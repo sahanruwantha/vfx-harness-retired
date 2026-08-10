@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bambi-vfx"
+version = "0.1.0"
+description = "An agent-driven 3D/VFX pipeline: a Blender-bridge department pipeline (modeling → look-dev → FX → lighting → comp) with per-discipline critics, powered by the Claude Agent SDK."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "claude-agent-sdk>=0.2.101,<0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+]
+
+[tool.hatch.build.targets.wheel]
+# Flat src layout: strip the src/ prefix so scene/, agents/, develop/, footage/ are top-level.
+sources = ["src"]
+only-include = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
