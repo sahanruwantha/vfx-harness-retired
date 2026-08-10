@@ -173,7 +173,7 @@ def make_hybrid_realizer(
     Reuses :func:`scene.plate.make_plate_generator` for the plate and :func:`scene.harness.build_shot`
     (with its ``prepare`` hook) for the subject; both injectable for testing. Caller owns the bridge.
     """
-    from develop.ledger import Clip
+    from contracts.ledger import Clip
     from scene.critic import load_reference_images
     from scene.harness import build_shot
     from scene.plate import make_plate_generator

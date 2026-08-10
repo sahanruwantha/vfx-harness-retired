@@ -6,7 +6,7 @@ import asyncio
 
 import agents.scene_supervisor as sup
 from agents.scene_supervisor import Methodology, ShotElement, decide_methodology, parse_methodology
-from develop.ledger import BeatEntry, Clip, Intent, Realization
+from contracts.ledger import BeatEntry, Clip, Intent, Realization
 from scene.supervisor import make_supervised_realizer
 
 

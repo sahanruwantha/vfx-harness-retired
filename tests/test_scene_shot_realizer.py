@@ -10,7 +10,7 @@ import asyncio
 import base64
 
 from agents.scene_supervisor import Methodology, ShotElement
-from develop.ledger import BeatEntry, Clip, Intent, Realization
+from contracts.ledger import BeatEntry, Clip, Intent, Realization
 from scene.departments import DEFAULT_STAGES, PipelineResult, StageResult
 from scene.shot_realizer import default_brief, make_pipeline_realizer, stages_for
 from scene.supervisor import make_supervised_realizer

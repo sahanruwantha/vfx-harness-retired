@@ -35,9 +35,9 @@ from agents.motion_critic import MotionCritique, critique_motion
 from agents.scene_builder import DeskResult, ReferenceImage, build_scene
 from agents.art_director import critique_craft
 from agents.scene_critic import SceneCritique, critique_scene
-from develop.ledger import Layer
-from develop.verdict import Lever, Verdict
-from develop.ledger import FrameSample
+from contracts.ledger import Layer
+from contracts.verdict import Lever, Verdict
+from contracts.ledger import FrameSample
 from scene.animate import _strip_frame_numbers
 from scene.departments import _best_of, _stage_passed
 from scene.diagnostics import black_frame_hint, is_black, scene_digest

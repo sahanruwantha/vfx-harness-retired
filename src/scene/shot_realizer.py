@@ -3,7 +3,7 @@ the real VFX pipeline (modeling → look-dev → [fx] → lighting → comp) ins
 
 This is the successor to :func:`scene.realizer.make_scene_builder` (one desk, one render): it runs
 :func:`scene.departments.build_shot_pipeline` and adapts its :class:`~scene.departments.PipelineResult`
-into a :class:`~develop.ledger.Clip`, exactly like the other develop leaves adapt their agents.
+into a :class:`~contracts.ledger.Clip`, exactly like the other develop leaves adapt their agents.
 
 Two seams make it the payoff of the last three increments:
 
@@ -26,9 +26,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from agents.scene_supervisor import Methodology
-from develop.agents import Render3D
-from develop.ledger import BeatEntry, Clip
-from develop.ledger import FrameSample
+from contracts.agents import Render3D
+from contracts.ledger import BeatEntry, Clip
+from contracts.ledger import FrameSample
 from scene.critic import load_reference_images
 from scene.departments import DEFAULT_STAGES, PipelineResult, Stage, build_shot_pipeline, with_fx
 

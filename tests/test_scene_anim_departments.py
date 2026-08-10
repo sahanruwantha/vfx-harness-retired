@@ -7,8 +7,8 @@ import asyncio
 from agents.motion_critic import MotionCritique
 from agents.scene_builder import DeskResult
 from agents.scene_critic import SceneCritique
-from develop.ledger import Layer
-from develop.verdict import Lever, Verdict
+from contracts.ledger import Layer
+from contracts.verdict import Lever, Verdict
 from scene.anim_departments import MOTION_STAGES, build_animation_pipeline
 
 

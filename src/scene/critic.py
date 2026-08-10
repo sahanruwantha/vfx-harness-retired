@@ -15,8 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agents.scene_critic import ReferenceImage, critique_scene
-from develop.agents import CritiqueFootage
-from develop.ledger import BeatEntry
+from contracts.agents import CritiqueFootage
+from contracts.ledger import BeatEntry
 
 _MEDIA_TYPES = {
     ".jpg": "image/jpeg",

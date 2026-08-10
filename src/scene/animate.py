@@ -25,10 +25,10 @@ from agents.desk_log import make_message_logger
 from agents.desk_memory import LessonBook, ShotContext, default_lessons_path
 from agents.motion_critic import MotionCritique, critique_motion
 from agents.scene_builder import DeskResult, ReferenceImage, build_scene
-from develop.agents import Render3D
-from develop.ledger import BeatEntry, Clip, Layer
-from develop.verdict import Lever, Verdict
-from develop.ledger import FrameSample
+from contracts.agents import Render3D
+from contracts.ledger import BeatEntry, Clip, Layer
+from contracts.verdict import Lever, Verdict
+from contracts.ledger import FrameSample
 from scene.critic import load_reference_images
 from scene.diagnostics import black_frame_hint, is_black, scene_digest
 from scene.harness import Iteration

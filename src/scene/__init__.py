@@ -36,18 +36,7 @@ from scene.departments import (
 from scene.harness import Iteration, ShotResult, build_shot
 from scene.hybrid import hybrid_stage_code, make_hybrid_realizer, plate_backdrop_code
 from scene.higgsfield import HiggsfieldError, generate_image
-from scene.panel import ATMOSPHERE_PRESETS, PanelResult, run_atmosphere_panel, signature_distance
 from scene.plate import make_plate_generator, plate_prompt
-from scene.realizer import (
-    SceneBuildError,
-    SceneSpec,
-    asset_prompt,
-    build_graybox,
-    default_graybox,
-    make_reconstruction_builder,
-    make_scene_builder,
-    scene_spec_from_beat,
-)
 from scene.shot_realizer import default_brief, make_pipeline_realizer, stages_for
 from scene.supervisor import make_supervised_realizer
 from scene.tripo import TripoError, image_to_glb
@@ -55,13 +44,9 @@ from scene.tripo import TripoError, image_to_glb
 __all__ = [
     "BlenderBridge",
     "BridgeError",
-    "ATMOSPHERE_PRESETS",
     "AnimationResult",
     "HiggsfieldError",
     "Iteration",
-    "PanelResult",
-    "SceneBuildError",
-    "SceneSpec",
     "ShotResult",
     "Stage",
     "StageResult",
@@ -78,15 +63,12 @@ __all__ = [
     "Asset",
     "AssetLibrary",
     "acquire_asset",
-    "asset_prompt",
     "barrel_roll_code",
     "bloom_compositor_code",
     "comp_graph_code",
     "build_animation",
-    "build_graybox",
     "build_shot",
     "build_shot_pipeline",
-    "default_graybox",
     "generate_image",
     "hybrid_stage_code",
     "image_to_glb",
@@ -96,15 +78,10 @@ __all__ = [
     "make_hybrid_realizer",
     "make_plate_generator",
     "make_pipeline_realizer",
-    "make_reconstruction_builder",
-    "make_scene_builder",
     "make_scene_critic",
     "make_supervised_realizer",
     "default_brief",
     "stages_for",
     "plate_prompt",
-    "run_atmosphere_panel",
     "sample_indices",
-    "scene_spec_from_beat",
-    "signature_distance",
 ]

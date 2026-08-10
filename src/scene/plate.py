@@ -7,7 +7,7 @@ a reconstruction look (the Silk Road finding, ``docs/3d-agent-architecture.md``)
 such beats as a generated plate: Higgsfield makes a cinematic frame from the beat's intent, which
 becomes the beat's ``Clip`` — judged by the same sighted critic, with no Blender at all.
 
-It is the MOTION_GRAPHICS twin of :func:`develop.lock.make_footage_acquirer` and
+It is the MOTION_GRAPHICS twin of :func:`contracts.lock.make_footage_acquirer` and
 :func:`scene.realizer.make_scene_builder`: same seam, same ``Clip`` output. ``generate_image`` is
 injected so the leaf is testable without the CLI. Plates are cached per beat, and the PNG Higgsfield
 returns is transcoded to JPEG (metadata stripped) so it drops cleanly into the sighted critic's
@@ -23,9 +23,9 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-from develop.agents import GeneratePlate
-from develop.ledger import BeatEntry, Clip
-from develop.ledger import FrameSample
+from contracts.agents import GeneratePlate
+from contracts.ledger import BeatEntry, Clip
+from contracts.ledger import FrameSample
 from scene.higgsfield import generate_image as _default_generate_image
 
 DEFAULT_STYLE = (

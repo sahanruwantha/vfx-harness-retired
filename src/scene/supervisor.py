@@ -19,8 +19,8 @@ import inspect
 from collections.abc import Awaitable, Callable
 
 from agents.scene_supervisor import Methodology, ReferenceImage, decide_methodology
-from develop.agents import Render3D
-from develop.ledger import BeatEntry, Clip
+from contracts.agents import Render3D
+from contracts.ledger import BeatEntry, Clip
 
 Decider = Callable[..., Awaitable[Methodology]]
 Realizer = Callable[[BeatEntry], "Clip | Awaitable[Clip]"]

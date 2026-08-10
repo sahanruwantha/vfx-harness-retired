@@ -19,7 +19,7 @@ LicenceState = Literal["KNOWN", "UNKNOWN"]
 
 
 class Layer(IntEnum):
-    """The layer a verdict attributes a result to — a small tag on :class:`~develop.verdict.Verdict`.
+    """The layer a verdict attributes a result to — a small tag on :class:`~contracts.verdict.Verdict`.
     The 3D pipeline judges the rendered CLIP; the other members remain for verdict compatibility."""
 
     INTENT = 0

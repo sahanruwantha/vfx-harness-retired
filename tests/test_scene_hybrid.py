@@ -35,8 +35,8 @@ def test_plate_backdrop_is_a_camera_locked_emissive_plane():
 
 import asyncio
 
-from develop.ledger import BeatEntry, Clip, Intent
-from develop.ledger import FrameSample
+from contracts.ledger import BeatEntry, Clip, Intent
+from contracts.ledger import FrameSample
 from scene.harness import Iteration
 from scene.hybrid import hybrid_subject_brief, make_hybrid_realizer
 

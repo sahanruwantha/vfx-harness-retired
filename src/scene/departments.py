@@ -31,9 +31,9 @@ from agents.scene_builder import DeskResult, ReferenceImage, build_scene
 from agents.art_director import critique_craft
 from agents.dept_critics import critique_fx, critique_layout, critique_lighting, critique_lookdev
 from agents.scene_critic import SceneCritique, critique_scene
-from develop.ledger import Layer
-from develop.verdict import Lever, Verdict
-from develop.ledger import FrameSample
+from contracts.ledger import Layer
+from contracts.verdict import Lever, Verdict
+from contracts.ledger import FrameSample
 from scene.diagnostics import black_frame_hint, is_black, scene_digest
 from scene.harness import Iteration, format_feedback
 

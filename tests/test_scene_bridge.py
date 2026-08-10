@@ -27,7 +27,7 @@ def test_server_dependency_boundary_is_protocol_only() -> None:
     """
     source = (Path(__file__).resolve().parents[1] / "src" / "scene" / "server.py").read_text()
     import_lines = [ln.strip() for ln in source.splitlines() if ln.strip().startswith(("import ", "from "))]
-    forbidden = ("scene", "develop", "agents", "claude_agent_sdk")  # client-only; absent in Blender
+    forbidden = ("scene", "contracts", "agents", "claude_agent_sdk")  # client-only; absent in Blender
     offenders = [ln for ln in import_lines if any(mod in ln for mod in forbidden)]
     assert not offenders, f"server.py must stay protocol-only; found client imports: {offenders}"
 

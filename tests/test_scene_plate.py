@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from develop.ledger import BeatEntry, Intent, Realization
+from contracts.ledger import BeatEntry, Intent, Realization
 from scene import plate as plate_mod
 from scene.plate import make_plate_generator, plate_prompt
 

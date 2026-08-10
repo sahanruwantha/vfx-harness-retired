@@ -6,8 +6,8 @@ import asyncio
 
 from agents.scene_builder import DeskResult
 from agents.scene_critic import SceneCritique
-from develop.ledger import Layer
-from develop.verdict import Lever, Verdict
+from contracts.ledger import Layer
+from contracts.verdict import Lever, Verdict
 from scene.departments import (
     DEFAULT_CRITICS,
     DEFAULT_STAGES,

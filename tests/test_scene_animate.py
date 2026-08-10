@@ -6,9 +6,9 @@ import asyncio
 
 from agents.motion_critic import MotionCritique, parse_score, parse_verdict
 from agents.scene_builder import DeskResult
-from develop.ledger import BeatEntry, Intent, Layer, Realization
-from develop.verdict import Lever, Verdict
-from develop.ledger import FrameSample
+from contracts.ledger import BeatEntry, Intent, Layer, Realization
+from contracts.verdict import Lever, Verdict
+from contracts.ledger import FrameSample
 from scene.animate import (
     AnimationResult,
     _strip_frame_numbers,

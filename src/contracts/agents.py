@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from develop.ledger import BeatEntry, Clip
-from develop.verdict import Verdict
+from contracts.ledger import BeatEntry, Clip
+from contracts.verdict import Verdict
 
 Render3D = Callable[[BeatEntry], Awaitable[Clip]]  # the 3D leaf — builds and renders a Clip
 GeneratePlate = Callable[[BeatEntry], Awaitable[Clip]]  # generates an AI image plate

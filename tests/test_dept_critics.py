@@ -17,8 +17,8 @@ from agents.dept_critics import (
     critique_lookdev,
 )
 from agents.scene_critic import SceneCritique
-from develop.verdict import Lever
-from develop.ledger import FrameSample
+from contracts.verdict import Lever
+from contracts.ledger import FrameSample
 
 
 def _frames():
