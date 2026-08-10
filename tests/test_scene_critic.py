@@ -7,7 +7,7 @@ import asyncio
 from agents.scene_critic import SceneCritique, build_content, critique_scene, parse_score, parse_verdict
 from develop.ledger import BeatEntry, Clip, Intent, Layer
 from develop.verdict import Lever, Verdict
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 from scene import critic as scene_critic_mod
 from scene.critic import load_reference_images, make_scene_critic
 

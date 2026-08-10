@@ -18,7 +18,7 @@ from agents.dept_critics import (
 )
 from agents.scene_critic import SceneCritique
 from develop.verdict import Lever
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 
 
 def _frames():

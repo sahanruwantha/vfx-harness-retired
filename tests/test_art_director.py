@@ -8,7 +8,7 @@ import agents.art_director as ad
 from agents.art_director import build_content, critique_craft
 from agents.scene_critic import SceneCritique
 from develop.verdict import Lever
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 
 
 def _refs():

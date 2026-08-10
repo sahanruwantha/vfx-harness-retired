@@ -33,7 +33,7 @@ from agents.dept_critics import critique_fx, critique_layout, critique_lighting,
 from agents.scene_critic import SceneCritique, critique_scene
 from develop.ledger import Layer
 from develop.verdict import Lever, Verdict
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 from scene.diagnostics import black_frame_hint, is_black, scene_digest
 from scene.harness import Iteration, format_feedback
 

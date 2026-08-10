@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from develop.ledger import BeatEntry, Intent, Mode, Realization
+from develop.ledger import BeatEntry, Intent, Realization
 from scene.realizer import (
     SceneSpec,
     asset_prompt,
@@ -70,7 +70,6 @@ def _beat(subject: str = "the shredder room") -> BeatEntry:
             index=0,
         ),
     )
-    entry.mode = Mode("3D")
     entry.realization = Realization("Inside the room where the documents were destroyed.")
     return entry
 

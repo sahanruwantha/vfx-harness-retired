@@ -31,7 +31,7 @@ from pathlib import Path
 from develop.agents import Render3D
 from develop.ledger import BeatEntry, Clip
 from develop.lock import estimate_seconds
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 from scene.higgsfield import generate_image as _default_generate_image
 from scene.tripo import image_to_glb as _default_image_to_glb
 

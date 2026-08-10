@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from develop.ledger import BeatEntry, Intent, Mode, Realization
+from develop.ledger import BeatEntry, Intent, Realization
 from scene import plate as plate_mod
 from scene.plate import make_plate_generator, plate_prompt
 
@@ -15,7 +15,6 @@ def _beat(subject: str = "the Silk Road server-tower monolith") -> BeatEntry:
         id="beat-01",
         intent=Intent(function="cold open", subject=subject, evidence="[Doc 1]", heading=f"1. {subject}", index=0),
     )
-    entry.mode = Mode("MOTION_GRAPHICS")
     entry.realization = Realization("A monolith of servers rises from the dark.")
     return entry
 

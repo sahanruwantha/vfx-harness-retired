@@ -28,7 +28,7 @@ from _sdk import MAX_BUFFER_SIZE, VISUAL_EFFORT, VISUAL_MODEL
 from production import FACELESS_ONELINE
 from develop.ledger import Layer
 from develop.verdict import Lever, Verdict
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 from agents.scene_critic import (
     RECOVERABLE_SUBTYPES,
     ReferenceImage,

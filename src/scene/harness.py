@@ -29,7 +29,7 @@ from agents.art_director import critique_craft
 from agents.scene_critic import SceneCritique, critique_scene
 from develop.ledger import Layer
 from develop.verdict import Lever, Verdict
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 from scene.diagnostics import black_frame_hint, is_black, scene_digest
 
 Progress = Callable[[str], None]

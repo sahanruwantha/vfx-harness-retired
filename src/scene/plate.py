@@ -25,7 +25,7 @@ from pathlib import Path
 
 from develop.agents import GeneratePlate
 from develop.ledger import BeatEntry, Clip
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 from scene.higgsfield import generate_image as _default_generate_image
 
 DEFAULT_STYLE = (

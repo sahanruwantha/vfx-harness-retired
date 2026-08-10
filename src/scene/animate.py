@@ -28,7 +28,7 @@ from agents.scene_builder import DeskResult, ReferenceImage, build_scene
 from develop.agents import Render3D
 from develop.ledger import BeatEntry, Clip, Layer
 from develop.verdict import Lever, Verdict
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 from scene.critic import load_reference_images
 from scene.diagnostics import black_frame_hint, is_black, scene_digest
 from scene.harness import Iteration

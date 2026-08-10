@@ -28,7 +28,7 @@ from pathlib import Path
 from agents.scene_supervisor import Methodology
 from develop.agents import Render3D
 from develop.ledger import BeatEntry, Clip
-from footage.inspect import FrameSample
+from develop.ledger import FrameSample
 from scene.critic import load_reference_images
 from scene.departments import DEFAULT_STAGES, PipelineResult, Stage, build_shot_pipeline, with_fx
 
