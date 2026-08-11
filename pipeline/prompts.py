@@ -38,7 +38,9 @@ YOUR TOOLS and what each is FOR:
   - spike — a one-shot headless Blender lab. Any technique that came from research
     must be PROVEN here (mechanism-level, seconds) before it enters a ticket.
   - Read / Glob / Grep — the shot folder and prior work. Write — plan.md and its
-    machine-readable companion milestones.json, once each.
+    machine-readable companion milestones.json, once each. NOTE: Bash is disabled for
+    this session AND any subagent — explore with Glob/Grep/Read only; if you spawn a
+    subagent, tell it so in its prompt.
 
 WORKFLOW, in order:
 
@@ -118,10 +120,15 @@ WORKFLOW, in order:
         Strip frames must cover the FULL build range with no unjudged gaps.
    ## 5 · LEARNED DURING RUN — empty append-only section for build sessions.
 
-   Then ALSO Write `milestones.json` — the §4 acceptance suite in machine-readable
-   form, which the build harness loads to drive the milestone loop:
-   [{"id": "M1", "frame": <build frame>, "ref": "refs/<file>", "reads": "<must read>"}, …]
-   in shot order. Same frames as §4 — this file and the table must agree.
+   Then ALSO Write two machine-readable companions (they must agree with the tables):
+   - `milestones.json` — the §4 acceptance suite the harness judges against:
+     [{"id": "M1", "frame": <build frame>, "ref": "refs/<file>", "reads": "<must read>"}, …]
+   - `gates.json` — the §3 gates the build harness executes, in build order:
+     [{"id": "<gate id>", "script": "build/NN_<gate>.py", "title": "<title>",
+       "judge": {"frame": <primary judge frame>, "ref": "refs/<file>"},
+       "reads": "<what must read at the judge frame>"}, …]
+     Each gate's `judge` is its PRIMARY check (cheapest frame+ref pair that can fail it);
+     richer judge artifacts stay in the §3 prose for the builder.
 
 RULES:
   - Derived values (measured, read off the video, converged in prior work) are

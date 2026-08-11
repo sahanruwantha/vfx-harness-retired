@@ -40,7 +40,7 @@ from .build_prompts import (
     finalize_prompt,
     revision_prompt,
 )
-from .ledger import Ledger, Milestone, load_axes, load_milestones
+from .ledger import Ledger, Milestone, load_axes, load_gates, load_milestones
 from .recipes import RECIPES_DIR, build_recipe_tools
 
 MODEL = "claude-fable-5"
@@ -99,6 +99,55 @@ def _run_priors(session: BlenderSession, shot: Shot, m: Milestone) -> list[str]:
         session.run(p.read_text(encoding="utf-8"))
         names.append(p.name)
     return names
+
+
+def _prior_gate_paths(shot: Shot, gate) -> list[Path]:
+    """Gate scripts that must run before this gate: all EXISTING build/NN_*.py with a
+    lower numeric prefix, in order. Gates build on each other like layers."""
+    def num(p: Path) -> int:
+        m = re.match(r"(\d+)", p.name)
+        return int(m.group(1)) if m else 10_000
+    mine = num(Path(gate.script))
+    build_dir = shot.folder / "build"
+    if not build_dir.is_dir():
+        return []
+    return sorted((p for p in build_dir.glob("*.py") if num(p) < mine), key=num)
+
+
+def _run_prior_paths(session: BlenderSession, paths: list[Path]) -> list[str]:
+    names = []
+    for p in paths:
+        log(f"running prior gate script {p.name}")
+        session.run(p.read_text(encoding="utf-8"))
+        names.append(p.name)
+    return names
+
+
+def _plan_gate_excerpt(shot: Shot, gate) -> str:
+    """The gate's own section of plan.md — its tickets ARE the build instructions."""
+    plan = shot.folder / "plan.md"
+    if not plan.is_file():
+        return ""
+    text = plan.read_text(encoding="utf-8")
+    script_name = Path(gate.script).name
+    lines = text.splitlines()
+    id_pat = re.compile(rf"(?:GATE\s+{re.escape(gate.id)}\b|\b{re.escape(gate.id)}\s*·)")
+    start = None
+    for i, ln in enumerate(lines):
+        if not ln.startswith("### "):
+            continue
+        # script name is unambiguous; gate id needs word-ish boundaries ("G" ⊂ "GATE L")
+        if script_name in ln or id_pat.search(ln) or (gate.title and gate.title in ln):
+            start = i
+            break
+    if start is None:
+        return ""
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j].startswith("### ") or lines[j].startswith("## "):
+            end = j
+            break
+    return "\n".join(lines[start:end]).strip()
 
 
 def _preamble(shot: Shot) -> str:
@@ -199,9 +248,10 @@ async def ensure_axes(shot: Shot, verbose: bool = True) -> list[tuple[str, str]]
     return axes
 
 
-async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True) -> None:
+async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True,
+                         script_rel: str | None = None) -> None:
     """Harvest reusable recipes from a passing build into the cookbook (best-effort)."""
-    script_path = shot.folder / "build" / f"{m.id.lower()}.py"
+    script_path = shot.folder / (script_rel or f"build/{m.id.lower()}.py")
     if not script_path.is_file():
         return
     log("distilling reusable recipes from the passing build…")
@@ -309,8 +359,12 @@ def _stash_motion_strip(session: BlenderSession, shot: Shot, m: Milestone, tag: 
 # --------------------------------------------------------------------------- #
 # The loop                                                                     #
 # --------------------------------------------------------------------------- #
-async def build_milestone(shot: Shot, m: Milestone, session: BlenderSession, *,
-                          rounds: int = 2, verbose: bool = True) -> Ledger:
+async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: list[Path],
+                     session: BlenderSession, *, rounds: int = 2, verbose: bool = True,
+                     plan_excerpt: str = "") -> Ledger:
+    """The build+critic engine for ONE unit of work. A unit is judged at m.frame vs
+    m.ref and persists the delta script `script_rel`. Gates and legacy milestones both
+    run through here — they differ only in judge point, script name and priors."""
     ledger = Ledger(shot)
     ledger.begin(m)
 
@@ -321,18 +375,19 @@ async def build_milestone(shot: Shot, m: Milestone, session: BlenderSession, *,
     mcp_servers = {"blender": bserver, "recipes": rserver}
     tool_names = bnames + rnames
 
-    # Start every build from the same deterministic base + earlier milestones' scripts
-    # (a milestone extends the shot's existing scene, it doesn't rebuild the world).
+    # Deterministic base + prior delta scripts (a unit extends the existing scene).
     session.run(_RESET)
     session.run(_preamble(shot))
-    priors = _run_priors(session, shot, m)
+    priors = _run_prior_paths(session, prior_paths)
 
     passed = False
     best = {"mean": -1.0, "round": 0, "render": None, "verdict": None}
     prev_mean = None
     opts = _builder_options(shot, mcp_servers, tool_names, axes)
     async with ClaudeSDKClient(options=opts) as builder:
-        await builder.query(builder_kickoff(shot, m, priors=priors))
+        await builder.query(builder_kickoff(shot, m, priors=priors,
+                                            script_rel=script_rel,
+                                            plan_excerpt=plan_excerpt))
         await _drain(builder, verbose)
 
         for rnd in range(1, rounds + 1):
@@ -374,41 +429,55 @@ async def build_milestone(shot: Shot, m: Milestone, session: BlenderSession, *,
             await _drain(builder, verbose)
 
         # Persist the deterministic recipe regardless — it's the artifact of record.
-        await builder.query(finalize_prompt(shot, m, priors=priors))
+        await builder.query(finalize_prompt(shot, m, priors=priors, script_rel=script_rel))
         await _drain(builder, verbose)
 
-    # Confirm the written script REPRODUCES the milestone from an empty scene. This is a
+    # Confirm the written script REPRODUCES the unit from an empty scene. This is a
     # reproduction check, NOT a second quality gate — with ~±0.15 judge noise, requiring
     # two consecutive gate-clears at the boundary is double jeopardy (cost M3 a pass).
-    canonical_ok = await _verify_script(shot, m, session, axes, ledger, verbose,
-                                        live_best_mean=best["mean"])
+    canonical_ok = await _verify_script(shot, m, script_rel, prior_paths, session, axes,
+                                        ledger, verbose, live_best_mean=best["mean"])
     ok = passed and canonical_ok
     ledger.mark(m, "passed" if ok else "failed", best=best)
     if ok:
         try:  # harvest reusable recipes from the passing build (best-effort)
-            await distill_recipe(shot, m, verbose)
+            await distill_recipe(shot, m, verbose, script_rel=script_rel)
         except Exception as e:
             log(f"distill skipped: {str(e)[:80]}")
     return ledger
 
 
-async def _verify_script(shot: Shot, m: Milestone, session: BlenderSession,
+async def build_gate(shot: Shot, gate, session: BlenderSession, *,
+                     rounds: int = 2, verbose: bool = True) -> Ledger:
+    """Build one PLAN GATE: chain lower-numbered gate scripts, implement this gate's
+    tickets (its plan.md section is the spec), judge at its primary frame/ref."""
+    return await build_unit(shot, gate.as_milestone(), gate.script,
+                            _prior_gate_paths(shot, gate), session,
+                            rounds=rounds, verbose=verbose,
+                            plan_excerpt=_plan_gate_excerpt(shot, gate))
+
+
+async def build_milestone(shot: Shot, m: Milestone, session: BlenderSession, *,
+                          rounds: int = 2, verbose: bool = True) -> Ledger:
+    """Legacy milestone-script mode (build/m<N>.py chained by milestone order)."""
+    return await build_unit(shot, m, f"build/{m.id.lower()}.py",
+                            _prior_scripts(shot, m), session,
+                            rounds=rounds, verbose=verbose)
+
+
+async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
+                         prior_paths: list[Path], session: BlenderSession,
                          axes: list[tuple[str, str]], ledger: Ledger, verbose: bool,
                          live_best_mean: float | None = None) -> bool:
-    script_path = shot.folder / "build" / f"{m.id.lower()}.py"
-    if not script_path.is_file():  # tolerate case slips (e.g. build/M1.py)
-        alt = [p for p in (shot.folder / "build").glob("*.py")
-               if p.stem.lower() == m.id.lower()]
-        if alt:
-            script_path = alt[0]
-        else:
-            log(f"! builder never wrote build/{m.id.lower()}.py")
-            return False
+    script_path = shot.folder / script_rel
+    if not script_path.is_file():
+        log(f"! builder never wrote {script_rel}")
+        return False
     log(f"verifying {script_path.name} reproduces from an empty scene…")
     try:
         session.run(_RESET)
         session.run(_preamble(shot))
-        _run_priors(session, shot, m)  # deltas assume earlier milestones ran first
+        _run_prior_paths(session, prior_paths)  # deltas assume priors ran first
         session.run(script_path.read_text(encoding="utf-8"))
     except BlenderError as e:
         log(f"! build script failed: {str(e)[:200]}")
@@ -433,31 +502,44 @@ async def _verify_script(shot: Shot, m: Milestone, session: BlenderSession,
 # --------------------------------------------------------------------------- #
 # CLI                                                                          #
 # --------------------------------------------------------------------------- #
-async def _run(folder: str, milestone: str, rounds: int, blender: str) -> None:
+async def _run(folder: str, gate_id: str | None, milestone: str | None,
+               rounds: int, blender: str) -> None:
     shot = load_shot(folder)
-    milestones = load_milestones(shot)
-    m = milestones.get(milestone.upper())
-    if m is None:
-        raise SystemExit(f"unknown milestone {milestone!r}; known: {', '.join(milestones)}")
-
-    log(f"build agent: shot '{shot.id}' milestone {m.id} (frame {m.frame}), model {MODEL}")
     session = BlenderSession(blender=blender, blend_file=None,
                              assets_dir=shot.folder / "assets").start()
     try:
-        ledger = await build_milestone(shot, m, session, rounds=rounds)
+        if gate_id:
+            gates = load_gates(shot)
+            g = gates.get(gate_id) or gates.get(gate_id.upper())
+            if g is None:
+                raise SystemExit(f"unknown gate {gate_id!r}; known: {', '.join(gates)}")
+            log(f"build agent: shot '{shot.id}' GATE {g.id} — {g.title} "
+                f"(judge f{g.judge_frame} vs {g.judge_ref}) → {g.script}, model {MODEL}")
+            ledger = await build_gate(shot, g, session, rounds=rounds)
+            log(f"{g.id}: {ledger.status(g.as_milestone())}  →  {ledger.path}")
+        else:
+            milestones = load_milestones(shot)
+            m = milestones.get((milestone or "M1").upper())
+            if m is None:
+                raise SystemExit(f"unknown milestone {milestone!r}; known: {', '.join(milestones)}")
+            log(f"build agent: shot '{shot.id}' milestone {m.id} (frame {m.frame}), model {MODEL}")
+            ledger = await build_milestone(shot, m, session, rounds=rounds)
+            log(f"{m.id}: {ledger.status(m)}  →  {ledger.path}")
     finally:
         session.close()
-    log(f"{m.id}: {ledger.status(m)}  →  {ledger.path}")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build one milestone with the critic loop.")
+    ap = argparse.ArgumentParser(description="Build one plan gate (or legacy milestone) "
+                                             "with the critic loop.")
     ap.add_argument("folder", help="shot folder (contains brief.md + refs/)")
-    ap.add_argument("--milestone", default="M1", help="milestone id (default M1)")
+    ap.add_argument("--gate", default=None,
+                    help="gate id from gates.json (e.g. L, G20) — the primary mode")
+    ap.add_argument("--milestone", default=None, help="legacy milestone id (e.g. M1)")
     ap.add_argument("--rounds", type=int, default=2, help="max build↔critic rounds")
     ap.add_argument("--blender", default="blender", help="blender executable")
     args = ap.parse_args()
-    anyio.run(_run, args.folder, args.milestone, args.rounds, args.blender)
+    anyio.run(_run, args.folder, args.gate, args.milestone, args.rounds, args.blender)
 
 
 if __name__ == "__main__":

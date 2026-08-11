@@ -53,6 +53,37 @@ def load_axes(shot: Shot) -> list[tuple[str, str]]:
             pass
     return DEFAULT_AXES
 
+@dataclass(frozen=True)
+class Gate:
+    """One build gate from the plan (build ORDER), judged at a primary frame/ref.
+    Milestones remain the acceptance MOMENTS; gates are how the scene gets built."""
+
+    id: str
+    script: str  # e.g. "build/20_green.py" — chained in numeric order
+    title: str
+    judge_frame: int
+    judge_ref: str
+    reads: str
+
+    def as_milestone(self) -> "Milestone":
+        """The critic loop speaks Milestone — adapt the gate's judge point."""
+        return Milestone(self.id, self.judge_frame, self.judge_ref, self.reads)
+
+
+def load_gates(shot: Shot) -> dict[str, Gate]:
+    """Per-shot build gates from shots/<id>/gates.json (written by the PLAN stage)."""
+    path = shot.folder / "gates.json"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} missing — run the plan agent first (its gates define the build "
+            f"order; milestones.json defines the acceptance moments)")
+    out: dict[str, Gate] = {}
+    for g in json.loads(path.read_text()):
+        out[g["id"]] = Gate(g["id"], g["script"], g.get("title", g["id"]),
+                            int(g["judge"]["frame"]), g["judge"]["ref"], g.get("reads", ""))
+    return out
+
+
 def load_milestones(shot: Shot) -> dict[str, Milestone]:
     """Per-shot milestones from shots/<id>/milestones.json — written by the PLAN stage
     (the brief gives approval moments; mapping them to frames is the plan's job).

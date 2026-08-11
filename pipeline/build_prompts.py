@@ -130,33 +130,36 @@ def builder_system(axes: list[tuple[str, str]]) -> str:
     return _BUILDER_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes))
 
 
-def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None) -> str:
+def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
+                    script_rel: str | None = None, plan_excerpt: str = "") -> str:
     adir = shot.folder / "assets"
     assets = sorted(p.name for p in adir.iterdir() if (p / "model.glb").is_file()) \
         if adir.is_dir() else []
     asset_line = (f"AVAILABLE ASSETS — import with import_asset() using these EXACT names "
                   f"(do NOT guess a name): {assets}. Prefer the committed hero mesh over "
                   f"hand-modelling a detailed prop.\n\n" if assets else "")
+    plan_block = (f"YOUR GATE'S PLAN SECTION — these tickets are your build instructions "
+                  f"(methods, starting values marked *(start)*, gotchas, done-checks). "
+                  f"Follow them; the full plan is `plan.md` if you need wider context:\n"
+                  f"---\n{plan_excerpt}\n---\n\n" if plan_excerpt else "")
     if priors:
         start_line = (
-            f"THE SCENE IS NOT EMPTY: the earlier milestone script(s) {priors} have "
-            f"already run — the world, hero, city, sky and camera animation from those "
-            f"milestones exist right now. Your job is the DELTA: key/extend/modify this "
-            f"scene so frame {m.frame} reads as the target state (a milestone is a "
-            f"frame of the SAME continuous shot — e.g. ramp existing emission/world "
-            f"values with keyframes; do NOT rebuild what exists, and do NOT break the "
-            f"earlier milestone's frame). inspect_scene/list_keyframes first to see "
-            f"what you have.")
+            f"THE SCENE IS NOT EMPTY: the earlier delta script(s) {priors} have already "
+            f"run — everything they build exists right now. Your job is THIS unit's "
+            f"DELTA only: add/key/modify per your instructions; do NOT rebuild what "
+            f"exists, and do NOT break what earlier units already got judged on. "
+            f"inspect_scene/list_keyframes first to see what you have.")
     else:
         start_line = (f"Start from the empty scene, build to hit frame {m.frame}, and "
                       f"render eevee to check yourself against the reference. Iterate "
                       f"until it matches.")
     return (
-        f"Build milestone {m.id} of shot '{shot.id}' — frame {m.frame} of "
-        f"{shot.frames} at {shot.fps}fps.\n\n"
+        f"Build unit {m.id} of shot '{shot.id}' — judged at frame {m.frame} of "
+        f"{shot.frames} at {shot.fps}fps. Your delta script will be `{script_rel or ('build/' + m.id.lower() + '.py')}`.\n\n"
         f"TARGET STATE (must read at frame {m.frame}):\n  {m.reads}\n\n"
         f"REFERENCE: read `{m.ref}` — match its colour, composition and camera state.\n"
         f"Also read `brief.md` for the shot's intent and palette.\n\n"
+        f"{plan_block}"
         f"{asset_line}"
         f"{start_line}"
     )
@@ -180,7 +183,9 @@ def revision_prompt(m: Milestone, verdict: dict, candidate_rel: str) -> str:
     )
 
 
-def finalize_prompt(shot, m: Milestone, priors: list[str] | None = None) -> str:
+def finalize_prompt(shot, m: Milestone, priors: list[str] | None = None,
+                    script_rel: str | None = None) -> str:
+    script = script_rel or f"build/{m.id.lower()}.py"
     if priors:
         scope = (
             f"a DELTA script: the harness re-runs {priors} first, then your script. "
@@ -191,7 +196,7 @@ def finalize_prompt(shot, m: Milestone, priors: list[str] | None = None) -> str:
             f"a script that rebuilds this entire scene from an EMPTY scene, reproducing "
             f"frame {m.frame} exactly as you have it")
     return (
-        f"Now persist your work. Write `build/{m.id.lower()}.py` — {scope}. Assume the "
+        f"Now persist your work. Write `{script}` — {scope}. Assume the "
         f"frame range (1–{shot.frames}), fps ({shot.fps}) and motion blur are already set "
         f"by the harness. To bring in a committed hero mesh, call "
         f"`bvfx_import_asset('<name>')` (the import_asset TOOL is NOT in scope inside the "
