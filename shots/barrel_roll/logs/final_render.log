@@ -1,0 +1,11 @@
+[   0.0s] running prior milestone script m1.py
+[   1.6s] running prior milestone script m2.py
+[   1.9s] running prior milestone script m3.py
+[   3.1s] rendering 48 frames of m4.py @ scale 1.0…
+[ 101.3s]   8/48 (98s)
+[ 203.2s]   16/48 (200s)
+[ 304.6s]   24/48 (302s)
+[ 392.8s]   32/48 (390s)
+[ 476.3s]   40/48 (473s)
+[ 557.3s]   48/48 (554s)
+[ 559.5s] wrote shots/barrel_roll/renders/barrel_roll_full.mp4 (4235 KB)
