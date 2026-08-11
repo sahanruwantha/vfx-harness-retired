@@ -12,3 +12,5 @@ runs/
 # regenerable asset cache (model.glb is the pinned input; raw.glb is not)
 shots/*/assets/*/raw.glb
 nohup.out
+# shot folders: local working data (briefs/refs/outputs) — not tracked
+shots/
