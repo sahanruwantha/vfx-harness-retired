@@ -4,8 +4,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 dist/
-build/
+/build/
 *.egg-info/
 # Blender/agent run artifacts
 runs/
 *.blend1
+# regenerable asset cache (model.glb is the pinned input; raw.glb is not)
+shots/*/assets/*/raw.glb
+nohup.out

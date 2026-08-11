@@ -4,12 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bambi-vfx"
-version = "0.1.0"
-description = "An agent-driven 3D/VFX pipeline: a Blender-bridge department pipeline (modeling → look-dev → FX → lighting → comp) with per-discipline critics, powered by the Claude Agent SDK."
+version = "0.2.0"
+description = "An agent-driven 3D/VFX pipeline built on the Claude Agent SDK. Input: a shot folder (brief.md + refs/). Stage 2 — the plan agent — turns the brief into a frame-numbered build plan."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "claude-agent-sdk>=0.2.101,<0.3",
+  "pyyaml>=6,<7",
+  "httpx>=0.27,<1",   # asset stage: image generation + image→3D HTTP
+  "pillow>=10,<14",   # asset stage: local background keying for cutout isolation
+  "python-dotenv>=1,<2",  # load the repo .env on import, so no shell setup is needed
 ]
 
 [project.optional-dependencies]
@@ -17,11 +21,16 @@ dev = [
   "pytest>=8,<10",
 ]
 
+[project.scripts]
+plan = "pipeline.plan_agent:main"
+build = "pipeline.build_agent:main"
+asset = "pipeline.asset_agent:main"
+prepare-asset = "pipeline.assets.normalize:main"
+render = "pipeline.render_shot:main"
+
 [tool.hatch.build.targets.wheel]
-# Flat src layout: strip the src/ prefix so scene/, agents/, develop/, footage/ are top-level.
-sources = ["src"]
-only-include = ["src"]
+packages = ["pipeline"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["."]
 testpaths = ["tests"]

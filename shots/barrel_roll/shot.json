@@ -1,0 +1,367 @@
+{
+  "shot": "barrel_roll",
+  "milestones": {
+    "M1": {
+      "frame": 1,
+      "ref": "refs/M1_green.jpg",
+      "status": "passed",
+      "script": "build/m1.py",
+      "rounds": [
+        {
+          "round": 1,
+          "kind": "iter",
+          "render": "renders/M1_r1.png",
+          "scores": {
+            "roll_inversion_readpose": 4,
+            "world_palette_state": 3,
+            "blackout_seam": 3,
+            "hero_tower_detail": 2,
+            "emissive_city_ground": 3,
+            "atmosphere_depth": 2,
+            "motion_finish_grade": 3
+          },
+          "mean": 2.86,
+          "pass": false,
+          "round_s": 61.8,
+          "issues": [
+            "Hero tower reads as a procedurally-perfect lit lattice (chess-pawn silhouette, every window identical) \u2014 break the grid: randomize per-window emission strength/on-off (noise texture into emission), add dark structural bands and circuit-trace runs between window clusters so it reads as a circuit-board megastructure like the reference's irregular particle facade.",
+            "Crown is a clipped flat-white sphere \u2014 replace with a structured glowing crown (emissive geometry with green-to-white gradient, emission ~2-3 stops lower) so it blooms without blowing to a featureless disc.",
+            "Sky is largely flat black with only faint edge wisps \u2014 add a volumetric/billboard wispy nebula-cloud layer wrapping the upper frame (green-tinted, driven by large-scale noise) and let the tower's bloom bleed into it; the reference has no empty black voids above the horizon.",
+            "World tint is confined to the tower \u2014 the reference frame is globally suffused green; add a subtle green fog/world tint or green grade lift on midtones so the whole world reads silk-road green, not neutral black with a green prop.",
+            "City ground is a uniform scatter of identical white dots on flat black and the lesser towers are unlit gray slabs \u2014 vary dot size/intensity, cluster lights into street-like rows, and add sparse emissive windows to the background towers so the city reads inhabited and recedes with depth.",
+            "Camera sits at near ground level with a level horizon \u2014 for the 'low aerial dive beginning' raise the camera and pitch down a few degrees so we look slightly over the city like the reference.",
+            "In strip frames 7/13 the blurred city lights render as broken dashes \u2014 raise motion-blur steps/shutter samples (or shutter to ~0.5 with more steps) so streaks are continuous ribbons, not stuttered segments."
+          ],
+          "at": "2026-08-11T06:20:36+00:00"
+        },
+        {
+          "round": 2,
+          "kind": "iter",
+          "render": "renders/M1_r2.png",
+          "scores": {
+            "roll_inversion_readpose": 4,
+            "world_palette_state": 4,
+            "blackout_seam": 3,
+            "hero_tower_detail": 3,
+            "emissive_city_ground": 3,
+            "atmosphere_depth": 2,
+            "motion_finish_grade": 4
+          },
+          "mean": 3.29,
+          "pass": false,
+          "round_s": 68.1,
+          "issues": [
+            "Atmosphere is nearly absent: the sky right of the tower is a flat gradient. Add layered wispy volumetric cloud/nebula noise wrapping the entire upper third (both sides), and raise volume scatter density near the tower so its glow blooms into the haze like the reference \u2014 currently the halo dies at a hard edge against clean sky.",
+            "Hero tower reads as a clean toy rook, not a circuit-board megastructure: break the uniform window grid with a noise-driven emission mask (clusters, dead zones, brighter 'trace' lines), and add rising particle motes / dissolving pixel clusters off the shaft and crown as in the reference. The crown is a featureless white blob \u2014 give it geometric structure (antenna tiers, gridded cap) under the bloom.",
+            "City ground lights are uniform white rectangles at one intensity: vary size, intensity, and warm/cool tint (reference skews warm amber), add faint street-line patterns, and put lit windows on the mid-ground lesser towers \u2014 they are currently unlit dark slabs that vanish against the ground.",
+            "Tower green is minty/desaturated versus the reference's saturated silk-road acid green: push emission color toward a purer high-saturation green (~RGB 0.1/1.0/0.25) and reserve white-hot only for the crown core.",
+            "Blackout seam prep: at strip frame 13 the roll is well past 45\u00b0 yet world and tower emission are still at full green with bright streaks \u2014 begin ramping world tint and tower emission down as the roll passes ~90\u00b0 so the green\u2192purple swap will be fully hidden at inversion.",
+            "Grade: slightly darken/crush the top-right sky gradient and add a subtle vignette to match the reference's moodier low-key framing; blacks elsewhere are good."
+          ],
+          "at": "2026-08-11T06:28:26+00:00"
+        },
+        {
+          "round": 0,
+          "kind": "canonical",
+          "render": "renders/M1_canonical.png",
+          "scores": {
+            "roll_inversion_readpose": 4,
+            "world_palette_state": 4,
+            "blackout_seam": 3,
+            "hero_tower_detail": 3,
+            "emissive_city_ground": 3,
+            "atmosphere_depth": 2,
+            "motion_finish_grade": 3
+          },
+          "mean": 3.14,
+          "pass": true,
+          "issues": [],
+          "at": "2026-08-11T12:45:00+00:00",
+          "note": "restored from run log (ledger clobber bug)"
+        }
+      ],
+      "updated": "2026-08-11T06:30:52+00:00",
+      "best": {
+        "round": 2,
+        "mean": 3.29,
+        "render": "renders/M1_r2.png"
+      },
+      "note": "calibrated gate 3.1; canonical 3.14"
+    },
+    "M2": {
+      "frame": 24,
+      "ref": "refs/M2_blackout.jpg",
+      "status": "passed",
+      "script": "build/m2.py",
+      "rounds": [
+        {
+          "round": 1,
+          "kind": "iter",
+          "render": "renders/M2_r1.png",
+          "scores": {
+            "roll_inversion_readpose": 3,
+            "world_palette_state": 4,
+            "blackout_seam": 4,
+            "hero_tower_detail": 3,
+            "emissive_city_ground": 3,
+            "atmosphere_depth": 3,
+            "motion_finish_grade": 2
+          },
+          "mean": 3.14,
+          "pass": false,
+          "round_s": 52.4,
+          "issues": [
+            "Motion blur is far too short: candidate streaks are stubby pills while the reference shows long comet-tail smears \u2014 raise camera motion blur shutter to ~0.5\u20130.7 (or increase the roll's angular velocity across frame 24) so each light elongates 3\u20135x along its arc, with the tail fading, not uniform.",
+            "Streak orientation reads wrong for a CCW roll: reference streaks lie diagonal (~30\u201345\u00b0 off horizontal), tangential to the roll arc; candidate's are near-vertical \u2014 retime the camera roll keys so the tangential smear direction at frame 24 is clearly diagonal/arcing.",
+            "Bloom is too tight: reference lights bleed into a wide warm halo with a soft tail gradient \u2014 in the Glare/bloom node drop the threshold and increase size ~2x on these highlights, without lifting the black floor.",
+            "Light placement is too even: candidate has 5 similar-sized streaks in a symmetric ring; reference has ~3 asymmetric lights with one large near-frame streak entering a corner \u2014 cull to 3\u20134, scale one up 2\u20133x and push it toward a frame corner for depth.",
+            "Background is dead digital black right up to each light: add a barely-visible warm haze falloff around the streak clusters (a dim volume or wide low-intensity glow pass) so the blackout stays atmospheric like the reference."
+          ],
+          "at": "2026-08-11T07:02:35+00:00"
+        },
+        {
+          "round": 2,
+          "kind": "iter",
+          "render": "renders/M2_r2.png",
+          "scores": {
+            "roll_inversion_readpose": 3,
+            "world_palette_state": 4,
+            "blackout_seam": 3,
+            "hero_tower_detail": 3,
+            "emissive_city_ground": 4,
+            "atmosphere_depth": 2,
+            "motion_finish_grade": 3
+          },
+          "mean": 3.14,
+          "pass": false,
+          "round_s": 79.5,
+          "issues": [
+            "Blacks are milky: a broad warm-brown ambient wash covers the right/upper two-thirds of the candidate, while the reference sits at true black outside the light streaks. Kill the world background strength (or set film exposure lower) and crush the tone-curve toe \u2014 anything below ~0.02 should hit 0 \u2014 so the seam reads as a genuine blackout.",
+            "Bloom on the upper-right streak is oversized and clipped into a featureless hot blob (~15% of frame width of glow). Raise the Glare/Bloom threshold and cut the size/intensity roughly in half so the streak core stays a legible bar like the reference's tight comet-tail lights.",
+            "Candidate lights read as soft rounded capsules; reference lights are tighter directional smears with a hard leading edge and a streaked tail. Elongate them along the motion vector (longer shutter on the roll, or stretch the emissive geometry) and shrink the emission radius so they read as motion-streaked window lights, not glowing pills.",
+            "Streak axes are mutually inconsistent (NW-SE, near-vertical, and NE-SW in the same frame) and reshuffle between strip frames 24/30/36, so the past-vertical camera roll doesn't read structurally. Align all streak tails tangentially to a single CCW roll direction and rotate that direction coherently across the strip.",
+            "The residual haze is a flat uniform gradient. Replace it with a faint noise-textured volume (low density, large-scale noise) so the remaining glow blooms into wispy structure instead of an even brown fog \u2014 this also fixes the lifted-black problem at its source."
+          ],
+          "at": "2026-08-11T07:09:15+00:00"
+        },
+        {
+          "round": 0,
+          "kind": "canonical",
+          "render": "renders/M2_canonical.png",
+          "scores": {
+            "roll_inversion_readpose": 3,
+            "world_palette_state": 4,
+            "blackout_seam": 4,
+            "hero_tower_detail": 3,
+            "emissive_city_ground": 3,
+            "atmosphere_depth": 3,
+            "motion_finish_grade": 2
+          },
+          "mean": 3.14,
+          "pass": true,
+          "issues": [],
+          "at": "2026-08-11T12:45:00+00:00",
+          "note": "restored from run log (ledger clobber bug)"
+        }
+      ],
+      "updated": "2026-08-11T07:11:49+00:00",
+      "best": {
+        "round": 1,
+        "mean": 3.14,
+        "render": "renders/M2_r1.png"
+      },
+      "note": "calibrated gate 3.1; canonical 3.14"
+    },
+    "M3": {
+      "frame": 32,
+      "ref": "refs/M3_purple.jpg",
+      "status": "passed",
+      "script": "build/m3.py",
+      "rounds": [
+        {
+          "round": 1,
+          "kind": "iter",
+          "render": "renders/M3_r1.png",
+          "scores": {
+            "roll_inversion_readpose": 2,
+            "world_palette_state": 4,
+            "blackout_seam": 3,
+            "hero_tower_detail": 3,
+            "emissive_city_ground": 4,
+            "atmosphere_depth": 3,
+            "motion_finish_grade": 2
+          },
+          "mean": 3.0,
+          "pass": false,
+          "round_s": 63.0,
+          "issues": [
+            "Camera pose does not read 'emerging inverted': frame 32 is near-upright with only a ~10-15 degree dutch tilt. Key the camera roll to ~200-230 degrees CCW at frame 32 so the world still hangs partly overhead and visibly unwinds toward upright over the following frames.",
+            "The roll is not progressing in the motion strip: across frames 32/38/44 the tower only drifts laterally and stays at the same near-vertical orientation. Continue the CCW roll curve (roughly 20-30 degrees of roll change across the strip) plus forward dive translation so the barrel roll reads structurally.",
+            "No motion blur anywhere in the strip \u2014 ground lights are sharp points in all three frames. Enable camera motion blur (shutter ~0.5) so the roll/dive streaks the emissive city lights; the reference's lights smear slightly.",
+            "Tower shaft is a dark slab between crown and base: densify the emissive window grid on the mid-body (reference shows continuous warm-lit gridded windows / circuit-board traces top to bottom). Add a second emission material pass on the shaft with per-window random intensity.",
+            "Blackout-seam residue missing at the emergence frame: at 32 the world is already at full brightness. Ramp world/ground emission from ~20% at frame 32 to 100% by ~frame 40 so the reveal reads as lights coming back after the near-black seam.",
+            "Sign/crown glow does not bloom into the sky \u2014 the cyan signage cuts off hard against the purple haze. Raise bloom threshold contribution around the crown or add a local volumetric so the glow wraps into the cloud layer as in the reference.",
+            "Sky shows soft horizontal banding and reads slightly flat in the upper-left; add wispier, higher-contrast dark nebula/cloud texture wrapping the top of frame.",
+            "Ground lights are uniform white blobs of similar size; the reference mixes warm amber/white at varied scales. Randomize light color temperature (roughly 3000-6500K mix) and size, and push a few more lesser-tower silhouettes near the horizon line."
+          ],
+          "at": "2026-08-11T07:36:34+00:00"
+        },
+        {
+          "round": 2,
+          "kind": "iter",
+          "render": "renders/M3_r2.png",
+          "scores": {
+            "roll_inversion_readpose": 4,
+            "world_palette_state": 4,
+            "blackout_seam": 3,
+            "hero_tower_detail": 2,
+            "emissive_city_ground": 3,
+            "atmosphere_depth": 3,
+            "motion_finish_grade": 3
+          },
+          "mean": 3.14,
+          "pass": true,
+          "round_s": 72.5,
+          "issues": [
+            "Hero tower shaft reads as a plain dark slab: add a dense gridded window-emission texture (small rectangular emitters in rows/columns) along the full shaft, matching the reference's circuit-board density \u2014 currently only a handful of dots.",
+            "'Silk Road 2.0' signage is an illegible cyan blob at the tip: replace with a proper emissive signage plane (text texture, purple/blue-cyan colourway), scaled so at least the '2.0' resolves at this framing, and give it a soft bloom halo like the reference crown.",
+            "The grey ribbed crown cylinder is completely unlit: add crown emission (ring lights / antenna glow) so the tower has a glowing head on the purple side, per the reference.",
+            "City lights float in black space as oversized blocky sprites: anchor them to a faintly visible dark ground plane, shrink emitter size ~50%, increase density toward the horizon, and add unlit lesser-tower silhouettes so the aerial dive gets scale and a legible low horizon.",
+            "Frame 32 is already fully re-lit, so the blackout\u2192purple emergence doesn't read: keyframe the world tint and tower/city emission strength ramping up from near-black over roughly frames 30\u201336 instead of snapping on.",
+            "City-light motion streaks in frames 38/44 are dashed/stepped: raise motion-blur shutter steps (or shutter length) so arcs are continuous, and pull streak cores below clipping so they hold colour instead of going paper-white.",
+            "The purple haze is a flat uniform band and the tower glow doesn't interact with it: add noise-driven density variation to the cloud volume and increase bloom radius/threshold so the crown and signage visibly bloom into the haze."
+          ],
+          "at": "2026-08-11T07:42:31+00:00"
+        },
+        {
+          "round": 0,
+          "kind": "canonical",
+          "render": "renders/M3_canonical.png",
+          "scores": {
+            "roll_inversion_readpose": 4,
+            "world_palette_state": 4,
+            "blackout_seam": 3,
+            "hero_tower_detail": 2,
+            "emissive_city_ground": 2,
+            "atmosphere_depth": 3,
+            "motion_finish_grade": 3
+          },
+          "mean": 3.0,
+          "pass": false,
+          "round_s": null,
+          "issues": [
+            "Crown signage is an unreadable cyan blob \u2014 bake a legible 'Silk Road 2.0' emissive texture (higher-res image texture on the crown faces, purple/blue colourway) so the rebrand actually reads at this distance.",
+            "Tower body is nearly unlit \u2014 add a gridded emissive window pattern (checker/brick mask on the facade, ~0.5\u20131.5 emission strength, cool blue) so it reads as a circuit-board megastructure like the reference, not a dark slab.",
+            "City lights are oversized uniform white rectangles \u2014 shrink emissive quads ~3\u20135x, randomize intensity (0.3\u20132.0) and warm/cool colour temperature, and add low lesser-tower volumes so the ground reads as a city, not scattered confetti.",
+            "No horizon recession in the city field \u2014 extend light density with distance falloff toward the haze band and add mild distance fog so the plane reads as receding to a low horizon instead of a flat starfield.",
+            "Motion-blur streaks are dashed/steppy in frames 38\u201344 \u2014 raise Cycles motion blur steps on the camera/lights (or increase shutter segments) so arcs are continuous ribbons, not dotted trails.",
+            "Blackout seam not evidenced: at frame 32 the city and crown are already at full emission \u2014 keyframe emissive strength ramping from near-black over ~frames 28\u201334 so the world visibly re-lights as it emerges.",
+            "Purple haze is flat and banded \u2014 add noise detail (higher-octave volume noise) and let the crown glow bloom into the haze so the sky region reads atmospheric rather than a gradient wedge."
+          ],
+          "at": "2026-08-11T07:44:48+00:00"
+        }
+      ],
+      "updated": "2026-08-11T07:44:48+00:00",
+      "best": {
+        "round": 2,
+        "mean": 3.14,
+        "render": "renders/M3_r2.png"
+      },
+      "note": "live PASS 3.14 \u2265 gate 3.1; canonical 3.0 within reproduction tolerance (fixed double-jeopardy rule)"
+    },
+    "M4": {
+      "frame": 48,
+      "ref": "refs/M4_end.jpg",
+      "status": "passed",
+      "script": "build/m4.py",
+      "rounds": [
+        {
+          "round": 1,
+          "kind": "iter",
+          "render": "renders/M4_r1.png",
+          "scores": {
+            "roll_inversion_readpose": 3,
+            "world_palette_state": 4,
+            "blackout_seam": 3,
+            "hero_tower_detail": 2,
+            "emissive_city_ground": 4,
+            "atmosphere_depth": 2,
+            "motion_finish_grade": 3
+          },
+          "mean": 3.0,
+          "pass": false,
+          "round_s": 76.8,
+          "issues": [
+            "Hero tower body is a plain dark slab with only two thin window strips \u2014 the reference shows a full circuit-board facade. Apply a dense gridded emissive window texture (small rectangular cells, cyan-blue ~(0.4,0.8,1.0), emission strength ~5-8 with per-cell random on/off mask) across all four faces from base collar to crown.",
+            "Camera is too far back: in the reference the tower spans ~80% of frame height with the city hugging the bottom edge; in the candidate it spans ~55% with a third of the frame as empty sky. Dolly the camera in (or narrow FOV ~10-15%) and drop it slightly so the tower crown sits near the top edge like the ref.",
+            "Upper frame is flat near-black \u2014 no nebula. Add wispy volumetric cloud/nebula planes (noise-textured, low-density volume scatter tinted purple ~(0.35,0.2,0.5)) wrapping the top third, and raise bloom threshold/radius so the sign glow blooms into the haze as in the reference.",
+            "'Silk Road 2.0' signage is over-bloomed and half-illegible \u2014 the text core is clipping to white. Lower sign emission strength ~30-40% or add a darker panel behind the glyphs so the lettering stays readable through the glow.",
+            "Motion strip (frame 48 only) shows zero motion blur \u2014 even a settling frame should carry residual roll blur. Enable camera motion blur (shutter ~0.5) and confirm the roll animation still has non-zero angular velocity at frame 48, or render the strip with 2-3 trailing frames so the settle reads.",
+            "City lights are a uniform confetti scatter of same-size dots and the secondary towers are unlit grey boxes. Vary light scale/intensity (2-3 size tiers, cluster density toward the hero tower) and give the lesser towers sparse emissive windows like the reference's mid-ground blocks.",
+            "Ground-light highlights are near-clipping while the sky is crushed flat \u2014 pull the city-light emission down slightly and lift a faint purple gradient into the lower sky so the grade is low-key but not two flat bands."
+          ],
+          "at": "2026-08-11T08:35:06+00:00"
+        },
+        {
+          "round": 2,
+          "kind": "iter",
+          "render": "renders/M4_r2.png",
+          "scores": {
+            "roll_inversion_readpose": 3,
+            "world_palette_state": 4,
+            "blackout_seam": 3,
+            "hero_tower_detail": 3,
+            "emissive_city_ground": 3,
+            "atmosphere_depth": 3,
+            "motion_finish_grade": 3
+          },
+          "mean": 3.14,
+          "pass": true,
+          "round_s": 74.1,
+          "issues": [
+            "Camera is too wide and too low: reference has the tower dominating ~90% of frame height, near-centred, with a slight aerial down-angle onto the city. Dolly the camera in (~40-50% closer), raise it above the ground-light plane, and pitch down a few degrees so the settled frame matches the reference's hero framing.",
+            "Ground city lights are uniform, oversized white blobs \u2014 reference lights are small, intensity-varied, and cluster into street/block patterns receding to the horizon. Shrink the emitter scale (~50%), randomize per-instance emission strength (0.3-2.0x) and warm/cool tint, and bias density into linear street-like runs with falloff toward the horizon.",
+            "Emissive bloom is too restrained: in the reference the crown signage and tower glow bloom into the surrounding haze. Lower the compositor bloom/glare threshold (~0.8) and raise intensity so the sign halo bleeds into the cloud layer, per the 5.2 bloom recipe.",
+            "Hero tower reads as a repeating-texture block: add circuit-trace emissive variation on the facade (per-window brightness jitter, a few dead windows, vertical trace lines) and a brighter glowing crown band beneath the signage; the podium base is a plain banded cylinder \u2014 give it gridded lit windows too.",
+            "Upper-frame atmosphere is faint and flat: add denser wispy dark nebula/cloud wisps wrapping the top third of frame and the tower crown (volumetric or layered noise-alpha cards) so the near-black sky stays atmospheric like the reference.",
+            "Lesser background towers are almost entirely dark silhouettes; give them sparse faint lit windows so they participate in the city read instead of floating as black slabs.",
+            "Motion strip contains only frame 48, so settle blur decay and the blackout seam cannot be verified \u2014 regenerate the strip with 3-4 frames spanning the final roll segment into the settle (e.g. 40/44/46/48) showing motion blur tapering to sharp at rest."
+          ],
+          "at": "2026-08-11T08:43:43+00:00"
+        },
+        {
+          "round": 0,
+          "kind": "canonical",
+          "render": "renders/M4_canonical.png",
+          "scores": {
+            "roll_inversion_readpose": 4,
+            "world_palette_state": 4,
+            "blackout_seam": 4,
+            "hero_tower_detail": 3,
+            "emissive_city_ground": 3,
+            "atmosphere_depth": 3,
+            "motion_finish_grade": 3
+          },
+          "mean": 3.43,
+          "pass": true,
+          "round_s": null,
+          "issues": [
+            "Tower facade reads as random emissive noise, not a circuit-board grid: replace the scattered pixel texture with regular row/column window grids (per-window ~70% random on/off, slight per-window intensity jitter) and fill the blank dark band on the shaft directly beneath the crown sign \u2014 in the reference the lit grid runs continuously from crown to base.",
+            "Camera vantage is too low and too far: the reference is an elevated aerial view with the tower spanning nearly full frame height and the city receding steeply below; raise the camera, pitch down a few degrees, and push in so the tower occupies ~85\u201390% of frame height with the horizon in the upper quarter.",
+            "Ground lights are a uniform glitter carpet: shrink the emissive blobs, vary size/intensity 3\u20134x, and cluster them into street/block patterns (grid-warped point distribution) instead of even scatter; also add lit window grids to the lesser towers, which currently sit as near-black silhouettes against a bright floor.",
+            "Atmosphere is thin: increase nebula/cloud texture contrast and coverage across the upper frame, add a shallow volumetric haze layer at crown height so the sign glow visibly blooms into cloud (reference shows glow eating into the nebula), and sprinkle faint star specks.",
+            "Tower base podium is a plain unlit striped drum: add emissive entrance/window bands so the base ties into the city light field rather than reading as untextured geometry.",
+            "Grade: sky gradient is slightly milky mid-purple \u2014 pull the sky luminance down toward the reference's near-black, and soften the clipped white cores of the ground lights with a gentler bloom threshold/highlight rolloff."
+          ],
+          "at": "2026-08-11T08:45:44+00:00"
+        }
+      ],
+      "updated": "2026-08-11T08:45:44+00:00",
+      "best": {
+        "round": 2,
+        "mean": 3.14,
+        "render": "renders/M4_r2.png"
+      }
+    }
+  }
+}

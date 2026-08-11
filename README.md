@@ -26,7 +26,7 @@ starts — so a lighting fix can never clobber approved modeling.
   methodology (3D / plate / hybrid) and breaks it into **per-element** tasks; an `fx`-tagged element
   turns the FX department on for that shot.
 - **Asset sourcing** (`scene/assets.py`) — the modeling desk can `acquire_asset(...)`: generate an
-  image (Higgsfield) → 3D mesh (Tripo) → cached GLB → imported, instead of sculpting primitives.
+  image (Codex `gpt-image-2`) → 3D mesh (Meshy) → cached GLB → imported, instead of sculpting primitives.
 - **Motion** (`scene/animate.py`, `scene/anim_departments.py`) — the same idea for moving shots.
 - **Shared contracts** (`develop/`, `footage/`) — a slim set of data types the pipeline builds
   against (`Clip`, `BeatEntry`, `Verdict`, `FrameSample`, the `Render3D` leaf type). Decoupled from
@@ -44,8 +44,9 @@ pytest                 # the full unit suite (no Blender needed — fakes)
 python -m scene        # Phase-0 smoke: launch the bridge, build + render a gray-box, headless
 ```
 
-Asset generation is optional — copy `.env.example` to `.env` and fill in the Tripo/Higgsfield keys to
-enable `acquire_asset`. Without them the pipeline degrades to procedural geometry.
+Asset generation is optional — copy `.env.example` to `.env` and set `MESHY_API_KEY` (image→3D), then
+run `codex login` once so the isolation step can reach `gpt-image-2` through the Codex CLI's own
+credentials. Without them the pipeline degrades to procedural geometry.
 
 ## Shot briefs
 
