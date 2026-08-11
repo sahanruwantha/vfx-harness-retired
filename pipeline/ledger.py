@@ -53,21 +53,20 @@ def load_axes(shot: Shot) -> list[tuple[str, str]]:
             pass
     return DEFAULT_AXES
 
-# The barrel_roll milestones (brief.md → Milestones table). Only M1 is wired end to
-# end for now; M2–M4 are declared so the same loop can walk them next.
-MILESTONES: dict[str, Milestone] = {
-    "M1": Milestone("M1", 1, "refs/M1_green.jpg",
-                    "upright; full green world; hero tower at full emission; the low "
-                    "aerial dive is beginning."),
-    "M2": Milestone("M2", 24, "refs/M2_blackout.jpg",
-                    "horizon past vertical; world tint and tower emission ramped to "
-                    "near-black — the seam that hides the world-swap."),
-    "M3": Milestone("M3", 32, "refs/M3_purple.jpg",
-                    "emerging inverted; the Silk Road 2.0 tower re-lit; the new world "
-                    "revealed."),
-    "M4": Milestone("M4", 48, "refs/M4_end.jpg",
-                    "settled, fully inverted; Silk Road 2.0 world; the dive finished."),
-}
+def load_milestones(shot: Shot) -> dict[str, Milestone]:
+    """Per-shot milestones from shots/<id>/milestones.json — written by the PLAN stage
+    (the brief gives approval moments; mapping them to frames is the plan's job).
+    Format: [{"id","frame","ref","reads"}, …] in shot order."""
+    path = shot.folder / "milestones.json"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} missing — run the plan agent first (it maps the brief's approval "
+            f"moments to frames and writes milestones.json)")
+    data = json.loads(path.read_text())
+    out: dict[str, Milestone] = {}
+    for m in data:
+        out[m["id"]] = Milestone(m["id"], int(m["frame"]), m["ref"], m.get("reads", ""))
+    return out
 
 
 def _now() -> str:

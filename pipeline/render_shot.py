@@ -17,7 +17,7 @@ from pathlib import Path
 from .blender.session import BlenderSession
 from .brief import Shot, load_shot
 from .build_agent import _RESET, _preamble, _run_priors
-from .ledger import MILESTONES
+from .ledger import load_milestones
 from .log import log
 
 
@@ -39,8 +39,9 @@ def render_mp4(shot: Shot, milestone: str = "M1", *, scale: float = 1.0,
         s.run(_RESET)
         s.run(_preamble(shot))
         # milestone scripts are DELTAS — run the earlier chain first (m1 → … → this one)
-        if milestone.upper() in MILESTONES:
-            _run_priors(s, shot, MILESTONES[milestone.upper()])
+        milestones = load_milestones(shot)
+        if milestone.upper() in milestones:
+            _run_priors(s, shot, milestones[milestone.upper()])
         s.run(build.read_text(encoding="utf-8"))
         log(f"rendering {shot.frames} frames of {build.name} @ scale {scale}…")
         t0 = time.monotonic()

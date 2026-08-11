@@ -40,7 +40,7 @@ from .build_prompts import (
     finalize_prompt,
     revision_prompt,
 )
-from .ledger import MILESTONES, Ledger, Milestone, load_axes
+from .ledger import Ledger, Milestone, load_axes, load_milestones
 from .recipes import RECIPES_DIR, build_recipe_tools
 
 MODEL = "claude-fable-5"
@@ -79,7 +79,7 @@ def _prior_scripts(shot: Shot, m: Milestone) -> list[Path]:
     """Build scripts of EARLIER milestones, in order. A milestone extends the same
     shot's scene — M2 = M1's scene + keyed deltas — so priors run before building,
     and the full shot is m1.py + m2.py + … applied in sequence."""
-    order = list(MILESTONES)
+    order = list(load_milestones(shot))
     build_dir = shot.folder / "build"
     out = []
     for mid in order[:order.index(m.id)]:
@@ -435,9 +435,10 @@ async def _verify_script(shot: Shot, m: Milestone, session: BlenderSession,
 # --------------------------------------------------------------------------- #
 async def _run(folder: str, milestone: str, rounds: int, blender: str) -> None:
     shot = load_shot(folder)
-    m = MILESTONES.get(milestone.upper())
+    milestones = load_milestones(shot)
+    m = milestones.get(milestone.upper())
     if m is None:
-        raise SystemExit(f"unknown milestone {milestone!r}; known: {', '.join(MILESTONES)}")
+        raise SystemExit(f"unknown milestone {milestone!r}; known: {', '.join(milestones)}")
 
     log(f"build agent: shot '{shot.id}' milestone {m.id} (frame {m.frame}), model {MODEL}")
     session = BlenderSession(blender=blender, blend_file=None,
