@@ -64,6 +64,7 @@ class Gate:
     judge_frame: int
     judge_ref: str
     reads: str
+    milestone: str | None = None  # set when this gate DELIVERS an approval moment
 
     def as_milestone(self) -> "Milestone":
         """The critic loop speaks Milestone — adapt the gate's judge point."""
@@ -80,24 +81,21 @@ def load_gates(shot: Shot) -> dict[str, Gate]:
     out: dict[str, Gate] = {}
     for g in json.loads(path.read_text()):
         out[g["id"]] = Gate(g["id"], g["script"], g.get("title", g["id"]),
-                            int(g["judge"]["frame"]), g["judge"]["ref"], g.get("reads", ""))
+                            int(g["judge"]["frame"]), g["judge"]["ref"], g.get("reads", ""),
+                            g.get("milestone"))
     return out
 
 
 def load_milestones(shot: Shot) -> dict[str, Milestone]:
-    """Per-shot milestones from shots/<id>/milestones.json — written by the PLAN stage
-    (the brief gives approval moments; mapping them to frames is the plan's job).
-    Format: [{"id","frame","ref","reads"}, …] in shot order."""
-    path = shot.folder / "milestones.json"
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"{path} missing — run the plan agent first (it maps the brief's approval "
-            f"moments to frames and writes milestones.json)")
-    data = json.loads(path.read_text())
+    """The acceptance suite, DERIVED from the gates that deliver each approval moment
+    (`"milestone": "M2"` on a gate). One source of truth: a gate's judge point IS its
+    moment's frame+ref, so the two can never drift (they already did once when kept
+    in separate files). Used by the final acceptance pass, not by the build loop."""
     out: dict[str, Milestone] = {}
-    for m in data:
-        out[m["id"]] = Milestone(m["id"], int(m["frame"]), m["ref"], m.get("reads", ""))
-    return out
+    for g in load_gates(shot).values():
+        if g.milestone:
+            out[g.milestone] = Milestone(g.milestone, g.judge_frame, g.judge_ref, g.reads)
+    return dict(sorted(out.items(), key=lambda kv: out[kv[0]].frame))
 
 
 def _now() -> str:

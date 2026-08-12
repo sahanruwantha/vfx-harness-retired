@@ -120,15 +120,18 @@ WORKFLOW, in order:
         Strip frames must cover the FULL build range with no unjudged gaps.
    ## 5 · LEARNED DURING RUN — empty append-only section for build sessions.
 
-   Then ALSO Write two machine-readable companions (they must agree with the tables):
-   - `milestones.json` — the §4 acceptance suite the harness judges against:
-     [{"id": "M1", "frame": <build frame>, "ref": "refs/<file>", "reads": "<must read>"}, …]
-   - `gates.json` — the §3 gates the build harness executes, in build order:
+   Then ALSO Write ONE machine-readable companion, `gates.json` — the §3 gates the
+   build harness executes, in build order, each carrying its acceptance link:
      [{"id": "<gate id>", "script": "build/NN_<gate>.py", "title": "<title>",
        "judge": {"frame": <primary judge frame>, "ref": "refs/<file>"},
+       "milestone": "<M-id>",          // ONLY on the gate that DELIVERS that §4
+                                        // approval moment; omit otherwise
        "reads": "<what must read at the judge frame>"}, …]
-     Each gate's `judge` is its PRIMARY check (cheapest frame+ref pair that can fail it);
-     richer judge artifacts stay in the §3 prose for the builder.
+   Each gate's `judge` is its PRIMARY check (cheapest frame+ref pair that can fail it);
+   richer judge artifacts stay in the §3 prose for the builder. The acceptance suite is
+   DERIVED from the `milestone` tags, so a tagged gate's judge frame/ref MUST equal that
+   moment's frame/ref in §4 — every §4 moment must be claimed by exactly one gate. Do not
+   write a separate milestones file; one source of truth, no drift.
 
 RULES:
   - Derived values (measured, read off the video, converged in prior work) are
