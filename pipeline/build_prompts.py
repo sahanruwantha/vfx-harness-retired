@@ -166,20 +166,27 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
 
 
 def revision_prompt(m: Milestone, verdict: dict, candidate_rel: str) -> str:
-    scores = verdict.get("scores", {})
+    raw = verdict.get("scores", {})
+    # scores may contain "n/a" for axes outside this stage's scope — rank numerics only
+    scores = {k: float(v) for k, v in raw.items()
+              if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    na = [k for k in raw if k not in scores]
     ranked = sorted(scores.items(), key=lambda kv: kv[1])
-    weakest = [k for k, _ in ranked[:2]]                    # the 1–2 lowest axes
+    weakest = [k for k, _ in ranked[:2]]                    # the 1–2 lowest in-scope axes
     strong = [k for k, v in scores.items() if v >= 3]       # already good — protect these
     issues = "\n".join(f"  - {s}" for s in verdict.get("issues", [])) or "  (none given)"
-    score_str = ", ".join(f"{k}={v}" for k, v in scores.items())
+    score_str = ", ".join(f"{k}={raw[k]}" for k in raw)
+    na_line = (f" Axes marked n/a ({', '.join(na)}) are OUT OF SCOPE for this stage — a "
+               f"later stage builds them; do not touch them." if na else "")
     return (
         f"Round scored mean {verdict.get('mean')} (scores: {score_str}) — REVISE.\n\n"
         f"Make a SURGICAL revision — this is the key to converging. Fix ONLY the weakest "
-        f"axes: {', '.join(weakest)}. Do NOT rebuild the scene and do NOT touch what already "
-        f"works ({', '.join(strong) or '(nothing ≥3 yet)'}) — broad re-tuning fixes one axis "
-        f"and breaks another, and the score stalls. Use compare_frame(`{m.ref}`) to see the "
-        f"gap on the weak axes, make the SMALLEST change that closes it, then re-render eevee "
-        f"and confirm nothing that was ≥3 regressed. Critic notes:\n{issues}"
+        f"axes: {', '.join(weakest) or '(none scored)'}.{na_line} Do NOT rebuild the scene "
+        f"and do NOT touch what already works ({', '.join(strong) or '(nothing ≥3 yet)'}) — "
+        f"broad re-tuning fixes one axis and breaks another, and the score stalls. Use "
+        f"compare_frame(`{m.ref}`) to see the gap on the weak axes, make the SMALLEST change "
+        f"that closes it, then re-render eevee and confirm nothing that was ≥3 regressed. "
+        f"Critic notes:\n{issues}"
     )
 
 
