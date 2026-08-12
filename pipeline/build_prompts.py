@@ -232,7 +232,8 @@ with exactly this shape:
 
 def critic_prompt(shot, m: Milestone, candidate_rel: str,
                   axes: list[tuple[str, str]], motion_rel: str | None = None,
-                  motion_frames: list[int] | None = None) -> str:
+                  motion_frames: list[int] | None = None,
+                  scope: str | None = None) -> str:
     axes = "\n".join(f"  - {k}: {desc}" for k, desc in axes)
     motion = ""
     if motion_rel:
@@ -243,12 +244,25 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
             f"single still (a still at the start frame can't show motion). Judge all other "
             f"axes from the candidate.\n"
         )
+    scope_block = ""
+    if scope:
+        scope_block = (
+            f"\n⚠ THIS IS A PARTIAL BUILD STAGE, NOT THE FINISHED SHOT. Its scope:\n"
+            f"{scope}\n"
+            f"Score ONLY the axes this stage is responsible for. For every axis whose "
+            f"subject a LATER stage delivers (it isn't built yet — no emission, no "
+            f"typography, no atmosphere, whatever this stage doesn't cover), return the "
+            f"string \"n/a\" instead of a number: absent-by-design is NOT a failure and "
+            f"must not drag the score. Likewise, `issues` must contain ONLY fixes inside "
+            f"this stage's scope — never 'add the thing a later stage adds'.\n"
+        )
     return (
-        f"Milestone {m.id} of shot '{shot.id}', frame {m.frame}.\n"
+        f"Stage {m.id} of shot '{shot.id}', frame {m.frame}.\n"
         f"TARGET STATE: {m.reads}\n\n"
         f"Read the REFERENCE image `{m.ref}` and the CANDIDATE render `{candidate_rel}`.{motion}"
+        f"{scope_block}"
         f"\nScore the candidate against the reference on these axes:\n"
         f"{axes}\n\n"
-        f"Score each axis 0–5, list concrete fixes under `issues` (most important "
-        f"first), and return the JSON scorecard."
+        f"Score each axis 0–5 (or \"n/a\" per the scope rule above), list concrete fixes "
+        f"under `issues` (most important first), and return the JSON scorecard."
     )

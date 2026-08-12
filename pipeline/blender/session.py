@@ -26,11 +26,16 @@ class BlenderSession:
 
     def __init__(self, blender: str = "blender", artifacts_dir: str | Path | None = None,
                  blend_file: str | Path | None = None, boot_timeout: float = 60.0,
-                 assets_dir: str | Path | None = None):
+                 assets_dir: str | Path | None = None, cwd: str | Path | None = None):
         self.blender = blender
         self.blend_file = str(blend_file) if blend_file else None
         self.boot_timeout = boot_timeout
         self.assets_dir = str(assets_dir) if assets_dir else None
+        # the worker must run FROM the shot folder: agents are configured with
+        # cwd=shot.folder, so relative paths inside run_bpy ("refs/…", "build/…") have
+        # to resolve the same way — otherwise the builder reads the repo root and
+        # concludes its own references are missing.
+        self.cwd = str(cwd) if cwd else None
         if artifacts_dir is None:
             artifacts_dir = Path(tempfile.mkdtemp(prefix=".bvfx-render-", dir=Path.home()))
         self.artifacts = Path(artifacts_dir)
@@ -48,7 +53,7 @@ class BlenderSession:
             argv += ["--assets", self.assets_dir]
         self.proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, bufsize=1,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1, cwd=self.cwd,
         )
         deadline = time.monotonic() + self.boot_timeout
         while time.monotonic() < deadline:

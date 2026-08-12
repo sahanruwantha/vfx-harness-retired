@@ -265,17 +265,29 @@ def _extract_json(text: str) -> dict:
 
 
 def _gate(verdict: dict) -> dict:
-    """Compute pass/mean from the critic's axis scores and fold them into verdict."""
-    scores = {k: float(v) for k, v in verdict.get("scores", {}).items()
-              if isinstance(v, (int, float))}
+    """Compute pass/mean from the critic's IN-SCOPE axis scores. A scaffolding stage
+    marks axes a later stage delivers as "n/a" — absent-by-design must not drag the
+    mean (judging gate L on emission scored it 1.25 while its own axis scored 4)."""
+    raw = verdict.get("scores", {})
+    scores, na = {}, []
+    for k, v in raw.items():
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            scores[k] = float(v)
+        else:  # "n/a", "N/A", null … — out of this stage's scope
+            na.append(k)
     mean = round(sum(scores.values()) / len(scores), 2) if scores else 0.0
     verdict["mean"] = mean
+    verdict["scored_axes"] = sorted(scores)
+    verdict["na_axes"] = sorted(na)
     verdict["pass"] = bool(scores) and mean >= PASS_MEAN and min(scores.values()) >= PASS_MIN
     return verdict
 
 
 async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
-                    axes: list[tuple[str, str]], session: BlenderSession, verbose: bool) -> dict:
+                    axes: list[tuple[str, str]], session: BlenderSession, verbose: bool,
+                    scope: str | None = None) -> dict:
     text = ""
     motion_rel, motion_frames = None, None
     if shot.frontmatter.get("type") == "motion" and shot.frames > 1:
@@ -284,7 +296,8 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
         except Exception as e:
             log(f"motion strip skipped: {str(e)[:80]}", 1)
     log(f"critic: scoring {candidate_rel} vs {m.ref}" + (f" (+motion {motion_frames})" if motion_rel else ""), 1)
-    async for message in query(prompt=critic_prompt(shot, m, candidate_rel, axes, motion_rel, motion_frames),
+    async for message in query(prompt=critic_prompt(shot, m, candidate_rel, axes, motion_rel,
+                                                    motion_frames, scope),
                                options=_critic_options(shot)):
         if isinstance(message, AssistantMessage):
             for block in message.content:
@@ -292,7 +305,9 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
                     text += block.text
     verdict = _gate(_extract_json(text))
     scores = ", ".join(f"{k}={v}" for k, v in verdict.get("scores", {}).items())
-    log(f"critic: {scores} | mean {verdict['mean']} | "
+    na = verdict.get("na_axes") or []
+    log(f"critic: {scores} | mean {verdict['mean']} (over {len(verdict.get('scored_axes', []))} "
+        f"in-scope axes{f'; n/a: {len(na)}' if na else ''}) | "
         f"{'PASS ✅' if verdict['pass'] else 'REVISE ✎'}", 1)
     for issue in verdict.get("issues", [])[:6]:
         log(f"· fix: {issue}", 2)
@@ -336,7 +351,7 @@ def _stash_motion_strip(session: BlenderSession, shot: Shot, m: Milestone, tag: 
 # --------------------------------------------------------------------------- #
 async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: list[Path],
                      session: BlenderSession, *, rounds: int = 2, verbose: bool = True,
-                     plan_excerpt: str = "") -> Ledger:
+                     plan_excerpt: str = "", scope: str | None = None) -> Ledger:
     """The build+critic engine for ONE unit of work. A unit is judged at m.frame vs
     m.ref and persists the delta script `script_rel`."""
     ledger = Ledger(shot)
@@ -369,7 +384,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             t_round = time.monotonic()
             render_rel = _stash_render(session, shot, m, f"r{rnd}")
             snap = session.snapshot(f"{m.id}_r{rnd}")  # checkpoint scene STATE per round
-            verdict = await _critique(shot, m, render_rel, axes, session, verbose)
+            verdict = await _critique(shot, m, render_rel, axes, session, verbose, scope)
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             ledger.record_round(m, kind="iter", index=rnd, render=render_rel, verdict=verdict)
             # best-of-N: keep the highest-scoring round (render AND scene snapshot)
@@ -410,7 +425,8 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     # reproduction check, NOT a second quality gate — with ~±0.15 judge noise, requiring
     # two consecutive gate-clears at the boundary is double jeopardy (cost M3 a pass).
     canonical_ok = await _verify_script(shot, m, script_rel, prior_paths, session, axes,
-                                        ledger, verbose, live_best_mean=best["mean"])
+                                        ledger, verbose, live_best_mean=best["mean"],
+                                        scope=scope)
     ok = passed and canonical_ok
     ledger.mark(m, "passed" if ok else "failed", best=best)
     if ok:
@@ -425,16 +441,27 @@ async def build_gate(shot: Shot, gate, session: BlenderSession, *,
                      rounds: int = 2, verbose: bool = True) -> Ledger:
     """Build one PLAN GATE: chain lower-numbered gate scripts, implement this gate's
     tickets (its plan.md section is the spec), judge at its primary frame/ref."""
+    excerpt = _plan_gate_excerpt(shot, gate)
+    # An ACCEPTANCE gate (milestone-tagged) delivers an approval moment → judge it on
+    # the full rubric. A SCAFFOLDING gate is deliberately unfinished → tell the critic
+    # its scope so absent-by-design axes come back "n/a" instead of zeros.
+    scope = None
+    if not gate.milestone:
+        done = "\n".join(ln for ln in excerpt.splitlines()
+                          if ln.startswith(("**Scope", "**Judge artifact", "**Done")))
+        scope = (f"  Gate {gate.id} — {gate.title} (one build stage of many; later gates "
+                 f"add the rest of the look).\n  {gate.reads}\n{done}").strip()
     return await build_unit(shot, gate.as_milestone(), gate.script,
                             _prior_gate_paths(shot, gate), session,
                             rounds=rounds, verbose=verbose,
-                            plan_excerpt=_plan_gate_excerpt(shot, gate))
+                            plan_excerpt=excerpt, scope=scope)
 
 
 async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
                          prior_paths: list[Path], session: BlenderSession,
                          axes: list[tuple[str, str]], ledger: Ledger, verbose: bool,
-                         live_best_mean: float | None = None) -> bool:
+                         live_best_mean: float | None = None,
+                         scope: str | None = None) -> bool:
     script_path = shot.folder / script_rel
     if not script_path.is_file():
         log(f"! builder never wrote {script_rel}")
@@ -452,7 +479,7 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
             verdict=_gate({"scores": {}, "issues": [f"script error: {e}"]}))
         return False
     render_rel = _stash_render(session, shot, m, "canonical")
-    verdict = await _critique(shot, m, render_rel, axes, session, verbose)
+    verdict = await _critique(shot, m, render_rel, axes, session, verbose, scope)
     ledger.record_round(m, kind="canonical", index=0, render=render_rel, verdict=verdict)
     if verdict["pass"]:
         return True
@@ -471,7 +498,8 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
 async def _run(folder: str, gate_id: str, rounds: int, blender: str) -> None:
     shot = load_shot(folder)
     session = BlenderSession(blender=blender, blend_file=None,
-                             assets_dir=shot.folder / "assets").start()
+                             assets_dir=shot.folder / "assets",
+                             cwd=shot.folder).start()
     try:
         gates = load_gates(shot)
         g = gates.get(gate_id) or gates.get(gate_id.upper())

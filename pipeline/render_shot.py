@@ -51,7 +51,7 @@ def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
     out.parent.mkdir(parents=True, exist_ok=True)
 
     s = BlenderSession(blender=blender, blend_file=None,
-                       assets_dir=shot.folder / "assets").start()
+                       assets_dir=shot.folder / "assets", cwd=shot.folder).start()
     try:
         s.run(_RESET)
         s.run(_preamble(shot))
