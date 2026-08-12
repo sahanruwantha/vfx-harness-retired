@@ -18,16 +18,19 @@ GOTCHAS:
   the ref is punchy/saturated. (Learned the hard way on barrel_roll.)
 - Filmic/AgX crush blacks nicely but can dull colour — nudge world/emission strength up a bit
   after applying it.
+- The `look` enum is **UNPREFIXED** in 5.x: `'Medium High Contrast'`, NOT
+  `'Filmic - Medium High Contrast'` (the prefixed form raises). Never wrap it in a bare
+  `try/except` — that swallows the error and leaves `look` at `'None'`, so you ship an
+  ungraded render that looks merely "a bit flat" and burn a critic round finding it.
+  **Assert the value instead.**
 
 ```python
 import bpy
 sc = bpy.context.scene
 # 1) tonemap: soft highlight rolloff, cinematic contrast
 sc.view_settings.view_transform = 'Filmic'      # or 'AgX' in newer builds
-try:
-    sc.view_settings.look = 'Filmic - Medium High Contrast'
-except Exception:
-    pass
+sc.view_settings.look = 'Medium High Contrast'  # UNPREFIXED in 5.x
+assert sc.view_settings.look == 'Medium High Contrast', sc.view_settings.look
 # 2) bloom on emission (compositor Glare — see bvfx_glare_bloom)
 bvfx_glare_bloom(threshold=0.6, size=0.8, strength=0.7)
 ```

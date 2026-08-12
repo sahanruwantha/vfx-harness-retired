@@ -277,12 +277,27 @@ def _gate(verdict: dict) -> dict:
             scores[k] = float(v)
         else:  # "n/a", "N/A", null … — out of this stage's scope
             na.append(k)
-    mean = round(sum(scores.values()) / len(scores), 2) if scores else 0.0
+    n = len(scores)
+    mean = round(sum(scores.values()) / n, 2) if n else 0.0
     verdict["mean"] = mean
     verdict["scored_axes"] = sorted(scores)
     verdict["na_axes"] = sorted(na)
-    verdict["pass"] = bool(scores) and mean >= PASS_MEAN and min(scores.values()) >= PASS_MIN
+    # Thresholds must be GRANULARITY-AWARE. mean = sum/n, so one axis point of judge
+    # noise moves the mean by 1/n: 0.125 across 8 axes but 1.0 across one. A scoped
+    # gate with 1-2 in-scope axes must not face a harsher bar than a full acceptance
+    # gate (PASS_MEAN 3.1 on a single axis silently demands a 4).
+    if n and n <= 2:
+        verdict["pass"] = min(scores.values()) >= 3
+    else:
+        verdict["pass"] = bool(scores) and mean >= PASS_MEAN and min(scores.values()) >= PASS_MIN
     return verdict
+
+
+def _repro_tolerance(n_scored: int) -> float:
+    """How far a canonical re-render may fall below the live best and still count as
+    'the script reproduces it'. One axis point of noise = 1/n of the mean, so the
+    tolerance has to widen as the scored-axis count shrinks."""
+    return max(0.3, 1.0 / n_scored) if n_scored else 0.3
 
 
 async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
@@ -484,10 +499,12 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
     if verdict["pass"]:
         return True
     # reproduction tolerance: within judge noise of the live best still counts as
-    # "the script reproduces what passed" (0.3 ≈ 2× observed ±0.15 critic noise)
-    if live_best_mean is not None and verdict["mean"] >= live_best_mean - 0.3:
-        log(f"canonical {verdict['mean']} within noise of live best {live_best_mean} — "
-            f"reproduction verified")
+    # "the script reproduces what passed" — widened for low-axis-count gates, where a
+    # single point of variance swings the mean by 1/n (SH G10: 4.0 → 3.0 on one axis).
+    tol = _repro_tolerance(len(verdict.get("scored_axes", [])))
+    if live_best_mean is not None and verdict["mean"] >= live_best_mean - tol:
+        log(f"canonical {verdict['mean']} within noise (±{tol:.2f}) of live best "
+            f"{live_best_mean} — reproduction verified")
         return True
     return False
 
