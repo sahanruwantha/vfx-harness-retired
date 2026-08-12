@@ -1,13 +1,14 @@
-"""Stage 3 — the build + critic loop for one milestone.
+"""Stage 3 — the build + critic loop for one PLAN GATE.
 
-A BUILD agent drives a warm Blender session (run_bpy / render_*) to hit a milestone
-frame, iterating against a reference-scored CRITIC until the render clears the bar.
-On pass it persists a deterministic `build/<milestone>.py`, and the harness re-runs
-that script from an empty scene to confirm it reproduces — the script, not the live
-scene, is the artifact of record.
+A BUILD agent drives a warm Blender session (run_bpy / render_*) to implement one
+gate from plan.md (its tickets are the spec), iterating against a reference-scored
+CRITIC until the gate's judge frame clears the bar. On pass it persists the gate's
+deterministic delta script (build/NN_<gate>.py); the harness re-runs the whole chain
+from an empty scene to confirm it reproduces — the scripts, not the live scene, are
+the artifact of record.
 
 Usage:
-    python -m pipeline.build_agent <shot-folder> [--milestone M1] [--rounds 4]
+    python -m pipeline.build_agent <shot-folder> --gate <id> [--rounds 2]
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from .build_prompts import (
     finalize_prompt,
     revision_prompt,
 )
-from .ledger import Ledger, Milestone, load_axes, load_gates, load_milestones
+from .ledger import Ledger, Milestone, load_axes, load_gates
 from .recipes import RECIPES_DIR, build_recipe_tools
 
 MODEL = "claude-fable-5"
@@ -73,32 +74,6 @@ PASS_MIN = 2
 PASS_MEAN = 3.1
 
 _RESET = "import bpy\nbpy.ops.wm.read_factory_settings(use_empty=True)\n"
-
-
-def _prior_scripts(shot: Shot, m: Milestone) -> list[Path]:
-    """Build scripts of EARLIER milestones, in order. A milestone extends the same
-    shot's scene — M2 = M1's scene + keyed deltas — so priors run before building,
-    and the full shot is m1.py + m2.py + … applied in sequence."""
-    order = list(load_milestones(shot))
-    build_dir = shot.folder / "build"
-    out = []
-    for mid in order[:order.index(m.id)]:
-        cand = [p for p in build_dir.glob("*.py") if p.stem.lower() == mid.lower()] \
-            if build_dir.is_dir() else []
-        if cand:
-            # deterministic pick: exact-lowercase name wins over case variants
-            cand.sort(key=lambda p: (p.name != f"{mid.lower()}.py", p.name))
-            out.append(cand[0])
-    return out
-
-
-def _run_priors(session: BlenderSession, shot: Shot, m: Milestone) -> list[str]:
-    names = []
-    for p in _prior_scripts(shot, m):
-        log(f"running prior milestone script {p.name}")
-        session.run(p.read_text(encoding="utf-8"))
-        names.append(p.name)
-    return names
 
 
 def _prior_gate_paths(shot: Shot, gate) -> list[Path]:
@@ -326,7 +301,7 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
 
 def _stash_render(session: BlenderSession, shot: Shot, m: Milestone, tag: str,
                   scale: float = 0.5) -> str:
-    """Render the milestone frame (eevee) and copy it into the shot for the critic.
+    """Render the judge frame (eevee) and copy it into the shot for the critic.
     Returns the path relative to the shot folder."""
     src = session.render(frame=m.frame, mode="eevee", scale=scale)
     dest_dir = shot.folder / "renders"
@@ -338,7 +313,7 @@ def _stash_render(session: BlenderSession, shot: Shot, m: Milestone, tag: str,
 
 def _stash_motion_strip(session: BlenderSession, shot: Shot, m: Milestone, tag: str,
                         span: int = 6, scale: float = 0.4):
-    """Render a few frames from the milestone onward and montage them side by side, so the
+    """Render a few frames from the judge frame onward and montage them side by side, so the
     critic can judge MOTION (blur, continuous movement) — a single still at the start
     frame can't show it. Returns (rel_path, frames)."""
     from PIL import Image
@@ -363,8 +338,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                      session: BlenderSession, *, rounds: int = 2, verbose: bool = True,
                      plan_excerpt: str = "") -> Ledger:
     """The build+critic engine for ONE unit of work. A unit is judged at m.frame vs
-    m.ref and persists the delta script `script_rel`. Gates and legacy milestones both
-    run through here — they differ only in judge point, script name and priors."""
+    m.ref and persists the delta script `script_rel`."""
     ledger = Ledger(shot)
     ledger.begin(m)
 
@@ -457,14 +431,6 @@ async def build_gate(shot: Shot, gate, session: BlenderSession, *,
                             plan_excerpt=_plan_gate_excerpt(shot, gate))
 
 
-async def build_milestone(shot: Shot, m: Milestone, session: BlenderSession, *,
-                          rounds: int = 2, verbose: bool = True) -> Ledger:
-    """Legacy milestone-script mode (build/m<N>.py chained by milestone order)."""
-    return await build_unit(shot, m, f"build/{m.id.lower()}.py",
-                            _prior_scripts(shot, m), session,
-                            rounds=rounds, verbose=verbose)
-
-
 async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
                          prior_paths: list[Path], session: BlenderSession,
                          axes: list[tuple[str, str]], ledger: Ledger, verbose: bool,
@@ -502,44 +468,32 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
 # --------------------------------------------------------------------------- #
 # CLI                                                                          #
 # --------------------------------------------------------------------------- #
-async def _run(folder: str, gate_id: str | None, milestone: str | None,
-               rounds: int, blender: str) -> None:
+async def _run(folder: str, gate_id: str, rounds: int, blender: str) -> None:
     shot = load_shot(folder)
     session = BlenderSession(blender=blender, blend_file=None,
                              assets_dir=shot.folder / "assets").start()
     try:
-        if gate_id:
-            gates = load_gates(shot)
-            g = gates.get(gate_id) or gates.get(gate_id.upper())
-            if g is None:
-                raise SystemExit(f"unknown gate {gate_id!r}; known: {', '.join(gates)}")
-            log(f"build agent: shot '{shot.id}' GATE {g.id} — {g.title} "
-                f"(judge f{g.judge_frame} vs {g.judge_ref}) → {g.script}, model {MODEL}")
-            ledger = await build_gate(shot, g, session, rounds=rounds)
-            log(f"{g.id}: {ledger.status(g.as_milestone())}  →  {ledger.path}")
-        else:
-            milestones = load_milestones(shot)
-            m = milestones.get((milestone or "M1").upper())
-            if m is None:
-                raise SystemExit(f"unknown milestone {milestone!r}; known: {', '.join(milestones)}")
-            log(f"build agent: shot '{shot.id}' milestone {m.id} (frame {m.frame}), model {MODEL}")
-            ledger = await build_milestone(shot, m, session, rounds=rounds)
-            log(f"{m.id}: {ledger.status(m)}  →  {ledger.path}")
+        gates = load_gates(shot)
+        g = gates.get(gate_id) or gates.get(gate_id.upper())
+        if g is None:
+            raise SystemExit(f"unknown gate {gate_id!r}; known: {', '.join(gates)}")
+        log(f"build agent: shot '{shot.id}' GATE {g.id} — {g.title} "
+            f"(judge f{g.judge_frame} vs {g.judge_ref}) → {g.script}, model {MODEL}")
+        ledger = await build_gate(shot, g, session, rounds=rounds)
+        log(f"{g.id}: {ledger.status(g.as_milestone())}  →  {ledger.path}")
     finally:
         session.close()
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build one plan gate (or legacy milestone) "
-                                             "with the critic loop.")
+    ap = argparse.ArgumentParser(description="Build one plan gate with the critic loop.")
     ap.add_argument("folder", help="shot folder (contains brief.md + refs/)")
-    ap.add_argument("--gate", default=None,
-                    help="gate id from gates.json (e.g. L, G20) — the primary mode")
-    ap.add_argument("--milestone", default=None, help="legacy milestone id (e.g. M1)")
+    ap.add_argument("--gate", required=True,
+                    help="gate id from gates.json (e.g. L, G20)")
     ap.add_argument("--rounds", type=int, default=2, help="max build↔critic rounds")
     ap.add_argument("--blender", default="blender", help="blender executable")
     args = ap.parse_args()
-    anyio.run(_run, args.folder, args.gate, args.milestone, args.rounds, args.blender)
+    anyio.run(_run, args.folder, args.gate, args.rounds, args.blender)
 
 
 if __name__ == "__main__":
