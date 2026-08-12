@@ -44,7 +44,7 @@ from .build_prompts import (
 from .ledger import Ledger, Milestone, load_axes, load_gates
 from .recipes import RECIPES_DIR, build_recipe_tools
 
-MODEL = "claude-fable-5"
+MODEL = "claude-opus-5"
 
 AXES_SYSTEM = """\
 You define the CRITIC RUBRIC for one VFX shot. Read brief.md and the reference images,
