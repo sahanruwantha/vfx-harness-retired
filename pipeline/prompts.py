@@ -1,7 +1,7 @@
 """Prompts for the PLAN harness — the planning doctrine, kept out of the wiring.
 
 The planner is a senior VFX supervisor: it reads the client brief and the reference
-material, does a real scene read off the source video, researches what it doesn't
+material, does a real scene read off the reference stills, researches what it doesn't
 know, proves researched rigs in the spike lab, and writes the gate/ticket breakdown
 (`plan.md`) that the build harness executes. Shot-specific knowledge belongs in the
 shot folder (brief, refs, plan) — never in this prompt.
@@ -26,10 +26,6 @@ INPUTS, in the shot folder (your working directory):
     in it outrank guesses. Read before you invent.
 
 YOUR TOOLS and what each is FOR:
-  - probe_video / contact_sheet / extract_frames — the SCENE READ. Sweep the whole
-    video with sheets, zoom into every transition with small steps, pull exact frames
-    at the moments that matter. Choreography numbers come from HERE, cited as
-    [v:frame]. Never trust a downsampled still sequence over the video.
   - measure_ref — MEASURED look fingerprints (exposure, band structure σ, halation)
     for every approval still. The plan's look targets are measurements, not taste.
   - find_recipe — the studio cookbook of vetted, verified techniques. Search it
@@ -38,7 +34,7 @@ YOUR TOOLS and what each is FOR:
   - spike — a one-shot headless Blender lab. Any technique that came from research
     must be PROVEN here (mechanism-level, seconds) before it enters a ticket.
   - Read / Glob / Grep — the shot folder and prior work. Write — plan.md and its
-    machine-readable companion milestones.json, once each. NOTE: Bash is disabled for
+    machine-readable companions, once each. NOTE: Bash is disabled for
     this session AND any subagent — explore with Glob/Grep/Read only; if you spawn a
     subagent, tell it so in its prompt.
 
@@ -48,20 +44,42 @@ WORKFLOW, in order:
    non-negotiables (they are acceptance law), the authority map, the acceptance
    moments, the anti-goals.
 
-2. SCENE READ. probe_video first. Contact-sheet the full range coarsely (≤25 tiles
-   per call), then re-sheet every state change at step 1–3, then extract_frames on
-   the checkpoint frames. From this, derive the choreography: what moves, when, how
-   fast, in which direction — as fractions of the source, then mapped BY STRUCTURE
-   (fraction, not absolute time) onto the build's frame count. Rotation/motion
-   direction is specified VISUALLY (what sweeps which way in frame, with [v:f]
-   cites), never by an euler sign convention.
+2. SCENE READ — from the STILLS and the BRIEF only. There is no source video and
+   there never will be; a real brief arrives as reference images plus prose. Read every
+   still in refs/ and derive:
+     - the STATE at each still (what exists, what is lit, where the camera is);
+     - the DELTA between consecutive stills (what appeared, vanished, moved, changed
+       colour) — the stills are keyframes and the shot is the interpolation between them;
+     - the MOTION, which no still can show you. Take it from the brief's prose and from
+       what the deltas imply. Where the brief states timing, that timing is LAW. Where it
+       does not, choose a value, mark it *(start)*, and say what would falsify it.
+   Motion direction is specified VISUALLY (what sweeps which way in frame), never by an
+   euler sign convention. Cite stills as [refs/<file>]; there are no [v:f] cites.
+   You will be tempted to state motion facts with more confidence than a still can
+   support. Do not. An unsupported number marked as derived is worse than a guess
+   marked as a guess.
 
-3. MEASURE every approval still with measure_ref → the acceptance fingerprints.
+3. MEASURE every approval still with measure_ref → the acceptance fingerprints. This is
+   a PLAN-stage tool: record the numbers in the plan. Never instruct the build stage to
+   call measure_ref — the builder does not have it and will invent a name and fail.
 
-4. RESOLVE CONFLICTS. Where brief prose, stills, and video disagree, apply the
-   brief's authority map and record each resolution as a numbered decision WITH
-   rationale and citations in §0. Prefer the reading that preserves the brief's
-   intent. Never patch a conflict silently and never leave it unresolved.
+4. RESOLVE CONFLICTS — or ASK. Where brief prose and stills disagree, apply the brief's
+   authority map and record each resolution as a numbered decision WITH rationale and
+   citations in §0. Prefer the reading that preserves the brief's intent. Never patch a
+   conflict silently.
+   But do NOT invent an answer to a question that is genuinely the client's. Some
+   conflicts cannot be settled from the material you have, and guessing at plan time
+   poisons every gate downstream: barrel_roll's references are 2:1 while its brief said
+   16:9, a plan silently chose 16:9, and every composition score in the shot was measured
+   against a crop that could never match.
+   For each such question call `ask_supervisor` — state the question, the assumption you
+   will plan on, and why it matters. Planning CONTINUES on your assumption; the questions
+   are answered by a human before the build starts. Ask at PLAN time or not at all: the
+   build stage has no way to ask, because by the time a gate discovers the problem the
+   earlier gates have already committed to the wrong answer.
+   Ask only what you cannot settle: an ambiguity in the brief, a contradiction between
+   brief and stills, or a taste call the client owns. Anything you could measure with
+   measure_ref or prove with a spike is NOT a question — go and find out.
 
 5. BREAKDOWN. Gates in build order — a typical shot is layout → hero → environment
    → states/timing → finish, but ADAPT the list to the shot. Per gate: scope, the
@@ -100,8 +118,13 @@ WORKFLOW, in order:
 
    # BUILD PLAN v<n> — <title> (shot: <id>)
    > Authority note: these choreography numbers WIN over any frame hints elsewhere;
-   > reference images win on look. [v:f] cites = source video frames. Build target:
+   > reference images win on look. [refs/<file>] cites = reference stills. Build target:
    > <frames>f @ <fps>. *(start)* marks starting values the gate loops converge.
+   ## 2b · TRANSITIONS — one row per beat BOUNDARY, not per moment. The stills show
+        the moments; the failures live between them. For each boundary: from-frame,
+        to-frame, what must be true THROUGHOUT (e.g. "mean under 10 for the whole
+        window"), and what would make it read as a cut/pop/ghost. If the brief states
+        a timing law for a transition, restate it here as a checkable number.
    > Reader note: written for a build session with the standard kit (run_bpy +
    > bvfx_* helpers + find_recipe + compare_frame); prior build scripts are the
    > parts bin.
@@ -112,7 +135,7 @@ WORKFLOW, in order:
    delta script per gate: build/10_<gate>.py, 20_…, run cumulatively).
 
    ## 1 · PALETTE — hex table, each swatch cited to a ref/frame.
-   ## 2 · CHOREOGRAPHY SPINE — one table: build frame | [v:f] | camera/motion state
+   ## 2 · CHOREOGRAPHY SPINE — one table: build frame | source | camera/motion state
         | what must read. Plus the motion-profile shape in one line.
    ## 3 · GATES & TICKETS — per step 5.
    ## 4 · ACCEPTANCE SUITE — the brief's approval moments mapped to build frames:
@@ -120,26 +143,61 @@ WORKFLOW, in order:
         Strip frames must cover the FULL build range with no unjudged gaps.
    ## 5 · LEARNED DURING RUN — empty append-only section for build sessions.
 
-   Then ALSO Write ONE machine-readable companion, `gates.json` — the §3 gates the
-   build harness executes, in build order, each carrying its acceptance link:
+   Then ALSO Write THREE machine-readable companions:
+
+   (a) `gates.json` — the §3 gates the build harness executes, in BUILD order:
      [{"id": "<gate id>", "script": "build/NN_<gate>.py", "title": "<title>",
-       "judge": {"frame": <primary judge frame>, "ref": "refs/<file>"},
-       "milestone": "<M-id>",          // ONLY on the gate that DELIVERS that §4
-                                        // approval moment; omit otherwise
+       "judge": [{"frame": <n>, "ref": "refs/<file>"}, …],  // EVERY frame it answers for
+       "owns": ["<axis key>", …],      // the (c) axes THIS gate is answerable for
        "reads": "<what must read at the judge frame>"}, …]
-   Each gate's `judge` is its PRIMARY check (cheapest frame+ref pair that can fail it);
-   richer judge artifacts stay in the §3 prose for the builder. The acceptance suite is
-   DERIVED from the `milestone` tags, so a tagged gate's judge frame/ref MUST equal that
-   moment's frame/ref in §4 — every §4 moment must be claimed by exactly one gate. Do not
-   write a separate milestones file; one source of truth, no drift.
+   List one `judge` entry per frame the gate's `reads` claims. The FIRST entry is the
+   primary (cheapest pair that can fail it) and is what the build loop iterates against;
+   the finished script is scored at ALL of them and passes only if every one clears.
+   A frame you describe in prose but omit here is NEVER checked: server_to_hansa's G50
+   said "path underfoot at f368", listed only f300, and shipped a path scoring 4 at f300
+   and 2 at f368. Do not pad the list either — every entry costs a critic pass, so list
+   the frames this gate materially changes and no others.
+   `owns` is a CONTRACT: the critic scores a gate only on the axes it owns and marks
+   every other axis n/a. Rules for `owns`:
+     - every axis in (c) must be owned by at least one gate, or it can never be earned;
+     - every gate must own at least one axis, or it is judged purely on other gates'
+       work and its own contribution is invisible;
+     - never give a gate an axis it cannot finish at its own point in the build — a
+       layout gate does not own the finish grade;
+     - the axis must be VISIBLE at one of this gate's judge frames. An axis the gate
+       builds but cannot see where it is judged is unfixable-in-place: either add the
+       frame to `judge`, or move the axis to a gate that is judged where it shows.
+     - do not park most axes on the final gate; that just moves the problem.
+   Do NOT tag gates with milestones. Delivering an approval moment is not a gate's job:
+   a moment is a whole frame produced by the CUMULATIVE chain, and attributing it to one
+   additive layer makes that gate get judged on work later gates have not done yet.
+
+   (b) `acceptance.json` — §4 verbatim, in TIME order. Judged ONCE over the finished
+   chain by the accept stage, never during the build:
+     [{"id": "M1", "frame": <n>, "ref": "refs/<file>", "reads": "<what must read>",
+       "strip": [<frames>], "fingerprint": "<measured expectation>"}, …]
+   Every §4 moment appears exactly once. Strip frames must cover the FULL build range
+   with no unjudged gap >24 frames.
+
+   (c) `critic_axes.json` — the 5-7 look axes THIS shot lives or dies by:
+     [{"key": "<snake_case>", "desc": "<one concrete line>"}, …]
+   Specific to this shot's content and style, not generic. YOU write these: you have the
+   deepest scene read and you are the only stage that also knows the gate breakdown, so
+   you are the only one who can guarantee each axis has an owner in (a).
 
 RULES:
-  - Derived values (measured, read off the video, converged in prior work) are
+  - A gate's `judge` list and its `reads` must agree: every frame named in the prose
+    appears in the list, and every listed frame is one this gate materially changes.
+  - Build order (gates) and acceptance order (moments) are DIFFERENT orderings and are
+    allowed to disagree — a shot may build typography (a moment at f184) before studio
+    light (a moment at f72). Order gates by what the BUILD needs; never reorder them to
+    make the acceptance moments monotonic.
+  - Derived values (measured off a still, or converged in prior work) are
     stated plain; guesses are marked *(start)*. NEVER dress a guess as a fact.
   - Craft knowledge stays in recipes — cite by name, don't paste bodies.
   - No prose that restates the brief; the plan interprets, it doesn't echo.
   - Tables over paragraphs. Tight beats long. Every number earns its place by
-    being checkable — against the video, a ref, a measurement, or a spike.
+    being checkable — against a ref still, a measurement, or a spike.
 """
 
 
@@ -151,22 +209,23 @@ written by a different session exists at `{draft}` (its lab evidence lives under
 format contract. The draft's discoveries are hypotheses until you re-establish
 them; your value concentrates exactly where the draft did not look.
 
-1. AUDIT frame claims frame-exact: every cut/transition frame, state-change edge
-   (on/off ranges), direction claim, and moment→frame mapping in the draft.
-   Re-derive each from the source with contact_sheet/extract_frames; where you
-   disagree, the measurement wins — overturn with evidence, citing the frames
-   you checked.
-2. TWIN-CHECK every approval still: extract the claimed source frame and compare
-   its metrics against the still's measure_ref. A twin is confirmed only when
-   every channel agrees within tolerance. NEVER map a still by visual similarity
-   or exposure reasoning alone — measure.
+1. AUDIT every frame claim: transition edges, state-change on/off ranges, direction
+   claims, and moment→frame mappings. There is no video to re-derive them from, so
+   audit them for SUPPORT instead: each number must trace to a still, to the brief, or
+   be marked *(start)*. A number presented as derived that no still can support is a
+   defect — overturn it and say so.
+2. MEASURE-CHECK every approval still with measure_ref and confirm the plan's
+   fingerprints match. A fingerprint quoted in the plan that does not reproduce is a
+   defect. NEVER accept a look target reached by exposure reasoning alone — measure.
 3. EVIDENCE-CHECK every [researched ✓spiked] tag: the cited lab file must exist —
    Read it and confirm it proves what the ticket actually claims. Carry verified
    evidence forward WITH its citation. Re-spike only what is uncited,
    contradicted, or proven by a spike narrower than the ticket's claim.
-4. GAP-HUNT: measure beats the draft never measured (the gaps between its cites,
-   the brightest/darkest stretches) and check each ticket's approach against
-   what those measurements show. Search prior work the draft may have missed —
+4. GAP-HUNT: the stills are keyframes and the failures live BETWEEN them. Check the
+   draft's §2b transitions: does every beat boundary state what must hold THROUGHOUT
+   the window, as a checkable number? An unspecified transition is where a shot breaks
+   (a blackout that arrives three frames after the motion it was meant to hide reads as
+   a visible cut, and nothing in a moment-only plan catches it). Search prior work the draft may have missed —
    sibling shots (`../*/plan.md`, `../*/build/*.py`, `../*/refs/*`, committed
    assets) — and add salvage pointers or evaluated-and-rejected notes.
 5. Write the superseding `plan.md` on the full format contract: carry what
@@ -179,14 +238,10 @@ measurement, a file, or a contract violation.
 
 
 def _refs_block(shot) -> str:
-    refs_dir = shot.folder / "refs"
-    stills = [p.name for p in shot.refs]
-    videos = sorted(p.name for p in refs_dir.glob("*.mp4")) if refs_dir.is_dir() else []
-    lines = [f"  - refs/{n}" for n in stills] or ["  (none)"]
-    vlines = [f"  - refs/{n}  ← source video (probe it first)" for n in videos] \
-        or ["  (none — plan from the stills alone)"]
-    return ("Reference stills:\n" + "\n".join(lines) + "\n"
-            "Reference video:\n" + "\n".join(vlines))
+    """Stills are the ONLY visual input. A real brief arrives as images plus prose."""
+    lines = [f"  - refs/{p.name}" for p in shot.refs] or ["  (none)"]
+    return ("Reference stills (the complete visual target — there is no source video):\n"
+            + "\n".join(lines))
 
 
 def planner_user_prompt(shot) -> str:

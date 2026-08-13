@@ -346,6 +346,57 @@ def h_ping(a: dict) -> dict:
     return {"blender": bpy.app.version_string, "eevee": _eevee_engine()}
 
 
+# Blender 4.x attribute -> the 5.x way. Surfaced inline so a wrong guess costs one
+# tool call instead of a retry loop.
+_ATTR_HINTS = {
+    "glare_type": "in 5.x Glare settings are INPUT SOCKETS, not attributes. Use the "
+                  "helper: bvfx_glare_bloom(threshold=..., size=..., strength=...). To "
+                  "read the graph use inspect_nodes('compositor').",
+    "node_tree": "scene.node_tree is GONE in 5.x — the compositor is "
+                 "scene.compositing_node_group. Prefer bvfx_glare_bloom / "
+                 "inspect_nodes('compositor') over poking it directly.",
+    "spot_size": "spot_size exists only on SPOT lights. Check light.type first "
+                 "('AREA' uses size/size_y, 'SUN' uses angle).",
+    "no attribute 'elements'": "ColorRamp stops live one level down: "
+                               "node.color_ramp.elements (and .color_ramp.evaluate(t)), "
+                               "not node.elements.",
+    "default_value": "shader-type sockets carry a LINK, not a value — link a node into "
+                     "it instead of assigning default_value.",
+}
+
+_JOURNAL: list[str] = []
+
+
+def h_replay(a: dict) -> dict:
+    """Re-exec journal entries [start:] — the WAL half of snapshot recovery."""
+    start = int(a.get("start", 0))
+    entries = _JOURNAL[start:]
+    done = 0
+    for code in list(entries):
+        h_run({"code": code})
+        done += 1
+    return {"replayed": done, "from": start}
+
+
+def h_journal(a: dict) -> dict:
+    """The accepted run_bpy calls, in order — a DRAFT of the build script.
+
+    Not a build script by itself: it contains superseded tweaks, probes and dead ends.
+    It is a transcript to prune, which is far cheaper than re-authoring from memory.
+    """
+    if a.get("clear"):
+        _JOURNAL.clear()
+        return {"cleared": True}
+    body = "\n\n# ---- next accepted run_bpy call ----\n".join(_JOURNAL)
+    path = a.get("path")
+    if path:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"# JOURNAL — {len(_JOURNAL)} accepted run_bpy calls, in order.\n"
+                     f"# Superseded tweaks and probes included: PRUNE, do not paste.\n\n"
+                     + body + "\n")
+    return {"calls": len(_JOURNAL), "chars": len(body), "path": path}
+
+
 def h_run(a: dict) -> dict:
     """Exec arbitrary bpy code. Set `RESULT = <json-able>` to return data.
 
@@ -370,7 +421,20 @@ def h_run(a: dict) -> dict:
                     f"`Vector((x, y, z))` is already in scope (so are math/mathutils), "
                     f"or use bvfx_aim(obj, target) for aiming.") from None
             raise
+        except AttributeError as e:
+            # Blender-4 attributes that became input sockets in 5.x. Without a hint the
+            # builder retries the same 4.x form (observed twice in 54s on glare_type),
+            # so name the replacement at the point of failure.
+            msg = str(e)
+            for attr, hint in _ATTR_HINTS.items():
+                if attr in msg:
+                    raise AttributeError(f"{msg}\nHINT: {hint}") from None
+            raise
     elapsed = time.monotonic() - t0
+    # Only successful code is journalled: the builder currently re-authors the whole
+    # gate from memory at finalize (~28KB of live calls -> a 23KB script), which is
+    # duplicated effort AND the only reason live and canonical can diverge.
+    _JOURNAL.append(a["code"])
     after = _scene_stats()
     result = ns.get("RESULT")
     try:
@@ -527,10 +591,16 @@ def h_render(a: dict) -> dict:
 
 
 def h_snapshot(a: dict) -> dict:
-    """Save the whole scene state as a .blend (per-round checkpoint)."""
-    path = os.path.join(ARTIFACTS, f"snapshot_{a.get('tag', 'x')}.blend")
+    """Save the scene as a .blend and record the journal position.
+
+    snapshot + journal = checkpoint + write-ahead log: restore the .blend, replay the
+    journal entries recorded after `journal_index`, and you have the exact scene even if
+    the session died mid-turn far from the last checkpoint."""
+    out_dir = a.get("dir") or ARTIFACTS
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"snapshot_{a.get('tag', 'x')}.blend")
     bpy.ops.wm.save_as_mainfile(filepath=path, compress=True, copy=True)
-    return {"blend": path}
+    return {"blend": path, "journal_index": len(_JOURNAL)}
 
 
 def h_restore(a: dict) -> dict:
@@ -548,6 +618,8 @@ HANDLERS = {
     "render": h_render,
     "snapshot": h_snapshot,
     "restore": h_restore,
+    "journal": h_journal,
+    "replay": h_replay,
 }
 
 

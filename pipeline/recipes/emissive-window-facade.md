@@ -47,7 +47,9 @@ GOTCHAS:
   or lit cells and mask cells drift apart.
 - GREATER_THAN threshold ≈ 1 − fraction lit (0.58 → ~42% of cells on).
 - Parent the shell to the tower and set `matrix_parent_inverse` so it tracks any
-  animation of the underlying mesh.
+  animation of the underlying mesh. Call `bpy.context.view_layer.update()` FIRST — the
+  inverse must be built from the parent's *current* evaluated matrix, or the child lands
+  hundreds of units off (this bites any parent that was moved/scaled earlier in the script).
 
 ```python
 bpy.ops.mesh.primitive_cube_add(size=1, location=tower_center)
@@ -81,5 +83,59 @@ l.new(mix.outputs['Shader'], nt.nodes['Material Output'].inputs['Surface'])
 bpy.data.materials[shell.name + '_windows'].surface_render_method = 'BLENDED'
 
 shell.parent = tower
+bpy.context.view_layer.update()                  # before reading matrix_world!
 shell.matrix_parent_inverse = tower.matrix_world.inverted()
+```
+
+## Variant: per-cell BRIGHTNESS variation (not just on/off)
+
+A binary on/off mask still reads as a uniform sheet at distance. Feeding the same
+SNAP → White Noise through a Map Range instead of GREATER_THAN gives each cell a stable
+brightness multiplier, so the facade reads as *occupied* — some floors bright, some dim.
+Still fully deterministic (no seed, no Python randomness). Use this on the hero; keep the
+cheaper on/off mask for background buildings.
+
+```python
+snap = n.new('ShaderNodeVectorMath'); snap.operation = 'SNAP'
+snap.inputs[1].default_value = (1.0 / density_x, 1.0 / density_y, 1.0 / density_z)
+l.new(n['Texture Coordinate'].outputs['Object'], snap.inputs[0])
+wn = n.new('ShaderNodeTexWhiteNoise'); wn.noise_dimensions = '3D'
+l.new(snap.outputs['Vector'], wn.inputs['Vector'])
+var = n.new('ShaderNodeMapRange')
+var.inputs['To Min'].default_value = 0.30        # dimmest cell (never 0 → keeps texture)
+var.inputs['To Max'].default_value = 1.25        # brightest cell
+l.new(wn.outputs['Value'], var.inputs['Value'])
+mul = n.new('ShaderNodeMath'); mul.operation = 'MULTIPLY'
+l.new(n['Math.010'].outputs[0], mul.inputs[0])   # the brick window mask
+l.new(var.outputs['Result'], mul.inputs[1])
+l.new(mul.outputs[0], n['Math.011'].inputs[0])   # → emission strength
+```
+
+## Variant: vertical band silhouette ("two bright strips, dark core")
+
+Real towers don't glow evenly across their width — the camera-facing face is bright, the
+core seam and the raking side faces fall off. Gate the window mask on `|X|` of the object
+coords (a GREATER_THAN × LESS_THAN band), then MULTIPLY_ADD so the excluded faces keep a
+floor instead of going black. This is what turns a lit box into a building.
+
+GOTCHAS:
+- Keep the MULTIPLY_ADD offset ≥ ~0.3 — side faces at 0 read as holes, and they may be
+  the camera-facing faces in an earlier/later milestone.
+- Band edges are in OBJECT coords, so they're scale-invariant — reusable across shots.
+- Also lift the emission's own MULTIPLY_ADD offset a little (≈0.05) so the dark body is
+  never a pure-black cutout against a haze-lit sky.
+
+```python
+ab = n.new('ShaderNodeMath'); ab.operation = 'ABSOLUTE'
+gt = n.new('ShaderNodeMath'); gt.operation = 'GREATER_THAN'; gt.inputs[1].default_value = CORE_SEAM
+lt = n.new('ShaderNodeMath'); lt.operation = 'LESS_THAN';    lt.inputs[1].default_value = FACE_EDGE
+band = n.new('ShaderNodeMath'); band.operation = 'MULTIPLY'
+madd = n.new('ShaderNodeMath'); madd.operation = 'MULTIPLY_ADD'
+madd.inputs[1].default_value = 0.62              # band contrast
+madd.inputs[2].default_value = 0.38              # floor for off-band faces
+l.new(n['Separate XYZ'].outputs['X'], ab.inputs[0])
+l.new(ab.outputs[0], gt.inputs[0]); l.new(ab.outputs[0], lt.inputs[0])
+l.new(gt.outputs[0], band.inputs[0]); l.new(lt.outputs[0], band.inputs[1])
+l.new(band.outputs[0], madd.inputs[0])
+# then MULTIPLY madd against the window mask before the variation stage above
 ```

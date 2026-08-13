@@ -36,10 +36,19 @@ class BlenderSession:
         # to resolve the same way — otherwise the builder reads the repo root and
         # concludes its own references are missing.
         self.cwd = str(cwd) if cwd else None
+        # Renders are throwaway; SNAPSHOTS are not — resume needs to find them again.
+        # These used to be mkdtemp(dir=$HOME) per session and were never cleaned: 107
+        # dirs and 1.8 GB accumulated in one day, and the .blend checkpoints inside them
+        # were unreachable, which is why a failed gate could only be rebuilt from zero.
+        self._ephemeral = artifacts_dir is None and cwd is None
         if artifacts_dir is None:
-            artifacts_dir = Path(tempfile.mkdtemp(prefix=".bvfx-render-", dir=Path.home()))
+            base = Path(cwd) if cwd else Path.home()
+            artifacts_dir = (Path(base) / ".artifacts" if cwd
+                             else Path(tempfile.mkdtemp(prefix=".bvfx-render-", dir=Path.home())))
         self.artifacts = Path(artifacts_dir)
         self.artifacts.mkdir(parents=True, exist_ok=True)
+        self.snapshots = (Path(cwd) / ".snapshots") if cwd else self.artifacts
+        self.snapshots.mkdir(parents=True, exist_ok=True)
         self.proc: subprocess.Popen | None = None
         self._ids = itertools.count(1)
 
@@ -64,7 +73,18 @@ class BlenderSession:
                 return self
         raise BlenderError("Blender worker did not become ready")
 
+    def _sweep(self, keep: int = 40) -> None:
+        """Renders pile up fast; keep the newest and bin the rest. Snapshots are kept —
+        they are the resume checkpoints."""
+        try:
+            pngs = sorted(self.artifacts.glob("*.png"), key=lambda p: p.stat().st_mtime)
+            for p in pngs[:-keep]:
+                p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def close(self) -> None:
+        self._sweep()
         if self.proc and self.proc.poll() is None:
             try:
                 self._write({"id": next(self._ids), "cmd": "shutdown"})
@@ -124,9 +144,19 @@ class BlenderSession:
     def render(self, frame: int, mode: str = "eevee", scale: float = 0.5, **kw) -> str:
         return self.call("render", frame=frame, mode=mode, scale=scale, **kw)["image_path"]
 
-    def snapshot(self, tag: str) -> str:
-        """Checkpoint the whole scene to a .blend; returns its path."""
-        return self.call("snapshot", tag=tag)["blend"]
+    def snapshot(self, tag: str) -> dict:
+        """Checkpoint the scene. Returns {blend, journal_index} — the journal index is
+        the write-ahead position, so replaying entries after it reconstructs any work
+        done between this checkpoint and a crash."""
+        return self.call("snapshot", tag=tag, dir=str(self.snapshots))
+
+    def journal(self, path: str | None = None, clear: bool = False) -> dict:
+        """Dump/clear the accepted-run_bpy transcript (see worker.h_journal)."""
+        return self.call("journal", path=path, clear=clear)
+
+    def replay(self, start: int = 0) -> dict:
+        """Re-exec journalled run_bpy calls from `start` (use after restore)."""
+        return self.call("replay", start=start)
 
     def restore(self, blend: str) -> dict:
         """Restore a .blend checkpoint (exact scene state at snapshot time)."""

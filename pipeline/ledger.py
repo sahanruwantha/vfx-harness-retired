@@ -24,6 +24,8 @@ class Milestone:
     frame: int
     ref: str  # path relative to the shot folder, e.g. "refs/M1_green.jpg"
     reads: str  # the state that MUST read at this frame
+    strip: tuple[int, ...] = ()   # extra frames judged with it (motion/continuity)
+    fingerprint: str = ""         # the plan's measured expectation for this moment
 
 
 # Fallback critic axes. Per shot, the real axes are DERIVED from the brief + refs and
@@ -55,20 +57,41 @@ def load_axes(shot: Shot) -> list[tuple[str, str]]:
 
 @dataclass(frozen=True)
 class Gate:
-    """One build gate from the plan (build ORDER), judged at a primary frame/ref.
-    Milestones remain the acceptance MOMENTS; gates are how the scene gets built."""
+    """One build gate from the plan (build ORDER), judged at a primary frame/ref on the
+    axes it OWNS. Acceptance moments are a separate, time-ordered list (acceptance.json)
+    judged once over the finished chain — a moment belongs to the cumulative chain, not
+    to any single gate."""
 
     id: str
     script: str  # e.g. "build/20_green.py" — chained in numeric order
     title: str
-    judge_frame: int
-    judge_ref: str
+    # EVERY frame this gate answers for, ((frame, ref), …) in frame order. A gate's
+    # responsibility is multi-frame while its judgment used to be single-frame: SH's G50
+    # declared "path at f300 AND underfoot at f368", was judged only at f300, and shipped
+    # a path scoring 4 there and 2 at f368. A frame not listed here is never checked.
+    judges: tuple[tuple[int, str], ...]
     reads: str
-    milestone: str | None = None  # set when this gate DELIVERS an approval moment
+    # The rubric axes this gate is ANSWERABLE for. The critic scores only these and
+    # marks the rest n/a — a layout gate cannot earn the finish grade, and judging it
+    # on one only produces a floor score it can never lift (BR gate G: 2.83 twice).
+    owns: tuple[str, ...] = ()
+
+    @property
+    def judge_frame(self) -> int:
+        """Primary judge frame (earliest) — what the iteration loop renders."""
+        return self.judges[0][0]
+
+    @property
+    def judge_ref(self) -> str:
+        return self.judges[0][1]
 
     def as_milestone(self) -> "Milestone":
-        """The critic loop speaks Milestone — adapt the gate's judge point."""
+        """The critic loop speaks Milestone — adapt the gate's PRIMARY judge point."""
         return Milestone(self.id, self.judge_frame, self.judge_ref, self.reads)
+
+    def milestone_at(self, frame: int, ref: str) -> "Milestone":
+        """A Milestone for one of this gate's judge points (id tagged with the frame)."""
+        return Milestone(f"{self.id}@f{frame}", frame, ref, self.reads)
 
 
 def load_gates(shot: Shot) -> dict[str, Gate]:
@@ -80,21 +103,35 @@ def load_gates(shot: Shot) -> dict[str, Gate]:
             f"order; milestones.json defines the acceptance moments)")
     out: dict[str, Gate] = {}
     for g in json.loads(path.read_text()):
+        j = g["judge"]
+        entries = [j] if isinstance(j, dict) else list(j)   # accept the old single form
+        if not entries:
+            raise ValueError(f"gate {g['id']}: empty judge list")
+        judges = tuple(sorted(((int(e["frame"]), e["ref"]) for e in entries),
+                              key=lambda fr: fr[0]))
         out[g["id"]] = Gate(g["id"], g["script"], g.get("title", g["id"]),
-                            int(g["judge"]["frame"]), g["judge"]["ref"], g.get("reads", ""),
-                            g.get("milestone"))
+                            judges, g.get("reads", ""), tuple(g.get("owns", ())))
     return out
 
 
 def load_milestones(shot: Shot) -> dict[str, Milestone]:
-    """The acceptance suite, DERIVED from the gates that deliver each approval moment
-    (`"milestone": "M2"` on a gate). One source of truth: a gate's judge point IS its
-    moment's frame+ref, so the two can never drift (they already did once when kept
-    in separate files). Used by the final acceptance pass, not by the build loop."""
+    """The acceptance suite (plan §4), in TIME order — judged ONCE over the finished
+    chain by the accept stage.
+
+    Deliberately NOT derived from gates. Build order (layer) and acceptance order (time)
+    are different orderings and are allowed to disagree: server_to_hansa builds
+    typography (M2 @ f184) before studio light (M1 @ f72). Attributing a whole-frame
+    moment to one additive layer is what made gates get judged on work they don't own.
+    """
+    path = shot.folder / "acceptance.json"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} missing — run the plan agent (it writes gates.json for the build "
+            f"order and acceptance.json for the approval moments)")
     out: dict[str, Milestone] = {}
-    for g in load_gates(shot).values():
-        if g.milestone:
-            out[g.milestone] = Milestone(g.milestone, g.judge_frame, g.judge_ref, g.reads)
+    for m in json.loads(path.read_text()):
+        out[m["id"]] = Milestone(m["id"], int(m["frame"]), m["ref"], m.get("reads", ""),
+                                 tuple(m.get("strip", ())), m.get("fingerprint", ""))
     return dict(sorted(out.items(), key=lambda kv: out[kv[0]].frame))
 
 
@@ -112,9 +149,14 @@ class Ledger:
             self.data = json.loads(self.path.read_text(encoding="utf-8"))
         else:
             self.data = {"shot": shot.id, "milestones": {}}
+        self._touched: set[str] = set()  # gates THIS instance owns (see save)
+        # snapshot of what we loaded, so save() can tell "I changed this" from
+        # "I never looked at it" for non-milestone top-level keys (e.g. acceptance)
+        self._loaded = json.loads(json.dumps(self.data))
 
     # -- accessors -----------------------------------------------------------
     def _slot(self, m: Milestone) -> dict:
+        self._touched.add(m.id)
         return self.data.setdefault("milestones", {}).setdefault(m.id, {})
 
     def status(self, m: Milestone) -> str:
@@ -153,5 +195,81 @@ class Ledger:
                             "render": best.get("render")}
         self.save()
 
+    def set_resume(self, m: Milestone, *, session_id: str | None, blend: str,
+                   journal_index: int, round: int) -> None:
+        """Record where a crashed/truncated gate can pick up: the SDK session to resume
+        AND the scene checkpoint to restore. Gate G's re-run cost ~$14 and 40 minutes
+        rebuilding work it had already done, because neither was ever written down."""
+        self._slot(m)["resume"] = {"session_id": session_id, "blend": blend,
+                                   "journal_index": journal_index, "round": round,
+                                   "at": _now()}
+        self.save()
+
+    def get_resume(self, m: Milestone) -> dict | None:
+        r = self._slot(m).get("resume")
+        return r if r and Path(r.get("blend", "")).is_file() else None
+
+    def snapshot_scripts(self, m: Milestone, tag: str = "pass") -> str | None:
+        """Copy build/*.py aside whenever a gate lands.
+
+        Not git ceremony — just enough history to undo. Gate scripts reference each
+        other's objects by NAME, so re-running an early gate can silently invalidate
+        every later one: rebuilding 20_green.py broke 30_purple.py's `tower_dot` lookup,
+        and the chain survived only because backups had been taken BY HAND, twice.
+        """
+        src = self.shot.folder / "build"
+        if not src.is_dir():
+            return None
+        stamp = _now().replace(":", "").replace("-", "")[:15]
+        dst = self.shot.folder / ".versions" / f"{m.id}_{tag}_{stamp}"
+        dst.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for p in sorted(src.glob("[0-9]*.py")):
+            (dst / p.name).write_bytes(p.read_bytes())
+            n += 1
+        self._slot(m).setdefault("versions", []).append(
+            {"tag": tag, "path": str(dst.relative_to(self.shot.folder)),
+             "scripts": n, "at": _now()})
+        self.save()
+        return str(dst)
+
+    def record_ablation(self, m: Milestone, abl: dict) -> None:
+        """Did this gate's script move anything at its own judge frame?"""
+        self._slot(m)["ablation"] = {**abl, "at": _now()}
+        self.save()
+
+    def record_review(self, m: Milestone, round: int, out: dict) -> None:
+        """Keep approach reviews: a REPLACE verdict is a negative result worth carrying —
+        it says a whole technique could not reach the reference here."""
+        self._slot(m).setdefault("reviews", []).append(
+            {"round": round, "replace": out.get("replace", False),
+             "text": out.get("text", "")[:1200], "at": _now()})
+        self.save()
+
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2) + "\n", encoding="utf-8")
+        """Write back only the gates this instance touched.
+
+        A shot's gates run as separate processes (and can overlap with an out-of-band
+        edit), each holding a snapshot taken at construction. Rewriting the whole
+        snapshot would silently revert everyone else's work, so re-read and splice.
+        """
+        on_disk = {}
+        if self.path.is_file():
+            try:
+                on_disk = json.loads(self.path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                on_disk = {}
+        # Disk wins for top-level keys we never modified; ours wins where we did.
+        # (Plain `{**self.data, **on_disk}` let disk clobber our own new keys, so a
+        # second acceptance run silently kept the first run's block.)
+        merged = dict(on_disk)
+        for k, v in self.data.items():
+            if k == "milestones":
+                continue
+            if k not in on_disk or v != self._loaded.get(k):
+                merged[k] = v
+        slots = dict(on_disk.get("milestones", {}))
+        for gid in self._touched:
+            slots[gid] = self.data.get("milestones", {}).get(gid, {})
+        merged["milestones"] = slots
+        self.path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")

@@ -49,6 +49,16 @@ class Shot:
         return int(self.frontmatter["fps"])
 
     @property
+    def resolution(self) -> tuple[int, int]:
+        """Delivery resolution. Defaults to 1920x1080, but the reference stills decide:
+        matching a 2:1 reference with a 16:9 render means composition can never agree and
+        every banded metric compares different regions of the frame."""
+        r = self.frontmatter.get("resolution")
+        if isinstance(r, (list, tuple)) and len(r) == 2:
+            return int(r[0]), int(r[1])
+        return 1920, 1080
+
+    @property
     def engine(self) -> str:
         return self.frontmatter.get("engine", "BLENDER_EEVEE_NEXT")
 

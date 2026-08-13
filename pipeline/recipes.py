@@ -51,7 +51,45 @@ def search_recipes(query: str, k: int = 3) -> list[dict]:
     return [rec for rec, s in sorted(scored, key=lambda x: -x[1]) if s > 0][:k]
 
 
-def build_recipe_tools():
+def recipe_index(verified_only: bool = False) -> str:
+    """One line per recipe: name + when. This goes in the SYSTEM PROMPT, always.
+
+    Retrieval was never the weak link — `find_recipe("make the city look real")` returns
+    night-city-field just fine. Discovery was: the builder can only query for a recipe it
+    already suspects exists. Gate S searched for a recipe name it had read in its plan and
+    never asked about bloom, so it hand-rolled a 4.x Glare node twice while
+    `cinematic-grade` and `blender-5-api` both sat in the cookbook with the fix.
+
+    Skills solve this by keeping name+description in context and loading the body on
+    demand. Same trade here: the index is ~4% of the library's tokens.
+    """
+    recs = [r for r in _all() if r["verified"] or not verified_only]
+    if not recs:
+        return ""
+    lines = [f"  - {r['name']} — {r['when']}" for r in recs if r["when"]]
+    return ("RECIPE COOKBOOK — vetted techniques. Call find_recipe(<name>) to pull the "
+            f"full snippet + gotchas BEFORE hand-rolling any of these ({len(lines)}):\n"
+            + "\n".join(lines))
+
+
+def log_recipe_use(shot_folder, names: list[str]) -> None:
+    """Append which recipes a build actually pulled.
+
+    Without this we cannot promote or prune: a recipe used in every build should graduate
+    into a bvfx_* helper (zero context, impossible to mis-adapt), and one never pulled in
+    N builds is dead weight behind an index line."""
+    if not names:
+        return
+    import json
+    from datetime import datetime, timezone
+    p = Path(shot_folder) / "logs" / "recipe_use.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                             "recipes": sorted(set(names))}) + "\n")
+
+
+def build_recipe_tools(on_use=None):
     """An MCP server exposing find_recipe to the build agent."""
     @tool(
         "find_recipe",
@@ -62,6 +100,11 @@ def build_recipe_tools():
     )
     async def find_recipe(args):
         hits = search_recipes(args["query"])
+        if on_use and hits:
+            try:
+                on_use([h["name"] for h in hits])
+            except Exception:
+                pass
         if not hits:
             return {"content": [{"type": "text",
                     "text": "no matching recipe — improvise; a good solution may be harvested "

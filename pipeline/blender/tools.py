@@ -16,6 +16,8 @@ import anyio
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from PIL import Image, ImageDraw
 
+from ..escalate import ask as _ask
+from ..script_map import find_lines as _find_lines, outline as _outline
 from .session import BlenderError, BlenderSession
 
 SERVER_NAME = "blender"
@@ -138,7 +140,7 @@ def _compare_image(cand_path: str, ref_path: Path, caption: str) -> dict:
 
 
 def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None = None,
-                        shot_dir: str | Path | None = None):
+                        shot_dir: str | Path | None = None, gate_id: str | None = None):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
     `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…)."""
     assets_dir = Path(assets_dir) if assets_dir else None
@@ -340,6 +342,96 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         tools.append(compare_frame)
     if assets_dir is not None:
         tools.append(import_asset)
+    @tool(
+        "script_map",
+        "STRUCTURAL INDEX of a build script — functions, sections, and which lines create "
+        "or reference each named object/material. Use this INSTEAD of reading the whole "
+        "file: a 536-line script maps to ~380 tokens. Then Read just that span and Edit "
+        "it. Never rewrite a script you only need to change in one place.",
+        {"type": "object", "properties": {"path": {"type": "string"}},
+         "required": ["path"]},
+    )
+    async def script_map(args):
+        p = Path(args["path"])
+        if not p.is_absolute() and shot_dir:
+            p = shot_dir / p
+        return {"content": [{"type": "text", "text": _outline(p)}]}
+
+    @tool(
+        "find_in_script",
+        "Locate a name/value inside a build script with surrounding context, so you can "
+        "Read the right span instead of the whole file. Give the object name, material "
+        "name, or literal you want to change.",
+        {"type": "object",
+         "properties": {"path": {"type": "string"}, "needle": {"type": "string"}},
+         "required": ["path", "needle"]},
+    )
+    async def find_in_script(args):
+        p = Path(args["path"])
+        if not p.is_absolute() and shot_dir:
+            p = shot_dir / p
+        return {"content": [{"type": "text",
+                             "text": _find_lines(p, args["needle"])}]}
+
+    @tool(
+        "ask_supervisor",
+        "Raise a question you cannot resolve from the brief, the stills or the plan — an "
+        "ambiguity, a contradiction, or a judgement call that is genuinely the client's. "
+        "This does NOT block: state the assumption you will proceed on and keep building. "
+        "Use it INSTEAD of guessing silently, and instead of tuning against a target you "
+        "are not sure about. Do not use it for things you could measure or spike.",
+        {"type": "object",
+         "properties": {"question": {"type": "string"},
+                        "assumption": {"type": "string"},
+                        "why_it_matters": {"type": "string"}},
+         "required": ["question", "assumption"]},
+    )
+    async def ask_supervisor(args):
+        if not shot_dir:
+            return {"content": [{"type": "text", "text": "no shot folder — cannot ask"}]}
+        qid = _ask(shot_dir, gate=gate_id or "?", question=args["question"],
+                   assumption=args["assumption"],
+                   why_it_matters=args.get("why_it_matters", ""))
+        return {"content": [{"type": "text", "text":
+                f"Recorded as Q{qid}. Continue on your stated assumption: "
+                f"{args['assumption']}"}]}
+
+    @tool(
+        "worklist",
+        "Your build checklist ON DISK — it survives context compaction and process death, "
+        "which your memory does not. Call with items=[...] to (re)write it, or done=[...] "
+        "to tick things off; call with neither to read it back. Write it once at the start "
+        "from your gate's tickets, then tick as you go. Gate G was killed at turn 121 with "
+        "the work half-finished and no record of what remained.",
+        {"type": "object",
+         "properties": {"items": {"type": "array", "items": {"type": "string"}},
+                        "done": {"type": "array", "items": {"type": "string"}},
+                        "note": {"type": "string"}},
+         "required": []},
+    )
+    async def worklist(args):
+        if not shot_dir:
+            return {"content": [{"type": "text", "text": "no shot folder"}]}
+        wl = shot_dir / "logs" / f"worklist_{gate_id or 'gate'}.json"
+        wl.parent.mkdir(parents=True, exist_ok=True)
+        state = json.loads(wl.read_text()) if wl.is_file() else {"items": [], "done": [], "notes": []}
+        if args.get("items"):
+            state["items"] = list(args["items"])
+        for d in args.get("done", []):
+            if d not in state["done"]:
+                state["done"].append(d)
+        if args.get("note"):
+            state["notes"].append(args["note"])
+        wl.write_text(json.dumps(state, indent=2))
+        left = [i for i in state["items"] if i not in state["done"]]
+        body = ("\n".join(f"  [x] {i}" for i in state["items"] if i in state["done"]) + "\n" +
+                "\n".join(f"  [ ] {i}" for i in left)).strip()
+        return {"content": [{"type": "text", "text":
+                f"{len(state['done'])}/{len(state['items'])} done, {len(left)} left\n{body}"}]}
+
+    # ask_supervisor is deliberately PLAN-ONLY: a gate that discovers an
+    # ambiguity is already building on earlier gates' answer to it.
+    tools = tools + [script_map, find_in_script, worklist]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)
     names = [f"mcp__{SERVER_NAME}__{t.name}" for t in tools]
     return server, names

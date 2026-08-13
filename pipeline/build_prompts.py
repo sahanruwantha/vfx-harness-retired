@@ -84,7 +84,17 @@ helpers are in scope (like `bpy`) — prefer them:
     COLUMNS across (~4-20; it's not a 0-1 fraction). Use this to shade a tower — do NOT
     apply one uniform emission material (it washes out all window detail).
   - bvfx_volumetric_world(color, bg_strength, vol_color, density) — tinted sky + haze.
-  - bvfx_glare_bloom(threshold, size, strength) — compositor bloom (EEVEE-Next has no
+EDITING YOUR BUILD SCRIPT — never rewrite a file to change part of it:
+  1. script_map(<path>) — the structure: functions, sections, and which lines create or
+     reference each named object/material. A 536-line script is ~380 tokens this way.
+  2. find_in_script(<path>, <name-or-value>) — locate the exact lines, with context.
+  3. Read ONLY that span (Read with offset/limit), then Edit that string.
+  Write is for creating the script the first time. A full rewrite to change one tuple
+  costs 23KB of output and risks dropping something that already worked.
+
+  - bvfx_glare_bloom(threshold, size, strength) — REQUIRED for bloom; hand-rolling a
+    CompositorNodeGlare uses the Blender-4 `glare_type` attribute, which does not exist
+    in 5.x (settings are input sockets) and will fail. (EEVEE-Next has no
     bloom toggle).
   - bvfx_emission(name, color, strength) — an emission material.
   - bvfx_import_asset(name) — import a committed asset (assets/<name>/model.glb) from
@@ -126,12 +136,17 @@ carried by light, not by lit architecture.
 """
 
 
-def builder_system(axes: list[tuple[str, str]]) -> str:
-    return _BUILDER_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes))
+def builder_system(axes: list[tuple[str, str]], recipe_index: str = "") -> str:
+    """The cookbook INDEX ships in the system prompt (~900 tokens for 23 recipes, ~4% of
+    their combined body). A builder cannot search for a technique it does not know exists:
+    gate S queried a recipe name from its plan, never asked about bloom, and hand-rolled a
+    Blender-4 Glare node twice while two cookbook entries held the fix."""
+    body = _BUILDER_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes))
+    return f"{body}\n\n{recipe_index}" if recipe_index else body
 
 
 def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
-                    script_rel: str | None = None, plan_excerpt: str = "") -> str:
+                    script_rel: str | None = None, plan_excerpt: str = "", also_judged: list | None = None) -> str:
     adir = shot.folder / "assets"
     assets = sorted(p.name for p in adir.iterdir() if (p / "model.glb").is_file()) \
         if adir.is_dir() else []
@@ -153,11 +168,20 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
         start_line = (f"Start from the empty scene, build to hit frame {m.frame}, and "
                       f"render eevee to check yourself against the reference. Iterate "
                       f"until it matches.")
+    extra = ""
+    if also_judged:
+        rows = "\n".join(f"    f{f} vs `{r}`" for f, r in also_judged)
+        extra = (f"\nTHIS GATE ALSO ANSWERS FOR these frames — the finished script is "
+                 f"scored at EVERY one of them and passes only if all clear:\n{rows}\n"
+                 f"Iterate against f{m.frame}, but before you finalize, render and check "
+                 f"the others too. A change that fixes f{m.frame} and breaks another of "
+                 f"your frames is not a fix.\n")
     return (
         f"Build unit {m.id} of shot '{shot.id}' — judged at frame {m.frame} of "
         f"{shot.frames} at {shot.fps}fps. Your delta script will be `{script_rel or ('build/' + m.id.lower() + '.py')}`.\n\n"
         f"TARGET STATE (must read at frame {m.frame}):\n  {m.reads}\n\n"
         f"REFERENCE: read `{m.ref}` — match its colour, composition and camera state.\n"
+        f"{extra}"
         f"Also read `brief.md` for the shot's intent and palette.\n\n"
         f"{plan_block}"
         f"{asset_line}"
@@ -191,7 +215,7 @@ def revision_prompt(m: Milestone, verdict: dict, candidate_rel: str) -> str:
 
 
 def finalize_prompt(shot, m: Milestone, priors: list[str] | None = None,
-                    script_rel: str | None = None) -> str:
+                    script_rel: str | None = None, journal_rel: str | None = None) -> str:
     script = script_rel or f"build/{m.id.lower()}.py"
     if priors:
         scope = (
@@ -209,6 +233,12 @@ def finalize_prompt(shot, m: Milestone, priors: list[str] | None = None,
         f"`bvfx_import_asset('<name>')` (the import_asset TOOL is NOT in scope inside the "
         f"script) — do not hardcode asset file paths. Use your Write tool. Write only that "
         f"file."
+        + (f"\n\nSTART FROM THE TRANSCRIPT, don't rewrite from memory: `{journal_rel}` "
+           f"holds every run_bpy call you made this session that succeeded, in order. "
+           f"Read it and PRUNE — drop probes, measurements and tweaks that were later "
+           f"superseded, keep the calls whose effect survives in the current scene, and "
+           f"merge them into clean ordered code. Re-deriving this from memory is how the "
+           f"script drifts from the scene you actually built." if journal_rel else "")
     )
 
 

@@ -7,6 +7,9 @@ qualified tool names for `ClaudeAgentOptions.allowed_tools`:
   - contact_sheet   tiled overview of a frame range, source frame numbers burned in
   - extract_frames  up to 4 exact frames at detail, with exposure/structure metrics
   - measure_ref     objective fingerprint of a ref still (plan targets, measured)
+  - ask_supervisor  a question only the client can settle; planning continues on your
+                    stated assumption and a human answers before the build starts
+  (video tools intentionally absent — the shot folder contains stills + brief only)
   - spike           one-shot headless Blender run to VERIFY a researched technique
 
 Scene truth comes from these tools, not from memory: choreography is read off the
@@ -313,9 +316,32 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
             blocks.append({"type": "image", "data": _b64(im), "mimeType": "image/jpeg"})
         return {"content": blocks, **({"is_error": True} if res["rc"] != 0 else {})}
 
+    # probe_video / contact_sheet / extract_frames are NOT registered: a real brief
+    # arrives as reference images plus prose, never the finished shot. They were dead
+    # tools whose doctrine ("SCENE READ — probe_video first") the planner still tried to
+    # follow, silently degrading to five stills for a 480-frame shot. Every unregistered
+    # tool is also schema text removed from every request.
+    @tool(
+        "ask_supervisor",
+        "Raise a question ONLY the client can settle — an ambiguity in the brief, a "
+        "contradiction between the brief and the stills, or a taste call that is theirs. "
+        "Does not block: state the assumption you will plan on and continue. A human "
+        "answers before the build starts, and the answer becomes law for every gate. "
+        "Do NOT use it for anything measure_ref or a spike could answer.",
+        {"type": "object",
+         "properties": {"question": {"type": "string"},
+                        "assumption": {"type": "string"},
+                        "why_it_matters": {"type": "string"}},
+         "required": ["question", "assumption"]},
+    )
+    async def ask_supervisor(args):
+        from .escalate import ask as _ask
+        qid = _ask(shot_folder, gate="PLAN", question=args["question"],
+                   assumption=args["assumption"],
+                   why_it_matters=args.get("why_it_matters", ""))
+        return _text(f"Recorded as Q{qid}. Continue planning on: {args['assumption']}")
+
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0",
-                                   tools=[probe_video, contact_sheet, extract_frames,
-                                          measure_ref, spike])
-    names = [f"mcp__{SERVER_NAME}__{t}" for t in
-             ("probe_video", "contact_sheet", "extract_frames", "measure_ref", "spike")]
+                                   tools=[measure_ref, spike, ask_supervisor])
+    names = [f"mcp__{SERVER_NAME}__{t}" for t in ("measure_ref", "spike", "ask_supervisor")]
     return server, names

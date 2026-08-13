@@ -14,7 +14,7 @@ The draft is kept alongside (`plan.draft.md` + its lab dir) as the audit trail.
 `--verify-only` skips pass 1 and audits an existing draft.
 
 Both passes run with the same tool surface the build harness deliberately lacks:
-scene forensics (probe/contact_sheet/extract/measure), the cookbook, the open
+still forensics (measure_ref), a Blender spike lab, the cookbook, the open
 web, and the one-shot headless Blender spike lab.
 
 Usage:

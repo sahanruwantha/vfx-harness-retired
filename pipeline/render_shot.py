@@ -32,7 +32,9 @@ def _chain_scripts(shot: Shot, upto: str | None = None) -> list[Path]:
         m = re.match(r"(\d+)", p.name)
         return (int(m.group(1)) if m else 10_000, p.name)
 
-    scripts = sorted(build_dir.glob("*.py"), key=num)
+    # NN_*.py only: build/ has held non-chain files (a gate journal) and pathlib's glob
+    # matches dotfiles, so "*.py" happily executed one as a build step mid-render.
+    scripts = sorted(build_dir.glob("[0-9]*.py"), key=num)
     if not scripts:
         raise FileNotFoundError(f"no gate scripts in {build_dir} — run the build stage first")
     if upto:
