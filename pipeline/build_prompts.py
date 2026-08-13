@@ -9,6 +9,8 @@ Two agents:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .ledger import Milestone
 
 _BUILDER_TMPL = """\
@@ -272,6 +274,12 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
                   motion_frames: list[int] | None = None,
                   scope: str | None = None) -> str:
     axes = "\n".join(f"  - {k}: {desc}" for k, desc in axes)
+    # ABSOLUTE paths. Given relative ones the critic resolves them against the repo root
+    # and misses every time — three redirects per scoring pass, and before the sandbox
+    # taught it the right location it simply scored a frame it had never seen.
+    _abs = lambda rel: str((Path(shot.folder) / rel).resolve()) if rel else rel
+    ref_p, cand_p = _abs(m.ref), _abs(candidate_rel)
+    motion_rel = _abs(motion_rel) if motion_rel else None
     motion = ""
     if motion_rel:
         motion = (
@@ -296,7 +304,8 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
     return (
         f"Stage {m.id} of shot '{shot.id}', frame {m.frame}.\n"
         f"TARGET STATE: {m.reads}\n\n"
-        f"Read the REFERENCE image `{m.ref}` and the CANDIDATE render `{candidate_rel}`.{motion}"
+        f"Read the REFERENCE image `{ref_p}` and the CANDIDATE render `{cand_p}`.\n"
+        f"Use those paths EXACTLY as given — they are absolute and correct.{motion}"
         f"{scope_block}"
         f"\nScore the candidate against the reference on these axes:\n"
         f"{axes}\n\n"

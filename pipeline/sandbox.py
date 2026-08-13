@@ -41,6 +41,21 @@ def _resolve(p: str, cwd: Path) -> Path:
     return (q if q.is_absolute() else cwd / q).resolve()
 
 
+def _relocate(target: Path, allowed: list[Path]) -> Path | None:
+    """The same file, inside an allowed root? Match on the longest tail that exists —
+    `<repo>/refs/f100.jpg` is almost always `<shot>/refs/f100.jpg` mistyped."""
+    # Drop the filesystem anchor: Path.joinpath("/", ...) RESETS to absolute and would
+    # hand back the very path we are refusing (/etc/passwd "relocated" to /etc/passwd).
+    parts = [s for s in target.parts if s not in ("/", "\\")]
+    for root in allowed:
+        for depth in range(1, min(4, len(parts)) + 1):
+            cand = (root.joinpath(*parts[-depth:])).resolve()
+            # and the result must genuinely land inside the root
+            if cand.exists() and (cand == root or root in cand.parents):
+                return cand
+    return None
+
+
 def path_sandbox(*roots: str | Path, cwd: str | Path | None = None) -> HookMatcher:
     """PreToolUse hook denying file tools that reach outside `roots`."""
     allowed = [Path(r).resolve() for r in roots]
@@ -58,6 +73,23 @@ def path_sandbox(*roots: str | Path, cwd: str | Path | None = None) -> HookMatch
             if any(target == a or a in target.parents for a in allowed):
                 continue
             where = ", ".join(str(a) for a in allowed)
+            # A WRONG PATH and a FORBIDDEN path are different problems and need
+            # different messages. The critic resolved `refs/f100_city.jpg` against the
+            # repo root, was told "outside your working directories", read that as "you
+            # lack permission", and scored the frame 0 without ever seeing it. Before the
+            # sandbox existed a bad path returned "file not found" and it self-corrected;
+            # a blunt denial turned a recoverable slip into a fabricated verdict.
+            elsewhere = _relocate(target, allowed)
+            if elsewhere:
+                log(f"⛔ sandbox: {tool} on {target} → redirect to {elsewhere}", 1)
+                return {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"WRONG PATH, not a permission problem: {target} does not exist. "
+                        f"The file you want is at {elsewhere} — retry with that exact "
+                        f"path. Relative paths resolve against {base}."),
+                }}
             log(f"⛔ sandbox: {tool} denied on {target} (outside {where})", 1)
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

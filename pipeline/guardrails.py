@@ -113,8 +113,13 @@ def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatche
             return {}
         try:
             from .metrics import compare, look_vector, report
-            latest = max((p for p in (folder / "renders").glob("*.png")),
-                         key=lambda p: p.stat().st_mtime, default=None)
+            # Build renders land in .artifacts/ (the warm session's dir); only the
+            # critic's stashed copies go to renders/. Looking in one place made this
+            # hook a silent no-op for the entire build phase — exactly when the
+            # feedback is worth having.
+            cands = [p for d in (".artifacts", "renders")
+                     for p in (folder / d).glob("*.png")]
+            latest = max(cands, key=lambda p: p.stat().st_mtime, default=None)
             if latest is None:
                 return {}
             d = compare(look_vector(str(latest)), look_vector(str(ref)))

@@ -42,7 +42,7 @@ from .build_prompts import (
     finalize_prompt,
     revision_prompt,
 )
-from .ledger import Ledger, Milestone, load_axes, load_gates
+from .ledger import Ledger, Milestone, load_axes, load_gates, plan_strips
 from .recipes import RECIPES_DIR, build_recipe_tools, log_recipe_use, recipe_index
 from .approach import review as approach_review, revision_from_review
 from .escalate import load as load_questions
@@ -551,21 +551,45 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     # The critic is a transient-failure choke point: an SDK hiccup here killed BR gate S
     # AFTER it had passed at 4.0 and written its script, throwing away ~20 minutes and a
     # good build. Scoring is idempotent, so just retry it.
+    want = {Path(candidate_rel).name, Path(m.ref).name}
     for attempt in range(1, 4):
         text = ""
+        seen: set[str] = set()
+        denied = 0
         try:
             async for message in query(prompt=prompt, options=_critic_options(shot, axes)):
+                for b in getattr(message, "content", []) or []:
+                    # which images did it ACTUALLY get? a Read that was denied or failed
+                    # returns no image, and a verdict formed without one is fabricated
+                    name = str(getattr(b, "input", {}) or {}).replace("\\", "/")
+                    for w in want:
+                        if w in name:
+                            seen.add(w)
+                    if getattr(b, "is_error", False):
+                        blob = _result_text(b)
+                        if "sandbox" in blob or "not exist" in blob or "No such" in blob:
+                            denied += 1
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             text += block.text
-            if text.strip():
+            missing = want - seen
+            if text.strip() and not missing:
                 break
-            log(f"critic returned nothing (attempt {attempt}/3) — retrying", 1)
+            why = ("read none of its images" if not seen else
+                   f"never read {sorted(missing)}") if missing else "returned nothing"
+            # A confident score from an agent that never saw the frame is worse than an
+            # error: G10 scored camera_framing=0 on a render it was denied three times.
+            log(f"critic {why} (attempt {attempt}/3, {denied} denied read(s)) — retrying", 1)
+            text = ""
         except Exception as e:
             if attempt == 3:
                 raise
             log(f"critic error (attempt {attempt}/3): {str(e)[:90]} — retrying", 1)
+    if not text.strip():
+        raise BlenderError(
+            f"critic could not read {candidate_rel} / {m.ref} after 3 attempts — refusing "
+            f"to record a verdict for a frame it never saw")
     verdict = _gate(_extract_json(text))
     scores = ", ".join(f"{k}={v}" for k, v in verdict.get("scores", {}).items())
     na = verdict.get("na_axes") or []
@@ -795,6 +819,8 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
         ledger.record_ablation(m, abl)
         if abl.get("moved"):
             log("ablation: " + " · ".join(f"{k}{v:+.0%}" for k, v in abl["moved"].items()), 1)
+        elif abl.get("note"):
+            log(f"ablation: {abl['note']}", 1)      # never silent — a skip is a result
         if not abl["ok"]:
             log(f"! {abl['note']}")
     if ok:
@@ -846,7 +872,8 @@ async def build_gate(shot: Shot, gate, session: BlenderSession, *,
         log(f"gate context → {p.relative_to(shot.folder)} (loaded every request)", 1)
     except Exception as e:
         log(f"gate context skipped: {str(e)[:70]}", 1)
-    return await build_unit(shot, gate.as_milestone(), gate.script,
+    strips = plan_strips(shot)
+    return await build_unit(shot, gate.as_milestone(strips), gate.script,
                             _prior_gate_paths(shot, gate), session,
                             rounds=rounds, verbose=verbose,
                             plan_excerpt=excerpt, scope=scope, gate=gate,
@@ -871,11 +898,23 @@ async def _ablate(shot: Shot, gate, prior_paths: list[Path], script_rel: str,
     try:
         session.run(_RESET); session.run(_preamble(shot))
         _run_prior_paths(session, prior_paths)
-        without = look_vector(session.render(frame=frame, mode="eevee", scale=0.4))
+        try:
+            without = look_vector(session.render(frame=frame, mode="eevee", scale=0.4))
+        except Exception as e:
+            # The FIRST gate has no priors, so "without it" is an empty scene with no
+            # camera. That is not a skip — it is the strongest possible result: nothing
+            # renders at all until this gate runs.
+            if "no camera" in str(e).lower():
+                session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
+                session.render(frame=frame, mode="eevee", scale=0.4)   # must now work
+                return {"ok": True, "frame": frame, "moved": {},
+                        "note": "scene cannot render at all without this gate "
+                                "(no camera) — it establishes the spine"}
+            raise
         session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
         with_ = look_vector(session.render(frame=frame, mode="eevee", scale=0.4))
     except Exception as e:
-        return {"ok": True, "note": f"ablation skipped: {str(e)[:70]}"}
+        return {"ok": True, "note": f"ablation INCONCLUSIVE: {str(e)[:70]}"}
     moved = {}
     for k, v in with_.items():
         base = without.get(k, 0.0)
@@ -937,7 +976,8 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
     # the pass count on server_to_hansa (8 -> 18).
     shots_ = []
     for frame, ref in judges:
-        m_i = m if len(judges) == 1 else gate.milestone_at(frame, ref)
+        m_i = (m if len(judges) == 1
+               else gate.milestone_at(frame, ref, plan_strips(shot)))
         render_rel = _stash_render(session, shot, m_i, f"canonical_f{frame}"
                                    if len(judges) > 1 else "canonical")
         shots_.append((frame, ref, m_i, render_rel))

@@ -85,13 +85,22 @@ class Gate:
     def judge_ref(self) -> str:
         return self.judges[0][1]
 
-    def as_milestone(self) -> "Milestone":
-        """The critic loop speaks Milestone — adapt the gate's PRIMARY judge point."""
-        return Milestone(self.id, self.judge_frame, self.judge_ref, self.reads)
+    def as_milestone(self, strips: dict[int, tuple[int, ...]] | None = None) -> "Milestone":
+        """The critic loop speaks Milestone — adapt the gate's PRIMARY judge point.
 
-    def milestone_at(self, frame: int, ref: str) -> "Milestone":
+        `strips` maps frame -> the plan's strip for the moment at that frame. Without it
+        the motion strip falls back to frame/+6/+12, which only looks FORWARD: barrel_roll
+        judged M2 at f20 (correctly near-black) while f16-f18 sat at mean ~57 with the
+        world-swap in plain view, and the plan's own [12,16,18,20,22] was never used.
+        """
+        return Milestone(self.id, self.judge_frame, self.judge_ref, self.reads,
+                         (strips or {}).get(self.judge_frame, ()))
+
+    def milestone_at(self, frame: int, ref: str,
+                     strips: dict[int, tuple[int, ...]] | None = None) -> "Milestone":
         """A Milestone for one of this gate's judge points (id tagged with the frame)."""
-        return Milestone(f"{self.id}@f{frame}", frame, ref, self.reads)
+        return Milestone(f"{self.id}@f{frame}", frame, ref, self.reads,
+                         (strips or {}).get(frame, ()))
 
 
 def load_gates(shot: Shot) -> dict[str, Gate]:
@@ -133,6 +142,14 @@ def load_milestones(shot: Shot) -> dict[str, Milestone]:
         out[m["id"]] = Milestone(m["id"], int(m["frame"]), m["ref"], m.get("reads", ""),
                                  tuple(m.get("strip", ())), m.get("fingerprint", ""))
     return dict(sorted(out.items(), key=lambda kv: out[kv[0]].frame))
+
+
+def plan_strips(shot: Shot) -> dict[int, tuple[int, ...]]:
+    """frame -> the plan's strip for the acceptance moment at that frame (if any)."""
+    try:
+        return {m.frame: m.strip for m in load_milestones(shot).values() if m.strip}
+    except Exception:
+        return {}
 
 
 def _now() -> str:

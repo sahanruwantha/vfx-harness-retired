@@ -180,8 +180,16 @@ class Delta:
 
     def __str__(self) -> str:
         arrow = "LOW" if self.rel < 0 else "HIGH"
+        # A percentage against a ~zero reference is meaningless and shouts over the real
+        # findings: the first live feedback read "halation_mid 1963 vs ref 0 (245375%
+        # HIGH)", burying detail_bot 77% LOW, which was the actual defect.
+        if abs(self.ref) < _FLOOR.get(self.key, 0.5):
+            return (f"{self.key} {self.got:g} vs ref ~0 "
+                    f"(reference has none of this — {self.hint})")
+        pct = min(abs(self.rel) * 100, 999)
+        cap = ">" if abs(self.rel) * 100 > 999 else ""
         return (f"{self.key} {self.got:g} vs ref {self.ref:g} "
-                f"({abs(self.rel) * 100:.0f}% {arrow} — {self.hint})")
+                f"({cap}{pct:.0f}% {arrow} — {self.hint})")
 
 
 def compare(cand: dict, ref: dict, spec: dict = SPEC) -> list[Delta]:
@@ -201,7 +209,7 @@ def compare(cand: dict, ref: dict, spec: dict = SPEC) -> list[Delta]:
         rel = (c - r) / max(abs(r), floor)
         if abs(rel) > tol:
             out.append(Delta(key, c, r, rel, blocking, hint))
-    return sorted(out, key=lambda d: (not d.blocking, -abs(d.rel)))
+    return sorted(out, key=lambda d: (not d.blocking, -min(abs(d.rel), 9.99)))
 
 
 def report(deltas: list[Delta], limit: int = 6) -> str:
