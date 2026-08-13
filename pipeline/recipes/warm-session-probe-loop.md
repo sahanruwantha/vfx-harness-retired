@@ -5,7 +5,7 @@ blender: "5.2+"
 when: "you need to measure a render many times inside one warm session while tuning — and want to know which node actually drives a metric before you spend turns tuning it"
 verified: true
 ---
-Tuning a gate against a reference means rendering-and-measuring dozens of times. Two things
+Tuning a layer against a reference means rendering-and-measuring dozens of times. Two things
 make that cheap: define the measurement helper ONCE and persist it across separate `run_bpy`
 calls, and ABLATE before you tune so you only tune sockets that actually move the metric.
 
@@ -26,7 +26,7 @@ GOTCHAS:
   `taa_render_samples`, `filepath`, and `file_format`. A probe that leaves the scene at 25%
   silently poisons the next real render, and that is very hard to spot in a metric.
 - **`file_format` is stills-only in 5.x** — `'FFMPEG'` is NOT in the enum (see `blender-5-api`).
-  Probes write `'PNG'`; video muxing is the harness's job, not a gate's.
+  Probes write `'PNG'`; video muxing is the harness's job, not a layer's.
 - Load the probe image with `check_existing=False` and `bpy.data.images.remove(img)` when done,
   or repeated probes accumulate datablocks named `_m.png.001`, `.002`, … and you start
   measuring a stale one.
@@ -80,7 +80,7 @@ barely move, the metric is being carried by something else and every turn spent 
 socket is wasted — or worse, you crush a value far from the reference chasing a number the
 socket cannot reach.
 
-Record confirmed no-ops in the script docstring and pin them off explicitly, so the next gate
+Record confirmed no-ops in the script docstring and pin them off explicitly, so the next layer
 does not "fix" them back and re-lose the same turns.
 
 ```python

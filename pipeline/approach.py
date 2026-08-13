@@ -6,7 +6,7 @@ The build loop could only ever tune. On a plateau it gave up:
         log("no gain over last round — stopping revisions"); break
 
 That is precisely the moment a craftsperson stops adjusting values and changes TECHNIQUE.
-barrel_roll gate G scored 2.83 twice, from two independent builds, with city_texture
+barrel_roll layer G scored 2.83 twice, from two independent builds, with city_texture
 pinned at 2 in every round of ~30 — nobody ever asked whether instanced boxes with a
 regular window grid was the wrong way to build a city. It was. The answer existed
 (night-city-field), and no amount of emission tuning could reach it.
@@ -80,22 +80,22 @@ def _stuck_axes(verdict: dict, owns: tuple) -> list[str]:
     return sorted(owned, key=lambda k: scores[k])[:3]
 
 
-async def review(shot, gate, render_rel: str, verdict: dict, script_rel: str,
+async def review(shot, layer, render_rel: str, verdict: dict, script_rel: str,
                  metric_report: str = "", verbose: bool = True) -> dict:
     """-> {"replace": bool, "text": str}. Empty text means the review was unavailable."""
-    stuck = _stuck_axes(verdict, tuple(gate.owns))
+    stuck = _stuck_axes(verdict, tuple(layer.owns))
     hints = {h["name"] for a in stuck for h in search_recipes(a.replace("_", " "), k=2)}
     script = shot.folder / script_rel
     sc = verdict.get("scores", {})
     stuck_line = ", ".join(f"{k}={sc.get(k)}" for k in stuck)
     prompt = (
-        f"Gate {gate.id} — {gate.title}. It has stopped improving.\n"
-        f"Scope: {gate.reads}\n"
-        f"Axes it owns: {', '.join(gate.owns) or '(none declared)'}\n"
+        f"Layer {layer.id} — {layer.title}. It has stopped improving.\n"
+        f"Scope: {layer.reads}\n"
+        f"Axes it owns: {', '.join(layer.owns) or '(none declared)'}\n"
         f"Stuck lowest: {stuck_line}\n"
         f"Critic's issues: {'; '.join(verdict.get('issues', [])[:3])}\n\n"
         f"{metric_report}\n\n"
-        f"Compare the render `{render_rel}` against the reference `{gate.judge_ref}`.\n"
+        f"Compare the render `{render_rel}` against the reference `{layer.judge_ref}`.\n"
         + (f"The current approach is in `{script_rel}` — read it.\n" if script.is_file() else
            "No script written yet; judge the approach from the render.\n")
         + (f"Possibly relevant recipes: {sorted(hints)}\n" if hints else "")
@@ -117,7 +117,7 @@ async def review(shot, gate, render_rel: str, verdict: dict, script_rel: str,
     return {"replace": replace, "text": text.strip()}
 
 
-def revision_from_review(gate, review_out: dict) -> str:
+def revision_from_review(layer, review_out: dict) -> str:
     """Turn the review into the builder's next instruction."""
     if review_out["replace"]:
         return (

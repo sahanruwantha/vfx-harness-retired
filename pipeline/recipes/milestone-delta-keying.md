@@ -74,7 +74,7 @@ def _channelbag_fcurves(ad):
 
 def linearise(ad):
     """Re-runnable deltas: bezier handles overshoot a fast ramp into nonsense, and the
-    overshoot differs per re-run, so a delta gate stops being idempotent. Booleans must
+    overshoot differs per re-run, so a delta layer stops being idempotent. Booleans must
     be CONSTANT or they render half-hidden on the in-between frames."""
     for fc in _channelbag_fcurves(ad):
         const = "hide_render" in fc.data_path
@@ -106,7 +106,7 @@ set_keys(ad, EM_STR, 0, {340.0: 22.0, 372.0: 44.0, 462.0: 32.0})
 set_keys(ad, EM_COL, 1, {340.0: 0.58, 374.0: 0.74, 462.0: 0.56})
 ```
 
-**Settle assertion.** A delta gate that retimes curves can leave the last beat drifting, which
+**Settle assertion.** A delta layer that retimes curves can leave the last beat drifting, which
 fails review even with perfect framing. Assert it instead of trusting it — sample the pose and
 every value you keyed across the hold and require byte-equality:
 

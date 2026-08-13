@@ -33,7 +33,7 @@ GOTCHAS:
 - **Soft shadows need samples.** A widened spot pool at `taa_render_samples = 8` is speckle,
   not shadow. Go to ~24 plus shadow rays. Guard the shadow attrs with `hasattr`.
 - Widening a spot to kill its hard elliptical rim: change `spot_size`/`spot_blend` ONLY, keep
-  energy and position. That moves hero exposure <5%, so an earlier gate's judged look survives.
+  energy and position. That moves hero exposure <5%, so an earlier layer's judged look survives.
 
 ```python
 import bpy

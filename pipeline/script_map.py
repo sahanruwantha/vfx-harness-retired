@@ -93,7 +93,7 @@ def outline(path: str | Path, max_names: int = 8) -> str:
         for name, ls in sorted(created.items())[:max_names * 4]:
             out.append(f"  {name:38s} L{','.join(map(str, ls[:6]))}")
     if touched:
-        out.append("\nREFERENCED FROM EARLIER GATES (name → lines)")
+        out.append("\nREFERENCED FROM EARLIER LAYERS (name → lines)")
         for name, ls in sorted(touched.items())[:max_names * 2]:
             out.append(f"  {name:38s} L{','.join(map(str, ls[:6]))}")
     return "\n".join(out)

@@ -1,14 +1,14 @@
-"""Stage 3 — the build + critic loop for one PLAN GATE.
+"""Stage 3 — the build + critic loop for one PLAN LAYER.
 
 A BUILD agent drives a warm Blender session (run_bpy / render_*) to implement one
-gate from plan.md (its tickets are the spec), iterating against a reference-scored
-CRITIC until the gate's judge frame clears the bar. On pass it persists the gate's
-deterministic delta script (build/NN_<gate>.py); the harness re-runs the whole chain
+layer from plan.md (its tickets are the spec), iterating against a reference-scored
+CRITIC until the layer's judge frame clears the bar. On pass it persists the layer's
+deterministic delta script (build/NN_<layer>.py); the harness re-runs the whole chain
 from an empty scene to confirm it reproduces — the scripts, not the live scene, are
 the artifact of record.
 
 Usage:
-    python -m pipeline.build_agent <shot-folder> --gate <id> [--rounds 2]
+    python -m pipeline.build_agent <shot-folder> --layer <id> [--rounds 2]
 """
 
 from __future__ import annotations
@@ -42,17 +42,17 @@ from .build_prompts import (
     finalize_prompt,
     revision_prompt,
 )
-from .ledger import Ledger, Milestone, load_axes, load_gates, plan_strips
+from .ledger import Ledger, Milestone, load_axes, load_layers, plan_strips
 from .recipes import RECIPES_DIR, build_recipe_tools, log_recipe_use, recipe_index
 from .approach import review as approach_review, revision_from_review
 from .escalate import load as load_questions
 from .guardrails import builder_hooks
 from .sandbox import sandbox_hooks
-from .shot_context import clear_gate_context, write_gate_context
+from .shot_context import clear_layer_context, write_layer_context
 
 MODEL = "claude-opus-5"
 # The critic scores renders — a verification job, like the plan's pass-2 audit — and it
-# runs 3-4x per gate to the builder's one session, so it dominates gate cost.
+# runs 3-4x per layer to the builder's one session, so it dominates layer cost.
 CRITIC_MODEL = "claude-fable-5"
 
 AXES_SYSTEM = """\
@@ -74,7 +74,7 @@ recipe already exists, improve it instead of duplicating. If nothing is general 
 write nothing and say so.
 """
 
-# Gate: the render passes when every axis clears PASS_MIN and the mean clears
+# Layer: the render passes when every axis clears PASS_MIN and the mean clears
 # PASS_MEAN (both on the critic's 0–5 scale). Calibrated from data: across 4 builds the
 # best/canonical band is 3.1-3.3 with ~±0.15 critic noise and coupled global axes that
 # REDISTRIBUTE score under revision — 3.3 sat inside that band and was missed by ≤0.16
@@ -82,7 +82,7 @@ write nothing and say so.
 PASS_MIN = 2
 PASS_MEAN = 3.1
 
-# Circuit breaker. Turns are a poor proxy for what we actually care about — a gate
+# Circuit breaker. Turns are a poor proxy for what we actually care about — a layer
 # needing 200 cheap turns is fine, one burning $40 in 40 turns is not — so cap SPEND
 # and leave turns as loose headroom. Observed: BR C $10.69 passing, BR G $15.95 while
 # truncated at 120 turns. Both default to unlimited in the SDK.
@@ -102,79 +102,79 @@ class BuildTruncated(RuntimeError):
     """The builder ran out of budget mid-build — no verdict is meaningful."""
 
 
-def _prior_gate_paths(shot: Shot, gate) -> list[Path]:
-    """Gate scripts that must run before this gate: all EXISTING build/NN_*.py with a
-    lower numeric prefix, in order. Gates build on each other like layers."""
+def _prior_layer_paths(shot: Shot, layer) -> list[Path]:
+    """Layer scripts that must run before this layer: all EXISTING build/NN_*.py with a
+    lower numeric prefix, in order. Each layer stacks on the ones before it."""
     def num(p: Path) -> int:
         m = re.match(r"(\d+)", p.name)
         return int(m.group(1)) if m else 10_000
-    mine = num(Path(gate.script))
+    mine = num(Path(layer.script))
     build_dir = shot.folder / "build"
     if not build_dir.is_dir():
         return []
     found = sorted((p for p in build_dir.glob("[0-9]*.py") if num(p) < mine), key=num)
     # The build dir is a glob, the ledger is the record of what was ACCEPTED. An
-    # interrupted gate leaves a script that would silently join the chain (a killed
-    # gate S left an un-critiqued 40_seam.py queued for R and F). Cross-check.
+    # interrupted layer leaves a script that would silently join the chain (a killed
+    # seam layer left an un-critiqued 40_seam.py queued for the two after it).
     try:
-        ledger, gates = Ledger(shot), load_gates(shot)
+        ledger, layers = Ledger(shot), load_layers(shot)
     except Exception:
         return found
-    by_script = {Path(g.script).name: g for g in gates.values()}
+    by_script = {Path(g.script).name: g for g in layers.values()}
     keep = []
     for p in found:
         g = by_script.get(p.name)
         if g is None:
-            log(f"! {p.name} matches no gate in gates.json — SKIPPING (orphan)")
+            log(f"! {p.name} matches no layer in layers.json — SKIPPING (orphan)")
             continue
         st = ledger.status(g.as_milestone())
         if st != "passed":
-            log(f"! {p.name} (gate {g.id}) is '{st}', not passed — chaining it anyway, "
+            log(f"! {p.name} (layer {g.id}) is '{st}', not passed — chaining it anyway, "
                 f"but its content was never accepted")
         keep.append(p)
     return keep
 
 
 class ChainBroken(RuntimeError):
-    """A prior gate script no longer composes — the chain must be repaired first."""
+    """A prior layer script no longer composes — the chain must be repaired first."""
 
 
 def _run_prior_paths(session: BlenderSession, paths: list[Path]) -> list[str]:
-    """Replay the accepted chain. A failure here is NOT this gate's fault: gate scripts
+    """Replay the accepted chain. A failure here is NOT this layer's fault: layer scripts
     reference each other's objects by name (30_purple.py does D.objects['tower_dot']
-    from 20_green.py), so re-running an early gate can invalidate every later one and
+    from 20_green.py), so re-running an early layer can invalidate every later one and
     the break only surfaces now. Say so plainly instead of leaking a raw bpy KeyError."""
     names = []
     for p in paths:
-        log(f"running prior gate script {p.name}")
+        log(f"running prior layer script {p.name}")
         try:
             session.run(p.read_text(encoding="utf-8"))
         except BlenderError as e:
             first = str(e).strip().splitlines()[0]
             raise ChainBroken(
-                f"{p.name} no longer composes onto the scene built by the gates before "
-                f"it: {first}\n  The chain is broken, not this gate. Re-run {p.name}'s "
-                f"gate (or restore the prior script it was authored against) before "
+                f"{p.name} no longer composes onto the scene built by the layers before "
+                f"it: {first}\n  The chain is broken, not this layer. Re-run {p.name}'s "
+                f"layer (or restore the prior script it was authored against) before "
                 f"building further.") from e
         names.append(p.name)
     return names
 
 
-def _plan_gate_excerpt(shot: Shot, gate) -> str:
-    """The gate's own section of plan.md — its tickets ARE the build instructions."""
+def _plan_layer_excerpt(shot: Shot, layer) -> str:
+    """The layer's own section of plan.md — its tickets ARE the build instructions."""
     plan = shot.folder / "plan.md"
     if not plan.is_file():
         return ""
     text = plan.read_text(encoding="utf-8")
-    script_name = Path(gate.script).name
+    script_name = Path(layer.script).name
     lines = text.splitlines()
-    id_pat = re.compile(rf"(?:GATE\s+{re.escape(gate.id)}\b|\b{re.escape(gate.id)}\s*·)")
+    id_pat = re.compile(rf"(?:LAYER\s+{re.escape(layer.id)}\b|\b{re.escape(layer.id)}\s*·)")
     start = None
     for i, ln in enumerate(lines):
         if not ln.startswith("### "):
             continue
-        # script name is unambiguous; gate id needs word-ish boundaries ("G" ⊂ "GATE L")
-        if script_name in ln or id_pat.search(ln) or (gate.title and gate.title in ln):
+        # script name is unambiguous; a bare id needs word-ish boundaries
+        if script_name in ln or id_pat.search(ln) or (layer.title and layer.title in ln):
             start = i
             break
     if start is None:
@@ -228,7 +228,7 @@ def _builder_options(shot: Shot, mcp_servers: dict, tool_names: list[str],
                           "BashOutput"],
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,  # renders/read-images can exceed the 1MB default
-        # "project" loads shots/<id>/CLAUDE.md on EVERY request, so the gate contract
+        # "project" loads shots/<id>/CLAUDE.md on EVERY request, so the layer contract
         # survives compaction — the kickoff message does not.
         setting_sources=["project"],
         max_turns=MAX_TURNS,      # headroom only — MAX_BUDGET_USD is the real stop
@@ -307,8 +307,8 @@ async def ensure_axes(shot: Shot, verbose: bool = True) -> list[tuple[str, str]]
     """The critic rubric for this shot.
 
     Written by the PLAN stage (critic_axes.json): the planner has the deepest scene read
-    AND knows the gate breakdown, so it is the only stage that can guarantee every axis
-    has an owning gate. The derive-from-refs path below is a fallback for shots planned
+    AND knows the layer breakdown, so it is the only stage that can guarantee every axis
+    has an owning layer. The derive-from-refs path below is a fallback for shots planned
     before that, and cannot produce `owns`.
     """
     path = shot.folder / "critic_axes.json"
@@ -337,33 +337,33 @@ async def ensure_axes(shot: Shot, verbose: bool = True) -> list[tuple[str, str]]
 
 
 def _warn_unowned_axes(shot: Shot, axes: list[tuple[str, str]]) -> None:
-    """Audit the axis↔gate mapping in BOTH directions — each catches a real bug we hit.
+    """Audit the axis↔layer mapping in BOTH directions — each catches a real bug we hit.
 
-    axis with no gate  → unearnable: nobody can ever score it.
-    gate with no axis  → unjudgeable: the gate is scored purely on OTHER gates' work,
+    axis with no layer  → unearnable: nobody can ever score it.
+    layer with no axis  → unjudgeable: the layer is scored purely on OTHER layers' work,
                          so its own contribution is invisible and its revisions polish
                          someone else's layer (SH G60 "ENVIRONMENT" scored only on
                          typography and palette until `environment_depth` was added).
 
-    An axis owned only by the LAST gate is fine and deliberately NOT flagged: with
-    `owns` in force the earlier gates simply aren't judged on it, which is the point.
+    An axis owned only by the LAST layer is fine and deliberately NOT flagged: with
+    `owns` in force the earlier layers simply aren't judged on it, which is the point.
     """
     try:
-        gates = load_gates(shot)
+        layers = load_layers(shot)
     except FileNotFoundError:
         return
-    if not any(g.owns for g in gates.values()):
+    if not any(g.owns for g in layers.values()):
         return  # plan predates ownership — the scope block still narrows the rubric
     keys = {k for k, _ in axes}
-    orphan = sorted(keys - {a for g in gates.values() for a in g.owns})
+    orphan = sorted(keys - {a for g in layers.values() for a in g.owns})
     if orphan:
-        log(f"! axes owned by NO gate — unearnable: {orphan}")
-    mute = sorted(g.id for g in gates.values() if not g.owns)
+        log(f"! axes owned by NO layer — unearnable: {orphan}")
+    mute = sorted(g.id for g in layers.values() if not g.owns)
     if mute:
-        log(f"! gates owning NO axis — judged only on other gates' work: {mute}")
-    unknown = sorted({a for g in gates.values() for a in g.owns} - keys)
+        log(f"! layers owning NO axis — judged only on other layers' work: {mute}")
+    unknown = sorted({a for g in layers.values() for a in g.owns} - keys)
     if unknown:
-        log(f"! gates claim axes not in the rubric: {unknown}")
+        log(f"! layers claim axes not in the rubric: {unknown}")
 
 
 async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True,
@@ -395,7 +395,7 @@ async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True,
         permission_mode="bypassPermissions", max_buffer_size=32 * 1024 * 1024,
         setting_sources=[], max_turns=16, effort="medium",
     )
-    parts = [f"Gate {m.id} of shot '{shot.id}' just finished. Existing recipes are in "
+    parts = [f"Layer {m.id} of shot '{shot.id}' just finished. Existing recipes are in "
              f"`{RECIPES_DIR}` — improve one rather than duplicating it."]
     if script_path.is_file():
         parts.append(f"It PASSED: read its build script `{script_path}` and harvest 0-2 "
@@ -425,7 +425,7 @@ _ERRORS: list[str] = []
 def _collect_errors(message) -> None:
     """Reuse log's extractor: a tool result's content may be a str, a list of dicts, or a
     list of BLOCK OBJECTS. My first version only handled the first two, so object-shaped
-    results extracted to "" and were dropped — it collected 1 of 2 errors on BR gate S."""
+    results extracted to "" and were dropped — it collected 1 of 2 errors on BR layer S."""
     for b in getattr(message, "content", []) or []:
         if not getattr(b, "is_error", False):
             continue
@@ -440,7 +440,7 @@ async def _drain_once(client: ClaudeSDKClient, verbose: bool) -> dict:
 
     The SDK signals a truncated loop with subtype='error_max_turns' on the final
     ResultMessage. Discarding it (as this used to) means a build that was cut off
-    mid-scene is indistinguishable from one that finished — BR gate G was critiqued,
+    mid-scene is indistinguishable from one that finished — BR layer G was critiqued,
     scored and recorded 'failed' while half-built. Always look at the subtype.
     """
     info = {"subtype": "unknown", "turns": 0, "cost": 0.0, "session_id": None}
@@ -476,10 +476,10 @@ async def _drain(client: ClaudeSDKClient, verbose: bool, *,
             f"continuing {i + 1}/{continues}")
         await client.query(
             f"You have hit a turn checkpoint: {info['turns']} turns and "
-            f"${info['cost']:.2f} spent on this gate so far, out of a ${MAX_BUDGET_USD:.0f} "
+            f"${info['cost']:.2f} spent on this layer so far, out of a ${MAX_BUDGET_USD:.0f} "
             f"budget. You have NOT been reset — the scene and your context are intact. "
             f"Continue from exactly where you stopped, but start converging: finish the "
-            f"work in progress and prefer landing the gate over further refinement.")
+            f"work in progress and prefer landing the layer over further refinement.")
         info = await _drain_once(client, verbose)
     if info["subtype"] == "error_max_turns":
         log(f"! builder still truncated after {continues} continuations "
@@ -499,10 +499,10 @@ def _extract_json(text: str) -> dict:
     raise ValueError("critic returned no parseable JSON scorecard")
 
 
-def _gate(verdict: dict) -> dict:
+def _verdict(verdict: dict) -> dict:
     """Compute pass/mean from the critic's IN-SCOPE axis scores. A scaffolding stage
     marks axes a later stage delivers as "n/a" — absent-by-design must not drag the
-    mean (judging gate L on emission scored it 1.25 while its own axis scored 4)."""
+    mean (judging layer L on emission scored it 1.25 while its own axis scored 4)."""
     raw = verdict.get("scores", {})
     scores, na = {}, []
     for k, v in raw.items():
@@ -519,8 +519,8 @@ def _gate(verdict: dict) -> dict:
     verdict["na_axes"] = sorted(na)
     # Thresholds must be GRANULARITY-AWARE. mean = sum/n, so one axis point of judge
     # noise moves the mean by 1/n: 0.125 across 8 axes but 1.0 across one. A scoped
-    # gate with 1-2 in-scope axes must not face a harsher bar than a full acceptance
-    # gate (PASS_MEAN 3.1 on a single axis silently demands a 4).
+    # layer with 1-2 in-scope axes must not face a harsher bar than a full acceptance
+    # layer (PASS_MEAN 3.1 on a single axis silently demands a 4).
     if n and n <= 2:
         verdict["pass"] = min(scores.values()) >= 3
     else:
@@ -548,7 +548,7 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     log(f"critic[{CRITIC_MODEL}]: scoring {candidate_rel} vs {m.ref}"
         + (f" (+motion {motion_frames})" if motion_rel else ""), 1)
     prompt = critic_prompt(shot, m, candidate_rel, axes, motion_rel, motion_frames, scope)
-    # The critic is a transient-failure choke point: an SDK hiccup here killed BR gate S
+    # The critic is a transient-failure choke point: an SDK hiccup here killed BR layer S
     # AFTER it had passed at 4.0 and written its script, throwing away ~20 minutes and a
     # good build. Scoring is idempotent, so just retry it.
     want = {Path(candidate_rel).name, Path(m.ref).name}
@@ -590,7 +590,7 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
         raise BlenderError(
             f"critic could not read {candidate_rel} / {m.ref} after 3 attempts — refusing "
             f"to record a verdict for a frame it never saw")
-    verdict = _gate(_extract_json(text))
+    verdict = _verdict(_extract_json(text))
     scores = ", ".join(f"{k}={v}" for k, v in verdict.get("scores", {}).items())
     na = verdict.get("na_axes") or []
     log(f"critic: {scores} | mean {verdict['mean']} (over {len(verdict.get('scored_axes', []))} "
@@ -660,16 +660,16 @@ def _stash_motion_strip(session: BlenderSession, shot: Shot, m: Milestone, tag: 
 async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: list[Path],
                      session: BlenderSession, *, rounds: int = 2, verbose: bool = True,
                      plan_excerpt: str = "", scope: str | None = None,
-                     gate=None, resume_ok: bool = False) -> Ledger:
+                     layer=None, resume_ok: bool = False) -> Ledger:
     """The build+critic engine for ONE unit of work. Iteration is judged at m.frame vs
-    m.ref; the canonical check covers every frame `gate` claims (see _verify_script)."""
+    m.ref; the canonical check covers every frame `layer` claims (see _verify_script)."""
     ledger = Ledger(shot)
     ledger.begin(m)
 
     axes = await ensure_axes(shot, verbose)  # per-shot critic rubric (from the plan)
     _warn_unowned_axes(shot, axes)
     bserver, bnames = build_blender_tools(session, assets_dir=shot.folder / "assets",
-                                          shot_dir=shot.folder, gate_id=getattr(gate, 'id', m.id))
+                                          shot_dir=shot.folder, layer_id=getattr(layer, 'id', m.id))
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: log_recipe_use(shot.folder, names))
     mcp_servers = {"blender": bserver, "recipes": rserver}
@@ -680,7 +680,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     session.run(_preamble(shot))
     resume = ledger.get_resume(m) if resume_ok else None
     if resume:
-        log(f"↻ resuming gate {m.id} from round {resume['round']}: restoring scene "
+        log(f"↻ resuming layer {m.id} from round {resume['round']}: restoring scene "
             f"+ replaying journal[{resume['journal_index']}:]")
         session.restore(resume["blend"])
         try:
@@ -693,14 +693,14 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
         priors = _run_prior_paths(session, prior_paths)
 
     passed = False
-    reviewed = False          # one approach review per gate; a second plateau stops
+    reviewed = False          # one approach review per layer; a second plateau stops
     best = {"mean": -1.0, "round": 0, "render": None, "verdict": None}
     prev_mean = None
     opts = _builder_options(shot, mcp_servers, tool_names, axes, ref_rel=m.ref)
     if resume and resume.get("session_id"):
         opts.resume = resume["session_id"]      # SDK restores the CONVERSATION
     async with ClaudeSDKClient(options=opts) as builder:
-        also = [(f, r) for f, r in (gate.judges if gate else ()) if f != m.frame]
+        also = [(f, r) for f, r in (layer.judges if layer else ()) if f != m.frame]
         await builder.query(builder_kickoff(shot, m, priors=priors,
                                             script_rel=script_rel,
                                             plan_excerpt=plan_excerpt,
@@ -713,8 +713,8 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                 f"${info['cost']:.2f}) — not critiquing an unfinished scene")
             ledger.mark(m, "truncated", best=None)
             raise BuildTruncated(
-                f"gate {m.id}: {info['subtype']} after {info['turns']} turns "
-                f"(${info['cost']:.2f}); raise MAX_BUDGET_USD or split the gate")
+                f"layer {m.id}: {info['subtype']} after {info['turns']} turns "
+                f"(${info['cost']:.2f}); raise MAX_BUDGET_USD or split the layer")
 
         for rnd in range(1, rounds + 1):
             log(f"── round {rnd}/{rounds} — rendering + critiquing frame {m.frame} ──")
@@ -722,7 +722,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             render_rel = _stash_render(session, shot, m, f"r{rnd}")
             snap = session.snapshot(f"{m.id}_r{rnd}")  # {blend, journal_index}
             # Resume point: the SDK restores the CONVERSATION, the snapshot+journal
-            # restores the SCENE. Both are needed or a resumed gate reasons about a
+            # restores the SCENE. Both are needed or a resumed layer reasons about a
             # world that no longer exists.
             ledger.set_resume(m, session_id=last_info.get("session_id"),
                               blend=snap["blend"], journal_index=snap["journal_index"],
@@ -739,24 +739,24 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                 passed = True
                 break
             # A plateau is where a professional CHANGES TECHNIQUE, not where they stop.
-            # This used to `break`: gate G tuned to 2.83 twice while city_texture sat at
+            # This used to `break`: layer G tuned to 2.83 twice while city_texture sat at
             # 2 in every round, because nothing ever asked if instanced boxes with a
             # regular window grid could reach the reference at all. They cannot.
             plateaued = prev_mean is not None and verdict["mean"] <= prev_mean
             prev_mean = verdict["mean"]
             if rnd >= rounds:
                 break
-            if plateaued and gate is not None and not reviewed:
+            if plateaued and layer is not None and not reviewed:
                 reviewed = True
                 log(f"plateau ({verdict['mean']} ≤ prev) — escalating to APPROACH REVIEW")
-                out = await approach_review(shot, gate, render_rel, verdict, script_rel,
+                out = await approach_review(shot, layer, render_rel, verdict, script_rel,
                                             metric_report=_metric_report(shot, render_rel,
-                                                                         gate.judge_ref),
+                                                                         layer.judge_ref),
                                             verbose=verbose)
                 if not out["text"]:
                     break                       # review unavailable: old behaviour
                 ledger.record_review(m, rnd, out)
-                await builder.query(revision_from_review(gate, out))
+                await builder.query(revision_from_review(layer, out))
             elif plateaued:
                 log(f"plateau again after review ({verdict['mean']}) — stopping revisions")
                 break
@@ -766,7 +766,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
         log(f"best round: r{best['round']} mean {best['mean']} → renders/{m.id}_best.png")
 
         # finalize from the BEST round's scene, not the last one — a regressed revision
-        # must not be what gets written into build/<m>.py (cost build8 the gate).
+        # must not be what gets written into build/<m>.py (cost build8 the layer).
         if best.get("snap") and best["round"] != rnd:
             log(f"restoring best round r{best['round']} scene state before finalize")
             session.restore(best["snap"]["blend"])
@@ -799,23 +799,23 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                 f"{script_rel} may be incomplete; not scoring it")
             ledger.mark(m, "truncated", best=best)
             raise BuildTruncated(
-                f"gate {m.id}: finalize hit {fin['subtype']} (${fin['cost']:.2f}); "
-                f"raise MAX_BUDGET_USD or split the gate")
+                f"layer {m.id}: finalize hit {fin['subtype']} (${fin['cost']:.2f}); "
+                f"raise MAX_BUDGET_USD or split the layer")
 
     # Confirm the written script REPRODUCES the unit from an empty scene. This is a
-    # reproduction check, NOT a second quality gate — with ~±0.15 judge noise, requiring
-    # two consecutive gate-clears at the boundary is double jeopardy (cost M3 a pass).
+    # reproduction check, NOT a second quality layer — with ~±0.15 judge noise, requiring
+    # two consecutive layer-clears at the boundary is double jeopardy (cost M3 a pass).
     canonical = await _verify_script(shot, m, script_rel, prior_paths, session, axes,
                                      ledger, verbose, live_best_mean=best["mean"],
-                                     scope=scope, gate=gate)
+                                     scope=scope, layer=layer)
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with
     # finalize-from-best-snapshot the clean rebuild often outscores every live round:
     # SH G20 rounds 2.67/3.00, canonical 3.67 — previously recorded as a failure).
     ok = canonical == "passed" or (passed and canonical == "reproduced")
     ledger.mark(m, "passed" if ok else "failed", best=best)
-    if ok and gate is not None:
-        abl = await _ablate(shot, gate, prior_paths, script_rel, session)
+    if ok and layer is not None:
+        abl = await _ablate(shot, layer, prior_paths, script_rel, session)
         ledger.record_ablation(m, abl)
         if abl.get("moved"):
             log("ablation: " + " · ".join(f"{k}{v:+.0%}" for k, v in abl["moved"].items()), 1)
@@ -837,30 +837,30 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     return ledger
 
 
-async def build_gate(shot: Shot, gate, session: BlenderSession, *,
+async def build_layer(shot: Shot, layer, session: BlenderSession, *,
                      rounds: int = 2, verbose: bool = True,
                      resume_ok: bool = False) -> Ledger:
-    """Build one PLAN GATE: chain lower-numbered gate scripts, implement this gate's
+    """Build one PLAN LAYER: chain lower-numbered layer scripts, implement this layer's
     tickets (its plan.md section is the spec), judge at its primary frame/ref."""
-    excerpt = _plan_gate_excerpt(shot, gate)
-    # EVERY gate is one layer of many, so every gate gets a scope block. Judging any
-    # gate on the whole rubric scores it for work later gates do (BR gate G: floor on
-    # emissive_finish, which gate F delivers 4 gates later — 2.83 ceiling in two
-    # independent builds) and, worse, penalises elements a gate correctly REMOVED
+    excerpt = _plan_layer_excerpt(shot, layer)
+    # EVERY layer is one layer of many, so every layer gets a scope block. Judging any
+    # layer on the whole rubric scores it for work later layers do (BR layer G: floor on
+    # emissive_finish, which layer F delivers 4 layers later — 2.83 ceiling in two
+    # independent builds) and, worse, penalises elements a layer correctly REMOVED
     # (SH G50 @ f300 scored typography_legibility=0; the type hides at f197 by design).
     done = "\n".join(ln for ln in excerpt.splitlines()
                       if ln.startswith(("**Scope", "**Judge artifact", "**Done")))
-    owned = (f"  THIS GATE OWNS: {', '.join(gate.owns)}.\n"
+    owned = (f"  THIS LAYER OWNS: {', '.join(layer.owns)}.\n"
              f"  Score ONLY those axes; every other axis is \"n/a\"."
-             if gate.owns else
-             f"  Score only what THIS gate's scope covers; everything else is \"n/a\".")
-    scope = (f"  Gate {gate.id} — {gate.title} (one build stage of many; later gates "
-             f"add the rest of the look).\n  {gate.reads}\n{done}\n{owned}\n"
+             if layer.owns else
+             f"  Score only what THIS layer's scope covers; everything else is \"n/a\".")
+    scope = (f"  Layer {layer.id} — {layer.title} (one build stage of many; later layers "
+             f"add the rest of the look).\n  {layer.reads}\n{done}\n{owned}\n"
              f"  Elements that are correctly ABSENT at this frame (they appear or "
-             f"disappear in other gates) are \"n/a\", never 0.").strip()
-    if len(gate.judges) > 1:
-        log(f"gate {gate.id} answers for {len(gate.judges)} frames: "
-            + ", ".join(f"f{f} vs {r}" for f, r in gate.judges))
+             f"disappear in other layers) are \"n/a\", never 0.").strip()
+    if len(layer.judges) > 1:
+        log(f"layer {layer.id} answers for {len(layer.judges)} frames: "
+            + ", ".join(f"f{f} vs {r}" for f, r in layer.judges))
     try:  # compaction-proof contract, re-injected on every request
         fps = {}
         try:
@@ -868,47 +868,47 @@ async def build_gate(shot: Shot, gate, session: BlenderSession, *,
             fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
         except Exception:
             pass
-        p = write_gate_context(shot, gate, load_axes(shot), fps)
-        log(f"gate context → {p.relative_to(shot.folder)} (loaded every request)", 1)
+        p = write_layer_context(shot, layer, load_axes(shot), fps)
+        log(f"layer context → {p.relative_to(shot.folder)} (loaded every request)", 1)
     except Exception as e:
-        log(f"gate context skipped: {str(e)[:70]}", 1)
+        log(f"layer context skipped: {str(e)[:70]}", 1)
     strips = plan_strips(shot)
-    return await build_unit(shot, gate.as_milestone(strips), gate.script,
-                            _prior_gate_paths(shot, gate), session,
+    return await build_unit(shot, layer.as_milestone(strips), layer.script,
+                            _prior_layer_paths(shot, layer), session,
                             rounds=rounds, verbose=verbose,
-                            plan_excerpt=excerpt, scope=scope, gate=gate,
+                            plan_excerpt=excerpt, scope=scope, layer=layer,
                             resume_ok=resume_ok)
 
 
-async def _ablate(shot: Shot, gate, prior_paths: list[Path], script_rel: str,
+async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str,
                   session: BlenderSession) -> dict:
-    """Does this gate's script actually CHANGE its judge frames?
+    """Does this layer's script actually CHANGE its judge frames?
 
     The pipeline already uses ablation inside a build — `warm-session-probe-loop` proved
     Glare strength was not driving halation and that DOF was a silent no-op. The same
-    question one level up has never been asked: a gate can pass on axes it does not own
+    question one level up has never been asked: a layer can pass on axes it does not own
     (SH G60 scored 2.67 on typography and palette, neither of which is its work) while
     contributing nothing measurable at all.
 
-    Render the primary judge frame WITHOUT this gate's script, then WITH it, and compare.
+    Render the primary judge frame WITHOUT this layer's script, then WITH it, and compare.
     Two renders, no model.
     """
     from .metrics import look_vector
-    frame, _ref = gate.judges[0]
+    frame, _ref = layer.judges[0]
     try:
         session.run(_RESET); session.run(_preamble(shot))
         _run_prior_paths(session, prior_paths)
         try:
             without = look_vector(session.render(frame=frame, mode="eevee", scale=0.4))
         except Exception as e:
-            # The FIRST gate has no priors, so "without it" is an empty scene with no
+            # The FIRST layer has no priors, so "without it" is an empty scene with no
             # camera. That is not a skip — it is the strongest possible result: nothing
-            # renders at all until this gate runs.
+            # renders at all until this layer runs.
             if "no camera" in str(e).lower():
                 session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
                 session.render(frame=frame, mode="eevee", scale=0.4)   # must now work
                 return {"ok": True, "frame": frame, "moved": {},
-                        "note": "scene cannot render at all without this gate "
+                        "note": "scene cannot render at all without this layer "
                                 "(no camera) — it establishes the spine"}
             raise
         session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
@@ -926,7 +926,7 @@ async def _ablate(shot: Shot, gate, prior_paths: list[Path], script_rel: str,
     return {"ok": changed, "moved": dict(top), "frame": frame,
             "note": ("" if changed else
                      f"f{frame} is essentially IDENTICAL with and without "
-                     f"{Path(script_rel).name} — this gate may be a no-op")}
+                     f"{Path(script_rel).name} — this layer may be a no-op")}
 
 
 def _metric_report(shot: Shot, render_rel: str, ref_rel: str) -> str:
@@ -946,12 +946,12 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
                          axes: list[tuple[str, str]], ledger: Ledger, verbose: bool,
                          live_best_mean: float | None = None,
                          scope: str | None = None,
-                         gate=None) -> str:
+                         layer=None) -> str:
     """-> "passed" (canonical clears the bar itself) | "reproduced" (matches the live
     best within noise) | "failed".
 
-    Scores EVERY frame the gate answers for, not just the primary. Iteration renders one
-    frame for speed; the deliverable has to hold at all of them, and a gate is only as
+    Scores EVERY frame the layer answers for, not just the primary. Iteration renders one
+    frame for speed; the deliverable has to hold at all of them, and a layer is only as
     good as its worst claimed frame.
     """
     script_path = shot.folder / script_rel
@@ -968,16 +968,16 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
         log(f"! build script failed: {str(e)[:200]}")
         ledger.record_round(
             m, kind="canonical", index=0, render="",
-            verdict=_gate({"scores": {}, "issues": [f"script error: {e}"]}))
+            verdict=_verdict({"scores": {}, "issues": [f"script error: {e}"]}))
         return "failed"
-    judges = list(gate.judges) if gate is not None else [(m.frame, m.ref)]
+    judges = list(layer.judges) if layer is not None else [(m.frame, m.ref)]
     # Render serially (one Blender session), then score CONCURRENTLY — the critic calls
     # are independent judgements of already-written PNGs, and multi-frame judging tripled
     # the pass count on server_to_hansa (8 -> 18).
     shots_ = []
     for frame, ref in judges:
         m_i = (m if len(judges) == 1
-               else gate.milestone_at(frame, ref, plan_strips(shot)))
+               else layer.milestone_at(frame, ref, plan_strips(shot)))
         render_rel = _stash_render(session, shot, m_i, f"canonical_f{frame}"
                                    if len(judges) > 1 else "canonical")
         shots_.append((frame, ref, m_i, render_rel))
@@ -1007,7 +1007,7 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
             f"{verdict['mean']})", 1)
         return "passed"
     # reproduction tolerance: within judge noise of the live best still counts as
-    # "the script reproduces what passed" — widened for low-axis-count gates, where a
+    # "the script reproduces what passed" — widened for low-axis-count layers, where a
     # single point of variance swings the mean by 1/n (SH G10: 4.0 → 3.0 on one axis).
     tol = _repro_tolerance(len(verdict.get("scored_axes", [])))
     if live_best_mean is not None and verdict["mean"] >= live_best_mean - tol:
@@ -1020,12 +1020,12 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
 # --------------------------------------------------------------------------- #
 # CLI                                                                          #
 # --------------------------------------------------------------------------- #
-async def _run(folder: str, gate_id: str, rounds: int, blender: str,
+async def _run(folder: str, layer_id: str, rounds: int, blender: str,
                resume_ok: bool = False, force: bool = False) -> None:
     shot = load_shot(folder)
-    # Questions are asked at PLAN time and must be settled BEFORE any gate runs. Building
+    # Questions are asked at PLAN time and must be settled BEFORE any layer runs. Building
     # on an unanswered assumption is how barrel_roll ended up 16:9 against 2:1 references
-    # — by the time a later gate could notice, the camera had been committed three gates
+    # — by the time a later layer could notice, the camera had been committed three layers
     # earlier and every composition score was measured against the wrong crop.
     unanswered = [q for q in load_questions(shot.folder) if not q.get("answer")]
     if unanswered and not force:
@@ -1042,23 +1042,23 @@ async def _run(folder: str, gate_id: str, rounds: int, blender: str,
                              assets_dir=shot.folder / "assets",
                              cwd=shot.folder).start()
     try:
-        gates = load_gates(shot)
-        g = gates.get(gate_id) or gates.get(gate_id.upper())
+        layers = load_layers(shot)
+        g = layers.get(layer_id) or layers.get(layer_id.upper())
         if g is None:
-            raise SystemExit(f"unknown gate {gate_id!r}; known: {', '.join(gates)}")
-        log(f"build agent: shot '{shot.id}' GATE {g.id} — {g.title} "
+            raise SystemExit(f"unknown layer {layer_id!r}; known: {', '.join(layers)}")
+        log(f"build agent: shot '{shot.id}' LAYER {g.id} — {g.title} "
             f"(judge f{g.judge_frame} vs {g.judge_ref}) → {g.script}, model {MODEL}")
-        ledger = await build_gate(shot, g, session, rounds=rounds, resume_ok=resume_ok)
+        ledger = await build_layer(shot, g, session, rounds=rounds, resume_ok=resume_ok)
         log(f"{g.id}: {ledger.status(g.as_milestone())}  →  {ledger.path}")
     finally:
         session.close()
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Build one plan gate with the critic loop.")
+    ap = argparse.ArgumentParser(description="Build one plan layer with the critic loop.")
     ap.add_argument("folder", help="shot folder (contains brief.md + refs/)")
-    ap.add_argument("--gate", required=True,
-                    help="gate id from gates.json (e.g. L, G20)")
+    ap.add_argument("--layer", required=True,
+                    help="layer id from layers.json — 1, 2, 3 …")
     ap.add_argument("--rounds", type=int, default=2, help="max build↔critic rounds")
     ap.add_argument("--blender", default="blender", help="blender executable")
     ap.add_argument("--force", action="store_true",
@@ -1068,7 +1068,7 @@ def main() -> None:
                          "replay the journal, and resume the same SDK session")
     args = ap.parse_args()
     try:
-        anyio.run(_run, args.folder, args.gate, args.rounds, args.blender, args.resume, args.force)
+        anyio.run(_run, args.folder, args.layer, args.rounds, args.blender, args.resume, args.force)
     except BuildTruncated as e:
         log(f"BUILD TRUNCATED — {e}")
         raise SystemExit(3)  # distinct from a crash (1) so drivers can tell them apart

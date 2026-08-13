@@ -94,7 +94,7 @@ Blender 5.x moved several APIs the model reaches for by habit. The fixes:
   image codecs ONLY — verbatim: `'AVIF'`, `'JPEG'`, `'OPEN_EXR'`, `'PNG'`, `'WEBP'`, `'BMP'`,
   `'CINEON'`, `'DPX'`, `'IRIS'`, `'JPEG2000'`, `'HDR'`, `'TARGA'`, `'TARGA_RAW'`, `'TIFF'`.
   There is no `AVI_JPEG` / `AVI_RAW` / `FFMPEG` member any more, so `scene.render.ffmpeg.*`
-  is not reachable from a gate either.
+  is not reachable from a layer either.
   ```python
   sc.render.image_settings.file_format = 'FFMPEG'   # TypeError in 5.x — no such enum member
   sc.render.image_settings.file_format = 'PNG'      # right: render a frame SEQUENCE
@@ -102,7 +102,7 @@ Blender 5.x moved several APIs the model reaches for by habit. The fixes:
   sc.render.filepath = os.path.join(outdir, 'f')    # -> f0001.png, f0002.png, …
   bpy.ops.render.render(animation=True)
   ```
-  **A gate should not be reaching for video at all.** Muxing to mp4 is the harness's job and
+  **A layer should not be reaching for video at all.** Muxing to mp4 is the harness's job and
   happens OUTSIDE Blender (`pipeline/render_shot.py` renders the PNG sequence, then shells out
   to `ffmpeg -framerate <fps> -i seq -c:v libx264 -pix_fmt yuv420p -crf 18`). If you want to
   check the grade in motion, build a contact sheet from low-res PNG stills in-process instead —

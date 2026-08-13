@@ -39,7 +39,7 @@ class BlenderSession:
         # Renders are throwaway; SNAPSHOTS are not — resume needs to find them again.
         # These used to be mkdtemp(dir=$HOME) per session and were never cleaned: 107
         # dirs and 1.8 GB accumulated in one day, and the .blend checkpoints inside them
-        # were unreachable, which is why a failed gate could only be rebuilt from zero.
+        # were unreachable, which is why a failed layer could only be rebuilt from zero.
         self._ephemeral = artifacts_dir is None and cwd is None
         if artifacts_dir is None:
             base = Path(cwd) if cwd else Path.home()

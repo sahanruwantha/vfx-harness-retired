@@ -88,7 +88,7 @@ def _claims(jwt: str) -> dict:
     """JWT payload, base64-decoded but NOT signature-verified — same as the CLI does.
 
     Only ever used for local scheduling (`exp`) and display (`account_id`, plan). Never
-    gate anything security-relevant on these: they are unverified attacker-shaped data
+    layer anything security-relevant on these: they are unverified attacker-shaped data
     if the file is tampered with, and the server re-validates the token regardless.
     """
     try:

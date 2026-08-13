@@ -13,7 +13,7 @@ milestone frame, then drive every look socket through a single shared multiplier
 The balance tuned against the critic's reference at the scored frame is then the SAME balance
 at every later frame, only dimmer. Retiming or reshaping the settle means editing the `DECAY`
 tuple and nothing else — no re-balancing, no per-material archaeology. This is what lets a
-gate end *settled but not frozen*: the last span carries LOOK keys only, so levels keep
+layer end *settled but not frozen*: the last span carries LOOK keys only, so levels keep
 drifting down while nothing moves.
 
 The envelope does not have to be monotonic — a fast rise to a peak slightly BEFORE the scored
@@ -74,7 +74,7 @@ whatever is behind it, so its entry in `LOOK` trades against the far elements' e
 mid/far band reads too dark, lower the haze's density in the table and raise the far emission —
 not the other way round.
 
-**Assert the settle.** A gate that retimes curves can leave a transform drifting into the hold
+**Assert the settle.** A layer that retimes curves can leave a transform drifting into the hold
 and fail review even with a perfect look. Scan every object's action for transform keys inside
 the settle span and fail the build if any exist:
 

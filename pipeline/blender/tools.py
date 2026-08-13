@@ -140,7 +140,7 @@ def _compare_image(cand_path: str, ref_path: Path, caption: str) -> dict:
 
 
 def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None = None,
-                        shot_dir: str | Path | None = None, gate_id: str | None = None):
+                        shot_dir: str | Path | None = None, layer_id: str | None = None):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
     `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…)."""
     assets_dir = Path(assets_dir) if assets_dir else None
@@ -389,7 +389,7 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
     async def ask_supervisor(args):
         if not shot_dir:
             return {"content": [{"type": "text", "text": "no shot folder — cannot ask"}]}
-        qid = _ask(shot_dir, gate=gate_id or "?", question=args["question"],
+        qid = _ask(shot_dir, layer=layer_id or "?", question=args["question"],
                    assumption=args["assumption"],
                    why_it_matters=args.get("why_it_matters", ""))
         return {"content": [{"type": "text", "text":
@@ -401,7 +401,7 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         "Your build checklist ON DISK — it survives context compaction and process death, "
         "which your memory does not. Call with items=[...] to (re)write it, or done=[...] "
         "to tick things off; call with neither to read it back. Write it once at the start "
-        "from your gate's tickets, then tick as you go. Gate G was killed at turn 121 with "
+        "from your layer's tickets, then tick as you go. Layer G was killed at turn 121 with "
         "the work half-finished and no record of what remained.",
         {"type": "object",
          "properties": {"items": {"type": "array", "items": {"type": "string"}},
@@ -412,7 +412,7 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
     async def worklist(args):
         if not shot_dir:
             return {"content": [{"type": "text", "text": "no shot folder"}]}
-        wl = shot_dir / "logs" / f"worklist_{gate_id or 'gate'}.json"
+        wl = shot_dir / "logs" / f"worklist_{layer_id or 'layer'}.json"
         wl.parent.mkdir(parents=True, exist_ok=True)
         state = json.loads(wl.read_text()) if wl.is_file() else {"items": [], "done": [], "notes": []}
         if args.get("items"):
@@ -429,8 +429,8 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         return {"content": [{"type": "text", "text":
                 f"{len(state['done'])}/{len(state['items'])} done, {len(left)} left\n{body}"}]}
 
-    # ask_supervisor is deliberately PLAN-ONLY: a gate that discovers an
-    # ambiguity is already building on earlier gates' answer to it.
+    # ask_supervisor is deliberately PLAN-ONLY: a layer that discovers an
+    # ambiguity is already building on earlier layers' answer to it.
     tools = tools + [script_map, find_in_script, worklist]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)
     names = [f"mcp__{SERVER_NAME}__{t.name}" for t in tools]

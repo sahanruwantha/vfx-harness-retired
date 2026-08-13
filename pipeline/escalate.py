@@ -1,17 +1,17 @@
 """Asking the supervisor — the escalation a professional makes instead of guessing.
 
-Gates run unattended, so "ask the user" cannot mean "block". It means: write the question
+Layers run unattended, so "ask the user" cannot mean "block". It means: write the question
 down, proceed on the best available assumption, and MARK the work as resting on it. Then
-a human answers a batch later and the answers become durable facts that every future gate
+a human answers a batch later and the answers become durable facts that every future layer
 reads.
 
-Without this, a genuinely ambiguous gate has one move: keep tuning. barrel_roll gate G
+Without this, a genuinely ambiguous layer has one move: keep tuning. barrel_roll layer G
 plateaued at 2.83 twice and burned ~$15 doing it, when the actual blocker was a question
 worth ten seconds of a human's time (the references are 2:1, the brief said 16:9 — which
 wins?). Nothing in the loop could form that question, let alone ask it.
 
     questions.jsonl   append-only, one JSON object per question
-    answers.md        human-written; answers are injected into every later gate context
+    answers.md        human-written; answers are injected into every later layer context
 
     python -m pipeline.escalate shots/barrel_roll            # show open questions
     python -m pipeline.escalate shots/barrel_roll --answer 3 "2:1 — match the refs"
@@ -34,7 +34,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def ask(shot_folder: str | Path, *, gate: str, question: str, assumption: str,
+def ask(shot_folder: str | Path, *, layer: str, question: str, assumption: str,
         why_it_matters: str = "") -> int:
     """Record a question, keep working on `assumption`. Returns the question id."""
     folder = Path(shot_folder)
@@ -45,7 +45,7 @@ def ask(shot_folder: str | Path, *, gate: str, question: str, assumption: str,
         if q["question"].strip().lower() == question.strip().lower():
             return q["id"]
     qid = (max((q["id"] for q in existing), default=0)) + 1
-    rec = {"id": qid, "gate": gate, "question": question.strip(),
+    rec = {"id": qid, "layer": layer, "question": question.strip(),
            "assumption": assumption.strip(), "why": why_it_matters.strip(),
            "asked": _now(), "answer": None}
     with path.open("a", encoding="utf-8") as fh:
@@ -93,14 +93,14 @@ def _rewrite_answers(folder: Path) -> None:
             "Decisions from the human. These are LAW — they outrank inference from the "
             "brief or the stills, and they do not need re-deriving.", ""]
     for q in answered:
-        body.append(f"**Q{q['id']} ({q['gate']}): {q['question']}**")
+        body.append(f"**Q{q['id']} ({q['layer']}): {q['question']}**")
         body.append(f"→ {q['answer']}")
         body.append("")
     (folder / ANSWERS).write_text("\n".join(body), encoding="utf-8")
 
 
 def answers_block(shot_folder: str | Path) -> str:
-    """Answered questions, for injection into a gate's context. Empty if none."""
+    """Answered questions, for injection into a layer's context. Empty if none."""
     answered = [q for q in load(shot_folder) if q.get("answer")]
     if not answered:
         return ""
@@ -110,8 +110,8 @@ def answers_block(shot_folder: str | Path) -> str:
 
 
 def open_block(shot_folder: str | Path) -> str:
-    """Unanswered questions + the assumption in force, so a gate stays consistent with
-    what earlier gates already assumed."""
+    """Unanswered questions + the assumption in force, so a layer stays consistent with
+    what earlier layers already assumed."""
     unanswered = [q for q in load(shot_folder) if not q.get("answer")]
     if not unanswered:
         return ""
@@ -122,7 +122,7 @@ def open_block(shot_folder: str | Path) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Questions a gate raised for the supervisor.")
+    ap = argparse.ArgumentParser(description="Questions a layer raised for the supervisor.")
     ap.add_argument("folder")
     ap.add_argument("--answer", nargs=2, metavar=("ID", "TEXT"))
     ap.add_argument("--all", action="store_true", help="include already-answered")
@@ -140,7 +140,7 @@ def main() -> None:
         return
     for q in qs:
         mark = "✔" if q.get("answer") else "?"
-        print(f"{mark} Q{q['id']} [{q['gate']}] {q['question']}")
+        print(f"{mark} Q{q['id']} [{q['layer']}] {q['question']}")
         if q.get("why"):
             print(f"    matters because: {q['why']}")
         print(f"    assuming: {q['assumption']}")

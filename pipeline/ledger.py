@@ -18,7 +18,7 @@ from .brief import Shot
 
 @dataclass(frozen=True)
 class Milestone:
-    """One non-negotiable state-change frame the critic gates on (from brief.md)."""
+    """One non-negotiable state-change frame the critic layers on (from brief.md)."""
 
     id: str
     frame: int
@@ -56,24 +56,24 @@ def load_axes(shot: Shot) -> list[tuple[str, str]]:
     return DEFAULT_AXES
 
 @dataclass(frozen=True)
-class Gate:
-    """One build gate from the plan (build ORDER), judged at a primary frame/ref on the
+class Layer:
+    """One build layer from the plan (build ORDER), judged at a primary frame/ref on the
     axes it OWNS. Acceptance moments are a separate, time-ordered list (acceptance.json)
     judged once over the finished chain — a moment belongs to the cumulative chain, not
-    to any single gate."""
+    to any single layer."""
 
     id: str
     script: str  # e.g. "build/20_green.py" — chained in numeric order
     title: str
-    # EVERY frame this gate answers for, ((frame, ref), …) in frame order. A gate's
+    # EVERY frame this layer answers for, ((frame, ref), …) in frame order. A layer's
     # responsibility is multi-frame while its judgment used to be single-frame: SH's G50
     # declared "path at f300 AND underfoot at f368", was judged only at f300, and shipped
     # a path scoring 4 there and 2 at f368. A frame not listed here is never checked.
     judges: tuple[tuple[int, str], ...]
     reads: str
-    # The rubric axes this gate is ANSWERABLE for. The critic scores only these and
-    # marks the rest n/a — a layout gate cannot earn the finish grade, and judging it
-    # on one only produces a floor score it can never lift (BR gate G: 2.83 twice).
+    # The rubric axes this layer is ANSWERABLE for. The critic scores only these and
+    # marks the rest n/a — a layout layer cannot earn the finish grade, and judging it
+    # on one only produces a floor score it can never lift (BR layer G: 2.83 twice).
     owns: tuple[str, ...] = ()
 
     @property
@@ -86,7 +86,7 @@ class Gate:
         return self.judges[0][1]
 
     def as_milestone(self, strips: dict[int, tuple[int, ...]] | None = None) -> "Milestone":
-        """The critic loop speaks Milestone — adapt the gate's PRIMARY judge point.
+        """The critic loop speaks Milestone — adapt the layer's PRIMARY judge point.
 
         `strips` maps frame -> the plan's strip for the moment at that frame. Without it
         the motion strip falls back to frame/+6/+12, which only looks FORWARD: barrel_roll
@@ -98,27 +98,27 @@ class Gate:
 
     def milestone_at(self, frame: int, ref: str,
                      strips: dict[int, tuple[int, ...]] | None = None) -> "Milestone":
-        """A Milestone for one of this gate's judge points (id tagged with the frame)."""
+        """A Milestone for one of this layer's judge points (id tagged with the frame)."""
         return Milestone(f"{self.id}@f{frame}", frame, ref, self.reads,
                          (strips or {}).get(frame, ()))
 
 
-def load_gates(shot: Shot) -> dict[str, Gate]:
-    """Per-shot build gates from shots/<id>/gates.json (written by the PLAN stage)."""
-    path = shot.folder / "gates.json"
+def load_layers(shot: Shot) -> dict[str, Layer]:
+    """Per-shot build layers from shots/<id>/layers.json (written by the PLAN stage)."""
+    path = shot.folder / "layers.json"
     if not path.is_file():
         raise FileNotFoundError(
-            f"{path} missing — run the plan agent first (its gates define the build "
+            f"{path} missing — run the plan agent first (its layers define the build "
             f"order; milestones.json defines the acceptance moments)")
-    out: dict[str, Gate] = {}
+    out: dict[str, Layer] = {}
     for g in json.loads(path.read_text()):
         j = g["judge"]
         entries = [j] if isinstance(j, dict) else list(j)   # accept the old single form
         if not entries:
-            raise ValueError(f"gate {g['id']}: empty judge list")
+            raise ValueError(f"layer {g['id']}: empty judge list")
         judges = tuple(sorted(((int(e["frame"]), e["ref"]) for e in entries),
                               key=lambda fr: fr[0]))
-        out[g["id"]] = Gate(g["id"], g["script"], g.get("title", g["id"]),
+        out[g["id"]] = Layer(g["id"], g["script"], g.get("title", g["id"]),
                             judges, g.get("reads", ""), tuple(g.get("owns", ())))
     return out
 
@@ -127,15 +127,15 @@ def load_milestones(shot: Shot) -> dict[str, Milestone]:
     """The acceptance suite (plan §4), in TIME order — judged ONCE over the finished
     chain by the accept stage.
 
-    Deliberately NOT derived from gates. Build order (layer) and acceptance order (time)
+    Deliberately NOT derived from layers. Build order (layer) and acceptance order (time)
     are different orderings and are allowed to disagree: server_to_hansa builds
     typography (M2 @ f184) before studio light (M1 @ f72). Attributing a whole-frame
-    moment to one additive layer is what made gates get judged on work they don't own.
+    moment to one additive layer is what made layers get judged on work they don't own.
     """
     path = shot.folder / "acceptance.json"
     if not path.is_file():
         raise FileNotFoundError(
-            f"{path} missing — run the plan agent (it writes gates.json for the build "
+            f"{path} missing — run the plan agent (it writes layers.json for the build "
             f"order and acceptance.json for the approval moments)")
     out: dict[str, Milestone] = {}
     for m in json.loads(path.read_text()):
@@ -166,7 +166,7 @@ class Ledger:
             self.data = json.loads(self.path.read_text(encoding="utf-8"))
         else:
             self.data = {"shot": shot.id, "milestones": {}}
-        self._touched: set[str] = set()  # gates THIS instance owns (see save)
+        self._touched: set[str] = set()  # layers THIS instance owns (see save)
         # snapshot of what we loaded, so save() can tell "I changed this" from
         # "I never looked at it" for non-milestone top-level keys (e.g. acceptance)
         self._loaded = json.loads(json.dumps(self.data))
@@ -214,8 +214,8 @@ class Ledger:
 
     def set_resume(self, m: Milestone, *, session_id: str | None, blend: str,
                    journal_index: int, round: int) -> None:
-        """Record where a crashed/truncated gate can pick up: the SDK session to resume
-        AND the scene checkpoint to restore. Gate G's re-run cost ~$14 and 40 minutes
+        """Record where a crashed/truncated layer can pick up: the SDK session to resume
+        AND the scene checkpoint to restore. Layer G's re-run cost ~$14 and 40 minutes
         rebuilding work it had already done, because neither was ever written down."""
         self._slot(m)["resume"] = {"session_id": session_id, "blend": blend,
                                    "journal_index": journal_index, "round": round,
@@ -227,10 +227,10 @@ class Ledger:
         return r if r and Path(r.get("blend", "")).is_file() else None
 
     def snapshot_scripts(self, m: Milestone, tag: str = "pass") -> str | None:
-        """Copy build/*.py aside whenever a gate lands.
+        """Copy build/*.py aside whenever a layer lands.
 
-        Not git ceremony — just enough history to undo. Gate scripts reference each
-        other's objects by NAME, so re-running an early gate can silently invalidate
+        Not git ceremony — just enough history to undo. Layer scripts reference each
+        other's objects by NAME, so re-running an early layer can silently invalidate
         every later one: rebuilding 20_green.py broke 30_purple.py's `tower_dot` lookup,
         and the chain survived only because backups had been taken BY HAND, twice.
         """
@@ -251,7 +251,7 @@ class Ledger:
         return str(dst)
 
     def record_ablation(self, m: Milestone, abl: dict) -> None:
-        """Did this gate's script move anything at its own judge frame?"""
+        """Did this layer's script move anything at its own judge frame?"""
         self._slot(m)["ablation"] = {**abl, "at": _now()}
         self.save()
 
@@ -264,9 +264,9 @@ class Ledger:
         self.save()
 
     def save(self) -> None:
-        """Write back only the gates this instance touched.
+        """Write back only the layers this instance touched.
 
-        A shot's gates run as separate processes (and can overlap with an out-of-band
+        A shot's layers run as separate processes (and can overlap with an out-of-band
         edit), each holding a snapshot taken at construction. Rewriting the whole
         snapshot would silently revert everyone else's work, so re-read and splice.
         """

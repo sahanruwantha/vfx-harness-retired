@@ -13,13 +13,13 @@ then fix the three leaks below.
 The envelope is a single list of `(frame, multiplier)` applied to every socket's base value,
 so the whole world dims as one unit and there is exactly one curve to retime. Key the floor
 value at the darkest frame, one re-light key after it, and full strength at the frame the
-next gate owns — everything before the first envelope key is untouched.
+next layer owns — everything before the first envelope key is untouched.
 
 GOTCHAS:
 - **Bloom is what breaks the blackout.** A normal-size Glare on a handful of clipped cores
   smears them over a huge fraction of the frame. Key the compositor Glare `Size` DOWN and
   `Strength` UP across the dark frames (tight, hard halo instead of a wide soft one), and
-  restore both afterwards so later gates keep their look. This alone moved black% from ~86 to
+  restore both afterwards so later layers keep their look. This alone moved black% from ~86 to
   ~94 on barrel_roll. Glare settings are input SOCKETS in 5.x (see `blender-5-api`).
 - **Dimming to 1% is not enough on the deepest frame — hang a CURTAIN.** Under fast motion the
   dying world smears into faint but plainly readable filament arcs (measured 3–8/255 across one
@@ -42,7 +42,7 @@ GOTCHAS:
   cost 0.7 of mean but bought 8 points of black%, because it pushed a smeared arc below the
   display floor. Bisect the floor value; don't assume 0.02 ≈ 0.
 - Re-running the delta must be idempotent: Bezier handles overshoot a one-frame crash into
-  NEGATIVE values. Force `LINEAR` on every fcurve this gate touches (and `CONSTANT` on
+  NEGATIVE values. Force `LINEAR` on every fcurve this layer touches (and `CONSTANT` on
   `hide_render`) after keying.
 
 ```python

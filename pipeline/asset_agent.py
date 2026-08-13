@@ -45,7 +45,7 @@ INPUTS in your working directory (the SHOT FOLDER): `plan.md` (the build breakdo
 RELATIVE to this folder — read `plan.md`, `brief.md`, `refs/M4_end.jpg` directly; do
 NOT prefix with the repo root.
 
-FINDING THE WORK-LIST: the plan is organised as gates and tickets. An asset is needed
+FINDING THE WORK-LIST: the plan is organised as layers and tickets. An asset is needed
 wherever a ticket says to IMPORT one — grep the plan for `bvfx_import_asset(` /
 `import_asset(` / `.glb`, plus any explicit assets table. THE NAME IN THE PLAN IS
 BINDING: build scripts call `bvfx_import_asset('<name>')` with that exact string, so

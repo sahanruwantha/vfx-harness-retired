@@ -1,8 +1,8 @@
 """Stage 4 — acceptance: judge the FINISHED chain against the plan's approval moments.
 
-The build stage judges each gate on the axes it owns, at one frame, mid-chain. That is
+The build stage judges each layer on the axes it owns, at one frame, mid-chain. That is
 the right question for a build unit and the wrong one for the shot: an approval moment is
-a whole frame produced by the CUMULATIVE chain, and it is only real once every gate has
+a whole frame produced by the CUMULATIVE chain, and it is only real once every layer has
 run. So acceptance is judged exactly once, here, on the full rubric.
 
     python -m pipeline.accept_agent <shot-folder> [--moment M2]
@@ -23,22 +23,22 @@ import anyio
 from .blender.session import BlenderSession
 from .blender.tools import build_blender_tools
 from .brief import Shot, load_shot
-from .build_agent import _critique, _gate, _stash_render, ensure_axes
-from .ledger import Ledger, Milestone, load_gates, load_milestones
+from .build_agent import _critique, _verdict, _stash_render, ensure_axes
+from .ledger import Ledger, Milestone, load_layers, load_milestones
 from .metrics import compare, look_vector, report
 from .log import log
 
 
 def _chain(session: BlenderSession, shot: Shot) -> list[str]:
-    """Run every gate script from an empty scene — the deliverable, start to finish."""
+    """Run every layer script from an empty scene — the deliverable, start to finish."""
     from .build_agent import _RESET, _preamble
     session.run(_RESET)
     session.run(_preamble(shot))
     ran = []
-    for g in sorted(load_gates(shot).values(), key=lambda g: g.script):
+    for g in sorted(load_layers(shot).values(), key=lambda g: g.script):
         p = shot.folder / g.script
         if not p.is_file():
-            log(f"! {g.script} missing — gate {g.id} never produced a script", 1)
+            log(f"! {g.script} missing — layer {g.id} never produced a script", 1)
             continue
         log(f"chain: {g.script}", 1)
         session.run(p.read_text(encoding="utf-8"))
@@ -81,7 +81,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             # on the metric regardless. The deltas are also better feedback than prose.
             log(f"metrics decide this moment — skipping the critic "
                 f"({len(blocking)} blocking)", 1)
-            verdict = _gate({"scores": {}, "issues": [str(d) for d in blocking[:4]]})
+            verdict = _verdict({"scores": {}, "issues": [str(d) for d in blocking[:4]]})
             verdict["pass"] = False
             verdict["decided_by"] = "metrics"
         else:
@@ -123,19 +123,19 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
 
 
 def reconcile(shot: Shot, results: dict, ledger: Ledger) -> list[str]:
-    """Correct the record: a gate that PASSED while the moments it answers for FAILED.
+    """Correct the record: a layer that PASSED while the moments it answers for FAILED.
 
     Nothing linked these before, so both verdicts sat in shot.json contradicting each
     other in silence — server_to_hansa's G50 passed at 3.75 on the one axis it owns while
-    M3 (2.50) and M4 (2.20), the two moments in its own judge list, both failed. A gate
+    M3 (2.50) and M4 (2.20), the two moments in its own judge list, both failed. A layer
     verdict is a claim about a layer; an acceptance verdict is a claim about the frame
     that layer is responsible for. When they disagree, acceptance wins — it judged the
     finished chain.
     """
-    gates = load_gates(shot)
+    layers = load_layers(shot)
     failed_frames = {r["frame"] for r in results.values() if not r["pass"]}
     notes = []
-    for g in gates.values():
+    for g in layers.values():
         claimed = {f for f, _ in g.judges}
         bad = sorted(claimed & failed_frames)
         if not bad:
@@ -143,7 +143,7 @@ def reconcile(shot: Shot, results: dict, ledger: Ledger) -> list[str]:
         m = g.as_milestone()
         if ledger.status(m) != "passed":
             continue
-        note = (f"gate {g.id} passed, but the moment(s) it answers for failed at "
+        note = (f"layer {g.id} passed, but the moment(s) it answers for failed at "
                 f"f{', f'.join(map(str, bad))} — superseded by acceptance")
         ledger._slot(m)["superseded_by_acceptance"] = {"frames": bad, "at": _now_str()}
         notes.append(note)

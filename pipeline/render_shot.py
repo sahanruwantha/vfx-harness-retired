@@ -1,6 +1,6 @@
 """Stage 4 — render the built shot to mp4.
 
-Runs the shot's gate delta scripts (build/NN_*.py) in numeric order in a warm
+Runs the shot's layer delta scripts (build/NN_*.py) in numeric order in a warm
 session, renders the frame range in EEVEE, and encodes to mp4 with ffmpeg. Run as a module so the
 `pipeline` package imports resolve:
 
@@ -22,7 +22,7 @@ from .log import log
 
 
 def _chain_scripts(shot: Shot, upto: str | None = None) -> list[Path]:
-    """The gate delta scripts to run, in numeric order. `upto` stops after that gate's
+    """The layer delta scripts to run, in numeric order. `upto` stops after that layer's
     script (e.g. '40' or '40_seam.py') so you can render a partially-built shot."""
     build_dir = shot.folder / "build"
     if not build_dir.is_dir():
@@ -32,15 +32,15 @@ def _chain_scripts(shot: Shot, upto: str | None = None) -> list[Path]:
         m = re.match(r"(\d+)", p.name)
         return (int(m.group(1)) if m else 10_000, p.name)
 
-    # NN_*.py only: build/ has held non-chain files (a gate journal) and pathlib's glob
+    # NN_*.py only: build/ has held non-chain files (a layer journal) and pathlib's glob
     # matches dotfiles, so "*.py" happily executed one as a build step mid-render.
     scripts = sorted(build_dir.glob("[0-9]*.py"), key=num)
     if not scripts:
-        raise FileNotFoundError(f"no gate scripts in {build_dir} — run the build stage first")
+        raise FileNotFoundError(f"no layer scripts in {build_dir} — run the build stage first")
     if upto:
         keep = [p for p in scripts if p.name.startswith(upto) or p.stem == upto]
         if not keep:
-            raise FileNotFoundError(f"no gate script matching {upto!r} in {build_dir}")
+            raise FileNotFoundError(f"no layer script matching {upto!r} in {build_dir}")
         cut = num(keep[-1])
         scripts = [p for p in scripts if num(p) <= cut]
     return scripts
@@ -79,10 +79,10 @@ def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Render the shot to mp4 — default runs ALL gate scripts in order.")
+        description="Render the shot to mp4 — default runs ALL layer scripts in order.")
     ap.add_argument("folder", help="shot folder (contains build/)")
     ap.add_argument("--upto", default=None,
-                    help="stop after this gate script (e.g. 40 or 40_seam.py)")
+                    help="stop after this layer script (e.g. 40 or 40_seam.py)")
     ap.add_argument("--scale", type=float, default=1.0, help="0..1 render resolution")
     ap.add_argument("--blender", default="blender")
     ap.add_argument("--out", help="output mp4 path (default renders/<shot>_full.mp4)")

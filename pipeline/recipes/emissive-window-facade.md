@@ -114,7 +114,7 @@ l.new(mul.outputs[0], n['Math.011'].inputs[0])   # → emission strength
 ## Variant: vertical band silhouette ("two bright strips, dark core")
 
 Real towers don't glow evenly across their width — the camera-facing face is bright, the
-core seam and the raking side faces fall off. Gate the window mask on `|X|` of the object
+core seam and the raking side faces fall off. Layer the window mask on `|X|` of the object
 coords (a GREATER_THAN × LESS_THAN band), then MULTIPLY_ADD so the excluded faces keep a
 floor instead of going black. This is what turns a lit box into a building.
 

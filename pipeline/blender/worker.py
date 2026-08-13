@@ -432,7 +432,7 @@ def h_run(a: dict) -> dict:
             raise
     elapsed = time.monotonic() - t0
     # Only successful code is journalled: the builder currently re-authors the whole
-    # gate from memory at finalize (~28KB of live calls -> a 23KB script), which is
+    # layer from memory at finalize (~28KB of live calls -> a 23KB script), which is
     # duplicated effort AND the only reason live and canonical can diverge.
     _JOURNAL.append(a["code"])
     after = _scene_stats()
@@ -570,7 +570,7 @@ def h_render(a: dict) -> dict:
     sc.render.engine = engines.get(mode, _eevee_engine())
     if mode in ("solid", "wire"):
         sc.display.shading.type = "WIREFRAME" if mode == "wire" else "SOLID"
-    if mode == "draft":  # fast, low-sample eevee for iteration (full 'eevee' for the gate)
+    if mode == "draft":  # fast, low-sample eevee for iteration (full 'eevee' for the layer)
         try:
             sc.eevee.taa_render_samples = int(a.get("samples", 8))
         except AttributeError:

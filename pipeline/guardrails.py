@@ -37,7 +37,7 @@ _BANNED: list[tuple[re.Pattern, str]] = [
      "EEVEE-Next has no use_bloom. Bloom is a compositor Glare node — bvfx_glare_bloom(...)."),
     (re.compile(r"file_format\s*=\s*['\"]FFMPEG['\"]"),
      "file_format is stills-only here ('FFMPEG' is not in the 5.x enum). Video muxing is "
-     "the harness's job (pipeline.render_shot), not a gate's. Use 'PNG'."),
+     "the harness's job (pipeline.render_shot), not a layer's. Use 'PNG'."),
     (re.compile(r"\.layers\[0\]\.strips\[0\]"),
      "An action only grows a layer/strip once something is keyed on it, so [0][0] raises "
      "on any un-keyed ID. Iterate: for layer in act.layers: for strip in layer.strips: ..."),

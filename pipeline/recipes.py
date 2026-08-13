@@ -56,7 +56,7 @@ def recipe_index(verified_only: bool = False) -> str:
 
     Retrieval was never the weak link — `find_recipe("make the city look real")` returns
     night-city-field just fine. Discovery was: the builder can only query for a recipe it
-    already suspects exists. Gate S searched for a recipe name it had read in its plan and
+    already suspects exists. Layer S searched for a recipe name it had read in its plan and
     never asked about bloom, so it hand-rolled a 4.x Glare node twice while
     `cinematic-grade` and `blender-5-api` both sat in the cookbook with the fix.
 

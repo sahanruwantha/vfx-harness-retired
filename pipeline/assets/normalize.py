@@ -161,7 +161,7 @@ def prepare_asset(shot, name: str, *, references: list[str | Path] | None = None
             meta["preview"] = _preview_render(model, adir / "preview.png",
                                               target_height, blender)
             meta["preview"] = str(Path(meta["preview"]).relative_to(shot.folder))
-        except Exception as e:  # preview is a nicety, not a gate
+        except Exception as e:  # preview is a nicety, not a layer
             meta["preview_error"] = str(e)[:200]
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
     return meta

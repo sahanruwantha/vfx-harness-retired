@@ -1,7 +1,7 @@
 """Write the per-shot CLAUDE.md that survives compaction.
 
 Everything task-specific currently arrives in the KICKOFF message — the oldest message in
-the conversation and the first thing compaction summarises away. Gate G ran 121 turns
+the conversation and the first thing compaction summarises away. Layer G ran 121 turns
 with 28KB of run_bpy payloads and megabytes of render output; it compacted, and its
 instructions were in the message least likely to survive.
 
@@ -10,7 +10,7 @@ via settingSources) rather than in the initial prompt, because CLAUDE.md content
 re-injected on every request." The compactor also reads CLAUDE.md, so a summary-
 instructions section steers what it keeps.
 
-This writes a short, durable file per gate run: the gate's contract (owned axes, every
+This writes a short, durable file per layer run: the layer's contract (owned axes, every
 frame it answers for, measured targets) plus the rules that must never be summarised out.
 """
 
@@ -21,33 +21,33 @@ from pathlib import Path
 from .brief import Shot
 from .escalate import answers_block, open_block
 
-_HEADER = "<!-- generated per gate run by pipeline.shot_context — safe to overwrite -->"
+_HEADER = "<!-- generated per layer run by pipeline.shot_context — safe to overwrite -->"
 
 
-def write_gate_context(shot: Shot, gate, axes: list[tuple[str, str]],
+def write_layer_context(shot: Shot, layer, axes: list[tuple[str, str]],
                        fingerprints: dict[int, str] | None = None) -> Path:
-    """Write shots/<id>/CLAUDE.md for this gate. Returns the path."""
+    """Write shots/<id>/CLAUDE.md for this layer. Returns the path."""
     fingerprints = fingerprints or {}
-    owned = list(gate.owns) or ["(not declared — judge on the gate's scope)"]
+    owned = list(layer.owns) or ["(not declared — judge on the layer's scope)"]
     judge_rows = "\n".join(
         f"- **f{f}** vs `{r}`" + (f" — target: {fingerprints[f]}" if f in fingerprints else "")
-        for f, r in gate.judges)
-    axis_rows = "\n".join(f"- `{k}` — {d}" for k, d in axes if k in gate.owns) or \
+        for f, r in layer.judges)
+    axis_rows = "\n".join(f"- `{k}` — {d}" for k, d in axes if k in layer.owns) or \
                 "\n".join(f"- `{k}` — {d}" for k, d in axes)
 
     sup = "\n\n".join(x for x in (answers_block(shot.folder), open_block(shot.folder)) if x)
     supervisor = (sup + "\n\n") if sup else ""
     body = f"""{_HEADER}
-# Gate {gate.id} — {gate.title}
+# Layer {layer.id} — {layer.title}
 
-You are building ONE gate of shot `{shot.id}` ({shot.frames}f @ {shot.fps}fps).
+You are building ONE layer of shot `{shot.id}` ({shot.frames}f @ {shot.fps}fps).
 This file is re-injected on every request: if the conversation is summarised, THESE
 facts remain true and authoritative.
 
-## What this gate must deliver
-{gate.reads}
+## What this layer must deliver
+{layer.reads}
 
-Delta script: `{gate.script}` — reproduce only THIS gate's changes; earlier gate scripts
+Delta script: `{layer.script}` — reproduce only THIS layer's changes; earlier layer scripts
 run before yours and their objects already exist.
 
 ## Frames you answer for
@@ -58,7 +58,7 @@ of them clear. A change that fixes one and breaks another is not a fix.
 
 ## Axes you are scored on
 Only these. Every other axis is marked "n/a" — including elements that are correctly
-ABSENT at your frames because another gate adds or removes them.
+ABSENT at your frames because another layer adds or removes them.
 
 {axis_rows}
 
@@ -75,8 +75,8 @@ ABSENT at your frames because another gate adds or removes them.
 
 {supervisor}## Summary instructions
 When summarising this conversation, ALWAYS preserve:
-- the gate id, its owned axes, and every judge frame listed above
-- object and material NAMES created so far (later gates reference them by name)
+- the layer id, its owned axes, and every judge frame listed above
+- object and material NAMES created so far (later layers reference them by name)
 - measured values already converged on, and values already ruled out with their measurement
 - which of the judge frames currently pass and which do not
 """
@@ -85,7 +85,7 @@ When summarising this conversation, ALWAYS preserve:
     return path
 
 
-def clear_gate_context(shot: Shot) -> None:
+def clear_layer_context(shot: Shot) -> None:
     """Remove a generated CLAUDE.md (never delete a hand-written one)."""
     p = shot.folder / "CLAUDE.md"
     if p.is_file() and p.read_text(encoding="utf-8").startswith(_HEADER):

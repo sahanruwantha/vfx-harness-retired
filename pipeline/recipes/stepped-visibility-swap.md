@@ -12,7 +12,7 @@ true hard cut: there is never an in-between frame with both objects on screen or
 half-faded. Hide the cut inside a blackout, a whip, an impact flash or a shutter-wide beat
 and it is invisible.
 
-This is what lets a layout gate ship cheap proxies that a later gate deletes and replaces —
+This is what lets a layout layer ship cheap proxies that a later layer deletes and replaces —
 the timing is already locked and verified before the hero asset exists.
 
 GOTCHAS:

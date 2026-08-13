@@ -326,7 +326,7 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
         "Raise a question ONLY the client can settle — an ambiguity in the brief, a "
         "contradiction between the brief and the stills, or a taste call that is theirs. "
         "Does not block: state the assumption you will plan on and continue. A human "
-        "answers before the build starts, and the answer becomes law for every gate. "
+        "answers before the build starts, and the answer becomes law for every layer. "
         "Do NOT use it for anything measure_ref or a spike could answer.",
         {"type": "object",
          "properties": {"question": {"type": "string"},
@@ -336,7 +336,7 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
     )
     async def ask_supervisor(args):
         from .escalate import ask as _ask
-        qid = _ask(shot_folder, gate="PLAN", question=args["question"],
+        qid = _ask(shot_folder, layer="PLAN", question=args["question"],
                    assumption=args["assumption"],
                    why_it_matters=args.get("why_it_matters", ""))
         return _text(f"Recorded as Q{qid}. Continue planning on: {args['assumption']}")

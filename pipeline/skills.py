@@ -1,9 +1,9 @@
 """Skill ledger — what this pipeline is systematically good and bad at.
 
 Every critic round is already written to `shot.json`, and we throw the aggregate away.
-Rolled up, it says something no single gate can: `city_texture` scored 2 in EVERY round
+Rolled up, it says something no single layer can: `city_texture` scored 2 in EVERY round
 of EVERY barrel_roll build, `environment_depth` failed at three of five server_to_hansa
-moments. That is not a gate having a bad day, it is a capability the pipeline does not
+moments. That is not a layer having a bad day, it is a capability the pipeline does not
 have — and it is the closest thing to a craftsperson knowing their own weak areas.
 
 Use it to decide what to learn next. A weak axis with no recipe is the recipe to write; a
@@ -50,7 +50,7 @@ def collect(root: Path = SHOTS) -> dict:
             seen_shots.add(shot)
             for axis, v in (scores or {}).items():
                 if isinstance(v, (int, float)):
-                    per_axis[axis].append({"shot": shot, "gate": gid, "kind": kind,
+                    per_axis[axis].append({"shot": shot, "layer": gid, "kind": kind,
                                            "score": float(v)})
     out = {}
     for axis, rows in per_axis.items():
@@ -85,7 +85,7 @@ def report(data: dict) -> str:
     lines.append("")
     if weak:
         lines.append(f"NEVER CLEARED 3 in any shot or round: {', '.join(sorted(weak))}")
-        lines.append("  → a capability gap, not a bad gate. Nothing tuned its way out.")
+        lines.append("  → a capability gap, not a bad layer. Nothing tuned its way out.")
     if gaps:
         lines.append(f"WEAK and NO RECIPE covers it: {', '.join(sorted(gaps))}")
         lines.append("  → write the recipe. This is the highest-value thing to learn next.")

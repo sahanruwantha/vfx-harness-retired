@@ -4,7 +4,7 @@ Two agents:
   - BUILDER drives the warm Blender session with run_bpy/render_* to hit one
     milestone frame, then persists a deterministic `build/<m>.py` recipe.
   - CRITIC is a fresh judge: it sees the candidate render and the reference crop
-    and returns a strict-JSON scorecard the harness gates on.
+    and returns a strict-JSON scorecard the harness layers on.
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ carried by light, not by lit architecture.
 def builder_system(axes: list[tuple[str, str]], recipe_index: str = "") -> str:
     """The cookbook INDEX ships in the system prompt (~900 tokens for 23 recipes, ~4% of
     their combined body). A builder cannot search for a technique it does not know exists:
-    gate S queried a recipe name from its plan, never asked about bloom, and hand-rolled a
+    layer S queried a recipe name from its plan, never asked about bloom, and hand-rolled a
     Blender-4 Glare node twice while two cookbook entries held the fix."""
     body = _BUILDER_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes))
     return f"{body}\n\n{recipe_index}" if recipe_index else body
@@ -155,7 +155,7 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
     asset_line = (f"AVAILABLE ASSETS — import with import_asset() using these EXACT names "
                   f"(do NOT guess a name): {assets}. Prefer the committed hero mesh over "
                   f"hand-modelling a detailed prop.\n\n" if assets else "")
-    plan_block = (f"YOUR GATE'S PLAN SECTION — these tickets are your build instructions "
+    plan_block = (f"YOUR LAYER'S PLAN SECTION — these tickets are your build instructions "
                   f"(methods, starting values marked *(start)*, gotchas, done-checks). "
                   f"Follow them; the full plan is `plan.md` if you need wider context:\n"
                   f"---\n{plan_excerpt}\n---\n\n" if plan_excerpt else "")
@@ -173,7 +173,7 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
     extra = ""
     if also_judged:
         rows = "\n".join(f"    f{f} vs `{r}`" for f, r in also_judged)
-        extra = (f"\nTHIS GATE ALSO ANSWERS FOR these frames — the finished script is "
+        extra = (f"\nTHIS LAYER ALSO ANSWERS FOR these frames — the finished script is "
                  f"scored at EVERY one of them and passes only if all clear:\n{rows}\n"
                  f"Iterate against f{m.frame}, but before you finalize, render and check "
                  f"the others too. A change that fixes f{m.frame} and breaks another of "
