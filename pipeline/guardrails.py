@@ -110,7 +110,12 @@ def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatche
 
     async def _after(inp: Any, tool_use_id: str | None, ctx: Any) -> dict:
         tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
-        if not (tool.endswith("render_frame") or tool.endswith("compare_frame")) or not ref_rel:
+        # render_frame ONLY. compare_frame now computes and prints the same signed gap
+        # itself, against the reference the builder actually named — appending a second
+        # near-identical report (and against a possibly DIFFERENT ref, the layer's
+        # primary one) is noise that makes the builder reconcile two sets of numbers.
+        # render_frame takes no reference, so it is the case that still needs pushing.
+        if not tool.endswith("render_frame") or not ref_rel:
             return {}
         ref = folder / ref_rel
         if not ref.is_file():

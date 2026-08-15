@@ -25,6 +25,7 @@ Every metric here was added because it caught a real defect by hand:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from PIL import Image
@@ -60,9 +61,27 @@ def _prep(im: Image.Image, width: int = 960) -> Image.Image:
     return im
 
 
+# Reference plates do not change during a run, yet their metrics were recomputed on every
+# comparison — refs/f100_city.jpg was re-derived ~6 times inside a single layer, each pass
+# a full per-pixel walk. Keyed on (realpath, mtime_ns, size, width) so an edited or swapped
+# plate is never served from a stale entry: silently comparing against the PREVIOUS version
+# of a reference would be a far worse bug than the work this saves.
+_VEC_CACHE: dict[tuple, dict[str, float]] = {}
+_VEC_CACHE_MAX = 64
+
+
 def look_vector(img: Image.Image | str, width: int = 960) -> dict[str, float]:
     """The full look vector for one frame. Resolution-normalised so a 1920x1080 render
     and a 1920x960 reference grab are comparable."""
+    key = None
+    if isinstance(img, str):
+        try:
+            st = os.stat(img)
+            key = (os.path.realpath(img), st.st_mtime_ns, st.st_size, width)
+        except OSError:
+            key = None                  # unreadable — let the open() below raise properly
+        if key is not None and key in _VEC_CACHE:
+            return dict(_VEC_CACHE[key])   # a copy; callers mutate look vectors
     im = _prep(Image.open(img).convert("RGB") if isinstance(img, str) else img.convert("RGB"), width)
     g = im.convert("L")
     W, H = g.size
@@ -155,7 +174,12 @@ def look_vector(img: Image.Image | str, width: int = 960) -> dict[str, float]:
         out["chroma_spread"] = (sum((v - m) ** 2 for v in rb) / len(rb)) ** 0.5
     else:
         out["chroma_spread"] = 0.0
-    return {k: round(v, 3) for k, v in out.items()}
+    vec = {k: round(v, 3) for k, v in out.items()}
+    if key is not None:
+        if len(_VEC_CACHE) >= _VEC_CACHE_MAX:
+            _VEC_CACHE.pop(next(iter(_VEC_CACHE)))     # plain FIFO; refs are few
+        _VEC_CACHE[key] = dict(vec)
+    return vec
 
 
 # Below this absolute difference a metric gap is noise, whatever the ratio says.
