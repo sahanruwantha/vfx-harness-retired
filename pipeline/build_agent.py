@@ -14,6 +14,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import re
 import shutil
@@ -27,6 +29,7 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
     query,
 )
 
@@ -77,9 +80,15 @@ write nothing and say so.
 
 # Layer: the render passes when every axis clears PASS_MIN and the mean clears
 # PASS_MEAN (both on the critic's 0–5 scale). Calibrated from data: across 4 builds the
-# best/canonical band is 3.1-3.3 with ~±0.15 critic noise and coupled global axes that
-# REDISTRIBUTE score under revision — 3.3 sat inside that band and was missed by ≤0.16
-# four times straight. 3.1 = clearly-good, reachably above the noise floor.
+# best/canonical band is 3.1-3.3, and coupled global axes REDISTRIBUTE score under
+# revision — 3.3 sat inside that band and was missed by ≤0.16 four times straight.
+#
+# The "~±0.15 critic noise" this once claimed was WRONG, and wrong in the dangerous
+# direction. Measured directly: the same render against the same reference on one axis
+# scored 4.0, 3.0, 3.0, 2.0 across four repeats — a 2-point spread that flipped the
+# verdict. On a one- or two-axis layer the mean IS that single number, so a lone verdict
+# near the line is close to a coin flip. Hence _judge() below, which buys a second and
+# third opinion exactly where the decision is uncertain.
 PASS_MIN = 2
 PASS_MEAN = 3.1
 
@@ -103,9 +112,15 @@ class BuildTruncated(RuntimeError):
     """The builder ran out of budget mid-build — no verdict is meaningful."""
 
 
-def _prior_layer_paths(shot: Shot, layer) -> list[Path]:
+class UnpassedPrior(RuntimeError):
+    """A layer below this one was never accepted — building on it would compound it."""
+
+
+def _prior_layer_paths(shot: Shot, layer, *, force: bool = False) -> list[Path]:
     """Layer scripts that must run before this layer: all EXISTING build/NN_*.py with a
-    lower numeric prefix, in order. Each layer stacks on the ones before it."""
+    lower numeric prefix, in order. Each layer stacks on the ones before it.
+
+    Raises UnpassedPrior unless every one of them is recorded 'passed'."""
     def num(p: Path) -> int:
         m = re.match(r"(\d+)", p.name)
         return int(m.group(1)) if m else 10_000
@@ -123,7 +138,7 @@ def _prior_layer_paths(shot: Shot, layer) -> list[Path]:
         log(f"! chaining WITHOUT the ledger cross-check: {str(e)[:70]}")
         return found
     by_script = {Path(g.script).name: g for g in layers.values()}
-    keep = []
+    keep, unpassed = [], []
     for p in found:
         g = by_script.get(p.name)
         if g is None:
@@ -131,9 +146,20 @@ def _prior_layer_paths(shot: Shot, layer) -> list[Path]:
             continue
         st = ledger.status(g.as_milestone())
         if st != "passed":
-            log(f"! {p.name} (layer {g.id}) is '{st}', not passed — chaining it anyway, "
-                f"but its content was never accepted")
+            unpassed.append(f"layer {g.id} ({p.name}) is '{st}'")
         keep.append(p)
+    # FAIL CLOSED. This used to warn and chain anyway, so a layer could be built on top of
+    # a predecessor whose content was never accepted — every judgement above it then rests
+    # on unreviewed geometry. The protection previously lived in the shell script that
+    # drove a full run, which meant running a single layer by hand silently bypassed it.
+    if unpassed and not force:
+        raise UnpassedPrior(
+            f"refusing to build layer {layer.id} on unaccepted work: "
+            + "; ".join(unpassed)
+            + ". Re-run those layers, or pass --force to chain anyway (debugging only).")
+    if unpassed:
+        log(f"! --force: chaining {len(unpassed)} unaccepted prior(s) — "
+            + "; ".join(unpassed))
     return keep
 
 
@@ -264,25 +290,43 @@ def _critic_schema(axes: list[tuple[str, str]]) -> dict:
                        "required": [k for k, _ in axes],
                        "additionalProperties": False},
             "issues": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+            # Asked EXPLICITLY because the critic will otherwise mention a bad reference
+            # in `issues` and score anyway: handed a render of a night city against a
+            # green meadow, it wrote "cannot be the shot's look reference" and returned
+            # camera_framing=4, PASS — silently grading the frame against the brief's
+            # prose instead of an image. Ref-relative scoring is the whole premise, so
+            # this has to be a first-class field, not a remark.
+            "reference_usable": {
+                "type": "boolean",
+                "description": "false if the REFERENCE image is not a plausible target "
+                               "for this candidate at all (wrong shot, wrong beat, "
+                               "corrupt, blank). Absent-by-design content that a LATER "
+                               "layer adds does NOT make a reference unusable.",
+            },
+            "reference_note": {"type": "string",
+                               "description": "one line; required when unusable"},
         },
-        "required": ["scores", "issues"],
+        "required": ["scores", "issues", "reference_usable", "reference_note"],
         "additionalProperties": False,
     }
 
 
 def _critic_options(shot: Shot, axes: list[tuple[str, str]] | None = None) -> ClaudeAgentOptions:
+    # NO TOOLS. The images arrive attached to the request (see _critique), so the critic
+    # has nothing to fetch and cannot score a frame it never saw. This deleted three
+    # layers of machinery that existed only to police the old tool loop: the sandbox
+    # redirect for critic reads, the request/result id pairing, and the blind-critic guard.
     return ClaudeAgentOptions(
         model=CRITIC_MODEL,
         system_prompt=CRITIC_SYSTEM,
         cwd=str(shot.folder),
-        hooks=sandbox_hooks(shot.folder, cwd=shot.folder),
-        allowed_tools=["Read", "Glob"],
-        disallowed_tools=["Write", "Edit", "Bash", "Grep", "WebFetch", "WebSearch",
-                          "Task", "Agent", "NotebookEdit"],
+        allowed_tools=[],
+        disallowed_tools=["Read", "Glob", "Write", "Edit", "Bash", "Grep", "WebFetch",
+                          "WebSearch", "Task", "Agent", "NotebookEdit"],
         permission_mode="bypassPermissions",
-        max_buffer_size=32 * 1024 * 1024,  # renders/read-images can exceed the 1MB default
+        max_buffer_size=32 * 1024 * 1024,  # a multi-image request exceeds the 1MB default
         setting_sources=[],
-        max_turns=8,
+        max_turns=1,
         # the judgement everything depends on; xhigh where the model supports it
         # (degrades to high elsewhere)
         effort="xhigh",
@@ -521,6 +565,13 @@ def _verdict(verdict: dict) -> dict:
     verdict["mean"] = mean
     verdict["scored_axes"] = sorted(scores)
     verdict["na_axes"] = sorted(na)
+    # A verdict measured against the wrong plate is not a verdict. The critic reports
+    # this itself; before it was asked directly it would note the mismatch in `issues`
+    # and pass regardless. No score can rescue this — the plan's ref path is wrong.
+    if verdict.get("reference_usable") is False:
+        verdict["pass"] = False
+        verdict["reference_unusable"] = True
+        return verdict
     # Thresholds must be GRANULARITY-AWARE. mean = sum/n, so one axis point of judge
     # noise moves the mean by 1/n: 0.125 across 8 axes but 1.0 across one. A scoped
     # layer with 1-2 in-scope axes must not face a harsher bar than a full acceptance
@@ -546,10 +597,58 @@ def _repro_tolerance(n_scored: int) -> float:
     return min(_REPRO_TOL_MAX, max(0.3, 1.0 / n_scored)) if n_scored else 0.3
 
 
+# Claude's long-edge sweet spot. Beyond this an image costs tokens without adding
+# discriminable detail, and the critic scores several images per call.
+_CRITIC_MAX_PX = 1568
+
+
+def _image_block(path: Path, max_px: int = _CRITIC_MAX_PX) -> dict:
+    """A base64 JPEG content block, downscaled to the useful maximum.
+
+    Verified against the live API before adopting: three images attached with positional
+    labels came back mapped correctly (reference/candidate/motion strip), and a control
+    request with no image attached correctly reported that it had none.
+    """
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    if max(im.size) > max_px:
+        im.thumbnail((max_px, max_px), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=90)
+    return {"type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg",
+                       "data": base64.b64encode(buf.getvalue()).decode()}}
+
+
+async def _one_user_message(blocks: list[dict]):
+    """Stream exactly one multimodal user message; the SDK ends input when we return."""
+    yield {"type": "user", "session_id": "",
+           "message": {"role": "user", "content": blocks},
+           "parent_tool_use_id": None}
+
+
+def _structured_or_text(message, acc: dict) -> None:
+    """Collect the verdict however the SDK delivers it.
+
+    With output_format=json_schema the answer arrives as a StructuredOutput TOOL USE
+    block, NOT as text — a request that scored three images perfectly returned no
+    TextBlock at all. Reading only text made the verdict depend on the model ALSO
+    volunteering prose JSON, which it is under no obligation to do.
+    """
+    if not isinstance(message, AssistantMessage):
+        return
+    for block in message.content:
+        if isinstance(block, ToolUseBlock) and block.name == "StructuredOutput":
+            if isinstance(block.input, dict):
+                acc["structured"] = block.input
+        elif isinstance(block, TextBlock):
+            acc["text"] = acc.get("text", "") + block.text
+
+
 async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
                     axes: list[tuple[str, str]], session: BlenderSession, verbose: bool,
-                    scope: str | None = None) -> dict:
-    text = ""
+                    scope: str | None = None, prior_rel: str | None = None,
+                    prior_mean: float | None = None) -> dict:
     motion_rel, motion_frames = None, None
     if shot.frontmatter.get("type") == "motion" and shot.frames > 1:
         try:  # a motion strip so motion/finish axes are judged across frames, not a still
@@ -559,66 +658,57 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     log(f"critic[{CRITIC_MODEL}]: scoring {candidate_rel} vs {m.ref}"
         + (f" (+motion {motion_frames})" if motion_rel else ""), 1)
     prompt = critic_prompt(shot, m, candidate_rel, axes, motion_rel, motion_frames, scope)
-    # The critic is a transient-failure choke point: an SDK hiccup here killed BR layer S
-    # AFTER it had passed at 4.0 and written its script, throwing away ~20 minutes and a
-    # good build. Scoring is idempotent, so just retry it.
-    want = {Path(candidate_rel).name, Path(m.ref).name}
+
+    # ATTACH the images instead of asking an agent to fetch them. A missing file is now a
+    # loud failure here rather than a confident score on a frame that was never seen.
+    ref_abs, cand_abs = shot.folder / m.ref, shot.folder / candidate_rel
+    for p, what in ((ref_abs, "reference"), (cand_abs, "candidate render")):
+        if not p.is_file():
+            raise BlenderError(f"critic cannot score {m.id}: {what} missing at {p}")
+    blocks = [{"type": "text", "text": prompt},
+              {"type": "text", "text": "FIRST — the REFERENCE:"},
+              _image_block(ref_abs),
+              {"type": "text", "text": "SECOND — the CANDIDATE render:"},
+              _image_block(cand_abs)]
+    if motion_rel and (shot.folder / motion_rel).is_file():
+        blocks += [{"type": "text",
+                    "text": f"THIRD — the MOTION STRIP, frames {motion_frames}:"},
+                   _image_block(shot.folder / motion_rel)]
+    # The previous best, so the critic can judge DIRECTION of travel and not only
+    # absolute state. Explicitly framed as context: it must score the candidate.
+    if prior_rel and (shot.folder / prior_rel).is_file():
+        blocks += [{"type": "text",
+                    "text": f"CONTEXT ONLY — the best PREVIOUS attempt at this frame, "
+                            f"which scored {prior_mean}. Do NOT score this image. Use it "
+                            f"to say whether the candidate improved or regressed, and "
+                            f"note in `issues` anything the previous attempt got right "
+                            f"that the candidate has lost:"},
+                   _image_block(shot.folder / prior_rel)]
+
+    # Still retried: the critic is a transient-failure choke point — an SDK hiccup here
+    # once killed a layer AFTER it had passed at 4.0 and written its script. Scoring is
+    # idempotent. What is gone is retrying because the critic never opened its images.
+    acc: dict = {}
     for attempt in range(1, 4):
-        text = ""
-        seen: set[str] = set()
-        pending: dict = {}
-        denied = 0
+        acc = {}
         try:
-            async for message in query(prompt=prompt, options=_critic_options(shot, axes)):
-                for b in getattr(message, "content", []) or []:
-                    # Track the REQUEST only to learn which file a result belongs to; a
-                    # tool-use block carries .input whether the read succeeded or was
-                    # denied, so counting it as "seen" is exactly the bug this guard
-                    # exists to catch (three denied reads still yielded a score of 0).
-                    inp = getattr(b, "input", None)
-                    if isinstance(inp, dict):
-                        p_ = str(inp.get("file_path") or inp.get("path") or "")
-                        hit = next((w for w in want if w in p_.replace("\\", "/")), None)
-                        if hit:
-                            pending[getattr(b, "id", None) or getattr(b, "tool_use_id", "")] = hit
-                        continue
-                    if not getattr(b, "type", "") and not hasattr(b, "content"):
-                        continue
-                    # a RESULT: it counts only if it carries an image and is not an error
-                    tid = getattr(b, "tool_use_id", None) or getattr(b, "id", None)
-                    who = pending.pop(tid, None)
-                    if getattr(b, "is_error", False):
-                        denied += 1
-                        continue
-                    body = b.content if hasattr(b, "content") else ""
-                    has_image = (isinstance(body, list) and
-                                 any(getattr(x, "type", None) == "image" or
-                                     (isinstance(x, dict) and x.get("type") == "image")
-                                     for x in body))
-                    if who and has_image:
-                        seen.add(who)
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            text += block.text
-            missing = want - seen
-            if text.strip() and not missing:
+            async for message in query(prompt=_one_user_message(blocks),
+                                       options=_critic_options(shot, axes)):
+                _structured_or_text(message, acc)
+            if acc.get("structured") or acc.get("text", "").strip():
                 break
-            why = ("read none of its images" if not seen else
-                   f"never read {sorted(missing)}") if missing else "returned nothing"
-            # A confident score from an agent that never saw the frame is worse than an
-            # error: G10 scored camera_framing=0 on a render it was denied three times.
-            log(f"critic {why} (attempt {attempt}/3, {denied} denied read(s)) — retrying", 1)
-            text = ""
+            log(f"critic returned nothing (attempt {attempt}/3) — retrying", 1)
         except Exception as e:
             if attempt == 3:
                 raise
             log(f"critic error (attempt {attempt}/3): {str(e)[:90]} — retrying", 1)
-    if not text.strip():
-        raise BlenderError(
-            f"critic could not read {candidate_rel} / {m.ref} after 3 attempts — refusing "
-            f"to record a verdict for a frame it never saw")
-    verdict = _verdict(_extract_json(text))
+    if not (acc.get("structured") or acc.get("text", "").strip()):
+        raise BlenderError(f"critic returned no verdict for {m.id} after 3 attempts")
+    verdict = _verdict(acc.get("structured") or _extract_json(acc["text"]))
+    if verdict.get("reference_unusable"):
+        log(f"✗ critic says the REFERENCE is unusable for {m.id}: "
+            f"{verdict.get('reference_note', '(no note)')} — fix {m.ref} in the plan; "
+            f"no score is meaningful against it", 1)
     scores = ", ".join(f"{k}={v}" for k, v in verdict.get("scores", {}).items())
     na = verdict.get("na_axes") or []
     log(f"critic: {scores} | mean {verdict['mean']} (over {len(verdict.get('scored_axes', []))} "
@@ -627,6 +717,69 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     for issue in verdict.get("issues", [])[:6]:
         log(f"· fix: {issue}", 2)
     return verdict
+
+
+# How close to the pass line counts as "noise could flip this". Scores are integers, so
+# on a 1-2 axis layer ANY verdict adjacent to the line is a coin-flip candidate.
+_ADJUDICATE_BAND = 0.4
+
+
+def _borderline(verdict: dict) -> bool:
+    """Could judge noise flip this verdict? Measured noise is ~1 point per axis."""
+    scores = [v for v in verdict.get("scores", {}).values()
+              if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if not scores:
+        return False
+    if len(scores) <= 2:
+        # min>=3 decides it, and scores are integers: 2 and 3 sit one point either side
+        # of the line — well inside the measured spread.
+        return min(scores) in (PASS_MIN, PASS_MIN + 1)
+    return (abs(verdict.get("mean", 0.0) - PASS_MEAN) <= _ADJUDICATE_BAND
+            or min(scores) == PASS_MIN)
+
+
+async def _judge(shot: Shot, m: Milestone, candidate_rel: str,
+                 axes: list[tuple[str, str]], session: BlenderSession, verbose: bool,
+                 scope: str | None = None, **kw) -> dict:
+    """Score the frame, buying extra opinions ONLY where the decision is uncertain.
+
+    One critic call decided every layer until now. That is fine when a verdict is far
+    from the line and indefensible when it is near it: the identical render/reference
+    pair scored 4.0, 3.0, 3.0, 2.0 on repeats, so a single 3 was deciding whether the
+    whole chain proceeded. Here a borderline verdict goes to best-of-three on the
+    pass/fail question, which is where the noise actually hurts.
+    """
+    first = await _critique(shot, m, candidate_rel, axes, session, verbose, scope, **kw)
+    if first.get("reference_unusable") or not _borderline(first):
+        return first
+    log(f"borderline verdict (mean {first['mean']}, "
+        f"{len(first.get('scored_axes', []))} axis/axes) — seeking a second opinion", 1)
+    panel = [first]
+    for extra in range(2, 4):
+        v = await _critique(shot, m, candidate_rel, axes, session, verbose, scope, **kw)
+        panel.append(v)
+        votes = [p["pass"] for p in panel]
+        if len(panel) == 2 and votes[0] == votes[1]:
+            break                          # unanimous; a third cannot change it
+        if len(panel) == 3:
+            break
+    votes = [p["pass"] for p in panel]
+    means = sorted(p["mean"] for p in panel)
+    agreed = sum(votes) > len(votes) / 2
+    out = dict(panel[0])
+    out["pass"] = agreed
+    out["mean"] = means[len(means) // 2]    # median resists the outlier
+    out["panel"] = [{"mean": p["mean"], "pass": p["pass"]} for p in panel]
+    # Take the issues from a judge that agrees with the panel, so the builder is not
+    # handed fixes derived from the verdict that lost the vote.
+    for p in panel:
+        if p["pass"] == agreed:
+            out["issues"], out["scores"] = p.get("issues", []), p.get("scores", {})
+            break
+    log(f"panel of {len(panel)}: means {[p['mean'] for p in panel]} · "
+        f"votes {['PASS' if v else 'REVISE' for v in votes]} → "
+        f"{'PASS ✅' if agreed else 'REVISE ✎'} (median {out['mean']})", 1)
+    return out
 
 
 def _stash_render(session: BlenderSession, shot: Shot, m: Milestone, tag: str,
@@ -759,7 +912,15 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             ledger.set_resume(m, session_id=last_info.get("session_id"),
                               blend=snap["blend"], journal_index=snap["journal_index"],
                               round=rnd)
-            verdict = await _critique(shot, m, render_rel, axes, session, verbose, scope)
+            # Show the critic the previous best. Judging each round in isolation, it
+            # re-derives an absolute verdict every time and cannot tell a round that
+            # IMPROVED things from one that made them worse — which is also part of why
+            # the same render scored 4.0/3.0/3.0/2.0 across repeats. Attaching one more
+            # image is nearly free now that images are attached rather than fetched.
+            prior = (best.get("render") if best.get("render")
+                     and best["render"] != render_rel else None)
+            verdict = await _judge(shot, m, render_rel, axes, session, verbose, scope,
+                                   prior_rel=prior, prior_mean=best["mean"])
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             ledger.record_round(m, kind="iter", index=rnd, render=render_rel, verdict=verdict)
             # best-of-N: keep the highest-scoring round (render AND scene snapshot)
@@ -892,7 +1053,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
 
 async def build_layer(shot: Shot, layer, session: BlenderSession, *,
                      rounds: int = 2, verbose: bool = True,
-                     resume_ok: bool = False) -> Ledger:
+                     resume_ok: bool = False, force: bool = False) -> Ledger:
     """Build one PLAN LAYER: chain lower-numbered layer scripts, implement this layer's
     tickets (its plan.md section is the spec), judge at its primary frame/ref."""
     excerpt = _plan_layer_excerpt(shot, layer)
@@ -927,7 +1088,7 @@ async def build_layer(shot: Shot, layer, session: BlenderSession, *,
         log(f"layer context skipped: {str(e)[:70]}", 1)
     strips = plan_strips(shot)
     return await build_unit(shot, layer.as_milestone(strips), layer.script,
-                            _prior_layer_paths(shot, layer), session,
+                            _prior_layer_paths(shot, layer, force=force), session,
                             rounds=rounds, verbose=verbose,
                             plan_excerpt=excerpt, scope=scope, layer=layer,
                             resume_ok=resume_ok)
@@ -1038,7 +1199,7 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
     results: list = [None] * len(shots_)
 
     async def _score(i, m_i, render_rel):
-        results[i] = await _critique(shot, m_i, render_rel, axes, session, verbose, scope)
+        results[i] = await _judge(shot, m_i, render_rel, axes, session, verbose, scope)
 
     if len(shots_) == 1:
         await _score(0, shots_[0][2], shots_[0][3])
@@ -1102,9 +1263,15 @@ async def _run(folder: str, layer_id: str, rounds: int, blender: str,
         g = layers.get(layer_id) or layers.get(layer_id.upper())
         if g is None:
             raise SystemExit(f"unknown layer {layer_id!r}; known: {', '.join(layers)}")
+        # Name EVERY judge frame. The banner used to print only the first, while the very
+        # next line said "answers for 4 frames" — and single-frame judging is precisely
+        # the bug that let a blacked-out stretch of barrel_roll through, so a banner that
+        # under-reports the judge list is the wrong thing to get wrong.
+        judged = " · ".join(f"f{f} vs {r}" for f, r in g.judges) or "no judge frame"
         log(f"build agent: shot '{shot.id}' LAYER {g.id} — {g.title} "
-            f"(judge f{g.judge_frame} vs {g.judge_ref}) → {g.script}, model {MODEL}")
-        ledger = await build_layer(shot, g, session, rounds=rounds, resume_ok=resume_ok)
+            f"(judges: {judged}) → {g.script}, model {MODEL}")
+        ledger = await build_layer(shot, g, session, rounds=rounds, resume_ok=resume_ok,
+                                   force=force)
         log(f"{g.id}: {ledger.status(g.as_milestone())}  →  {ledger.path}")
     finally:
         session.close()
@@ -1118,7 +1285,9 @@ def main() -> None:
     ap.add_argument("--rounds", type=int, default=2, help="max build↔critic rounds")
     ap.add_argument("--blender", default="blender", help="blender executable")
     ap.add_argument("--force", action="store_true",
-                    help="build even with unanswered plan questions (uses the assumptions)")
+                    help="override the pre-build refusals: unanswered plan questions "
+                         "(uses the assumptions) and unaccepted prior layers. Debugging "
+                         "only — anything built this way rests on unreviewed work.")
     ap.add_argument("--resume", action="store_true",
                     help="continue a crashed/truncated run: restore its scene checkpoint, "
                          "replay the journal, and resume the same SDK session")
@@ -1131,6 +1300,9 @@ def main() -> None:
     except ChainBroken as e:
         log(f"CHAIN BROKEN — {e}")
         raise SystemExit(4)  # the chain needs repair; building on is pointless
+    except UnpassedPrior as e:
+        log(f"UNACCEPTED PRIOR — {e}")
+        raise SystemExit(6)  # a lower layer must pass first
 
 
 if __name__ == "__main__":

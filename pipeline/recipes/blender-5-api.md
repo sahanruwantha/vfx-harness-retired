@@ -61,6 +61,19 @@ Blender 5.x moved several APIs the model reaches for by habit. The fixes:
   ```
   Same rule for COLOR RAMP stops (below): a fresh ramp has two elements, so `elements[2]`
   raises until you `.new()` — guard with `if len(cr.elements) < 3: cr.elements.new(pos)`.
+- IDENTITY vs EQUALITY on bpy structs: `bpy_struct` wrappers are re-created on every attribute
+  access, so `link.from_node is node`, `ob is bpy.data.objects['x']` and
+  `sock in (a.inputs[0],)` are all unreliable — the wrapper you compare is a different Python
+  object each time. bpy overloads `==` to compare the underlying data; use it everywhere.
+  ```python
+  [l.to_node for l in nt.links if l.from_node is node]   # always [] — different wrappers
+  [l.to_node for l in nt.links if l.from_node == node]   # right
+  ```
+- BARE `StopIteration`: `next(x for x in nt.nodes if x.type == 'EMISSION')` raises a
+  *message-less* `StopIteration` when nothing matches, which tells the next reader nothing.
+  Always give `next()` a default and assert with the name you were looking for:
+  `n = next((x for x in nt.nodes if x.type == T), None); assert n, f'no {T} node'`.
+  Same for `next(l.from_node for l in nt.links if ...)` when walking a graph upstream.
 - BLOOM: EEVEE-Next has no bloom toggle — it's the compositor Glare (see above).
 - SLOTTED ACTIONS (4.4+): `action.fcurves` is gone. F-curves live in per-slot channelbags.
   Use the `list_keyframes` tool (handles both), or in bpy:

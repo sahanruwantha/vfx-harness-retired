@@ -23,23 +23,48 @@ import anyio
 from .blender.session import BlenderSession
 from .blender.tools import build_blender_tools
 from .brief import Shot, load_shot
-from .build_agent import _critique, _verdict, _stash_render, ensure_axes
+from .build_agent import _critique, _judge, _verdict, _stash_render, ensure_axes
 from .ledger import Ledger, Milestone, load_layers, load_milestones
 from .metrics import compare, look_vector, report
 from .log import log
 
 
-def _chain(session: BlenderSession, shot: Shot) -> list[str]:
-    """Run every layer script from an empty scene — the deliverable, start to finish."""
+class IncompleteChain(RuntimeError):
+    """Acceptance was asked to judge a shot that is not finished."""
+
+
+def _chain(session: BlenderSession, shot: Shot, *, force: bool = False) -> list[str]:
+    """Run every layer script from an empty scene — the deliverable, start to finish.
+
+    Refuses a PARTIAL chain. This used to log a missing script and carry on, so
+    acceptance could pronounce on a shot that was never fully built — and then
+    reconcile() would mark real layer verdicts `superseded_by_acceptance` on the
+    strength of that partial render, corrupting good records with a bad judgement.
+    """
+    layers = sorted(load_layers(shot).values(), key=lambda g: g.script)
+    ledger = Ledger(shot)
+    missing = [f"layer {g.id} ({g.script}) has no script"
+               for g in layers if not (shot.folder / g.script).is_file()]
+    unpassed = [f"layer {g.id} is '{ledger.status(g.as_milestone())}'"
+                for g in layers
+                if (shot.folder / g.script).is_file()
+                and ledger.status(g.as_milestone()) != "passed"]
+    if (missing or unpassed) and not force:
+        raise IncompleteChain(
+            "refusing to judge an unfinished shot — " + "; ".join(missing + unpassed)
+            + ". Finish those layers first, or pass --force (the verdict will not be "
+              "about the deliverable).")
+    if missing or unpassed:
+        log(f"! --force: judging an INCOMPLETE chain — {'; '.join(missing + unpassed)}")
+
     from .build_agent import _RESET, _preamble
     session.run(_RESET)
     session.run(_preamble(shot))
     ran = []
-    for g in sorted(load_layers(shot).values(), key=lambda g: g.script):
+    for g in layers:
         p = shot.folder / g.script
         if not p.is_file():
-            log(f"! {g.script} missing — layer {g.id} never produced a script", 1)
-            continue
+            continue                      # only reachable under --force
         log(f"chain: {g.script}", 1)
         session.run(p.read_text(encoding="utf-8"))
         ran.append(g.script)
@@ -47,12 +72,12 @@ def _chain(session: BlenderSession, shot: Shot) -> list[str]:
 
 
 async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
-                 verbose: bool = True) -> dict:
+                 verbose: bool = True, force: bool = False) -> dict:
     moments = load_milestones(shot)
     if only:
         moments = {k: v for k, v in moments.items() if k == only} or moments
     axes = await ensure_axes(shot, verbose)
-    ran = _chain(session, shot)
+    ran = _chain(session, shot, force=force)
     log(f"chain rebuilt from empty: {len(ran)} scripts — judging {len(moments)} moment(s)")
 
     ledger = Ledger(shot)
@@ -85,9 +110,11 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             verdict["pass"] = False
             verdict["decided_by"] = "metrics"
         else:
-            verdict = await _critique(shot, m, render_rel, axes, session, verbose,
-                                      ("MEASURED GAPS vs the reference (objective, already "
-                                       "computed — treat as fact):\n" + extra) if extra else None)
+            # _judge, not _critique: acceptance is the last verdict anyone gets, so a
+            # borderline call here is the worst place to trust a single noisy score.
+            verdict = await _judge(shot, m, render_rel, axes, session, verbose,
+                                   ("MEASURED GAPS vs the reference (objective, already "
+                                    "computed — treat as fact):\n" + extra) if extra else None)
             verdict["decided_by"] = "critic"
         verdict["round_s"] = round(time.monotonic() - t0, 1)
         if m.fingerprint:
@@ -158,13 +185,13 @@ def _now_str() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-async def _run(folder: str, only: str | None, blender: str) -> None:
+async def _run(folder: str, only: str | None, blender: str, force: bool = False) -> None:
     shot = load_shot(folder)
     session = BlenderSession(blender=blender, blend_file=None,
                              assets_dir=shot.folder / "assets",
                              cwd=shot.folder).start()
     try:
-        await accept(shot, session, only=only)
+        await accept(shot, session, only=only, force=force)
     finally:
         session.close()
 
@@ -175,8 +202,15 @@ def main() -> None:
     ap.add_argument("folder", help="shot folder (contains brief.md + acceptance.json)")
     ap.add_argument("--moment", default=None, help="judge only this moment (e.g. M2)")
     ap.add_argument("--blender", default="blender")
+    ap.add_argument("--force", action="store_true",
+                    help="judge even an incomplete chain (debugging only — the verdict "
+                         "will not be about the deliverable)")
     args = ap.parse_args()
-    anyio.run(_run, args.folder, args.moment, args.blender)
+    try:
+        anyio.run(_run, args.folder, args.moment, args.blender, args.force)
+    except IncompleteChain as e:
+        log(f"INCOMPLETE CHAIN — {e}")
+        raise SystemExit(7)
 
 
 if __name__ == "__main__":

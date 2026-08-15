@@ -274,20 +274,19 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
                   motion_frames: list[int] | None = None,
                   scope: str | None = None) -> str:
     axes = "\n".join(f"  - {k}: {desc}" for k, desc in axes)
-    # ABSOLUTE paths. Given relative ones the critic resolves them against the repo root
-    # and misses every time — three redirects per scoring pass, and before the sandbox
-    # taught it the right location it simply scored a frame it had never seen.
-    _abs = lambda rel: str((Path(shot.folder) / rel).resolve()) if rel else rel
-    ref_p, cand_p = _abs(m.ref), _abs(candidate_rel)
-    motion_rel = _abs(motion_rel) if motion_rel else None
+    # The images are ATTACHED to this request, not fetched. The critic used to be an agent
+    # that had to call Read to see them, and that indirection caused the same bug three
+    # separate times: the path sandbox stonewalled its reads, relative paths resolved to
+    # the repo root, and the guard meant to catch a blind verdict inspected the REQUEST
+    # instead of the RESULT so it never fired. An attached frame cannot go unread.
     motion = ""
     if motion_rel:
         motion = (
-            f"\nAlso read the MOTION STRIP `{motion_rel}` — frames {motion_frames} of the "
-            f"shot side by side. Judge any MOTION/finish axis (motion blur, weighty "
-            f"continuous movement, the roll/dive progressing) from THIS strip, not from the "
-            f"single still (a still at the start frame can't show motion). Judge all other "
-            f"axes from the candidate.\n"
+            f"\nThe THIRD image is a MOTION STRIP — frames {motion_frames} of the shot side "
+            f"by side. Judge any MOTION/finish axis (motion blur, weighty continuous "
+            f"movement, the roll/dive progressing) from THAT strip, not from the single "
+            f"still (a still at one frame cannot show motion). Judge every other axis from "
+            f"the candidate.\n"
         )
     scope_block = ""
     if scope:
@@ -304,8 +303,8 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
     return (
         f"Stage {m.id} of shot '{shot.id}', frame {m.frame}.\n"
         f"TARGET STATE: {m.reads}\n\n"
-        f"Read the REFERENCE image `{ref_p}` and the CANDIDATE render `{cand_p}`.\n"
-        f"Use those paths EXACTLY as given — they are absolute and correct.{motion}"
+        f"The FIRST image is the REFERENCE ({Path(m.ref).name}).\n"
+        f"The SECOND image is the CANDIDATE render ({Path(candidate_rel).name}).{motion}"
         f"{scope_block}"
         f"\nScore the candidate against the reference on these axes:\n"
         f"{axes}\n\n"

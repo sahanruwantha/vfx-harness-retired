@@ -30,6 +30,63 @@ bvfx_emissive_windows(
 )
 ```
 
+## Retuning the helper's graph: find nodes by WALKING, never by name
+
+Every variant below reaches back into the graph `bvfx_emissive_windows` built. Do **not**
+address those nodes as `n['Math.010']` / `n['Math.011']` — those names are assigned by
+Blender in *creation order*, so they shift the moment the helper changes, and the failure is
+silent-ish garbage (`KeyError`, or worse, you retune the wrong Math node). Find nodes by
+their `type`, then follow `node_tree.links` outward from a known anchor.
+
+GOTCHAS:
+- **`next(...)` with no default raises bare `StopIteration`** — an empty traceback that says
+  nothing about which node was missing. Always pass a default and assert, or the next builder
+  burns a turn on `StopIteration:` with no message.
+- **Compare bpy nodes with `==`, never `is`.** `bpy_struct` wrappers are re-created on every
+  attribute access, so `link.from_node is node` is `False` even when they are the same node.
+  bpy overloads `==` to compare the underlying data. This one silently returns empty lists.
+- Anchor on types that are unique in the graph (`'EMISSION'`, `'SEPXYZ'`, `'BRICK'`), then
+  walk one hop at a time. Sockets are addressed by name (`'X'`, `'Strength'`), which IS stable.
+- Walking UPSTREAM from a consumer socket (`l.to_node == emi and l.to_socket.name ==
+  'Strength'`) is how you grab the node feeding a value without knowing its name at all.
+
+```python
+nt = obj.data.materials[0].node_tree
+
+def find(node_type):
+    n = next((x for x in nt.nodes if x.type == node_type), None)   # default -> no StopIteration
+    assert n is not None, f'no {node_type} node in {nt.name}'
+    return n
+
+def downstream(node, out_name='Value'):
+    """Nodes fed by node.outputs[out_name].  == not `is` — wrappers are recreated."""
+    return [l.to_node for l in nt.links
+            if l.from_node == node and l.from_socket.name == out_name]
+
+def upstream(node, in_name):
+    """The node feeding node.inputs[in_name], or None."""
+    return next((l.from_node for l in nt.links
+                 if l.to_node == node and l.to_socket.name == in_name), None)
+
+sep = find('SEPXYZ')                       # object coords split
+emi = find('EMISSION')
+strength = upstream(emi, 'Strength')       # the MULTIPLY_ADD driving window vs body
+strength.inputs[1].default_value = LIT     # lit-window emission,   e.g. 3.0
+strength.inputs[2].default_value = DARK    # dark body floor,       e.g. 0.008
+
+xf, zf = downstream(sep, 'X')[0], downstream(sep, 'Z')[0]   # per-axis cell frequency
+xf.inputs[1].default_value = COLS          # ~window columns across the face
+zf.inputs[1].default_value = ROWS          # ~window rows up the shaft
+for freq, lo, hi in ((xf, 0.40, 0.60), (zf, 0.30, 0.70)):   # duty cycle per axis
+    fract = downstream(freq)[0]
+    for t in downstream(fract):            # the band's two threshold nodes
+        t.inputs[1].default_value = lo if t.inputs[1].default_value < 0.5 else hi
+```
+
+Pick ROWS/COLS against the *rendered* size, not the model: a facade that fills 0.10 of frame
+width downscales its cells hard, so ~2 bright columns and ~30 rows read better than a dense
+grid that aliases into flat glow.
+
 ## Variant: ADDITIVE transparent window shell over an existing facade
 
 When the hero mesh already has a good textured facade (e.g. an imported glb) and you only

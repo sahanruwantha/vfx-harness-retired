@@ -21,9 +21,21 @@ from .build_agent import _RESET, _preamble
 from .log import log
 
 
-def _chain_scripts(shot: Shot, upto: str | None = None) -> list[Path]:
-    """The layer delta scripts to run, in numeric order. `upto` stops after that layer's
-    script (e.g. '40' or '40_seam.py') so you can render a partially-built shot."""
+class IncompleteRender(RuntimeError):
+    """The deliverable was asked for before the chain that produces it is accepted."""
+
+
+def _chain_scripts(shot: Shot, upto: str | None = None, *,
+                   force: bool = False) -> list[Path]:
+    """The layer delta scripts to run, in order, taken from the LEDGER's manifest.
+
+    This used to glob build/ and run whatever it found. A glob answers "what files are
+    here", but the deliverable is defined by "what did the pipeline accept" — so a stray
+    experiment or a half-written 09_*.py silently entered the mp4, and a real layer that
+    was misnamed silently did not. The ledger is the record; the directory is a cache.
+    """
+    from .ledger import Ledger, load_layers
+
     build_dir = shot.folder / "build"
     if not build_dir.is_dir():
         raise FileNotFoundError(f"no build/ in {shot.folder} — run the build stage first")
@@ -32,23 +44,49 @@ def _chain_scripts(shot: Shot, upto: str | None = None) -> list[Path]:
         m = re.match(r"(\d+)", p.name)
         return (int(m.group(1)) if m else 10_000, p.name)
 
-    # NN_*.py only: build/ has held non-chain files (a layer journal) and pathlib's glob
-    # matches dotfiles, so "*.py" happily executed one as a build step mid-render.
-    scripts = sorted(build_dir.glob("[0-9]*.py"), key=num)
+    layers = sorted(load_layers(shot).values(), key=lambda g: num(Path(g.script)))
+    if upto:
+        keep = [g for g in layers
+                if Path(g.script).name.startswith(upto) or Path(g.script).stem == upto
+                or str(g.id) == upto]
+        if not keep:
+            raise FileNotFoundError(f"no layer matching {upto!r} in the plan")
+        cut = num(Path(keep[-1].script))
+        layers = [g for g in layers if num(Path(g.script)) <= cut]
+
+    ledger = Ledger(shot)
+    scripts, problems = [], []
+    for g in layers:
+        p = shot.folder / g.script
+        if not p.is_file():
+            problems.append(f"layer {g.id}: {g.script} missing")
+            continue
+        st = ledger.status(g.as_milestone())
+        if st != "passed":
+            problems.append(f"layer {g.id} ({g.script}) is '{st}', not passed")
+        scripts.append(p)
+    if problems and not force:
+        raise IncompleteRender(
+            "refusing to render an unaccepted chain — " + "; ".join(problems)
+            + ". Finish those layers, or pass --force for a preview render.")
+    if problems:
+        log(f"! --force: rendering an unaccepted chain — {'; '.join(problems)}")
     if not scripts:
         raise FileNotFoundError(f"no layer scripts in {build_dir} — run the build stage first")
-    if upto:
-        keep = [p for p in scripts if p.name.startswith(upto) or p.stem == upto]
-        if not keep:
-            raise FileNotFoundError(f"no layer script matching {upto!r} in {build_dir}")
-        cut = num(keep[-1])
-        scripts = [p for p in scripts if num(p) <= cut]
+
+    # Say what is being LEFT OUT. Silent truncation reads as "we rendered everything".
+    named = {p.name for p in scripts}
+    strays = sorted(p.name for p in build_dir.glob("[0-9]*.py") if p.name not in named)
+    if strays:
+        log(f"! ignoring {len(strays)} script(s) in build/ that the plan does not list: "
+            + ", ".join(strays))
     return scripts
 
 
 def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
-               blender: str = "blender", out: str | Path | None = None) -> Path:
-    scripts = _chain_scripts(shot, upto)
+               blender: str = "blender", out: str | Path | None = None,
+               force: bool = False) -> Path:
+    scripts = _chain_scripts(shot, upto, force=force)
     out = Path(out) if out else shot.folder / "renders" / f"{shot.id}_full.mp4"
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -61,7 +99,6 @@ def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
             log(f"running {p.name}")
             s.run(p.read_text(encoding="utf-8"))
         log(f"rendering {shot.frames} frames @ scale {scale}…")
-        t0 = time.monotonic()
         t0 = time.monotonic()
         for f in range(1, shot.frames + 1):
             s.render(frame=f, mode="eevee", scale=scale)
@@ -86,9 +123,16 @@ def main() -> None:
     ap.add_argument("--scale", type=float, default=1.0, help="0..1 render resolution")
     ap.add_argument("--blender", default="blender")
     ap.add_argument("--out", help="output mp4 path (default renders/<shot>_full.mp4)")
+    ap.add_argument("--force", action="store_true",
+                    help="render even if layers are missing or unaccepted (preview only)")
     args = ap.parse_args()
     shot = load_shot(args.folder)
-    render_mp4(shot, args.upto, scale=args.scale, blender=args.blender, out=args.out)
+    try:
+        render_mp4(shot, args.upto, scale=args.scale, blender=args.blender,
+                   out=args.out, force=args.force)
+    except IncompleteRender as e:
+        log(f"INCOMPLETE CHAIN — {e}")
+        raise SystemExit(7)
 
 
 if __name__ == "__main__":

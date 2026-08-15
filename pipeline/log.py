@@ -48,9 +48,54 @@ def log(msg: str, indent: int = 0) -> None:
     print(f"[{_elapsed():6.1f}s] {'  ' * indent}{msg}", flush=True)
 
 
-def _clip(s: str, n: int) -> str:
+# Display caps. Ordinary tool results stay short (they are mostly scene stats we can
+# re-derive); errors get a far bigger budget because the log is the ONLY record of a
+# failed run once the process is gone.
+_OK_CHARS = 300
+_ERR_CHARS = 2400
+_ARG_CHARS = 400
+_SCRIPT_LINES = 120
+_SCRIPT_CHARS = 6000
+
+# Tool inputs whose value is code the operator needs verbatim to read the log at all.
+_CODE_KEYS = ("script", "code")
+
+
+def _clip(s: str, n: int, keep: str = "head") -> str:
+    """One-line, length-capped rendering. keep='tail' drops the FRONT instead.
+
+    Tracebacks are head-heavy boilerplate ("Traceback…", the serve() frame, the exec
+    frame) and tail-light where it matters: the innermost frame, the exception, and any
+    HINT we attached. Clipping those from the head threw away the only diagnostic part,
+    so error text is clipped from the front instead.
+    """
     s = s.replace("\n", " ⏎ ")
-    return s if len(s) <= n else s[:n] + "…"
+    if len(s) <= n:
+        return s
+    return "…" + s[-n:] if keep == "tail" else s[:n] + "…"
+
+
+def _log_tool_use(b) -> None:
+    """Log a tool call. Code payloads print verbatim; everything else is clipped.
+
+    run_bpy scripts are routinely thousands of characters, so a 400-char cap showed the
+    imports and nothing else — the log recorded that a script ran but never what it did.
+    Raising the cap for ALL tools would flood the log with file-write payloads, so only
+    script/code arguments get the big, line-by-line treatment.
+    """
+    args = dict(b.input) if isinstance(b.input, dict) else {"input": b.input}
+    code = next((args.pop(k) for k in _CODE_KEYS
+                 if isinstance(args.get(k), str) and "\n" in args[k]), None)
+    rest = _clip(json.dumps(args, default=str), _ARG_CHARS) if args else ""
+    log(f"→ {b.name}  {rest}".rstrip(), 1)
+    if code is None:
+        return
+    lines = code[:_SCRIPT_CHARS].splitlines()
+    for line in lines[:_SCRIPT_LINES]:
+        log(f"│ {line}", 2)
+    dropped = len(code.splitlines()) - len(lines[:_SCRIPT_LINES])
+    if dropped > 0:
+        log(f"│ … {dropped} more line(s)", 2)
 
 
 def _result_text(block) -> str:
@@ -87,14 +132,17 @@ def log_message(m) -> None:
                     if line.strip():
                         log(f"💬 {line.strip()}", 1)
             elif isinstance(b, ToolUseBlock):
-                log(f"→ {b.name}  {_clip(json.dumps(b.input, default=str), 400)}", 1)
+                _log_tool_use(b)
         return
 
     if UserMessage is not None and isinstance(m, UserMessage):
         for b in getattr(m, "content", []) or []:
             if ToolResultBlock is not None and isinstance(b, ToolResultBlock):
-                err = " (error)" if getattr(b, "is_error", False) else ""
-                log(f"←{err} {_clip(_result_text(b), 300)}", 1)
+                is_err = bool(getattr(b, "is_error", False))
+                err = " (error)" if is_err else ""
+                text = (_clip(_result_text(b), _ERR_CHARS, keep="tail") if is_err
+                        else _clip(_result_text(b), _OK_CHARS))
+                log(f"←{err} {text}", 1)
         return
 
     if isinstance(m, ResultMessage):

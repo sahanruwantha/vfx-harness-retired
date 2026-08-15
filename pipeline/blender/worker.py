@@ -364,6 +364,57 @@ _ATTR_HINTS = {
                      "it instead of assigning default_value.",
 }
 
+
+def _hinted(e: BaseException) -> BaseException | None:
+    """Return a replacement exception carrying a HINT, or None if we can't improve it.
+
+    Some Blender-script failures arrive with a message that is useless on its own —
+    worst of all StopIteration, whose message is EMPTY, so the builder receives
+    "StopIteration: " and has no node name, no collection, nothing to act on. Naming the
+    fix at the point of failure turns a debug turn into a retry.
+    """
+    msg = str(e)
+
+    if isinstance(e, StopIteration):
+        return StopIteration(
+            "a next(...) generator found NO match — StopIteration carries no message, "
+            "so this is all Python can tell you. Never write bare "
+            "`next(n for n in nt.nodes if ...)`: use "
+            "`n = next((n for n in nt.nodes if ...), None)` and handle n is None, or "
+            "call inspect_nodes('compositor'/'world'/<material>/<object>) first to see "
+            "which node types actually exist. For the usual targets the helpers already "
+            "do this: bvfx_emission / bvfx_emissive_windows (emission shaders), "
+            "bvfx_glare_bloom (compositor glare), bvfx_volume (volume scatter)."
+        )
+
+    if isinstance(e, TypeError) and "tuple" in msg and ("operand" in msg or "unsupported" in msg):
+        # the recurring footgun — make the fix instant instead of a debug turn
+        return TypeError(
+            f"{msg}\nHINT: you did vector math on a raw TUPLE. Wrap it first — "
+            f"`Vector((x, y, z))` is already in scope (so are math/mathutils), "
+            f"or use bvfx_aim(obj, target) for aiming.")
+
+    if isinstance(e, AttributeError):
+        # Blender-4 attributes that became input sockets in 5.x. Without a hint the
+        # builder retries the same 4.x form (observed twice in 54s on glare_type),
+        # so name the replacement at the point of failure.
+        for attr, hint in _ATTR_HINTS.items():
+            if attr in msg:
+                return AttributeError(f"{msg}\nHINT: {hint}")
+
+    if isinstance(e, KeyError):
+        # bpy collections do say which key missed, but never what IS there, so the
+        # builder's next move is another blind guess at the name.
+        return KeyError(
+            f"{msg} — no such key. HINT: a bpy collection lookup missed. Use "
+            f".get(name) and check for None instead of [name], and list the real names "
+            f"first: inspect_scene('objects'/'materials') for bpy.data, "
+            f"inspect_nodes(<target>) for nodes and sockets. Socket names differ "
+            f"between Blender versions and are localised by node type — never assume.")
+
+    return None
+
+
 _JOURNAL: list[str] = []
 
 
@@ -413,23 +464,13 @@ def h_run(a: dict) -> dict:
     with contextlib.redirect_stdout(buf):
         try:
             exec(a["code"], ns)  # noqa: S102 — this is the point of the tool
-        except TypeError as e:
-            if "tuple" in str(e) and ("operand" in str(e) or "unsupported" in str(e)):
-                # the recurring footgun — make the fix instant instead of a debug turn
-                raise TypeError(
-                    f"{e}\nHINT: you did vector math on a raw TUPLE. Wrap it first — "
-                    f"`Vector((x, y, z))` is already in scope (so are math/mathutils), "
-                    f"or use bvfx_aim(obj, target) for aiming.") from None
-            raise
-        except AttributeError as e:
-            # Blender-4 attributes that became input sockets in 5.x. Without a hint the
-            # builder retries the same 4.x form (observed twice in 54s on glare_type),
-            # so name the replacement at the point of failure.
-            msg = str(e)
-            for attr, hint in _ATTR_HINTS.items():
-                if attr in msg:
-                    raise AttributeError(f"{msg}\nHINT: {hint}") from None
-            raise
+        except Exception as e:  # noqa: BLE001 — re-raised; we only enrich the message
+            better = _hinted(e)
+            if better is None:
+                raise
+            # `from None` keeps the traceback tail on OUR line: the enriched message is
+            # the last thing printed, which is also the part the log now preserves.
+            raise better.with_traceback(e.__traceback__) from None
     elapsed = time.monotonic() - t0
     # Only successful code is journalled: the builder currently re-authors the whole
     # layer from memory at finalize (~28KB of live calls -> a 23KB script), which is
