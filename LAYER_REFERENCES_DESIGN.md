@@ -125,10 +125,42 @@ expensive part today is re-running layers because their reference was wrong.
 - **How to verify framing fidelity.** No instrument exists. Worth building regardless —
   it would also let us check the *builder's* framing directly instead of via a critic's eye.
 
+## Pilot result (layer 3, run 2026-08-15)
+
+**The thesis held.** Every critique stayed inside `city_field_depth` — six-for-six
+in-scope issues, three of them citing the plate directly, and not one demand for sky,
+green, grade or geometry the layer does not build. Compare layer 2 under finished-frame
+references, which spent three attempts being told to add a stepped podium that was
+already in the mesh.
+
+**The derived fingerprints landed.** The builder converged on **mu35-39**, the plate's
+measured target, rather than the plan's inherited **mu74** which only exists after layer 8
+grades the shot. The critic then cited the derived number by name: *"verify bottom-band
+statistics against the plate target (f440 mu~34/sigma~39)"*.
+
+**The critique is better feedback.** "Add warm sodium street-lamp chains along a grid of
+avenues converging toward camera" is buildable. Under the old reference that note competed
+for space with complaints about a missing storm sky.
+
+The layer still FAILED (both frames 2.0, $20.76) — but on its own axis, for real reasons,
+after a repair round regressed it. That failure is about the repair loop, not the
+references, and is fixed separately.
+
 ## Rollout
 
-1. Pilot on **layer 3** only: generate its two plates, derive its fingerprints from them,
-   run the layer, compare against the frozen baseline.
-2. If it holds, extend to layers 2 and 4 (the other look-axis layers).
+1. ~~Pilot on layer 3~~ — **done, thesis held.**
+2. ~~Extend to layers 2 and 4~~ — **done.** Layer 2 has plates for all four judge frames,
+   layer 4 for both of its. Fingerprints derived from each plate and written into
+   `layers.json`. The layer-2 plates matter most: they show the two polarities that were
+   built inverted three times (outer strips vs recessed core, dark sign panel vs glowing
+   letters), so the target now *shows* the answer instead of describing it.
 3. Build the framing measurer as separate work; only then consider layer 1.
 4. Never generate for an axis whose fingerprint is geometric until step 3 lands.
+
+## Caveat on the extension
+
+The layer-2 and layer-4 plates were generated in a batch and spot-checked, not
+individually verified frame by frame. The runtime safety net is `reference_usable` — the
+critic must declare a reference unfit, and a false declaration fails the verdict rather
+than silently grading against a bad plate. If one of these plates is wrong, that is where
+it should surface.
