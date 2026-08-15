@@ -660,6 +660,46 @@ def _repro_tolerance(n_scored: int) -> float:
     return min(_REPRO_TOL_MAX, max(0.3, 1.0 / n_scored)) if n_scored else 0.3
 
 
+def _repair_delta(pre: list, post: list) -> dict:
+    """What a canonical repair round actually achieved, per judged frame.
+
+    Two questions, and the loop used to get the second one wrong.
+
+    `broke` — frames that PASSED before the repair and do not now. A repair that trades
+    a passing frame for a failing one is not a fix, and the caller reverts on it.
+
+    `progressed` — whether the round moved toward a pass at all. This used to compare the
+    SUM of the failing frames' means, which is the wrong statistic for a conjunctive
+    requirement: the layer passes only when EVERY judged frame clears the bar, so the
+    binding constraint is the worst frame, while a sum rises whenever any one frame does.
+    A four-frame layer going 1.0→2.0 on one frame and holding the rest scored as
+    improvement and bought another round that could not lead to a pass. Layer 2 spent five
+    attempts in that state — the sum crept up while the minimum sat still. Progress means
+    the worst failing frame improved, or there are fewer failing frames than before.
+    """
+    was = {f: v.get("mean") for (f, _r), v in pre}
+    now = {f: v.get("mean") for (f, _r), v in post}
+    was_pass = {f for (f, _r), v in pre if v.get("pass")}
+    failed = [f for (f, _r), v in pre if not v.get("pass")]
+    still = [f for (f, _r), v in post if not v.get("pass")]
+    # Only frames judged BOTH times can be compared. A frame missing from `post` has no
+    # score to improve on, and treating its absence as 0 would read as a regression.
+    common = [f for f in failed if f in now]
+    was_worst = min((was.get(f) or 0) for f in common) if common else None
+    now_worst = min((now.get(f) or 0) for f in common) if common else None
+    progressed = (
+        (was_worst is not None and now_worst > was_worst)
+        or len(still) < len(failed)
+    )
+    return {
+        "was": was, "now": now,
+        "broke": sorted(f for (f, _r), v in post if f in was_pass and not v.get("pass")),
+        "was_worst": was_worst, "now_worst": now_worst,
+        "was_failing": len(failed), "now_failing": len(still),
+        "progressed": progressed,
+    }
+
+
 # Claude's long-edge sweet spot. Beyond this an image costs tokens without adding
 # discriminable detail, and the critic scores several images per call.
 _CRITIC_MAX_PX = 1568
@@ -1146,20 +1186,16 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                 log(f"✗ canonical repair TRUNCATED ({last_info['subtype']}) — stopping "
                     f"here", 1)
                 break
-            # EVERY frame's score before the repair, not just the failing ones. The
-            # previous version compared only the frames that had failed, so a repair that
-            # lifted one frame while wrecking another read as progress. It could not see
-            # collateral damage at all.
-            was = {f: v.get("mean") for (f, _r), v in (canon_verdicts or [])}
-            was_pass = {f for (f, _r), v in (canon_verdicts or []) if v.get("pass")}
+            # Re-verify, then compare against EVERY frame's pre-repair score rather than
+            # only the failing ones — see _repair_delta, which owns both judgements (did
+            # this break a passing frame, and did it move toward a pass at all).
             canon_verdicts.clear()
             canonical = await _verify_script(shot, m, script_rel, prior_paths, session,
                                              axes, ledger, verbose,
                                              live_best_mean=best["mean"], scope=scope,
                                              layer=layer, out_verdicts=canon_verdicts)
-            now = {f: v.get("mean") for (f, _r), v in (canon_verdicts or [])}
-            broke = sorted(f for (f, _r), v in (canon_verdicts or [])
-                           if f in was_pass and not v.get("pass"))
+            delta = _repair_delta(pre_verdicts, canon_verdicts or [])
+            was, now, broke = delta["was"], delta["now"], delta["broke"]
             if broke:
                 # ENFORCE it. Telling the builder "these frames already pass, a trade is
                 # not a fix" is a request, and it was ignored: the layer-3 pilot went
@@ -1176,14 +1212,11 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                 canon_verdicts.extend(pre_verdicts)
                 canonical = pre_canonical
                 break
-            gained = sum(now.get(f, 0) or 0 for f, _v in failed) - \
-                     sum(was.get(f, 0) or 0 for f, _v in failed)
-            if canonical == "failed" and gained <= 0:
-                # A repair that moved nothing will not move anything next time either.
-                log(f"repair {attempt} improved nothing on the failing frame(s) "
-                    f"({[was.get(f) for f, _v in failed]} → "
-                    f"{[now.get(f) for f, _v in failed]}) — stopping rather than paying "
-                    f"for another identical round", 1)
+            if canonical == "failed" and not delta["progressed"]:
+                log(f"repair {attempt} moved neither the worst failing frame "
+                    f"({delta['was_worst']} → {delta['now_worst']}) nor the count of "
+                    f"failing frames ({delta['was_failing']} → {delta['now_failing']}) "
+                    f"— stopping rather than paying for another identical round", 1)
                 break
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with

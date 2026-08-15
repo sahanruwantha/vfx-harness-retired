@@ -575,6 +575,59 @@ def main():
           all(a in sc for a in layers["1"].owns))
     # ---- END eval-harness block ---------------------------------------------------
 
+    print("\n[canonical repair · what a round achieved]")
+    from pipeline.build_agent import _repair_delta
+
+    def vs(*frames):
+        """(frame, mean, pass) triples -> the verdict shape _repair_delta consumes."""
+        return [((f, f"r{f}.png"), {"mean": m, "pass": p}) for f, m, p in frames]
+
+    # THE LAYER-2 CASE, and the reason this function exists. The improving frame is NOT
+    # the binding one: f440 lifts 2.0 -> 2.75 while f200 sits at 1.0. The old test summed
+    # the failing frames, saw the total rise, and bought another repair round — but the
+    # layer passes only when its WORST frame clears the bar, and that frame did not move.
+    # (An earlier draft of this test used the worst frame as the improving one, which is
+    # genuine progress and rightly returns True. The defect needs a non-binding frame.)
+    pre = vs((45, 3.0, True), (100, 3.0, True), (200, 1.0, False), (440, 2.0, False))
+    post = vs((45, 3.0, True), (100, 3.0, True), (200, 1.0, False), (440, 2.75, False))
+    d = _repair_delta(pre, post)
+    check("a rising SUM with a static worst frame is not progress",
+          not d["progressed"], f"worst {d['was_worst']}->{d['now_worst']}")
+    check("  ... and the sum really did rise (the old test would have passed it)",
+          sum(d["now"][f] for f in (200, 440)) > sum(d["was"][f] for f in (200, 440)))
+
+    # The worst frame moving IS progress, even when the total is unchanged.
+    d = _repair_delta(
+        vs((200, 1.0, False), (440, 3.0, False)),
+        vs((200, 2.0, False), (440, 2.0, False)))
+    check("the worst failing frame improving is progress", d["progressed"],
+          f"worst {d['was_worst']}->{d['now_worst']}")
+
+    # So is clearing a frame outright, even if the remaining worst is untouched.
+    d = _repair_delta(
+        vs((200, 2.0, False), (440, 2.0, False)),
+        vs((200, 3.0, True), (440, 2.0, False)))
+    check("one fewer failing frame is progress", d["progressed"],
+          f"{d['was_failing']}->{d['now_failing']} failing")
+
+    # Regression detection is independent of progress: a repair can lift the worst
+    # failing frame AND break a passing one. The caller reverts on `broke` first.
+    d = _repair_delta(
+        vs((45, 4.0, True), (440, 1.0, False)),
+        vs((45, 2.0, False), (440, 3.0, True)))
+    check("a trade against a passing frame is reported as broken", d["broke"] == [45],
+          str(d["broke"]))
+
+    check("nothing broken when every passing frame holds",
+          _repair_delta(vs((45, 4.0, True), (440, 1.0, False)),
+                        vs((45, 4.0, True), (440, 2.0, False)))["broke"] == [])
+
+    # A frame absent from the post-repair verdicts has no score to compare. Scoring its
+    # absence as 0 would read as a regression and mask the real state.
+    d = _repair_delta(vs((200, 2.0, False), (440, 2.0, False)), vs((200, 3.0, True)))
+    check("a frame missing after repair is not scored as zero",
+          d["now_worst"] == 3.0 and d["broke"] == [], f"worst {d['now_worst']}")
+
     print(f"\n{'ALL PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}"
           f"  ({'0' if not FAILS else len(FAILS)} failed)")
     raise SystemExit(1 if FAILS else 0)
