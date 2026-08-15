@@ -58,6 +58,22 @@ def main():
           len(layers["1"].as_milestone(plan_strips(shot)).strip) > 0)
     owned = {a for l in layers.values() for a in l.owns}
     check("every axis owned", {k for k, _ in axes} == owned)
+    # Scope prose names other layers by NUMBER ("the finish grade (layer 8)") so the critic
+    # knows what a later stage delivers. Inserting the lighting stage renumbered 5..8 into
+    # 6..9 and left layer 3 telling the critic that the grade is layer 8 — which is now
+    # rebirth. Nothing caught it; the strings just went stale and stayed plausible.
+    import re as _re
+    bad = []
+    for l in layers.values():
+        for m in _re.finditer(r"layers? (\d+)(?:\s*[/&,]\s*(\d+))?", l.reads):
+            for g in m.groups():
+                if g and g not in layers:
+                    bad.append(f"layer {l.id} cites layer {g}, which does not exist")
+    check("scope prose cites layers that exist", not bad, "; ".join(bad[:3]))
+    # A layer must not describe ITSELF as the stage that delivers something later.
+    self_ref = [l.id for l in layers.values()
+                if _re.search(rf"layers? {l.id}\b", l.reads)]
+    check("no layer cites itself as a later stage", not self_ref, str(self_ref))
     check("no mute layer", all(l.owns for l in layers.values()))
 
     print("\n[verdict + tolerance]")
