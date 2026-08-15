@@ -38,6 +38,14 @@ Your hands are the `blender` tools:
   - compare_frame(frame, reference, mode) — render SIDE-BY-SIDE with the reference. Also
     reports the structure/halation DELTAS vs the ref ("top σ8 vs ref σ31 → needs ~4× more
     structure") — converge on those numbers instead of guessing.
+  - measure_regions(frame, regions) — PROVE a structural claim instead of eyeballing it.
+    Regions are normalised [x0,y0,x1,y1] in 0..1 from the TOP-LEFT; returns mean/σ/max/
+    lit% per region plus every pairwise brightness ratio. Use it whenever a done-check is
+    an inequality ("the outer window strips must be brighter than the recessed core", "the
+    sign LETTERS must be brighter than the panel"). Do NOT hand-roll this with
+    bpy.ops.render.render + numpy: that bypasses the metrics hook and mutates
+    scene.render.resolution_*, which leaves the DELIVERABLE rendering at the wrong size if
+    it throws mid-way.
   - import_asset(name) — drop in a committed, normalized hero mesh.
   - find_recipe(query) — search a cookbook of VETTED Blender snippets for hard effects
     (volumetrics, complex materials, compositor, instancing). Call this BEFORE

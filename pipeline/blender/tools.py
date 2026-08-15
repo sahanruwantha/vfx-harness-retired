@@ -521,9 +521,96 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         return {"content": [{"type": "text", "text":
                 f"{len(state['done'])}/{len(state['items'])} done, {len(left)} left\n{body}"}]}
 
+    @tool(
+        "measure_regions",
+        "Measure named RECTANGLES of a rendered frame and compare them. Use this to "
+        "prove a structural claim numerically instead of eyeballing it — 'the outer "
+        "window strips are brighter than the recessed core', 'the sign LETTERS are "
+        "brighter than the panel behind them'. Regions are in NORMALISED frame "
+        "coordinates [x0,y0,x1,y1], each 0..1, origin TOP-LEFT. Returns mean/σ/max/lit%% "
+        "per region plus every pairwise brightness ratio, so you never slice pixels "
+        "yourself.",
+        {"type": "object",
+         "properties": {
+             "frame": {"type": "integer"},
+             "regions": {
+                 "type": "object",
+                 "description": 'name -> [x0,y0,x1,y1] in 0..1, e.g. '
+                                '{"left_strip":[0.42,0.2,0.46,0.8], '
+                                '"core":[0.47,0.2,0.53,0.8]}',
+                 "additionalProperties": {"type": "array", "items": {"type": "number"}}},
+             "mode": {"type": "string", "enum": ["solid", "wire", "draft", "eevee"]},
+             "scale": {"type": "number"},
+         },
+         "required": ["frame", "regions"]},
+    )
+    async def measure_regions(args):
+        """Exists because the builder was writing its own measurement rig every layer.
+
+        Asked to prove 'the outer quarters are brighter than the central half', it had no
+        tool for it, so it hand-rolled `bpy.ops.render.render(write_still=True)` plus numpy
+        pixel slicing INSIDE run_bpy — which produced two distinct crashes in one layer
+        (a zero-size reduction and a 28-vs-31 concatenation), bypassed the session's render
+        path so the metrics hook never saw those frames, and mutated
+        scene.render.resolution_* on the live scene, where an exception between set and
+        restore leaves the deliverable rendering at the wrong size.
+        """
+        regions = args.get("regions") or {}
+        if not regions:
+            return _text("no regions given", is_error=True)
+        bad = [n for n, r in regions.items()
+               if not (isinstance(r, list) and len(r) == 4
+                       and all(isinstance(v, (int, float)) and 0.0 <= v <= 1.0 for v in r)
+                       and r[0] < r[2] and r[1] < r[3])]
+        if bad:
+            return _text(f"regions must be [x0,y0,x1,y1] in 0..1 with x0<x2 and y0<y1; "
+                         f"bad: {bad}", is_error=True)
+        try:
+            r = await _call("render", frame=int(args["frame"]),
+                            mode=args.get("mode", "eevee"),
+                            scale=float(args.get("scale", 0.5)))
+        except BlenderError as e:
+            return _text(str(e), is_error=True)
+
+        im = Image.open(r["image_path"]).convert("RGB")
+        g = im.convert("L")
+        W, H = g.size
+        out = {}
+        for name, (x0, y0, x1, y1) in regions.items():
+            box = (max(0, int(x0 * W)), max(0, int(y0 * H)),
+                   min(W, max(int(x1 * W), int(x0 * W) + 1)),
+                   min(H, max(int(y1 * H), int(y0 * H) + 1)))
+            px = list(g.crop(box).getdata())
+            n = len(px) or 1
+            mean = sum(px) / n
+            sd = (sum((p - mean) ** 2 for p in px) / n) ** 0.5
+            out[name] = {"mean": round(mean, 1), "sd": round(sd, 1), "max": max(px),
+                         "lit_pct": round(100 * sum(1 for p in px if p >= 120) / n, 1),
+                         "px": n}
+        lines = [f"frame {r['frame']} ({r['mode']}) — {W}x{H}"]
+        for name, v in out.items():
+            lines.append(f"  {name:<16} mean {v['mean']:>5} · σ {v['sd']:>5} · "
+                         f"max {v['max']:>3} · lit {v['lit_pct']:>5}% · {v['px']}px")
+        names = list(out)
+        if len(names) > 1:
+            lines.append("  ratios (a/b by mean brightness):")
+            for i, a in enumerate(names):
+                for b in names[i + 1:]:
+                    ma, mb = out[a]["mean"], out[b]["mean"]
+                    rel = ma / mb if mb > 0.5 else float("inf")
+                    verdict = ("BRIGHTER" if ma > mb * 1.05 else
+                               "DARKER" if mb > ma * 1.05 else "about EQUAL")
+                    lines.append(f"    {a} is {verdict} than {b}  "
+                                 f"({ma} vs {mb}, ×{rel:.2f})")
+        for name, v in out.items():
+            if v["px"] < 64:
+                lines.append(f"  ⚠ {name} is only {v['px']}px — too small to measure "
+                             f"reliably; widen the region or raise scale")
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
     # ask_supervisor is deliberately PLAN-ONLY: a layer that discovers an
     # ambiguity is already building on earlier layers' answer to it.
-    tools = tools + [script_map, find_in_script, worklist]
+    tools = tools + [script_map, find_in_script, worklist, measure_regions]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)
     names = [f"mcp__{SERVER_NAME}__{t.name}" for t in tools]
     return server, names
