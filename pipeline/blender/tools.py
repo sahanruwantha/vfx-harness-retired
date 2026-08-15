@@ -111,6 +111,18 @@ def _metrics_line(im: Image.Image, ref: Image.Image | None = None) -> str:
     return line
 
 
+def _warn_suffix(r: dict) -> str:
+    """Scene-state warnings from the worker, attached to the render they describe.
+
+    These are conditions where the render looks entirely plausible while silently doing
+    the opposite of what was asked — a sun inside a world volume being the one that cost
+    five layer-2 attempts. There is nothing in the picture to prompt suspicion, so the
+    warning has to travel with it.
+    """
+    w = r.get("warnings") or []
+    return "".join(f"\n⚠ {x}" for x in w)
+
+
 def _image(path: str, caption: str) -> dict:
     im = _load(path)
     return {"content": [
@@ -320,7 +332,8 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
                             mode=args.get("mode", "eevee"), scale=float(args.get("scale", 0.4)))
         except BlenderError as e:
             return _text(str(e), is_error=True)
-        return _image(r["image_path"], f"frame {r['frame']} ({r['mode']})")
+        cap = f"frame {r['frame']} ({r['mode']})" + _warn_suffix(r)
+        return _image(r["image_path"], cap)
 
     @tool(
         "compare_frame",
@@ -349,7 +362,7 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         except BlenderError as e:
             return _text(str(e), is_error=True)
         out = _compare_image(r["image_path"], ref_path,
-                             f"frame {r['frame']} ({mode})  vs  {ref}")
+                             f"frame {r['frame']} ({mode})  vs  {ref}" + _warn_suffix(r))
         # Structure and exposure are now scale-invariant, but halation is not and cannot
         # be: a 672px render genuinely holds less high-frequency detail than a 1920px one.
         # So changing mode or scale between two readings of the SAME frame moves the
@@ -389,7 +402,8 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
                 r = await _call("render", frame=int(f), mode=mode, scale=scale)
                 im = _load(r["image_path"])
                 blocks.append({"type": "text",
-                               "text": f"frame {r['frame']} ({mode})\n{_stats(im)}"})
+                               "text": f"frame {r['frame']} ({mode})\n{_stats(im)}"
+                                       + _warn_suffix(r)})
                 blocks.append({"type": "image", "data": _b64(im),
                                "mimeType": "image/jpeg"})
             except BlenderError as e:

@@ -628,6 +628,27 @@ def main():
     check("a frame missing after repair is not scored as zero",
           d["now_worst"] == 3.0 and d["broke"] == [], f"worst {d['now_worst']}")
 
+    print("\n[sun-in-volume trap]")
+    # The runtime check needs bpy, so it is verified empirically (no sun -> silent;
+    # sun + world volume -> warns; volume unlinked -> silent again). What IS testable
+    # here is that the warning and its guidance still exist in all three places, since
+    # the failure mode is someone tidying away a comment and restoring a $78 trap.
+    worker_src = Path("pipeline/blender/worker.py").read_text(encoding="utf-8")
+    prompts_src = Path("pipeline/build_prompts.py").read_text(encoding="utf-8")
+    tools_src = Path("pipeline/blender/tools.py").read_text(encoding="utf-8")
+    check("the worker warns on SUN + world volume",
+          "_scene_warnings" in worker_src and "SUN + WORLD VOLUME" in worker_src)
+    check("every render path surfaces worker warnings",
+          tools_src.count("_warn_suffix(r)") >= 3, str(tools_src.count("_warn_suffix(r)")))
+    check("the render result carries warnings",
+          '"warnings": _scene_warnings()' in worker_src)
+    check("the builder prompt names the trap and the fix",
+          all(s in prompts_src for s in ("SUN CONTRIBUTES ALMOST NOTHING", "AREA/POINT/SPOT")))
+    check("bvfx_volumetric_world's docstring carries the warning",
+          "infinitely distant" in worker_src)
+    check("imported assets are normalised out of QUATERNION mode",
+          'rotation_mode = "XYZ"' in worker_src and "silent no-op" in worker_src)
+
     print("\n[facade profile]")
     from pipeline.facade import facade_profile, compare_profiles
     from PIL import Image as _Im

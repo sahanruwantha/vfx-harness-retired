@@ -97,7 +97,14 @@ def _bvfx_scatter_emissive(count, area=200.0, z_range=(0.0, 6.0), color=(1.0, 0.
 
 def _bvfx_volumetric_world(color=(0.02, 0.05, 0.03), bg_strength=0.3,
                            vol_color=(0.05, 0.3, 0.1), density=0.006, **_):
-    """Near-black tinted sky + volume-scatter haze (the billowing-glow look)."""
+    """Near-black tinted sky + volume-scatter haze (the billowing-glow look).
+
+    WARNING: once a world Volume is linked, a SUN contributes essentially nothing — it is
+    infinitely distant, so its light is fully extinguished crossing an unbounded volume.
+    Measured here: a white 0.8 body under a sun at energy 25 reads 6.74/255 with the
+    volume linked and 216 without. No volumetric setting changes it. Key your subjects
+    with LOCAL lights (AREA/POINT/SPOT) placed near them.
+    """
     sc = bpy.context.scene
     w = sc.world or bpy.data.worlds.new("World"); sc.world = w
     w.use_nodes = True; nt = w.node_tree; nt.nodes.clear()
@@ -710,6 +717,43 @@ def h_keyframes(a: dict) -> dict:
     return {"text": "\n".join(lines)}
 
 
+def _scene_warnings() -> list:
+    """Scene states that render as a plausible picture while silently deleting the thing
+    the builder just asked for. Returned with every render, because the render itself
+    looks fine and gives no reason to suspect anything.
+
+    THE SUN-IN-A-WORLD-VOLUME TRAP. A sun is infinitely distant, so its shadow ray through
+    an unbounded homogeneous world volume accumulates unbounded optical depth and arrives
+    at zero. Measured on this shot: a white 0.8-albedo body under a sun at energy 25
+    renders at mean 6.74/255 with the world volume linked, and 216 without it. It is a
+    cliff, not a gradient -- density 6e-6 is bit-identical to no volume, 6e-5 collapses --
+    and NO volumetric setting rescues it (shadows off, custom end, 256 samples all render
+    identically). A local AREA/POINT/SPOT light at the same atmosphere reads 154.
+
+    This cost five layer-2 attempts and $78.76. Every builder that reached for a key light
+    saw a black tower, concluded lighting does not work in this scene, and fell back to
+    emissive geometry -- which cannot show faceting, which is what it was asked for.
+    """
+    out = []
+    sc = bpy.context.scene
+    w = sc.world
+    vol_linked = bool(
+        w and w.use_nodes and w.node_tree and any(
+            l.to_socket.name == "Volume" and l.to_node.type == "OUTPUT_WORLD"
+            for l in w.node_tree.links))
+    if vol_linked:
+        suns = [o.name for o in sc.objects
+                if o.type == "LIGHT" and o.data.type == "SUN" and not o.hide_render]
+        if suns:
+            out.append(
+                f"SUN + WORLD VOLUME: {', '.join(suns)} will contribute almost nothing. "
+                f"A sun is infinitely distant, so its light is fully extinguished by an "
+                f"unbounded world volume (measured on this shot: 6.74/255 vs 216 with the "
+                f"volume unlinked). No volumetric setting fixes it. Use a LOCAL light "
+                f"(AREA/POINT/SPOT) placed near the subject, or unlink the world Volume.")
+    return out
+
+
 def h_render(a: dict) -> dict:
     sc = bpy.context.scene
     frame = int(a["frame"])
@@ -737,6 +781,7 @@ def h_render(a: dict) -> dict:
     sc.render.image_settings.file_format = "PNG"
     bpy.ops.render.render(write_still=True)
     return {"image_path": path, "frame": frame, "mode": mode,
+            "warnings": _scene_warnings(),
             "resolution": [sc.render.resolution_x, sc.render.resolution_y, sc.render.resolution_percentage]}
 
 

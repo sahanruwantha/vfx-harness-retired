@@ -94,6 +94,17 @@ helpers are in scope (like `bpy`) — prefer them:
     COLUMNS across (~4-20; it's not a 0-1 fraction). Use this to shade a tower — do NOT
     apply one uniform emission material (it washes out all window detail).
   - bvfx_volumetric_world(color, bg_strength, vol_color, density) — tinted sky + haze.
+LIGHTING IN A SCENE THAT HAS A WORLD VOLUME — read this before adding a key light:
+  A SUN CONTRIBUTES ALMOST NOTHING once a world Volume is linked. A sun is infinitely
+  distant, so its light is fully extinguished crossing an unbounded volume. Measured on
+  barrel_roll: a white 0.8-albedo body under a sun at energy 25 renders at 6.74/255 with
+  the volume linked, 216 without. It is a cliff, not a gradient, and NO volumetric
+  setting fixes it (shadows off, custom end, 256 samples all render identically). The
+  same body under a LOCAL area light reads 154.
+  So: key with AREA/POINT/SPOT placed near the subject. If you add a sun and the subject
+  renders black, that is this — not your material, not your exposure.
+  Related: an EMISSION shader cannot be lit at all. To let a surface catch light, mix a
+  Principled BSDF under the emission using the mask that separates window from body.
 EDITING YOUR BUILD SCRIPT — never rewrite a file to change part of it:
   1. script_map(<path>) — the structure: functions, sections, and which lines create or
      reference each named object/material. A 536-line script is ~380 tokens this way.
