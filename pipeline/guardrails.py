@@ -100,6 +100,65 @@ def api_guardrails() -> HookMatcher:
     return HookMatcher(matcher=None, hooks=[_check])
 
 
+def script_sanity() -> HookMatcher:
+    """Parse every run_bpy payload before it executes: syntax, and bare `next(...)`.
+
+    An error HINT teaches one session. Every layer is a separate process with a fresh SDK
+    session, so a shot with 8 layers gets 8 independent chances to make the same mistake —
+    which is why bare `next(...)` raised StopIteration in one run, got a good hint, was
+    absorbed, and then raised again in the next run's layer 2. Reactive help cannot
+    accumulate across a boundary the pipeline deliberately creates. A PreToolUse deny can.
+
+    Detection is by AST, not regex: nested parens defeat any pattern, and `next(gen, None)`
+    (the safe form) differs from `next(gen)` only by an argument count. Zero false
+    positives by construction.
+
+    Parsing also gives a free syntax check. A typo currently costs a full round-trip into
+    Blender to discover.
+    """
+    import ast as _ast
+
+    async def _check(inp, tool_use_id, ctx) -> dict:
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        if not tool.endswith("run_bpy"):
+            return {}
+        args = (inp.get("tool_input") if isinstance(inp, dict) else getattr(inp, "tool_input", {})) or {}
+        code = next((str(args[k]) for k in _CODE_KEYS if args.get(k)), "")
+        if not code.strip():
+            return {}
+        try:
+            tree = _ast.parse(code)
+        except SyntaxError as e:
+            bump("syntax_blocked")
+            log(f"⛔ run_bpy has a syntax error at line {e.lineno} — blocked before "
+                f"executing", 1)
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    f"SyntaxError on line {e.lineno}: {e.msg}\n"
+                    f"    {(e.text or '').rstrip()}\n"
+                    f"Fix it and resend — this never reached Blender."}}
+
+        bare = [n.lineno for n in _ast.walk(tree)
+                if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                and n.func.id == "next" and len(n.args) == 1 and not n.keywords]
+        if bare:
+            bump("bare_next_blocked")
+            log(f"⛔ run_bpy uses bare next(...) at line(s) {bare} — blocked", 1)
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    f"BLOCKED: bare `next(...)` at line(s) {', '.join(map(str, bare))}. "
+                    f"When the generator matches nothing it raises StopIteration, which "
+                    f"carries NO message — you would get a bare 'StopIteration:' and "
+                    f"nothing to act on. Write `x = next((... for ... if ...), None)` and "
+                    f"handle `x is None`, or call inspect_nodes(...) first to see which "
+                    f"node types actually exist. For the usual targets the bvfx_* helpers "
+                    f"already handle the miss."}}
+        return {}
+    return HookMatcher(matcher=None, hooks=[_check])
+
+
 def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatcher:
     """After every render, append objective ref-deltas to the tool result.
 
@@ -229,7 +288,7 @@ def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = No
     from .sandbox import path_sandbox
     return {
         "PreToolUse": [path_sandbox(*roots, cwd=shot_folder), api_guardrails(),
-                       web_allowlist()],
+                       script_sanity(), web_allowlist()],
         "PostToolUse": [metrics_feedback(shot_folder, ref_rel)],
         "PreCompact": [compaction_notice(shot_folder)],
     }

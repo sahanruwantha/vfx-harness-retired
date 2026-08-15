@@ -127,6 +127,30 @@ def main():
     check("blocks off-domain web", offsite["hookSpecificOutput"]["permissionDecision"] == "deny")
     check("allows Blender docs", docs == {})
 
+    # An error HINT teaches one SESSION; every layer is a fresh process, so bare next()
+    # raised StopIteration in one run, was hinted and absorbed, then raised again in the
+    # next run. A PreToolUse deny is the only form of help that crosses that boundary.
+    from pipeline.guardrails import script_sanity
+    _ss = script_sanity().hooks[0]
+
+    def _blocked(code):
+        r = anyio.run(_ss, {"tool_name": "mcp__blender__run_bpy",
+                            "tool_input": {"script": code}}, None, None)
+        return r.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+
+    check("bare next() is blocked before it runs",
+          _blocked("n = next(n for n in nt.nodes if n.type=='EMISSION')"))
+    check("next(gen, None) is allowed",
+          not _blocked("n = next((n for n in nt.nodes if n.type=='X'), None)"))
+    check("bare next nested in another call is still caught",
+          _blocked("print(len(next(g for g in gs if g)))"))
+    check("a variable named next is not a call",
+          not _blocked("next = 5\nprint(next)"))
+    check("a syntax error never reaches Blender",
+          _blocked("for i in range(3)\n    print(i)"))
+    check("ordinary scripts pass untouched",
+          not _blocked("import bpy\nbpy.ops.mesh.primitive_cube_add()"))
+
     print("\n[script map]")
     tmp = Path(tempfile.mkdtemp()) / "s.py"
     tmp.write_text("import bpy\ndef helper():\n    pass\no = bpy.data.objects.new('tower', None)\n"
