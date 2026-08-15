@@ -4,7 +4,7 @@ Standard flow is TWO-PASS, an A/B-tested division of labour:
 
   pass 1  DRAFT   (default claude-opus-5)   — from-scratch forensics: deep scene
           read, research, spikes. Empirically the stronger cold-start discoverer.
-  pass 2  VERIFY  (default claude-fable-5)  — adversarial audit of the draft:
+  pass 2  VERIFY  (default claude-opus-5)   — adversarial audit of the draft:
           frame claims re-derived, still↔source twins metric-matched, spike
           citations evidence-checked, gaps measured, missed prior work salvaged.
           Empirically the stronger reviewer. Writes the superseding plan.md.
@@ -42,7 +42,13 @@ from .prompts import (PLANNER_SYSTEM, VERIFIER_ADDENDUM, planner_user_prompt,
 from .recipes import build_recipe_tools
 
 DRAFT_MODEL = "claude-opus-5"
-VERIFY_MODEL = "claude-fable-5"
+# The audit pass was fable-5 on the reasoning that reviewing is lighter work than drafting.
+# It is opus-5 now: the plan is the specification every layer is judged against, and the
+# most expensive defects found so far were PLAN defects that survived this audit — a
+# ticket instructing the builder to rebuild a facade the asset already carried, an axis
+# bundling three disciplines into one scalar, and done-checks measured off a frame band
+# when the layer owned a narrow subject.
+VERIFY_MODEL = "claude-opus-5"
 MODEL = VERIFY_MODEL  # single-pass default
 
 

@@ -33,7 +33,10 @@ from .assets.normalize import prepare_asset
 from .brief import Shot, load_shot
 from .log import log, log_message
 
-MODEL = "claude-fable-5"
+# opus-5: the asset is frozen upstream and every layer inherits it, so a mistake here is
+# the most expensive kind — sr2_tower's baked facade went unnoticed for five layer-2
+# attempts because nobody looked closely at what the asset already had.
+MODEL = "claude-opus-5"
 
 ASSET_SYSTEM = """\
 You are the ASSET agent in an automated 3D/VFX pipeline. You build the bespoke,

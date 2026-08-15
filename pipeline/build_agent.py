@@ -60,9 +60,16 @@ from .runlog import bump, reset_counts, summary as run_summary, write as write_r
 from .shot_context import clear_layer_context, write_layer_context
 
 MODEL = "claude-opus-5"
-# The critic scores renders — a verification job, like the plan's pass-2 audit — and it
-# runs 3-4x per layer to the builder's one session, so it dominates layer cost.
-CRITIC_MODEL = "claude-fable-5"
+# The critic scores renders and runs 3-4x per layer to the builder's one session, so it
+# dominates layer cost. It was fable-5 on that reasoning; it is opus-5 now because the
+# verdict is the pipeline's only measure of quality and a cheaper judge is a false economy
+# when every downstream decision rests on it.
+#
+# NOTE the calibration below: _JUDGE_SD = 0.603 and the adjudication band derived from it
+# were MEASURED ON FABLE-5. They are the wrong constants for this judge until re-measured
+# (`python -m pipeline.evals variance <shot>`). Until then the panel is being convened on
+# a noise estimate that belongs to a different model.
+CRITIC_MODEL = "claude-opus-5"
 
 AXES_SYSTEM = """\
 You define the CRITIC RUBRIC for one VFX shot. Read brief.md and the reference images,
@@ -841,7 +848,14 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
 # mistake _repro_tolerance and the granularity-aware PASS_MEAN already corrected. Two
 # sigma of the mean at this sd: n=3 → 0.70, n=4 → 0.60, n=6 → 0.49, n=8 → 0.43. The old
 # flat 0.4 was only defensible at n≈8, and most layers here are narrower than that.
-_JUDGE_SD = 0.603     # re-measure: python -m pipeline.evals variance <shot>
+#
+# STALE AS OF THE SWITCH TO OPUS-5. Every number above was measured on FABLE-5. Judge
+# noise is a property of the judge, so both the sd and the flip rate belong to a model
+# that is no longer scoring anything here. The band may now be too wide (paying for
+# panels that were never in doubt) or too narrow (passing verdicts that a second opinion
+# would have flipped) — and which of those it is, is not currently known.
+# Re-measure before trusting the adjudication economics: python -m pipeline.evals variance <shot>
+_JUDGE_SD = 0.603     # fable-5 measurement; see above
 
 # How many times a canonical failure may be handed back before we stop paying for it.
 # Two, plus a no-improvement break: a repair that moved nothing will not move anything

@@ -17,7 +17,7 @@ plan → build (×N layers) → acceptance → render
 
 | stage | command | what it does |
 |---|---|---|
-| **plan** | `python -m pipeline.plan_agent <shot>` | Reads `brief.md` + refs, emits `plan.md`, `layers.json`, `acceptance.json`, `critic_axes.json`. Two-pass by default: opus-5 drafts, fable-5 audits. Any ambiguity becomes a **question answered before building starts**, never mid-build. |
+| **plan** | `python -m pipeline.plan_agent <shot>` | Reads `brief.md` + refs, emits `plan.md`, `layers.json`, `acceptance.json`, `critic_axes.json`. Two-pass by default: opus-5 drafts, opus-5 audits. Any ambiguity becomes a **question answered before building starts**, never mid-build. |
 | **build** | `python -m pipeline.build_agent <shot> --layer 1` | Builds ONE layer as an additive delta script (`build/01_layout.py` …). Iterates live in Blender, then writes a script that must rebuild it from empty. |
 | **acceptance** | `python -m pipeline.accept_agent <shot>` | Replays the whole chain from an empty scene and judges the approval moments on the full rubric. `--repair` routes a failure back to the layer that owns the failing axis. |
 | **render** | `python -m pipeline.render_shot <shot>` | Runs the accepted chain and encodes the frame range to mp4. |
