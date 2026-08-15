@@ -40,8 +40,12 @@ def main():
     layers, axes, moments = load_layers(shot), load_axes(shot), load_milestones(shot)
 
     print("\n[plan artifacts]")
-    check("layers load", len(layers) == 8, f"{len(layers)}")
-    check("ids are 1..N", [l.id for l in layers.values()] == [str(i) for i in range(1, 9)])
+    # Count derived, not hardcoded: inserting the lighting stage renumbered 5..8 into
+    # 6..9 and these read as three failures of the PLAN rather than of the assertion.
+    # What matters is that ids are dense and 1-based, which is what chaining relies on.
+    check("layers load", len(layers) >= 8, f"{len(layers)}")
+    check("ids are 1..N",
+          [l.id for l in layers.values()] == [str(i) for i in range(1, len(layers) + 1)])
     check("script prefix matches id",
           all(Path(l.script).name.startswith(f"{int(l.id):02d}_") for l in layers.values()))
     check("every layer multi-frame aware", all(len(l.judges) >= 1 for l in layers.values()))
@@ -197,10 +201,15 @@ def main():
     check("answer becomes law", "2:1" in answers_block(q))
 
     print("\n[layer context]")
-    p = write_layer_context(shot, layers["6"], axes, {195: "mean 0.5"})
+    # Pick the layer by what it OWNS, not by id — ids shift whenever the stack is
+    # restructured, and a test keyed on "layer 6" silently starts asserting about a
+    # different layer instead of failing honestly.
+    lay = next(l for l in layers.values() if "roll_and_blackout" in l.owns)
+    fp_frame = lay.judges[0][0]
+    p = write_layer_context(shot, lay, axes, {fp_frame: "mean 0.5"})
     body = p.read_text()
-    check("names its layer", "# Layer 6" in body)
-    check("lists every judge frame", all(f"f{f}" in body for f, _ in layers["6"].judges))
+    check("names its layer", f"# Layer {lay.id}" in body)
+    check("lists every judge frame", all(f"f{f}" in body for f, _ in lay.judges))
     check("carries fingerprints", "mean 0.5" in body)
     check("has summary instructions", "Summary instructions" in body)
     clear_layer_context(shot)
