@@ -328,6 +328,100 @@ def _bvfx_aim(obj, target=(0.0, 0.0, 0.0), up="Y"):
     return obj
 
 
+def _bvfx_fcurves(target):
+    """EVERY f-curve keyed on `target` — object, material, world, node group, scene, or a
+    raw animation_data.
+
+    Promoted to a helper because 8 of 10 shipped build scripts walk channelbags by hand,
+    in 5 distinct implementations, and 5 of those use the `action.layers[0].strips[0]`
+    indexed form that raises on any ID nothing has been keyed on yet. 5.x actions are
+    SLOTTED: `action.fcurves` is empty, so the obvious read finds nothing. Both failure
+    modes are SILENT — you set interpolation on an empty list and ship the bezier.
+    """
+    ad = getattr(target, "animation_data", None)
+    if ad is None and getattr(target, "node_tree", None) is not None:
+        ad = target.node_tree.animation_data      # materials/worlds animate on the TREE
+    if ad is None and hasattr(target, "action"):
+        ad = target                               # already an animation_data
+    if not ad or not ad.action:
+        return []
+    legacy = getattr(ad.action, "fcurves", None)
+    if legacy and len(legacy):
+        return list(legacy)                       # pre-4.4 action
+    return [fc for layer in ad.action.layers for strip in layer.strips
+            for cb in strip.channelbags for fc in cb.fcurves]
+
+
+def _bvfx_interp(target, mode="LINEAR", const=("hide_render", "hide_viewport")):
+    """Force interpolation on everything keyed on `target`; visibility goes CONSTANT so a
+    swap is a hard cut, never a half-hidden in-between frame.
+
+    Returns the number of curves touched — 0 means you keyed something other than what you
+    think you did, which is the failure this exists to make visible. Bezier overshoot on a
+    fast ramp is what makes a delta layer non-idempotent, and can drive a one-frame value
+    negative between keys that are both positive.
+    """
+    n = 0
+    for fc in _bvfx_fcurves(target):
+        m = "CONSTANT" if any(c in fc.data_path for c in const) else mode
+        for kp in fc.keyframe_points:
+            kp.interpolation = m
+            if m == "BEZIER":
+                kp.handle_left_type = kp.handle_right_type = "AUTO_CLAMPED"
+        fc.update()
+        n += 1
+    return n
+
+
+def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0),
+                     spine=(), ladder=(), display=4.0):
+    """The two-object camera: an EMPTY owns location+pitch, the camera child owns ROLL on
+    its own local Z. On a bare camera `rotation_euler[2]` is world YAW and swings the
+    subject out of frame; under the rig the view axis IS local Z, so the frame rotates
+    about its own centre. Returns (rig, cam).
+
+      spine:  [(frame, distance, altitude, pitch_up_deg), ...] subject on +Y at origin.
+              Keyed BEZIER — one smooth travel; a velocity step reads as a camera bump.
+      ladder: [(frame, roll_deg), ...] keyed LINEAR — a roll ladder's segment RATES are
+              the look, and bezier drags the peak rate off the frames you keyed it on.
+
+    Pitch is `radians(90 + p)`: a camera looks down its own -Z, so LEVEL is 90, not 0."""
+    import math                      # not a module-level import in this worker
+    sc = bpy.context.scene
+    for n in (name, "camera"):
+        o = bpy.data.objects.get(n)
+        if o:
+            bpy.data.objects.remove(o, do_unlink=True)
+    rig = bpy.data.objects.new(name, None)
+    rig.empty_display_size = display
+    sc.collection.objects.link(rig)
+    camd = bpy.data.cameras.new("camera")
+    camd.lens, camd.sensor_width, camd.sensor_fit = lens, sensor, "AUTO"
+    camd.clip_start, camd.clip_end = clip
+    cam = bpy.data.objects.new("camera", camd)
+    sc.collection.objects.link(cam)
+    cam.parent = rig
+    cam.matrix_parent_inverse.identity()   # BEFORE location, or offsets are silently wrong
+    cam.location = (0.0, 0.0, 0.0)
+    cam.rotation_euler = (0.0, 0.0, 0.0)
+    sc.camera = cam
+    if spine:
+        rig.animation_data_clear()
+        for f, d, z, p in spine:
+            rig.location = (0.0, -d, z)
+            rig.rotation_euler = (math.radians(90.0 + p), 0.0, 0.0)
+            rig.keyframe_insert("location", frame=f)
+            rig.keyframe_insert("rotation_euler", frame=f)
+        _bvfx_interp(rig, "BEZIER")
+    if ladder:
+        cam.animation_data_clear()
+        for f, r in ladder:
+            cam.rotation_euler[2] = math.radians(r)
+            cam.keyframe_insert("rotation_euler", index=2, frame=f)
+        _bvfx_interp(cam, "LINEAR")
+    return rig, cam
+
+
 _HELPERS = {
     "bvfx_emission": _bvfx_emission,
     "bvfx_emissive_windows": _bvfx_emissive_windows,
@@ -337,6 +431,9 @@ _HELPERS = {
     "bvfx_volumetric_world": _bvfx_volumetric_world,
     "bvfx_volume": _bvfx_volume,
     "bvfx_glare_bloom": _bvfx_glare_bloom,
+    "bvfx_fcurves": _bvfx_fcurves,
+    "bvfx_interp": _bvfx_interp,
+    "bvfx_camera_rig": _bvfx_camera_rig,
 }
 
 

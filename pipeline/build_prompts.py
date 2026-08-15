@@ -104,6 +104,20 @@ EDITING YOUR BUILD SCRIPT — never rewrite a file to change part of it:
     there). Returns the new object names.
   - bvfx_aim(obj, target, up='Y') — point a camera/object at a target (accepts tuples or
     Vectors — avoids the `unary -: tuple` mistake of hand-rolled aim math).
+  - bvfx_camera_rig(name, lens, spine=[(frame, dist, alt, pitch_up)], ladder=[(frame,
+    roll_deg)]) — the two-object camera: an EMPTY owns location+pitch, the camera child
+    owns ROLL on its own local Z. Returns (rig, cam). NEVER roll a bare camera: its
+    `rotation_euler[2]` is world YAW, and measured across 0-180° it moved the subject's
+    frame radius by 59,534,535 (off frame entirely) where the rig moved it by 0.0.
+    spine is keyed BEZIER (one smooth travel), ladder LINEAR (segment rates ARE the look).
+  - bvfx_fcurves(target) — EVERY f-curve keyed on an object/material/world/node group.
+    5.x actions are SLOTTED: `action.fcurves` is empty, and `action.layers[0].strips[0]`
+    RAISES on any id nothing has been keyed on yet. Never hand-roll this walk.
+  - bvfx_interp(target, mode='LINEAR') — force interpolation on everything keyed on
+    target; hide_render/hide_viewport go CONSTANT so a visibility swap is a hard cut.
+    RETURNS THE NUMBER OF CURVES TOUCHED — if it returns 0 you keyed something other
+    than what you think you did. Bezier overshoot on a fast ramp is what makes a delta
+    layer non-idempotent and can drive a value negative between two positive keys.
 If a run_bpy call warns it was slow or added too many objects, STOP and redo it with a
 helper/instancing. Keep the whole scene lean so build/<milestone>.py re-runs fast.
 
