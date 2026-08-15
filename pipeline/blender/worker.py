@@ -314,7 +314,16 @@ def _bvfx_import_asset(name):
         raise FileNotFoundError(f"no asset {name!r}; available: {avail}")
     before = set(bpy.data.objects.keys())
     bpy.ops.import_scene.gltf(filepath=glb)
-    return [n for n in bpy.data.objects.keys() if n not in before]
+    new = [n for n in bpy.data.objects.keys() if n not in before]
+    # glTF import leaves objects in QUATERNION rotation mode, and in that mode Blender
+    # ignores `rotation_euler` ENTIRELY — assigning to it is a silent no-op, not an error.
+    # A lookdev turntable written against it produced four "different" angles that were
+    # identical to the pixel, and bvfx_aim() below would fail the same silent way on an
+    # imported object. Euler is what every build script and helper here actually writes,
+    # so normalise on the way in rather than leaving the trap behind the asset boundary.
+    for n in new:
+        bpy.data.objects[n].rotation_mode = "XYZ"
+    return new
 
 
 def _bvfx_aim(obj, target=(0.0, 0.0, 0.0), up="Y"):
@@ -324,6 +333,9 @@ def _bvfx_aim(obj, target=(0.0, 0.0, 0.0), up="Y"):
     bpy.context.view_layer.update()  # matrix_world is stale right after setting .location
     t = mathutils.Vector(target)
     loc = obj.matrix_world.translation
+    # Writing rotation_euler on a QUATERNION-mode object does nothing at all, so aiming
+    # would silently leave the object pointing wherever it already was.
+    obj.rotation_mode = "XYZ"
     obj.rotation_euler = (t - loc).to_track_quat("-Z", up).to_euler()
     return obj
 

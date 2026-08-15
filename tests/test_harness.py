@@ -628,6 +628,66 @@ def main():
     check("a frame missing after repair is not scored as zero",
           d["now_worst"] == 3.0 and d["broke"] == [], f"worst {d['now_worst']}")
 
+    print("\n[facade profile]")
+    from pipeline.facade import facade_profile, compare_profiles
+    from PIL import Image as _Im
+
+    def synth(path, strips, w=200, h=600, bg=255, body=40, win=250):
+        """A synthetic tower: `strips` are (x0,x1) fractions of the shaft that are lit."""
+        im = _Im.new("L", (w, h), bg)
+        px = im.load()
+        sx0, sx1 = int(0.25 * w), int(0.75 * w)
+        for y in range(int(0.05 * h), int(0.95 * h)):
+            for x in range(sx0, sx1):
+                f = (x - sx0) / (sx1 - sx0)
+                lit = any(a <= f <= b for a, b in strips) and (y // 6) % 2 == 0
+                px[x, y] = win if lit else body
+        im.save(path)
+
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as td:
+        outer_p = Path(td) / "outer.png"
+        centre_p = Path(td) / "centre.png"
+        # OUTER strips against a dark core -- the plate's polarity.
+        synth(outer_p, [(0.02, 0.22), (0.78, 0.98)])
+        # The inverse: bright centre, dark edges. This is what layer 1 actually renders,
+        # and the instrument exists to tell these two apart by number.
+        synth(centre_p, [(0.40, 0.60)])
+        o = facade_profile(outer_p)
+        c = facade_profile(centre_p)
+        check("outer-strip tower reads a high outer/core ratio",
+              o["outer_core_ratio"] > 3.0, str(o["outer_core_ratio"]))
+        check("centre-lit tower reads a low outer/core ratio",
+              c["outer_core_ratio"] < 1.0, str(c["outer_core_ratio"]))
+        check("the two polarities are far apart in profile L1",
+              compare_profiles(c, o)["l1"] > 0.3, str(compare_profiles(c, o)["l1"]))
+        check("a profile compared with itself is identical",
+              compare_profiles(o, o)["l1"] == 0.0)
+        check("shaft width excludes the background",
+              abs(o["shaft_px"] - 100) <= 4, str(o["shaft_px"]))
+
+        # Segmentation must FAIL LOUDLY rather than profile the backdrop. A hardcoded
+        # 240 threshold silently classified a whole 720px turntable render as subject,
+        # and every angle then returned an identical "measurement".
+        flat = Path(td) / "flat.png"
+        _Im.new("L", (200, 600), 211).save(flat)
+        try:
+            r = facade_profile(flat)
+            check("a frame with no separable subject is flagged, not silently profiled",
+                  bool(r.get("warning")), str(r.get("warning")))
+        except ValueError:
+            check("a frame with no separable subject is flagged, not silently profiled",
+                  True)
+
+        # The backdrop is segmented by its ACTUAL value, not a constant: a 211-grey
+        # backdrop must still yield a ~100px shaft, which the old threshold could not do.
+        grey_bg = Path(td) / "greybg.png"
+        synth(grey_bg, [(0.02, 0.22), (0.78, 0.98)], bg=211)
+        g = facade_profile(grey_bg)
+        check("segments against a non-white backdrop (211, not 255)",
+              abs(g["shaft_px"] - 100) <= 4 and not g.get("warning"),
+              f"shaft {g['shaft_px']} warn {g.get('warning')}")
+
     print(f"\n{'ALL PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}"
           f"  ({'0' if not FAILS else len(FAILS)} failed)")
     raise SystemExit(1 if FAILS else 0)
