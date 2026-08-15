@@ -343,8 +343,16 @@ def main():
           rec["layers"]["1"]["telemetry"]["cost_usd"] is not None)
     check("baseline carries run_id + attempt for pairing",
           "run_id" in rec["layers"]["1"] and "attempt" in rec["layers"]["1"])
+    # Assert the PROPERTY (the body is stored verbatim), not a string that happens to be
+    # in it. This originally checked for "import bpy" and passed only because one script
+    # in the fixture contained it — build scripts do not import bpy, since the harness
+    # injects it into the namespace. Moving an unrelated aborted script out of build/
+    # removed the coincidence and the test failed while nothing was broken.
     check("baseline stores script bodies, not pointers",
-          any("import bpy" in s.get("text", "") for s in rec["scripts"].values()))
+          bool(rec["scripts"]) and all(
+              s.get("text") == (t3 / name).read_text(encoding="utf-8") and s.get("text")
+              for name, s in rec["scripts"].items()
+              if (t3 / name).is_file()))
     check("baseline hashes every judged render",
           all(v for v in rec["renders"].values()) and len(rec["renders"]) > 0)
     # Absent acceptance must read as absent, never as zero: "0/10 passed" and "never

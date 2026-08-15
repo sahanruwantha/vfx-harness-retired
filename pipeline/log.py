@@ -51,7 +51,7 @@ def log(msg: str, indent: int = 0) -> None:
 # Display caps. Ordinary tool results stay short (they are mostly scene stats we can
 # re-derive); errors get a far bigger budget because the log is the ONLY record of a
 # failed run once the process is gone.
-_OK_CHARS = 300
+_OK_CHARS = 700
 _ERR_CHARS = 2400
 _ARG_CHARS = 400
 _SCRIPT_LINES = 120
@@ -62,17 +62,28 @@ _CODE_KEYS = ("script", "code")
 
 
 def _clip(s: str, n: int, keep: str = "head") -> str:
-    """One-line, length-capped rendering. keep='tail' drops the FRONT instead.
+    """One-line, length-capped rendering.
 
-    Tracebacks are head-heavy boilerplate ("Traceback…", the serve() frame, the exec
-    frame) and tail-light where it matters: the innermost frame, the exception, and any
-    HINT we attached. Clipping those from the head threw away the only diagnostic part,
-    so error text is clipped from the front instead.
+    keep='tail' drops the FRONT. Tracebacks are head-heavy boilerplate ("Traceback…", the
+    serve() frame, the exec frame) and tail-light where it matters: the innermost frame,
+    the exception, and any HINT we attached. Clipping those from the head threw away the
+    only diagnostic part.
+
+    keep='ends' elides the MIDDLE, because a compare_frame result is informative at both
+    ends and dull in between: the caption and exposure line open it, and the signed gap
+    plus any scale-change warning close it. Head-clipping at 300 cut off exactly the
+    feedback added to make the builder converge — so the log showed a comparison happening
+    and hid what it said. Same failure as the traceback clip, one layer along.
     """
     s = s.replace("\n", " ⏎ ")
     if len(s) <= n:
         return s
-    return "…" + s[-n:] if keep == "tail" else s[:n] + "…"
+    if keep == "tail":
+        return "…" + s[-n:]
+    if keep == "ends":
+        head, tail = n * 2 // 5, n - (n * 2 // 5)
+        return f"{s[:head]}…[{len(s) - n} chars]…{s[-tail:]}"
+    return s[:n] + "…"
 
 
 def _log_tool_use(b) -> None:
@@ -141,7 +152,7 @@ def log_message(m) -> None:
                 is_err = bool(getattr(b, "is_error", False))
                 err = " (error)" if is_err else ""
                 text = (_clip(_result_text(b), _ERR_CHARS, keep="tail") if is_err
-                        else _clip(_result_text(b), _OK_CHARS))
+                        else _clip(_result_text(b), _OK_CHARS, keep="ends"))
                 log(f"←{err} {text}", 1)
         return
 
