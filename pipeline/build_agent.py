@@ -1231,8 +1231,22 @@ async def build_layer(shot: Shot, layer, session: BlenderSession, *,
              f"  Score ONLY those axes; every other axis is \"n/a\"."
              if layer.owns else
              f"  Score only what THIS layer's scope covers; everything else is \"n/a\".")
+    # Name what the LATER layers deliver, by title. `owns` scopes the critic by AXIS, and
+    # that is not fine-grained enough: layer 2 owns hero_tower_read, so every tower-shaped
+    # thing in a wide frame counts against it — including the background city, which is
+    # layer 3's job and has not been built yet. It was marked down at f440 for
+    # "featureless flat-grey boxes" that were never its work. An axis can be owned and
+    # still have parts of its subject produced elsewhere.
+    later = [f"layer {g.id} ({g.title})" for g in sorted(
+        load_layers(shot).values(), key=lambda g: str(g.script))
+        if str(g.script) > str(layer.script)]
+    not_yet = (f"  STILL TO COME, and therefore NOT this layer's to deliver or be marked "
+               f"down for: {'; '.join(later)}. Judge the SUBJECT this layer built. If a "
+               f"weakness in an owned axis comes from something a later layer delivers, "
+               f"say so in `issues` and do NOT let it depress the score.\n"
+               if later else "")
     scope = (f"  Layer {layer.id} — {layer.title} (one build stage of many; later layers "
-             f"add the rest of the look).\n  {layer.reads}\n{done}\n{owned}\n"
+             f"add the rest of the look).\n  {layer.reads}\n{done}\n{owned}\n{not_yet}"
              f"  Elements that are correctly ABSENT at this frame (they appear or "
              f"disappear in other layers) are \"n/a\", never 0.").strip()
     if len(layer.judges) > 1:
