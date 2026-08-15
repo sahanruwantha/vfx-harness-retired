@@ -17,6 +17,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import re
 import shutil
 import time
@@ -36,6 +37,7 @@ from claude_agent_sdk import (
 from .blender.session import BlenderError, BlenderSession
 from .blender.tools import build_blender_tools
 from .brief import Shot, load_shot
+from .layer_state import record_round as state_round, start as state_start
 from .log import _result_text, log, log_message
 from .build_prompts import (
     CRITIC_SYSTEM,
@@ -75,9 +77,20 @@ You harvest REUSABLE Blender recipes from a build that just passed its critic. R
 build script. Identify 0-2 GENERAL techniques worth reusing on other shots (volumetrics,
 materials, compositor/grade, instancing) — NOT shot-specific values or trivia. For each,
 Write pipeline/recipes/<slug>.md with frontmatter (name, tags, blender: "5.2+", when,
-verified: true), a short GOTCHAS note, and a parameterized code snippet. If a similar
+verified: false), a short GOTCHAS note, and a parameterized code snippet. If a similar
 recipe already exists, improve it instead of duplicating. If nothing is general enough,
 write nothing and say so.
+
+ALWAYS write `verified: false`. You are not able to verify anything — you are reading a
+script, not running one. `verified: true` is set ONLY by pipeline.verify_recipes, and only
+after the snippet has been EXECUTED in a real Blender session and its top-level callable
+actually invoked, with the result and a hash of the exact code recorded as evidence.
+Claiming it yourself both lies to every future build and fails the test suite.
+
+Write your snippet so it CAN be verified: put the technique in a top-level function with
+plain, defaulted arguments. Code that only runs inside a larger shot-specific block cannot
+be proved to work — a recipe whose function was never called once passed verification for
+months while containing a Blender-4 API call that raises on 5.x.
 """
 
 # Layer: the render passes when every axis clears PASS_MIN and the mean clears
@@ -909,6 +922,10 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
 
     t_layer = time.monotonic()
     reset_counts()
+    # Conclusions that outlive the transcript: a compaction or a crash-resume costs the
+    # conversation, not the measured state of each judge frame or what has been ruled out.
+    state_start(shot.folder, getattr(layer, "id", m.id),
+                list(getattr(layer, "judges", None) or [(m.frame, m.ref)]))
     canon_verdicts: list = []
     passed = False
     reviewed = False          # one approach review per layer; a second plateau stops
@@ -956,6 +973,9 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                                    prior_rel=prior, prior_mean=best["mean"])
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             ledger.record_round(m, kind="iter", index=rnd, render=render_rel, verdict=verdict)
+            state_round(shot.folder, frame=m.frame, mean=verdict["mean"],
+                        passed=verdict["pass"], scores=verdict.get("scores"),
+                        issues=verdict.get("issues"), approach=_APPROACH.get("text"))
             # best-of-N: keep the highest-scoring round (render AND scene snapshot)
             if verdict["mean"] > best["mean"]:
                 best = {"mean": verdict["mean"], "round": rnd, "render": render_rel,
@@ -1056,11 +1076,36 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
         if v:
             log(f"chain snapshot → {Path(v).name} (revert point)", 1)
     if ok or _ERRORS:
-        try:  # harvest from the passing build AND/OR the errors it worked around
-            await distill_recipe(shot, m, verbose, script_rel=script_rel if ok else None,
-                                 errors=list(_ERRORS))
-        except Exception as e:
-            log(f"distill skipped: {str(e)[:80]}")
+        # QUEUED, not run here. Distillation writes recipes for FUTURE layers; nothing
+        # downstream in this run needs them, yet the run used to sit and wait for a model
+        # to finish writing prose before the next layer could start. Drain the queue with
+        # `python -m pipeline.distill <shot>` after the run, or set BVFX_DISTILL_INLINE=1.
+        req = {"milestone": m.id, "script_rel": script_rel if ok else None,
+               "errors": list(_ERRORS), "run_id": RUN_ID}
+        if os.environ.get("BVFX_DISTILL_INLINE") == "1":
+            try:
+                await distill_recipe(shot, m, verbose,
+                                     script_rel=script_rel if ok else None,
+                                     errors=list(_ERRORS))
+            except Exception as e:
+                log(f"distill skipped: {str(e)[:80]}")
+        else:
+            try:
+                q = shot.folder / "logs" / "distill_queue.jsonl"
+                q.parent.mkdir(parents=True, exist_ok=True)
+                with q.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(req) + "\n")
+                log(f"distillation queued ({len(_ERRORS)} error(s)) → "
+                    f"logs/distill_queue.jsonl; drain with "
+                    f"`python -m pipeline.distill {shot.folder}`", 1)
+            except OSError as e:
+                log(f"! could not queue distillation, running it inline: {e}")
+                try:
+                    await distill_recipe(shot, m, verbose,
+                                         script_rel=script_rel if ok else None,
+                                         errors=list(_ERRORS))
+                except Exception as e2:
+                    log(f"distill skipped: {str(e2)[:80]}")
     # One report per layer: everything that previously took six greps, plus what the
     # HOOKS did — a hook that never fires is silent by accident and invisible otherwise.
     try:
@@ -1324,6 +1369,13 @@ async def _run(folder: str, layer_id: str, rounds: int, blender: str,
         log(f"{g.id}: {ledger.status(g.as_milestone())}  →  {ledger.path}")
     finally:
         session.close()
+        # This was imported and never called. write_layer_context() overwrites CLAUDE.md
+        # per layer, so nothing leaked BETWEEN layers — but the last layer's contract was
+        # left behind in the shot folder, where any later project-scoped session would
+        # silently load it as if it were current. Generated context should not outlive
+        # the layer that generated it. (Only removes a file it wrote; never a hand-written
+        # CLAUDE.md.)
+        clear_layer_context(shot)
 
 
 def main() -> None:

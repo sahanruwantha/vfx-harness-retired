@@ -23,6 +23,7 @@ from typing import Any
 
 from claude_agent_sdk import HookMatcher
 
+from .layer_state import NAME as LAYER_STATE
 from .log import log
 from .runlog import bump
 
@@ -139,6 +140,34 @@ def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatche
     return HookMatcher(matcher=None, hooks=[_after])
 
 
+def compaction_notice(shot_folder: str | Path) -> HookMatcher:
+    """Make compaction VISIBLE, and point the builder at its durable state.
+
+    A long layer gets compacted mid-build and nothing recorded it: the builder silently
+    lost the middle of its own reasoning, and afterwards the only symptom was work being
+    repeated. Compaction is also exactly when the layer's conclusions need to be somewhere
+    other than the transcript — layer_state.json holds the measured state per judge frame
+    and what has already been ruled out.
+    """
+    async def _pre(inp, tool_use_id, ctx):
+        bump("compaction")
+        trigger = (inp or {}).get("trigger", "?")
+        log(f"⚠ CONTEXT COMPACTED mid-layer (trigger={trigger}) — the transcript is being "
+            f"summarised; conclusions live in logs/{LAYER_STATE}")
+        block = ""
+        try:
+            from .layer_state import as_prompt_block
+            block = as_prompt_block(shot_folder)
+        except Exception as e:
+            log(f"! layer state unavailable at compaction: {str(e)[:70]}")
+        if not block:
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreCompact",
+                                       "additionalContext": block}}
+
+    return HookMatcher(matcher=None, hooks=[_pre])
+
+
 def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = None) -> dict:
     """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback."""
     from .sandbox import path_sandbox
@@ -146,4 +175,5 @@ def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = No
         "PreToolUse": [path_sandbox(*roots, cwd=shot_folder), api_guardrails(),
                        web_allowlist()],
         "PostToolUse": [metrics_feedback(shot_folder, ref_rel)],
+        "PreCompact": [compaction_notice(shot_folder)],
     }

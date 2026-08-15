@@ -190,6 +190,57 @@ def main():
     check("top-level key updates persist",
           json.loads((t2 / "shot.json").read_text())["acceptance"] == {"run": 2})
 
+    # ---- BEGIN recipe-verification block ------------------------------------------
+    # (added with the verify_recipes rewrite; self-contained, safe to move/merge)
+    from pipeline.verify_recipes import (LEDGER, SPIKES, _blocks, _static, audit,
+                                         current_sha, load_ledger)
+
+    print("\n[recipe verification]")
+    # The bug this whole tool exists to close: a call INSIDE a def is not evidence the def
+    # ever ran. An injected 4.x API sat in an uncalled function and was reported "verified".
+    defs, called, err = _static("def f(x):\n    bpy.thing()\n\ny = 1\n")
+    check("a call inside a def is not a top-level call", (defs, called, err) == (["f"], [], None))
+    defs, called, _ = _static("def f(x):\n    pass\n\nf(1)\n")
+    check("a real top-level call is seen", (defs, called) == (["f"], ["f"]))
+    check("a syntax error is reported, not swallowed", _static("def f(:\n")[2] is not None)
+
+    body = ("prose\n```python\n  a = 1\n  b = 2\n```\n"
+            "```python skip\nthis is not code at all\n```\n"
+            "```python\nglare.glare_type = 'BLOOM'   # 4.x\n```\n")
+    blk = _blocks(body)
+    check("indented fences are dedented", blk == ["a = 1\nb = 2\n"], repr(blk))
+    check("skip + 4.x contrast fences are not executed", len(blk) == 1)
+
+    recs = _all()
+    ledger = load_ledger()
+    check("spike ledger exists", LEDGER.is_file(), str(LEDGER))
+    rows = audit(recs, ledger)
+    liars = [r["name"] for r, entitled, _w in rows if r["verified"] and not entitled]
+    check("no recipe claims verification without live spike evidence", not liars, str(liars))
+    lying_low = [r["name"] for r, entitled, _w in rows if entitled and not r["verified"]]
+    check("no proven recipe is left flagged unverified", not lying_low, str(lying_low))
+    check("every ledger entry names a real recipe",
+          set(ledger) <= {r["name"] for r in recs}, str(set(ledger) - {r["name"] for r in recs}))
+    stale = [n for n, e in ledger.items() if e.get("verdict") == "stale"]
+    check("no recipe is stale against this Blender", not stale, str(stale))
+
+    # editing a recipe must invalidate its evidence, or `verified:` decays into a rumour
+    if recs and ledger:
+        r0 = next((r for r in recs if r["verified"] and _blocks(r["body"])), None)
+        if r0:
+            tampered = dict(r0, body=r0["body"] + "\n```python\nx = 1\n```\n")
+            check("an edited recipe loses its verified claim",
+                  not audit([tampered], ledger)[0][1])
+            check("code hash changes with the code", current_sha(tampered) != current_sha(r0))
+
+    # scaffolding must not leak into what find_recipe hands the builder
+    check("spike fixtures live outside the .md",
+          not any(f.suffix == ".md" and f.name != "README.md" for f in SPIKES.glob("*"))
+          if SPIKES.is_dir() else True)
+    check("no recipe body mentions SPIKE_ARGS",
+          not [r["name"] for r in recs if "SPIKE_ARGS" in r["body"]])
+    # ---- END recipe-verification block --------------------------------------------
+
     print(f"\n{'ALL PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}"
           f"  ({'0' if not FAILS else len(FAILS)} failed)")
     raise SystemExit(1 if FAILS else 0)

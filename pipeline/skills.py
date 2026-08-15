@@ -27,6 +27,17 @@ from .recipes import search_recipes
 SHOTS = Path(__file__).resolve().parent.parent / "shots"
 
 
+def _unproven() -> set[str]:
+    """Recipes with no live spike evidence (see `pipeline.verify_recipes`).
+
+    "WEAK DESPITE a recipe existing" has a third explanation the report used to miss:
+    the recipe may never have been proven to RUN. Distinguishing that from "not found"
+    and "found but wrong" is the difference between a fix and a guess."""
+    from .verify_recipes import audit, load_ledger
+    from .recipes import _all
+    return {r["name"] for r, entitled, _why in audit(_all(), load_ledger()) if not entitled}
+
+
 def _rounds(shot_json: Path):
     try:
         d = json.loads(shot_json.read_text(encoding="utf-8"))
@@ -72,13 +83,19 @@ def report(data: dict) -> str:
     axes = data["axes"]
     if not axes:
         return "no scored rounds yet — build something first"
+    try:
+        unproven = _unproven()
+    except Exception as e:
+        print(f"! could not read the spike ledger: {e}")
+        unproven = set()
     lines = [f"SKILL LEDGER — {len(axes)} axes across {len(data['shots'])} shot(s): "
              f"{', '.join(data['shots'])}", ""]
     lines.append(f"  {'axis':32s} {'n':>3s} {'mean':>5s} {'best':>4s}  {'':2s} recipes")
     for axis, s in sorted(axes.items(), key=lambda kv: kv[1]["mean"]):
         flag = "✗✗" if s["never_cleared"] else ("✗ " if s["mean"] < 3.0 else "  ")
+        names = [n + " (UNPROVEN)" if n in unproven else n for n in s["recipes"]]
         lines.append(f"  {axis:32s} {s['n']:>3d} {s['mean']:>5.2f} {s['best']:>4.0f}  "
-                     f"{flag} {', '.join(s['recipes']) or '— NO RECIPE'}")
+                     f"{flag} {', '.join(names) or '— NO RECIPE'}")
     weak = [a for a, s in axes.items() if s["never_cleared"]]
     gaps = [a for a, s in axes.items() if s["mean"] < 3.0 and not s["recipes"]]
     covered = [a for a, s in axes.items() if s["mean"] < 3.0 and s["recipes"]]
@@ -93,6 +110,11 @@ def report(data: dict) -> str:
         lines.append(f"WEAK DESPITE a recipe existing: {', '.join(sorted(covered))}")
         lines.append("  → the recipe is not being found, or does not work. Different fix: "
                      "index entry, guardrail hook, or promote it to a bvfx_* helper.")
+    blind = sorted({n for a in covered for n in axes[a]["recipes"]} & unproven)
+    if blind:
+        lines.append(f"  → and these covering recipes have NO spike evidence: "
+                     f"{', '.join(blind)}. Run `python -m pipeline.verify_recipes "
+                     f"--name <n>` before blaming the axis.")
     return "\n".join(lines)
 
 

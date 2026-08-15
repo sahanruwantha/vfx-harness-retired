@@ -37,6 +37,19 @@ def write_layer_context(shot: Shot, layer, axes: list[tuple[str, str]],
 
     sup = "\n\n".join(x for x in (answers_block(shot.folder), open_block(shot.folder)) if x)
     supervisor = (sup + "\n\n") if sup else ""
+    # Carry forward what a PREVIOUS attempt at this layer already established — a resume
+    # after a crash, or a rebuild triggered by acceptance repair, otherwise starts by
+    # re-deriving (and often re-trying) approaches that were already measured and rejected.
+    # Written only here, at layer start: CLAUDE.md sits in the cached prompt prefix, so
+    # rewriting it every round would invalidate the cache and cost more than it saves.
+    prior_state = ""
+    try:
+        from .layer_state import as_prompt_block
+        prior_state = as_prompt_block(shot.folder)
+    except Exception as e:                       # never block a build on context assembly
+        print(f"! prior layer state unavailable: {e}", flush=True)
+    if prior_state:
+        supervisor = prior_state + "\n" + supervisor
     body = f"""{_HEADER}
 # Layer {layer.id} — {layer.title}
 

@@ -1,67 +1,112 @@
 # bambi-vfx
 
-An **agent-driven 3D/VFX pipeline**. An LLM technical artist ("the desk") builds one cinematic shot
-in a live, headless Blender through real tools — probe the API, run bpy, look, revise — and the shot
-moves through a **department pipeline** exactly as a real studio does, each stage gated by its own
-domain-expert critic.
+An **agent-driven Blender VFX pipeline** on the Claude Agent SDK. A shot is specified as a
+markdown brief plus a board of reference frames; agents plan it, build it in a live headless
+Blender, judge each piece against the references, and render the result.
+
+The organising idea is that **every claim is checked against something objective**. A layer
+does not pass because an agent says it looks right — it passes because a critic scored the
+frames it is responsible for, a deterministic re-run of its script reproduced those frames
+from an empty scene, and measured image metrics agree.
+
+## The stages
 
 ```
-modeling / layout  →  look-dev  →  [ FX / sim ]  →  lighting  →  comp
-   (layout critic)   (lookdev)      (fx critic)     (lighting)   (craft)
+plan → build (×N layers) → acceptance → render
 ```
 
-Each department is a fresh desk over a **persistent, versioned `.blend`**: it opens the prior stage's
-published scene, adds only its own layer, and is signed off on its own terms before the next stage
-starts — so a lighting fix can never clobber approved modeling.
+| stage | command | what it does |
+|---|---|---|
+| **plan** | `python -m pipeline.plan_agent <shot>` | Reads `brief.md` + refs, emits `plan.md`, `layers.json`, `acceptance.json`, `critic_axes.json`. Two-pass by default: opus-5 drafts, fable-5 audits. Any ambiguity becomes a **question answered before building starts**, never mid-build. |
+| **build** | `python -m pipeline.build_agent <shot> --layer 1` | Builds ONE layer as an additive delta script (`build/01_layout.py` …). Iterates live in Blender, then writes a script that must rebuild it from empty. |
+| **acceptance** | `python -m pipeline.accept_agent <shot>` | Replays the whole chain from an empty scene and judges the approval moments on the full rubric. `--repair` routes a failure back to the layer that owns the failing axis. |
+| **render** | `python -m pipeline.render_shot <shot>` | Runs the accepted chain and encodes the frame range to mp4. |
 
-## How it works
+Supporting commands: `pipeline.escalate` (answer plan questions), `pipeline.asset_agent`
+(image→3D asset caching), `pipeline.verify_recipes` (audit the cookbook), `pipeline.skills`.
 
-- **The desk** (`agents/scene_builder.py`, `agents/blender_tools.py`) — an LLM artist with live Blender
-  tools: `run_bpy`, `introspect`, `scene_graph` (the free "viewport"), `viewport_snapshot`, `render`.
-  It works to a *viewport → dailies* doctrine: sense structure with the free symbolic channel, build in
-  coherent passes, and spend a small **look budget** at checkpoints — not a render after every edit.
-- **Departments** (`scene/departments.py`) — the sequential stages above over a published `.blend`,
-  each with its own critic (`agents/dept_critics.py`, `agents/art_director.py`).
-- **The supervisor** (`agents/scene_supervisor.py`, `scene/supervisor.py`) — decides a shot's
-  methodology (3D / plate / hybrid) and breaks it into **per-element** tasks; an `fx`-tagged element
-  turns the FX department on for that shot.
-- **Asset sourcing** (`scene/assets.py`) — the modeling desk can `acquire_asset(...)`: generate an
-  image (Codex `gpt-image-2`) → 3D mesh (Meshy) → cached GLB → imported, instead of sculpting primitives.
-- **Motion** (`scene/animate.py`, `scene/anim_departments.py`) — the same idea for moving shots.
-- **Shared contracts** (`develop/`, `footage/`) — a slim set of data types the pipeline builds
-  against (`Clip`, `BeatEntry`, `Verdict`, `FrameSample`, the `Render3D` leaf type). Decoupled from
-  any documentary/research back-half — this repo is the 3D pipeline only.
+## Layers
+
+A shot is built as an ordered stack of **layers**, ids starting at 1. Each layer is one
+delta script that adds only its own contribution and must not break what earlier layers were
+judged on. Layer N runs every accepted script below it first, so the chain is always built
+the way it will finally be rendered.
+
+Each layer declares:
+
+- **`owns`** — the look axes it is responsible for. The critic marks every other axis `"n/a"`,
+  so a layout layer is not penalised for absent lighting.
+- **`judges`** — every frame it answers for. A layer passes only if **all** of them clear.
+  Single-frame judging is what once let a blacked-out stretch of a shot through.
+
+## Fail-closed by design
+
+The pipeline refuses rather than proceeding on unreviewed work:
+
+- building a layer on a prior that never passed (`UnpassedPrior`, exit 6)
+- judging acceptance on a partial chain (`IncompleteChain`, exit 7)
+- rendering a chain with missing or unaccepted layers (`IncompleteRender`, exit 7)
+- building when `brief.md` has changed since the plan was written (exit 8)
+- building with unanswered plan questions (exit 5)
+
+Each has a `--force` for debugging, which names exactly what it is overriding.
+
+## Judging
+
+The critic receives the reference, the candidate render, an optional motion strip and the
+previous best attempt **as attached images** — it cannot score a frame it never saw. It must
+also declare `reference_usable`; handed a mismatched plate it fails the verdict instead of
+quietly grading against the brief's prose.
+
+Critic scores are noisy — the same render against the same reference has scored 4.0, 3.0,
+3.0 and 2.0 — so a verdict landing near the pass line goes to **best-of-three with a median**.
+Objective metrics (`pipeline/metrics.py`) run alongside and can decide a moment outright.
 
 ## Quickstart
 
-Requires **Blender 5.x** on `PATH` (headless) and Python ≥ 3.10.
+Requires **Blender 5.x** on `PATH` (headless) and Python ≥ 3.11.
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+cp .env.example .env          # set CLAUDE_CODE_OAUTH_TOKEN (and MESHY_API_KEY for assets)
 
-pytest                 # the full unit suite (no Blender needed — fakes)
-python -m scene        # Phase-0 smoke: launch the bridge, build + render a gray-box, headless
+.venv/bin/python -m tests.test_harness        # deterministic suite, no Blender or network
+
+set -a; . ./.env; set +a
+.venv/bin/python -m pipeline.plan_agent  shots/barrel_roll
+.venv/bin/python -m pipeline.build_agent shots/barrel_roll --layer 1
 ```
 
-Asset generation is optional — copy `.env.example` to `.env` and set `MESHY_API_KEY` (image→3D), then
-run `codex login` once so the isolation step can reach `gpt-image-2` through the Codex CLI's own
-credentials. Without them the pipeline degrades to procedural geometry.
+Run all layers of a shot under one run id so their records are comparable:
 
-## Shot briefs
+```bash
+export BVFX_RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-manual
+for L in 1 2 3 4 5 6 7 8; do
+  .venv/bin/python -m pipeline.build_agent shots/barrel_roll --layer "$L" || break
+done
+```
 
-A shot is specified by a structured markdown **brief** plus a **reference board** of milestone images
-(set angles + each beat's first frame). See [`shots/barrel_roll/`](shots/barrel_roll/) for the format:
-`brief.md` (frontmatter + description + `## Milestones` + `## Beats`) alongside `refs/` (the master
-reference and the isolated milestone frames the desks build to and the critics judge against).
+## What a run leaves behind
+
+```
+shots/<shot>/
+  brief.md refs/            inputs: the spec and the reference board
+  plan.md layers.json …     the plan, plus plan.provenance.json (hashes of its inputs)
+  build/NN_*.py             one delta script per layer — the real artifact
+  shot.json                 the ledger: verdicts, rounds, run/attempt ids, acceptance
+  logs/run_layerN.json      per-layer report: rounds, cost, tokens, cache hit, hooks
+  renders/                  judged frames, motion strips, the final mp4
+```
+
+`logs/run_layerN.json` is the place to look first when a layer goes wrong: it records what
+the hooks did, and a hook that *never fired* is the signal that something silently no-opped.
 
 ## Layout
 
 ```
-src/scene/     the Blender bridge + department pipeline + realizers
-src/agents/    the desk, its tools, and the per-department critics
-src/develop/   slim shared contracts (ledger, verdict, leaf type aliases)
-src/footage/   FrameSample + FootageCandidate
-tests/         the unit suite (Blender/SDK faked)
-shots/         shot briefs + reference boards
+pipeline/            the stages, ledger, metrics, prompts, hooks
+pipeline/blender/    the warm headless Blender session, its tools and bvfx_* helpers
+pipeline/recipes/    the cookbook — vetted, measured Blender techniques
+tests/               deterministic suite (no Blender, no network)
+shots/               shot briefs, reference boards and outputs (untracked)
 ```

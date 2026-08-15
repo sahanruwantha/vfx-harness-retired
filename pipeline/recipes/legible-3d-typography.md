@@ -77,6 +77,25 @@ def key_vis(ob, spans):                             # [(frame, hidden_bool), ...
         ob.keyframe_insert('hide_render', frame=f)
         ob.keyframe_insert('hide_viewport', frame=f)
 
+def key_strength(mat, spans, linear=True):
+    """Key an emission material's Strength; LINEAR or the fade holds then pops.
+    5.x fcurves live in per-slot channelbags, NOT action.fcurves — see `blender-5-api`."""
+    em = next((n for n in mat.node_tree.nodes if n.type == 'EMISSION'), None)
+    assert em is not None, 'no EMISSION node in %s' % mat.name
+    for f, v in spans:
+        em.inputs['Strength'].default_value = v
+        em.inputs['Strength'].keyframe_insert('default_value', frame=f)
+    if not linear:
+        return
+    ad = mat.node_tree.animation_data
+    for layer in ad.action.layers:                  # iterate — layers[0] IndexErrors
+        for strip in layer.strips:
+            for cb in strip.channelbags:
+                for fc in cb.fcurves:
+                    for kp in fc.keyframe_points:
+                        kp.interpolation = 'LINEAR'
+                    fc.update()
+
 # ---- typewriter reveal: prefix stack, STEP frames per character ----------------
 CAP, PITCH, STEP, START, OFF = 0.176, 0.285, 2, 140, 199
 root = billboard_root('inv_root', (1.29, 0.09, 1.37))
@@ -95,7 +114,7 @@ for li, line in enumerate(['Code', 'Configs', 'Backups']):
         g += 1
 
 # ---- exit: LINEAR emission fade, THEN hide (0-strength still renders black) ----
-key_strength(mat, [(186, 9.0), (198, 0.0)], linear=True)      # linearise channelbag fcurves
+key_strength(mat, [(186, 9.0), (198, 0.0)], linear=True)
 
 # ---- pin delivery resolution LAST so nothing upstream wins ---------------------
 sc.render.resolution_x, sc.render.resolution_y = 1920, 1080

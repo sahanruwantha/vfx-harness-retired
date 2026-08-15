@@ -60,12 +60,16 @@ def load(shot_folder: str | Path) -> list[dict]:
     if not path.is_file():
         return []
     out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if line.strip():
             try:
                 out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as e:
+                # A dropped line here can be an ANSWER, and an answer that vanishes turns
+                # a settled question back into an unanswered one that blocks the build —
+                # or, worse, silently reverts to the assumption.
+                log(f"! {path.name}:{n} is not valid JSON and was SKIPPED ({e}); "
+                    f"a question or answer may be missing")
     # later records for the same id win (that is how an answer lands)
     merged: dict[int, dict] = {}
     for q in out:
