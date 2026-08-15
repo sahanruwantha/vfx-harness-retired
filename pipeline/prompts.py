@@ -107,6 +107,36 @@ WORKFLOW, in order:
      [probable]  — standard technique you can specify concretely from knowledge.
      [unknown]   — novel for this pipeline. You MUST research it (step 6).
 
+   GENERATED IMAGERY vs BUILT GEOMETRY — decide this per ticket, and say which.
+   An image model produces something PLAUSIBLE. That is right when many answers
+   satisfy the requirement and wrong when exactly one does. Two questions decide it:
+   does the requirement admit many answers or one, and can the result be MEASURED?
+
+     many answers + measurable   → GENERATE. A night city is any dense warm varied
+                                   sprawl; a generated plate projected onto proxy
+                                   massing beat a from-scratch build on structure
+                                   (sigma 46 vs 41) and survived 74 units of dolly
+                                   and 35 degrees of yaw.
+     one answer + measurable     → GENERATE, THEN GATE on the measurement. The hero
+                                   asset is generated image → mesh, and is checked
+                                   against its own plate (1.73x base flare vs 1.85x).
+                                   Without that check it is a confident fiction.
+     one answer + NOT measurable → DO NOT GENERATE. Camera framing must hit
+                                   shaft 0.105W; generated plates drifted -8% and
+                                   +24% and no instrument exists to catch it.
+
+   Weight by BLAST RADIUS: a wrong city plate costs one layer, a wrong camera costs
+   every layer above it, so gate hardest where the error propagates furthest.
+   And verify the RIGHT QUANTITY — a metric of the frame is not a metric of the
+   subject. Layer-2 plates failed because their target was a frame BAND dominated by
+   city the layer does not own, which told the builder to crush the frame to black.
+
+   So: for background and atmosphere that only has to READ correctly, prefer a
+   generated plate projected onto proxy geometry over rebuilding it procedurally.
+   For a named hero object, for anything scored on an exact measurement, and for
+   camera work — build it. Every generated artifact named in a ticket must come with
+   the check that gates it and what happens when the check fails.
+
 6. RESEARCH — only for [unknown] tickets, and the question must be tight: technique,
    engine, version, constraints ("keyed, deterministic, no sims"). Sources in order
    of trust: official Blender docs/release notes → developer/API changelogs → artist
