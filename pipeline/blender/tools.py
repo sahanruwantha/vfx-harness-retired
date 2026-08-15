@@ -172,8 +172,8 @@ def _compare_image(cand_path: str, ref_path: Path, caption: str) -> dict:
     # acceptance stage — the tool the builder actually calls dozens of times per layer
     # simply never called it.
     try:
-        from ..metrics import compare as _mcompare, look_vector as _lv
-        deltas = _mcompare(_lv(cand_path), _lv(str(ref_path)))
+        from ..metrics import compare as _mcompare, look_pair as _lp
+        deltas = _mcompare(*_lp(cand_path, str(ref_path)))
         if deltas:
             text += ("\ngap vs reference (signed — fix the sign, not just the number):\n"
                      + "\n".join(f"  {d}" for d in deltas[:6]))

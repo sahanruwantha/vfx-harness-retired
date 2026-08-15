@@ -191,13 +191,16 @@ def _layer_block(a: dict, b: dict, noise: float | None) -> list[str]:
 def _telemetry_block(a: dict, b: dict) -> list[str]:
     out = ["─── telemetry only: cost / tokens / turns (NEVER a quality argument) ───"]
     shared = sorted(set(a["layers"]) & set(b["layers"]), key=lambda s: (len(s), s))
-    rows, tot = [], {"cost": [0.0, 0.0], "turns": [0, 0], "out_tok": [0, 0], "cache": [0, 0]}
+    rows, tot = [], {"cost": [0.0, 0.0], "turns": [0, 0], "out_tok": [0, 0]}
+    unlogged: list[str] = []
     for lid in shared:
         ta = a["layers"][lid]["telemetry"]
         tb = b["layers"][lid]["telemetry"]
         if not (ta.get("present") and tb.get("present")):
-            rows.append(f"  {lid:<4} no run log in "
-                        + ("A" if not ta.get("present") else "B"))
+            # Named, not silently dropped: a layer with no run log contributes nothing to
+            # the totals below, and a total that quietly covers a different set of layers
+            # in each arm is the kind of number that reads as a saving.
+            unlogged.append(lid)
             continue
         ca, cb = ta.get("cost_usd") or 0.0, tb.get("cost_usd") or 0.0
         na, nb = ta.get("turns") or 0, tb.get("turns") or 0
@@ -208,10 +211,14 @@ def _telemetry_block(a: dict, b: dict) -> list[str]:
         tot["out_tok"][0] += oa; tot["out_tok"][1] += ob
         rows.append(f"  {lid:<4} ${ca:>7.2f} → ${cb:>7.2f} ({cb - ca:+.2f})  ·  "
                     f"{na:>4} → {nb:>4} turns  ·  out {oa:>7,} → {ob:>7,}")
-    out += rows or ["  (no per-layer run logs in either baseline)"]
-    out.append(f"  TOTAL ${tot['cost'][0]:.2f} → ${tot['cost'][1]:.2f} "
+    out += rows or ["  (no layer has a run log in both arms)"]
+    out.append(f"  TOTAL over the {len(rows)} comparable layer(s): "
+               f"${tot['cost'][0]:.2f} → ${tot['cost'][1]:.2f} "
                f"({tot['cost'][1] - tot['cost'][0]:+.2f}) · "
                f"{tot['turns'][0]} → {tot['turns'][1]} turns")
+    if unlogged:
+        out.append(f"  excluded (no run log in one or both arms): {', '.join(unlogged)} "
+                   f"— the totals above are NOT whole-shot figures")
     out.append("  A cost delta justifies a change ONLY once final task success has "
                "already cleared its non-inferiority bound above.")
     return out

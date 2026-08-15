@@ -121,7 +121,7 @@ def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatche
         if not ref.is_file():
             return {}
         try:
-            from .metrics import compare, look_vector, report
+            from .metrics import compare, look_pair, report
             # Build renders land in .artifacts/ (the warm session's dir); only the
             # critic's stashed copies go to renders/. Looking in one place made this
             # hook a silent no-op for the entire build phase — exactly when the
@@ -131,7 +131,7 @@ def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatche
             latest = max(cands, key=lambda p: p.stat().st_mtime, default=None)
             if latest is None:
                 return {}
-            d = compare(look_vector(str(latest)), look_vector(str(ref)))
+            d = compare(*look_pair(str(latest), str(ref)))
             if not d:
                 return {}
             bump("metric_feedback")

@@ -781,22 +781,41 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     return verdict
 
 
-# How close to the pass line counts as "noise could flip this". Scores are integers, so
-# on a 1-2 axis layer ANY verdict adjacent to the line is a coin-flip candidate.
-_ADJUDICATE_BAND = 0.4
+# How close to the pass line counts as "noise could flip this".
+#
+# MEASURED (N=12, same render vs same reference, layer-1 scope, one axis):
+#   scores [2,4,3,2,3,3,3,3,3,3,4,3] → median 3.0, spread 2.0, sd 0.603,
+#   and 2 of 12 draws flipped the verdict — a 17% flip rate on an unchanged image.
+#
+# A FIXED band was the wrong shape. Noise in the MEAN falls as 1/sqrt(n), so one constant
+# is simultaneously too narrow on a 3-axis layer and wasteful on an 8-axis one — the same
+# mistake _repro_tolerance and the granularity-aware PASS_MEAN already corrected. Two
+# sigma of the mean at this sd: n=3 → 0.70, n=4 → 0.60, n=6 → 0.49, n=8 → 0.43. The old
+# flat 0.4 was only defensible at n≈8, and most layers here are narrower than that.
+_JUDGE_SD = 0.603     # re-measure: python -m pipeline.evals variance <shot>
+
+
+def _adjudicate_band(n_scored: int) -> float:
+    """2σ of the mean for this many axes, clamped to a sane range."""
+    if n_scored <= 0:
+        return 0.4
+    return min(0.8, max(0.4, 2 * _JUDGE_SD / (n_scored ** 0.5)))
 
 
 def _borderline(verdict: dict) -> bool:
-    """Could judge noise flip this verdict? Measured noise is ~1 point per axis."""
+    """Could judge noise flip this verdict?"""
     scores = [v for v in verdict.get("scores", {}).values()
               if isinstance(v, (int, float)) and not isinstance(v, bool)]
     if not scores:
         return False
     if len(scores) <= 2:
-        # min>=3 decides it, and scores are integers: 2 and 3 sit one point either side
-        # of the line — well inside the measured spread.
-        return min(scores) in (PASS_MIN, PASS_MIN + 1)
-    return (abs(verdict.get("mean", 0.0) - PASS_MEAN) <= _ADJUDICATE_BAND
+        # With one or two axes the mean IS a single integer score and the measured spread
+        # is a full 2 points, so every value near the line is a coin flip — even a lone 4
+        # carried a 7.4% chance a panel would have said REVISE. Two extra critic calls
+        # (~$0.06) against a ~$6 layer that seven more layers get stacked on: always
+        # convene the panel here rather than guess which single scores are safe.
+        return True
+    return (abs(verdict.get("mean", 0.0) - PASS_MEAN) <= _adjudicate_band(len(scores))
             or min(scores) == PASS_MIN)
 
 
@@ -1246,9 +1265,9 @@ def _metric_report(shot: Shot, render_rel: str, ref_rel: str) -> str:
     """Objective ref-deltas for the reviewer — technique problems show up as structural
     metrics (points, detail) rather than exposure."""
     try:
-        from .metrics import compare, look_vector, report
-        d = compare(look_vector(str(shot.folder / render_rel)),
-                    look_vector(str(shot.folder / ref_rel)))
+        from .metrics import compare, look_pair, report
+        d = compare(*look_pair(str(shot.folder / render_rel),
+                               str(shot.folder / ref_rel)))
         return report(d) if d else ""
     except Exception as e:
         log(f"! metric report unavailable for the review: {str(e)[:70]}", 1)

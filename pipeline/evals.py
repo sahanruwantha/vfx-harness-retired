@@ -63,15 +63,19 @@ def _cmd_check(argv: list[str]) -> int:
         images = [shot.folder / i for i in args.image]
     else:
         # Refs AND judged renders: the two populations the metric is ever applied to.
-        # A sweep over refs alone would miss that the renders are the side that arrives
-        # at the wrong resolution.
+        # Anything already below the delivery resolution is dropped by the checker with
+        # a note — a stashed 960x480 render cannot play the full-quality control.
         rdir = shot.folder / "renders"
         # motion strips are montages of several frames — a horizontal join is not a
         # frame, and the banded metrics would be measuring the seams.
         renders = sorted(p for p in rdir.glob("*.png")
                          if "_motion" not in p.name) if rdir.is_dir() else []
         images = list(shot.refs) + renders
-    results.append(metric_scale_consistency(images))
+    # The shot's own delivery resolution defines what `scale` is a fraction OF. Without
+    # it the sweep invents scales the pipeline never renders at and reports the artifact
+    # it finds there as though the builder were living with it — which is exactly the
+    # mistake the first version of this check made.
+    results.append(metric_scale_consistency(images, delivery=shot.resolution))
 
     if args.skip_replay:
         from .eval.determinism import Result
@@ -112,8 +116,13 @@ def _cmd_compare(argv: list[str]) -> int:
     v = _variance.latest(a["shot"])
     noise = v["mean"]["spread"] if v and v.get("mean", {}).get("n", 0) > 1 else None
     if v:
-        print(f"(judge noise from {v['at']}, n={v['n']}, scope {v['scope']}: "
-              f"mean spread {v['mean']['spread']})")
+        print(f"(measured judge noise, from {v['at']}: n={v['n']}, scope {v['scope']}, "
+              f"{v['render']} — mean spread {v['mean']['spread']}. One pair, so this is "
+              f"a lower bound on the pipeline's noise, not an estimate of it.)")
+    else:
+        print(f"(no usable judge-variance measurement for {a['shot']} — a run must have "
+              f"n>={_variance.MIN_N_FOR_BAND} AND sit near the pass line to count. "
+              f"Score movements below cannot be called signal or noise.)")
     print()
     print(_compare.report(a, b, margin=args.margin, judge_noise=noise))
     return 0

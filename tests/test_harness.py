@@ -315,6 +315,189 @@ def main():
           not [r["name"] for r in recs if "SPIKE_ARGS" in r["body"]])
     # ---- END recipe-verification block --------------------------------------------
 
+    # ---- BEGIN eval-harness block (pipeline/evals.py + pipeline/eval/) -------------
+    # Self-contained, safe to move/merge. Added with A7.
+    #
+    # These test the INSTRUMENT, never the current state of the repo. A check that
+    # asserted "artifact integrity passes for barrel_roll" would encode today's shot
+    # folder into the suite: it would fail the moment someone starts a build, and it
+    # would say nothing about whether the checker can see a problem. So every checker
+    # here is pointed at a fixture whose answer is known by construction. What the repo
+    # actually scores is a finding, and findings belong in `python -m pipeline.evals
+    # check`, not in a pass/fail suite.
+    from pipeline.eval import baseline as EB
+    from pipeline.eval import compare as EC
+    from pipeline.eval import variance as EV
+    from pipeline.eval.determinism import RENDER_SCALES, Result, metric_scale_consistency
+    from pipeline.eval.integrity import _problems as integrity_problems
+
+    print("\n[evals · baseline]")
+    t3 = Path(tempfile.mkdtemp()) / "br"
+    shutil.copytree(shot.folder, t3, ignore=shutil.ignore_patterns(
+        ".artifacts", ".snapshots", ".versions", "assets"))
+    s3 = load_shot(t3)
+    rec = EB.freeze(s3, label="unit", note="fixture")
+    check("baseline names its shot and schema",
+          rec["shot"] == "barrel_roll" and rec["schema"] == EB.SCHEMA)
+    check("baseline carries per-layer telemetry",
+          rec["layers"]["1"]["telemetry"]["cost_usd"] is not None)
+    check("baseline carries run_id + attempt for pairing",
+          "run_id" in rec["layers"]["1"] and "attempt" in rec["layers"]["1"])
+    check("baseline stores script bodies, not pointers",
+          any("import bpy" in s.get("text", "") for s in rec["scripts"].values()))
+    check("baseline hashes every judged render",
+          all(v for v in rec["renders"].values()) and len(rec["renders"]) > 0)
+    # Absent acceptance must read as absent, never as zero: "0/10 passed" and "never
+    # judged" support opposite conclusions and conflating them turns a partial build
+    # into a quality regression.
+    check("missing acceptance is 'unavailable', not 0",
+          rec["final"]["present"] is False and "why" in rec["final"])
+    check("baseline records code identity", rec["git"]["commit"] != "")
+    (t3 / "renders").mkdir(exist_ok=True)
+    (t3 / "renders" / "zzz_new.png").write_bytes(b"not really a png")
+    rec2 = EB.freeze(s3, label="unit2")
+    check("a new render shows up in a re-freeze",
+          "renders/zzz_new.png" in rec2["renders"]
+          and "renders/zzz_new.png" not in rec["renders"])
+
+    print("\n[evals · integrity]")
+    # Fixture with three planted defects, one of each class the checker claims to find.
+    t4 = Path(tempfile.mkdtemp()) / "br"
+    shutil.copytree(shot.folder, t4, ignore=shutil.ignore_patterns(
+        ".artifacts", ".snapshots", ".versions", "assets"))
+    led = json.loads((t4 / "shot.json").read_text())
+    led["milestones"]["1"]["rounds"][0]["render"] = "renders/vanished.png"
+    led["milestones"]["3"] = {"status": "passed", "rounds": [{"round": 1, "render": ""}]}
+    (t4 / "build" / "99_experiment.py").write_text("# stray\n")
+    (t4 / "shot.json").write_text(json.dumps(led, indent=2))
+    errs, warns, data = integrity_problems(load_shot(t4))
+    check("a vanished judged render is an ERROR",
+          any("vanished.png" in e for e in errs), str(errs))
+    check("a 'passed' layer with no script on disk is an ERROR",
+          any("layer 3" in e and "03_city.py" in e for e in errs), str(errs))
+    check("an orphan build script is reported",
+          "99_experiment.py" in str(warns) or "99_experiment.py" in str(errs))
+    check("orphans are listed in the data, not just prose",
+          "99_experiment.py" in data.get("orphan_scripts", []))
+    clean_errs, _w, _d = integrity_problems(load_shot(t3))
+    check("the checker does not invent errors on an untouched shot",
+          not clean_errs, str(clean_errs))
+
+    print("\n[evals · metric self-consistency]")
+    # The one invariant that holds both before and after the in-flight compare_frame fix:
+    # scale 1.0 is the identity, so it cannot disagree with itself. Whether the SUB-1.0
+    # scales agree is the open finding this check exists to report — asserting either
+    # answer here would bake today's bug (or tomorrow's fix) into the suite.
+    r_ident = metric_scale_consistency([Path(ref)], scales=(1.0,))
+    check("identity scale is self-consistent", r_ident.ok is True, r_ident.detail)
+    check("no images -> SKIP, not PASS",
+          metric_scale_consistency([Path("/nonexistent.png")]).ok is None)
+    # The sweep must model the PIPELINE's geometry: a render is scale × the delivery
+    # resolution. The first version of this check swept already-downscaled 960x480
+    # stashed renders by a further 0.25 — a scale of 0.125 that nothing renders at — and
+    # reported "11 blocking failures". Overstating a finding is the same defect as
+    # missing one, so a plate that cannot serve as a full-quality control is SKIPPED.
+    small = Path(tempfile.mkdtemp()) / "half.png"
+    from PIL import Image as _PILImage
+    _PILImage.open(ref).resize((960, 480)).save(small)
+    r_small = metric_scale_consistency([small], delivery=(1920, 960))
+    check("an under-resolution plate is skipped, not judged",
+          r_small.ok is None and "960x480" in r_small.detail, r_small.detail[:120])
+    r_mixed = metric_scale_consistency([Path(ref), small], delivery=(1920, 960))
+    check("the full-res plate is still swept when a small one is dropped",
+          r_mixed.ok is not None and "half.png" in str(r_mixed.data.get("skipped")))
+    r_all = metric_scale_consistency([Path(ref)], scales=RENDER_SCALES,
+                                     delivery=shot.resolution)
+    print(f"    (informational, not a check) {Path(ref).name} across "
+          f"{list(RENDER_SCALES)}: {r_all.state} — {r_all.detail.splitlines()[0][:110]}")
+    check("a skipped check never reads as a pass",
+          Result("x", ok=None, detail="").state == "SKIP")
+
+    print("\n[evals · statistics]")
+    # The whole point of the compare stage is refusing to call small differences results.
+    check("no discordant pairs -> p=1", EC.sign_test_p(0, 0) == 1.0)
+    check("one flip is not significant", EC.sign_test_p(1, 0) > 0.05)
+    check("5 one-way flips still are not", EC.sign_test_p(5, 0) > 0.05)
+    check("6 one-way flips are", EC.sign_test_p(6, 0) <= 0.05)
+    check("the design states its own resolution",
+          EC.min_discordant_for_significance() == 6,
+          str(EC.min_discordant_for_significance()))
+    check("the test is symmetric", EC.sign_test_p(2, 5) == EC.sign_test_p(5, 2))
+
+    print("\n[evals · compare]")
+    import copy as _copy
+    ba = EB.freeze(s3, label="A")
+    bb = _copy.deepcopy(ba); bb["label"] = "B"
+    txt = EC.report(ba, bb)
+    check("final task success leads the report",
+          txt.index("PRIMARY: FINAL TASK SUCCESS")
+          < txt.index("layer verdicts") < txt.index("telemetry only"))
+    check("no acceptance -> the primary statistic is UNAVAILABLE", "UNAVAILABLE" in txt)
+    check("secondary statistics are labelled gameable", "GAMEABLE" in txt)
+    check("cost is labelled telemetry, not quality",
+          "NEVER a quality argument" in txt)
+
+    def _acc(flags):
+        return {"present": True, "passed": sum(flags.values()), "total": len(flags),
+                "moments": {k: {"frame": 1, "pass": v, "critic_pass": v, "mean": 3.5,
+                                "decided_by": "critic", "metric_failures": [],
+                                "scores": {}, "render": "", "render_sha": None}
+                            for k, v in flags.items()}}
+    ids = [f"M{i}" for i in range(1, 11)]
+    ba["final"] = _acc({m: True for m in ids})
+    one = dict.fromkeys(ids, True); one["M9"] = False
+    bb["final"] = _acc(one)
+    txt1 = EC.report(ba, bb)
+    check("a single moment flip is reported as noise, not a delta",
+          "WITHIN NOISE" in txt1 and "NOT a result" in txt1)
+    big = dict.fromkeys(ids, True)
+    for m in ids[:7]:
+        big[m] = False
+    bb["final"] = _acc(big)
+    txt2 = EC.report(ba, bb)
+    check("a 7-moment regression IS called a regression",
+          "REGRESSED" in txt2 and "WITHIN NOISE" not in txt2)
+    bb["final"] = _acc({m: True for m in ids[:5]})
+    txt3 = EC.report(ba, bb)
+    check("a changed acceptance suite is flagged as unpaired",
+          "acceptance suites DIFFER" in txt3)
+    ba["shot"], bb["shot"] = "a", "b"
+    check("comparing two different shots is refused loudly",
+          "DIFFERENT SHOTS" in EC.report(ba, bb))
+
+    print("\n[evals · variance]")
+    d = EV._dispersion([2.0, 4.0, 3.0, 3.0])
+    check("dispersion reports the spread that flips verdicts",
+          d["spread"] == 2.0 and d["median"] == 3.0)
+    fake = {"at": "2026-01-01T00:00:00+00:00", "shot": "x", "render": "r", "ref": "f",
+            "layer": "1", "scope": "layer", "n": 3, "critic_model": "m",
+            "motion_strip": False, "axes_in_rubric": ["a"],
+            "per_axis": {"a": {**EV._dispersion([2.0, 3.0, 4.0]), "n_a": 0,
+                               "scope_unstable": False}},
+            "mean": EV._dispersion([2.0, 3.0, 4.0]), "verdicts": [],
+            "pass_count": 2, "flip_rate": 0.33, "unanimous": False,
+            "thresholds": {"PASS_MEAN": 3.1, "PASS_MIN": 2, "ADJUDICATE_BAND": 0.4},
+            "band_evidence": 1.0, "enough_for_band": False}
+    rep = EV.report(fake)
+    check("a low-N run refuses to recommend a band",
+          "TOO SMALL TO RECOMMEND A BAND" in rep)
+    check("the no-motion-strip proxy is declared in the output", "NO strip" in rep)
+    fake["n"], fake["enough_for_band"] = 12, True
+    check("a sufficient-N run quotes a band AND its caveat",
+          "should be AT LEAST" in EV.report(fake)
+          and "ONE render/reference pair" in EV.report(fake))
+    # Drift tripwire: variance.layer_scope MIRRORS the scope block build_layer builds
+    # inline. If build_agent's wording moves, the eval silently starts measuring the
+    # critic under a prompt production never sends.
+    ba_src = Path("pipeline/build_agent.py").read_text(encoding="utf-8")
+    sc = EV.layer_scope(shot, layers["1"])
+    check("layer scope mirrors build_agent's block",
+          all(mark in ba_src and mark in sc
+              for mark in ("THIS LAYER OWNS:", "one build stage of many")), sc[:120])
+    check("layer scope names the layer's own axes",
+          all(a in sc for a in layers["1"].owns))
+    # ---- END eval-harness block ---------------------------------------------------
+
     print(f"\n{'ALL PASS' if not FAILS else 'FAILURES: ' + ', '.join(FAILS)}"
           f"  ({'0' if not FAILS else len(FAILS)} failed)")
     raise SystemExit(1 if FAILS else 0)

@@ -25,7 +25,7 @@ from .blender.tools import build_blender_tools
 from .brief import Shot, load_shot
 from .build_agent import _critique, _judge, _verdict, _stash_render, ensure_axes
 from .ledger import Ledger, Milestone, load_layers, load_milestones
-from .metrics import compare, look_vector, report
+from .metrics import compare, look_pair, report
 from .log import log
 
 
@@ -93,8 +93,8 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         # free and grounds the critic's feedback in something checkable.
         deltas = []
         try:
-            deltas = compare(look_vector(str(shot.folder / render_rel)),
-                             look_vector(str(shot.folder / m.ref)))
+            deltas = compare(*look_pair(str(shot.folder / render_rel),
+                                        str(shot.folder / m.ref)))
             log(report(deltas), 1)
         except Exception as e:
             log(f"metrics skipped: {str(e)[:80]}", 1)

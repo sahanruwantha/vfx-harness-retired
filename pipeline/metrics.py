@@ -61,6 +61,23 @@ def _prep(im: Image.Image, width: int = 960) -> Image.Image:
     return im
 
 
+def look_pair(cand: str, ref: str) -> tuple[dict[str, float], dict[str, float]]:
+    """Look vectors for a candidate and its reference, measured at a COMMON width.
+
+    look_vector() normalises to width 960, which is fine for one image and wrong for a
+    comparison: a render at scale 0.4 is 768px wide and gets UPSCALED 1.25x, while the
+    1920px reference downscales 0.5x. The two then travel different resampling paths and
+    every detail metric reads soft — the exact asymmetry fixed in compare_frame, which I
+    promptly reintroduced by routing the new signed-gap readout through look_vector.
+    Found by the eval suite's scale-invariance check, not by me.
+
+    Measuring at min(candidate, reference, 960) means neither image is ever upscaled.
+    """
+    with Image.open(cand) as c, Image.open(ref) as r:
+        w = min(c.width, r.width, 960)
+    return look_vector(cand, width=w), look_vector(ref, width=w)
+
+
 # Reference plates do not change during a run, yet their metrics were recomputed on every
 # comparison — refs/f100_city.jpg was re-derived ~6 times inside a single layer, each pass
 # a full per-pixel walk. Keyed on (realpath, mtime_ns, size, width) so an edited or swapped

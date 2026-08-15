@@ -98,8 +98,10 @@ def _dispersion(values: list[float]) -> dict:
 
 async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
                   layer_id: str | None = None, milestone_id: str = "VAR",
-                  frame: int = 0, reads: str = "", verbose: bool = True) -> dict:
+                  frame: int = 0, reads: str = "", verbose: bool = True,
+                  concurrency: int = 3) -> dict:
     """Score one existing render/reference pair `n` times through the real critic."""
+    import anyio
     from ..build_agent import PASS_MEAN, PASS_MIN, _ADJUDICATE_BAND, _borderline, _critique
 
     axes = load_axes(shot)
@@ -122,11 +124,28 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
 
     log(f"judge variance: {n} repeats of {render_rel} vs {ref_rel}"
         + (f" under layer {layer_id} scope" if layer_id else " on the FULL rubric"))
-    verdicts: list[dict] = []
-    for i in range(1, n + 1):
-        log(f"repeat {i}/{n}", 1)
-        v = await _critique(shot, m, render_rel, axes, _NoSession(), verbose, scope)
-        verdicts.append(v)
+    # Repeats run concurrently only to save wall time. They are independent requests to
+    # a stateless endpoint, so this cannot correlate them — the same interleaving already
+    # happens in _verify_script, which scores a layer's judge frames in a task group.
+    slots: list[dict | None] = [None] * n
+
+    async def _one(i: int) -> None:
+        slots[i] = await _critique(shot, m, render_rel, axes, _NoSession(), verbose, scope)
+
+    limiter = anyio.CapacityLimiter(max(1, concurrency))
+
+    async def _guarded(i: int) -> None:
+        async with limiter:
+            log(f"repeat {i + 1}/{n}", 1)
+            await _one(i)
+
+    async with anyio.create_task_group() as tg:
+        for i in range(n):
+            tg.start_soon(_guarded, i)
+    verdicts = [v for v in slots if v is not None]
+    if len(verdicts) != n:
+        raise RuntimeError(f"only {len(verdicts)} of {n} repeats produced a verdict — "
+                           f"a partial sample would understate the spread")
 
     per_axis: dict[str, dict] = {}
     for key, _desc in axes:
@@ -149,6 +168,31 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
     mean_stats = _dispersion(means)
     band_evidence = (round(max(abs(x - mean_stats["median"]) for x in means), 3)
                      if means else 0.0)
+    # Variance measured far from the decision boundary says nothing about variance AT it.
+    # The full-rubric run on a layout-only render scored [0.83, 1.0, 0.67, …]: five of six
+    # axes pinned at 0 or 1 with a spread of exactly zero, which is a FLOOR effect, not a
+    # stable judge. It produced a "band should be ≥0.17" that would have been a
+    # confidently wrong number — the exact failure this package exists to prevent.
+    near_line = any(abs(x - PASS_MEAN) <= 1.0 for x in means)
+    scored = [d for d in per_axis.values() if d.get("n")]
+    floored = [d for d in scored if d["spread"] == 0 and d["median"] <= 1.0]
+
+    # Does axis noise cancel across the mean, or move together?
+    #
+    # This decides how the ONE number we can measure cheaply (per-axis spread on a
+    # scoped layer) transfers to the many-axis case that _ADJUDICATE_BAND actually
+    # governs. If axis errors are independent, sd(mean) = sqrt(Σ sd_i²)/n and a wide rubric
+    # is self-stabilising. If the critic is instead having a generous or harsh day across
+    # the whole card, sd(mean) ≈ mean(sd_i) and the rubric width buys nothing. Guessing
+    # would set the band 2-3x wrong in whichever direction the guess went, so the
+    # prediction is stated next to the observation and the reader can see the gap.
+    indep = None
+    if len(scored) >= 2:
+        pred = (sum(d["stdev"] ** 2 for d in scored) ** 0.5) / len(scored)
+        indep = {"sd_mean_observed": mean_stats["stdev"],
+                 "sd_mean_if_independent": round(pred, 4),
+                 "ratio": round(mean_stats["stdev"] / pred, 3) if pred else None,
+                 "n_scored_axes": len(scored)}
 
     rec = {
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -173,7 +217,11 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
         "thresholds": {"PASS_MEAN": PASS_MEAN, "PASS_MIN": PASS_MIN,
                        "ADJUDICATE_BAND": _ADJUDICATE_BAND},
         "band_evidence": band_evidence,
-        "enough_for_band": n >= MIN_N_FOR_BAND,
+        "near_pass_line": near_line,
+        "axis_independence": indep,
+        "floored_axes": len(floored),
+        "scored_axes_count": len(scored),
+        "enough_for_band": n >= MIN_N_FOR_BAND and near_line,
     }
     return rec
 
@@ -221,12 +269,26 @@ def report(rec: dict) -> str:
     lines.append(f"   thresholds PASS_MEAN {t['PASS_MEAN']} · PASS_MIN {t['PASS_MIN']} "
                  f"· _ADJUDICATE_BAND {t['ADJUDICATE_BAND']}")
     lines.append("")
-    if not rec["enough_for_band"]:
+    if rec.get("floored_axes") and rec["floored_axes"] >= max(1, rec.get("scored_axes_count", 0) // 2):
+        lines.append(
+            f"   ⚠ FLOOR EFFECT: {rec['floored_axes']} of {rec['scored_axes_count']} "
+            f"scored axes sat at 0-1 with zero spread. That is the rubric bottoming out, "
+            f"not the judge agreeing — read those zeros as 'not built yet', and do not "
+            f"quote the low overall spread as stability.")
+    if n < MIN_N_FOR_BAND:
         lines.append(
             f"   ⚠ N={n} IS TOO SMALL TO RECOMMEND A BAND. This run tells you the spread "
             f"was AT LEAST {m['spread']}; it cannot tell you the spread's distribution, "
             f"and the observed range of {n} draws systematically UNDERSTATES the true "
             f"range. Re-run with --n {MIN_N_FOR_BAND} or more before quoting a number.")
+    elif not rec.get("near_pass_line", True):
+        lines.append(
+            f"   ⚠ NO BAND RECOMMENDATION FROM THIS RUN. Every observed mean "
+            f"({m['min']}–{m['max']}) sits more than a full point from PASS_MEAN "
+            f"({t['PASS_MEAN']}), so this sample never went near the decision boundary. "
+            f"Variance measured away from the line does not transfer to the line — a "
+            f"render nothing could mistake for a pass is easy to agree about. Measure a "
+            f"pair whose verdict is actually in contention.")
     else:
         rec_band = max(rec["band_evidence"], 0.0)
         lines.append(
@@ -239,6 +301,27 @@ def report(rec: dict) -> str:
             f"   Caveat that travels with that number: it is ONE render/reference pair. "
             f"Ambiguity is a property of the frame, so this is a lower bound for the "
             f"pipeline as a whole, not an estimate of it.")
+    ind = rec.get("axis_independence")
+    if ind and ind.get("ratio") is not None:
+        r = ind["ratio"]
+        verdict = ("consistent with INDEPENDENT axis noise — a wider rubric does damp "
+                   "the mean, so a many-axis layer needs a narrower band than a "
+                   "one-axis layer" if r < 1.4 else
+                   "axis noise moves TOGETHER — rubric width does NOT damp the mean, so "
+                   "a many-axis layer needs about the same band as a one-axis layer")
+        lines.append(
+            f"   axis coupling: sd(mean) observed {ind['sd_mean_observed']} vs "
+            f"{ind['sd_mean_if_independent']} predicted if the {ind['n_scored_axes']} "
+            f"axes were independent (ratio {r}) — {verdict}.")
+        # An axis that never moved contributes nothing to a correlation estimate. Saying
+        # "6 axes look independent" when 4 of them are constants is arithmetic dressed as
+        # evidence.
+        varying = ind["n_scored_axes"] - rec.get("floored_axes", 0)
+        if varying < 3:
+            lines.append(
+                f"   ⚠ that coupling read rests on only {varying} axis/axes that "
+                f"actually moved; the rest were constant and carry no information about "
+                f"correlation. Treat it as a hint, not a measurement.")
     if any(d.get("scope_unstable") for d in rec["per_axis"].values()):
         lines.append(
             "   ⚠ At least one axis moved in and out of scope between repeats. The mean "
@@ -257,15 +340,28 @@ def save(rec: dict) -> Path:
 
 
 def latest(shot_id: str) -> dict | None:
-    """The most recent variance measurement for a shot, if one was ever taken.
+    """The most recent USABLE variance measurement for a shot, if one was ever taken.
 
     `compare` uses it to say whether a score delta is inside measured noise. Without it
     the only honest answer is "unknown", which is what returning None means here.
+
+    "Usable" excludes runs whose own report refuses to draw a conclusion — a sample taken
+    far from the pass line, or too small. The full-rubric run on a layout-only render
+    reported a mean spread of 0.33 purely because four of six axes were pinned at the
+    rubric floor; handing that to `compare` as "measured judge noise ±0.33" would turn a
+    caveat into a threshold, one directory hop away from where the caveat was written.
     """
     found = sorted((VARIANCE / shot_id).glob("*.json")) if (VARIANCE / shot_id).is_dir() else []
-    if not found:
-        return None
-    return json.loads(found[-1].read_text(encoding="utf-8"))
+    usable = []
+    for p in found:
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            log(f"! variance record {p.name} is unreadable and was SKIPPED ({e})")
+            continue
+        if rec.get("near_pass_line") and rec.get("n", 0) >= MIN_N_FOR_BAND:
+            usable.append(rec)
+    return usable[-1] if usable else None
 
 
 def _default_pair(shot: Shot) -> tuple[str, str, str | None]:
@@ -300,6 +396,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--layer", help="score under this layer's production scope block")
     ap.add_argument("--full-rubric", action="store_true",
                     help="ignore layer scope and score every axis (acceptance-like)")
+    ap.add_argument("--concurrency", type=int, default=3,
+                    help="repeats in flight at once (wall-time only; default 3)")
     ap.add_argument("--no-save", action="store_true")
     args = ap.parse_args(argv)
 
@@ -314,7 +412,7 @@ def main(argv: list[str]) -> int:
         layer_id = None
 
     rec = anyio.run(lambda: measure(shot, render_rel=render, ref_rel=ref, n=args.n,
-                                    layer_id=layer_id))
+                                    layer_id=layer_id, concurrency=args.concurrency))
     print("\n" + report(rec))
     if not args.no_save:
         print(f"\n→ {save(rec)}")

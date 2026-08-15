@@ -216,8 +216,20 @@ class Ledger:
         # Which run and which attempt produced this. Without it, re-running a layer
         # overwrites the previous verdict leaving no trace that an earlier attempt
         # existed, let alone what it scored — so "did the change help?" is unanswerable.
+        # The script name comes from the PLAN, not from the layer id. Deriving it as
+        # build/<id>.py recorded "build/1.py" for a layer whose script is
+        # build/01_layout.py and has never existed under any other name. Nothing broke,
+        # because chaining reads layers.json — which is exactly why it went unnoticed:
+        # the ledger's own field was misinformation that no code depended on, so it would
+        # only ever mislead a human reading the record.
+        script = slot.get("script")
+        if not script:
+            try:
+                script = load_layers(self.shot)[m.id].script
+            except (KeyError, FileNotFoundError, json.JSONDecodeError):
+                script = f"build/{m.id.lower()}.py"   # milestone with no plan layer
         slot.update(frame=m.frame, ref=m.ref, status="in_progress",
-                    script=f"build/{m.id.lower()}.py", rounds=slot.get("rounds", []),
+                    script=script, rounds=slot.get("rounds", []),
                     run_id=RUN_ID, attempt=int(slot.get("attempt", 0)) + 1,
                     started=_now())
         self.save()

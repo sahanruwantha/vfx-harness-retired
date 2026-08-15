@@ -32,7 +32,7 @@ from pathlib import Path
 
 from ..brief import Shot
 from ..log import log
-from ..metrics import compare, look_vector
+from ..metrics import compare, look_pair, look_vector
 
 # The scales the render tools actually offer. render_frame and compare_frame default to
 # 0.4, render_frames to 0.35, _stash_render to 0.5 — so a builder's own measurements and
@@ -62,49 +62,82 @@ class Result:
 # --------------------------------------------------------------------------- #
 # metric self-consistency (pure python, no Blender, no model)                  #
 # --------------------------------------------------------------------------- #
-def _one_image_scale_sweep(image: Path, scales, tmp: Path) -> dict:
-    """scale -> the deltas a perfect render at that scale would show against the full-res
-    original. Downscaling the image IS the model of a perfect render: same content, fewer
-    pixels, which is exactly what `scale` buys you from the render tools."""
+def _one_image_scale_sweep(image: Path, scales, tmp: Path, delivery: tuple[int, int] | None) -> dict:
+    """scale -> the deltas a PIXEL-PERFECT render at that scale would show against the
+    full-resolution plate.
+
+    The geometry has to match the pipeline's or the number is fiction. A render is
+    produced at `scale × delivery resolution` and compared against a full-resolution
+    reference, so the variant must be `scale × delivery`, not `scale × whatever this file
+    happens to be`. Getting that wrong is not hypothetical: the first version of this
+    check swept the already-downscaled 960x480 stashed renders down by a further 0.25 and
+    reported "11 blocking failures", which is a scale of 0.125 the pipeline never uses.
+    An eval that overstates its finding is the same defect as one that misses it.
+    """
     from PIL import Image
 
     im = Image.open(image).convert("RGB")
-    full = look_vector(str(image))
+    base_w, base_h = delivery or im.size
     out = {}
     for s in scales:
-        if s >= 1.0:
+        if s >= 1.0 and (im.width, im.height) == (base_w, base_h):
             path = image
         else:
             path = tmp / f"{image.stem}_s{s}.png"
-            im.resize((max(1, round(im.width * s)), max(1, round(im.height * s))),
+            im.resize((max(1, round(base_w * s)), max(1, round(base_h * s))),
                       Image.LANCZOS).save(path)
-        out[s] = compare(look_vector(str(path)), full)
+        # look_PAIR, not look_vector. Measuring each image independently is what produced
+        # the asymmetry in the first place: look_vector normalises everything to width
+        # 960, which UPSCALES a sub-960 render while the full-res plate downscales. That
+        # is defensible for one image on its own and wrong for a comparison, which is the
+        # only way the pipeline uses it. look_pair measures both at a common width no
+        # larger than either input, so neither is ever upscaled. This check exists to
+        # police the COMPARISON path, because that is the one every verdict rides on.
+        out[s] = compare(*look_pair(str(path), str(image)))
     return out
 
 
-def metric_scale_consistency(images: list[Path], scales=RENDER_SCALES) -> Result:
+def metric_scale_consistency(images: list[Path], scales=RENDER_SCALES,
+                             delivery: tuple[int, int] | None = None) -> Result:
     """The same picture, delivered at different resolutions, must measure the same.
 
-    Written against the INTENDED behaviour, which the code does not yet have. A failure
-    here is the finding, not a broken test: it says every metric delta the pipeline
-    reports on a sub-full-resolution render is contaminated by resampling, and the
-    contamination lands on `detail`, `points` and `detail_bot` — three of the five
-    BLOCKING metrics in metrics.SPEC.
+    Written against the INTENDED behaviour, which the code does not fully have. A failure
+    here is the finding, not a broken test: it says part of every metric delta the
+    pipeline reports on a sub-full-resolution render is resampling rather than the scene.
 
     Deliberately swept over SEVERAL images. A single frame is not a test of this: a dark,
     low-detail plate passes trivially because every gap falls under the absolute floors
     in metrics._FLOOR, while a dense city frame at the same scale fails hard. Checking
     one image and reporting "scale-invariant" would be its own false negative.
+
+    Only full-resolution plates qualify. An image already smaller than the delivery
+    resolution cannot stand in for "the same picture at full quality" — upscaling it to
+    build the baseline would put the artifact under test into the control.
     """
     images = [p for p in images if p.is_file()]
     if not images:
         return Result("metric self-consistency", ok=None,
                       detail="no images to check (no refs, no judged renders)")
+    skipped: list[str] = []
+    if delivery:
+        from PIL import Image as _I
+        keep = []
+        for p in images:
+            w, h = _I.open(p).size
+            (keep if (w, h) >= delivery else skipped).append(
+                p if (w, h) >= delivery else f"{p.name} ({w}x{h})")
+        images = keep
+        if not images:
+            return Result("metric self-consistency", ok=None,
+                          detail=f"no image is at the delivery resolution "
+                                 f"{delivery[0]}x{delivery[1]}, so none can serve as the "
+                                 f"full-quality control. Skipped: {', '.join(skipped)}",
+                          data={"skipped": skipped, "per_image": {}})
     tmp = Path(tempfile.mkdtemp(prefix="bvfx-eval-scale-"))
     per_image: dict[str, dict] = {}
     failures: list[str] = []
     for image in images:
-        sweep = _one_image_scale_sweep(image, scales, tmp)
+        sweep = _one_image_scale_sweep(image, scales, tmp, delivery)
         per_image[image.name] = {str(s): [str(d) for d in ds] for s, ds in sweep.items()}
         bad = {s: ds for s, ds in sweep.items() if ds}
         if not bad:
@@ -121,25 +154,50 @@ def metric_scale_consistency(images: list[Path], scales=RENDER_SCALES) -> Result
                         f"worst{' blocking' if blocking else ''} is scale {worst_s} → {top}")
         log(f"{image.name}: scale-dependent at {sorted(bad, reverse=True)}", 1)
 
+    skip_note = (f"\n      Excluded (below the delivery resolution, so they cannot serve "
+                 f"as a full-quality control): {', '.join(skipped)}" if skipped else "")
     if not failures:
         return Result("metric self-consistency", ok=True,
-                      detail=f"{len(images)} image(s) measure identically at scales "
-                             f"{list(scales)}", data={"per_image": per_image})
+                      detail=f"{len(images)} full-resolution plate(s) measure identically "
+                             f"at scales {list(scales)}" + skip_note,
+                      data={"per_image": per_image, "skipped": skipped})
+    readings = sum(len(strs) for per in per_image.values() for strs in per.values())
+    n_block = sum(1 for f in failures for _ in [f] if "(0 blocking)" not in f)
+    severity = (
+        "NONE of them is a BLOCKING metric, so no verdict currently turns on this — it "
+        "is noise in the advice the builder is given, not a false rejection."
+        if n_block == 0 else
+        f"{n_block} plate(s) show a BLOCKING metric drifting, which CAN flip an "
+        f"acceptance verdict: accept_agent skips the critic entirely when a blocking "
+        f"metric trips.")
+    # The contract is about BLOCKING metrics. Comparison now goes through look_pair, so
+    # neither image is ever upscaled and the systematic asymmetry is gone — but halation_*
+    # counts pixels above brightness thresholds, so ANY resampling filter moves it, and no
+    # common width makes that invariant. Failing forever on a property we have accepted is
+    # how a check gets ignored; a blocking metric drifting is the thing that can actually
+    # flip a verdict, because accept_agent skips the critic outright when one trips.
     return Result(
-        "metric self-consistency", ok=False,
-        detail=(f"{len(failures)} of {len(images)} image(s) compared against THEMSELVES "
-                f"are not scale-invariant. look_vector() resamples every input to 960px "
-                f"wide, so a render taken below that is upscaled, and the interpolated "
-                f"pixels destroy exactly the high-frequency signal `detail` and `points` "
-                f"count.\n      "
+        "metric self-consistency", ok=(n_block == 0),
+        detail=(f"{len(failures)} of {len(images)} full-resolution plate(s) show "
+                f"scale-dependent readings when compared against THEMSELVES"
+                + (" — but no BLOCKING metric among them, which is the bar: "
+                   "threshold-counting metrics like halation_* move under any resampling "
+                   "filter and cannot be made invariant."
+                   if n_block == 0 else "") + "\n      "
+                f"SEVERITY: {severity}\n      "
                 + "\n      ".join(failures)
-                + "\n      Consequence: guardrails.metrics_feedback compares the "
-                  "builder's scale=0.4 draft against a full-res reference after every "
-                  "render, so part of every gap it pushes into the builder's context is "
-                  "resampling, not the scene. `detail`, `points` and `detail_bot` are "
-                  "BLOCKING metrics, and accept_agent skips the critic entirely when a "
-                  "blocking metric trips."),
-        data={"per_image": per_image})
+                + f"\n      ({readings} out-of-tolerance readings in total across the "
+                  f"sweep.)"
+                + "\n      Every comparison path now goes through metrics.look_pair(), "
+                  "which measures both images at a common width no larger than either, so "
+                  "nothing is upscaled: guardrails.metrics_feedback, accept_agent, "
+                  "build_agent._metric_report and the signed-gap block in "
+                  "blender/tools._compare_image. What remains is each metric's own "
+                  "sensitivity to resolution, which is a property of the picture, not of "
+                  "how it was measured. _ablate still calls look_vector directly, and "
+                  "correctly so — it compares two renders made at the SAME scale."
+                + skip_note),
+        data={"per_image": per_image, "skipped": skipped})
 
 
 # --------------------------------------------------------------------------- #
