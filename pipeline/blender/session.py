@@ -80,8 +80,12 @@ class BlenderSession:
             pngs = sorted(self.artifacts.glob("*.png"), key=lambda p: p.stat().st_mtime)
             for p in pngs[:-keep]:
                 p.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except OSError as e:
+            # Housekeeping, so never fatal — but a sweep that keeps failing means renders
+            # accumulate unbounded, and this pipeline has already leaked 1.8 GB into $HOME
+            # once by nobody noticing exactly this.
+            print(f"! artifact sweep failed ({e}) — renders may accumulate in "
+                  f"{self.artifacts}", flush=True)
 
     def close(self) -> None:
         self._sweep()

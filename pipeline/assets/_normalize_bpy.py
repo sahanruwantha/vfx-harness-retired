@@ -53,8 +53,12 @@ def _tidy(objs):
             bm.to_mesh(o.data)
             bm.free()
             o.data.update()
-        except Exception:  # normalization must not die on one bad mesh
-            pass
+        except Exception as e:
+            # Must not die on one bad mesh — but it must SAY so. A silently skipped mesh
+            # ships an asset normalized everywhere except one part, and the only symptom
+            # downstream is geometry that looks subtly wrong in a finished render.
+            print(f"! normalize SKIPPED {getattr(o, 'name', '?')}: "
+                  f"{type(e).__name__}: {e}", flush=True)
 
 
 def main():

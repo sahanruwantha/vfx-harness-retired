@@ -166,16 +166,46 @@ def main():
                     "hooks": {"metric_feedback": 9}})
     check("healthy run is not flagged", "NO objective metric" not in s_ok)
     import ast as _ast
-    crit = {"guardrails.py", "recipes.py"}
-    quiet = []
-    for f in Path("pipeline").rglob("*.py"):
-        if f.name not in crit: continue
-        for n in _ast.walk(_ast.parse(f.read_text())):
-            if isinstance(n, _ast.ExceptHandler):
-                src = _ast.unparse(n)
-                if "log(" not in src and "print(" not in src and "raise" not in src:
-                    quiet.append(f"{f.name}:{n.lineno}")
+
+    def _mute(handler) -> bool:
+        """Does this handler swallow the failure without anyone finding out?
+
+        A handler is NOT mute if it logs, prints, re-raises — or RETURNS the problem to
+        its caller, which several legitimately do (an is_error tool result, a "verdict
+        INCONCLUSIVE" note, a list of problems). The first version of this check only
+        looked for log/print/raise and so counted 53 handlers, most of which were
+        reporting perfectly well through their return value. Flagging those trains
+        everyone to ignore the check, which costs more than the handlers do.
+        """
+        src = _ast.unparse(handler)
+        if any(k in src for k in ("log(", "print(", "raise", "bump(")):
+            return False
+        for n in _ast.walk(handler):
+            # a return/append carrying an f-string or the exception name is a report
+            if isinstance(n, (_ast.Return, _ast.Assign)) and _ast.unparse(n).count("e") \
+                    and ("JoinedStr" in str(type(getattr(n, "value", None)))
+                         or "is_error" in _ast.unparse(n)
+                         or "error" in _ast.unparse(n).lower()):
+                return False
+        return True
+
+    # The hook path specifically: a hook that dies quietly is how metrics_feedback
+    # no-opped for an entire build phase with no trace at all.
+    crit = {"guardrails.py", "recipes.py", "sandbox.py", "runlog.py", "layer_state.py"}
+    quiet = [f"{f.name}:{n.lineno}"
+             for f in Path("pipeline").rglob("*.py") if f.name in crit
+             for n in _ast.walk(_ast.parse(f.read_text()))
+             if isinstance(n, _ast.ExceptHandler) and _mute(n)]
     check("no silent handlers in hook code", not quiet, str(quiet))
+
+    # And the handlers that were individually judged to lose information (#7).
+    fixed = {"pipeline/blender/session.py": "artifact sweep failed",
+             "pipeline/assets/_normalize_bpy.py": "normalize SKIPPED",
+             "pipeline/skills.py": "skills: skipping",
+             "pipeline/escalate.py": "is not valid JSON and was SKIPPED"}
+    missing = [p for p, marker in fixed.items()
+               if marker not in Path(p).read_text(encoding="utf-8")]
+    check("degradations that lose data announce themselves", not missing, str(missing))
 
     print("\n[ledger]")
     t2 = Path(tempfile.mkdtemp()) / "br"

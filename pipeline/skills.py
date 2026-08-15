@@ -41,7 +41,10 @@ def _unproven() -> set[str]:
 def _rounds(shot_json: Path):
     try:
         d = json.loads(shot_json.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError) as e:
+        # Returning silently dropped a whole shot from the report while it still read as
+        # a complete tally — under-reporting that presents itself as data.
+        print(f"! skills: skipping {shot_json} ({e})", flush=True)
         return
     for gid, slot in (d.get("milestones") or {}).items():
         for r in slot.get("rounds", []):
