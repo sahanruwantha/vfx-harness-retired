@@ -109,12 +109,16 @@ def metric_scale_consistency(images: list[Path], scales=RENDER_SCALES) -> Result
         bad = {s: ds for s, ds in sweep.items() if ds}
         if not bad:
             continue
-        worst_s, worst_ds = max(bad.items(), key=lambda kv: max(abs(d.rel) for d in kv[1]))
-        top = max(worst_ds, key=lambda d: abs(d.rel))
-        n_block = sum(1 for ds in bad.values() for d in ds if d.blocking)
+        # Lead with a BLOCKING delta when there is one. A blocking metric is the only
+        # kind that decides anything — accept_agent skips the critic outright when one
+        # trips — so quoting the largest non-blocking halation ratio instead would bury
+        # the part that changes an outcome.
+        flat = [(s, d) for s, ds in bad.items() for d in ds]
+        blocking = [(s, d) for s, d in flat if d.blocking]
+        worst_s, top = max(blocking or flat, key=lambda sd: abs(sd[1].rel))
         failures.append(f"{image.name}: out of tolerance at scale(s) "
-                        f"{sorted(bad, reverse=True)} ({n_block} blocking); worst is "
-                        f"scale {worst_s} → {top}")
+                        f"{sorted(bad, reverse=True)} ({len(blocking)} blocking); "
+                        f"worst{' blocking' if blocking else ''} is scale {worst_s} → {top}")
         log(f"{image.name}: scale-dependent at {sorted(bad, reverse=True)}", 1)
 
     if not failures:
@@ -153,29 +157,60 @@ def _scene_manifest(session) -> dict:
     return {"inspect": text, "scene": stats.get("scene", {})}
 
 
+def accepted_prefix(shot: Shot) -> tuple[list, int]:
+    """The longest run of layers, from the first, that the ledger records as passed.
+
+    Not `render_shot._chain_scripts`, which refuses anything short of a complete accepted
+    chain — correct for producing a deliverable, useless for measuring determinism. A
+    half-built shot is the normal state during development and is exactly when a
+    non-deterministic script is cheapest to find. Returns (layers, total) so the caller
+    can say how much of the chain it actually exercised.
+    """
+    from ..ledger import Ledger, load_layers
+
+    import re as _re
+
+    def num(script: str) -> int:
+        m = _re.match(r"(\d+)", Path(script).name)
+        return int(m.group(1)) if m else 10_000
+
+    layers = sorted(load_layers(shot).values(), key=lambda L: num(L.script))
+    ledger = Ledger(shot)
+    prefix = []
+    for L in layers:
+        if ledger.status(L.as_milestone()) != "passed" or not (shot.folder / L.script).is_file():
+            break
+        prefix.append(L)
+    return prefix, len(layers)
+
+
 def replay_equivalence(shot: Shot, *, blender: str = "blender", passes: int = 2,
                        frame: int | None = None, scale: float = 0.5,
-                       mode: str = "eevee", force: bool = False) -> Result:
+                       mode: str = "eevee") -> Result:
     """Run the accepted chain from empty `passes` times; require the same scene and the
     same look vector every time."""
     from ..blender.session import BlenderError, BlenderSession
     from ..build_agent import _RESET, _preamble
-    from ..render_shot import IncompleteRender, _chain_scripts
 
     try:
-        scripts = _chain_scripts(shot, force=force)
-    except (IncompleteRender, FileNotFoundError) as e:
+        layers, total = accepted_prefix(shot)
+    except Exception as e:      # noqa: BLE001 — no plan is a skip with a reason, not a crash
         return Result("replay equivalence", ok=None,
-                      detail=f"no accepted chain to replay — {str(e)[:200]}")
+                      detail=f"cannot determine the accepted chain: {str(e)[:200]}")
+    if not layers:
+        return Result("replay equivalence", ok=None,
+                      detail="no layer is recorded 'passed' with a script on disk — "
+                             "there is no accepted chain to replay yet")
+    scripts = [shot.folder / L.script for L in layers]
+    partial = ("" if len(layers) == total else
+               f"PARTIAL CHAIN: {len(layers)} of {total} layers are accepted, so this "
+               f"exercises the accepted prefix only. ")
 
     if frame is None:
-        # The first accepted layer's own judge frame: the frame the pipeline already
-        # decided is worth looking at, so a difference here is a difference that matters.
-        try:
-            from ..ledger import load_layers
-            frame = min(L.judge_frame for L in load_layers(shot).values())
-        except Exception:       # noqa: BLE001 — reported via the detail string below
-            frame = 1
+        # The last accepted layer's own judge frame: the frame the pipeline already
+        # decided is worth looking at for the deepest layer we can replay, so a
+        # difference here is a difference someone already cares about.
+        frame = layers[-1].judge_frame
 
     manifests, vectors = [], []
     tmp = Path(tempfile.mkdtemp(prefix="bvfx-eval-replay-"))
@@ -199,7 +234,8 @@ def replay_equivalence(shot: Shot, *, blender: str = "blender", passes: int = 2,
                       detail=f"Blender could not replay the chain: {str(e)[:300]}")
 
     problems, data = [], {"frame": frame, "scripts": [p.name for p in scripts],
-                          "passes": passes}
+                          "passes": passes, "layers_replayed": len(layers),
+                          "layers_total": total}
     base = manifests[0]
     for i, man in enumerate(manifests[1:], start=2):
         if man["scene"] != base["scene"]:
@@ -219,15 +255,18 @@ def replay_equivalence(shot: Shot, *, blender: str = "blender", passes: int = 2,
 
     if problems:
         return Result("replay equivalence", ok=False,
-                      detail="\n      ".join(problems), data=data)
+                      detail=partial + "\n      ".join(problems), data=data)
     return Result("replay equivalence", ok=True,
-                  detail=(f"{len(scripts)} script(s), {passes} passes from empty: "
+                  detail=(partial
+                          + f"{len(scripts)} script(s), {passes} passes from empty: "
                           f"identical scene manifest and look vector at f{frame} "
                           f"(worst metric drift {data['max_metric_drift']:.4g}, "
                           f"tolerance-clean).\n      "
                           f"Scope note: all passes ran in ONE Blender process with a "
                           f"factory reset between them, so this proves script-level "
-                          f"determinism, not process-level."),
+                          f"determinism, not process-level — a script that depends on "
+                          f"module state surviving `read_factory_settings` would still "
+                          f"pass here."),
                   data=data)
 
 

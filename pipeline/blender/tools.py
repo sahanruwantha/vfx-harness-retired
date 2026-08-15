@@ -119,22 +119,95 @@ def _image(path: str, caption: str) -> dict:
     ]}
 
 
+# Metrics are computed at ONE fixed size for every comparison, whatever `scale` the
+# render was made at. Previously both images were forced to height 512 AFTER the render
+# had already been shrunk by `scale`, so the two travelled different resampling paths:
+# the reference (always the full 1920x960 plate) was downscaled 0.53x and stayed sharp,
+# while a render at the default scale=0.4 was 768x384 and got UPSCALED 1.33x. Detail and
+# structure therefore read as systematically softer than they were, and the builder chased
+# sharpness it already had. Worse, two calls at different scales were not comparable to
+# each other, yet the builder varies scale freely between them — in one layer it compared
+# the same frame at 0.6 and then at 1.0 while editing a node in between, making the
+# reading uninterpretable. (This is the same artifact that produced a "detail 46% high"
+# finding I had to retract; it was in the tool, not just the analysis.)
+# 320, NOT 512, and the number matters. The smallest scale the builder uses (0.35 of a
+# 1920x960 shot) renders 336px tall, so a 512 metric height would still UPSCALE the render
+# while the full-res reference downscaled — the very asymmetry this is fixing, just moved.
+# Measuring below every accepted render height means neither image is ever upscaled.
+_METRIC_H = 320
+_DISPLAY_H = 512
+
+# (frame, ref) -> the (mode, scale) it was last measured at, so a change is announced.
+_LAST_COMPARE: dict = {}
+
+
+def _to_metric_size(im: Image.Image) -> Image.Image:
+    """One canonical geometry for measurement, independent of render scale.
+
+    Downscale only. Upscaling invents no detail but redistributes it, which is what made
+    a render read softer than the reference it was being compared against.
+    """
+    w = max(1, round(im.width * _METRIC_H / im.height))
+    return im.resize((w, _METRIC_H), Image.LANCZOS)
+
+
+def _to_display_size(im: Image.Image) -> Image.Image:
+    w = max(1, round(im.width * _DISPLAY_H / im.height))
+    return im.resize((w, _DISPLAY_H), Image.LANCZOS)
+
+
 def _compare_image(cand_path: str, ref_path: Path, caption: str) -> dict:
-    cand = Image.open(cand_path).convert("RGB")
-    ref = Image.open(ref_path).convert("RGB")
-    h = 512
+    cand_raw = Image.open(cand_path).convert("RGB")
+    ref_raw = Image.open(ref_path).convert("RGB")
 
-    def _rz(im):
-        return im.resize((max(1, round(im.width * h / im.height)), h))
+    # MEASURE on identically-resampled copies…
+    cand_m, ref_m = _to_metric_size(cand_raw), _to_metric_size(ref_raw)
+    text = f"{caption}\n{_stats(cand_m)}\n{_metrics_line(cand_m, ref_m)}"
 
-    cand, ref = _rz(cand), _rz(ref)
-    sheet = Image.new("RGB", (cand.width + ref.width, h), (18, 18, 22))
-    sheet.paste(cand, (0, 0)); sheet.paste(ref, (cand.width, 0))
+    # …and state the SIGNED GAP, not just the two numbers. The builder was reading its own
+    # absolute values ("exposure: mean 22/255") and having to remember or re-derive the
+    # reference's, so it searched instead of solving: across one layer f440's mean went
+    # 22 → 74 → 44, overshooting and correcting, ~10 compare calls in 19 minutes. The full
+    # signed, banded delta already existed in metrics.compare() and was used by the
+    # acceptance stage — the tool the builder actually calls dozens of times per layer
+    # simply never called it.
+    try:
+        from ..metrics import compare as _mcompare, look_vector as _lv
+        deltas = _mcompare(_lv(cand_path), _lv(str(ref_path)))
+        if deltas:
+            text += ("\ngap vs reference (signed — fix the sign, not just the number):\n"
+                     + "\n".join(f"  {d}" for d in deltas[:6]))
+            if len(deltas) > 6:
+                text += f"\n  … and {len(deltas) - 6} smaller gap(s)"
+        else:
+            text += "\ngap vs reference: every tracked metric is within tolerance"
+    except Exception as e:
+        # Never break a comparison over the extra readout — but say it is missing, or a
+        # builder silently loses its only objective signal and nobody can tell.
+        text += f"\n(signed gap unavailable: {type(e).__name__}: {str(e)[:70]})"
+    if abs(cand_raw.width / max(cand_raw.height, 1)
+           - ref_raw.width / max(ref_raw.height, 1)) > 0.02:
+        # Different aspect means the metric bands are not describing the same regions;
+        # say so rather than reporting a confident number about mismatched frames.
+        text += (f"\n⚠ aspect mismatch: render {cand_raw.width}x{cand_raw.height} vs "
+                 f"reference {ref_raw.width}x{ref_raw.height} — band metrics compare "
+                 f"different parts of the frame")
+
+    if cand_raw.height < _METRIC_H:
+        text += (f"\n⚠ render is only {cand_raw.height}px tall — below the {_METRIC_H}px "
+                 f"measurement height, so it had to be upscaled and detail metrics read "
+                 f"soft. Re-render at a higher scale before trusting them.")
+
+    # …and build the side-by-side from the ORIGINALS, purely for looking at. Display
+    # resizing is separate on purpose: it must never feed back into the numbers.
+    cand_d, ref_d = _to_display_size(cand_raw), _to_display_size(ref_raw)
+    sheet = Image.new("RGB", (cand_d.width + ref_d.width, _DISPLAY_H), (18, 18, 22))
+    sheet.paste(cand_d, (0, 0)); sheet.paste(ref_d, (cand_d.width, 0))
     d = ImageDraw.Draw(sheet)
     d.text((6, 6), "YOURS", fill=(255, 255, 0))
-    d.text((cand.width + 6, 6), "REFERENCE", fill=(0, 255, 255))
+    d.text((cand_d.width + 6, 6), "REFERENCE", fill=(0, 255, 255))
     return {"content": [
-        {"type": "text", "text": f"{caption}\n{_stats(cand)}\n{_metrics_line(cand, ref)}"},
+        {"type": "text", "text": text},
         {"type": "image", "data": _b64(sheet), "mimeType": "image/jpeg"},
     ]}
 
@@ -269,13 +342,30 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         ref_path = (shot_dir / ref) if (shot_dir and not Path(ref).is_absolute()) else Path(ref)
         if not ref_path.is_file():
             return _text(f"reference not found: {ref_path}", is_error=True)
+        mode = args.get("mode", "eevee")
+        scale = float(args.get("scale", 0.4))
         try:
-            r = await _call("render", frame=int(args["frame"]),
-                            mode=args.get("mode", "eevee"), scale=float(args.get("scale", 0.4)))
+            r = await _call("render", frame=int(args["frame"]), mode=mode, scale=scale)
         except BlenderError as e:
             return _text(str(e), is_error=True)
-        return _compare_image(r["image_path"], ref_path,
-                              f"frame {r['frame']} ({r['mode']})  vs  {ref}")
+        out = _compare_image(r["image_path"], ref_path,
+                             f"frame {r['frame']} ({mode})  vs  {ref}")
+        # Structure and exposure are now scale-invariant, but halation is not and cannot
+        # be: a 672px render genuinely holds less high-frequency detail than a 1920px one.
+        # So changing mode or scale between two readings of the SAME frame moves the
+        # numbers for reasons that have nothing to do with the edit in between — which is
+        # exactly what happened when one layer compared f45 at 0.6, then at 1.0, having
+        # altered a shader node in between, and could not tell which change moved what.
+        key = (int(args["frame"]), str(ref))
+        prev = _LAST_COMPARE.get(key)
+        _LAST_COMPARE[key] = (mode, scale)
+        if prev and prev != (mode, scale):
+            out["content"][0]["text"] += (
+                f"\n⚠ last comparison of f{key[0]} used mode={prev[0]} scale={prev[1]}, "
+                f"this one mode={mode} scale={scale}. Halation is not comparable across "
+                f"that change — hold mode and scale FIXED while iterating, or you cannot "
+                f"tell your edit from the render settings.")
+        return out
 
     @tool(
         "render_frames",

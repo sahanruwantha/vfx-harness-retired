@@ -65,9 +65,12 @@ def _cmd_check(argv: list[str]) -> int:
         # Refs AND judged renders: the two populations the metric is ever applied to.
         # A sweep over refs alone would miss that the renders are the side that arrives
         # at the wrong resolution.
-        images = list(shot.refs) + sorted(
-            p for p in (shot.folder / "renders").glob("*.png")
-            if "_motion" not in p.name) if (shot.folder / "renders").is_dir() else list(shot.refs)
+        rdir = shot.folder / "renders"
+        # motion strips are montages of several frames — a horizontal join is not a
+        # frame, and the banded metrics would be measuring the seams.
+        renders = sorted(p for p in rdir.glob("*.png")
+                         if "_motion" not in p.name) if rdir.is_dir() else []
+        images = list(shot.refs) + renders
     results.append(metric_scale_consistency(images))
 
     if args.skip_replay:

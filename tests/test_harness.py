@@ -73,6 +73,27 @@ def main():
     check("zero-ref does not explode",
           "~0" in str(compare({"halation_mid": 900.0}, {"halation_mid": 0.0})[0]))
 
+    # compare_frame used to force BOTH images to height 512 AFTER the render had already
+    # been shrunk by `scale`, so the reference (always full-res) downscaled and stayed
+    # sharp while a default scale=0.4 render was UPSCALED 1.33x — every detail metric read
+    # soft, and two calls at different scales were not comparable to each other. Measuring
+    # an image against ITSELF must therefore give the same answer at every scale.
+    from PIL import Image as _I
+    from pipeline.blender.tools import _compare_image as _ci
+    _src = _I.open(ref).convert("RGB")
+    _sigs = set()
+    for _s in (0.35, 0.4, 0.6, 1.0):
+        _p = Path(tempfile.mkdtemp()) / f"s{_s}.png"
+        _src.resize((round(_src.width * _s), round(_src.height * _s)), _I.LANCZOS).save(_p)
+        _lines = _ci(str(_p), Path(ref), "x")["content"][0]["text"].splitlines()
+        # exposure + per-band structure must not depend on the scale knob
+        _sigs.add(_lines[1] + " | " + _lines[2].split("· halation")[0])
+    check("metrics are scale-invariant for an image vs itself", len(_sigs) == 1,
+          f"{len(_sigs)} variants: {sorted(_sigs)[:2]}")
+    _out = _ci(str(shot.folder / "renders/1@f100_canonical_f100.png"), Path(ref), "x")
+    check("compare_frame states the SIGNED gap, not just raw values",
+          "LOW" in _out["content"][0]["text"] or "HIGH" in _out["content"][0]["text"])
+
     print("\n[sandbox]")
     async def sb():
         chk = path_sandbox(shot.folder, cwd=shot.folder).hooks[0]
