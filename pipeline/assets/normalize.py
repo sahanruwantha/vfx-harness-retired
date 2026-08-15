@@ -181,6 +181,27 @@ def prepare_asset(shot, name: str, *, references: list[str | Path] | None = None
         except Exception as e:
             meta["fidelity_error"] = str(e)[:200]
             log(f"! fidelity check unavailable: {str(e)[:80]}", 2)
+        # And the asset's LOOK, which the silhouette check above cannot see. Rendered
+        # front-on WITH materials so it is comparable to the plate; the 3/4 clay preview
+        # is a shape check and shows no facade at all.
+        log("facade: front-on textured render", 2)
+        try:
+            meta["facade_preview"] = str(
+                Path(_facade_render(model, adir / "facade.png", target_height, blender))
+                .relative_to(shot.folder))
+            plate = next((shot.folder / v for v in meta.get("views") or []), None)
+            fpng = shot.folder / meta["facade_preview"]
+            if plate and plate.is_file() and fpng.is_file():
+                meta["facade"] = facade_vs_plate(plate, fpng)
+                fa = meta["facade"]
+                log(f"facade vs plate: outer/core {fa.get('mesh_outer_core')} vs "
+                    f"{fa.get('plate_outer_core')} · L1 {fa.get('profile_l1')} "
+                    f"→ {fa['verdict']}", 2)
+                if fa["verdict"] not in ("consistent",):
+                    log(f"! {fa['note']}", 2)
+        except Exception as e:
+            meta["facade_error"] = str(e)[:200]
+            log(f"! facade check unavailable: {str(e)[:80]}", 2)
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
     return meta
 
@@ -238,8 +259,117 @@ def compare_to_plate(plate: Path, preview: Path) -> dict:
             "mesh_profile": [round(v, 3) for v in b]}
 
 
+def _facade_render(model: Path, out: Path, height: float, blender: str) -> str:
+    """FRONT-ON, TEXTURED render of the normalized mesh — the asset's LOOK, not its shape.
+
+    The 3/4 Workbench preview below is a clay render with materials switched OFF. That is
+    right for a silhouette check and useless for anything else — and it was the ONLY image
+    of an asset anyone ever saw. The consequence was expensive: sr2_tower ships three
+    2048x2048 maps reproducing its design plate almost exactly (dense window cells in
+    strips, a dark recessed core, ribbed piers, a stepped podium, a sign with glowing
+    letters), none of which is visible in clay, so a build layer spent five attempts and
+    $78 reconstructing a facade the asset already had.
+
+    Front-on and evenly lit, to match how an isolation plate is framed: a facade profile
+    is only comparable between matched ANGLE and matched LIGHTING.
+    """
+    from ..blender.session import BlenderSession
+    s = BlenderSession(blender=blender, blend_file=None).start()
+    try:
+        s.run("import bpy\nbpy.ops.wm.read_factory_settings(use_empty=True)\n")
+        s.run(f"import bpy\nbpy.ops.import_scene.gltf(filepath={str(model)!r})\n")
+        s.run(
+            "import bpy, math, mathutils\n"
+            "sc=bpy.context.scene\n"
+            "sc.render.resolution_x, sc.render.resolution_y = 720, 1080\n"
+            # Bright even world, no key: we want the TEXTURE's own values the way a plate
+            # shows them. A raking key would measure the lighting rather than the asset.
+            "w=bpy.data.worlds.new('W'); sc.world=w; w.use_nodes=True\n"
+            "nt=w.node_tree; nt.nodes.clear()\n"
+            "o=nt.nodes.new('ShaderNodeOutputWorld'); bg=nt.nodes.new('ShaderNodeBackground')\n"
+            "bg.inputs['Color'].default_value=(1,1,1,1); bg.inputs['Strength'].default_value=1.8\n"
+            "nt.links.new(bg.outputs[0], o.inputs['Surface'])\n"
+            "cam_d=bpy.data.cameras.new('Cam'); cam=bpy.data.objects.new('Cam',cam_d)\n"
+            "sc.collection.objects.link(cam); sc.camera=cam; cam_d.lens=85\n"
+            # Frame from the REAL world bbox. Assuming base-at-z=0 framed the top third of
+            # the tower in an earlier rig and measured empty backdrop for two runs.
+            "obs=[ob for ob in sc.objects if ob.type=='MESH']\n"
+            "bb=[ob.matrix_world @ mathutils.Vector(c) for ob in obs for c in ob.bound_box]\n"
+            "zmin=min(v.z for v in bb); zmax=max(v.z for v in bb); cz=0.5*(zmin+zmax)\n"
+            "H=max(zmax-zmin, 1e-6)\n"
+            "fov=2*math.atan(cam_d.sensor_width/(2*cam_d.lens))\n"
+            "dist=(H*1.12)/(2*math.tan(fov/2))\n"
+            "cam.location=(0.0,-dist,cz); cam.rotation_euler=(math.radians(90),0,0)\n"
+        )
+        src = s.render(frame=1, mode="eevee", scale=1.0)
+        shutil.copyfile(src, out)
+        return str(out)
+    finally:
+        s.close()
+
+
+def facade_vs_plate(plate: Path, facade_png: Path) -> dict:
+    """Does the mesh's FACADE match the plate, not just its outline?
+
+    compare_to_plate measures the silhouette, and a silhouette statistic cannot see a
+    facade: sr2_tower passed it at 1.73x base flare against the plate's 1.85x while the
+    facade the pipeline actually rendered had the WRONG POLARITY (outer/core 1.91 where
+    the plate reads 3.37). The gate was correct and the asset cleared it while being wrong
+    in the way that mattered.
+
+    Same rule as #37, one level up: A GATE MUST MEASURE THE PROPERTY THE ARTIFACT IS FOR.
+    An asset is for its look, not its outline.
+    """
+    from ..facade import compare_profiles, facade_profile
+    ref = facade_profile(plate)
+    got = facade_profile(facade_png)
+    if ref.get("warning") or got.get("warning"):
+        return {"verdict": "unmeasurable",
+                "note": ref.get("warning") or got.get("warning")}
+    cmp = compare_profiles(got, ref)
+    l1 = cmp["l1"]
+    pf, mf = ref["outer_core_ratio"], got["outer_core_ratio"]
+
+    # THE RATIO IS PRIMARY, not L1. My first version of this gate made L1 the test at a
+    # 0.25 threshold and it passed the very defect it was written for: the procedural
+    # facade scores outer/core 1.91 against the plate's 3.37 — plainly wrong — with an L1
+    # of 0.242, just inside the bar. L1 measures overall profile distance and is sensitive
+    # to lighting and exposure; the outer/core RATIO measures the one structural property
+    # that keeps being built backwards. Judge that, and treat L1 as corroboration.
+    #
+    # Asymmetric on purpose. Falling SHORT of the plate's separation is the failure (a
+    # fused or inverted facade); EXCEEDING it is not — the correct asset measures 4.48
+    # against the plate's 3.37 simply because a render can separate strips from core more
+    # cleanly than a photograph does.
+    floor = 0.70 * pf
+    if pf < 1.2:
+        verdict, note = "no-structure-in-plate", ("the plate shows no outer/core "
+                                                  "separation to compare")
+    elif mf < floor:
+        verdict = "facade-polarity-lost"
+        note = (f"the plate reads outer/core {pf} — bright OUTER bands against a darker "
+                f"recessed core — and the mesh renders {mf}, only {mf/pf:.0%} of it. The "
+                f"facade's structure is fused or inverted. Any layer judged on 'does the "
+                f"hero read' will fail on this and CANNOT fix it by shading, because the "
+                f"structure itself is wrong. Check nothing downstream is overwriting the "
+                f"asset's own material.")
+    elif l1 > 0.30:
+        verdict = "facade-differs"
+        note = (f"outer/core is in range ({mf} vs {pf}) but the profile shape differs "
+                f"(L1 {l1}): the bright bands may be in the wrong PLACE across the shaft, "
+                f"or the cell density is off.")
+    else:
+        verdict, note = "consistent", ""
+    return {"plate_outer_core": pf, "mesh_outer_core": mf, "profile_l1": l1,
+            "ratio_gap": cmp["ratio_gap"], "verdict": verdict, "note": note,
+            "plate_profile": ref["profile"], "mesh_profile": got["profile"]}
+
+
 def _preview_render(model: Path, out: Path, height: float, blender: str) -> str:
-    """Quick 3/4 Workbench render of the normalized mesh so the agent can eyeball it."""
+    """Quick 3/4 Workbench render of the normalized mesh so the agent can eyeball it.
+
+    SHAPE ONLY — Workbench solid shading ignores materials entirely. Use _facade_render
+    for the asset's look, and see the note there on what a clay-only preview cost."""
     from ..blender.session import BlenderSession
     s = BlenderSession(blender=blender, blend_file=None).start()
     try:

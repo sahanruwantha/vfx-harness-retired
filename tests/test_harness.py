@@ -13,6 +13,7 @@ import anyio, json, shutil, sys, tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT_DIR = Path(__file__).resolve().parent.parent
 FAILS: list[str] = []
 
 
@@ -723,6 +724,32 @@ def main():
         check("a non-passed layer is never reported stale", led2.stale(m1) is None)
     check("chaining treats a stale prior like an unpassed one",
           "ledger.stale(g.as_milestone())" in ba_src)
+
+    print("\n[the asset gate can see a facade]")
+    # The silhouette gate (#30) passes sr2_tower at 1.73x base flare vs the plate's 1.85x
+    # while the facade the pipeline rendered had the WRONG POLARITY. A silhouette
+    # statistic cannot see a facade.
+    #
+    # BOTH DIRECTIONS ARE TESTED, because the first version of this gate passed the very
+    # defect it was written for: it made L1 primary at a 0.25 threshold, and the bad case
+    # scores 0.242. A gate proved only against the good case is not a gate.
+    from pipeline.assets.normalize import facade_vs_plate as _fvp
+    _plate = shot.folder / "assets/sr2_tower/isolated/view_0.png"
+    _bad = ROOT_DIR / "docs/probes/L39_turntable_front.png"   # bvfx_emissive_windows
+    if _plate.is_file() and _bad.is_file():
+        rb = _fvp(_plate, _bad)
+        check("catches a facade whose polarity is lost",
+              rb["verdict"] == "facade-polarity-lost",
+              f"{rb['verdict']} (outer/core {rb.get('mesh_outer_core')} vs "
+              f"{rb.get('plate_outer_core')}, L1 {rb.get('profile_l1')})")
+        check("  ... and says so in terms a builder can act on",
+              "CANNOT fix it by shading" in (rb.get("note") or ""))
+        # The plate compared with ITSELF must pass — a gate that fails everything is as
+        # useless as one that passes everything.
+        rg = _fvp(_plate, _plate)
+        check("passes an exact match", rg["verdict"] == "consistent", str(rg["verdict"]))
+    else:
+        check("facade gate fixtures present", False, f"{_plate} / {_bad}")
 
     print("\n[textured assets keep their facade]")
     # sr2_tower ships three 2048² maps that reproduce its design plate; the procedural
