@@ -157,6 +157,42 @@ references, and is fixed separately.
 3. Build the framing measurer as separate work; only then consider layer 1.
 4. Never generate for an axis whose fingerprint is geometric until step 3 lands.
 
+## The extension FAILED on layer 2, and why (run 2026-08-15)
+
+Layer 2 on plates scored **2.0 on all four frames** — worse than the 3/4 it reached with
+finished-frame references. $18.68, 53 min. The cause is a real design flaw, not bad luck.
+
+    REAL f045_pullback.jpg   bot mu68/sigma53
+    PLATE f045_..._L2.png    bot mu9/sigma14      <- 7.5x darker, near-flat
+    v4 canonical render      bot mu30/sigma33
+
+The plate's bottom band reads mu9 because the prompt said "reduce the surrounding city to
+dim, sparse unlit massing so it does not compete". That was right for keeping the city out
+of layer 2's SCORE — but the fingerprint was then derived from the WHOLE BAND, which at
+this frame is almost entirely city. The target handed to layer 2 therefore said "make the
+bottom of frame nearly black", the builder obeyed, and the window hierarchy died with it.
+
+**Band statistics are a whole-frame measure; a layer owns a SUBJECT, not a band.**
+
+| layer | subject | band statistic |
+|---|---|---|
+| 3 — city | the entire lower frame | valid: subject and band coincide |
+| 2 — hero tower | a narrow vertical region | invalid: band is dominated by city |
+
+That is precisely why plates helped layer 3 and hurt layer 2, and it was foreseeable from
+what the number measures.
+
+**Correction to the design:** derive fingerprints from the SUBJECT REGION, not the frame
+band. `measure_regions` already does this — for a tower the targets are strip/core ratios
+and per-region sigma, not band mu. Until that lands, a layer whose subject does not fill a
+band keeps its real references, with the plate retained as a STRUCTURAL target (it still
+shows the polarities that have been built inverted four times) and its band numbers
+explicitly disowned.
+
+Current state: layer 3 on plates + plate fingerprints. Layer 4 on plates (its subject, the
+sky, fills the top band, so band statistics are valid there). Layer 2 reverted to real
+references with the plates cited for structure only.
+
 ## Caveat on the extension
 
 The layer-2 and layer-4 plates were generated in a batch and spot-checked, not
