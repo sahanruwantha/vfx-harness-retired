@@ -16,6 +16,7 @@ the environment (see pipeline/runid.py).
 Exit codes are propagated, not flattened, because they say different things:
     3 truncated (budget)   4 chain broken       5 unanswered questions
     6 unaccepted prior     7 incomplete chain   8 plan is stale vs the brief
+    9 ran cleanly but the VERDICT was not a pass
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ _MEANING = {
     5: "unanswered plan questions — settle them first",
     6: "UNACCEPTED PRIOR — a lower layer must pass first",
     7: "INCOMPLETE CHAIN", 8: "plan is STALE against brief.md — re-plan",
+    9: "layer ran cleanly but its VERDICT was not a pass",
 }
 
 
@@ -92,6 +94,20 @@ def main() -> None:
             log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
                 f"Fix, then resume with --from {lid}")
             raise SystemExit(rc)
+
+        # An exit code says the PROCESS completed; the ledger says the WORK was accepted.
+        # Conflating them is why this driver announced "✓ layer 2 passed" for a layer whose
+        # own report read FAILED and whose four judged frames all scored 2.0: build_agent
+        # exits 0 for a layer that builds fine and then fails its verdict — only crashes,
+        # truncation and chain breaks raise. The chain guard caught it 0.2s into layer 3,
+        # which is the system working, but the driver should not have needed rescuing.
+        status = Ledger(shot).status(layers[lid].as_milestone())
+        if status != "passed":
+            log(f"✗ layer {lid} finished cleanly but its verdict is '{status}' — not "
+                f"building on it")
+            log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
+                f"See {shot.folder}/logs/run_layer{lid}.json, then resume with --from {lid}")
+            raise SystemExit(9)
         log(f"✓ layer {lid} passed ({(time.monotonic() - t0) / 60:.0f} min elapsed)")
 
     if not a.skip_accept:
