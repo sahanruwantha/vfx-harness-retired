@@ -77,14 +77,14 @@ set -a; . ./.env; set +a
 .venv/bin/python -m pipeline.build_agent shots/barrel_roll --layer 1
 ```
 
-Run all layers of a shot under one run id so their records are comparable:
+Run the whole shot — every layer, acceptance, then the mp4 — under one run id:
 
 ```bash
-export BVFX_RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-manual
-for L in 1 2 3 4 5 6 7 8; do
-  .venv/bin/python -m pipeline.build_agent shots/barrel_roll --layer "$L" || break
-done
+.venv/bin/python -m pipeline.run_shot shots/barrel_roll            # --dry-run to preview
 ```
+
+It skips layers already recorded as passed (so it doubles as resume), stops at the first
+failing layer rather than stacking work on it, and propagates that layer's exit code.
 
 ## What a run leaves behind
 
