@@ -89,10 +89,19 @@ helpers are in scope (like `bpy`) — prefer them:
     density is derived from the domain size so ANY domain starts near-right (what you see
     is density × path length — that's why big domains fog-wall). Density fades to 0 at the
     faces (edge_falloff) so you NEVER see a hard box/wall.
+  - bvfx_emissive_from_texture(obj, threshold, soft, strength, tint, body_glow) — USE THIS
+    ON AN IMPORTED ASSET. Makes the BRIGHT cells of the asset's own base-colour texture
+    emit, keeping the texture, the normal map and all baked detail. sr2_tower ships three
+    2048² maps that reproduce its design plate almost exactly — window cells in strips,
+    the dark recessed core, ribbed piers, the stepped podium, and the "Silk Road 2.0" sign
+    with glowing letters. You do not need to build any of that; light it and it is there.
   - bvfx_emissive_windows(obj, window_color, strength, density, aspect, mortar) — a glowing
-    window-grid facade on a hero building (lit cells on a dark grid). `density` = window
-    COLUMNS across (~4-20; it's not a 0-1 fraction). Use this to shade a tower — do NOT
-    apply one uniform emission material (it washes out all window detail).
+    window-grid facade for an UNTEXTURED / procedural mesh (lit cells on a dark grid).
+    `density` = window COLUMNS across (~4-20; it's not a 0-1 fraction).
+    THIS CLEARS THE OBJECT'S MATERIAL SLOTS. On a textured asset it destroys the baked
+    facade: measured on sr2_tower it takes the facade profile from L1 0.184 / outer-core
+    4.41 (native, correct polarity) to L1 0.242 / outer-core 1.91 — INVERTED. That
+    discarded the sign too, and cost five layer-2 attempts rebuilding it by hand.
   - bvfx_volumetric_world(color, bg_strength, vol_color, density) — tinted sky + haze.
 LIGHTING IN A SCENE THAT HAS A WORLD VOLUME — read this before adding a key light:
   A SUN CONTRIBUTES ALMOST NOTHING once a world Volume is linked. A sun is infinitely

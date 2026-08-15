@@ -649,6 +649,23 @@ def main():
     check("imported assets are normalised out of QUATERNION mode",
           'rotation_mode = "XYZ"' in worker_src and "silent no-op" in worker_src)
 
+    print("\n[textured assets keep their facade]")
+    # sr2_tower ships three 2048² maps that reproduce its design plate; the procedural
+    # window helper cleared the material slots and threw them away, inverting the facade
+    # polarity (L1 0.184/ratio 4.41 native -> 0.242/1.91 procedural) and deleting the sign.
+    check("a texture-preserving emission helper exists",
+          "_bvfx_emissive_from_texture" in worker_src)
+    check("  ... and is exposed to build scripts",
+          '"bvfx_emissive_from_texture": _bvfx_emissive_from_texture' in worker_src)
+    check("it ADDS emission rather than replacing the shader",
+          "ShaderNodeAddShader" in worker_src)
+    check("the destructive helper warns before discarding textures",
+          "_warn_if_textured(obj)" in worker_src and "about to DISCARD" in worker_src)
+    check("the builder prompt steers imported assets to the right helper",
+          "USE THIS" in prompts_src and "bvfx_emissive_from_texture" in prompts_src)
+    check("the prompt states what the destructive one costs",
+          "CLEARS THE OBJECT'S MATERIAL SLOTS" in prompts_src)
+
     print("\n[facade profile]")
     from pipeline.facade import facade_profile, compare_profiles
     from PIL import Image as _Im

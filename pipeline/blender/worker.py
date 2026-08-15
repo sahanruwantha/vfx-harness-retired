@@ -304,9 +304,124 @@ def _bvfx_emissive_windows(obj, window_color=(0.12, 1.0, 0.38), strength=8.0,
     nt.links.new(stg.outputs[0], emis.inputs["Strength"])
     nt.links.new(emis.outputs[0], out.inputs["Surface"])
     if obj is not None and hasattr(obj, "data") and hasattr(obj.data, "materials"):
+        # DESTRUCTIVE, and for a textured asset almost certainly wrong — see the warning
+        # this raises. Kept as-is for procedural/untextured meshes, where it is the point.
+        _warn_if_textured(obj)
         obj.data.materials.clear()
         obj.data.materials.append(m)
     return m
+
+
+def _warn_if_textured(obj):
+    """Shout if we are about to throw away a baked facade.
+
+    sr2_tower ships three 2048x2048 maps (base colour, normal, ORM) that reproduce the
+    design plate almost exactly: dense window cells in strips, the dark recessed core,
+    the ribbed piers, the stepped podium, and the "Silk Road 2.0" sign with glowing
+    letters. Measured against the plate, the native texture scores facade L1 0.184 and
+    outer/core 4.41 against the plate's 3.37.
+
+    bvfx_emissive_windows() clears the material slots and replaces all of it with a
+    procedural grid that scores L1 0.242 and outer/core 1.91 — the WRONG polarity. Layer 1
+    called it on the hero, so from the first stage onward the real facade was gone, and
+    layer 2 then spent five attempts and $78.76 rebuilding by hand what had been discarded
+    one layer earlier, including the sign, which is in the texture.
+
+    Use bvfx_emissive_from_texture() on a textured asset instead: it keeps the maps and
+    makes their bright cells emit.
+    """
+    try:
+        imgs = [n.image.name
+                for m in obj.data.materials if m and m.node_tree
+                for n in m.node_tree.nodes
+                if n.type == "TEX_IMAGE" and n.image]
+    except Exception:
+        return
+    if imgs:
+        print(f"WARNING bvfx_emissive_windows is about to DISCARD {len(imgs)} image "
+              f"texture(s) on {obj.name!r} ({', '.join(sorted(set(imgs)))}). This asset "
+              f"has a baked facade. Use bvfx_emissive_from_texture(obj) to keep it and "
+              f"make the lit cells emit.")
+
+
+def _bvfx_emissive_from_texture(obj, threshold=0.55, soft=0.10, strength=6.0,
+                                tint=(1.0, 1.0, 1.0), body_glow=0.0, **_):
+    """Make the BRIGHT cells of an asset's OWN base-colour texture emit, keeping the
+    texture, the normal map and every bit of baked detail.
+
+    This is the right tool for an imported asset that already looks correct in daylight
+    and needs to read at night: windows glow, the body stays dark, and the sign lights up
+    because it is painted bright in the same map. Contrast with bvfx_emissive_windows,
+    which builds a procedural grid from scratch and destroys the maps.
+
+    `threshold` is on texture luminance (0..1) — above it a texel is treated as a lit
+    cell; `soft` is the width of the ramp so cell edges do not alias; `strength` scales
+    the emission; `tint` colours it (leave white to keep the texture's own colour);
+    `body_glow` adds a faint floor everywhere, for a facade that should not go pure black.
+    """
+    mats = [m for m in getattr(getattr(obj, "data", None), "materials", []) or []
+            if m and m.use_nodes and m.node_tree]
+    if not mats:
+        raise RuntimeError(f"{getattr(obj, 'name', obj)!r} has no node-based material; "
+                           f"bvfx_emissive_from_texture needs the asset's own material")
+    touched = []
+    for m in mats:
+        nt = m.node_tree
+        out = next((n for n in nt.nodes if n.type == "OUTPUT_MATERIAL"), None)
+        surf = next((l for l in nt.links
+                     if l.to_node == out and l.to_socket.name == "Surface"), None)
+        if out is None or surf is None:
+            continue
+        base = surf.from_node
+        # The base-colour image: prefer the one feeding Base Color, else any image node.
+        tex = None
+        if base.type == "BSDF_PRINCIPLED":
+            tex = next((l.from_node for l in nt.links
+                        if l.to_node == base and l.to_socket.name == "Base Color"
+                        and l.from_node.type == "TEX_IMAGE"), None)
+        if tex is None:
+            tex = next((n for n in nt.nodes if n.type == "TEX_IMAGE" and n.image), None)
+        if tex is None:
+            continue
+
+        lum = nt.nodes.new("ShaderNodeRGBToBW")
+        nt.links.new(tex.outputs["Color"], lum.inputs["Color"])
+        # Smooth ramp rather than GREATER_THAN: a hard step aliases badly on a 2048 map
+        # viewed at 0.1 of frame width, which is exactly how this asset is framed.
+        ramp = nt.nodes.new("ShaderNodeMapRange")
+        ramp.inputs["From Min"].default_value = max(0.0, threshold - soft)
+        ramp.inputs["From Max"].default_value = min(1.0, threshold + soft)
+        ramp.inputs["To Min"].default_value = 0.0
+        ramp.inputs["To Max"].default_value = 1.0
+        ramp.clamp = True
+        nt.links.new(lum.outputs[0], ramp.inputs["Value"])
+
+        stg = nt.nodes.new("ShaderNodeMath"); stg.operation = "MULTIPLY_ADD"
+        stg.inputs[1].default_value = float(strength)
+        stg.inputs[2].default_value = float(body_glow)
+        nt.links.new(ramp.outputs[0], stg.inputs[0])
+
+        emi = nt.nodes.new("ShaderNodeEmission")
+        # Emit the texture's OWN colour so lit cells keep their painted hue (the sign is
+        # cyan in this asset), tinted only if the caller asks.
+        if tuple(tint) == (1.0, 1.0, 1.0):
+            nt.links.new(tex.outputs["Color"], emi.inputs["Color"])
+        else:
+            emi.inputs["Color"].default_value = (*tint, 1.0)
+        nt.links.new(stg.outputs[0], emi.inputs["Strength"])
+
+        # ADD, not mix: emission sits on top of the shaded surface, so the body still
+        # takes light and self-shadows while the windows glow.
+        add = nt.nodes.new("ShaderNodeAddShader")
+        nt.links.new(base.outputs[0], add.inputs[0])
+        nt.links.new(emi.outputs[0], add.inputs[1])
+        nt.links.new(add.outputs[0], out.inputs["Surface"])
+        touched.append(m.name)
+    if not touched:
+        raise RuntimeError(f"no image-textured material found on "
+                           f"{getattr(obj, 'name', obj)!r}; use bvfx_emissive_windows "
+                           f"for an untextured mesh")
+    return touched
 
 
 def _bvfx_import_asset(name):
@@ -444,6 +559,7 @@ def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0)
 _HELPERS = {
     "bvfx_emission": _bvfx_emission,
     "bvfx_emissive_windows": _bvfx_emissive_windows,
+    "bvfx_emissive_from_texture": _bvfx_emissive_from_texture,
     "bvfx_import_asset": _bvfx_import_asset,
     "bvfx_aim": _bvfx_aim,
     "bvfx_scatter_emissive": _bvfx_scatter_emissive,

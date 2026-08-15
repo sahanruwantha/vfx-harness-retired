@@ -1,104 +1,113 @@
-# The asset does not have the facade it is being judged on
+# The asset was right the whole time. The pipeline deleted it in layer 1.
 
-Measured 2026-08-15 by `docs/probes/spike_lookdev.py` and `pipeline/facade.py`. This is
-the first thing a lookdev turntable was pointed at, and it failed the asset immediately —
-which is the point of having one.
+Measured 2026-08-15 by `docs/probes/spike_lookdev.py` and `pipeline/facade.py`. This
+started as "add a lookdev stage", became "the asset has no facade", and ended somewhere
+worse and much more fixable.
 
-## The gap
+## The finding
 
-![plate vs turntable](probes/L39_asset_vs_plate.png)
+`sr2_tower/model.glb` ships **three 2048×2048 textures** — base colour, normal, ORM — and
+a UV map, on a full Principled material. Rendered with its native material, the asset
+reproduces its design plate almost exactly.
 
-Left, the design plate `assets/sr2_tower/isolated/view_0.png`: hundreds of small window
-cells in four vertical strips, a near-black body, ribbed piers, a stepped Art-Deco podium,
-and a dark sign panel with glowing letters.
+![native vs procedural](probes/L45_native_vs_procedural.png)
 
-Right, a front-on turntable of the mesh the pipeline actually builds with: a grey body,
-about two dozen oversized white slabs painted on by `bvfx_emissive_windows`, and no sign.
+*Left: the design plate. Middle: the mesh with its own textures. Right: what the pipeline
+actually shipped.*
 
-Meshy produced a **massing model**. The relief is real — piers, the central recess,
-setbacks, stepped podium, 260,332 polygons — but the plate's window detail is not in the
-geometry and not in a texture. It did not survive image→3D.
+Dense window cells in strips, the dark recessed core, ribbed piers, the stepped podium
+with its entrance, and the **"Silk Road 2.0" sign with glowing letters** — all of it, in
+the box, from the start.
 
-| | plate | mesh (front-on) |
+`bvfx_emissive_windows()` clears the object's material slots and replaces every bit of it
+with a procedural grid. **Layer 1 calls it on the hero.** So from the first stage onward
+the real facade was gone.
+
+Measured front-on against the plate:
+
+| | outer/core ratio | profile L1 |
 |---|---|---|
-| facade profile L1 | — | **0.242** |
-| outer/core ratio | **3.37** | **1.91** |
-| body level | 36.8 | 66.1 |
-| window level | 246.6 | 206.8 |
+| design plate (target) | 3.37 | — |
+| **native texture** | **4.41** | **0.184** |
+| `bvfx_emissive_windows` (shipped) | 1.91 | 0.242 |
 
-## Why the existing gate passed it
+The plate's polarity is bright outer strips against a dark core. The native texture has
+it. The procedural grid **inverts** it — which is the exact defect the critic reported
+across five layer-2 attempts, and which layer 2 could never fix, because the thing it was
+being asked to reproduce had been deleted one layer upstream.
 
-Ticket #30 added `compare_to_plate` at normalise time, and it works as designed:
-sr2_tower measures 1.73x base flare against the plate's 1.85x.
+Layer 2 also spent rounds building the crown sign by hand. The sign is painted into the
+base-colour map.
 
-**A silhouette statistic cannot see a facade.** The check compares outlines. The asset it
-passed has no windows, no sign, and a facade profile nowhere near the plate's.
+## Why nothing caught it
 
-This is the same defect as #37 — a band statistic standing in for a subject-shaped
-requirement — in a different place. Stated as a rule:
+Ticket #30 added `compare_to_plate` at normalise time and it passes: 1.73x base flare
+against the plate's 1.85x. **A silhouette statistic cannot see a facade.** It measures the
+outline, and the outline was never wrong. Filed as #46.
+
+That check is the pipeline's one working example of "generate, then gate on a
+measurement", and `WHEN_TO_GENERATE.md` holds it up as the pattern to generalise. It gates
+on the wrong quantity. Same defect as #37 — a band statistic standing in for a
+subject-shaped requirement — in a different place:
 
 > A gate must measure the property the artifact is *for*. An asset is for its look, not
 > its outline.
 
-Which matters, because `WHEN_TO_GENERATE.md` holds this exact check up as the pipeline's
-one working example of "generate, then gate on a measurement", and the thing to
-generalise. It gates on the wrong quantity.
+## The fix
 
-## What this means for layer 2
+`bvfx_emissive_from_texture(obj, threshold, soft, strength, tint, body_glow)` — keep the
+asset's material, and make the bright cells of its own base-colour map emit. A smooth
+`MapRange` ramp on texture luminance drives an Emission that is **added** to the existing
+shader, so the body still takes light and self-shadows while the windows glow.
 
-Five attempts, $78.76, never cleared all four frames. The layer was asked to make the
-tower "read like the reference" using:
+![night](probes/L45_night_from_texture.png)
 
-- an asset whose facade **does not exist**, and
-- `bvfx_emissive_windows`, a uniform-grid helper that cannot express strips-plus-dark-core
-  at any parameter setting.
+*Reference f045 · the asset at night via emissive-from-texture · the same at 90° · what we
+were shipping.*
 
-Both were unstated assumptions that nobody had checked. Combined with the lighting trap
-(`LIGHTING_FINDING.md`) — where a sun renders black and emission is the only tool that
-puts pixels on screen — the layer was being asked to do something the pipeline could not
-do, and marked down four frames a run for failing.
+`bvfx_emissive_windows` now warns loudly before discarding textures, and remains correct
+for the untextured/procedural meshes it was written for.
 
-## The instrument
+## A caveat on the numbers
 
-`pipeline/facade.py` collapses a tower shaft to a horizontal luminance profile: for each
-pixel column, the mean down the shaft. Windows are vertical runs, so a lit strip becomes a
-peak and a recessed core a trough. Normalising x by shaft width and luminance by the
-shaft's own range makes a 321px plate and a 241px render directly comparable.
+The night render scores facade L1 **0.35** against the plate — worse than the daylight
+0.184, and worse than the procedural. That is not a regression; it is the metric being
+misapplied. The plate is evenly lit, and at night the body correctly goes black, leaving
+two narrow spikes where the plate has broad structure.
 
-```
-PLATE                                    outer/core 3.37
-  0.85 |     #                           #
-  0.60 |   ####                          ####
-  0.35 |#  #####        ###   ###        ####  #
-  0.15 |############   ####  ####   ############
-```
+Which is the same shape of error as comparing a front-on plate to a corner-on shot frame.
+Both say the profile comparison is only meaningful **between matched lighting and matched
+angle** — so lookdev judges the asset under neutral light against the plate, and the night
+key is lighting's call, not lookdev's. The department split earns its keep here.
 
-That ASCII is the thing the critic has been describing in prose for five attempts — "two
-bright OUTER window strips against a darker recessed core" — as a number.
+## Three bugs found building the rig
 
-It deliberately does **not** locate a tower in a cluttered frame. Segmenting a dark tower
-from a dark city at night is what defeated four earlier hand-rolled detectors in this
-project; callers pass a box, or use a render whose background separates.
+Each returned a plausible number and raised nothing.
 
-## Three bugs found while building it
+**1. `rotation_euler` is a silent no-op on imported assets.** glTF import leaves objects in
+`QUATERNION` mode, where Blender ignores `rotation_euler` entirely. The turntable produced
+four "angles" identical to the pixel. `bvfx_aim()` had the same hole. Fixed in
+`_bvfx_import_asset` and `_bvfx_aim`.
 
-**1. `rotation_euler` is a silent no-op on imported assets.** glTF import leaves objects
-in `QUATERNION` rotation mode, where Blender ignores `rotation_euler` entirely — no error.
-The turntable produced four "angles" that were identical to the pixel. `bvfx_aim()` would
-fail the same way on an imported object. Fixed at the source in `_bvfx_import_asset` and
-`_bvfx_aim`.
+**2. Segmentation on a magic constant.** `facade_profile` treated background as ≥240; the
+turntable backdrop resolved to 211, so the whole frame counted as subject and every angle
+returned an identical profile *of the backdrop*. Now segments against the measured corner
+value, and warns when the shaft fills the frame.
 
-**2. Segmentation on a magic constant.** `facade_profile` treated "background" as ≥240;
-the turntable backdrop resolved to 211 after the view transform, so the entire frame
-counted as subject and every angle returned an identical profile of the *backdrop*. Now
-segmented against the measured corner value, and a shaft spanning >97% of the frame
-returns an explicit `warning` rather than a confident number.
+**3. Framing from an assumed origin.** The rig set the asset to `(0,0,0)` and aimed at
+`z = height/2`, assuming the base sat at z=0. It does not, so the camera framed the top
+third and measured empty backdrop for two runs.
 
-**3. Framing from an assumed origin.** The first rig set the asset to `(0,0,0)` and aimed
-at `z = height/2`, assuming the base sat at z=0. It does not — import leaves the centre
-near the origin — so the camera framed the top third and every measurement was of empty
-backdrop.
+## The pattern
 
-All three produced *plausible numbers*. None raised an error. That is the recurring shape
-of failure in this project, and the reason the fix for each was a loud failure mode rather
-than a corrected constant.
+Layer 2 was asked to make the tower read like the reference while:
+
+- the facade it was told to reproduce had been deleted by layer 1,
+- the helper it was given inverts that facade's polarity by construction,
+- a sun renders black in this scene, so emission was the only tool available
+  (`LIGHTING_FINDING.md`), and
+- the axis bundled massing, windows and typography into one scalar (#41).
+
+Five attempts. $78.76. Every one of those is a pipeline defect, and not one of them was
+visible in a render — which is why the fixes here are loud failure modes rather than
+corrected constants.
