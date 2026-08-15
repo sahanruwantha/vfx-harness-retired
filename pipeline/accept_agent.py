@@ -72,7 +72,8 @@ def _chain(session: BlenderSession, shot: Shot, *, force: bool = False) -> list[
 
 
 async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
-                 verbose: bool = True, force: bool = False) -> dict:
+                 verbose: bool = True, force: bool = False,
+                 repair: bool = False) -> dict:
     moments = load_milestones(shot)
     if only:
         moments = {k: v for k, v in moments.items() if k == only} or moments
@@ -141,7 +142,17 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
     ledger.save()
     if not only:                      # a partial run cannot judge the whole chain
         ledger.data["acceptance"]["superseded"] = reconcile(shot, results, ledger)
+        plan = repair_plan(shot, results)
+        ledger.data["acceptance"]["repair_plan"] = plan
         ledger.save()
+        if plan:
+            marked = apply_repair(shot, plan, ledger) if repair else []
+            if not repair:
+                log(f"! {len(plan)} failing moment group(s) route to layer(s) "
+                    f"{', '.join(c['layer'] for c in plan)} — re-run with --repair to "
+                    f"invalidate and rebuild them")
+            ledger.data["acceptance"]["repaired"] = marked
+            ledger.save()
     log(f"acceptance: {ledger.data['acceptance']['passed']}/{len(results)} moments passed "
         f"→ {ledger.path}")
     for mid, r in results.items():
@@ -185,13 +196,107 @@ def _now_str() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-async def _run(folder: str, only: str | None, blender: str, force: bool = False) -> None:
+# A repair loop that cannot stop is worse than none — it burns the budget re-running the
+# same layer against the same failure. Two attempts per layer, and a round that improves
+# nothing ends it.
+MAX_REPAIR_ROUNDS = 2
+
+
+def repair_plan(shot: Shot, results: dict) -> list[dict]:
+    """Which layers must be rebuilt to fix the failing moments, earliest first.
+
+    Acceptance used to END here: it wrote the verdict, marked contradicting layer
+    verdicts superseded, and stopped. A shot could therefore complete the whole pipeline
+    with failing moments recorded and nothing done about them — acceptance was a report,
+    not a stage. `owns` already maps every axis to the layer responsible for it, so the
+    routing was available all along; nothing consumed it.
+    """
+    from .build_agent import PASS_MIN
+
+    layers = load_layers(shot)
+    axis_owner: dict[str, str] = {}
+    for g in layers.values():
+        for ax in (g.owns or ()):
+            # earliest owner wins: fixing the axis at its source is what unblocks the rest
+            if ax not in axis_owner or _order(layers, g.id) < _order(layers, axis_owner[ax]):
+                axis_owner[ax] = g.id
+
+    culprits: dict[str, dict] = {}
+    for mid, r in results.items():
+        if r["pass"]:
+            continue
+        weak = sorted(ax for ax, v in (r.get("scores") or {}).items()
+                      if isinstance(v, (int, float)) and not isinstance(v, bool)
+                      and v <= PASS_MIN)
+        for ax in weak:
+            owner = axis_owner.get(ax)
+            if not owner:
+                continue
+            slot = culprits.setdefault(owner, {"layer": owner, "axes": set(),
+                                               "moments": set()})
+            slot["axes"].add(ax)
+            slot["moments"].add(mid)
+        if not weak:
+            log(f"! {mid} failed but no owned axis is at/below {PASS_MIN} "
+                f"(metric failures: {len(r.get('metric_failures') or [])}) — "
+                f"no layer to route it to", 1)
+
+    plan = sorted(culprits.values(), key=lambda c: _order(layers, c["layer"]))
+    for c in plan:
+        c["axes"], c["moments"] = sorted(c["axes"]), sorted(c["moments"])
+        # Everything above the repair root re-runs too: layer scripts chain, so rebuilding
+        # layer 3 invalidates the judgements made on 4-8 that were stacked on top of it.
+        c["invalidates"] = [g.id for g in layers.values()
+                            if _order(layers, g.id) > _order(layers, c["layer"])]
+    return plan
+
+
+def _order(layers: dict, layer_id: str) -> int:
+    keys = sorted(layers, key=lambda k: str(layers[k].script))
+    return keys.index(layer_id) if layer_id in keys else 10_000
+
+
+def apply_repair(shot: Shot, plan: list[dict], ledger: Ledger) -> list[str]:
+    """Mark the repair root and everything downstream as needing a rebuild."""
+    if not plan:
+        return []
+    layers = load_layers(shot)
+    root = plan[0]
+    touched = [root["layer"]] + list(root["invalidates"])
+    marked = []
+    for lid in touched:
+        g = layers.get(lid)
+        if g is None:
+            continue
+        m = g.as_milestone()
+        slot = ledger._slot(m)
+        n = int(slot.get("repair_rounds", 0))
+        if lid == root["layer"] and n >= MAX_REPAIR_ROUNDS:
+            log(f"! layer {lid} has already been repaired {n}x — not looping again; "
+                f"this needs a human or a plan change")
+            return marked
+        if slot.get("status") == "passed":
+            slot["status"] = "needs_repair"
+        slot["repair_rounds"] = n + (1 if lid == root["layer"] else 0)
+        slot["repair_reason"] = {
+            "axes": root["axes"], "moments": root["moments"],
+            "root": root["layer"], "at": _now_str()}
+        marked.append(lid)
+    ledger.save()
+    log(f"repair routed → rebuild layer {root['layer']} "
+        f"(owns {', '.join(root['axes'])}, failing {', '.join(root['moments'])}); "
+        f"{len(marked) - 1} downstream layer(s) invalidated with it")
+    return marked
+
+
+async def _run(folder: str, only: str | None, blender: str, force: bool = False,
+               repair: bool = False) -> None:
     shot = load_shot(folder)
     session = BlenderSession(blender=blender, blend_file=None,
                              assets_dir=shot.folder / "assets",
                              cwd=shot.folder).start()
     try:
-        await accept(shot, session, only=only, force=force)
+        await accept(shot, session, only=only, force=force, repair=repair)
     finally:
         session.close()
 
@@ -205,9 +310,13 @@ def main() -> None:
     ap.add_argument("--force", action="store_true",
                     help="judge even an incomplete chain (debugging only — the verdict "
                          "will not be about the deliverable)")
+    ap.add_argument("--repair", action="store_true",
+                    help="act on a failure: invalidate the layer that owns the failing "
+                         "axis and everything downstream of it, so they rebuild")
     args = ap.parse_args()
     try:
-        anyio.run(_run, args.folder, args.moment, args.blender, args.force)
+        anyio.run(_run, args.folder, args.moment, args.blender, args.force,
+                  args.repair)
     except IncompleteChain as e:
         log(f"INCOMPLETE CHAIN — {e}")
         raise SystemExit(7)

@@ -16,3 +16,6 @@ nohup.out
 shots/
 # stray probe renders at the repo root (shots keep their own)
 renders/
+# ledger write-lock sidecars and in-flight atomic writes
+*.json.lock
+*.json.tmp.*

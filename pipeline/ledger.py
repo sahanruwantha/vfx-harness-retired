@@ -8,12 +8,16 @@ resumed sessions read the ledger to know what's done.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .brief import Shot
+from .runid import RUN_ID
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+@contextmanager
+def _locked(path: Path):
+    """Exclusive lock on a sidecar, so two processes cannot interleave a read-merge-write."""
+    lock = path.with_name(path.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Publish by rename: a reader sees the old file or the new one, never a half file."""
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 class Ledger:
     """Read/modify/write `shot.json` for one shot."""
 
@@ -189,15 +213,21 @@ class Ledger:
     # -- mutations -----------------------------------------------------------
     def begin(self, m: Milestone) -> None:
         slot = self._slot(m)
+        # Which run and which attempt produced this. Without it, re-running a layer
+        # overwrites the previous verdict leaving no trace that an earlier attempt
+        # existed, let alone what it scored — so "did the change help?" is unanswerable.
         slot.update(frame=m.frame, ref=m.ref, status="in_progress",
-                    script=f"build/{m.id.lower()}.py", rounds=slot.get("rounds", []))
+                    script=f"build/{m.id.lower()}.py", rounds=slot.get("rounds", []),
+                    run_id=RUN_ID, attempt=int(slot.get("attempt", 0)) + 1,
+                    started=_now())
         self.save()
 
     def record_round(self, m: Milestone, *, kind: str, index: int,
                      render: str, verdict: dict) -> None:
         """Append one critic round (kind='iter' during the loop, 'canonical' for the
         deterministic re-run of the build script)."""
-        self._slot(m).setdefault("rounds", []).append({
+        slot = self._slot(m)
+        slot.setdefault("rounds", []).append({
             "round": index,
             "kind": kind,
             "render": render,
@@ -206,6 +236,11 @@ class Ledger:
             "pass": verdict.get("pass", False),
             "round_s": verdict.get("round_s"),  # wall-time telemetry (for eval)
             "issues": verdict.get("issues", []),
+            # what the adjudication panel saw, when one was convened — a barely-passed
+            # verdict must be distinguishable from a solid one after the fact
+            "panel": verdict.get("panel"),
+            "run_id": RUN_ID,
+            "attempt": slot.get("attempt"),
             "at": _now(),
         })
         self.save()
@@ -276,27 +311,38 @@ class Ledger:
         A shot's layers run as separate processes (and can overlap with an out-of-band
         edit), each holding a snapshot taken at construction. Rewriting the whole
         snapshot would silently revert everyone else's work, so re-read and splice.
+
+        The read-merge-write is done under an exclusive file lock and published with an
+        atomic rename. The merge alone only protects concurrent writers WITHIN a process:
+        two processes could still interleave between the re-read and the write, and a
+        crash mid-write could leave a truncated shot.json that later stages parse as a
+        shot with no recorded layers.
         """
-        on_disk = {}
-        if self.path.is_file():
-            try:
-                on_disk = json.loads(self.path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as e:
-                # treating a corrupt ledger as empty would let this write clobber every
-                # layer recorded so far
-                print(f"! shot.json unreadable on merge, NOT clobbering ({e})", flush=True)
-                raise
-        # Disk wins for top-level keys we never modified; ours wins where we did.
-        # (Plain `{**self.data, **on_disk}` let disk clobber our own new keys, so a
-        # second acceptance run silently kept the first run's block.)
-        merged = dict(on_disk)
-        for k, v in self.data.items():
-            if k == "milestones":
-                continue
-            if k not in on_disk or v != self._loaded.get(k):
-                merged[k] = v
-        slots = dict(on_disk.get("milestones", {}))
-        for gid in self._touched:
-            slots[gid] = self.data.get("milestones", {}).get(gid, {})
-        merged["milestones"] = slots
-        self.path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        with _locked(self.path):
+            on_disk = {}
+            if self.path.is_file():
+                try:
+                    on_disk = json.loads(self.path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError as e:
+                    # treating a corrupt ledger as empty would let this write clobber
+                    # every layer recorded so far
+                    print(f"! shot.json unreadable on merge, NOT clobbering ({e})",
+                          flush=True)
+                    raise
+            # Disk wins for top-level keys we never modified; ours wins where we did.
+            # (Plain `{**self.data, **on_disk}` let disk clobber our own new keys, so a
+            # second acceptance run silently kept the first run's block.)
+            merged = dict(on_disk)
+            for k, v in self.data.items():
+                if k == "milestones":
+                    continue
+                if k not in on_disk or v != self._loaded.get(k):
+                    merged[k] = v
+            slots = dict(on_disk.get("milestones", {}))
+            for gid in self._touched:
+                slots[gid] = self.data.get("milestones", {}).get(gid, {})
+            merged["milestones"] = slots
+            merged.setdefault("runs", [])
+            if RUN_ID not in merged["runs"]:
+                merged["runs"] = (merged["runs"] + [RUN_ID])[-20:]
+            _atomic_write(self.path, json.dumps(merged, indent=2) + "\n")

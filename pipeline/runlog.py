@@ -37,7 +37,8 @@ def write(shot_folder: str | Path, layer, *, status: str, rounds: list,
           canonical: list | None = None, ablation: dict | None = None,
           cost: float = 0.0, turns: int = 0, seconds: float = 0.0,
           journal: dict | None = None, recipes: list | None = None,
-          reviews: list | None = None, extra: dict | None = None) -> Path:
+          reviews: list | None = None, tokens: dict | None = None,
+          approach: str | None = None, extra: dict | None = None) -> Path:
     folder = Path(shot_folder)
     rec = {
         "layer": getattr(layer, "id", "?"),
@@ -55,6 +56,11 @@ def write(shot_folder: str | Path, layer, *, status: str, rounds: list,
         "cost_usd": round(cost, 4),
         "turns": turns,
         "seconds": round(seconds, 1),
+        "tokens": tokens or {},
+        # WHY the builder built it this way, not only what it ran. The journal records
+        # run_bpy calls; without the stated approach, "did the recipe index change what
+        # it reached for?" is unanswerable except by reading raw SDK transcripts.
+        "approach": approach,
         "hooks": snapshot_counts(),
         **(extra or {}),
     }
@@ -78,6 +84,23 @@ def summary(rec: dict) -> str:
         f"   cost       ${rec.get('cost_usd', 0):.2f} · {rec.get('turns', 0)} turns · "
         f"{rec.get('seconds', 0) / 60:.0f} min",
     ]
+    t = rec.get("tokens") or {}
+    if t:
+        read, made = t.get("cache_read_input_tokens", 0), t.get("cache_creation_input_tokens", 0)
+        served = read + made + t.get("input_tokens", 0)
+        hit = f"{100 * read / served:.0f}%" if served else "n/a"
+        lines.append(f"   tokens     in {t.get('input_tokens', 0):,} · out "
+                     f"{t.get('output_tokens', 0):,} · cache read {read:,} / created "
+                     f"{made:,} → {hit} hit")
+        # A cached prefix is the difference between ~0.1x and 1x on the biggest part of
+        # every request, so a collapse here is a cost regression hiding as normal output.
+        if served > 50_000 and read / served < 0.5:
+            lines.append("   ⚠ cache hit rate is LOW — something is breaking the stable "
+                         "prefix (system prompt / tool defs / CLAUDE.md)")
+    if rec.get("approach"):
+        lines.append(f"   approach   {str(rec['approach'])[:160]}")
+    if rec.get("run_id"):
+        lines.append(f"   run        {rec['run_id']} · attempt {rec.get('attempt', '?')}")
     if rec.get("ablation"):
         a = rec["ablation"]
         lines.append(f"   ablation   {'moved ' + ', '.join(a['moved']) if a.get('moved') else a.get('note', '—')}")

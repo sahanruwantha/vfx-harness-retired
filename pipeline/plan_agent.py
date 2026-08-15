@@ -169,6 +169,11 @@ def main() -> None:
             max_turns=args.max_turns, tag=args.tag,
             verify_only=args.verify_only))
     log(f"wrote {plan_path}")
+    # Record what this plan was derived from, so a later brief edit is detectable
+    # instead of silently leaving every layer built to a spec that no longer exists.
+    from .provenance import stamp
+    used = args.model if args.single else f"{args.draft_model}→{args.verify_model}"
+    log(f"provenance → {stamp(args.folder, model=used, note='tag=' + str(args.tag))}")
 
 
 if __name__ == "__main__":

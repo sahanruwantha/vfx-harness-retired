@@ -187,7 +187,13 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
         f"Also read `brief.md` for the shot's intent and palette.\n\n"
         f"{plan_block}"
         f"{asset_line}"
-        f"{start_line}"
+        f"{start_line}\n\n"
+        # Captured into the layer's run report. The journal records WHICH bpy calls were
+        # made but never WHY, so there was no way to tell whether the recipe cookbook
+        # actually changed what the builder reached for — only that it ran something.
+        f"FIRST, before any tool call, emit ONE line beginning `APPROACH:` naming the "
+        f"technique you intend to use and which recipe or helper (if any) you are basing "
+        f"it on. One line, no preamble — then start building."
     )
 
 

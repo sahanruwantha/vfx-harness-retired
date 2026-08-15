@@ -51,6 +51,8 @@ from .approach import review as approach_review, revision_from_review
 from .escalate import load as load_questions
 from .guardrails import builder_hooks
 from .sandbox import sandbox_hooks
+from .provenance import check as provenance_check
+from .runid import RUN_ID
 from .runlog import bump, reset_counts, summary as run_summary, write as write_run
 from .shot_context import clear_layer_context, write_layer_context
 
@@ -470,6 +472,26 @@ _RECIPES_USED: list[str] = []
 _JOURNAL_INFO: dict = {}
 
 
+# The builder's own statement of what it is going to do, captured once per layer. The
+# journal records the run_bpy calls it made; nothing recorded the reasoning that produced
+# them, so whether the recipe index actually changed what it reached for was unanswerable
+# without reading raw SDK transcripts.
+_APPROACH: dict = {}
+
+
+def _collect_approach(message) -> None:
+    if _APPROACH.get("text") or not isinstance(message, AssistantMessage):
+        return
+    for b in message.content:
+        if not isinstance(b, TextBlock):
+            continue
+        for line in b.text.splitlines():
+            if line.strip().upper().startswith("APPROACH:"):
+                _APPROACH["text"] = line.split(":", 1)[1].strip()[:400]
+                log(f"approach: {_APPROACH['text'][:120]}", 1)
+                return
+
+
 def _collect_errors(message) -> None:
     """Reuse log's extractor: a tool result's content may be a str, a list of dicts, or a
     list of BLOCK OBJECTS. My first version only handled the first two, so object-shaped
@@ -491,18 +513,29 @@ async def _drain_once(client: ClaudeSDKClient, verbose: bool) -> dict:
     mid-scene is indistinguishable from one that finished — BR layer G was critiqued,
     scored and recorded 'failed' while half-built. Always look at the subtype.
     """
-    info = {"subtype": "unknown", "turns": 0, "cost": 0.0, "session_id": None}
+    info = {"subtype": "unknown", "turns": 0, "cost": 0.0, "session_id": None,
+            "tokens": {}}
     async for message in client.receive_response():
         if verbose:
             log_message(message)
         _collect_errors(message)
+        _collect_approach(message)
         if isinstance(message, ResultMessage):
+            # Token economics lived ONLY in the SDK's session JSONL, outside the repo, so
+            # "which layer burned the budget, and was the stable prefix actually cached?"
+            # could not be answered from anything the pipeline writes. A collapsing
+            # cache-hit rate is the early warning that the cached prefix has been broken.
+            u = getattr(message, "usage", None)
             info = {
                 "session_id": getattr(message, "session_id", None),
                 "subtype": getattr(message, "subtype", "unknown"),
                 "turns": getattr(message, "num_turns", 0) or 0,
                 # total_cost_usd is cumulative for the session and Optional on error paths
                 "cost": getattr(message, "total_cost_usd", None) or 0.0,
+                "tokens": {k: (u.get(k) or 0) for k in
+                           ("input_tokens", "output_tokens",
+                            "cache_read_input_tokens", "cache_creation_input_tokens")
+                           } if isinstance(u, dict) else {},
             }
     return info
 
@@ -1041,13 +1074,18 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             ablation=slot.get("ablation", {}), reviews=slot.get("reviews", []),
             recipes=_RECIPES_USED, journal=_JOURNAL_INFO,
             cost=last_info.get("cost", 0.0), turns=last_info.get("turns", 0),
-            seconds=time.monotonic() - t_layer)
+            seconds=time.monotonic() - t_layer,
+            tokens=last_info.get("tokens", {}),
+            approach=_APPROACH.get("text"),
+            extra={"run_id": RUN_ID, "attempt": slot.get("attempt"),
+                   "session_id": last_info.get("session_id")})
         import json as _json
         log("\n" + run_summary(_json.loads(rec_path.read_text())))
     except Exception as e:
         log(f"! run report unavailable: {str(e)[:80]}")
     _ERRORS.clear()
     _RECIPES_USED.clear()
+    _APPROACH.clear()
     return ledger
 
 
@@ -1240,6 +1278,17 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
 async def _run(folder: str, layer_id: str, rounds: int, blender: str,
                resume_ok: bool = False, force: bool = False) -> None:
     shot = load_shot(folder)
+    # Is the plan still a plan for THIS brief? Editing brief.md leaves the plan stale with
+    # nothing recording the divergence, and every layer below is then built to a spec that
+    # no longer exists. An edited INPUT refuses; an edited artifact only warns, since
+    # hand-tuning layers.json is a legitimate thing to do mid-build.
+    stale = provenance_check(shot.folder)
+    for s in stale:
+        log(f"! plan provenance: {s}")
+    if any("CHANGED since the plan" in s for s in stale) and not force:
+        log("   re-plan with `python -m pipeline.plan_agent <folder>`, or --force")
+        raise SystemExit(8)
+
     # Questions are asked at PLAN time and must be settled BEFORE any layer runs. Building
     # on an unanswered assumption is how barrel_roll ended up 16:9 against 2:1 references
     # — by the time a later layer could notice, the camera had been committed three layers
