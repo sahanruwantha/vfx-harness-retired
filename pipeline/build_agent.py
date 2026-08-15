@@ -1114,14 +1114,30 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             if canonical != "failed":
                 break
             failed = [(f, v) for (f, _r), v in (canon_verdicts or []) if not v.get("pass")]
+            # The frames that currently PASS are constraints, not background. Feeding back
+            # only the failures produced textbook whack-a-mole: repair 1 fixed f440 and
+            # left f45 broken, repair 2 fixed f45 and BROKE f440. Every frame passed at
+            # some point; never all at once. The builder was told what was wrong and
+            # nothing about what it must not break, so trading one for the other looked
+            # like progress. builder_kickoff already says "a change that fixes f{frame}
+            # and breaks another of your frames is not a fix" — that instruction just
+            # never made it into the repair path.
+            holding = [(f, v) for (f, _r), v in (canon_verdicts or []) if v.get("pass")]
             if not failed:
                 break
             log(f"canonical failed on {len(failed)} frame(s) — repair {attempt}/"
-                f"{MAX_CANON_REPAIRS}, feeding the critique back to the builder")
-            await builder.query(canonical_repair_prompt(m, failed, script_rel))
-            rep = await _drain(builder, verbose)
-            if rep["subtype"] in _TRUNCATED:
-                log(f"✗ canonical repair TRUNCATED ({rep['subtype']}) — stopping here", 1)
+                f"{MAX_CANON_REPAIRS}, feeding the critique back"
+                + (f" (protecting {len(holding)} passing frame(s))" if holding else ""))
+            await builder.query(canonical_repair_prompt(m, failed, script_rel,
+                                                        holding=holding))
+            # last_info, NOT a throwaway: the layer report reads cost/turns from it, so
+            # assigning to a local under-reported this layer as $14.64/37 turns when it
+            # had actually spent $23.20 across five drains — within $1.80 of the cap,
+            # invisible in the record.
+            last_info = await _drain(builder, verbose)
+            if last_info["subtype"] in _TRUNCATED:
+                log(f"✗ canonical repair TRUNCATED ({last_info['subtype']}) — stopping "
+                    f"here", 1)
                 break
             before = [v.get("mean") for _f, v in failed]
             canon_verdicts.clear()

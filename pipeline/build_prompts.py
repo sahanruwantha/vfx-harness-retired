@@ -341,7 +341,8 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
     )
 
 
-def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str) -> str:
+def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str,
+                            holding: list | None = None) -> str:
     """Hand a CANONICAL failure back to the builder that wrote the script.
 
     The distinction this prompt has to land is the one the builder gets wrong by default:
@@ -357,11 +358,24 @@ def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str) -> str:
         scores = ", ".join(f"{k}={val}" for k, val in (v.get("scores") or {}).items()
                            if val != "n/a")
         blocks.append(f"  f{frame} — scored {v.get('mean')} ({scores})\n{issues}")
+    # Frames that currently pass are CONSTRAINTS. Omitting them produced whack-a-mole:
+    # one repair fixed f440 and left f45 broken, the next fixed f45 and broke f440.
+    keep = ""
+    if holding:
+        rows = "\n".join(f"    f{f} — currently {v.get('mean')}, PASSING"
+                          for f, v in holding)
+        keep = (f"\nTHESE FRAMES ALREADY PASS. They are constraints, not context:\n"
+                f"{rows}\n"
+                f"A change that fixes a failing frame and breaks one of these is NOT a "
+                f"fix — it is a trade, and the unit still fails. Re-check them before you "
+                f"declare done. If a fix genuinely cannot be made without regressing one, "
+                f"say so explicitly instead of shipping the trade.\n")
     return (
         f"CANONICAL VERIFICATION FAILED for unit {m.id}.\n\n"
         f"Your script `{script_rel}` was re-run FROM AN EMPTY SCENE and the result was "
         f"scored at every frame this unit answers for. These frames did not clear:\n\n"
-        + "\n\n".join(blocks) + "\n\n"
+        + "\n\n".join(blocks) + "\n"
+        + keep + "\n"
         f"Read that carefully: the live scene you have been tuning is NOT what failed. "
         f"The SCRIPT's output is. If the script omits something you built interactively, "
         f"or builds it in an order that changes the result, the two will disagree — so "
