@@ -163,8 +163,79 @@ def prepare_asset(shot, name: str, *, references: list[str | Path] | None = None
             meta["preview"] = str(Path(meta["preview"]).relative_to(shot.folder))
         except Exception as e:  # preview is a nicety, not a layer
             meta["preview_error"] = str(e)[:200]
+        # Does the MESH still look like the plate it was reconstructed FROM? Nothing
+        # checked, and the cost of not checking is paid three layers later: a critic
+        # demanding "setbacks and a stepped podium" at every frame of every attempt, with
+        # no way to tell whether the mesh lacks them or the render is merely hiding them.
+        # Answering that took me a manual look at two PNGs; it should be a field.
+        try:
+            plate = next((shot.folder / v for v in meta.get("views") or []), None)
+            prev = shot.folder / meta["preview"] if meta.get("preview") else None
+            if plate and prev and plate.is_file() and prev.is_file():
+                meta["fidelity"] = compare_to_plate(plate, prev)
+                f = meta["fidelity"]
+                log(f"fidelity vs plate: flare {f['mesh_flare']}x vs {f['plate_flare']}x "
+                    f"→ {f['verdict']}", 2)
+                if f["verdict"] != "consistent":
+                    log(f"! {f['note']}", 2)
+        except Exception as e:
+            meta["fidelity_error"] = str(e)[:200]
+            log(f"! fidelity check unavailable: {str(e)[:80]}", 2)
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
     return meta
+
+
+def _silhouette_profile(path: Path, rows: int = 24) -> list[float]:
+    """Fraction of SUBJECT pixels per horizontal band, subject = anything materially
+    darker or lighter than the corner background. Works across a dark shaded design plate
+    and a grey clay preview, because it measures SHAPE, not colour."""
+    from PIL import Image
+    im = Image.open(path).convert("L")
+    w, h = im.size
+    px = im.load()
+    bg = sum((px[1, 1], px[w - 2, 1], px[1, h - 2], px[w - 2, h - 2])) / 4
+    out = []
+    for r in range(rows):
+        y0, y1 = int(r * h / rows), int((r + 1) * h / rows)
+        ys, xs = range(y0, y1, 2), range(0, w, 2)
+        sub = sum(1 for y in ys for x in xs if abs(px[x, y] - bg) > 28)
+        out.append(sub / max(len(list(ys)) * len(list(xs)), 1))
+    return out
+
+
+def compare_to_plate(plate: Path, preview: Path) -> dict:
+    """Compare the normalized mesh's silhouette against its source plate.
+
+    Ratios only, never absolute fill: the preview is framed by our own camera and the
+    plate by whatever produced it, so absolute widths are not comparable — but the
+    PROPORTION of base flare to shaft width is, and that is exactly the structure a
+    reconstruction tends to lose (a stepped podium collapsing into a plain extrusion).
+    """
+    a, b = _silhouette_profile(plate), _silhouette_profile(preview)
+
+    def flare(p: list[float]) -> float:
+        body = sorted(p[len(p) // 4: len(p) * 2 // 3])
+        shaft = body[len(body) // 2] if body else 0.0        # median of the middle band
+        base = max(p[len(p) * 2 // 3:] or [0.0])             # widest row low down
+        return round(base / shaft, 2) if shaft > 0.01 else 0.0
+
+    pf, mf = flare(a), flare(b)
+    rel = abs(mf - pf) / pf if pf > 0.01 else 0.0
+    if pf <= 1.05:
+        verdict, note = "no-base-in-plate", "the plate shows no base flare to compare"
+    elif rel <= 0.25:
+        verdict, note = "consistent", ""
+    else:
+        lost = mf < pf
+        verdict = "mesh-lost-structure" if lost else "mesh-added-structure"
+        note = (f"the mesh's base flare is {mf}x its shaft where the plate shows {pf}x — "
+                f"the reconstruction {'DROPPED' if lost else 'invented'} base massing the "
+                f"design has. Anything scored on silhouette will be judged against a shape "
+                f"the mesh cannot produce.")
+    return {"plate_flare": pf, "mesh_flare": mf, "rel_diff": round(rel, 2),
+            "verdict": verdict, "note": note,
+            "plate_profile": [round(v, 3) for v in a],
+            "mesh_profile": [round(v, 3) for v in b]}
 
 
 def _preview_render(model: Path, out: Path, height: float, blender: str) -> str:

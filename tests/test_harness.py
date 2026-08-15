@@ -275,6 +275,28 @@ def main():
                if marker not in Path(p).read_text(encoding="utf-8")]
     check("degradations that lose data announce themselves", not missing, str(missing))
 
+    # The mesh is a reconstruction OF the plate; nothing checked it still looked like it.
+    # The cost of not checking was paid three layers later, as a critic demanding a
+    # "stepped podium" at every frame with no way to tell whether the mesh lacked one or
+    # the render was hiding it. Ratios only — the preview and the plate are framed
+    # differently, so absolute widths are not comparable but base-flare/shaft is.
+    print("\n[asset fidelity]")
+    from pipeline.assets.normalize import compare_to_plate
+    _plate = shot.folder / "assets/sr2_tower/isolated/view_0.png"
+    _prev = shot.folder / "assets/sr2_tower/preview.png"
+    if _plate.is_file() and _prev.is_file():
+        _f = compare_to_plate(_plate, _prev)
+        check("the committed asset matches its design plate",
+              _f["verdict"] == "consistent", f"{_f['verdict']}: {_f['note'][:80]}")
+        from PIL import Image as _I2
+        _im = _I2.open(_prev).convert("L"); _w, _h = _im.size
+        _cut = Path(tempfile.mkdtemp()) / "nopodium.png"
+        _im.crop((0, 0, _w, int(_h * 0.66))).resize((_w, _h)).save(_cut)
+        check("a mesh that lost its base massing is caught",
+              compare_to_plate(_plate, _cut)["verdict"] == "mesh-lost-structure")
+    else:
+        check("asset fidelity fixture present", False, "plate/preview missing")
+
     print("\n[ledger]")
     t2 = Path(tempfile.mkdtemp()) / "br"
     shutil.copytree(shot.folder, t2, ignore=shutil.ignore_patterns("refs", "assets", "renders"))
