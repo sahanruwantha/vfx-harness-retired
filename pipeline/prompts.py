@@ -228,6 +228,57 @@ WORKFLOW, in order:
    deepest scene read and you are the only stage that also knows the layer breakdown, so
    you are the only one who can guarantee each axis has an owner in (a).
 
+DEPARTMENTS — the layer breakdown mirrors how a real VFX shot is built:
+
+    layout → set dressing → environment → LIGHTING → FX → comp
+
+  Two of those are routinely forgotten, and both omissions have been paid for:
+
+  - **LIGHTING IS ITS OWN LAYER.** Not folded into a look layer, not left to whichever
+    stage happens to need it. It owns key/fill and the exposure relationship between
+    subject, mid-ground and background, and it sits AFTER the environment exists and
+    BEFORE FX. When no layer owned light, every layer emitted piecemeal and a hero asset
+    with modelled piers, setbacks and a stepped podium rendered as a flat black box —
+    which the shot layer then tried to fix by ADDING GEOMETRY, five attempts and $78 of
+    it, on top of geometry that was already there.
+    Its axis must score MODELLING BY LIGHT and explicitly disown emission and the grade,
+    or it will be satisfied by glowing windows. Put the disclaimer IN the axis text:
+    "a facade legible only because its windows glow has FAILED this axis".
+
+  - **LOOKDEV BEFORE SHOT WORK**, whenever the shot has a hero asset. Approve the asset's
+    look on a turntable against its own isolation plate under neutral light, then LOCK it.
+    "Does the hero read correctly" is an ASSET question; asking it inside a shot layer
+    means asking it at 0.1 of frame width, at night, in a composite, against a reference
+    containing six other layers' work. Judge the asset where it is legible.
+
+  - An imported asset may ALREADY CARRY baked maps that answer most of the look. Check
+    before planning work to rebuild it — one shot's hero shipped three 2048² textures
+    reproducing its design plate almost exactly, and the plan still spent four ticket
+    revisions instructing the builder to construct that facade from scratch.
+
+ONE AXIS, ONE SUBJECT, ONE OWNER:
+  - An axis bundling several disciplines into one scalar cannot be optimised. A single
+    "hero reads correctly" axis covering massing + windows + typography produced fixes
+    that traded invisibly: one attempt fixed the sign and fused the facade, the next fixed
+    the facade and lost the sign, and the mean concealed both.
+  - An axis owned by TWO layers scores each of them on the other's work. Split by phase
+    (pre/post an event) or by subject, and have each half disown the other in its text.
+  - An axis must not describe something an EARLIER layer keys. Where a later stage answers
+    for an observable whose input another stage controls, say so in the axis text and name
+    the owner, so a failure is escalated rather than re-keyed in the wrong place.
+
+LIGHTING PHYSICS THAT CHANGES LAYER DESIGN, not just build tactics:
+  - If the shot calls for volumetric atmosphere, the lighting layer must key with LOCAL
+    lights (area/point/spot). A SUN is infinitely distant, so its light is fully
+    extinguished crossing an unbounded world volume — measured, a white 0.8-albedo body
+    under a sun at energy 25 rendered 6.74/255 with a world volume linked and 216 without,
+    and no volumetric setting changed it. Prefer a BOUNDED volume domain over a world
+    volume where the look allows, precisely so suns keep working.
+  - A layer that introduces a world volume silently disables any sun an earlier layer
+    relies on. If the plan has both, say which layer owns the key and note the collision.
+  - An EMISSION shader cannot be lit at all. A surface that must catch light needs a
+    BSDF; emission can be mixed on top for the parts that glow.
+
 RULES:
   - A layer's `judge` list and its `reads` must agree: every frame named in the prose
     appears in the list, and every listed frame is one this layer materially changes.

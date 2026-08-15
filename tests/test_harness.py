@@ -653,6 +653,27 @@ def main():
     check("a frame missing after repair is not scored as zero",
           d["now_worst"] == 3.0 and d["broke"] == [], f"worst {d['now_worst']}")
 
+    print("\n[the plan agent knows the departments]")
+    # Everything learned on barrel_roll lived only as hand-edits to that shot's plan, so a
+    # new brief would have been planned by an agent that had never heard any of it — no
+    # lighting stage, no lookdev, and the same $78 of geometry added over geometry.
+    from pipeline.prompts import PLANNER_SYSTEM as _PS
+    check("names the department order incl. LIGHTING",
+          "LIGHTING → FX" in _PS and "layout → set dressing → environment" in _PS)
+    check("requires lookdev before shot work for a hero asset",
+          "LOOKDEV BEFORE SHOT WORK" in _PS and "turntable" in _PS)
+    check("warns that an imported asset may already carry its look",
+          "ALREADY CARRY" in _PS and "baked maps" in _PS)
+    check("gives the lighting axis its anti-gaming clause",
+          "legible only because its windows glow" in _PS)
+    check("one axis, one subject, one owner",
+          "ONE AXIS, ONE SUBJECT, ONE OWNER" in _PS
+          and "owned by TWO layers" in _PS)
+    check("carries the sun/volume physics into PLAN decisions",
+          "infinitely distant" in _PS and "BOUNDED volume domain" in _PS)
+    check("says an emission shader cannot be lit",
+          "EMISSION shader cannot be lit" in _PS)
+
     print("\n[sun-in-volume trap]")
     # The runtime check needs bpy, so it is verified empirically (no sun -> silent;
     # sun + world volume -> warns; volume unlinked -> silent again). What IS testable
