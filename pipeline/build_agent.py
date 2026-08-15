@@ -43,6 +43,7 @@ from .build_prompts import (
     CRITIC_SYSTEM,
     builder_kickoff,
     builder_system,
+    canonical_repair_prompt,
     critic_prompt,
     finalize_prompt,
     revision_prompt,
@@ -794,6 +795,11 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
 # flat 0.4 was only defensible at n≈8, and most layers here are narrower than that.
 _JUDGE_SD = 0.603     # re-measure: python -m pipeline.evals variance <shot>
 
+# How many times a canonical failure may be handed back before we stop paying for it.
+# Two, plus a no-improvement break: a repair that moved nothing will not move anything
+# next time, and the money is better spent on a human reading the critique.
+MAX_CANON_REPAIRS = 2
+
 
 def _adjudicate_band(n_scored: int) -> float:
     """2σ of the mean for this many axes, clamped to a sane range."""
@@ -1084,13 +1090,52 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                 f"layer {m.id}: finalize hit {fin['subtype']} (${fin['cost']:.2f}); "
                 f"raise MAX_BUDGET_USD or split the layer")
 
-    # Confirm the written script REPRODUCES the unit from an empty scene. This is a
-    # reproduction check, NOT a second quality layer — with ~±0.15 judge noise, requiring
-    # two consecutive layer-clears at the boundary is double jeopardy (cost M3 a pass).
-    canonical = await _verify_script(shot, m, script_rel, prior_paths, session, axes,
-                                     ledger, verbose, live_best_mean=best["mean"],
-                                     scope=scope, layer=layer,
-                                     out_verdicts=canon_verdicts)
+        # Confirm the written script REPRODUCES the unit from an empty scene. This is a
+        # reproduction check, NOT a second quality layer — with judge noise, requiring two
+        # consecutive layer-clears at the boundary is double jeopardy (cost M3 a pass).
+        #
+        # Done INSIDE the builder session so a canonical failure can be handed back. It
+        # used to run after the session closed, so the critique was unreachable and the
+        # layer simply died with it. Both barrel_roll layer-2 attempts produced ~24
+        # specific, actionable fixes this way ("brightest strip runs down the centre where
+        # the reference has two bright OUTER strips", "sign cabinet inverted: panel glows,
+        # text dark") and discarded every one. Closing that gap by hand — read the log,
+        # diagnose, edit the plan, re-run — cost $16.52 and two rounds of human attention
+        # for feedback the pipeline was already holding.
+        canonical = await _verify_script(shot, m, script_rel, prior_paths, session, axes,
+                                         ledger, verbose, live_best_mean=best["mean"],
+                                         scope=scope, layer=layer,
+                                         out_verdicts=canon_verdicts)
+
+        # Repair rounds, bounded. The target here is the SCRIPT's output from an empty
+        # scene — not the live scene the builder has been tuning, which is why it must be
+        # re-verified canonically or the loop would keep re-passing live and failing here.
+        for attempt in range(1, MAX_CANON_REPAIRS + 1):
+            if canonical != "failed":
+                break
+            failed = [(f, v) for (f, _r), v in (canon_verdicts or []) if not v.get("pass")]
+            if not failed:
+                break
+            log(f"canonical failed on {len(failed)} frame(s) — repair {attempt}/"
+                f"{MAX_CANON_REPAIRS}, feeding the critique back to the builder")
+            await builder.query(canonical_repair_prompt(m, failed, script_rel))
+            rep = await _drain(builder, verbose)
+            if rep["subtype"] in _TRUNCATED:
+                log(f"✗ canonical repair TRUNCATED ({rep['subtype']}) — stopping here", 1)
+                break
+            before = [v.get("mean") for _f, v in failed]
+            canon_verdicts.clear()
+            canonical = await _verify_script(shot, m, script_rel, prior_paths, session,
+                                             axes, ledger, verbose,
+                                             live_best_mean=best["mean"], scope=scope,
+                                             layer=layer, out_verdicts=canon_verdicts)
+            after = [v.get("mean") for (f, _r), v in (canon_verdicts or [])
+                     if f in {fr for fr, _ in failed}]
+            if canonical == "failed" and after and before and sum(after) <= sum(before):
+                # A repair that moved nothing will not move anything next time either.
+                log(f"repair {attempt} improved nothing ({before} → {after}) — "
+                    f"stopping rather than paying for another identical round", 1)
+                break
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with
     # finalize-from-best-snapshot the clean rebuild often outscores every live round:

@@ -331,3 +331,36 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
         f"Score each axis 0–5 (or \"n/a\" per the scope rule above), list concrete fixes "
         f"under `issues` (most important first), and return the JSON scorecard."
     )
+
+
+def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str) -> str:
+    """Hand a CANONICAL failure back to the builder that wrote the script.
+
+    The distinction this prompt has to land is the one the builder gets wrong by default:
+    it has spent the whole layer tuning a LIVE scene, but what just failed is its SCRIPT
+    replayed from empty. Those diverge whenever the script omits something the live
+    session accumulated, and the builder's instinct is to re-tune the live scene, which
+    changes nothing about the artifact being judged.
+    """
+    blocks = []
+    for frame, v in failed:
+        issues = "\n".join(f"    - {s}" for s in (v.get("issues") or [])[:6]) or \
+                 "    (no specific issues returned)"
+        scores = ", ".join(f"{k}={val}" for k, val in (v.get("scores") or {}).items()
+                           if val != "n/a")
+        blocks.append(f"  f{frame} — scored {v.get('mean')} ({scores})\n{issues}")
+    return (
+        f"CANONICAL VERIFICATION FAILED for unit {m.id}.\n\n"
+        f"Your script `{script_rel}` was re-run FROM AN EMPTY SCENE and the result was "
+        f"scored at every frame this unit answers for. These frames did not clear:\n\n"
+        + "\n\n".join(blocks) + "\n\n"
+        f"Read that carefully: the live scene you have been tuning is NOT what failed. "
+        f"The SCRIPT's output is. If the script omits something you built interactively, "
+        f"or builds it in an order that changes the result, the two will disagree — so "
+        f"fix `{script_rel}` itself, then reason about what it produces from empty.\n\n"
+        f"Work the listed issues in order; they are concrete and measured. Do NOT start a "
+        f"new approach, and do NOT re-tune the live scene and declare it fixed. Use "
+        f"script_map / find_in_script / Read that span / Edit — never rewrite the whole "
+        f"file for a few values. When you are done, say so and the script will be "
+        f"re-verified from empty again."
+    )
