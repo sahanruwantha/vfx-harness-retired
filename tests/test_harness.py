@@ -421,7 +421,12 @@ def main():
         ".artifacts", ".snapshots", ".versions", "assets"))
     led = json.loads((t4 / "shot.json").read_text())
     led["milestones"]["1"]["rounds"][0]["render"] = "renders/vanished.png"
+    # Plant the defect explicitly rather than relying on layer 3 happening to have no
+    # script. It had none this morning and has one now, so the fixture silently stopped
+    # planting anything and the check passed on repo state instead of on the property.
     led["milestones"]["3"] = {"status": "passed", "rounds": [{"round": 1, "render": ""}]}
+    for _s in (t4 / "build").glob("03_*.py"):
+        _s.unlink()
     (t4 / "build" / "99_experiment.py").write_text("# stray\n")
     (t4 / "shot.json").write_text(json.dumps(led, indent=2))
     errs, warns, data = integrity_problems(load_shot(t4))

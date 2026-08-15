@@ -1128,6 +1128,13 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             log(f"canonical failed on {len(failed)} frame(s) — repair {attempt}/"
                 f"{MAX_CANON_REPAIRS}, feeding the critique back"
                 + (f" (protecting {len(holding)} passing frame(s))" if holding else ""))
+            # Keep the script we are about to modify, plus the verdicts that describe it,
+            # so a repair that makes things worse can be undone rather than merely regretted.
+            backup = shot.folder / "logs" / f"{m.id}_prerepair{attempt}.py"
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(shot.folder / script_rel, backup)
+            pre_verdicts = list(canon_verdicts or [])
+            pre_canonical = canonical
             await builder.query(canonical_repair_prompt(m, failed, script_rel,
                                                         holding=holding))
             # last_info, NOT a throwaway: the layer report reads cost/turns from it, so
@@ -1139,18 +1146,44 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                 log(f"✗ canonical repair TRUNCATED ({last_info['subtype']}) — stopping "
                     f"here", 1)
                 break
-            before = [v.get("mean") for _f, v in failed]
+            # EVERY frame's score before the repair, not just the failing ones. The
+            # previous version compared only the frames that had failed, so a repair that
+            # lifted one frame while wrecking another read as progress. It could not see
+            # collateral damage at all.
+            was = {f: v.get("mean") for (f, _r), v in (canon_verdicts or [])}
+            was_pass = {f for (f, _r), v in (canon_verdicts or []) if v.get("pass")}
             canon_verdicts.clear()
             canonical = await _verify_script(shot, m, script_rel, prior_paths, session,
                                              axes, ledger, verbose,
                                              live_best_mean=best["mean"], scope=scope,
                                              layer=layer, out_verdicts=canon_verdicts)
-            after = [v.get("mean") for (f, _r), v in (canon_verdicts or [])
-                     if f in {fr for fr, _ in failed}]
-            if canonical == "failed" and after and before and sum(after) <= sum(before):
+            now = {f: v.get("mean") for (f, _r), v in (canon_verdicts or [])}
+            broke = sorted(f for (f, _r), v in (canon_verdicts or [])
+                           if f in was_pass and not v.get("pass"))
+            if broke:
+                # ENFORCE it. Telling the builder "these frames already pass, a trade is
+                # not a fix" is a request, and it was ignored: the layer-3 pilot went
+                # f100 3.0 PASS / f440 2.0 into a repair and came out 2.0 / 2.0 — the
+                # repair broke the good frame and fixed nothing. This module's own
+                # preamble says a rule stated in a prompt gets ignored; I wrote the
+                # instruction anyway instead of the guard. Revert the script and stop:
+                # the pre-repair version is strictly better than what we now hold.
+                shutil.copyfile(backup, shot.folder / script_rel)
+                log(f"✗ repair {attempt} REGRESSED f{', f'.join(map(str, broke))} "
+                    f"({ {f: (was[f], now.get(f)) for f in broke} }) — reverting "
+                    f"{script_rel} to its pre-repair state and stopping", 1)
+                canon_verdicts.clear()
+                canon_verdicts.extend(pre_verdicts)
+                canonical = pre_canonical
+                break
+            gained = sum(now.get(f, 0) or 0 for f, _v in failed) - \
+                     sum(was.get(f, 0) or 0 for f, _v in failed)
+            if canonical == "failed" and gained <= 0:
                 # A repair that moved nothing will not move anything next time either.
-                log(f"repair {attempt} improved nothing ({before} → {after}) — "
-                    f"stopping rather than paying for another identical round", 1)
+                log(f"repair {attempt} improved nothing on the failing frame(s) "
+                    f"({[was.get(f) for f, _v in failed]} → "
+                    f"{[now.get(f) for f, _v in failed]}) — stopping rather than paying "
+                    f"for another identical round", 1)
                 break
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with
