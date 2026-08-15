@@ -528,11 +528,18 @@ def _verdict(verdict: dict) -> dict:
     return verdict
 
 
+# A canonical render may sit slightly under the live best and still be the same picture —
+# judge noise is real. But 1/n was derived from "one axis point moves the mean by 1/n",
+# which at n=1 licenses a FULL POINT: a 4 becoming a 3 counted as "reproduced". That is a
+# different verdict, not noise, and on a one-axis layer it is the entire verdict.
+_REPRO_TOL_MAX = 0.5
+
+
 def _repro_tolerance(n_scored: int) -> float:
     """How far a canonical re-render may fall below the live best and still count as
-    'the script reproduces it'. One axis point of noise = 1/n of the mean, so the
-    tolerance has to widen as the scored-axis count shrinks."""
-    return max(0.3, 1.0 / n_scored) if n_scored else 0.3
+    'the script reproduces it'. Widens as the axis count shrinks (one axis point moves
+    the mean by 1/n), but never far enough to absorb a whole grade."""
+    return min(_REPRO_TOL_MAX, max(0.3, 1.0 / n_scored)) if n_scored else 0.3
 
 
 async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
@@ -555,20 +562,37 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     for attempt in range(1, 4):
         text = ""
         seen: set[str] = set()
+        pending: dict = {}
         denied = 0
         try:
             async for message in query(prompt=prompt, options=_critic_options(shot, axes)):
                 for b in getattr(message, "content", []) or []:
-                    # which images did it ACTUALLY get? a Read that was denied or failed
-                    # returns no image, and a verdict formed without one is fabricated
-                    name = str(getattr(b, "input", {}) or {}).replace("\\", "/")
-                    for w in want:
-                        if w in name:
-                            seen.add(w)
+                    # Track the REQUEST only to learn which file a result belongs to; a
+                    # tool-use block carries .input whether the read succeeded or was
+                    # denied, so counting it as "seen" is exactly the bug this guard
+                    # exists to catch (three denied reads still yielded a score of 0).
+                    inp = getattr(b, "input", None)
+                    if isinstance(inp, dict):
+                        p_ = str(inp.get("file_path") or inp.get("path") or "")
+                        hit = next((w for w in want if w in p_.replace("\\", "/")), None)
+                        if hit:
+                            pending[getattr(b, "id", None) or getattr(b, "tool_use_id", "")] = hit
+                        continue
+                    if not getattr(b, "type", "") and not hasattr(b, "content"):
+                        continue
+                    # a RESULT: it counts only if it carries an image and is not an error
+                    tid = getattr(b, "tool_use_id", None) or getattr(b, "id", None)
+                    who = pending.pop(tid, None)
                     if getattr(b, "is_error", False):
-                        blob = _result_text(b)
-                        if "sandbox" in blob or "not exist" in blob or "No such" in blob:
-                            denied += 1
+                        denied += 1
+                        continue
+                    body = b.content if hasattr(b, "content") else ""
+                    has_image = (isinstance(body, list) and
+                                 any(getattr(x, "type", None) == "image" or
+                                     (isinstance(x, dict) and x.get("type") == "image")
+                                     for x in body))
+                    if who and has_image:
+                        seen.add(who)
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):

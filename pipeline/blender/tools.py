@@ -297,8 +297,10 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         for f in args["frames"]:
             try:
                 r = await _call("render", frame=int(f), mode=mode, scale=scale)
-                blocks.append({"type": "text", "text": f"frame {r['frame']} ({mode})"})
-                blocks.append({"type": "image", "data": _encode(r["image_path"]),
+                im = _load(r["image_path"])
+                blocks.append({"type": "text",
+                               "text": f"frame {r['frame']} ({mode})\n{_stats(im)}"})
+                blocks.append({"type": "image", "data": _b64(im),
                                "mimeType": "image/jpeg"})
             except BlenderError as e:
                 blocks.append({"type": "text", "text": f"frame {f}: ERROR {e}"})
