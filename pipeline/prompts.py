@@ -91,7 +91,16 @@ WORKFLOW, in order:
      - gotchas: shot-specific traps (from prior work, the scene read, or research)
      - salvage: file+section pointers when prior build scripts already solve it
      - done: a check the builder can run cheaply (crop compare, metric range,
-       keyframe readback)
+       keyframe readback). Where the check is a NUMBER, state a BAND — what must
+       improve AND what must not degrade while it does. Never a one-sided target:
+       they get optimised into a different defect. "The two outer window strips must
+       be BRIGHTER than the recessed core" was satisfied at a ratio of 2.24 by
+       driving the strips so hot they fused into solid clipped-white bars, which
+       destroyed the window grid the axis was actually about. As a band — "ratio
+       > 1.5 AND strip sigma >= 35 (cells still read as separate windows) AND
+       clipped(blown) = 0%" — it cannot be gamed that way. `measure_regions` returns
+       mean, sigma, max and lit% per region plus every pairwise ratio, so a band
+       costs the builder no more to check than an inequality does.
    Confidence tags:
      [known]     — a recipe covers it (cite the recipe name) or converged values
                    exist in prior work (cite the file).
