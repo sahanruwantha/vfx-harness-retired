@@ -198,6 +198,29 @@ def main():
              if isinstance(n, _ast.ExceptHandler) and _mute(n)]
     check("no silent handlers in hook code", not quiet, str(quiet))
 
+    # The recipe frontmatter guard: enforced at the WRITE, not merely requested in the
+    # distiller prompt. Prompt-only, a self-declared `verified: true` lands quietly and
+    # fails a LATER suite run on a file nobody in that session meant to write.
+    import anyio as _anyio
+    from pipeline.guardrails import recipe_write_guard
+    _g = recipe_write_guard().hooks[0]
+
+    def _denied(path, body):
+        r = _anyio.run(_g, {"tool_name": "Write",
+                            "tool_input": {"file_path": path, "content": body}},
+                       None, None)
+        return r.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+
+    _fm = "---\nname: x\nverified: %s\n---\nbody\n"
+    check("recipe claiming verified:true is blocked",
+          _denied("pipeline/recipes/x.md", _fm % "true"))
+    check("recipe with verified:false is allowed",
+          not _denied("pipeline/recipes/x.md", _fm % "false"))
+    check("spike scaffolding in a recipe body is blocked",
+          _denied("pipeline/recipes/x.md", (_fm % "false") + "SPIKE_ARGS['a']=1\n"))
+    check("the guard does not touch non-recipe writes",
+          not _denied("shots/b/build/01_layout.py", _fm % "true"))
+
     # And the handlers that were individually judged to lose information (#7).
     fixed = {"pipeline/blender/session.py": "artifact sweep failed",
              "pipeline/assets/_normalize_bpy.py": "normalize SKIPPED",

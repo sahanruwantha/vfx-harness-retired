@@ -168,6 +168,57 @@ def compaction_notice(shot_folder: str | Path) -> HookMatcher:
     return HookMatcher(matcher=None, hooks=[_pre])
 
 
+def recipe_write_guard() -> HookMatcher:
+    """Force `verified: false` on any recipe the distiller writes, and keep spike
+    scaffolding out of the recipe body.
+
+    Both rules are already in DISTILL_SYSTEM, and the top of this module exists because a
+    rule stated in a system prompt AND two recipes still got ignored twice in 54 seconds.
+    Prompt-only, the failure lands late and confusingly: the recipe is written, the run
+    finishes, and the NEXT test-suite invocation fails on a file nobody in that session
+    deliberately wrote. `verified: true` now means an executed, hash-pinned spike — the
+    harvester is reading a script, not running one, and cannot know it.
+    """
+    async def _check(inp, tool_use_id, ctx) -> dict:
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        if tool not in ("Write", "Edit"):
+            return {}
+        args = (inp.get("tool_input") if isinstance(inp, dict) else getattr(inp, "tool_input", {})) or {}
+        target = str(args.get("file_path") or "")
+        if "/recipes/" not in target.replace("\\", "/") or not target.endswith(".md"):
+            return {}
+        body = str(args.get("content") or args.get("new_string") or "")
+        if re.search(r"^verified:\s*true\s*$", body, re.MULTILINE | re.IGNORECASE):
+            bump("recipe_verified_blocked")
+            log(f"⛔ recipe write: {Path(target).name} claimed `verified: true`", 1)
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    "Write `verified: false`. That flag is set ONLY by "
+                    "pipeline.verify_recipes after the snippet has been EXECUTED in a "
+                    "headless Blender and its top-level callables invoked, with a sha256 "
+                    "of the code recorded as evidence. Claiming it here fails the audit "
+                    "and the test suite. Earn it with: "
+                    "python -m pipeline.verify_recipes --name <slug> --sync"}}
+        if "SPIKE_ARGS" in body:
+            bump("recipe_scaffold_blocked")
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    "Spike scaffolding must NOT go in the recipe body — find_recipe hands "
+                    "that text to a builder verbatim, so SPIKE_ARGS would be pasted into "
+                    "a real shot. Put it in pipeline/recipes/_spikes/<slug>.py instead "
+                    "(see the README there)."}}
+        return {}
+    return HookMatcher(matcher=None, hooks=[_check])
+
+
+def distiller_hooks(*roots, cwd: str | Path | None = None) -> dict:
+    """Sandbox + the recipe-frontmatter guard, for the harvesting agent."""
+    from .sandbox import path_sandbox
+    return {"PreToolUse": [path_sandbox(*roots, cwd=cwd), recipe_write_guard()]}
+
+
 def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = None) -> dict:
     """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback."""
     from .sandbox import path_sandbox

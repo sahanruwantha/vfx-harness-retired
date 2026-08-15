@@ -51,7 +51,7 @@ from .ledger import Ledger, Milestone, load_axes, load_layers, plan_strips
 from .recipes import RECIPES_DIR, build_recipe_tools, log_recipe_use, recipe_index
 from .approach import review as approach_review, revision_from_review
 from .escalate import load as load_questions
-from .guardrails import builder_hooks
+from .guardrails import builder_hooks, distiller_hooks
 from .sandbox import sandbox_hooks
 from .provenance import check as provenance_check
 from .runid import RUN_ID
@@ -464,7 +464,7 @@ async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True,
     repo = Path(__file__).resolve().parent.parent
     options = ClaudeAgentOptions(
         model=MODEL, system_prompt=DISTILL_SYSTEM, cwd=str(repo),
-        hooks=sandbox_hooks(RECIPES_DIR, shot.folder, cwd=repo),
+        hooks=distiller_hooks(RECIPES_DIR, shot.folder, cwd=repo),
         allowed_tools=["Read", "Write", "Glob"],
         # Grep is why the distiller walked out to ~/.claude and read this session's
         # transcript looking for context on an error message.
