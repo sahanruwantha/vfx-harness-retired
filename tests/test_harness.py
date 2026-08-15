@@ -649,6 +649,35 @@ def main():
     check("imported assets are normalised out of QUATERNION mode",
           'rotation_mode = "XYZ"' in worker_src and "silent no-op" in worker_src)
 
+    print("\n[a verdict is about a script, not a layer id]")
+    # 01_layout.py was edited after layer 1 was recorded `passed`, and nothing anywhere
+    # noticed that the verdict and the canonical renders now described the previous
+    # script. provenance.py does this for plan artifacts vs brief.md; build scripts had
+    # no equivalent.
+    import tempfile as _tf2
+    with _tf2.TemporaryDirectory() as td:
+        dst = Path(td) / "barrel_roll"
+        shutil.copytree(shot.folder, dst, symlinks=True,
+                        ignore=shutil.ignore_patterns("renders", "logs", "artifacts"))
+        from pipeline.brief import load_shot as _ls
+        s2 = _ls(str(dst))
+        led2, lay2 = Ledger(s2), load_layers(s2)
+        m1 = lay2["1"].as_milestone()
+        led2.mark(m1, "passed")
+        check("marking a pass records the script digest", led2.script_digest(m1))
+        check("an untouched script is not stale", led2.stale(m1) is None)
+        sp = dst / lay2["1"].script
+        sp.write_text(sp.read_text(encoding="utf-8") + "\n# an edit\n", encoding="utf-8")
+        why = led2.stale(m1)
+        check("editing the script makes the recorded pass stale", bool(why))
+        check("  ... and the reason names the layer and the script",
+              bool(why) and "layer 1" in why and Path(lay2["1"].script).name in why,
+              str(why)[:90])
+        led2.mark(m1, "failed")
+        check("a non-passed layer is never reported stale", led2.stale(m1) is None)
+    check("chaining treats a stale prior like an unpassed one",
+          "ledger.stale(g.as_milestone())" in ba_src)
+
     print("\n[textured assets keep their facade]")
     # sr2_tower ships three 2048² maps that reproduce its design plate; the procedural
     # window helper cleared the material slots and threw them away, inverting the facade

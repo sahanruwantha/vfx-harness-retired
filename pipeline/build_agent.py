@@ -179,6 +179,14 @@ def _prior_layer_paths(shot: Shot, layer, *, force: bool = False) -> list[Path]:
         st = ledger.status(g.as_milestone())
         if st != "passed":
             unpassed.append(f"layer {g.id} ({p.name}) is '{st}'")
+        else:
+            # 'passed' is a verdict on a SCRIPT, not on a layer id. Editing the script
+            # afterwards leaves the pass in place describing code that no longer exists,
+            # and every layer above then builds on renders of the old version. Treated
+            # exactly like an unpassed prior, because that is what it is.
+            why = ledger.stale(g.as_milestone())
+            if why:
+                unpassed.append(why)
         keep.append(p)
     # FAIL CLOSED. This used to warn and chain anyway, so a layer could be built on top of
     # a predecessor whose content was never accepted — every judgement above it then rests

@@ -9,6 +9,7 @@ resumed sessions read the ledger to know what's done.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 from contextlib import contextmanager
@@ -257,10 +258,50 @@ class Ledger:
         })
         self.save()
 
+    def script_digest(self, m: Milestone) -> str | None:
+        """Hash of this layer's build script as it stands on disk right now."""
+        try:
+            rel = self._slot(m).get("script") or load_layers(self.shot)[m.id].script
+        except Exception:
+            return None
+        p = self.shot.folder / rel
+        if not p.is_file():
+            return None
+        return hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+
+    def stale(self, m: Milestone) -> str | None:
+        """Why this layer's recorded verdict no longer describes its script, if so.
+
+        A verdict is about a SCRIPT, not about a layer id. Edit the script afterwards and
+        the ledger still reads `passed` while the thing that passed no longer exists —
+        and every layer chained on top builds against renders of code that is gone.
+
+        This happened for real: 01_layout.py was changed to stop overwriting the asset's
+        baked facade, and nothing noticed that layer 1's `passed` and its canonical
+        renders now described the previous script. provenance.py already does exactly
+        this for PLAN artifacts against brief.md; build scripts had no equivalent, which
+        is the same gap one level down.
+        """
+        slot = self._slot(m)
+        if slot.get("status") != "passed":
+            return None
+        was, now = slot.get("script_sha"), self.script_digest(m)
+        if was and now and was != now:
+            return (f"layer {m.id} is recorded as passed against script_sha {was}, but "
+                    f"{slot.get('script')} now hashes to {now}. That verdict and the "
+                    f"canonical renders under renders/{m.id}@* describe the OLD script — "
+                    f"re-verify before chaining onto it.")
+        return None          # no recorded digest = predates this check; nothing to compare
+
     def mark(self, m: Milestone, status: str, best: dict | None = None) -> None:
         slot = self._slot(m)
         slot["status"] = status
         slot["updated"] = _now()
+        # Bind the verdict to the exact script it was reached on, so a later edit becomes
+        # detectable instead of silently inheriting the pass.
+        d = self.script_digest(m)
+        if d:
+            slot["script_sha"] = d
         if best is not None:
             slot["best"] = {"round": best.get("round"), "mean": best.get("mean"),
                             "render": best.get("render")}
