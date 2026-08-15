@@ -104,7 +104,9 @@ def build_recipe_tools(on_use=None):
             try:
                 on_use([h["name"] for h in hits])
             except Exception:
-                pass
+                # telemetry drives promote/prune; losing it silently means the cookbook
+                # can never learn which recipes earn their place
+                print("! recipe-use telemetry failed", flush=True)
         if not hits:
             return {"content": [{"type": "text",
                     "text": "no matching recipe — improvise; a good solution may be harvested "

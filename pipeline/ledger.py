@@ -51,8 +51,11 @@ def load_axes(shot: Shot) -> list[tuple[str, str]]:
             axes = [(a["key"], a["desc"]) for a in data if a.get("key") and a.get("desc")]
             if axes:
                 return axes
-        except Exception:
-            pass
+        except Exception as e:
+            # falling back to GENERIC axes silently means the whole shot is judged on
+            # the wrong rubric and every score becomes uninterpretable
+            print(f"! critic_axes.json unreadable — using generic defaults ({str(e)[:50]})",
+                  flush=True)
     return DEFAULT_AXES
 
 @dataclass(frozen=True)
@@ -148,7 +151,11 @@ def plan_strips(shot: Shot) -> dict[int, tuple[int, ...]]:
     """frame -> the plan's strip for the acceptance moment at that frame (if any)."""
     try:
         return {m.frame: m.strip for m in load_milestones(shot).values() if m.strip}
-    except Exception:
+    except Exception as e:
+        # the default strip only looks FORWARD, which is precisely how barrel_roll
+        # judged f20 and never saw the broken f16-f18 beside it
+        print(f"! plan strips unavailable — motion strips fall back to the default "
+              f"({str(e)[:60]})", flush=True)
         return {}
 
 
@@ -274,8 +281,11 @@ class Ledger:
         if self.path.is_file():
             try:
                 on_disk = json.loads(self.path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                on_disk = {}
+            except json.JSONDecodeError as e:
+                # treating a corrupt ledger as empty would let this write clobber every
+                # layer recorded so far
+                print(f"! shot.json unreadable on merge, NOT clobbering ({e})", flush=True)
+                raise
         # Disk wins for top-level keys we never modified; ours wins where we did.
         # (Plain `{**self.data, **on_disk}` let disk clobber our own new keys, so a
         # second acceptance run silently kept the first run's block.)

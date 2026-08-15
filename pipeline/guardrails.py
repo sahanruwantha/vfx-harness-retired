@@ -24,6 +24,7 @@ from typing import Any
 from claude_agent_sdk import HookMatcher
 
 from .log import log
+from .runlog import bump
 
 # pattern -> what to do instead. Each of these was hit for real during a build.
 _BANNED: list[tuple[re.Pattern, str]] = [
@@ -66,6 +67,7 @@ def web_allowlist() -> HookMatcher:
         target = str(args.get("url") or args.get("query") or "")
         if tool == "WebFetch" and not any(d in target for d in _WEB_ALLOW):
             log(f"⛔ web: {target[:60]} is outside the docs allowlist", 1)
+            bump("web_blocked")
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",
                 "permissionDecisionReason":
@@ -87,6 +89,7 @@ def api_guardrails() -> HookMatcher:
         for pat, fix in _BANNED:
             if pat.search(code):
                 log(f"⛔ guardrail: blocked `{pat.pattern}` — {fix[:60]}…", 1)
+                bump("api_guardrail_blocked")
                 return {"hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
@@ -125,10 +128,14 @@ def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatche
             d = compare(look_vector(str(latest)), look_vector(str(ref)))
             if not d:
                 return {}
+            bump("metric_feedback")
             return {"hookSpecificOutput": {"hookEventName": "PostToolUse",
                                            "additionalContext": report(d)}}
-        except Exception:
-            return {}          # feedback is a nicety; never break a render on it
+        except Exception as e:
+            # never break a render on feedback — but a hook that dies quietly is exactly
+            # how this one stayed a silent no-op for an entire build phase
+            log(f"! metric feedback unavailable: {str(e)[:70]}", 1)
+            return {}
     return HookMatcher(matcher=None, hooks=[_after])
 
 

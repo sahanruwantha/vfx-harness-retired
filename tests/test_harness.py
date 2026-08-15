@@ -153,6 +153,30 @@ def main():
     import pipeline.blender.tools as T
     check("no undefined _encode", "_encode" not in Path(T.__file__).read_text())
 
+    print("\n[observability]")
+    from pipeline.runlog import bump, reset_counts, snapshot_counts, summary
+    reset_counts(); bump("sandbox_denied", 2)
+    check("hook counters accumulate", snapshot_counts() == {"sandbox_denied": 2})
+    s_no = summary({"layer": "1", "title": "t", "status": "passed", "hooks": {}})
+    check("silent hooks are flagged", "NOTHING FIRED" in s_no)
+    s_nm = summary({"layer": "1", "title": "t", "status": "passed",
+                    "hooks": {"sandbox_denied": 1}})
+    check("missing metric feedback is flagged", "NO objective metric feedback" in s_nm)
+    s_ok = summary({"layer": "1", "title": "t", "status": "passed",
+                    "hooks": {"metric_feedback": 9}})
+    check("healthy run is not flagged", "NO objective metric" not in s_ok)
+    import ast as _ast
+    crit = {"guardrails.py", "recipes.py"}
+    quiet = []
+    for f in Path("pipeline").rglob("*.py"):
+        if f.name not in crit: continue
+        for n in _ast.walk(_ast.parse(f.read_text())):
+            if isinstance(n, _ast.ExceptHandler):
+                src = _ast.unparse(n)
+                if "log(" not in src and "print(" not in src and "raise" not in src:
+                    quiet.append(f"{f.name}:{n.lineno}")
+    check("no silent handlers in hook code", not quiet, str(quiet))
+
     print("\n[ledger]")
     t2 = Path(tempfile.mkdtemp()) / "br"
     shutil.copytree(shot.folder, t2, ignore=shutil.ignore_patterns("refs", "assets", "renders"))

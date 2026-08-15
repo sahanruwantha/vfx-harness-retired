@@ -23,6 +23,7 @@ from typing import Any
 from claude_agent_sdk import HookMatcher
 
 from .log import log
+from .runlog import bump
 
 # tool name -> the arg(s) that carry a path
 _PATH_ARGS: dict[str, tuple[str, ...]] = {
@@ -82,6 +83,7 @@ def path_sandbox(*roots: str | Path, cwd: str | Path | None = None) -> HookMatch
             elsewhere = _relocate(target, allowed)
             if elsewhere:
                 log(f"⛔ sandbox: {tool} on {target} → redirect to {elsewhere}", 1)
+                bump("sandbox_redirect")
                 return {"hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
@@ -91,6 +93,7 @@ def path_sandbox(*roots: str | Path, cwd: str | Path | None = None) -> HookMatch
                         f"path. Relative paths resolve against {base}."),
                 }}
             log(f"⛔ sandbox: {tool} denied on {target} (outside {where})", 1)
+            bump("sandbox_denied")
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",

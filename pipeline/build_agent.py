@@ -48,6 +48,7 @@ from .approach import review as approach_review, revision_from_review
 from .escalate import load as load_questions
 from .guardrails import builder_hooks
 from .sandbox import sandbox_hooks
+from .runlog import bump, reset_counts, summary as run_summary, write as write_run
 from .shot_context import clear_layer_context, write_layer_context
 
 MODEL = "claude-opus-5"
@@ -118,7 +119,8 @@ def _prior_layer_paths(shot: Shot, layer) -> list[Path]:
     # seam layer left an un-critiqued 40_seam.py queued for the two after it).
     try:
         ledger, layers = Ledger(shot), load_layers(shot)
-    except Exception:
+    except Exception as e:
+        log(f"! chaining WITHOUT the ledger cross-check: {str(e)[:70]}")
         return found
     by_script = {Path(g.script).name: g for g in layers.values()}
     keep = []
@@ -420,6 +422,8 @@ async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True,
 # four distinct Blender-5 errors self-corrected in one run and taught the cookbook
 # nothing. These are the highest-value recipes precisely because they cost turns.
 _ERRORS: list[str] = []
+_RECIPES_USED: list[str] = []
+_JOURNAL_INFO: dict = {}
 
 
 def _collect_errors(message) -> None:
@@ -695,7 +699,8 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     bserver, bnames = build_blender_tools(session, assets_dir=shot.folder / "assets",
                                           shot_dir=shot.folder, layer_id=getattr(layer, 'id', m.id))
     rserver, rnames = build_recipe_tools(
-        on_use=lambda names: log_recipe_use(shot.folder, names))
+        on_use=lambda names: (log_recipe_use(shot.folder, names),
+                              _RECIPES_USED.extend(names)))
     mcp_servers = {"blender": bserver, "recipes": rserver}
     tool_names = bnames + rnames
 
@@ -716,6 +721,9 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     else:
         priors = _run_prior_paths(session, prior_paths)
 
+    t_layer = time.monotonic()
+    reset_counts()
+    canon_verdicts: list = []
     passed = False
     reviewed = False          # one approach review per layer; a second plateau stops
     best = {"mean": -1.0, "round": 0, "render": None, "verdict": None}
@@ -809,6 +817,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             info = session.journal(path=str(shot.folder / jrel))
             if info.get("calls"):
                 journal_rel = jrel
+                _JOURNAL_INFO.clear(); _JOURNAL_INFO.update(info)
                 log(f"journal: {info['calls']} accepted run_bpy calls "
                     f"({info['chars'] // 1024}KB) → {jrel}")
         except Exception as e:  # never block finalize on a nicety
@@ -831,7 +840,8 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     # two consecutive layer-clears at the boundary is double jeopardy (cost M3 a pass).
     canonical = await _verify_script(shot, m, script_rel, prior_paths, session, axes,
                                      ledger, verbose, live_best_mean=best["mean"],
-                                     scope=scope, layer=layer)
+                                     scope=scope, layer=layer,
+                                     out_verdicts=canon_verdicts)
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with
     # finalize-from-best-snapshot the clean rebuild often outscores every live round:
@@ -857,7 +867,26 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                                  errors=list(_ERRORS))
         except Exception as e:
             log(f"distill skipped: {str(e)[:80]}")
+    # One report per layer: everything that previously took six greps, plus what the
+    # HOOKS did — a hook that never fires is silent by accident and invisible otherwise.
+    try:
+        slot = ledger._slot(m)
+        rec_path = write_run(
+            shot.folder, layer if layer is not None else m, status=slot.get("status", "?"),
+            rounds=[{"kind": r.get("kind"), "mean": r.get("mean"), "pass": r.get("pass")}
+                    for r in slot.get("rounds", []) if r.get("kind") != "canonical"],
+            canonical=[{"frame": f, "mean": v["mean"], "pass": v["pass"]}
+                       for (f, _r), v in (canon_verdicts or [])],
+            ablation=slot.get("ablation", {}), reviews=slot.get("reviews", []),
+            recipes=_RECIPES_USED, journal=_JOURNAL_INFO,
+            cost=last_info.get("cost", 0.0), turns=last_info.get("turns", 0),
+            seconds=time.monotonic() - t_layer)
+        import json as _json
+        log("\n" + run_summary(_json.loads(rec_path.read_text())))
+    except Exception as e:
+        log(f"! run report unavailable: {str(e)[:80]}")
     _ERRORS.clear()
+    _RECIPES_USED.clear()
     return ledger
 
 
@@ -890,8 +919,8 @@ async def build_layer(shot: Shot, layer, session: BlenderSession, *,
         try:
             from .ledger import load_milestones
             fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"! no measured fingerprints in the layer contract: {str(e)[:60]}", 1)
         p = write_layer_context(shot, layer, load_axes(shot), fps)
         log(f"layer context → {p.relative_to(shot.folder)} (loaded every request)", 1)
     except Exception as e:
@@ -961,7 +990,8 @@ def _metric_report(shot: Shot, render_rel: str, ref_rel: str) -> str:
         d = compare(look_vector(str(shot.folder / render_rel)),
                     look_vector(str(shot.folder / ref_rel)))
         return report(d) if d else ""
-    except Exception:
+    except Exception as e:
+        log(f"! metric report unavailable for the review: {str(e)[:70]}", 1)
         return ""
 
 
@@ -970,7 +1000,7 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
                          axes: list[tuple[str, str]], ledger: Ledger, verbose: bool,
                          live_best_mean: float | None = None,
                          scope: str | None = None,
-                         layer=None) -> str:
+                         layer=None, out_verdicts: list | None = None) -> str:
     """-> "passed" (canonical clears the bar itself) | "reproduced" (matches the live
     best within noise) | "failed".
 
@@ -1021,6 +1051,8 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
         v = results[i]
         ledger.record_round(m, kind="canonical", index=i, render=render_rel, verdict=v)
         verdicts.append(((frame, ref), v))
+    if out_verdicts is not None:
+        out_verdicts.extend(verdicts)      # the run report needs the per-frame results
     if len(judges) > 1:
         log("canonical per-frame: " + " · ".join(
             f"f{f}:{v['mean']}{'✅' if v['pass'] else '✗'}" for (f, _), v in verdicts), 1)
