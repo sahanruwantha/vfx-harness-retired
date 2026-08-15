@@ -100,6 +100,64 @@ def api_guardrails() -> HookMatcher:
     return HookMatcher(matcher=None, hooks=[_check])
 
 
+def _injected_scope() -> set[str]:
+    """Exactly what a run_bpy call can see. Read from worker.py's own _HELPERS so a new
+    bvfx_* helper can never become a false positive here."""
+    import builtins
+    names = {"bpy", "math", "mathutils", "Vector"} | set(dir(builtins))
+    try:
+        src = (Path(__file__).parent / "blender" / "worker.py").read_text(encoding="utf-8")
+        names |= set(re.findall(r'"(bvfx_\w+)":', src))
+    except OSError as e:
+        # Fall back to blocking nothing rather than blocking everything.
+        log(f"! could not read worker helpers, undefined-name check disabled: {e}")
+        return set()
+    return names
+
+
+def _undefined_names(tree) -> set[str]:
+    """Names this script CALLS but nothing defines — the fresh-namespace trap.
+
+    Deliberately under-reports. A false positive here blocks legitimate work, which is
+    far worse than missing a NameError the builder will see anyway, so this only flags a
+    bare `name(...)` call where `name` is bound nowhere in the script and is not in the
+    injected scope. Anything dynamic (globals(), exec, star-import, getattr) disables the
+    check entirely rather than risking a wrong deny.
+    """
+    import ast
+    scope = _injected_scope()
+    if not scope:
+        return set()
+    src_names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    if {"globals", "locals", "exec", "eval", "vars"} & src_names:
+        return set()                       # dynamic binding: cannot reason statically
+
+    bound: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(n.name)
+            bound |= {a.arg for a in n.args.args + n.args.kwonlyargs + n.args.posonlyargs}
+            for a in (n.args.vararg, n.args.kwarg):
+                if a is not None:
+                    bound.add(a.arg)
+        elif isinstance(n, ast.Lambda):
+            bound |= {a.arg for a in n.args.args}
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            bound.add(n.id)
+        elif isinstance(n, ast.alias):
+            bound.add((n.asname or n.name).split(".")[0])
+            if n.name == "*":
+                return set()               # star-import: unknowable
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+        elif isinstance(n, ast.Global) or isinstance(n, ast.Nonlocal):
+            bound |= set(n.names)
+
+    called = {n.func.id for n in ast.walk(tree)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    return called - bound - scope
+
+
 def script_sanity() -> HookMatcher:
     """Parse every run_bpy payload before it executes: syntax, and bare `next(...)`.
 
@@ -138,6 +196,22 @@ def script_sanity() -> HookMatcher:
                     f"SyntaxError on line {e.lineno}: {e.msg}\n"
                     f"    {(e.text or '').rstrip()}\n"
                     f"Fix it and resend — this never reached Blender."}}
+
+        undefined = _undefined_names(tree)
+        if undefined:
+            bump("undefined_name_blocked")
+            names = ", ".join(sorted(undefined)[:4])
+            log(f"⛔ run_bpy calls undefined name(s): {names} — blocked", 1)
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    f"BLOCKED: this script uses {names}, which nothing defines.\n"
+                    f"EVERY run_bpy call is a FRESH NAMESPACE — it cannot see anything "
+                    f"you defined in a previous call. In scope you have only: bpy, math, "
+                    f"mathutils, Vector, the bvfx_* helpers, and Python builtins.\n"
+                    f"Either inline the definition in THIS call, or put it in the build "
+                    f"script where it will be defined at module scope when the script "
+                    f"runs."}}
 
         bare = [n.lineno for n in _ast.walk(tree)
                 if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)

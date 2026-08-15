@@ -151,6 +151,24 @@ def main():
     check("ordinary scripts pass untouched",
           not _blocked("import bpy\nbpy.ops.mesh.primitive_cube_add()"))
 
+    # Every run_bpy call is a FRESH NAMESPACE, which the system prompt states and the
+    # builder ignored: it defined build_window_nodes in one call and used it in the next.
+    # Under-reports on purpose — a false positive blocks legitimate work, which is worse
+    # than a NameError the builder would see anyway.
+    check("a helper from a previous run_bpy call is blocked",
+          _blocked("m = build_window_nodes(mat, 8)"))
+    check("a helper defined in THIS call is fine",
+          not _blocked("def f(a):\n    return a\nx = f(1)"))
+    check("injected bvfx helpers are in scope",
+          not _blocked("bvfx_emissive_windows(o, density=8)"))
+    check("dynamic binding disables the check rather than guessing",
+          not _blocked("g = globals()\nmystery_fn(1)"))
+    import ast as _a2, glob as _g2
+    from pipeline.guardrails import _undefined_names as _un
+    _fp = [f for f in _g2.glob("shots/*/build/*.py") + _g2.glob("shots/*/logs/journals/*.py")
+           if _un(_a2.parse(Path(f).read_text(encoding="utf-8")))]
+    check("no real build script trips the undefined-name check", not _fp, str(_fp[:3]))
+
     print("\n[script map]")
     tmp = Path(tempfile.mkdtemp()) / "s.py"
     tmp.write_text("import bpy\ndef helper():\n    pass\no = bpy.data.objects.new('tower', None)\n"
