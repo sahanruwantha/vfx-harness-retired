@@ -5,6 +5,7 @@ actually helped.
     python -m pipeline.evals check    shots/barrel_roll            # free, no model
     python -m pipeline.evals variance shots/barrel_roll --n 6      # cheap, real critic
     python -m pipeline.evals compare  barrel_roll:latest evals/baselines/.../x.json
+    python -m pipeline.evals panels                                # free, from ledgers
     python -m pipeline.evals list
 
 Why this exists, in one paragraph. Every claim about this pipeline so far has rested on
@@ -32,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from .brief import load_shot
 from .eval import BASELINES, VARIANCE
@@ -159,11 +161,63 @@ def _cmd_list(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_panels(argv: list[str]) -> int:
+    """Did adjudication ever change a verdict, and what did it cost?
+
+    Free — reads panels already recorded in the ledgers. Exists so "is best-of-three
+    earning its keep" is answered from data rather than taste, and stays re-answerable
+    as runs accumulate.
+    """
+    import glob
+    from collections import Counter
+    pat = argv[0] if argv else "shots/*"
+    rows = []
+    for f in sorted(glob.glob(f"{pat}/shot.json")):
+        d = json.loads(Path(f).read_text(encoding="utf-8"))
+        for lid, slot in (d.get("milestones") or {}).items():
+            for r in slot.get("rounds", []):
+                panel = r.get("panel")
+                if not panel:
+                    continue
+                rows.append({"shot": Path(f).parent.name, "layer": lid,
+                             "kind": r.get("kind", "iter"), "n": len(panel),
+                             "first_pass": panel[0]["pass"], "final": r.get("pass"),
+                             "means": [x["mean"] for x in panel]})
+    if not rows:
+        print("no panels recorded yet — run a layer whose verdict lands near the line")
+        return 0
+    changed = [r for r in rows if r["first_pass"] != r["final"]]
+    extra = sum(r["n"] - 1 for r in rows)
+    shots = len({r["shot"] for r in rows})
+    print(f"── adjudication · {len(rows)} panel(s) across {shots} shot(s) ──")
+    print(f"   extra critic calls paid : {extra}")
+    print(f"   verdicts CHANGED        : {len(changed)}  "
+          f"({100 * len(changed) / len(rows):.0f}% of panels)")
+    print(f"   panel sizes             : {dict(Counter(r['n'] for r in rows))}")
+    for n in sorted({r["n"] for r in rows}):
+        at = [r for r in rows if r["n"] == n]
+        ch = [r for r in at if r in changed]
+        note = ("   (tautological — a unanimous pair cannot differ from its own first "
+                "judge; this call is the DETECTOR that earns the n=3 call)"
+                if n == 2 else "")
+        print(f"     n={n}: {len(ch)}/{len(at)} changed{note}")
+    for r in changed:
+        print(f"   ! {r['shot']} layer {r['layer']} ({r['kind']}): means {r['means']} — "
+              f"first judge said {'PASS' if r['first_pass'] else 'REVISE'}, "
+              f"panel said {'PASS' if r['final'] else 'REVISE'}")
+    print("\n   Read this as cost-per-correction, not a hit rate. The second call can "
+          "never change\n   a verdict by itself — it exists to find the disagreements the "
+          "third call resolves.\n   Weigh `extra calls` against a layer's total cost "
+          "before tightening anything.")
+    return 0
+
+
 _COMMANDS = {
     "freeze": _baseline.main,
     "variance": _variance.main,
     "check": _cmd_check,
     "compare": _cmd_compare,
+    "panels": _cmd_panels,
     "list": _cmd_list,
 }
 
