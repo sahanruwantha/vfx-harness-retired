@@ -83,14 +83,30 @@ write nothing and say so.
 
 ALWAYS write `verified: false`. You are not able to verify anything — you are reading a
 script, not running one. `verified: true` is set ONLY by pipeline.verify_recipes, and only
-after the snippet has been EXECUTED in a real Blender session and its top-level callable
-actually invoked, with the result and a hash of the exact code recorded as evidence.
-Claiming it yourself both lies to every future build and fails the test suite.
+after the snippet has been EXECUTED in a headless Blender and the top-level callables it
+defines actually INVOKED, with what changed and a sha256 of the exact code that ran
+recorded as evidence in pipeline/recipes/_verified.json. `--audit` fails on any recipe
+claiming verification without a matching spike entry, and the test suite asserts it — so
+declaring it yourself does not merely lie to every future build, it breaks the build.
+
+Verification is earned, by running:
+
+    python -m pipeline.verify_recipes --name <slug> --sync
+
+which promotes the flag only if the spike actually passes.
 
 Write your snippet so it CAN be verified: put the technique in a top-level function with
 plain, defaulted arguments. Code that only runs inside a larger shot-specific block cannot
-be proved to work — a recipe whose function was never called once passed verification for
-months while containing a Blender-4 API call that raises on 5.x.
+be proved to work — one recipe's shader function was never called, so verification proved
+only that an unrelated loop beneath it ran, and a Blender-4 call inside that function
+would have gone undetected.
+
+If the snippet needs scaffolding before it can run — a named material or object it assumes
+a real shot provides, a placeholder constant, or arguments the verifier cannot guess —
+also Write pipeline/recipes/_spikes/<slug>.py supplying them. Read
+pipeline/recipes/_spikes/README.md first; it documents the SPIKE_ARGS convention. Keep
+that scaffolding OUT of the .md: find_recipe hands the recipe body to a builder verbatim,
+and test scaffolding in there gets pasted straight into a shot.
 """
 
 # Layer: the render passes when every axis clears PASS_MIN and the mean clears
