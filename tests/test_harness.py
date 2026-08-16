@@ -654,6 +654,26 @@ def main():
     check("a frame missing after repair is not scored as zero",
           d["now_worst"] == 3.0 and d["broke"] == [], f"worst {d['now_worst']}")
 
+    print("\n[a layer learns from its own failed attempts]")
+    # The ledger held every critic round with its issues and NONE of it reached the
+    # builder: each attempt started blind to the last one's corrections. Layer 5's second
+    # attempt rebuilt a six-light rig not knowing the first had twice been told the hero
+    # was not light-linked. The existing critique feedback only carries WITHIN an attempt.
+    from pipeline.build_prompts import builder_kickoff, recurring_complaints
+    h5 = recurring_complaints(shot, layers["5"].as_milestone())
+    check("surfaces complaints that recur across attempts", "ATTEMPTED" in h5, h5[:80])
+    check("  ... names how many attempts raised each", "separate attempts" in h5)
+    check("  ... and forbids silently skipping one",
+          "do not silently skip" in h5)
+    check("silent for a layer that passed first time",
+          recurring_complaints(shot, layers["1"].as_milestone()) == "")
+    # Recurrence, not volume: one round's note is noise, a note that survives an
+    # independent attempt describes something the layer keeps getting wrong.
+    check("needs >=2 attempts before it says anything",
+          recurring_complaints(shot, layers["5"].as_milestone(), min_attempts=99) == "")
+    check("the kickoff actually carries it",
+          "ATTEMPTED" in builder_kickoff(shot, layers["5"].as_milestone(), history=h5))
+
     print("\n[the plan agent knows the departments]")
     # Everything learned on barrel_roll lived only as hand-edits to that shot's plan, so a
     # new brief would have been planned by an agent that had never heard any of it — no
@@ -674,6 +694,13 @@ def main():
           "infinitely distant" in _PS and "BOUNDED volume domain" in _PS)
     check("says an emission shader cannot be lit",
           "EMISSION shader cannot be lit" in _PS)
+    # Ticket granularity — the same bundling defect as axes, one level down.
+    check("one ticket, one control",
+          "ONE TICKET, ONE CONTROL" in _PS and "set INDEPENDENTLY" in _PS)
+    check("every control the approach can vary gets a target",
+          "NAME EVERY CONTROL" in _PS and "any value, not scored" in _PS)
+    check("an assumption that drives the approach must be checked first",
+          "MARK THE PREMISE" in _PS and "Unchecked assumptions" in _PS)
 
     print("\n[sun-in-volume trap]")
     # The runtime check needs bpy, so it is verified empirically (no sun -> silent;

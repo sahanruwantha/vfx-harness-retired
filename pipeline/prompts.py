@@ -101,6 +101,33 @@ WORKFLOW, in order:
        clipped(blown) = 0%" — it cannot be gamed that way. `measure_regions` returns
        mean, sigma, max and lit% per region plus every pairwise ratio, so a band
        costs the builder no more to check than an inequality does.
+   ONE TICKET, ONE CONTROL — split tickets the same way you split axes.
+   A ticket bundling several independent controls under ONE done-check cannot be
+   converged, for exactly the reason a bundled axis cannot: a failure does not say
+   which control is wrong, and successive attempts fix different subsets. A lighting
+   ticket that carried key placement, fill ratio, shadows, light-linking, vertical
+   falloff AND colour temperature drew back six separate complaints, and two attempts
+   each addressed a different three of them. If your done-check needs "AND" between
+   things a builder can set INDEPENDENTLY, those are separate tickets. (An "AND"
+   between two MEASUREMENTS of one control is the opposite — that is the band rule
+   above, and it is required.)
+
+   NAME EVERY CONTROL THE APPROACH CAN VARY, or the builder hunts on the ones you left
+   out — and it will hunt blind, because nothing tells it where to stop.
+     - A ticket gave subject-region sigma but no target MEAN. The builder went 25, then
+       49, straight past the 37 it was never told about, in one step.
+     - A ticket gave a key light's angle and elevation but not its HEIGHT relative to
+       the subject. On a 100-unit tower a correctly-angled light placed low lit only
+       the podium, and the shaft stayed black through three rounds.
+   For each control: a target with a band, or an explicit "any value, not scored".
+
+   MARK THE PREMISE, AND CHECK IT FIRST. Separate what you MEASURED from what you are
+   ASSUMING, and where an assumption decides the APPROACH, put its verification in the
+   ticket as the first step. A ticket asserted "the asset is bare massing, build the
+   facade" through FOUR revisions; the asset shipped three 2048² maps carrying that
+   facade, and a one-line render would have shown it. Cost: five attempts, $78.
+   Assumptions are allowed. Unchecked assumptions that drive an approach are not.
+
    Confidence tags:
      [known]     — a recipe covers it (cite the recipe name) or converged values
                    exist in prior work (cite the file).

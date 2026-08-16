@@ -42,6 +42,7 @@ from .log import _result_text, log, log_message
 from .build_prompts import (
     CRITIC_SYSTEM,
     builder_kickoff,
+    recurring_complaints,
     builder_system,
     canonical_repair_prompt,
     critic_prompt,
@@ -1039,10 +1040,19 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
         opts.resume = resume["session_id"]      # SDK restores the CONVERSATION
     async with ClaudeSDKClient(options=opts) as builder:
         also = [(f, r) for f, r in (layer.judges if layer else ()) if f != m.frame]
+        # What earlier ATTEMPTS at this layer were told and kept being told. Without
+        # this each attempt starts blind to the last one's corrections: layer 5's second
+        # attempt rebuilt a six-light rig not knowing the first had twice been told the
+        # hero was not light-linked and the podium was overlit.
+        hist = recurring_complaints(shot, m)
+        if hist:
+            log(f"prior attempts: surfacing {hist.count('    - ')} recurring "
+                f"complaint(s) to the builder", 1)
         await builder.query(builder_kickoff(shot, m, priors=priors,
                                             script_rel=script_rel,
                                             plan_excerpt=plan_excerpt,
-                                            also_judged=also or None))
+                                            also_judged=also or None,
+                                            history=hist))
         info = last_info = await _drain(builder, verbose)
         if info["subtype"] in _TRUNCATED:
             # Scoring a half-built scene produces a "failed" that says nothing about the

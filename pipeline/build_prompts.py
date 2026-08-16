@@ -189,8 +189,53 @@ def builder_system(axes: list[tuple[str, str]], recipe_index: str = "") -> str:
     return f"{body}\n\n{recipe_index}" if recipe_index else body
 
 
+def recurring_complaints(shot, m: Milestone, min_attempts: int = 2) -> str:
+    """What EARLIER ATTEMPTS at this layer were told, and kept being told.
+
+    The ledger records every critic round with its issues, and none of it reached the
+    builder: each attempt started blind to what the previous one had already been
+    corrected on. Layer 5's second attempt re-derived a six-light rig without knowing
+    the first had been told "the hero is not light-linked" and "the podium is overlit"
+    twice. The critique-feedback path added earlier only carries WITHIN an attempt.
+
+    Deliberately reports issues by RECURRENCE across attempts rather than dumping every
+    round: a note that survived two independent attempts is the one that describes
+    something the layer keeps getting wrong, as opposed to one round's noise.
+    """
+    from .ledger import Ledger
+    try:
+        rounds = Ledger(shot)._slot(m).get("rounds", [])
+    except Exception:
+        return ""
+    attempts = {r.get("attempt") for r in rounds if r.get("attempt")}
+    if len(attempts) < min_attempts:
+        return ""
+    # An issue "recurs" when its opening words show up under more than one attempt.
+    seen: dict[str, set] = {}
+    for r in rounds:
+        a = r.get("attempt")
+        for issue in r.get("issues") or []:
+            key = " ".join(str(issue).lower().split()[:6])
+            seen.setdefault(key, set()).add(a)
+    repeated = sorted((k for k, v in seen.items() if len(v) >= min_attempts),
+                      key=lambda k: -len(seen[k]))
+    if not repeated:
+        return ""
+    lines = "\n".join(f"    - {k}…  (raised under {len(seen[k])} separate attempts)"
+                      for k in repeated[:6])
+    return (
+        f"\nTHIS LAYER HAS BEEN ATTEMPTED {len(attempts)} TIMES BEFORE AND FAILED. These "
+        f"notes were raised again under a LATER attempt, so a previous build already "
+        f"tried and did not resolve them:\n{lines}\n"
+        f"Read them as the layer's standing defects, not as one critic's opinion. If your "
+        f"approach does not specifically address each one, it will fail the same way. If "
+        f"you believe a note is wrong or impossible, say so explicitly in your APPROACH "
+        f"line and explain why — do not silently skip it.\n")
+
+
 def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
-                    script_rel: str | None = None, plan_excerpt: str = "", also_judged: list | None = None) -> str:
+                    script_rel: str | None = None, plan_excerpt: str = "",
+                    also_judged: list | None = None, history: str = "") -> str:
     adir = shot.folder / "assets"
     assets = sorted(p.name for p in adir.iterdir() if (p / "model.glb").is_file()) \
         if adir.is_dir() else []
@@ -228,6 +273,7 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
         f"{extra}"
         f"Also read `brief.md` for the shot's intent and palette.\n\n"
         f"{plan_block}"
+        f"{history}"
         f"{asset_line}"
         f"{start_line}\n\n"
         # Captured into the layer's run report. The journal records WHICH bpy calls were
