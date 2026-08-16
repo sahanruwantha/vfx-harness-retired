@@ -293,6 +293,17 @@ ONE AXIS, ONE SUBJECT, ONE OWNER:
   - An axis must not describe something an EARLIER layer keys. Where a later stage answers
     for an observable whose input another stage controls, say so in the axis text and name
     the owner, so a failure is escalated rather than re-keyed in the wrong place.
+  - LIGHTING IS THE EASIEST ONE TO GET WRONG, so split it deliberately. "The subject's
+    form reads under light" and "subject, mid-ground and background sit in the right
+    exposure hierarchy" are DIFFERENT SUBJECTS and belong to different axes. Bundled, they
+    are unsatisfiable: a rig tuned to model the hero's facade cannot also be constrained
+    to hold the neighbours and the set at a chosen relative exposure, because those need
+    lights the first axis has no reason to add. A lighting layer that failed four times
+    was being scored on one axis carrying both, so every attempt fixed one half and was
+    marked down for the other — and the plan's own ticket, written to stop the rig
+    sprawling, forbade the very lights the exposure half required.
+    Two axes, two done-checks, and the ticket for each may then add exactly the lights
+    its own axis needs.
 
 LIGHTING PHYSICS THAT CHANGES LAYER DESIGN, not just build tactics:
   - If the shot calls for volumetric atmosphere, the lighting layer must key with LOCAL

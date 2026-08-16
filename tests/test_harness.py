@@ -701,6 +701,13 @@ def main():
           "NAME EVERY CONTROL" in _PS and "any value, not scored" in _PS)
     check("an assumption that drives the approach must be checked first",
           "MARK THE PREMISE" in _PS and "Unchecked assumptions" in _PS)
+    # Lighting is where the bundling rule is easiest to break — I broke it myself, in the
+    # same session I added the rule, by writing an axis covering both hero form AND
+    # set-wide exposure hierarchy. Four attempts failed between a ticket that forbade
+    # extra lights and an axis that required them.
+    check("lighting axes split form from exposure hierarchy",
+          "LIGHTING IS THE EASIEST ONE TO GET WRONG" in _PS
+          and "DIFFERENT SUBJECTS" in _PS)
 
     print("\n[sun-in-volume trap]")
     # The runtime check needs bpy, so it is verified empirically (no sun -> silent;
