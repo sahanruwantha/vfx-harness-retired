@@ -22,13 +22,13 @@ promising an isolation it did not perform.
 """
 import sys
 
-sys.path.insert(0, ".")
+sys.path.insert(0, "src")
 
 from pathlib import Path
 
 from PIL import Image
 
-from pipeline.blender.session import BlenderSession
+from bambi_vfx.blender.session import BlenderSession
 
 OUT = Path("renders/probe_render_modes")
 OUT.mkdir(parents=True, exist_ok=True)
@@ -141,9 +141,9 @@ def main() -> int:
         print(f"\n── Phase 2 render modes · {OUT} ──")
         print(f"   {'mode':<16} {'LEFT lit body':>14} {'RIGHT emitter':>14}   "
               f"res%   pixels")
-        for tag, lit, emit, cap, dest, res, px in rows:
+        for tag, lit, emit, cap, _dest, res, px in rows:
             pct = (res or [None, None, "?"])[2]
-            print(f"   {tag:<16} {lit:>14.1f} {emit:>14.1f}   {str(pct):>4}   {px}")
+            print(f"   {tag:<16} {lit:>14.1f} {emit:>14.1f}   {pct!s:>4}   {px}")
             if cap:
                 print(f"       caption: {cap[:110]}")
 

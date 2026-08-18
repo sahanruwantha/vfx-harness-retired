@@ -5,11 +5,12 @@ Projected FROM the f100 camera. f100 is therefore the free case — it should lo
 plate. f440 is the stress test: 74 units closer and 35 degrees of yaw arc away from the
 projector, which is where a projection either holds or shears apart.
 """
-import sys; sys.path.insert(0, ".")
+import sys; sys.path.insert(0, "src")
 from pathlib import Path
-from pipeline.blender.session import BlenderSession
-from pipeline.brief import load_shot
-from pipeline.build_agent import _RESET, _preamble
+
+from bambi_vfx.blender.session import BlenderSession
+from bambi_vfx.brief import load_shot
+from bambi_vfx.agents.builder import _RESET, _preamble
 
 shot = load_shot("shots/barrel_roll")
 OUT = Path("/tmp/claude-1000/-home-sahan-Desktop-bambi-vfx/"

@@ -13,24 +13,79 @@ dependencies = [
   "pyyaml>=6,<7",
   "httpx>=0.27,<1",   # asset stage: image generation + image→3D HTTP
   "pillow>=10,<14",   # asset stage: local background keying for cutout isolation
-  "python-dotenv>=1,<2",  # load the repo .env on import, so no shell setup is needed
+  "python-dotenv>=1,<2",  # explicit, non-overriding dotenv loading at CLI boundaries
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8,<10",
+  # Not a style preference. `build_unit()` called two functions this package never
+  # imported, so every layer build died on a NameError while `import build_agent`
+  # still succeeded — an unbound global resolves only when its line runs. Ruff's F821
+  # finds that in milliseconds; we had written a bespoke AST walker to do the same job.
+  "ruff>=0.14,<1",
 ]
 
 [project.scripts]
-plan = "pipeline.plan_agent:main"
-build = "pipeline.build_agent:main"
-asset = "pipeline.asset_agent:main"
-prepare-asset = "pipeline.assets.normalize:main"
-render = "pipeline.render_shot:main"
+# `bambi <verb>` is the canonical interface; verb-specific commands suit automation.
+bambi = "bambi_vfx.cli:main"
+bambi-plan = "bambi_vfx.agents.planner:main"
+bambi-build = "bambi_vfx.agents.builder:main"
+bambi-run = "bambi_vfx.run_shot:main"
+bambi-accept = "bambi_vfx.agents.acceptance:main"
+bambi-render = "bambi_vfx.render_shot:main"
+bambi-preflight = "bambi_vfx.preflight:main"
+bambi-inspect = "bambi_vfx.inspect_run:main"
+bambi-asset = "bambi_vfx.agents.asset_builder:main"
+bambi-prepare-asset = "bambi_vfx.assets.normalize:main"
+bambi-evals = "bambi_vfx.evals:main"
+bambi-verify-recipes = "bambi_vfx.verify_recipes:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["pipeline"]
+packages = ["src/bambi_vfx"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
+
+[tool.ruff]
+# The de-facto convention already in the code: p90 is 87 columns, p99 is 93. 100 flags
+# genuine outliers without reformatting 977 lines that are fine as they are.
+line-length = 120
+target-version = "py311"
+extend-exclude = ["src/bambi_vfx/recipes/_spikes"]
+
+[tool.ruff.lint]
+select = [
+  "F",    # pyflakes — F821 undefined-name is the one that matters most here
+  "E", "W",
+  "I",    # import sorting
+  "UP",   # pyupgrade
+  "B",    # bugbear
+  "C4", "PIE", "SIM", "RUF",
+]
+ignore = [
+  "E741",   # ambiguous names: `l`/`L` read fine in the geometry and metrics code
+  "B008",   # call-in-default is deliberate in a couple of tool signatures
+  "SIM108", # ternaries are not always clearer than the if/else they replace
+  # The reports are built out of ·, →, ⏎, ✓, ✗, ⚠, ⚖ and box-drawing on purpose — that
+  # is the whole visual language of `inspect_run`, `runlog.summary` and the console log.
+  # 59 findings here, all of them the formatting working as intended.
+  "RUF001", "RUF002", "RUF003",
+  # `if not x: return` and `a = 1; b = 2` on one line, 74 times, 32 of them in the
+  # Blender worker. This is a house style, not a defect, and the point of adopting a
+  # linter is to keep it: one that opens with 74 no-value edits in the most
+  # crash-sensitive file in the repo is one that gets switched off within a week.
+  "E701", "E702",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Recipe spikes are SNIPPETS executed inside Blender in a namespace that already holds
+# bpy, the bvfx_* helpers and SPIKE_ARGS. All 29 F821s in this repo were here, and they
+# are all false — which is exactly enough noise to make a real one invisible.
+"src/bambi_vfx/recipes/_spikes/*.py" = ["F821", "F401", "E402"]
+# Probes bootstrap sys.path before importing the package, so import ORDER is
+# load-bearing here, not cosmetic: sorting the block moves the package import above the
+# sys.path.insert that makes it resolvable, and the probe stops running.
+"docs/probes/*.py" = ["E402", "I001"]
+"src/bambi_vfx/__init__.py" = ["E402"]

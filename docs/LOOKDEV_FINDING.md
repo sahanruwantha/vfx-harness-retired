@@ -1,6 +1,6 @@
 # The asset was right the whole time. The pipeline deleted it in layer 1.
 
-Measured 2026-08-15 by `docs/probes/spike_lookdev.py` and `pipeline/facade.py`. This
+Measured 2026-08-15 by `docs/probes/spike_lookdev.py` and `bambi_vfx/facade.py`. This
 started as "add a lookdev stage", became "the asset has no facade", and ended somewhere
 worse and much more fixable.
 

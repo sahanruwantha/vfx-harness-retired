@@ -24,9 +24,9 @@ import shutil
 import sys
 from pathlib import Path
 
-sys.path.insert(0, ".")
-from pipeline.blender.session import BlenderSession
-from pipeline.blender.tools import subtract_png
+sys.path.insert(0, "src")
+from bambi_vfx.blender.session import BlenderSession
+from bambi_vfx.blender.tools import subtract_png
 
 OUT = Path("renders/probe_render_isolation")
 OUT.mkdir(parents=True, exist_ok=True)
@@ -79,10 +79,10 @@ try:
     t3 = plain("after_diagnostics")
     tst = subtract_png(str(c2), str(t3), str(OUT / "d_test.png"))
 
-    print(f"\n  control  : plain vs plain, nothing in between")
+    print("\n  control  : plain vs plain, nothing in between")
     print(f"             sha {sha(c1)} vs {sha(c2)} · "
           f"mean pixel delta {ctl['mean_delta']} · max {ctl['max_delta']}")
-    print(f"  test     : plain vs plain, ALL FIVE diagnostic modes in between")
+    print("  test     : plain vs plain, ALL FIVE diagnostic modes in between")
     print(f"             sha {sha(c2)} vs {sha(t3)} · "
           f"mean pixel delta {tst['mean_delta']} · max {tst['max_delta']}")
 

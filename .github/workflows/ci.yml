@@ -1,0 +1,55 @@
+name: ci
+
+# Neither the lint nor the test job existed, and the two failures that cost the most this
+# month were both things a CI run catches for free: a NameError that made every layer build
+# impossible (ruff F821), and a pytest config that collected zero tests and exited 0.
+#
+# Nothing here needs Blender, a model or a credential. The Blender-side gates
+# (`evals checks`, the render probes) need a real 5.x install and stay manual.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -e ".[dev]"
+
+      # Correctness before style, and F821 before either: it is the rule that would have
+      # caught the build path being dead, so it should fail on its own line rather than as
+      # one entry in a 200-line style report.
+      - name: undefined names (F821)
+        run: ruff check --select F821 --output-format concise .
+
+      - name: lint
+        run: ruff check --output-format concise .
+
+      # The real suite. Invoked directly as well as through pytest because it is the
+      # authority — pytest is the wrapper, not the source of truth.
+      - name: deterministic suite
+        run: python -m tests.test_harness
+
+      - name: pytest
+        run: pytest -q
+
+      # A shot folder is not needed to prove the CLIs are wired: an entry point that
+      # crashes on --help is broken for every user before it does anything useful.
+      - name: entry points respond
+        run: |
+          python -m bambi_vfx.preflight
+          python -m bambi_vfx.evals --help > /dev/null
+          python -m bambi_vfx.inspect_run --help > /dev/null

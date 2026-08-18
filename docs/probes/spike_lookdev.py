@@ -23,16 +23,16 @@ volume, but the treatment approved here has to survive the shot's atmosphere.
 
     .venv/bin/python docs/probes/spike_lookdev.py
 """
-import sys; sys.path.insert(0, ".")
+import sys; sys.path.insert(0, "src")
 import json
 from pathlib import Path
 
 from PIL import Image
 
-from pipeline.blender.session import BlenderSession
-from pipeline.brief import load_shot
-from pipeline.build_agent import _RESET, _preamble
-from pipeline.facade import facade_profile, render_profile, compare_profiles
+from bambi_vfx.blender.session import BlenderSession
+from bambi_vfx.brief import load_shot
+from bambi_vfx.agents.builder import _RESET, _preamble
+from bambi_vfx.facade import compare_profiles, facade_profile, render_profile
 
 shot = load_shot("shots/barrel_roll")
 OUT = Path("/tmp/claude-1000/-home-sahan-Desktop-bambi-vfx/"

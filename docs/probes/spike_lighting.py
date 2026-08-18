@@ -24,12 +24,13 @@ and the honest conclusion is the opposite one — model it, or amend the axis.
 
     .venv/bin/python docs/probes/spike_lighting.py
 """
-import sys; sys.path.insert(0, ".")
+import sys; sys.path.insert(0, "src")
 import json
 from pathlib import Path
-from pipeline.blender.session import BlenderSession
-from pipeline.brief import load_shot
-from pipeline.build_agent import _RESET, _preamble
+
+from bambi_vfx.blender.session import BlenderSession
+from bambi_vfx.brief import load_shot
+from bambi_vfx.agents.builder import _RESET, _preamble
 
 shot = load_shot("shots/barrel_roll")
 OUT = Path("/tmp/claude-1000/-home-sahan-Desktop-bambi-vfx/"
@@ -173,7 +174,7 @@ finally:
 # The claim under test is "the faceting reads", which means detail CONTRAST across the
 # tower's own pixels. sigma over the hero's subject region is the statistic for that --
 # the frame band is mostly city and would drown it (the #37 lesson).
-from PIL import Image                          # noqa: E402
+from PIL import Image
 
 # Hero occupies roughly the centre column. Deliberately generous vertically so setbacks
 # and podium are inside the box, and narrow horizontally so city does not leak in.

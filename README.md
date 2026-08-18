@@ -17,13 +17,13 @@ plan → build (×N layers) → acceptance → render
 
 | stage | command | what it does |
 |---|---|---|
-| **plan** | `python -m pipeline.plan_agent <shot>` | Reads `brief.md` + refs, emits `plan.md`, `layers.json`, `acceptance.json`, `critic_axes.json`. Two-pass by default: opus-5 drafts, opus-5 audits. Any ambiguity becomes a **question answered before building starts**, never mid-build. |
-| **build** | `python -m pipeline.build_agent <shot> --layer 1` | Builds ONE layer as an additive delta script (`build/01_layout.py` …). Iterates live in Blender, then writes a script that must rebuild it from empty. |
-| **acceptance** | `python -m pipeline.accept_agent <shot>` | Replays the whole chain from an empty scene and judges the approval moments on the full rubric. `--repair` routes a failure back to the layer that owns the failing axis. |
-| **render** | `python -m pipeline.render_shot <shot>` | Runs the accepted chain and encodes the frame range to mp4. |
+| **plan** | `bambi plan <shot>` | Reads `brief.md` + refs, emits `plan.md`, `layers.json`, `acceptance.json`, `critic_axes.json`. Two-pass by default: opus-5 drafts, opus-5 audits. Any ambiguity becomes a **question answered before building starts**, never mid-build. |
+| **build** | `bambi build <shot> --layer 1` | Builds ONE layer as an additive delta script (`build/01_layout.py` …). Iterates live in Blender, then writes a script that must rebuild it from empty. |
+| **acceptance** | `bambi accept <shot>` | Replays the whole chain from an empty scene and judges the approval moments on the full rubric. `--repair` routes a failure back to the layer that owns the failing axis. |
+| **render** | `bambi render <shot>` | Runs the accepted chain and encodes the frame range to mp4. |
 
-Supporting commands: `pipeline.escalate` (answer plan questions), `pipeline.asset_agent`
-(image→3D asset caching), `pipeline.verify_recipes` (audit the cookbook), `pipeline.skills`.
+Supporting commands: `bambi_vfx.escalate` (answer plan questions), `bambi_vfx.agents.asset_builder`
+(image→3D asset caching), `bambi_vfx.verify_recipes` (audit the cookbook), `bambi_vfx.skills`.
 
 ## Layers
 
@@ -60,7 +60,7 @@ quietly grading against the brief's prose.
 
 Critic scores are noisy — the same render against the same reference has scored 4.0, 3.0,
 3.0 and 2.0 — so a verdict landing near the pass line goes to **best-of-three with a median**.
-Objective metrics (`pipeline/metrics.py`) run alongside and can decide a moment outright.
+Objective metrics (`bambi_vfx/metrics.py`) run alongside and can decide a moment outright.
 
 ## Checks that need no judgment
 
@@ -71,11 +71,11 @@ acceleration, jerk), is the mesh sound (non-manifold edges, loose verts, islands
 applied, does the render buffer contain NaN.
 
 Each of these is gated on a **known-bad fixture**. A check nobody has watched fail is not a
-check, so `pipeline.evals checks` builds one deliberately broken scene per check and fails
+check, so `bambi_vfx.evals checks` builds one deliberately broken scene per check and fails
 if any of them stays silent:
 
 ```bash
-.venv/bin/python -m pipeline.evals checks     # free, Blender only, no model
+bambi evals checks     # free, Blender only, no model
 ```
 
 `render_pass` shows the builder what it is being judged on rather than a composite it has to
@@ -107,15 +107,19 @@ cp .env.example .env          # set ONE auth variable (below), + MESHY_API_KEY f
 
 .venv/bin/python -m tests.test_harness        # deterministic suite, no Blender or network
 
-set -a; . ./.env; set +a
-.venv/bin/python -m pipeline.plan_agent  shots/barrel_roll
-.venv/bin/python -m pipeline.build_agent shots/barrel_roll --layer 1
+bambi preflight
+bambi plan  shots/barrel_roll
+bambi build shots/barrel_roll --layer 1
 ```
+
+The CLI loads the repository `.env` explicitly; shell-exported variables take precedence.
+Set `BVFX_ENV_FILE=/absolute/path/to/file` to use a different dotenv file. Importing the
+Python package never loads credentials or mutates the environment.
 
 **Auth — check it before you spend anything:**
 
 ```bash
-.venv/bin/python -m pipeline.preflight
+bambi preflight
 ```
 
 Two variables work and **only these two names are read**: `CLAUDE_CODE_OAUTH_TOKEN` for
@@ -139,7 +143,7 @@ is usually auth.
 Run the whole shot — every layer, acceptance, then the mp4 — under one run id:
 
 ```bash
-.venv/bin/python -m pipeline.run_shot shots/barrel_roll            # --dry-run to preview
+bambi run shots/barrel_roll            # --dry-run to preview
 ```
 
 It skips layers already recorded as passed (so it doubles as resume), stops at the first
@@ -177,9 +181,9 @@ Three records, three jobs, and they are not substitutes for each other:
 Read them with one command rather than six greps:
 
 ```bash
-.venv/bin/python -m pipeline.inspect_run shots/barrel_roll             # the digest
-.venv/bin/python -m pipeline.inspect_run shots/barrel_roll --layer 3   # action timeline
-.venv/bin/python -m pipeline.inspect_run shots/barrel_roll --tools     # tool adoption
+bambi inspect shots/barrel_roll             # the digest
+bambi inspect shots/barrel_roll --layer 3   # action timeline
+bambi inspect shots/barrel_roll --tools     # tool adoption
 ```
 
 The digest leads with **findings**, not data: a layer whose score never moved, one that
@@ -205,22 +209,14 @@ jq -r 'select(.kind=="tool_use") | .tool' logs/transcript/*.jsonl | sort | uniq 
 ## Layout
 
 ```
-pipeline/              the stages, ledger, metrics, prompts, hooks
-pipeline/geom.py       judgment-free geometry (motion, framing, mesh) — no bpy, so testable
-pipeline/transcript.py the durable JSONL record of every agent message and tool call
-pipeline/inspect_run.py one reader: is the run on track, are the new tools being used
-pipeline/preflight.py  auth checks that run before a stage spends anything
-pipeline/blender/      the warm headless Blender session, its tools and bvfx_* helpers
-pipeline/eval/         measurement, kept separate from the thing measured; writes evals/ only
-pipeline/recipes/      the cookbook — vetted, measured Blender techniques
-docs/probes/           spikes that answer one question against real Blender
-tests/                 deterministic suite (no Blender, no network)
-shots/                 shot briefs, reference boards and outputs (untracked)
+src/bambi_vfx/agents/     planner, builder, acceptance, and asset orchestration
+src/bambi_vfx/assets/     asset providers and normalization
+src/bambi_vfx/blender/    headless Blender boundary, tools, and checks
+src/bambi_vfx/eval/       evaluation and reproducibility checks
+src/bambi_vfx/recipes/    verified agent cookbook
+src/bambi_vfx/config.py   typed runtime configuration and explicit dotenv loading
+src/bambi_vfx/cli.py      unified `bambi <verb>` command dispatcher
+docs/probes/              spikes against real Blender
+tests/                    deterministic suite (no Blender, model, or network)
+shots/                    local shot inputs and outputs (untracked)
 ```
-
-`python -m pipeline.evals unbound` is worth knowing about: it compiles every module and
-reports globals that are loaded but never bound. It exists because `build_unit()` called
-`reset_tool_use()` and `tool_use_summary()` while `build_agent` imported neither — a
-`NameError` at the top of the function, outside any `try`, which meant **no layer could be
-built at all**. Importing the module succeeded, and the telemetry's own tests passed because
-they import from `pipeline.log` directly, so nothing in the loop caught it.

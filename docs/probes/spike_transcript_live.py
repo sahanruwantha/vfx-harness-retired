@@ -1,6 +1,6 @@
 """Does the durable transcript capture a REAL agent round trip?
 
-Every other check of `pipeline/transcript.py` builds SDK objects by hand. That proves the
+Every other check of `bambi_vfx/transcript.py` builds SDK objects by hand. That proves the
 serialiser, not the wiring: whether `log_message` is actually reached on a live stream,
 whether an image tool result arrives in the shape the scrubber expects, and whether the
 auth in `.env` works at all are separate questions this answers in one ~$0.02 call.
@@ -21,14 +21,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import anyio
 from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server, query, tool
 from PIL import Image
 
-from pipeline import transcript
-from pipeline.log import TOOL_USE, log, reset_tool_use, log_message, tool_use_summary
+from bambi_vfx import transcript
+from bambi_vfx.log import log, log_message, reset_tool_use, tool_use_summary
 
 
 @tool("fake_render", "Render the scene and return the frame as an image.",

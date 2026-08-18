@@ -9,11 +9,17 @@ I had watched happen.
 """
 from __future__ import annotations
 
-import anyio, json, os, shutil, sys, tempfile
+import json
+import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import anyio
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR / "src"))
 FAILS: list[str] = []
 
 
@@ -24,18 +30,29 @@ def check(name, cond, detail=""):
 
 
 def main():
-    from pipeline.brief import load_shot
-    from pipeline.ledger import Ledger, Milestone, load_layers, load_axes, load_milestones, plan_strips
-    from pipeline.build_agent import (_repro_tolerance, _verdict, _prior_layer_paths,
-                                      _plan_layer_excerpt, _warn_unowned_axes)
-    from pipeline.metrics import compare, look_vector, report
-    from pipeline.sandbox import path_sandbox, _relocate
-    from pipeline.guardrails import api_guardrails, web_allowlist, metrics_feedback
-    from pipeline.script_map import outline, find_lines
-    from pipeline.recipes import recipe_index, search_recipes, _all
-    from pipeline.escalate import ask, load as lq, answer, answers_block
-    from pipeline.shot_context import write_layer_context, clear_layer_context
-    from pipeline.blender.tools import build_blender_tools
+    from bambi_vfx.agents.builder import (
+        _plan_layer_excerpt,
+        _repro_tolerance,
+        _verdict,
+    )
+    from bambi_vfx.blender.tools import build_blender_tools
+    from bambi_vfx.brief import load_shot
+    from bambi_vfx.escalate import answer, answers_block, ask
+    from bambi_vfx.escalate import load as lq
+    from bambi_vfx.guardrails import api_guardrails, web_allowlist
+    from bambi_vfx.ledger import (
+        Ledger,
+        Milestone,
+        load_axes,
+        load_layers,
+        load_milestones,
+        plan_strips,
+    )
+    from bambi_vfx.metrics import compare, look_vector
+    from bambi_vfx.recipes import _all, recipe_index, search_recipes
+    from bambi_vfx.sandbox import _relocate, path_sandbox
+    from bambi_vfx.script_map import find_lines, outline
+    from bambi_vfx.shot_context import clear_layer_context, write_layer_context
 
     shot = load_shot("shots/barrel_roll")
     layers, axes, moments = load_layers(shot), load_axes(shot), load_milestones(shot)
@@ -82,7 +99,7 @@ def main():
     check("single-axis 2 fails", not _verdict({"scores": {"a": 2}})["pass"])
     check("n/a excluded from mean", _verdict({"scores": {"a": 4, "b": "n/a"}})["mean"] == 4.0)
     check("tolerance capped at 0.5", _repro_tolerance(1) == 0.5, f"{_repro_tolerance(1)}")
-    check("full grade drop is NOT reproduced", 3.0 < 4.0 - _repro_tolerance(1))
+    check("full grade drop is NOT reproduced", 4.0 - _repro_tolerance(1) > 3.0)
 
     print("\n[metrics]")
     ref = str(shot.folder / "refs/f100_city.jpg")
@@ -100,7 +117,8 @@ def main():
     # soft, and two calls at different scales were not comparable to each other. Measuring
     # an image against ITSELF must therefore give the same answer at every scale.
     from PIL import Image as _I
-    from pipeline.blender.tools import _compare_image as _ci
+
+    from bambi_vfx.blender.tools import _compare_image as _ci
     _src = _I.open(ref).convert("RGB")
     _sigs = set()
     for _s in (0.35, 0.4, 0.6, 1.0):
@@ -151,7 +169,7 @@ def main():
     # An error HINT teaches one SESSION; every layer is a fresh process, so bare next()
     # raised StopIteration in one run, was hinted and absorbed, then raised again in the
     # next run. A PreToolUse deny is the only form of help that crosses that boundary.
-    from pipeline.guardrails import script_sanity
+    from bambi_vfx.guardrails import script_sanity
     _ss = script_sanity().hooks[0]
 
     def _blocked(code):
@@ -184,8 +202,10 @@ def main():
           not _blocked("bvfx_emissive_windows(o, density=8)"))
     check("dynamic binding disables the check rather than guessing",
           not _blocked("g = globals()\nmystery_fn(1)"))
-    import ast as _a2, glob as _g2
-    from pipeline.guardrails import _undefined_names as _un
+    import ast as _a2
+    import glob as _g2
+
+    from bambi_vfx.guardrails import _undefined_names as _un
     _fp = [f for f in _g2.glob("shots/*/build/*.py") + _g2.glob("shots/*/logs/journals/*.py")
            if _un(_a2.parse(Path(f).read_text(encoding="utf-8")))]
     check("no real build script trips the undefined-name check", not _fp, str(_fp[:3]))
@@ -239,11 +259,11 @@ def main():
     check("render_frames registered", "render_frames" in short)
     check("script_map + worklist registered", {"script_map", "worklist"} <= set(short))
     check("ask_supervisor NOT in build tools", "ask_supervisor" not in short)
-    import pipeline.blender.tools as T
+    import bambi_vfx.blender.tools as T
     check("no undefined _encode", "_encode" not in Path(T.__file__).read_text())
 
     print("\n[observability]")
-    from pipeline.runlog import bump, reset_counts, snapshot_counts, summary
+    from bambi_vfx.runlog import bump, reset_counts, snapshot_counts, summary
     reset_counts(); bump("sandbox_denied", 2)
     check("hook counters accumulate", snapshot_counts() == {"sandbox_denied": 2})
     s_no = summary({"layer": "1", "title": "t", "status": "passed", "hooks": {}})
@@ -282,7 +302,7 @@ def main():
     # no-opped for an entire build phase with no trace at all.
     crit = {"guardrails.py", "recipes.py", "sandbox.py", "runlog.py", "layer_state.py"}
     quiet = [f"{f.name}:{n.lineno}"
-             for f in Path("pipeline").rglob("*.py") if f.name in crit
+             for f in Path("src/bambi_vfx").rglob("*.py") if f.name in crit
              for n in _ast.walk(_ast.parse(f.read_text()))
              if isinstance(n, _ast.ExceptHandler) and _mute(n)]
     check("no silent handlers in hook code", not quiet, str(quiet))
@@ -291,7 +311,8 @@ def main():
     # distiller prompt. Prompt-only, a self-declared `verified: true` lands quietly and
     # fails a LATER suite run on a file nobody in that session meant to write.
     import anyio as _anyio
-    from pipeline.guardrails import recipe_write_guard
+
+    from bambi_vfx.guardrails import recipe_write_guard
     _g = recipe_write_guard().hooks[0]
 
     def _denied(path, body):
@@ -302,19 +323,19 @@ def main():
 
     _fm = "---\nname: x\nverified: %s\n---\nbody\n"
     check("recipe claiming verified:true is blocked",
-          _denied("pipeline/recipes/x.md", _fm % "true"))
+          _denied("src/bambi_vfx/recipes/x.md", _fm % "true"))
     check("recipe with verified:false is allowed",
-          not _denied("pipeline/recipes/x.md", _fm % "false"))
+          not _denied("src/bambi_vfx/recipes/x.md", _fm % "false"))
     check("spike scaffolding in a recipe body is blocked",
-          _denied("pipeline/recipes/x.md", (_fm % "false") + "SPIKE_ARGS['a']=1\n"))
+          _denied("src/bambi_vfx/recipes/x.md", (_fm % "false") + "SPIKE_ARGS['a']=1\n"))
     check("the guard does not touch non-recipe writes",
           not _denied("shots/b/build/01_layout.py", _fm % "true"))
 
     # And the handlers that were individually judged to lose information (#7).
-    fixed = {"pipeline/blender/session.py": "artifact sweep failed",
-             "pipeline/assets/_normalize_bpy.py": "normalize SKIPPED",
-             "pipeline/skills.py": "skills: skipping",
-             "pipeline/escalate.py": "is not valid JSON and was SKIPPED"}
+    fixed = {"src/bambi_vfx/blender/session.py": "artifact sweep failed",
+             "src/bambi_vfx/assets/_normalize_bpy.py": "normalize SKIPPED",
+             "src/bambi_vfx/skills.py": "skills: skipping",
+             "src/bambi_vfx/escalate.py": "is not valid JSON and was SKIPPED"}
     missing = [p for p, marker in fixed.items()
                if marker not in Path(p).read_text(encoding="utf-8")]
     check("degradations that lose data announce themselves", not missing, str(missing))
@@ -325,7 +346,7 @@ def main():
     # the render was hiding it. Ratios only — the preview and the plate are framed
     # differently, so absolute widths are not comparable but base-flare/shaft is.
     print("\n[asset fidelity]")
-    from pipeline.assets.normalize import compare_to_plate
+    from bambi_vfx.assets.normalize import compare_to_plate
     _plate = shot.folder / "assets/sr2_tower/isolated/view_0.png"
     _prev = shot.folder / "assets/sr2_tower/preview.png"
     if _plate.is_file() and _prev.is_file():
@@ -356,8 +377,15 @@ def main():
 
     # ---- BEGIN recipe-verification block ------------------------------------------
     # (added with the verify_recipes rewrite; self-contained, safe to move/merge)
-    from pipeline.verify_recipes import (LEDGER, SPIKES, _blocks, _static, audit,
-                                         current_sha, load_ledger)
+    from bambi_vfx.verify_recipes import (
+        LEDGER,
+        SPIKES,
+        _blocks,
+        _static,
+        audit,
+        current_sha,
+        load_ledger,
+    )
 
     print("\n[recipe verification]")
     # The bug this whole tool exists to close: a call INSIDE a def is not evidence the def
@@ -405,7 +433,7 @@ def main():
           not [r["name"] for r in recs if "SPIKE_ARGS" in r["body"]])
     # ---- END recipe-verification block --------------------------------------------
 
-    # ---- BEGIN eval-harness block (pipeline/evals.py + pipeline/eval/) -------------
+    # ---- BEGIN eval-harness block (bambi_vfx/evals.py + bambi_vfx/eval/) -------------
     # Self-contained, safe to move/merge. Added with A7.
     #
     # These test the INSTRUMENT, never the current state of the repo. A check that
@@ -413,13 +441,13 @@ def main():
     # folder into the suite: it would fail the moment someone starts a build, and it
     # would say nothing about whether the checker can see a problem. So every checker
     # here is pointed at a fixture whose answer is known by construction. What the repo
-    # actually scores is a finding, and findings belong in `python -m pipeline.evals
+    # actually scores is a finding, and findings belong in `python -m bambi_vfx.evals
     # check`, not in a pass/fail suite.
-    from pipeline.eval import baseline as EB
-    from pipeline.eval import compare as EC
-    from pipeline.eval import variance as EV
-    from pipeline.eval.determinism import RENDER_SCALES, Result, metric_scale_consistency
-    from pipeline.eval.integrity import _problems as integrity_problems
+    from bambi_vfx.eval import baseline as EB
+    from bambi_vfx.eval import compare as EC
+    from bambi_vfx.eval import variance as EV
+    from bambi_vfx.eval.determinism import RENDER_SCALES, Result, metric_scale_consistency
+    from bambi_vfx.eval.integrity import _problems as integrity_problems
 
     print("\n[evals · baseline]")
     t3 = Path(tempfile.mkdtemp()) / "br"
@@ -547,7 +575,7 @@ def main():
                                 "scores": {}, "render": "", "render_sha": None}
                             for k, v in flags.items()}}
     ids = [f"M{i}" for i in range(1, 11)]
-    ba["final"] = _acc({m: True for m in ids})
+    ba["final"] = _acc(dict.fromkeys(ids, True))
     one = dict.fromkeys(ids, True); one["M9"] = False
     bb["final"] = _acc(one)
     txt1 = EC.report(ba, bb)
@@ -560,7 +588,7 @@ def main():
     txt2 = EC.report(ba, bb)
     check("a 7-moment regression IS called a regression",
           "REGRESSED" in txt2 and "WITHIN NOISE" not in txt2)
-    bb["final"] = _acc({m: True for m in ids[:5]})
+    bb["final"] = _acc(dict.fromkeys(ids[:5], True))
     txt3 = EC.report(ba, bb)
     check("a changed acceptance suite is flagged as unpaired",
           "acceptance suites DIFFER" in txt3)
@@ -592,7 +620,7 @@ def main():
     # Drift tripwire: variance.layer_scope MIRRORS the scope block build_layer builds
     # inline. If build_agent's wording moves, the eval silently starts measuring the
     # critic under a prompt production never sends.
-    ba_src = Path("pipeline/build_agent.py").read_text(encoding="utf-8")
+    ba_src = Path("src/bambi_vfx/agents/builder.py").read_text(encoding="utf-8")
     sc = EV.layer_scope(shot, layers["1"])
     check("layer scope mirrors build_agent's block",
           all(mark in ba_src and mark in sc
@@ -603,20 +631,20 @@ def main():
     # module's import of the old flat `_ADJUDICATE_BAND` was never updated — so the ONE
     # module whose job is to re-measure judge noise could not be imported at all, and
     # `evals variance` died before it scored anything. Import it the way `measure` does.
-    from pipeline.build_agent import _adjudicate_band as _ab
+    from bambi_vfx.agents.builder import _adjudicate_band as _ab
     check("variance can import the band it reports",
           callable(_ab) and _ab(1) >= _ab(8),
           "the band must NARROW as axis count rises")
     check("no stale flat-constant import survives",
-          "import" not in [ln for ln in Path("pipeline/eval/variance.py")
+          "import" not in [ln for ln in Path("src/bambi_vfx/eval/variance.py")
                            .read_text(encoding="utf-8").splitlines()
                            if "_ADJUDICATE_BAND" in ln and "#" not in ln.split("_ADJ")[0]]
-          or not any("from ..build_agent import" in ln and "_ADJUDICATE_BAND" in ln
-                     for ln in Path("pipeline/eval/variance.py")
+          or not any("from ..agents.builder import" in ln and "_ADJUDICATE_BAND" in ln
+                     for ln in Path("src/bambi_vfx/eval/variance.py")
                      .read_text(encoding="utf-8").splitlines()))
 
     print("\n[evals · ICC(2,1)]")
-    from pipeline.eval.icc import icc_2_1
+    from bambi_vfx.eval.icc import icc_2_1
     # Raters that agree on how the targets RANK → high ICC.
     agree = icc_2_1([[4, 4, 4], [3, 3, 3], [1, 1, 1]])
     # Raters that disagree completely on the same targets → near zero or below.
@@ -636,7 +664,7 @@ def main():
     check("ragged input is refused", not icc_2_1([[1, 2], [1]])["ok"])
 
     print("\n[evals · blank-frame control]")
-    from pipeline.eval import blank as EBL
+    from bambi_vfx.eval import blank as EBL
     check("an axis scoring 2.0 on black is called a language prior",
           EBL.language_prior({"values": [2.0, 2.0]}))
     check("an axis that collapses on black is NOT flagged",
@@ -654,13 +682,12 @@ def main():
           "LANGUAGE PRIOR" in brep and "rubric problem" in brep)
     # ---- END eval-harness block ---------------------------------------------------
 
-    # ---- BEGIN judgment-free checks block (pipeline/geom.py + blender/checks.py) ----
+    # ---- BEGIN judgment-free checks block (bambi_vfx/geom.py + blender/checks.py) ----
     # The arithmetic is tested here; that the checks FIRE on a broken scene is tested
-    # in Blender by `python -m pipeline.evals checks`, because a check nobody has
+    # in Blender by `python -m bambi_vfx.evals checks`, because a check nobody has
     # watched fail is not a check.
     print("\n[geometry · motion]")
-    from pipeline.geom import (framing_from_ndc, mesh_issues, motion_from_positions,
-                               scale_issues)
+    from bambi_vfx.geom import framing_from_ndc, mesh_issues, motion_from_positions, scale_issues
     # A→B→A in three frames: the classic "it moved and came back" that reads as motion
     # in a still and as a broken move in the curve.
     m_bad = motion_from_positions([1, 2, 3], [(0, 0, 0), (4, 0, 0), (0, 0, 0)])
@@ -707,7 +734,7 @@ def main():
     check("applied scale is silent", scale_issues((1.0, 1.0, 1.0)) == [])
 
     print("\n[checks · the report reads as a finding]")
-    from pipeline.blender.tools import _check_report
+    from bambi_vfx.blender.tools import _check_report
     rep = _check_report("motion", {"ok": False, "max_speed": 4.66, "max_accel": 0.39,
                                    "max_jerk": 0.0, "unbroken": False,
                                    "peak_speed_frame": 24,
@@ -728,7 +755,7 @@ def main():
     # all (−10.6pp alone vs +7.7pp with text), so a mode with no caption is a
     # regression, not a missing nicety.
     import importlib.util as _ilu
-    _sp = _ilu.spec_from_file_location("_rext", "pipeline/blender/render_ext.py")
+    _sp = _ilu.spec_from_file_location("_rext", "src/bambi_vfx/blender/render_ext.py")
     _rext = _ilu.module_from_spec(_sp); _sp.loader.exec_module(_rext)
     for _pass in ("beauty", "diffuse_direct", "emit", "shadow", "ao", "normal",
                   "depth", "crypto"):
@@ -750,7 +777,7 @@ def main():
           and _rext._PASS_SOCKETS["emit"][0] == "Emission")
 
     print("\n[display size vs metric size]")
-    import pipeline.blender.tools as _T
+    import bambi_vfx.blender.tools as _T
     # These answer DIFFERENT questions and the reasoning for one has leaked into the
     # other before. Metric height must stay low (never upscale a render); display
     # height must clear the critic's 28px patch grid by enough that a facade pier is
@@ -767,7 +794,7 @@ def main():
     # ---- END judgment-free checks block --------------------------------------------
 
     print("\n[canonical repair · what a round achieved]")
-    from pipeline.build_agent import _repair_delta
+    from bambi_vfx.agents.builder import _repair_delta
 
     def vs(*frames):
         """(frame, mean, pass) triples -> the verdict shape _repair_delta consumes."""
@@ -823,8 +850,8 @@ def main():
     # Answering "which tools did the builder use" required grepping a console log that
     # only survived by luck — three of the four had already been cleaned. The counts now
     # live in the run report. Fixtures below are the REAL profiles from barrel_roll.
-    from pipeline.log import TOOL_USE, reset_tool_use, tool_use_summary
-    from pipeline.runlog import summary as _rsum
+    from bambi_vfx.log import TOOL_USE, reset_tool_use, tool_use_summary
+    from bambi_vfx.runlog import summary as _rsum
     reset_tool_use()
     check("no tool calls -> no telemetry", tool_use_summary() == {})
     TOOL_USE["mcp__blender__compare_frame"] = 4
@@ -902,7 +929,8 @@ def main():
     # log_message printed all of this to STDOUT and nowhere else, and run_shot inherited
     # the stream — so the reasoning trace of a $6 layer lived in a terminal scrollback.
     import tempfile as _tf
-    from pipeline import transcript as _tr
+
+    from bambi_vfx import transcript as _tr
 
     class _TB:
         def __init__(s, t): s.text = t
@@ -962,7 +990,7 @@ def main():
     del _os.environ["BVFX_NO_TRANSCRIPT"]
 
     print("\n[the digest says whether a run is on track]")
-    from pipeline.inspect_run import _findings, _trajectory, adoption
+    from bambi_vfx.inspect_run import _findings, _trajectory, adoption
     # A trajectory is the shape, not the last number: the cases that need attention are
     # the ones that look fine at a glance because the final value is the highest.
     check("flat rounds are called flat", _trajectory([2.0, 2.0, 2.0]).startswith("FLAT"))
@@ -998,31 +1026,27 @@ def main():
     # build_agent imported NEITHER. The call is at the top of the function outside any
     # try, so every layer build raised NameError before doing any work — the main build
     # path was dead. Nothing caught it: the telemetry's own tests import the functions
-    # from pipeline.log directly, and an unbound global does not fail at import time.
-    from pipeline.eval.unbound import audit as _unbound_audit, scan as _unbound_scan
-    _ub = _unbound_audit()
-    check("every pipeline module binds every global it loads", _ub["ok"],
-          json.dumps(_ub["modules"], indent=1)[:700])
-    _fixture = Path(tempfile.mkdtemp()) / "bad.py"
-    _fixture.write_text("import os\n\ndef f():\n    return never_imported(os.sep)\n")
-    _hits = _unbound_scan(_fixture)
-    check("the check itself catches a planted unbound name",
-          [h["name"] for h in _hits] == ["never_imported"], str(_hits))
-    # AnnAssign (`_ERRORS: list[str] = []`) binds a module global. Missing it is what made
-    # the first version of this check report four false positives in build_agent alone,
-    # and a check with a 2:1 false-positive rate is one nobody runs twice.
-    _fixture.write_text("_E: list[str] = []\n\ndef f():\n    _E.append(1)\n    return _E\n")
-    check("  ... and does not flag an annotated module global",
-          _unbound_scan(_fixture) == [], str(_unbound_scan(_fixture)))
-    _fixture.write_text("def f():\n    import json\n    return json.dumps({})\n")
-    check("  ... nor a function-local import", _unbound_scan(_fixture) == [])
+    # from bambi_vfx.log directly, and an unbound global does not fail at import time.
+    #
+    # Detecting this now lives in ruff (F821), enforced by tests/test_suite.py and CI,
+    # rather than in the bespoke bytecode walker that used to be here. That walker was
+    # reimplementing a mature linter, and it shipped with a false positive of its own: it
+    # did not count an annotated assignment (`_ERRORS: list[str] = []`) as binding a name,
+    # so its first run reported four names in build_agent that were perfectly fine.
+    #
+    # What is worth keeping here is the cheap, specific part: the names that were actually
+    # missing must be reachable from the module that calls them.
+    import bambi_vfx.agents.builder as _ba
+    for _name in ("reset_tool_use", "tool_use_summary", "TOOL_USE", "empty_success"):
+        check(f"build_agent resolves {_name}", hasattr(_ba, _name))
 
     print("\n[a credential nothing reads is caught before it costs a layer]")
     # A key was added as CLAUDE_API_KEY. The SDK reads ANTHROPIC_API_KEY, so it was
     # ignored and the stale OAuth token was used — and that subscription was over its
     # monthly spend limit. The failure arrived as subtype=success, cost $0.00, one turn,
     # whose entire output was the limit message.
-    from pipeline.preflight import auth as _auth, empty_success as _empty
+    from bambi_vfx.preflight import auth as _auth
+    from bambi_vfx.preflight import empty_success as _empty
     _saved = {k: os.environ.pop(k, None) for k in
               ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_API_KEY")}
     try:
@@ -1071,7 +1095,7 @@ def main():
     # builder: each attempt started blind to the last one's corrections. Layer 5's second
     # attempt rebuilt a six-light rig not knowing the first had twice been told the hero
     # was not light-linked. The existing critique feedback only carries WITHIN an attempt.
-    from pipeline.build_prompts import builder_kickoff, recurring_complaints
+    from bambi_vfx.build_prompts import builder_kickoff, recurring_complaints
     h5 = recurring_complaints(shot, layers["5"].as_milestone())
     check("surfaces complaints that recur across attempts", "ATTEMPTED" in h5, h5[:80])
     check("  ... names how many attempts raised each", "separate attempts" in h5)
@@ -1090,7 +1114,7 @@ def main():
     # Everything learned on barrel_roll lived only as hand-edits to that shot's plan, so a
     # new brief would have been planned by an agent that had never heard any of it — no
     # lighting stage, no lookdev, and the same $78 of geometry added over geometry.
-    from pipeline.prompts import PLANNER_SYSTEM as _PS
+    from bambi_vfx.prompts import PLANNER_SYSTEM as _PS
     check("names the department order incl. LIGHTING",
           "LIGHTING → FX" in _PS and "layout → set dressing → environment" in _PS)
     check("requires lookdev before shot work for a hero asset",
@@ -1126,9 +1150,9 @@ def main():
     # sun + world volume -> warns; volume unlinked -> silent again). What IS testable
     # here is that the warning and its guidance still exist in all three places, since
     # the failure mode is someone tidying away a comment and restoring a $78 trap.
-    worker_src = Path("pipeline/blender/worker.py").read_text(encoding="utf-8")
-    prompts_src = Path("pipeline/build_prompts.py").read_text(encoding="utf-8")
-    tools_src = Path("pipeline/blender/tools.py").read_text(encoding="utf-8")
+    worker_src = Path("src/bambi_vfx/blender/worker.py").read_text(encoding="utf-8")
+    prompts_src = Path("src/bambi_vfx/build_prompts.py").read_text(encoding="utf-8")
+    tools_src = Path("src/bambi_vfx/blender/tools.py").read_text(encoding="utf-8")
     check("the worker warns on SUN + world volume",
           "_scene_warnings" in worker_src and "SUN + WORLD VOLUME" in worker_src)
     check("every render path surfaces worker warnings",
@@ -1152,7 +1176,7 @@ def main():
         dst = Path(td) / "barrel_roll"
         shutil.copytree(shot.folder, dst, symlinks=True,
                         ignore=shutil.ignore_patterns("renders", "logs", "artifacts"))
-        from pipeline.brief import load_shot as _ls
+        from bambi_vfx.brief import load_shot as _ls
         s2 = _ls(str(dst))
         led2, lay2 = Ledger(s2), load_layers(s2)
         m1 = lay2["1"].as_milestone()
@@ -1179,7 +1203,7 @@ def main():
     # BOTH DIRECTIONS ARE TESTED, because the first version of this gate passed the very
     # defect it was written for: it made L1 primary at a 0.25 threshold, and the bad case
     # scores 0.242. A gate proved only against the good case is not a gate.
-    from pipeline.assets.normalize import facade_vs_plate as _fvp
+    from bambi_vfx.assets.normalize import facade_vs_plate as _fvp
     _plate = shot.folder / "assets/sr2_tower/isolated/view_0.png"
     _bad = ROOT_DIR / "docs/probes/L39_turntable_front.png"   # bvfx_emissive_windows
     if _plate.is_file() and _bad.is_file():
@@ -1215,8 +1239,9 @@ def main():
           "CLEARS THE OBJECT'S MATERIAL SLOTS" in prompts_src)
 
     print("\n[facade profile]")
-    from pipeline.facade import facade_profile, compare_profiles
     from PIL import Image as _Im
+
+    from bambi_vfx.facade import compare_profiles, facade_profile
 
     def synth(path, strips, w=200, h=600, bg=255, body=40, win=250):
         """A synthetic tower: `strips` are (x0,x1) fractions of the shaft that are lit."""
