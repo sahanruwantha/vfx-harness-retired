@@ -654,6 +654,44 @@ def main():
     check("a frame missing after repair is not scored as zero",
           d["now_worst"] == 3.0 and d["broke"] == [], f"worst {d['now_worst']}")
 
+    print("\n[tool usage is recorded, and measuring-instead-of-looking is flagged]")
+    # Answering "which tools did the builder use" required grepping a console log that
+    # only survived by luck — three of the four had already been cleaned. The counts now
+    # live in the run report. Fixtures below are the REAL profiles from barrel_roll.
+    from pipeline.log import TOOL_USE, reset_tool_use, tool_use_summary
+    from pipeline.runlog import summary as _rsum
+    reset_tool_use()
+    check("no tool calls -> no telemetry", tool_use_summary() == {})
+    TOOL_USE["mcp__blender__compare_frame"] = 4
+    TOOL_USE["mcp__blender__measure_regions"] = 32
+    TOOL_USE["mcp__blender__render_frame"] = 14
+    s5 = tool_use_summary()
+    check("counts per tool and separates looking from measuring",
+          s5["compared"] == 4 and s5["measured"] == 32 and s5["looked"] == 18, str(s5))
+    check("look_per_measure below 1 when it measures more than it looks",
+          s5["look_per_measure"] < 1.0, str(s5.get("look_per_measure")))
+    check("reset clears it between layers",
+          (reset_tool_use(), tool_use_summary())[1] == {})
+
+    def _rec(tools):
+        return {"layer": "x", "title": "t", "status": "failed", "rounds": [],
+                "canonical": [], "tools": tools}
+    # Layer 5 (failed 3x): measured 32, looked 18.
+    warn5 = "MEASURED MORE THAN IT LOOKED" in _rsum(_rec(
+        {"calls": {"mcp__blender__measure_regions": 32}, "total": 93,
+         "looked": 18, "measured": 32, "compared": 4, "look_per_measure": 0.56}))
+    # Layer 4 (passed): 41 compares, ZERO measurements — must not warn.
+    warn4 = "MEASURED MORE THAN IT LOOKED" in _rsum(_rec(
+        {"calls": {"mcp__blender__compare_frame": 41}, "total": 104,
+         "looked": 43, "measured": 0, "compared": 41}))
+    # Layer 2 (passed): high on BOTH — measuring is fine, it just must not replace looking.
+    warn2 = "MEASURED MORE THAN IT LOOKED" in _rsum(_rec(
+        {"calls": {"mcp__blender__compare_frame": 38}, "total": 178,
+         "looked": 45, "measured": 25, "compared": 38, "look_per_measure": 1.8}))
+    check("warns on the profile that failed three times", warn5)
+    check("silent on a layer that only looked", not warn4)
+    check("silent on a layer high in BOTH — measuring is not the sin", not warn2)
+
     print("\n[a layer learns from its own failed attempts]")
     # The ledger held every critic round with its issues and NONE of it reached the
     # builder: each attempt started blind to the last one's corrections. Layer 5's second

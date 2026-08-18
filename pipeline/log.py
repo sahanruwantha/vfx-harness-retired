@@ -9,6 +9,7 @@ results, and the final cost/duration.
 from __future__ import annotations
 
 import json
+from collections import Counter
 import time
 
 from claude_agent_sdk import (
@@ -86,6 +87,42 @@ def _clip(s: str, n: int, keep: str = "head") -> str:
     return s[:n] + "…"
 
 
+# Which tools an agent reached for, counted as they go past. Every drain path already
+# routes through log_message, so this is the one place that sees all of them.
+#
+# WHY THIS IS WORTH RECORDING. The four layers that passed barrel_roll called
+# compare_frame — the tool that puts a render NEXT TO its reference — 7 to 41 times each.
+# The one that failed three times called it 3 to 5 times and called measure_regions 17 to
+# 44 times instead. It is the only layer where measuring outnumbered looking, and it
+# optimised its way onto the target numbers with a render that still did not match the
+# picture. The ratio looks like a leading indicator of a layer in trouble, and until now
+# it was recoverable only by grepping a console log that does not survive the session.
+TOOL_USE: Counter = Counter()
+
+
+def reset_tool_use() -> None:
+    TOOL_USE.clear()
+
+
+def tool_use_summary() -> dict:
+    """Per-tool counts, plus the look-vs-measure ratio the layer outcomes correlate with."""
+    if not TOOL_USE:
+        return {}
+
+    def n(*names):
+        return sum(TOOL_USE.get(x, 0) for x in names)
+
+    looked = n("mcp__blender__compare_frame", "mcp__blender__render_frame",
+               "mcp__blender__render_frames")
+    measured = n("mcp__blender__measure_regions", "mcp__blender__measure_ref")
+    out = {"calls": dict(TOOL_USE.most_common()), "total": sum(TOOL_USE.values()),
+           "looked": looked, "measured": measured,
+           "compared": n("mcp__blender__compare_frame")}
+    if measured:
+        out["look_per_measure"] = round(looked / measured, 2)
+    return out
+
+
 def _log_tool_use(b) -> None:
     """Log a tool call. Code payloads print verbatim; everything else is clipped.
 
@@ -143,6 +180,7 @@ def log_message(m) -> None:
                     if line.strip():
                         log(f"💬 {line.strip()}", 1)
             elif isinstance(b, ToolUseBlock):
+                TOOL_USE[b.name] += 1
                 _log_tool_use(b)
         return
 

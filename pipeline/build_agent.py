@@ -1025,6 +1025,8 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
         priors = _run_prior_paths(session, prior_paths)
 
     t_layer = time.monotonic()
+    # Per-layer, not per-process: the counts are attributed to one layer's report.
+    reset_tool_use()
     reset_counts()
     # Conclusions that outlive the transcript: a compaction or a crash-resume costs the
     # conversation, not the measured state of each judge frame or what has been ruled out.
@@ -1317,7 +1319,12 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             tokens=last_info.get("tokens", {}),
             approach=_APPROACH.get("text"),
             extra={"run_id": RUN_ID, "attempt": slot.get("attempt"),
-                   "session_id": last_info.get("session_id")})
+                   "session_id": last_info.get("session_id"),
+                   # WHICH tools the builder reached for. The four layers that passed
+                   # barrel_roll called compare_frame 7-41 times; the one that failed
+                   # three times called it 3-5 and measured 17-44 instead. Recovering
+                   # that took grepping a console log that no longer exists.
+                   "tools": tool_use_summary()})
         import json as _json
         log("\n" + run_summary(_json.loads(rec_path.read_text())))
     except Exception as e:

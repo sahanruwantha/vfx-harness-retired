@@ -109,6 +109,25 @@ def summary(rec: dict) -> str:
     if rec.get("journal"):
         j = rec["journal"]
         lines.append(f"   journal    {j.get('calls', 0)} calls, {j.get('chars', 0) // 1024}KB")
+    tu = rec.get("tools") or {}
+    if tu:
+        top = " · ".join(f"{k.split('__')[-1]} {v}"
+                         for k, v in list((tu.get("calls") or {}).items())[:5])
+        lines.append(f"   tools      {tu.get('total', 0)} calls — {top}")
+        # LOOKING vs MEASURING. On barrel_roll every layer that passed called
+        # compare_frame 7-41 times; the layer that failed three times called it 3-5 and
+        # called measure_regions 17-44 instead — the only layer where measuring
+        # outnumbered looking, and it optimised onto its target numbers with a render
+        # that still did not match the picture. Surfaced as a warning rather than a bare
+        # number because it is a LEADING indicator: by the time the verdict reads 2.0 the
+        # money is already spent.
+        lpm = tu.get("look_per_measure")
+        if lpm is not None and lpm < 1.0 and tu.get("measured", 0) >= 8:
+            lines.append(f"   ⚠ MEASURED MORE THAN IT LOOKED ({tu.get('looked')} render/"
+                         f"compare vs {tu.get('measured')} measurements). Layers that pass "
+                         f"look at the reference far more than they measure, and this "
+                         f"ratio has tracked failure — check the done-check is not "
+                         f"all-numeric.")
     if rec.get("reviews"):
         lines.append(f"   reviews    {len(rec['reviews'])} "
                      f"({sum(1 for r in rec['reviews'] if r.get('replace'))} said REPLACE)")
