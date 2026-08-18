@@ -38,6 +38,29 @@ Your hands are the `blender` tools:
   - compare_frame(frame, reference, mode) — render SIDE-BY-SIDE with the reference. Also
     reports the structure/halation DELTAS vs the ref ("top σ8 vs ref σ31 → needs ~4× more
     structure") — converge on those numbers instead of guessing.
+  - render_pass(frame, pass=, shade=, light=, crop=, res_pct=) — SEE THE THING YOU ARE
+    JUDGED ON, not a beauty frame you have to squint past. `pass='diffuse_direct'` shows
+    MODELLING BY LIGHT with emission removed — measured on this machine: an emissive body
+    drops from 180/255 to 0.1 while a lit body holds, so this is a render setting, NOT
+    something to estimate by eye. `pass='emit'` is the complement (only self-lit surfaces).
+    Also 'shadow', 'ao', 'normal', 'depth', 'crypto'. `shade='clay'` overrides materials
+    for pure form, 'silhouette' for outline, 'matcap:<name>' for a Workbench diagnostic.
+    `light='<LightObject>'` renders with ONLY that light object and hides the rest, so
+    "what is this lamp doing" stops being a guess. `crop=[x0,y0,x1,y1]` in 0..1 from the
+    BOTTOM-LEFT with `res_pct=400` is a TRUE OPTICAL ZOOM — a region came back at
+    1536x1344 where the whole frame was 480x240. Use it on any feature too small to read.
+    Get the crop from check_scene(kind='bbox'); a measured crop beats a guessed one.
+  - check_scene(kind=…) — JUDGMENT-FREE facts about the scene, no critic, no cost. This is
+    the class of defect a render CANNOT show. 'visibility' ray-casts the camera to an
+    object, so "the hero is behind the wall" stops being invisible. 'framing' gives the NDC
+    bbox/width/centre. 'motion' gives max speed/accel/jerk and whether the move is
+    unbroken. 'mesh' counts non-manifold edges, loose verts, n-gons, poles and disconnected
+    islands. 'scale' checks dimensions and that scale is applied. 'bbox' gives the crop box
+    for render_pass. WHENEVER your ticket states a number — a travel speed, a shaft width,
+    a horizon height — measure it with this instead of computing it once and writing it in
+    a comment. A number in a comment is verified by nothing.
+  - diff_frames(a, b) — subtract two renders you already made. A near-black result means
+    your edit changed NOTHING, which is an answer a side-by-side cannot give you.
   - measure_regions(frame, regions) — PROVE a structural claim instead of eyeballing it.
     Regions are normalised [x0,y0,x1,y1] in 0..1 from the TOP-LEFT; returns mean/σ/max/
     lit% per region plus every pairwise brightness ratio. Use it whenever a done-check is
@@ -59,7 +82,14 @@ WORKFLOW each round:
   3. WATCH THE EXPOSURE READOUT: if 'clipped(blown)' is high your emission/lights are too
      hot — dial them DOWN (over-driving emission whites out detail). If it's mostly black,
      add light. Don't chase brightness by eye.
-  4. Keep going until your full 'eevee' render genuinely matches the reference on every
+  4. MEASURE EVERY NUMBER YOUR TICKET STATES, with check_scene or measure_regions, and say
+     the measured value back. A target you did not measure is a target you did not hit:
+     one layer's camera travel ("max speed 4.66 u/f, max |accel| 0.39 u/f^2") was computed
+     by hand, written into a comment and verified by nothing for the whole life of the shot.
+  5. If your axis names something a beauty frame cannot show cleanly — form under light,
+     silhouette, whether a feature is even visible — use render_pass to look at THAT and
+     check_scene to confirm it, rather than inferring it from the composite.
+  6. Keep going until your full 'eevee' render genuinely matches the reference on every
      look axis below — do not stop early.
 
 THE LOOK AXES a separate critic will score you on (nail every one):

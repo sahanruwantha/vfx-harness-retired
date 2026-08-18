@@ -16,6 +16,10 @@ import traceback
 
 import bpy
 
+# Blender runs this file by path, so its own directory is NOT importable by default.
+# `checks` and `render_ext` are siblings and are imported lazily by their handlers.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 SENT = "@@BVFX@@"
 
 
@@ -890,15 +894,76 @@ def h_render(a: dict) -> dict:
             sc.eevee.taa_render_samples = int(a["samples"])
         except AttributeError:
             pass
-    sc.render.resolution_percentage = max(1, min(100, int(scale * 100)))
+
+    # Phase 2 knobs. Absent = the old behaviour, bit for bit: the critic's canonical
+    # path must not move because a diagnostic mode exists.
+    pass_name = a.get("pass") or "beauty"
+    shade = a.get("shade") or "beauty"
+    light = a.get("light") or None
+    crop = a.get("crop") or None
+    res_pct = a.get("res_pct")
+    extended = not (pass_name == "beauty" and shade == "beauty"
+                    and light is None and crop is None and res_pct is None)
+
+    undo, caption, did = [], "", {}
+    if extended:
+        import render_ext  # same directory as this worker
+        undo, caption, did = render_ext.configure(
+            sc, pass_name=pass_name, light=light, shade=shade,
+            crop=crop, res_pct=res_pct, scale=scale)
+    else:
+        sc.render.resolution_percentage = max(1, min(100, int(scale * 100)))
+
     sc.frame_set(frame)
-    path = os.path.join(ARTIFACTS, f"{mode}_f{frame:04d}.png")
+    tag = mode if not extended else f"{mode}_{shade if shade != 'beauty' else pass_name}"
+    tag = tag.replace(":", "-")
+    path = os.path.join(ARTIFACTS, f"{tag}_f{frame:04d}.png")
     sc.render.filepath = path
-    sc.render.image_settings.file_format = "PNG"
-    bpy.ops.render.render(write_still=True)
-    return {"image_path": path, "frame": frame, "mode": mode,
-            "warnings": _scene_warnings(),
-            "resolution": [sc.render.resolution_x, sc.render.resolution_y, sc.render.resolution_percentage]}
+    _set_image_format(sc.render.image_settings, "PNG")
+    # Read the settings the render ACTUALLY used, before restore puts them back. Reading
+    # them afterwards reported resolution_percentage=50 for a render made at 400 and made
+    # a working optical zoom look like a broken one.
+    used = [sc.render.resolution_x, sc.render.resolution_y,
+            sc.render.resolution_percentage]
+    try:
+        bpy.ops.render.render(write_still=True)
+    finally:
+        if extended:
+            import render_ext
+            render_ext.restore(undo)
+    out = {"image_path": path, "frame": frame, "mode": mode,
+           "warnings": _scene_warnings(),
+           "resolution": used}
+    if extended:
+        out.update({"pass": pass_name, "shade": shade, "light": light,
+                    "crop": crop, "res_pct": res_pct, "caption": caption, **did})
+        try:
+            import render_ext
+            out["pixels"] = render_ext.image_size(path)
+        except Exception as e:
+            out["pixels_error"] = str(e)[:120]
+    return out
+
+
+def _set_image_format(settings, fmt: str) -> None:
+    """Blender 5.x requires media_type BEFORE file_format, or the enum rejects it."""
+    if hasattr(settings, "media_type"):
+        try:
+            settings.media_type = "IMAGE"
+        except Exception:
+            pass
+    settings.file_format = fmt
+
+
+def h_check(a: dict) -> dict:
+    """Phase 1 — judgment-free scene checks (bmesh / ray_cast / camera projection)."""
+    import checks
+    kind = a.get("kind", "")
+    if kind == "self_test":
+        return checks.self_test()
+    return checks.dispatch(kind, a)
+
+
 
 
 def h_snapshot(a: dict) -> dict:
@@ -931,6 +996,7 @@ HANDLERS = {
     "restore": h_restore,
     "journal": h_journal,
     "replay": h_replay,
+    "check": h_check,
 }
 
 

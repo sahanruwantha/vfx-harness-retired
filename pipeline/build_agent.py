@@ -38,7 +38,10 @@ from .blender.session import BlenderError, BlenderSession
 from .blender.tools import build_blender_tools
 from .brief import Shot, load_shot
 from .layer_state import record_round as state_round, start as state_start
-from .log import _result_text, log, log_message
+from .log import (
+    TOOL_USE, _result_text, log, log_message, reset_tool_use, tool_use_summary,
+)
+from .preflight import empty_success, warn_if_broken
 from .build_prompts import (
     CRITIC_SYSTEM,
     builder_kickoff,
@@ -59,6 +62,7 @@ from .provenance import check as provenance_check
 from .runid import RUN_ID
 from .runlog import bump, reset_counts, summary as run_summary, write as write_run
 from .shot_context import clear_layer_context, write_layer_context
+from . import transcript
 
 MODEL = "claude-opus-5"
 # The critic scores renders and runs 3-4x per layer to the builder's one session, so it
@@ -835,6 +839,25 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
         f"{'PASS ✅' if verdict['pass'] else 'REVISE ✎'}", 1)
     for issue in verdict.get("issues", [])[:6]:
         log(f"· fix: {issue}", 2)
+    # The judge's answer is what every control decision downstream hangs on, and it was
+    # the one output with no durable home: `_critique` drains its own stream and never
+    # calls log_message, so nothing but this console line recorded WHICH image scored
+    # what against which reference. Recorded with the inputs beside it, because a score
+    # without its render/reference pair cannot be re-checked.
+    transcript.event("critic",
+                     milestone=m.id, frame=m.frame,
+                     candidate=candidate_rel, ref=m.ref,
+                     model=CRITIC_MODEL,
+                     mean=verdict.get("mean"),
+                     verdict="pass" if verdict.get("pass") else "revise",
+                     scores=verdict.get("scores", {}),
+                     scored_axes=verdict.get("scored_axes", []),
+                     na_axes=na,
+                     borderline=_borderline(verdict),
+                     reference_unusable=bool(verdict.get("reference_unusable")),
+                     issues=verdict.get("issues", []),
+                     scope="layer" if scope else "full-rubric",
+                     motion_strip=motion_rel)
     return verdict
 
 
@@ -1028,6 +1051,13 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     # Per-layer, not per-process: the counts are attributed to one layer's report.
     reset_tool_use()
     reset_counts()
+    # The durable record of this layer's conversation. Bound BEFORE the kickoff so the
+    # very first thing in the file is the prompt the builder was given — a transcript of
+    # answers to an unrecorded question cannot be audited, and the contract is exactly
+    # what changes between the runs we want to compare.
+    _tpath = transcript.bind(shot.folder, "build", label=f"layer{getattr(layer, 'id', m.id)}")
+    if _tpath:
+        log(f"transcript → {_tpath.relative_to(shot.folder)}", 1)
     # Conclusions that outlive the transcript: a compaction or a crash-resume costs the
     # conversation, not the measured state of each judge frame or what has been ruled out.
     state_start(shot.folder, getattr(layer, "id", m.id),
@@ -1050,12 +1080,27 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
         if hist:
             log(f"prior attempts: surfacing {hist.count('    - ')} recurring "
                 f"complaint(s) to the builder", 1)
-        await builder.query(builder_kickoff(shot, m, priors=priors,
-                                            script_rel=script_rel,
-                                            plan_excerpt=plan_excerpt,
-                                            also_judged=also or None,
-                                            history=hist))
+        _kickoff = builder_kickoff(shot, m, priors=priors,
+                                   script_rel=script_rel,
+                                   plan_excerpt=plan_excerpt,
+                                   also_judged=also or None,
+                                   history=hist)
+        transcript.prompt(_kickoff, role="kickoff", layer=getattr(layer, "id", m.id),
+                          judges=[[f, r] for f, r in (layer.judges if layer else ())],
+                          owns=list(getattr(layer, "owns", ())),
+                          model=MODEL, system_prompt_chars=len(opts.system_prompt or ""))
+        await builder.query(_kickoff)
+        _tools_before = sum(TOOL_USE.values())
         info = last_info = await _drain(builder, verbose)
+        # A layer that spent nothing and touched no tool did not build anything, whatever
+        # the result subtype claims. Caught here rather than after the critic, because the
+        # next thing this function does is pay a vision model to look at an empty scene.
+        _why = empty_success(info, sum(TOOL_USE.values()) - _tools_before)
+        if _why:
+            log(f"✗ build DID NOTHING: {_why}")
+            transcript.event("empty_success", why=_why, **info)
+            ledger.mark(m, "failed", best=None)
+            raise BuildTruncated(f"layer {m.id}: {_why}")
         if info["subtype"] in _TRUNCATED:
             # Scoring a half-built scene produces a "failed" that says nothing about the
             # look, buys a misleading ledger entry, and pays the critic to judge it.
@@ -1326,9 +1371,20 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                    # that took grepping a console log that no longer exists.
                    "tools": tool_use_summary()})
         import json as _json
-        log("\n" + run_summary(_json.loads(rec_path.read_text())))
+        _rec = _json.loads(rec_path.read_text())
+        log("\n" + run_summary(_rec))
+        # The layer's OUTCOME as the transcript's last word, so one file answers "what was
+        # it asked, what did it do, what did the judge say, how did it end" without
+        # joining across three artifacts.
+        transcript.event("layer_end", status=_rec.get("status"),
+                         layer=_rec.get("layer"),
+                         cost_usd=_rec.get("cost_usd"), turns=_rec.get("turns"),
+                         rounds=_rec.get("rounds"), canonical=_rec.get("canonical"),
+                         tools=_rec.get("tools"), hooks=_rec.get("hooks"),
+                         report=str(rec_path))
     except Exception as e:
         log(f"! run report unavailable: {str(e)[:80]}")
+    transcript.unbind()
     _ERRORS.clear()
     _RECIPES_USED.clear()
     _APPROACH.clear()
@@ -1537,6 +1593,9 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
 # --------------------------------------------------------------------------- #
 async def _run(folder: str, layer_id: str, rounds: int, blender: str,
                resume_ok: bool = False, force: bool = False) -> None:
+    # Cheapest possible check, first: a credential in a variable nothing reads costs a
+    # whole layer to discover otherwise, and it does not fail loudly when it happens.
+    warn_if_broken()
     shot = load_shot(folder)
     # Is the plan still a plan for THIS brief? Editing brief.md leaves the plan stale with
     # nothing recording the divergence, and every layer below is then built to a spec that

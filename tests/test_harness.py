@@ -9,7 +9,7 @@ I had watched happen.
 """
 from __future__ import annotations
 
-import anyio, json, shutil, sys, tempfile
+import anyio, json, os, shutil, sys, tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -599,7 +599,172 @@ def main():
               for mark in ("THIS LAYER OWNS:", "one build stage of many")), sc[:120])
     check("layer scope names the layer's own axes",
           all(a in sc for a in layers["1"].owns))
+    # The band stopped being a constant when it became granularity-aware, and this
+    # module's import of the old flat `_ADJUDICATE_BAND` was never updated — so the ONE
+    # module whose job is to re-measure judge noise could not be imported at all, and
+    # `evals variance` died before it scored anything. Import it the way `measure` does.
+    from pipeline.build_agent import _adjudicate_band as _ab
+    check("variance can import the band it reports",
+          callable(_ab) and _ab(1) >= _ab(8),
+          "the band must NARROW as axis count rises")
+    check("no stale flat-constant import survives",
+          "import" not in [ln for ln in Path("pipeline/eval/variance.py")
+                           .read_text(encoding="utf-8").splitlines()
+                           if "_ADJUDICATE_BAND" in ln and "#" not in ln.split("_ADJ")[0]]
+          or not any("from ..build_agent import" in ln and "_ADJUDICATE_BAND" in ln
+                     for ln in Path("pipeline/eval/variance.py")
+                     .read_text(encoding="utf-8").splitlines()))
+
+    print("\n[evals · ICC(2,1)]")
+    from pipeline.eval.icc import icc_2_1
+    # Raters that agree on how the targets RANK → high ICC.
+    agree = icc_2_1([[4, 4, 4], [3, 3, 3], [1, 1, 1]])
+    # Raters that disagree completely on the same targets → near zero or below.
+    disagree = icc_2_1([[4, 1, 3], [1, 4, 2], [3, 2, 4]])
+    check("ICC is high when raters agree on the ranking",
+          agree["ok"] and agree["icc"] > 0.9, str(agree.get("icc")))
+    check("ICC collapses when raters disagree",
+          disagree["ok"] and disagree["icc"] < 0.4, str(disagree.get("icc")))
+    check("ICC reports the between/within split, not just a coefficient",
+          {"between", "within", "BMS", "EMS"} <= set(agree))
+    # One target cannot produce an ICC — there is no between-target variance to
+    # compare against. Refusing is the only honest answer; returning a number here is
+    # how a repeat-only sample gets quoted as a reliability coefficient.
+    lone = icc_2_1([[3, 4, 3]])
+    check("a single target REFUSES rather than inventing a coefficient",
+          not lone["ok"] and lone["icc"] is None, str(lone))
+    check("ragged input is refused", not icc_2_1([[1, 2], [1]])["ok"])
+
+    print("\n[evals · blank-frame control]")
+    from pipeline.eval import blank as EBL
+    check("an axis scoring 2.0 on black is called a language prior",
+          EBL.language_prior({"values": [2.0, 2.0]}))
+    check("an axis that collapses on black is NOT flagged",
+          not EBL.language_prior({"values": [0.0, 1.0]}))
+    check("no values means no claim either way",
+          not EBL.language_prior({"values": []}))
+    brep = EBL.report({
+        "shot": "x", "ref": "refs/f.jpg", "layer": "5", "scope": "layer",
+        "mean": 2.0, "pass": False,
+        "per_axis": {"lighting_and_form": {"values": [2.0], "n_a": 0,
+                                           "language_prior": True}},
+        "language_prior_axes": ["lighting_and_form"],
+        "gate": "Phase 2 is premature for: lighting_and_form"})
+    check("the blank-frame report names the axis AND what it implies",
+          "LANGUAGE PRIOR" in brep and "rubric problem" in brep)
     # ---- END eval-harness block ---------------------------------------------------
+
+    # ---- BEGIN judgment-free checks block (pipeline/geom.py + blender/checks.py) ----
+    # The arithmetic is tested here; that the checks FIRE on a broken scene is tested
+    # in Blender by `python -m pipeline.evals checks`, because a check nobody has
+    # watched fail is not a check.
+    print("\n[geometry · motion]")
+    from pipeline.geom import (framing_from_ndc, mesh_issues, motion_from_positions,
+                               scale_issues)
+    # A→B→A in three frames: the classic "it moved and came back" that reads as motion
+    # in a still and as a broken move in the curve.
+    m_bad = motion_from_positions([1, 2, 3], [(0, 0, 0), (4, 0, 0), (0, 0, 0)])
+    check("a reversing path is not one unbroken move", not m_bad["unbroken"])
+    check("peak speed is attributed to a FRAME, not just a value",
+          m_bad["peak_speed_frame"] == 2, str(m_bad["peak_speed_frame"]))
+    m_ok = motion_from_positions([1, 2, 3, 4], [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)])
+    check("a constant-velocity move is unbroken with zero accel",
+          m_ok["unbroken"] and m_ok["max_accel"] == 0.0 and m_ok["max_speed"] == 1.0)
+    # Non-uniform frame gaps are the normal case for a judge-frame list, so speed must
+    # be per FRAME and not per sample — otherwise a strip of [1, 24, 48] reports a
+    # 24x-too-large speed and every travel target is met by accident.
+    m_gap = motion_from_positions([1, 25], [(0, 0, 0), (24, 0, 0)])
+    check("speed is per frame, not per sample", m_gap["max_speed"] == 1.0,
+          str(m_gap["max_speed"]))
+    check("one sample cannot yield a velocity",
+          not motion_from_positions([1], [(0, 0, 0)])["ok"])
+    try:
+        motion_from_positions([2, 1], [(0, 0, 0), (1, 0, 0)])
+        check("non-increasing frames are refused", False)
+    except ValueError:
+        check("non-increasing frames are refused", True)
+
+    print("\n[geometry · framing]")
+    # world_to_camera_view: x,y in 0..1 on screen, z>0 in front of the camera.
+    on = framing_from_ndc([(0.4, 0.4, 5.0), (0.6, 0.7, 5.0)])
+    check("an on-screen bbox reports width, height and centre",
+          on["on_screen"] == 1.0 and on["width"] == 0.2 and on["centre"] == [0.5, 0.55])
+    off = framing_from_ndc([(1.8, 0.4, 5.0), (2.0, 0.7, 5.0)])
+    check("an off-screen bbox reports 0% on screen", off["on_screen"] == 0.0)
+    behind = framing_from_ndc([(0.5, 0.5, -3.0)])
+    check("geometry BEHIND the camera is not counted as framed",
+          behind["on_screen"] == 0.0, str(behind))
+
+    print("\n[geometry · mesh + scale]")
+    check("non-manifold geometry is reported",
+          any("non-manifold" in i for i in mesh_issues({"nonmanifold_edges": 6})))
+    check("a second island is reported",
+          any("island" in i for i in mesh_issues({"islands": 2})))
+    check("a clean mesh reports nothing",
+          mesh_issues({"nonmanifold_edges": 0, "islands": 1, "degenerate_faces": 0,
+                       "loose_verts": 0, "poles": 0, "ngons": 0}) == [])
+    check("unapplied scale is reported", scale_issues((4.0, 4.0, 4.0)))
+    check("applied scale is silent", scale_issues((1.0, 1.0, 1.0)) == [])
+
+    print("\n[checks · the report reads as a finding]")
+    from pipeline.blender.tools import _check_report
+    rep = _check_report("motion", {"ok": False, "max_speed": 4.66, "max_accel": 0.39,
+                                   "max_jerk": 0.0, "unbroken": False,
+                                   "peak_speed_frame": 24,
+                                   "issues": ["Cam path reverses or stops mid-move"]})
+    check("issues come FIRST and the numbers follow",
+          rep.index("reverses") < rep.index("4.66") and "ISSUES" in rep)
+    rep_ok = _check_report("mesh", {"ok": True, "counts": {"verts": 8, "edges": 12,
+                                                          "faces": 6, "islands": 1},
+                                   "issues": []})
+    check("a passing check still states the measured record", "PASS" in rep_ok
+          and "8 verts" in rep_ok)
+    rep_bb = _check_report("bbox", {"ok": True, "bbox": [0.4, 0.2, 0.6, 0.9],
+                                    "width": 0.2, "height": 0.7, "centre": [0.5, 0.55]})
+    check("the bbox report says what to DO with the box", "render_pass" in rep_bb)
+
+    print("\n[render modes · every mode ships a caption]")
+    # A visual channel with no caption measured WORSE than not adding the channel at
+    # all (−10.6pp alone vs +7.7pp with text), so a mode with no caption is a
+    # regression, not a missing nicety.
+    import importlib.util as _ilu
+    _sp = _ilu.spec_from_file_location("_rext", "pipeline/blender/render_ext.py")
+    _rext = _ilu.module_from_spec(_sp); _sp.loader.exec_module(_rext)
+    for _pass in ("beauty", "diffuse_direct", "emit", "shadow", "ao", "normal",
+                  "depth", "crypto"):
+        cap = _rext.caption_for(_pass, "beauty", None, None, None)
+        check(f"caption for pass {_pass}", len(cap) > 30 and cap.strip() != "")
+    check("the diffuse_direct caption says emission must be absent",
+          "mission" in _rext.caption_for("diffuse_direct", "beauty", None, None, None))
+    for _shade in ("clay", "silhouette", "matcap:check_normal+y"):
+        check(f"caption for shade {_shade}",
+              len(_rext.caption_for("beauty", _shade, None, None, None)) > 30)
+    cap = _rext.caption_for("beauty", "beauty", "key", [0.1, 0.2, 0.3, 0.4], 400)
+    check("a light group, a crop and a zoom are all declared in the caption",
+          "key" in cap and "crop" in cap and "400" in cap)
+    # Socket names were MEASURED on 5.2 (Diffuse Direct / Emission, not DiffDir / Emit).
+    # Getting these wrong renders a perfect copy of the beauty frame under a caption
+    # promising isolation — the worst possible outcome, so pin them.
+    check("the 5.x pass socket names are the ones that exist",
+          _rext._PASS_SOCKETS["diffuse_direct"][0] == "Diffuse Direct"
+          and _rext._PASS_SOCKETS["emit"][0] == "Emission")
+
+    print("\n[display size vs metric size]")
+    import pipeline.blender.tools as _T
+    # These answer DIFFERENT questions and the reasoning for one has leaked into the
+    # other before. Metric height must stay low (never upscale a render); display
+    # height must clear the critic's 28px patch grid by enough that a facade pier is
+    # more than a fifth of one patch.
+    check("metric height is unchanged and still below every accepted render",
+          _T._METRIC_H == 320)
+    check("display height clears several patch rows", _T._DISPLAY_H >= 1024,
+          f"{_T._DISPLAY_H}")
+    check("display is never the size metrics are taken at",
+          _T._DISPLAY_H != _T._METRIC_H)
+    _tools_src = Path(_T.__file__).read_text(encoding="utf-8")
+    check("the two constants carry the reason they differ",
+          "28x28" in _tools_src or "patch" in _tools_src)
+    # ---- END judgment-free checks block --------------------------------------------
 
     print("\n[canonical repair · what a round achieved]")
     from pipeline.build_agent import _repair_delta
@@ -691,6 +856,215 @@ def main():
     check("warns on the profile that failed three times", warn5)
     check("silent on a layer that only looked", not warn4)
     check("silent on a layer high in BOTH — measuring is not the sin", not warn2)
+
+    print("\n[the look/measure ratio counts the NEW tools too]")
+    # The ratio is the leading indicator of a layer in trouble, and adding render_pass /
+    # diff_frames without teaching it about them made it blind in the exact direction that
+    # matters: a builder doing the right thing (isolating a pass to see what it is judged
+    # on) would have been counted as not looking, and warned about for it.
+    reset_tool_use()
+    TOOL_USE["mcp__blender__render_pass"] = 12
+    TOOL_USE["mcp__blender__diff_frames"] = 3
+    TOOL_USE["mcp__blender__measure_regions"] = 10
+    s6 = tool_use_summary()
+    check("render_pass and diff_frames count as LOOKING", s6["looked"] == 15, str(s6))
+    check("  ... so a pass-isolating builder is not warned at it",
+          s6["look_per_measure"] > 1.0, str(s6.get("look_per_measure")))
+    # check_scene is its own category on purpose: the failure the ratio detects is
+    # optimising against self-chosen image statistics, and a judgment-free scene fact is
+    # the opposite of that. Folding it into `measured` would penalise verifying a claim.
+    reset_tool_use()
+    TOOL_USE["mcp__blender__check_scene"] = 9
+    TOOL_USE["mcp__blender__compare_frame"] = 4
+    s7 = tool_use_summary()
+    check("check_scene is VERIFYING, not measuring",
+          s7["verified"] == 9 and s7["measured"] == 0 and s7["looked"] == 4, str(s7))
+    check("  ... and does not drag the look/measure ratio",
+          s7.get("look_per_measure") is None, str(s7.get("look_per_measure")))
+
+    print("\n[adoption of the diagnostic tools is reported, not assumed]")
+    check("names the tools that were never called",
+          set(s7["unused_new_tools"]) == {"render_pass", "diff_frames"},
+          str(s7["unused_new_tools"]))
+    check("counts the ones that were", s7["adoption"]["check_scene"] == 9)
+    unused_txt = _rsum(_rec(s7))
+    check("the layer report says so loudly", "NEVER CALLED" in unused_txt, unused_txt)
+    check("  ... and blames the PROMPT, not the tool", "PROMPT" in unused_txt)
+    reset_tool_use()
+    for t in ("render_pass", "check_scene", "diff_frames"):
+        TOOL_USE[f"mcp__blender__{t}"] = 5
+    all_used = _rsum(_rec(tool_use_summary()))
+    check("silent when every diagnostic tool saw use", "NEVER CALLED" not in all_used)
+    check("  ... but still reports the counts", "diagnostics" in all_used, all_used)
+    reset_tool_use()
+
+    print("\n[the durable transcript records input, output and every tool call]")
+    # log_message printed all of this to STDOUT and nowhere else, and run_shot inherited
+    # the stream — so the reasoning trace of a $6 layer lived in a terminal scrollback.
+    import tempfile as _tf
+    from pipeline import transcript as _tr
+
+    class _TB:
+        def __init__(s, t): s.text = t
+    class _TU:
+        def __init__(s, n, i): s.name, s.input, s.id = n, i, "tu1"
+    class _TR:
+        def __init__(s, c, e=False): s.content, s.is_error, s.tool_use_id = c, e, "tu1"
+    class _AM:
+        def __init__(s, c): s.content = c
+    _TB.__name__, _TU.__name__ = "TextBlock", "ToolUseBlock"
+    _TR.__name__, _AM.__name__ = "ToolResultBlock", "AssistantMessage"
+
+    _tmp = Path(_tf.mkdtemp())
+    _p = _tr.bind(_tmp, "build", label="layer9", run_id="TEST")
+    _script = "import bpy\n" + "\n".join(f"# line {i}" for i in range(300))
+    _b64 = "iVBORw0KGgo" + "A" * 300_000
+    _tr.prompt("build layer 9 against refs/hero.png", role="kickoff")
+    _tr.message(_AM([_TU("mcp__blender__run_bpy", {"script": _script})]))
+    _tr.message(_AM([_TR([{"type": "text", "text": "ok"},
+                          {"type": "image", "data": _b64, "mimeType": "image/jpeg"}])]))
+    _tr.message(_AM([_TR([{"type": "image", "source": {"type": "base64",
+                                                       "media_type": "image/png",
+                                                       "data": _b64}}])]))
+    _tr.event("critic", frame=24, mean=3.5, verdict="pass", scores={"a": 3})
+    _tr.unbind()
+    _evs = _tr.read(_p)
+    _kinds = [e["kind"] for e in _evs]
+    check("the INPUT is recorded, not just the replies", "prompt" in _kinds, str(_kinds))
+    check("tool calls and results are recorded",
+          _kinds.count("tool_use") == 1 and _kinds.count("tool_result") == 2, str(_kinds))
+    check("the critic verdict has a durable home", "critic" in _kinds)
+    # A render reaches the model as ~300-450KB of base64 and the critic attaches up to
+    # four per call; storing them would put hundreds of MB of pixels in a file whose
+    # value is the text. The placeholder keeps the FACT of the image.
+    check("base64 image payloads are stripped", _p.stat().st_size < 100_000,
+          f"{_p.stat().st_size} bytes for 600KB of base64")
+    check("  ... but the image is still accounted for",
+          all(c.get("bytes", 0) > 100_000
+              for e in _evs if isinstance(e.get("content"), list)
+              for c in e["content"] if isinstance(c, dict) and c.get("type") == "image"))
+    # The console clips scripts to 120 lines because a terminal is unreadable otherwise.
+    # This file is diffed against the next attempt, and a clipped script cannot be.
+    _tu_ev = next(e for e in _evs if e["kind"] == "tool_use")
+    check("run_bpy scripts survive VERBATIM (the console clips, the record must not)",
+          _tu_ev["input"]["script"] == _script,
+          f"{len(_tu_ev['input']['script'])} vs {len(_script)}")
+    # A killed process leaves half a line; refusing to parse the file because of it would
+    # throw away the record of the very thing that killed it.
+    with _p.open("a") as _fh:
+        _fh.write('{"seq": 99, "kind": "tool_u')
+    check("a truncated final line is tolerated, not fatal",
+          _tr.read(_p)[-1]["kind"] == "unparseable")
+    import os as _os
+    _os.environ["BVFX_NO_TRANSCRIPT"] = "1"
+    check("recording can be switched off", _tr.bind(_tmp, "build") is None
+          and not _tr.is_bound())
+    del _os.environ["BVFX_NO_TRANSCRIPT"]
+
+    print("\n[the digest says whether a run is on track]")
+    from pipeline.inspect_run import _findings, _trajectory, adoption
+    # A trajectory is the shape, not the last number: the cases that need attention are
+    # the ones that look fine at a glance because the final value is the highest.
+    check("flat rounds are called flat", _trajectory([2.0, 2.0, 2.0]).startswith("FLAT"))
+    check("rising is rising", _trajectory([2.0, 3.0, 3.5]) == "rising")
+    check("a net gain that lost ground on the way is a sawtooth",
+          _trajectory([3.0, 2.0, 3.0, 2.0, 3.33]).startswith("sawtooth"),
+          _trajectory([3.0, 2.0, 3.0, 2.0, 3.33]))
+    check("falling is named", _trajectory([4.0, 3.0]) == "FALLING")
+    check("one round is not a trend", _trajectory([3.0]) == "single round")
+    check("no rounds is not a trend either", _trajectory([]) == "unscored")
+    # An OLD report has no tool telemetry. Counting that as "the tool was never used"
+    # would invent evidence of neglect on runs that could not have called it.
+    _old = adoption([{"layer": "1", "tools": {"total": 90}}])
+    check("a report predating the telemetry is UNMEASURED, not zero",
+          _old["never_used"] == [] and _old["unmeasured_layers"] == ["1"], str(_old))
+    _new = adoption([{"layer": "1", "tools": {"total": 90, "adoption":
+                                              {"render_pass": 0, "check_scene": 4,
+                                               "diff_frames": 0}}}])
+    check("a measured layer that skipped a tool IS a finding",
+          set(_new["never_used"]) == {"render_pass", "diff_frames"}, str(_new))
+    _f = _findings({"layers": [{"layer": "3", "trajectory": "FLAT — rounds are not moving "
+                                "the score", "rounds": 6, "turns": 20,
+                                "means": [2.0] * 6, "canonical_pass": True,
+                                "no_metric_feedback": False, "status": "failed",
+                                "look_per_measure": None}],
+                    "adoption": _new, "transcripts": [{"file": "x", "unparseable": 0}]})
+    check("the digest leads with the flat layer", any("without moving" in x for x in _f),
+          str(_f))
+    check("  ... and with the unused tool", any("never called" in x for x in _f))
+
+    print("\n[a module cannot call a name it never imported]")
+    # build_agent.build_unit() called reset_tool_use() and tool_use_summary() and
+    # build_agent imported NEITHER. The call is at the top of the function outside any
+    # try, so every layer build raised NameError before doing any work — the main build
+    # path was dead. Nothing caught it: the telemetry's own tests import the functions
+    # from pipeline.log directly, and an unbound global does not fail at import time.
+    from pipeline.eval.unbound import audit as _unbound_audit, scan as _unbound_scan
+    _ub = _unbound_audit()
+    check("every pipeline module binds every global it loads", _ub["ok"],
+          json.dumps(_ub["modules"], indent=1)[:700])
+    _fixture = Path(tempfile.mkdtemp()) / "bad.py"
+    _fixture.write_text("import os\n\ndef f():\n    return never_imported(os.sep)\n")
+    _hits = _unbound_scan(_fixture)
+    check("the check itself catches a planted unbound name",
+          [h["name"] for h in _hits] == ["never_imported"], str(_hits))
+    # AnnAssign (`_ERRORS: list[str] = []`) binds a module global. Missing it is what made
+    # the first version of this check report four false positives in build_agent alone,
+    # and a check with a 2:1 false-positive rate is one nobody runs twice.
+    _fixture.write_text("_E: list[str] = []\n\ndef f():\n    _E.append(1)\n    return _E\n")
+    check("  ... and does not flag an annotated module global",
+          _unbound_scan(_fixture) == [], str(_unbound_scan(_fixture)))
+    _fixture.write_text("def f():\n    import json\n    return json.dumps({})\n")
+    check("  ... nor a function-local import", _unbound_scan(_fixture) == [])
+
+    print("\n[a credential nothing reads is caught before it costs a layer]")
+    # A key was added as CLAUDE_API_KEY. The SDK reads ANTHROPIC_API_KEY, so it was
+    # ignored and the stale OAuth token was used — and that subscription was over its
+    # monthly spend limit. The failure arrived as subtype=success, cost $0.00, one turn,
+    # whose entire output was the limit message.
+    from pipeline.preflight import auth as _auth, empty_success as _empty
+    _saved = {k: os.environ.pop(k, None) for k in
+              ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_API_KEY")}
+    try:
+        os.environ["CLAUDE_API_KEY"] = "sk-ant-api03-" + "x" * 40
+        a = _auth()
+        check("names the variable nothing reads", not a["ok"]
+              and "NOTHING READS IT" in a["problems"][0], str(a["problems"]))
+        check("  ... says which variable to use instead",
+              "ANTHROPIC_API_KEY" in a["problems"][0])
+        check("  ... and that there is now no usable credential at all",
+              a["using"] is None, str(a["using"]))
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-api03-" + "y" * 40
+        a2 = _auth()
+        check("with the correct name set, the dead one is only dead weight",
+              a2["using"] == "ANTHROPIC_API_KEY" and "dead weight" in a2["problems"][0],
+              str(a2["problems"]))
+        del os.environ["CLAUDE_API_KEY"]
+        check("clean once the decoy is gone", _auth()["ok"])
+        # Prefix mismatch: an OAuth token pasted into the API-key variable is catchable
+        # without sending it anywhere.
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-oat01-" + "z" * 40
+        check("catches an OAuth token in the API-key variable",
+              "expects a API key" in " ".join(_auth()["problems"])
+              or "expects an API key" in " ".join(_auth()["problems"]),
+              str(_auth()["problems"]))
+    finally:
+        for k, v in _saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    # The observed spend-limit shape. Cost AND tools, not either alone: a cheap turn is
+    # not suspicious on its own, but nothing that spent $0 and touched no tool has built.
+    check("a zero-cost, zero-tool 'success' is not a build",
+          _empty({"subtype": "success", "turns": 1, "cost": 0.0}, 0) is not None)
+    check("  ... and the message points at preflight",
+          "preflight" in _empty({"subtype": "success", "turns": 1, "cost": 0.0}, 0))
+    check("a session that called tools is a build",
+          _empty({"subtype": "success", "turns": 12, "cost": 0.0}, 40) is None)
+    check("a session that spent money is a build",
+          _empty({"subtype": "success", "turns": 1, "cost": 0.31}, 0) is None)
+    check("a real error path is left to its own handler",
+          _empty({"subtype": "error_max_turns", "turns": 40, "cost": 0.0}, 0) is None)
 
     print("\n[a layer learns from its own failed attempts]")
     # The ledger held every critic round with its issues and NONE of it reached the

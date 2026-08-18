@@ -31,6 +31,7 @@ from pathlib import Path
 from .brief import load_shot
 from .ledger import Ledger, load_layers
 from .log import log
+from .preflight import warn_if_broken
 from .runid import RUN_ID
 
 _MEANING = {
@@ -43,11 +44,41 @@ _MEANING = {
 }
 
 
-def _run(args: list[str], *, dry: bool) -> int:
+def _run(args: list[str], *, dry: bool, tee: Path | None = None) -> int:
+    """Run a stage, mirroring its console output to `tee` as it happens.
+
+    Every stage inherited this process's stdout, so the run's whole narrative — the
+    critic's per-axis lines, the chain guard, the end-of-layer report block — existed only
+    in a terminal scrollback. `logs/run_layer*.json` holds the aggregates and
+    `logs/transcript/` now holds the structured record, but neither is the thing you
+    actually re-read after a bad run, which is the pretty-printed sequence in order.
+
+    Mirrored rather than redirected: watching a live run is how you notice a Blender
+    session wedged on one frame, and a run you cannot watch is worse than one you cannot
+    re-read. PYTHONUNBUFFERED because a pipe makes the child block-buffer, and a stage
+    whose output arrives in 8KB bursts is not watchable.
+    """
     log(f"$ {' '.join(args)}")
     if dry:
         return 0
-    return subprocess.call(args, env={**os.environ, "BVFX_RUN_ID": RUN_ID})
+    env = {**os.environ, "BVFX_RUN_ID": RUN_ID, "PYTHONUNBUFFERED": "1",
+           "BVFX_STAGE_ARGV": " ".join(args)}
+    if tee is None:
+        return subprocess.call(args, env=env)
+    tee.parent.mkdir(parents=True, exist_ok=True)
+    with tee.open("a", encoding="utf-8") as fh:
+        fh.write(f"\n{'=' * 78}\n$ {' '.join(args)}\nrun {RUN_ID}\n{'=' * 78}\n")
+        fh.flush()
+        proc = subprocess.Popen(args, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                errors="replace", bufsize=1)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            fh.write(line)
+            fh.flush()
+        return proc.wait()
 
 
 def main() -> None:
@@ -64,6 +95,7 @@ def main() -> None:
                     help="print the plan and the layers that would run, execute nothing")
     a = ap.parse_args()
 
+    warn_if_broken()
     shot = load_shot(a.folder)
     layers = load_layers(shot)
     ids = sorted(layers, key=lambda k: str(layers[k].script))
@@ -74,10 +106,14 @@ def main() -> None:
     ledger = Ledger(shot)
     done = [i for i in ids if ledger.status(layers[i].as_milestone()) == "passed"]
     py = sys.executable
+    console = shot.folder / "logs" / "console" / f"{RUN_ID}.log"
     log(f"run {RUN_ID} · shot '{shot.id}' · layers {ids[0]}–{ids[-1]} "
         f"({len(done)} already passed) · rounds {a.rounds}")
     if done:
         log(f"  already passed, will be SKIPPED: {', '.join(done)}", 1)
+    if not a.dry_run:
+        log(f"  console → {console.relative_to(shot.folder)} · structured → "
+            f"logs/transcript/ · digest: python -m pipeline.inspect_run {shot.folder}", 1)
 
     t0 = time.monotonic()
     for lid in ids:
@@ -86,7 +122,7 @@ def main() -> None:
         log(f"════ LAYER {lid} — {layers[lid].title} ════")
         rc = _run([py, "-m", "pipeline.build_agent", str(shot.folder),
                    "--layer", lid, "--rounds", str(a.rounds), "--blender", a.blender],
-                  dry=a.dry_run)
+                  dry=a.dry_run, tee=console)
         if rc:
             # Stop. Building layer N+1 on a layer N that never passed is the failure this
             # whole chain of guards exists to prevent; carrying on would just bury it.
@@ -113,7 +149,7 @@ def main() -> None:
     if not a.skip_accept:
         log("════ ACCEPTANCE ════")
         rc = _run([py, "-m", "pipeline.accept_agent", str(shot.folder),
-                   "--blender", a.blender], dry=a.dry_run)
+                   "--blender", a.blender], dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ acceptance exited {rc}: {_MEANING.get(rc, 'unknown')}")
             raise SystemExit(rc)
@@ -121,7 +157,8 @@ def main() -> None:
     if not a.skip_render:
         log("════ RENDER ════")
         rc = _run([py, "-m", "pipeline.render_shot", str(shot.folder),
-                   "--scale", str(a.scale), "--blender", a.blender], dry=a.dry_run)
+                   "--scale", str(a.scale), "--blender", a.blender],
+                  dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ render exited {rc}: {_MEANING.get(rc, 'unknown')}")
             raise SystemExit(rc)
@@ -130,10 +167,13 @@ def main() -> None:
     # layers made the run wait on a model writing prose.
     if (shot.folder / "logs" / "distill_queue.jsonl").is_file():
         log("════ DISTILL (queued during the run) ════")
-        _run([py, "-m", "pipeline.distill", str(shot.folder)], dry=a.dry_run)
+        _run([py, "-m", "pipeline.distill", str(shot.folder)], dry=a.dry_run, tee=console)
 
     log(f"run {RUN_ID} finished in {(time.monotonic() - t0) / 60:.0f} min")
     log(f"  per-layer reports: {shot.folder / 'logs'}/run_layer*.json")
+    log(f"  console log:       {console}")
+    log(f"  transcripts:       {shot.folder / 'logs' / 'transcript'}/*.jsonl")
+    log(f"  digest:            python -m pipeline.inspect_run {shot.folder}")
 
 
 if __name__ == "__main__":

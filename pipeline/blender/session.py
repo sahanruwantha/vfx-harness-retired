@@ -148,6 +148,24 @@ class BlenderSession:
     def render(self, frame: int, mode: str = "eevee", scale: float = 0.5, **kw) -> str:
         return self.call("render", frame=frame, mode=mode, scale=scale, **kw)["image_path"]
 
+    def render_full(self, frame: int, mode: str = "eevee", scale: float = 0.5, **kw) -> dict:
+        """`render` returns only the path; the Phase-2 modes also return a caption and
+        the settings they used, and a caption that never reaches the reader is the
+        measured failure mode of every diagnostic render mode."""
+        return self.call("render", frame=frame, mode=mode, scale=scale, **kw)
+
+    def check(self, kind: str, **kw) -> dict:
+        """Phase 1 — a judgment-free scene check. `kind='self_test'` runs the fixtures."""
+        return self.call("check", kind=kind, **kw)
+
+    def diff(self, a: str, b: str, dest: str | None = None) -> dict:
+        """|A − B| for two PNGs already rendered.
+
+        Client-side on purpose: Blender's bundled Python has no Pillow, and subtracting
+        two files that are already on disk never needed a scene."""
+        from .tools import subtract_png
+        return subtract_png(a, b, dest or str(self.artifacts / "diff.png"))
+
     def snapshot(self, tag: str) -> dict:
         """Checkpoint the scene. Returns {blend, journal_index} — the journal index is
         the write-ahead position, so replaying entries after it reconstructs any work

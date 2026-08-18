@@ -8,7 +8,8 @@ spread on a five-point scale, straddling the pass line.
 
 That single observation is currently load-bearing. It set PASS_MEAN's justification, it
 motivated the best-of-three panel in `build_agent._judge`, and it is the sole evidence
-behind `_ADJUDICATE_BAND = 0.4` — a number the comment beside it honestly calls a guess.
+behind the adjudication band — originally a flat 0.4 the comment beside it honestly
+called a guess, now `build_agent._adjudicate_band(n_axes)` derived from `_JUDGE_SD`.
 This module makes that measurement repeatable and cheap so the guess can be replaced.
 
 It needs no build. It re-scores a render that already exists, through the real critic,
@@ -102,7 +103,12 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
                   concurrency: int = 3) -> dict:
     """Score one existing render/reference pair `n` times through the real critic."""
     import anyio
-    from ..build_agent import PASS_MEAN, PASS_MIN, _ADJUDICATE_BAND, _borderline, _critique
+    # _ADJUDICATE_BAND (a flat 0.4) became _adjudicate_band(n_axes) when the band was
+    # made granularity-aware, and this import was never updated — so the module that
+    # exists to re-measure the band could not be imported at all. Report the band at the
+    # axis count THIS sample was actually scored on; a single number would be the same
+    # mistake the flat constant was.
+    from ..build_agent import PASS_MEAN, PASS_MIN, _adjudicate_band, _borderline, _critique
 
     axes = load_axes(shot)
     scope = None
@@ -180,7 +186,7 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
     # Does axis noise cancel across the mean, or move together?
     #
     # This decides how the ONE number we can measure cheaply (per-axis spread on a
-    # scoped layer) transfers to the many-axis case that _ADJUDICATE_BAND actually
+    # scoped layer) transfers to the many-axis case that the adjudication band actually
     # governs. If axis errors are independent, sd(mean) = sqrt(Σ sd_i²)/n and a wide rubric
     # is self-stabilising. If the critic is instead having a generous or harsh day across
     # the whole card, sd(mean) ≈ mean(sd_i) and the rubric width buys nothing. Guessing
@@ -215,7 +221,11 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
         "flip_rate": round(min(n_pass, n - n_pass) / n, 3) if n else 0.0,
         "unanimous": n_pass in (0, n),
         "thresholds": {"PASS_MEAN": PASS_MEAN, "PASS_MIN": PASS_MIN,
-                       "ADJUDICATE_BAND": _ADJUDICATE_BAND},
+                       # the band is a function of axis count now, so record BOTH the
+                       # value in force for this sample and the axis count it came from
+                       "ADJUDICATE_BAND": round(_adjudicate_band(len(scored)), 3),
+                       "ADJUDICATE_BAND_AXES": len(scored)},
+        "icc": _icc_from_axes(per_axis),
         "band_evidence": band_evidence,
         "near_pass_line": near_line,
         "axis_independence": indep,
@@ -224,6 +234,35 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
         "enough_for_band": n >= MIN_N_FOR_BAND and near_line,
     }
     return rec
+
+
+def _icc_from_axes(per_axis: dict) -> dict:
+    """ICC(2,1) with AXES as targets and repeats as raters.
+
+    This is the between/within split Phase 0.2 asks for, and it is NOT the same
+    quantity as "how much does one axis wobble". Targets here are axes, so a high ICC
+    means the critic reliably ranks the axes against each other, not that any single
+    score is repeatable. Stated in the output so the two cannot be conflated. Judge
+    model and prompt template are held FIXED within one run, so this reports repetition
+    variance only — crossing model x template is a separate sweep.
+    """
+    from .icc import icc_2_1
+    rows = []
+    keys = []
+    for key, d in per_axis.items():
+        vals = d.get("values") or []
+        if len(vals) >= 2:
+            rows.append(list(vals))
+            keys.append(key)
+    if len(rows) < 2:
+        return {"ok": False, "icc": None, "axes": keys,
+                "reason": "ICC needs at least 2 axes that were scored in every repeat"}
+    width = min(len(r) for r in rows)
+    out = icc_2_1([r[:width] for r in rows])
+    out["axes"] = keys
+    out["targets_are"] = "axes"
+    out["raters_are"] = "repeats of the same judge, same prompt"
+    return out
 
 
 def _critic_model() -> str:
@@ -267,7 +306,20 @@ def report(rec: dict) -> str:
     ]
     t = rec["thresholds"]
     lines.append(f"   thresholds PASS_MEAN {t['PASS_MEAN']} · PASS_MIN {t['PASS_MIN']} "
-                 f"· _ADJUDICATE_BAND {t['ADJUDICATE_BAND']}")
+                 f"· adjudication band {t['ADJUDICATE_BAND']} "
+                 f"(at {t.get('ADJUDICATE_BAND_AXES', '?')} scored axes)")
+    icc = rec.get("icc") or {}
+    if icc.get("ok"):
+        lines.append(
+            f"   ICC(2,1)   {icc['icc']} across {icc['n_targets']} axes x "
+            f"{icc['n_raters']} repeats · between {icc['between']} / within "
+            f"{icc['within']}")
+        lines.append(
+            "   Read that as axis RANKING reliability, not per-score repeatability: the "
+            "targets are axes, so it says the critic separates the axes consistently. "
+            "Judge model and prompt were held fixed, so this is repetition variance only.")
+    elif icc.get("reason"):
+        lines.append(f"   ICC(2,1)   not computed — {icc['reason']}")
     lines.append("")
     if rec.get("floored_axes") and rec["floored_axes"] >= max(1, rec.get("scored_axes_count", 0) // 2):
         lines.append(
@@ -295,8 +347,9 @@ def report(rec: dict) -> str:
             f"   band evidence: every observed mean sat within {rec_band} of the median. "
             f"A verdict whose mean is within that distance of PASS_MEAN "
             f"({t['PASS_MEAN']}) could plausibly have landed on the other side, so "
-            f"_ADJUDICATE_BAND should be AT LEAST {rec_band} "
-            f"(currently {t['ADJUDICATE_BAND']}).")
+            f"the adjudication band should be AT LEAST {rec_band} "
+            f"(currently {t['ADJUDICATE_BAND']} at {t.get('ADJUDICATE_BAND_AXES', '?')} "
+            f"axes).")
         lines.append(
             f"   Caveat that travels with that number: it is ONE render/reference pair. "
             f"Ambiguity is a property of the frame, so this is a lower bound for the "

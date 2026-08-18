@@ -36,6 +36,7 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 
 from .brief import load_shot
 from .log import log, log_message
+from . import transcript
 from .plan_tools import build_plan_tools
 from .prompts import (PLANNER_SYSTEM, VERIFIER_ADDENDUM, planner_user_prompt,
                       verifier_user_prompt)
@@ -98,12 +99,20 @@ async def generate_plan(folder: str | Path, *, model: str = MODEL,
     log(f"lab: blender '{blender}' · artifacts → {lab_dir.relative_to(shot.folder)}/ · "
         f"web research ENABLED · max_turns {max_turns}", 1)
 
+    tpath = transcript.bind(shot.folder, "plan", label=tag or mode)
+    if tpath:
+        log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
+    transcript.prompt(kickoff, role="kickoff", mode=mode, model=model, tag=tag,
+                      refs=stills, videos=videos, max_turns=max_turns)
     try:
         async for message in query(prompt=kickoff, options=options):
             log_message(message)
     except Exception as e:  # noqa: BLE001
         log(f"! plan session died: {str(e)[:200]}")
+        transcript.event("died", error=str(e)[:2000])
         raise
+    finally:
+        transcript.unbind()
 
     if not plan_path.is_file():
         log(f"! agent finished without writing {plan_path.name}")

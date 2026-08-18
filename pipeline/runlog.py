@@ -114,6 +114,24 @@ def summary(rec: dict) -> str:
         top = " · ".join(f"{k.split('__')[-1]} {v}"
                          for k, v in list((tu.get("calls") or {}).items())[:5])
         lines.append(f"   tools      {tu.get('total', 0)} calls — {top}")
+        lines.append(f"   looked {tu.get('looked', 0)} · measured "
+                     f"{tu.get('measured', 0)} · verified {tu.get('verified', 0)} "
+                     f"(judgment-free scene checks)")
+        # Whether the diagnostic tools are EARNING their place. They were verified
+        # against Blender and written into the builder prompt; if the builder never calls
+        # them the prompt is what needs changing, and that is invisible unless it is said
+        # here. Reported for every layer, because "adopted on layer 2, forgotten by layer
+        # 6" is the shape this kind of drift actually takes.
+        unused = tu.get("unused_new_tools") or []
+        used = {k: v for k, v in (tu.get("adoption") or {}).items() if v}
+        if used:
+            lines.append("   diagnostics " + " · ".join(f"{k} {v}" for k, v in used.items()))
+        if unused:
+            lines.append(f"   ⚠ NEVER CALLED: {', '.join(unused)} — these exist to show "
+                         f"the builder what it is judged on (render_pass), prove claims "
+                         f"it would otherwise assert (check_scene) and show whether an "
+                         f"edit did anything (diff_frames). Unused means the PROMPT is "
+                         f"not landing, not that the tools are unnecessary.")
         # LOOKING vs MEASURING. On barrel_roll every layer that passed called
         # compare_frame 7-41 times; the layer that failed three times called it 3-5 and
         # called measure_regions 17-44 instead — the only layer where measuring

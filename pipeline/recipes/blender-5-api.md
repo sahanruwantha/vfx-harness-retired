@@ -120,6 +120,37 @@ Blender 5.x moved several APIs the model reaches for by habit. The fixes:
   to `ffmpeg -framerate <fps> -i seq -c:v libx264 -pix_fmt yuv420p -crf 18`). If you want to
   check the grade in motion, build a contact sheet from low-res PNG stills in-process instead —
   and save/restore `file_format` around it (see `warm-session-probe-loop`).
+- RENDER PASSES need an INTERFACE SOCKET, not just a link. Routing an isolated pass
+  (`Diffuse Direct`, `Emission`, `Shadow`, `AO`, `Normal`, `Depth`) to the output fails
+  SILENTLY in the worst way: `CompositorNodeComposite` does not exist in 5.x, the
+  compositor is a node GROUP, and a fresh `NodeGroupOutput` has only a virtual socket. Link
+  to `inputs[0]` on a group whose interface is empty and the group outputs nothing, Blender
+  falls back to the raw Combined pass, and you get a render **bit-identical to beauty** —
+  no error, no warning, just a diagnostic image that is secretly the beauty frame. Declare
+  the interface socket FIRST. Note the socket names are `'Diffuse Direct'` / `'Emission'`,
+  NOT the `'DiffDir'` / `'Emit'` of older docs, and they only appear AFTER the pass is
+  enabled on the view layer.
+  ```python
+  vl = sc.view_layers[0]
+  vl.use_pass_diffuse_direct = True                 # the socket does not exist until this
+  ng = bpy.data.node_groups.new("route", "CompositorNodeTree")
+  ng.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+  rl, go = ng.nodes.new("CompositorNodeRLayers"), ng.nodes.new("NodeGroupOutput")
+  ng.links.new(rl.outputs["Diffuse Direct"], go.inputs["Image"])
+  sc.compositing_node_group = ng
+  sc.render.use_compositing = True
+  ```
+  Verified: an emissive body reads 180/255 in beauty and 0.1 in `Diffuse Direct`. If your
+  "pass" render matches beauty, the route is not connected — check `ng.links` is non-empty
+  and that `ng.interface.items_tree` has an OUTPUT. Use `render_pass(frame, pass=...)`
+  and you never touch this.
+- LIGHT GROUPS ARE CYCLES-ONLY, and `lightgroup` is on the OBJECT, not the light data
+  (`AttributeError: 'AreaLight' object has no attribute 'lightgroup'` means you wrote
+  `light.data.lightgroup`). On EEVEE the render layer exposes only `Image` and `Alpha` with
+  a light group assigned, so there is no per-group pass to route and assigning groups does
+  **nothing** to the render. To see one lamp's contribution, hide the others
+  (`obj.hide_render = True`) — that EEVEE does perform. `render_pass(light='Key')` does
+  exactly this and reports which lights it hid.
 - MOTION BLUR: it's on `scene.render`, NOT `scene.eevee` (legacy). Set
   `scene.render.use_motion_blur = True`, `scene.render.motion_blur_shutter = <0.5-2.0>`,
   `scene.render.motion_blur_position` ('CENTER'/'START'/'END'). `scene.eevee.use_motion_blur`

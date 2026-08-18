@@ -27,6 +27,7 @@ from .build_agent import _critique, _judge, _verdict, _stash_render, ensure_axes
 from .ledger import Ledger, Milestone, load_layers, load_milestones
 from .metrics import compare, look_pair, report
 from .log import log
+from . import transcript
 
 
 class IncompleteChain(RuntimeError):
@@ -78,8 +79,13 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
     if only:
         moments = {k: v for k, v in moments.items() if k == only} or moments
     axes = await ensure_axes(shot, verbose)
+    tpath = transcript.bind(shot.folder, "accept")
+    if tpath:
+        log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
     ran = _chain(session, shot, force=force)
     log(f"chain rebuilt from empty: {len(ran)} scripts — judging {len(moments)} moment(s)")
+    transcript.event("accept_start", moments=list(moments), chained=ran,
+                     axes=[k for k, _ in axes])
 
     ledger = Ledger(shot)
     results: dict[str, dict] = {}
@@ -132,6 +138,8 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         verdict["pass"] = ok
         why = "" if not blocking else f"  (critic {verdict['mean']}, but {len(blocking)} metric(s) out of tolerance)"
         log(f"{mid}: mean {verdict['mean']} {'PASS ✅' if ok else 'FAIL ✗'}{why}")
+        transcript.event("accept_moment", moment=mid, **results[mid],
+                         seconds=verdict.get("round_s"))
 
     ledger.data["acceptance"] = {
         "scripts": ran,
@@ -157,6 +165,9 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         f"→ {ledger.path}")
     for mid, r in results.items():
         log(f"  {mid} f{r['frame']}: {r['mean']} {'✅' if r['pass'] else '✗'}", 1)
+    transcript.event("accept_end", **{k: v for k, v in ledger.data["acceptance"].items()
+                                      if k != "moments"})
+    transcript.unbind()
     return ledger.data["acceptance"]
 
 

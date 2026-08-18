@@ -24,8 +24,18 @@ SERVER_NAME = "blender"
 
 # Renders are downscaled to JPEG before base64 so a single tool-result message stays
 # well under the SDK's stdio buffer (a detailed 960px PNG base64s to >1MB and crashes
-# it). 1024px JPEG q85 ≈ 150-250KB base64 — plenty to judge look, far cheaper in tokens.
-_MAX_W = 1024
+# it).
+#
+# 1024 was chosen against the stdio limit alone and is too small for the judgement it
+# feeds. Claude tokenises images in 28x28 px patches: fine discrimination is measured at
+# 0.00 accuracy for features spanning <=2 patches (56px) and 1.00 at >=4 patches (112px).
+# At 1024px wide, this shot's hero facade piers span ~6px — a fifth of ONE patch, i.e.
+# no representational slot in the encoder at all. 2048 doubles every feature's patch
+# count and a 2048x1024 JPEG q85 base64s to ~300-450KB, comfortably inside the buffer.
+_MAX_W = 2048
+# The side-by-side sheet is two images wide, so it needs its own ceiling or the same
+# height that is right for ONE frame doubles the payload.
+_SHEET_MAX_W = 3072
 _JPEG_Q = 85
 
 
@@ -123,6 +133,89 @@ def _warn_suffix(r: dict) -> str:
     return "".join(f"\n⚠ {x}" for x in w)
 
 
+def subtract_png(a_path: str, b_path: str, dest: str) -> dict:
+    """|A − B| as an image, plus how much the two frames actually differ.
+
+    Client-side: Blender's bundled Python has no Pillow, and two PNGs already on disk
+    do not need a scene to be subtracted.
+
+    `did_work` answers the question a side-by-side cannot: a near-black diff means the
+    edit changed nothing. The 1.5/255 threshold is above PNG quantisation and well below
+    any visible change.
+    """
+    from PIL import ImageChops, ImageStat
+    a = Image.open(a_path).convert("RGB")
+    b = Image.open(b_path).convert("RGB")
+    resized = a.size != b.size
+    if resized:
+        b = b.resize(a.size, Image.LANCZOS)
+    diff = ImageChops.difference(a, b)
+    st = ImageStat.Stat(diff.convert("L"))
+    mean = st.mean[0]
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    diff.save(dest)
+    return {
+        "image_path": dest,
+        "mean_delta": round(mean, 2),
+        "max_delta": int(st.extrema[0][1]),
+        "did_work": mean > 1.5,
+        # A resample introduces differences of its own, so a diff across two sizes
+        # cannot answer "did my edit do anything". Say so rather than returning a
+        # number that looks like the same measurement.
+        "resized": resized,
+    }
+
+
+def _check_report(kind: str, r: dict) -> str:
+    """A check's answer as text, with the ISSUES first.
+
+    Deliberately not a JSON dump. The failure this class of check exists to catch is
+    "the number was measured, written into a comment, and verified by nothing" — so
+    the finding has to read as a finding, not as a payload to be re-derived.
+    """
+    issues = r.get("issues") or []
+    head = f"check {kind}: " + ("PASS ✅" if r.get("ok") else "ISSUES ✗")
+    lines = [head]
+    for i in issues:
+        lines.append(f"  ✗ {i}")
+    if kind == "visibility":
+        lines.append(f"  visible fraction {r.get('visible_fraction')} "
+                     f"({r.get('hits')} hit · {r.get('occluded')} occluded · "
+                     f"{r.get('missed')} missed of {r.get('samples')} rays)")
+    elif kind == "framing":
+        for fr in r.get("frames", []):
+            lines.append(f"  f{fr.get('frame')}: bbox {fr.get('bbox')} · "
+                         f"w {fr.get('width')} h {fr.get('height')} · "
+                         f"centre {fr.get('centre')} · on-screen {fr.get('on_screen')}")
+    elif kind == "motion":
+        lines.append(f"  max speed {r.get('max_speed')} u/f (f{r.get('peak_speed_frame')}) · "
+                     f"max |accel| {r.get('max_accel')} u/f^2 · "
+                     f"max |jerk| {r.get('max_jerk')} u/f^3 · "
+                     f"{'one unbroken move' if r.get('unbroken') else 'BROKEN move'}")
+    elif kind == "mesh":
+        c = r.get("counts", {})
+        lines.append(f"  {c.get('verts')} verts · {c.get('edges')} edges · "
+                     f"{c.get('faces')} faces · {c.get('islands')} island(s)")
+        lines.append(f"  non-manifold {c.get('nonmanifold_edges')} · loose "
+                     f"{c.get('loose_verts')} · degenerate {c.get('degenerate_faces')} · "
+                     f"n-gons {c.get('ngons')} · poles {c.get('poles')}")
+    elif kind == "scale":
+        lines.append(f"  scale {r.get('scale')} · dimensions {r.get('dimensions')} · "
+                     f"units {r.get('unit_system')}")
+    elif kind == "passes":
+        lines.append(f"  {r.get('channels')} channels · NaN {r.get('nan')} · "
+                     f"Inf {r.get('inf')} · negative {r.get('negative')} · "
+                     f"passes {r.get('passes_enabled')}")
+    elif kind in ("bbox", "subject_bbox"):
+        lines.append(f"  bbox {r.get('bbox')} (0..1, origin BOTTOM-LEFT) · "
+                     f"w {r.get('width')} h {r.get('height')} · centre {r.get('centre')}")
+        lines.append("  hand this straight to render_pass(crop=…, res_pct=400) — an "
+                     "oracle crop measures far better than a guessed one.")
+    if not issues and kind in ("visibility", "framing", "motion", "mesh", "scale"):
+        lines.append("  nothing to fix on this check — the numbers above are the record.")
+    return "\n".join(lines)
+
+
 def _image(path: str, caption: str) -> dict:
     im = _load(path)
     return {"content": [
@@ -147,7 +240,22 @@ def _image(path: str, caption: str) -> dict:
 # while the full-res reference downscaled — the very asymmetry this is fixing, just moved.
 # Measuring below every accepted render height means neither image is ever upscaled.
 _METRIC_H = 320
-_DISPLAY_H = 512
+# DISPLAY is a SEPARATE question from METRIC and the two must not be reconciled.
+#
+# _METRIC_H exists to stop resampling asymmetry: measure below every accepted render
+# height so neither image is ever upscaled. Lower is SAFER there.
+#
+# _DISPLAY_H is what a vision model gets to look at, where lower is strictly worse.
+# Claude tokenises in 28x28 px patches, so a feature must clear ~4 patches (112px) to be
+# discriminable and is at chance below ~2 (56px). At 512px tall, this shot's hero tower
+# facade piers land near 6px — 0.21 of one patch, five times below the floor. The render
+# was already paid for at full resolution; shipping it shrunk is throwing away the only
+# signal the judge has. 1024 is the height at which a 2:1 frame still passes Claude's
+# high-resolution tier unresized (~2400 tokens, ~$0.012 a call).
+#
+# The reasoning for METRIC leaked into DISPLAY once already. They answer different
+# questions; do not "unify" them.
+_DISPLAY_H = 1024
 
 # (frame, ref) -> the (mode, scale) it was last measured at, so a change is announced.
 _LAST_COMPARE: dict = {}
@@ -218,6 +326,12 @@ def _compare_image(cand_path: str, ref_path: Path, caption: str) -> dict:
     d = ImageDraw.Draw(sheet)
     d.text((6, 6), "YOURS", fill=(255, 255, 0))
     d.text((cand_d.width + 6, 6), "REFERENCE", fill=(0, 255, 255))
+    # Two frames side by side hit the stdio ceiling at half the height one frame does.
+    # Shrink only if the join is genuinely too wide, and shrink the SHEET — never the
+    # copies the numbers above were computed from.
+    if sheet.width > _SHEET_MAX_W:
+        h = max(1, round(sheet.height * _SHEET_MAX_W / sheet.width))
+        sheet = sheet.resize((_SHEET_MAX_W, h), Image.LANCZOS)
     return {"content": [
         {"type": "text", "text": text},
         {"type": "image", "data": _b64(sheet), "mimeType": "image/jpeg"},
@@ -336,6 +450,132 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         return _image(r["image_path"], cap)
 
     @tool(
+        "render_pass",
+        "Render one frame as a DIAGNOSTIC rather than a beauty shot, so you can see the "
+        "thing you are actually being judged on. `pass` isolates a render pass — use "
+        "'diffuse_direct' to see MODELLING BY LIGHT with emission removed (a render "
+        "setting, not something to squint past), 'emit' to see only self-lit surfaces, "
+        "'shadow'/'ao'/'normal'/'depth'/'crypto' for the rest. `shade` overrides "
+        "materials: 'clay' for form, 'silhouette' for outline, 'matcap:<name>' for a "
+        "Workbench diagnostic. `light='<LightObject>'` (comma list allowed) renders with "
+        "ONLY those light objects and hides the rest, so you can see what one lamp "
+        "actually contributes. `crop` is "
+        "[x0,y0,x1,y1] in 0..1 from the BOTTOM-LEFT and is a true optical zoom, so pair "
+        "it with res_pct (e.g. 400) to see fine detail at real resolution instead of "
+        "upscaling a thumbnail. Every mode returns a caption saying what to look for.",
+        {"type": "object",
+         "properties": {
+             "frame": {"type": "integer"},
+             "pass": {"type": "string",
+                      "enum": ["beauty", "diffuse_direct", "emit", "shadow", "ao",
+                               "normal", "depth", "crypto"]},
+             "shade": {"type": "string",
+                       "description": "beauty | clay | silhouette | matcap:<name>"},
+             "light": {"type": "string",
+                       "description": "light OBJECT name(s), comma-separated; all other "
+                                      "lights are hidden for this render"},
+             "crop": {"type": "array", "items": {"type": "number"},
+                      "description": "[x0,y0,x1,y1] in 0..1, origin BOTTOM-LEFT"},
+             "res_pct": {"type": "integer",
+                         "description": "resolution percentage; >100 zooms a crop"},
+             "scale": {"type": "number"},
+         },
+         "required": ["frame"]},
+    )
+    async def render_pass(args):
+        crop = args.get("crop")
+        if crop is not None:
+            if len(crop) != 4 or not all(0.0 <= float(v) <= 1.0 for v in crop) \
+                    or not (crop[0] < crop[2] and crop[1] < crop[3]):
+                return _text("crop must be [x0,y0,x1,y1] in 0..1 with x0<x1 and y0<y1 "
+                             "(origin BOTTOM-LEFT)", is_error=True)
+        try:
+            r = await _call("render", frame=int(args["frame"]),
+                            mode="eevee",
+                            scale=float(args.get("scale", 0.5)),
+                            **{"pass": args.get("pass", "beauty")},
+                            shade=args.get("shade", "beauty"),
+                            light=args.get("light"),
+                            crop=crop,
+                            res_pct=args.get("res_pct"))
+        except BlenderError as e:
+            return _text(str(e), is_error=True)
+        # The caption is the point: a visual channel with no text measured WORSE than no
+        # extra channel at all. It travels in the same text block as the readouts.
+        cap = (f"frame {r['frame']} · {r.get('caption', '')}"
+               + f"\nsettings: pass={r.get('pass')} shade={r.get('shade')} "
+                 f"light={r.get('light')} crop={r.get('crop')} res_pct={r.get('res_pct')}"
+               + _warn_suffix(r))
+        return _image(r["image_path"], cap)
+
+    @tool(
+        "check_scene",
+        "JUDGMENT-FREE checks on the scene itself — no critic, no cost, no render (except "
+        "`passes`). This is the whole class of defect a beauty render CANNOT show: "
+        "kind='visibility' ray-casts the camera to the object (a hero behind a wall looks "
+        "fine until you look for it), 'framing' gives the NDC bbox/width/centre via "
+        "world_to_camera_view, 'motion' gives max speed/accel/jerk and whether the move is "
+        "unbroken, 'mesh' counts non-manifold edges, loose verts, n-gons, poles and "
+        "disconnected islands, 'scale' checks dimensions and that scale is applied, "
+        "'passes' checks the render buffer for NaN/Inf/negative pixels, 'bbox' returns the "
+        "oracle crop box to hand to render_pass. Use these to VERIFY a claim you would "
+        "otherwise write in a comment.",
+        {"type": "object",
+         "properties": {
+             "kind": {"type": "string",
+                      "enum": ["visibility", "framing", "motion", "mesh", "scale",
+                               "passes", "bbox"]},
+             "object": {"type": "string"},
+             "frame": {"type": "integer"},
+             "frames": {"type": "array", "items": {"type": "integer"}},
+             "samples": {"type": "integer"},
+             "scale": {"type": "number"},
+         },
+         "required": ["kind"]},
+    )
+    async def check_scene(args):
+        kind = args["kind"]
+        payload = {k: v for k, v in args.items() if k != "kind" and v is not None}
+        try:
+            r = await _call("check", kind=kind, **payload)
+        except BlenderError as e:
+            return _text(str(e), is_error=True)
+        return _text(_check_report(kind, r))
+
+    @tool(
+        "diff_frames",
+        "Subtract one render from another and SEE the difference. Give two image paths "
+        "from earlier render calls. A near-black diff means nothing changed — which is the "
+        "answer to 'did my edit do anything' that a side-by-side cannot give you. Reports "
+        "mean and max delta alongside the image.",
+        {"type": "object",
+         "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+         "required": ["a", "b"]},
+    )
+    async def diff_frames(args):
+        a, b = Path(args["a"]), Path(args["b"])
+        for p in (a, b):
+            if not p.is_file():
+                return _text(f"{p} does not exist — pass the image paths from two "
+                             f"earlier render calls", is_error=True)
+        dest = a.with_name(f"diff_{a.stem}_vs_{b.stem}.png")
+        try:
+            r = await anyio.to_thread.run_sync(
+                lambda: subtract_png(str(a), str(b), str(dest)))
+        except OSError as e:
+            return _text(f"could not subtract those images: {e}", is_error=True)
+        verdict = ("the two renders DIFFER" if r["did_work"] else
+                   "the two renders are essentially IDENTICAL — whatever you changed had "
+                   "no visible effect at this frame")
+        cap = (f"|A − B| · mean delta {r['mean_delta']}/255 · max {r['max_delta']}/255 — "
+               f"{verdict}. Bright regions are where the two renders disagree.")
+        if r["resized"]:
+            cap += (" ⚠ the two frames were DIFFERENT SIZES, so one was resampled and "
+                    "part of this difference is the resample, not your edit. Re-render "
+                    "both at the same scale before trusting it.")
+        return _image(r["image_path"], cap)
+
+    @tool(
         "compare_frame",
         "Render a frame and place it SIDE-BY-SIDE with a reference image (YOURS | "
         "REFERENCE) so you judge the match directly — composition, palette, atmosphere. "
@@ -443,7 +683,8 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         dims = json.loads(meta.read_text()).get("bbox_dims") if meta.is_file() else None
         return _text(f"imported {name}: objects={r.get('result')} bbox_dims={dims}")
 
-    tools = [run_bpy, inspect_scene, inspect_nodes, list_keyframes, render_frame, render_frames]
+    tools = [run_bpy, inspect_scene, inspect_nodes, list_keyframes, render_frame,
+             render_frames, render_pass, check_scene, diff_frames]
     if shot_dir is not None:
         tools.append(compare_frame)
     if assets_dir is not None:

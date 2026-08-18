@@ -4,6 +4,12 @@ Everything flushes immediately (default `print` block-buffers when redirected to
 file, which hid all our output). `log_message` unpacks an Agent SDK message into
 readable lines: reasoning/thinking, agent text, tool calls with inputs, tool
 results, and the final cost/duration.
+
+It also forwards every message to `transcript`, which writes the DURABLE record. The two
+have different jobs and therefore different clipping: the console is for a human watching
+a run and must stay readable, so scripts stop at 120 lines; the transcript is grepped and
+diffed after the fact, so it keeps them whole. Both are driven from here because this is
+the one function all five drain paths already call.
 """
 
 from __future__ import annotations
@@ -99,25 +105,47 @@ def _clip(s: str, n: int, keep: str = "head") -> str:
 # it was recoverable only by grepping a console log that does not survive the session.
 TOOL_USE: Counter = Counter()
 
+_MCP = "mcp__blender__"
+
+# LOOKING: tools that put pixels in front of the model. `render_pass` belongs here and
+# not in a category of its own — a diffuse-direct or clay render is still the model
+# looking at the frame, just at the channel its axis is about.
+_LOOK = ("compare_frame", "render_frame", "render_frames", "render_pass", "diff_frames")
+# MEASURING: reducing the frame to numbers the model then optimises against.
+_MEASURE = ("measure_regions", "measure_ref")
+# VERIFYING: judgment-free facts about the SCENE rather than the image — visibility,
+# framing, motion, mesh, scale. Deliberately a THIRD category, not folded into
+# `measured`, because the failure mode the look/measure ratio detects is optimising
+# against self-chosen image statistics, and `check_scene` is the opposite of that: it
+# answers a question with one right answer that the builder did not get to pick.
+_VERIFY = ("check_scene",)
+# The Phase 1/2 additions, tracked by name so "did the builder ever reach for them" is
+# answerable from the ledger instead of by grepping a transcript.
+_NEW_TOOLS = ("render_pass", "check_scene", "diff_frames")
+
 
 def reset_tool_use() -> None:
     TOOL_USE.clear()
 
 
 def tool_use_summary() -> dict:
-    """Per-tool counts, plus the look-vs-measure ratio the layer outcomes correlate with."""
+    """Per-tool counts, the look-vs-measure ratio layer outcomes correlate with, and
+    whether the newer diagnostic tools were used at all."""
     if not TOOL_USE:
         return {}
 
     def n(*names):
-        return sum(TOOL_USE.get(x, 0) for x in names)
+        return sum(TOOL_USE.get(_MCP + x, 0) for x in names)
 
-    looked = n("mcp__blender__compare_frame", "mcp__blender__render_frame",
-               "mcp__blender__render_frames")
-    measured = n("mcp__blender__measure_regions", "mcp__blender__measure_ref")
+    looked, measured, verified = n(*_LOOK), n(*_MEASURE), n(*_VERIFY)
     out = {"calls": dict(TOOL_USE.most_common()), "total": sum(TOOL_USE.values()),
-           "looked": looked, "measured": measured,
-           "compared": n("mcp__blender__compare_frame")}
+           "looked": looked, "measured": measured, "verified": verified,
+           "compared": n("compare_frame"),
+           # Adoption, per tool. A zero here is not neutral: it means a capability that
+           # was built, verified against Blender and documented in the builder prompt is
+           # being ignored, and the prompt is the thing to fix — not the tool.
+           "adoption": {t: TOOL_USE.get(_MCP + t, 0) for t in _NEW_TOOLS},
+           "unused_new_tools": [t for t in _NEW_TOOLS if not TOOL_USE.get(_MCP + t)]}
     if measured:
         out["look_per_measure"] = round(looked / measured, 2)
     return out
@@ -161,7 +189,13 @@ def _result_text(block) -> str:
 
 
 def log_message(m) -> None:
-    """Pretty-print one SDK message: reasoning, text, tool calls, results, result."""
+    """Pretty-print one SDK message: reasoning, text, tool calls, results, result.
+
+    Also appends it to the durable transcript when one is bound (see `transcript.bind`).
+    """
+    from . import transcript
+    transcript.message(m)
+
     if SystemMessage is not None and isinstance(m, SystemMessage):
         if getattr(m, "subtype", None) == "init":
             data = getattr(m, "data", {}) or {}

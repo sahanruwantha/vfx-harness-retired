@@ -3,7 +3,10 @@ actually helped.
 
     python -m pipeline.evals freeze   shots/barrel_roll --label before-context-editing
     python -m pipeline.evals check    shots/barrel_roll            # free, no model
+    python -m pipeline.evals checks                                # free, Blender only
+    python -m pipeline.evals unbound                               # free, no Blender
     python -m pipeline.evals variance shots/barrel_roll --n 6      # cheap, real critic
+    python -m pipeline.evals blank    shots/barrel_roll --layer 5  # cheap, real critic
     python -m pipeline.evals compare  barrel_roll:latest evals/baselines/.../x.json
     python -m pipeline.evals panels                                # free, from ledgers
     python -m pipeline.evals list
@@ -38,10 +41,58 @@ from pathlib import Path
 from .brief import load_shot
 from .eval import BASELINES, VARIANCE
 from .eval import baseline as _baseline
+from .eval import blank as _blank
 from .eval import compare as _compare
+from .eval import unbound as _unbound
 from .eval import variance as _variance
 from .eval.determinism import metric_scale_consistency, replay_equivalence
 from .eval.integrity import artifact_integrity
+
+
+def _cmd_checks(argv: list[str]) -> int:
+    """Phase 1 gate: every judgment-free check must FIRE on a known-bad scene.
+
+    A check nobody has seen fail is not a check. This boots a throwaway headless
+    Blender, builds one deliberately broken fixture per check, and fails if any of
+    them stays silent — which is the only way to earn the right to trust a green one.
+    """
+    ap = argparse.ArgumentParser(prog="pipeline.evals checks")
+    ap.add_argument("--blender", default="blender")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    from .blender.session import BlenderError, BlenderSession
+    session = BlenderSession(blender=args.blender).start()
+    try:
+        res = session.check("self_test")
+    except BlenderError as e:
+        print(f"✗ the check fixtures could not run: {e}")
+        return 3
+    finally:
+        session.close()
+
+    if args.json:
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("gate", {}).get("ok") else 3
+
+    gate = res.get("gate", {})
+    print("\n── Phase 1 checks · known-bad fixtures ──")
+    for kind, d in res.items():
+        if kind == "gate":
+            continue
+        fired = d.get("fired")
+        mark = "✓" if fired else "✗"
+        detail = "; ".join(d.get("issues") or []) or "(no issues reported)"
+        print(f"  {mark} {kind:<12} {'fired on the bad scene' if fired else 'STAYED SILENT'}"
+              f"  — {detail}")
+    if gate.get("ok"):
+        print("\nEvery check fired on its fixture. A green result from these is now "
+              "evidence rather than an assumption.")
+        return 0
+    print(f"\n{len(gate.get('silent', []))} check(s) stayed silent: "
+          f"{', '.join(gate.get('silent', []))}. Do NOT trust those checks — a check "
+          f"that cannot see a defect built to trip it will not see a real one.")
+    return 3
 
 
 def _cmd_check(argv: list[str]) -> int:
@@ -215,7 +266,10 @@ def _cmd_panels(argv: list[str]) -> int:
 _COMMANDS = {
     "freeze": _baseline.main,
     "variance": _variance.main,
+    "blank": _blank.main,
     "check": _cmd_check,
+    "checks": _cmd_checks,
+    "unbound": _unbound.main,
     "compare": _cmd_compare,
     "panels": _cmd_panels,
     "list": _cmd_list,
