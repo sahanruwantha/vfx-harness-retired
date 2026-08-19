@@ -229,6 +229,8 @@ def log_message(m) -> None:
         return
 
     if isinstance(m, ResultMessage):
+        from . import costlog
+        costlog.record(m)          # one row per session, labelled by role — see costlog
         cost = getattr(m, "total_cost_usd", None)
         dur = getattr(m, "duration_ms", None)
         turns = getattr(m, "num_turns", None)

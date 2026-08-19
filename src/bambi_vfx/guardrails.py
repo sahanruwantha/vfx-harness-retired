@@ -17,7 +17,9 @@ numbers without asking (the critic never once noticed barrel_roll M1 was 54% hot
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -357,12 +359,72 @@ def distiller_hooks(*roots, cwd: str | Path | None = None) -> dict:
     return {"PreToolUse": [path_sandbox(*roots, cwd=cwd), recipe_write_guard()]}
 
 
-def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = None) -> dict:
-    """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback."""
+def completion_gate(shot_folder: str | Path, script_rel: str | None) -> HookMatcher:
+    """Stop: a layer has not finished until its ARTIFACTS exist.
+
+    "Write the delta script before you finish" was prompt text, and prompt text is what
+    reads zero in this pipeline: `[unknown]` was used 0 times across four plan documents,
+    `ask_supervisor` never fired, no plan carried a source URL. Every one of those was
+    asked for and none was required. A Stop hook is the same instruction expressed as a
+    condition the harness evaluates, so "finished" stops being the model's opinion of its
+    own work.
+
+    Blocking here returns the agent to work with the reason, rather than failing the layer
+    — the session is still warm and the missing artifact is usually one Write away.
+    """
+    folder = Path(shot_folder)
+
+    async def _check(inp, tool_use_id, ctx):
+        if not script_rel:
+            return {}
+        target = folder / script_rel
+        if target.is_file() and target.stat().st_size > 0:
+            return {}
+        return {"decision": "block",
+                "reason": (f"This layer has not published {script_rel}. The live scene is "
+                           f"not the deliverable — the delta script that rebuilds it from "
+                           f"empty is. Write it, then finish.")}
+    return HookMatcher(matcher=None, hooks=[_check])
+
+
+def failure_recorder(shot_folder: str | Path) -> HookMatcher:
+    """PostToolUseFailure: keep a durable record of every tool call that raised.
+
+    A failed run_bpy can leave the live scene half-mutated while the model's account of
+    what happened lives only in a context window that compaction will discard. Appending
+    to disk means a post-mortem can ask "what was Blender actually asked to do before it
+    broke" without replaying the whole session.
+    """
+    folder = Path(shot_folder)
+
+    async def _record(inp, tool_use_id, ctx):
+        try:
+            rec = {"at": datetime.now(UTC).isoformat(timespec="seconds"),
+                   "tool": inp.get("tool_name"),
+                   "error": str(inp.get("error") or inp.get("tool_response"))[:1500],
+                   "input": json.dumps(inp.get("tool_input"))[:4000]}
+            out = folder / "logs" / "tool_failures.jsonl"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with out.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except Exception as e:
+            # A recorder that breaks the run is worse than no recorder — but a SILENT one
+            # is how you later believe there were no failures because the log is empty.
+            log(f"! could not record tool failure: {str(e)[:120]}", 1)
+        return {}
+    return HookMatcher(matcher=None, hooks=[_record])
+
+
+def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = None,
+                  script_rel: str | None = None) -> dict:
+    """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback.
+    PostToolUseFailure: durable failure log. Stop: the artifacts must exist."""
     from .sandbox import path_sandbox
     return {
         "PreToolUse": [path_sandbox(*roots, cwd=shot_folder), api_guardrails(),
                        script_sanity(), web_allowlist()],
         "PostToolUse": [metrics_feedback(shot_folder, ref_rel)],
+        "PostToolUseFailure": [failure_recorder(shot_folder)],
+        "Stop": [completion_gate(shot_folder, script_rel)],
         "PreCompact": [compaction_notice(shot_folder)],
     }

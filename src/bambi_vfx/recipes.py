@@ -112,8 +112,19 @@ def build_recipe_tools(on_use=None):
             return {"content": [{"type": "text",
                     "text": "no matching recipe — improvise; a good solution may be harvested "
                             "into the cookbook if this milestone passes."}]}
-        parts = [f"### {h['name']}  (when: {h['when']})\n{h['body']}" for h in hits]
-        return {"content": [{"type": "text", "text": "\n\n---\n\n".join(parts)}]}
+        # The TOP hit in full, the rest as one-liners. Returning every body meant one query
+        # could put ~17KB of cookbook into the conversation, and a tool result is replayed
+        # on every subsequent model call — the draft pass alone made 13 of these calls.
+        # Summaries-only would be cheaper still but costs a second round-trip in the common
+        # case where one recipe is obviously right, so: the likely answer stays immediately
+        # usable and the alternatives are named and fetchable by name.
+        top, rest = hits[0], hits[1:]
+        text = f"### {top['name']}  (when: {top['when']})\n{top['body']}"
+        if rest:
+            more = "\n".join(f"  · {h['name']} — {h['when']}" for h in rest)
+            text += (f"\n\n---\nAlso matched ({len(rest)}); query by name for the body:\n"
+                     f"{more}")
+        return {"content": [{"type": "text", "text": text}]}
 
     server = create_sdk_mcp_server(name="recipes", version="0.1.0", tools=[find_recipe])
     return server, ["mcp__recipes__find_recipe"]

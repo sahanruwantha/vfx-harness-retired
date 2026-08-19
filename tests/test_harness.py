@@ -48,7 +48,7 @@ def main():
         load_milestones,
         plan_strips,
     )
-    from bambi_vfx.metrics import compare, look_vector
+    from bambi_vfx.metrics import compare, look_pair, look_vector
     from bambi_vfx.recipes import _all, recipe_index, search_recipes
     from bambi_vfx.sandbox import _relocate, path_sandbox
     from bambi_vfx.script_map import find_lines, outline
@@ -104,12 +104,66 @@ def main():
     print("\n[metrics]")
     ref = str(shot.folder / "refs/f100_city.jpg")
     v = look_vector(ref)
-    check("look vector has banded metrics", {"detail_bot", "points_bot", "halation_mid"} <= set(v))
+    check("look vector has banded metrics",
+          {"detail_bot", "points_bot", "structure_mid", "hot_core"} <= set(v))
     check("identical images -> no deltas", compare(v, v) == [])
     d = compare({**v, "points_bot": v["points_bot"] * 0.1}, v)
     check("large drop is blocking", any(x.blocking for x in d))
     check("zero-ref does not explode",
-          "~0" in str(compare({"halation_mid": 900.0}, {"halation_mid": 0.0})[0]))
+          "~0" in str(compare({"chroma_spread": 900.0}, {"chroma_spread": 0.0})[0]))
+
+    # halation divides by a count of blown-out pixels. When that count is a handful the
+    # ratio is an artifact of its denominator, and `if hot else 0.0` published it anyway:
+    # f045_pullback read 0.0 at four widths and 1769.5 at two, same picture. An UNMEASURABLE
+    # metric must be absent, because 0.0 is not neutral here — it is the loudest claim the
+    # metric can make ("no glow at all"), and the builder acts on it.
+    _hot = str(shot.folder / "refs/f300_widen.jpg")      # 506 hot px — real core
+    _cold = str(shot.folder / "refs/f045_pullback.jpg")  # 4 hot px — nothing to divide by
+    check("halation is reported where there IS a hot core", "halation" in look_vector(_hot))
+    check("halation is ABSENT, not 0.0, where there is not",
+          "halation" not in look_vector(_cold), f"{look_vector(_cold).get('halation')}")
+    check("hot_core is reported either way", {"hot_core"} <= set(look_vector(_cold)))
+    _at = {w: look_vector(_cold, width=w).get("halation") for w in (320, 480, 640, 960)}
+    check("an unmeasurable halation stays unmeasurable under resampling",
+          set(_at.values()) == {None}, f"{_at}")
+    # ...and a real one stays put. Absence must come from the image, not from the width.
+    _real = {w: look_vector(_hot, width=w).get("halation") for w in (480, 640, 960)}
+    check("a measurable halation survives resampling", all(x is not None for x in _real.values()),
+          f"{_real}")
+    # The signal the floor could have silently eaten: a render with no blown core where the
+    # reference has one used to surface as `halation 0.0 vs ref 11.5`. hot_core keeps it.
+    check("no-core-vs-core still produces a delta",
+          any(x.key == "hot_core" for x in
+              compare({**look_vector(_hot), "hot_core": 0.0}, look_vector(_hot))))
+
+    # FORM AND SKY. Every other metric here is a histogram or an edge count, so a flat card
+    # and a solid tower with the same pixel statistics are indistinguishable to all of them.
+    # `structure_top` is credited in this module's docstring with catching "flat fog-wall
+    # skies vs wispy structured cloud" and does not: on the layer-5 render against
+    # f001_open it reads 15% apart against its own 45% tolerance while the two skies share
+    # nothing to look at.
+    _flat = str(shot.folder / "renders/5_best.png")        # banded sky, no atmosphere
+    _turb = str(shot.folder / "refs/f001_open.jpg")        # turbulent green-teal cloud
+    _fv, _tv = look_pair(_flat, _turb)
+    check("the look vector carries the form metrics",
+          {"aniso_top", "local_range"} <= set(_fv))
+    _keys = {d.key for d in compare(_fv, _tv)}
+    check("structure_top is SILENT on two skies that share nothing",
+          "structure_top" not in _keys, f"{sorted(_keys)}")
+    check("...and aniso_top is not", "aniso_top" in _keys, f"{sorted(_keys)}")
+    check("aniso_top can decide a moment (blocking)",
+          any(d.key == "aniso_top" and d.blocking for d in compare(_fv, _tv)))
+    # A metric that fires on a plate compared with ITSELF is measuring the instrument.
+    for _p in ("refs/f001_open.jpg", "refs/f195_black.jpg", "refs/f440_final.jpg"):
+        _q = str(shot.folder / _p)
+        check(f"no self-comparison false positive on {Path(_p).name}",
+              not [d for d in compare(*look_pair(_q, _q))
+                   if d.key in ("aniso_top", "local_range")])
+    # Layer 1 is layout: no sky exists yet, so the sky metric must not accuse it.
+    _l1 = str(shot.folder / "renders/1@f100_canonical_f100.png")
+    check("aniso_top stays quiet on a layer that has not built a sky",
+          "aniso_top" not in {d.key for d in
+                              compare(*look_pair(_l1, str(shot.folder / "refs/f100_city.jpg")))})
 
     # compare_frame used to force BOTH images to height 512 AFTER the render had already
     # been shrunk by `scale`, so the reference (always full-res) downscaled and stayed
@@ -132,6 +186,487 @@ def main():
     _out = _ci(str(shot.folder / "renders/1@f100_canonical_f100.png"), Path(ref), "x")
     check("compare_frame states the SIGNED gap, not just raw values",
           "LOW" in _out["content"][0]["text"] or "HIGH" in _out["content"][0]["text"])
+
+    print("\n[plan grounding]")
+    # The plan is the only stage whose output nothing checked, and its fingerprints are the
+    # numeric targets every later layer aims at. Each verdict is exercised against a real
+    # plate, because a checker nobody has watched fire is not a checker.
+    from bambi_vfx.eval import grounding as _gr
+    _truth = _gr.measure(shot.folder / "refs/f300_widen.jpg")      # a plate WITH hot core
+    _cold_t = _gr.measure(shot.folder / "refs/f045_pullback.jpg")  # 73 ppm — no denominator
+
+    _fp = f"mean {_truth['mean']:.0f} · detail {_truth['detail']:.1f}"
+    _rows, _ = _gr.check_fingerprint(_fp, _truth)
+    check("a fingerprint read off its own plate is grounded",
+          len(_rows) == 2 and all(r["verdict"] == "ok" for r in _rows), f"{_rows}")
+
+    _rows, _ = _gr.check_fingerprint(f"mean {_truth['mean'] * 2:.0f}", _truth)
+    check("a target that is not in the picture is a MISMATCH",
+          [r["verdict"] for r in _rows] == ["MISMATCH"], f"{_rows}")
+
+    # The verdict a plain numeric diff cannot produce. barrel_roll M1 claimed "halation 0.0"
+    # on a plate with no blown pixels at all; against the old always-0.0 metric that read as
+    # a perfect match, so the target survived into every build that aimed at it.
+    _rows, _ = _gr.check_fingerprint("halation 0.0", _cold_t)
+    check("a target the plate cannot support is UNMEASURABLE, not a match",
+          [r["verdict"] for r in _rows] == ["UNMEASURABLE"], f"{_rows}")
+    _rows, _ = _gr.check_fingerprint("halation 2340.1", _cold_t)
+    check("...and so is the same claim carrying a large value",
+          [r["verdict"] for r in _rows] == ["UNMEASURABLE"], f"{_rows}")
+
+    # A checker that silently ignores tokens it does not understand reports "all grounded"
+    # while checking nothing — the failure class this module exists to catch.
+    _rows, _un = _gr.check_fingerprint("mean 40 · wibble 123.4", {**_truth, "mean": 40.0})
+    check("an unrecognised number is reported, not skipped", "123.4" in _un, f"{_un}")
+
+    print("\n[plan gate]")
+    # Every check gets a deliberately broken fixture. A gate nobody has watched fire is not
+    # a gate — and this one decides whether a plan is fit to build on.
+    from bambi_vfx.eval import plan_gate as _pg
+    _lab = Path(tempfile.mkdtemp())
+    (_lab / "logs").mkdir()
+    (_lab / "real.out").write_text("line one\nline two\n")
+
+    _f, _ = _pg._check_citations(_lab, "see `logs/../real.out` for the measurement")
+    check("a citation that resolves is not a finding", not _f, f"{_f}")
+    _f, _ = _pg._check_citations(_lab, "measured in `logs/plan_lab/spike_99.out`")
+    check("a citation that does NOT resolve is blocking",
+          len(_f) == 1 and _f[0].blocking, f"{_f}")
+    _f, _ = _pg._check_citations(_lab, "see `real.out` line 9")
+    check("a cited line past end-of-file is blocking",
+          len(_f) == 1 and "9" in _f[0].what, f"{_f}")
+    # The planner prompt itself tells the verifier to search `../*/build/*.py`. Quoting a
+    # search instruction is not a claim about a file, and reporting it as rot would train
+    # the reader to skim the gate — which is how a check stops being read at all.
+    _f, _ = _pg._check_citations(_lab, "search prior work in `../*/build/*.py` first")
+    check("a glob is a search instruction, not a citation", not _f, f"{_f}")
+    # One repair per dead path, however many times the plan leans on it.
+    _f, _ = _pg._check_citations(_lab, "`a/x.out` and `a/x.out` line 3 and `a/x.out`")
+    check("a dead path is reported once, not once per mention", len(_f) == 1, f"{_f}")
+
+    _f, _ = _pg._check_evidence(_lab, "**G10·T1 · Rig**  [known ✓spiked — verified]\n- no cite\n")
+    check("a ✓spiked ticket with no lab file is blocking",
+          len(_f) == 1 and _f[0].blocking, f"{_f}")
+    # The word "spike_04" is not evidence; the file it names is. Substring-matching the tag
+    # would have passed every barrel_roll ticket, whose lab was archived and whose spike
+    # references resolve to nothing today.
+    _cite = "**G10·T1 · Rig**  [known ✓spiked]\n- proof in `logs/plan_lab/spike_01.out`\n"
+    _f, _ = _pg._check_evidence(_lab, _cite)
+    check("a ✓spiked ticket naming a file that does not exist is still blocking",
+          len(_f) == 1 and _f[0].blocking, f"{_f}")
+    (_lab / "logs" / "plan_lab").mkdir(parents=True)
+    (_lab / "logs" / "plan_lab" / "spike_01.out").write_text("max|vert| 0.0 -> 45.0\n")
+    _f, _ = _pg._check_evidence(_lab, _cite)
+    check("...and is satisfied once that artifact exists", not _f, f"{_f}")
+    # The shorthand plans actually use — a bare tag carrying no path at all.
+    _f, _ = _pg._check_evidence(_lab, "**G20·T1 · Roll**  [known ✓spiked — spike_01]\n- x\n")
+    check("a bare `spike_NN` tag resolves by search", not _f, f"{_f}")
+    _f, _ = _pg._check_evidence(_lab, "**G30·T1 · Gone**  [known ✓spiked — spike_99]\n- x\n")
+    check("...and a bare tag naming a missing spike is blocking",
+          len(_f) == 1 and _f[0].blocking, f"{_f}")
+    _f, _ = _pg._check_evidence(_lab, "**G20·T1 · Novel**  [researched]\n- trust me\n")
+    check("a researched ticket with no source link is flagged (warn)",
+          len(_f) == 1 and not _f[0].blocking, f"{_f}")
+
+    (_lab / "critic_axes.json").write_text('[{"key": "lighting", "desc": "d"}]')
+    (_lab / "acceptance.json").write_text("[]")
+    (_lab / "layers.json").write_text(
+        '[{"id": "1", "owns": ["lighting", "typo_axis"], "judge": []}]')
+    _f, _ = _pg._check_contracts(_lab)
+    check("a layer owning an axis the rubric lacks is blocking",
+          any(f.blocking and "typo_axis" in f.what for f in _f), f"{_f}")
+    check("an axis no layer owns is a warn, not a block",
+          all(not f.blocking for f in _f if "no layer owns" in f.what), f"{_f}")
+
+    print("\n[planner inputs]")
+    # The planner writes every target the rest of the run aims at, and the harness used to
+    # hand it a list of FILENAMES. Whether it ever SAW the shot came down to whether it
+    # happened to try Read on a .jpg. The critic has long been guaranteed its images
+    # ("cannot score a frame it never saw"); the stage that WRITES the targets was not.
+    from bambi_vfx.agents import planner as _pl
+    from bambi_vfx.prompts import planner_user_prompt as _pup
+    _blocks = _pl._kickoff_blocks(_pup(shot), shot)
+    _imgs = [b for b in _blocks if b["type"] == "image"]
+    check("every reference still is attached to the kickoff",
+          len(_imgs) == len(shot.refs), f"{len(_imgs)} images for {len(shot.refs)} refs")
+    check("...in the API content-block shape the SDK needs",
+          all(b["source"]["type"] == "base64" and b["source"]["media_type"] == "image/jpeg"
+              for b in _imgs))
+    check("the kickoff text still leads", _blocks[0]["type"] == "text")
+
+    # probe_video / contact_sheet / extract_frames were defined with @tool and never passed
+    # to create_sdk_mcp_server — unreachable on EVERY shot. An absent tool is
+    # indistinguishable from one the model declined to call, so nothing noticed.
+    import tempfile as _tf
+    _names = _pl.build_plan_tools(shot.folder, lab_dir=Path(_tf.mkdtemp()))[1]
+    _short = {n.split("__")[-1] for n in _names}
+    check("a stills-only shot registers the stills tools",
+          {"measure_ref", "spike", "ask_supervisor"} <= _short, f"{_short}")
+    check("...and does NOT carry video tools that could only fail",
+          not ({"contact_sheet", "extract_frames", "probe_video"} & _short), f"{_short}")
+    _vid = Path(_tf.mkdtemp()); (_vid / "refs").mkdir()
+    (_vid / "refs" / "source.mp4").write_bytes(b"")
+    _vshort = {n.split("__")[-1] for n in _pl.build_plan_tools(
+        _vid, lab_dir=Path(_tf.mkdtemp()))[1]}
+    check("a shot WITH video gets its scene-read tools",
+          {"contact_sheet", "extract_frames", "probe_video"} <= _vshort, f"{_vshort}")
+
+    print("\n[planner inputs]")
+    # The planner writes every target the rest of the run aims at, and the harness used to
+    # hand it a list of FILENAMES. Whether it ever SAW the shot came down to whether it
+    # happened to try Read on a .jpg. The critic has long been guaranteed its images
+    # ("cannot score a frame it never saw"); the stage that WRITES the targets was not.
+    from bambi_vfx.agents import planner as _pl
+    from bambi_vfx.prompts import planner_user_prompt as _pup
+    _blocks = _pl._kickoff_blocks(_pup(shot), shot)
+    _imgs = [b for b in _blocks if b["type"] == "image"]
+    check("every reference still is attached to the kickoff",
+          len(_imgs) == len(shot.refs), f"{len(_imgs)} images for {len(shot.refs)} refs")
+    check("...in the API content-block shape the SDK needs",
+          all(b["source"]["type"] == "base64" and b["source"]["media_type"] == "image/jpeg"
+              for b in _imgs))
+    check("the kickoff text still leads", _blocks[0]["type"] == "text")
+
+    # probe_video / contact_sheet / extract_frames were defined with @tool and never passed
+    # to create_sdk_mcp_server — unreachable on EVERY shot. An absent tool is
+    # indistinguishable from one the model declined to call, so nothing noticed.
+    import tempfile as _tf
+    _names = _pl.build_plan_tools(shot.folder, lab_dir=Path(_tf.mkdtemp()))[1]
+    _short = {n.split("__")[-1] for n in _names}
+    check("a stills-only shot registers the stills tools",
+          {"measure_ref", "spike", "ask_supervisor"} <= _short, f"{_short}")
+    check("...and does NOT carry video tools that could only fail",
+          not ({"contact_sheet", "extract_frames", "probe_video"} & _short), f"{_short}")
+    _vid = Path(_tf.mkdtemp()); (_vid / "refs").mkdir()
+    (_vid / "refs" / "source.mp4").write_bytes(b"")
+    _vshort = {n.split("__")[-1] for n in _pl.build_plan_tools(
+        _vid, lab_dir=Path(_tf.mkdtemp()))[1]}
+    check("a shot WITH video gets its scene-read tools",
+          {"contact_sheet", "extract_frames", "probe_video"} <= _vshort, f"{_vshort}")
+
+    print("\n[executable checks]")
+    # ROOT CAUSE, not symptom. Every gate before this one read English and inferred
+    # structure, and every one needed three rounds of false-positive repair. A check is now
+    # a record that must be RUN before it may enter a plan. All four defects an independent
+    # review found by hand are rejected here by construction.
+    from bambi_vfx.checks import Check as _C
+    from bambi_vfx.checks import verify as _verify
+    _R = shot.folder / "refs"
+    _corpus = sorted((shot.folder / "renders").glob("*_best.png"))
+    _banded = "shots/barrel_roll/renders/5_best.png"      # the flat/banded render
+
+    _v = _verify(_C("pier", "region_ratio", "band", 1.35, 2.20,
+                    regions={"a": (0.44, 0.35, 0.50, 0.85),
+                             "b": (0.50, 0.35, 0.56, 0.85)}),
+                 _R / "f440_final.jpg", _corpus)
+    check("rule 1 rejects a target the reference cannot reach",
+          not _v.ok and any("UNREACHABLE" in r for r in _v.reasons), f"{_v.reasons}")
+
+    _v = _verify(_C("gr", "green_excess", "<=", float("-inf"), 1.08),
+                 _R / "f440_final.jpg", _corpus)
+    check("...including the G/R check the plan had already caught once and repeated",
+          not _v.ok and any("UNREACHABLE" in r for r in _v.reasons), f"{_v.reasons}")
+
+    _v = _verify(_C("floor", "region_mean", ">=", 14.0, float("inf"),
+                    regions={"r": (0.50, 0.35, 0.56, 0.85)}),
+                 _R / "f440_final.jpg", _corpus)
+    check("rule 2 rejects a FLOOR aimed at a CEILING defect",
+          not _v.ok and any("TOOTHLESS" in r for r in _v.reasons), f"{_v.reasons}")
+
+    # Rule 2 is only as strong as the negative it is graded against. Scoring a sky on band
+    # sigma looked discriminating only because a LAYOUT render with no sky at all failed it,
+    # while the banded render it actually targets sailed through. Naming the adversary is
+    # the author's real work.
+    _v = _verify(_C("sky_sigma", "region_sigma", ">=", 26.0, float("inf"),
+                    regions={"r": (0.0, 0.0, 1.0, 0.33)}, rejects=[_banded]),
+                 _R / "f001_open.jpg", _corpus, root=Path.cwd())
+    check("a named adversary exposes a check that only looked discriminating",
+          not _v.ok, f"{_v.reasons}")
+    _v = _verify(_C("sky_aniso", "frame_aniso_top", "band", 0.6, 1.0, rejects=[_banded]),
+                 _R / "f001_open.jpg", _corpus, root=Path.cwd())
+    check("...and the metric that genuinely separates that pair PASSES", _v.ok, f"{_v.reasons}")
+
+    _v = _verify(_C("nofloor", "frame_mean", "band", 0.0, 255.0), _R / "f100_city.jpg", _corpus)
+    check("a check naming no adversary is reported as WEAK",
+          any("WEAK" in r for r in _v.reasons), f"{_v.reasons}")
+    _v = _verify(_C("bogus", "no_such_metric", ">=", 1.0), _R / "f100_city.jpg", _corpus)
+    check("an unknown metric is rejected at plan time, not mid-build", not _v.ok)
+
+    # RULE 4 — the shipped spec must reproduce the proof recorded with it.
+    # L3c-2 shipped a region measuring 18.50/13.01 while carrying "ref 23.74, adversary 5.67"
+    # in free-text `note`: the planner tested one box and shipped another, and nothing tied
+    # the two together. Moving the CHECK out of prose while leaving its PROOF in prose left
+    # the last mile self-certified — the same shape as [unknown]=0 and zero source URLs.
+    _adv = str(shot.folder.parent / "barrel_roll_v2/refs/layer2/f240_reveal_L2.png")
+    _V2 = shot.folder.parent / "barrel_roll_v2"
+    _shipped = _C("L3c-2", "region_sigma", ">=", 12.0, regions={"r": (0.05, 0.70, 0.95, 0.74)},
+                  rejects=[_adv], proof={"ref": 23.74, "adversary": [5.67]})
+    _v = _verify(_shipped, _V2 / "refs/f100_city.jpg", [], root=Path.cwd())
+    check("a spec that does not reproduce its own proof is rejected",
+          not _v.ok and any("PROOF DOES NOT REPRODUCE" in r for r in _v.reasons), f"{_v.reasons}")
+    _tested = _C("L3c-2b", "region_sigma", ">=", 12.0, regions={"r": (0.05, 0.73, 0.95, 0.77)},
+                 rejects=[_adv], proof={"ref": 21.54, "adversary": [5.55]})
+    check("...and the region actually tested passes every rule",
+          _verify(_tested, _V2 / "refs/f100_city.jpg", [], root=Path.cwd()).ok)
+
+    # RULE 5 — a verdict that depends on exactly where the box was put is not a verdict.
+    # Threshold threaded between ref 22.36 and adversary 21.36; a 1% nudge inverts them.
+    _frag = _C("frag", "region_sigma", ">=", 21.86, regions={"r": (0.05, 0.56, 0.95, 0.59)},
+               rejects=[_adv])
+    _v = _verify(_frag, _V2 / "refs/f100_city.jpg", [], root=Path.cwd())
+    check("a check whose verdict flips on a 1% region nudge is rejected",
+          not _v.ok and any("FRAGILE" in r for r in _v.reasons), f"{_v.reasons}")
+
+    # The scaffold tripwire that lived here has been honoured: checks.json is live on
+    # barrel_roll_v2 and eval/done_checks.py is deleted. grounding.py stays — acceptance.json
+    # fingerprints are still prose and checks.json is a different artifact, so the tripwire's
+    # own instruction to reduce it was over-specified. Removing scaffolding is only correct
+    # for the part actually superseded.
+    check("the prose done-check parser is gone",
+          not (Path("src/bambi_vfx/eval/done_checks.py")).exists())
+
+    print("\n[completion gate]")
+    # "Write the delta script before you finish" was prompt text, and prompt text is what
+    # reads zero here: [unknown] used 0 times across four plan documents, ask_supervisor
+    # never fired, no plan carried a source URL. A Stop hook is the same instruction as a
+    # condition the harness evaluates, so "finished" stops being the model's own opinion.
+    import tempfile as _tf2
+
+    from bambi_vfx.guardrails import builder_hooks, completion_gate
+    _sf = Path(_tf2.mkdtemp())
+    _gate = completion_gate(_sf, "build/01_layout.py").hooks[0]
+    _r = anyio.run(lambda: _gate({}, None, None))
+    check("Stop BLOCKS when the layer published no script",
+          _r.get("decision") == "block" and "01_layout.py" in _r.get("reason", ""), f"{_r}")
+    (_sf / "build").mkdir(parents=True)
+    (_sf / "build/01_layout.py").write_text("import bpy\n")
+    check("...and allows finishing once it exists",
+          not anyio.run(lambda: _gate({}, None, None)).get("decision"))
+    _empty = completion_gate(_sf, "build/99_missing.py").hooks[0]
+    check("an empty file does not count as published",
+          anyio.run(lambda: _empty({}, None, None)).get("decision") == "block")
+
+    # A failed run_bpy can half-mutate the live scene while the only account of what was
+    # attempted lives in a context window compaction will discard.
+    _rec = builder_hooks(_sf, [_sf])["PostToolUseFailure"][0].hooks[0]
+    anyio.run(lambda: _rec({"tool_name": "run_bpy", "error": "boom",
+                            "tool_input": {"script": "bpy.ops.explode()"}}, None, None))
+    _fl = _sf / "logs/tool_failures.jsonl"
+    check("PostToolUseFailure durably records the failed call",
+          _fl.is_file() and "run_bpy" in _fl.read_text() and "explode" in _fl.read_text())
+
+    print("\n[import levels]")
+    # Three `from .metrics` / `from .ledger` inside bambi_vfx/agents/ — one level short, so
+    # they resolve to bambi_vfx.agents.metrics, which does not exist. All three sat in
+    # function-local imports on paths that only run AFTER a layer passes (_ablate, the
+    # metric report, the milestone reload), so nothing exercised them until layer 1 cleared
+    # canonical replay and crashed on the step after it. The layer had done all its work and
+    # was left unmarked. A lazy import is only checked when it fires; static analysis is.
+    import ast as _ast2
+    _leaf = {"metrics", "checks", "facade", "log", "brief", "ledger", "recipes", "prompts",
+             "guardrails", "costlog", "resilience", "plan_tools", "sandbox", "runlog",
+             "transcript", "escalate", "script_map", "preflight", "config"}
+    _wrong = [f"{f.name}:{n.lineno} from .{n.module}"
+              for f in Path("src/bambi_vfx/agents").glob("*.py")
+              for n in _ast2.walk(_ast2.parse(f.read_text()))
+              if isinstance(n, _ast2.ImportFrom) and n.level == 1 and n.module in _leaf]
+    check("no agents/ module imports a top-level sibling at the wrong level",
+          not _wrong, str(_wrong))
+
+    # The accounting hole, found by using the accounting. costlog was hooked into
+    # log_message, but the critic loop consumes messages with _structured_or_text and never
+    # calls it — so critic sessions were never recorded, and rows that appeared under
+    # role="critic" were whatever else finished while the bind was active. The one
+    # experiment costlog existed for (is the critic's xhigh effort worth 70% of a layer?)
+    # came back with a verdict comparison and no cost data at all.
+    import inspect as _insp
+
+    from bambi_vfx.agents import builder as _bld
+    check("the critic loop records its own cost, not via log_message",
+          "costlog.record" in _insp.getsource(_bld._critique))
+
+    print("\n[necessity]")
+    # THE structural flaw: checks are authored by the stage with the LEAST information.
+    # The planner writes every check before any work exists, from reference images alone —
+    # so all 15 metrics compare pixels to a plate, 42 of 52 checks are post_grade, and the
+    # layout layer got ONE check that cannot run at its own stage. Meanwhile layer 1
+    # re-derived the hero's roof at NDC 0.89 and a mirrored roll ladder, and had nowhere to
+    # record it. verify_necessity is the question only the builder can answer: does this
+    # check pass on what I built AND fail on the state before I ran?
+    from bambi_vfx.checks import Check as _NC
+    from bambi_vfx.checks import verify_necessity
+    _lit = shot.folder / "renders/5_best.png"     # a lit render
+    _dark = shot.folder / "renders/1_best.png"    # the layout state before lighting
+
+    # after 36.6 / before 32.3 — the band must sit BETWEEN them or it is not necessary.
+    _c = _NC("L5-necessity", "frame_mean", ">=", 35.0, float("inf"))
+    _v = verify_necessity(_c, _lit, _dark)
+    check("a check that holds after and fails before is NECESSARY", _v.ok,
+          f"after {_v.ref_value} before {_v.bad_values} {_v.reasons}")
+
+    # The failure this catches: a check that was already true before the layer ran.
+    _c2 = _NC("stolen", "frame_mean", ">=", 1.0, float("inf"))
+    _v2 = verify_necessity(_c2, _lit, _dark)
+    check("a check that ALSO passes before the layer proves nothing about it",
+          not _v2.ok and any("NOT NECESSARY" in r for r in _v2.reasons), f"{_v2.reasons}")
+
+    _c3 = _NC("wrong", "frame_mean", ">=", 250.0, float("inf"))
+    _v3 = verify_necessity(_c3, _lit, _dark)
+    check("a check its own render fails does not describe what was built",
+          not _v3.ok and any("DOES NOT HOLD" in r for r in _v3.reasons), f"{_v3.reasons}")
+
+    # Layer 1 has no prior layer; its adversary is the empty scene.
+    check("the first layer verifies with no prior state",
+          verify_necessity(_NC("L1", "frame_mean", ">=", 1.0, float("inf")), _dark, None).ok)
+
+    print("\n[lit occupancy]")
+    # The brief's FIRST anti-goal — "windows on a regular grid, identical spacing, one
+    # colour" — shipped in layer 2 and scored 3. Nothing could see it: every metric here is
+    # a histogram or an edge count, and a uniform lattice with varied per-cell brightness
+    # satisfies region_sigma completely.
+    #
+    # The first fix measured spatial PERIODICITY by autocorrelation and was thrown away: the
+    # references scored MORE periodic than the render (0.857/0.885 vs 0.689), because real
+    # towers do have regular window columns. The anti-goal is about OCCUPANCY, not spacing.
+    from bambi_vfx.checks import Check as _LC
+    from bambi_vfx.checks import evaluate as _lev
+    from bambi_vfx.checks import noise_floor as _lnf
+    _V2 = shot.folder.parent / "barrel_roll_v2"
+    _lv = _LC("lit", "region_lit_variance", ">=", 0.0,
+              regions={"r": (0.38, 0.60, 0.62, 0.95)})
+    _ref = _lev(_lv, _V2 / "refs/f001_open.jpg")
+    _ren = _lev(_lv, _V2 / "renders/2@f1_canonical_f1.png")
+    check("an evenly-lit lattice reads LOWER occupancy spread than a real facade",
+          _ren < _ref * 0.75, f"render {_ren:.3f} vs ref {_ref:.3f}")
+    # The separation must beat the instrument, or it is a coin flip (rule 3).
+    _fl = max(_lnf(_lv, _V2 / "refs/f001_open.jpg"),
+              _lnf(_lv, _V2 / "renders/2@f1_canonical_f1.png"))
+    check("...by far more than the metric's own resampling noise",
+          abs(_ref - _ren) > 10 * _fl, f"gap {abs(_ref-_ren):.4f} vs floor {_fl:.4f}")
+    check("region_lit_variance is reachable from a check spec",
+          "region_lit_variance" in __import__("bambi_vfx.checks", fromlist=["x"]).METRICS)
+    # A metric in the registry that no tool description names is unreachable in practice —
+    # the same shape as contact_sheet being defined and never registered. The vocabulary is
+    # now GENERATED from METRICS so the two cannot drift apart again.
+    from bambi_vfx.checks import METRICS as _MET
+    from bambi_vfx.plan_tools import _metric_list as _ml
+    check("every registered metric is advertised to the agents",
+          all(k in _ml() for k in _MET), sorted(k for k in _MET if k not in _ml()))
+
+    print("\n[stale builder checks]")
+    # A builder check is authored MID-layer against the render in front of it. A later
+    # attempt rebuilds the scene and replaces every render, so a check proven in attempt 2
+    # can describe a picture that no longer exists by attempt 3 — measured on layer 1:
+    # three checks proven at 0.354 / 2.052 / 0.675 read 1.532 / 1.000 / 8.107 against the
+    # final renders, and nothing distinguished that from a wrong check.
+    from PIL import Image as _I3
+
+    from bambi_vfx.checks import revalidate_layer as _rv
+    _sd = Path(_tf2.mkdtemp())
+    (_sd / "renders").mkdir()
+    _img = _sd / "renders" / "9@f1_canonical_f1.png"
+    _I3.new("RGB", (128, 64), (200, 200, 200)).save(_img)
+    (_sd / "checks.json").write_text(json.dumps([
+        {"id": "holds", "layer": "9", "frame": 1, "origin": "builder", "metric": "frame_mean",
+         "op": ">=", "lo": 100, "ref": "refs/x.jpg", "proof": {"ref": 200}},
+        {"id": "stale", "layer": "9", "frame": 1, "origin": "builder", "metric": "frame_mean",
+         "op": "<=", "hi": 20, "ref": "refs/x.jpg", "proof": {"ref": 5}},
+        {"id": "planner", "layer": "9", "origin": "planner", "metric": "frame_mean",
+         "op": ">=", "lo": 999, "ref": "refs/x.jpg"},
+    ]))
+    _r = _rv(_sd, "9", lambda c: _img)
+    check("a stale builder check is dropped at layer end",
+          [d[0] for d in _r["dropped"]] == ["stale"], f"{_r['dropped']}")
+    check("...one that still holds is kept", _r["kept"] == 1, f"{_r}")
+    _left = {d["id"] for d in json.loads((_sd / "checks.json").read_text())}
+    check("...and a PLANNER check is never touched by this", "planner" in _left, f"{_left}")
+
+    print("\n[cost attribution]")
+    # run_layerN.json says layer 5 cost $18.63 across 11 turns and 9,082 output tokens —
+    # MORE than layer 2's $9.77 across 37 turns. The aggregate said the expensive layer was
+    # the one that barely ran and could not say why. It was not the builder: all 16 of
+    # layer 5's rounds went to a best-of-three critic panel carrying four images each.
+    # A row per session with its ROLE turns that from an inference into a groupby.
+    from typing import ClassVar
+
+    from bambi_vfx import costlog as _cl
+    _cs = Path(_tf2.mkdtemp())
+
+    class _R:                       # the shape of a ResultMessage
+        total_cost_usd, duration_ms, num_turns = 3.10, 41000, 2
+        subtype, model = "success", "claude-opus-5"
+        usage: ClassVar[dict] = {"output_tokens": 400,
+                                 "cache_read_input_tokens": 540000}
+
+    check("nothing is recorded when unbound", (_cl.record(_R()), True)[1]
+          and not (_cs / "logs/cost.jsonl").exists())
+    _cl.bind(_cs, role="critic", layer="5")
+    _cl.record(_R()); _cl.record(_R()); _cl.record(_R())
+    _cl.bind(_cs, role="builder", layer="5")
+    _cl.record(_R())
+    _cl.unbind()
+    _rows = [json.loads(x) for x in (_cs / "logs/cost.jsonl").read_text().splitlines()]
+    check("a row is written per session, carrying its role", len(_rows) == 4, f"{len(_rows)}")
+    check("...and the role/layer labels survive",
+          sum(1 for r in _rows if r["role"] == "critic" and r["layer"] == "5") == 3)
+    _sum = _cl.summarise(_cs)
+    check("the summary splits spend by role — the cut the aggregate could not give",
+          "critic" in _sum and "builder" in _sum and "$12.40" in _sum, _sum)
+    check("a broken row never breaks the run",
+          (_cl.bind(_cs, role="x"), _cl.record(object()), _cl.unbind(), True)[3])
+
+    print("\n[resilience]")
+    # Two repair rounds ($9 and 25 min each) were lost to a session that raised
+    # "error result: success" at $0.0007 having written nothing. The real cause was in the
+    # session's own text — "Repeated 529 Overloaded errors" — so the exception a caller sees
+    # carries none of the information needed to decide what to do. And that shape is
+    # indistinguishable from a spend-limit failure, which will fail identically forever.
+    from bambi_vfx.resilience import classify, run_session
+    for _t, _want in (("Repeated 529 Overloaded errors. The API is at capacity", "transient"),
+                      ("connection reset by peer", "transient"),
+                      ("rate limit exceeded", "transient"),
+                      ("invalid x-api-key", "terminal"),
+                      ("Your credit balance is too low", "terminal"),
+                      ("401 Unauthorized", "terminal"),
+                      ("TypeError: NoneType is not subscriptable", "unknown")):
+        check(f"classify: {_want:<9} <- {_t[:38]}", classify(_t) == _want, classify(_t))
+    # A terminal error mentioning a timeout is still terminal: retrying a bad credential
+    # ten times is how it turns into half an hour of silence.
+    check("terminal wins over transient when both match",
+          classify("401 Unauthorized (connection timed out)") == "terminal")
+
+    _n = {"i": 0}
+    async def _flaky():
+        _n["i"] += 1
+        if _n["i"] < 3:
+            return "API Error: Repeated 529 Overloaded errors"   # no exception, no output
+        return "done"
+    anyio.run(lambda: run_session(_flaky, succeeded=lambda: _n["i"] >= 3,
+                                  label="t", attempts=4, base_delay=0.001))
+    check("a transient failure is retried until the POST-CONDITION holds", _n["i"] == 3)
+
+    _m = {"i": 0}
+    async def _dead():
+        _m["i"] += 1
+        raise RuntimeError("invalid x-api-key")
+    try:
+        anyio.run(lambda: run_session(_dead, succeeded=lambda: False, label="t",
+                                      base_delay=0.001))
+        check("a terminal failure raises without retrying", False, "did not raise")
+    except RuntimeError:
+        check("a terminal failure raises without retrying", _m["i"] == 1, f"{_m['i']} tries")
+
+    print("\n[plan gate · loop]")
+    # The loop's stopping rule. Two rounds with the same findings means the repair pass
+    # changed nothing that matters, and paying for the same answer again helps nobody.
+    _a = _pg.GateResult("s", [_pg.Finding("citations", True, "x", "gone")])
+    _b = _pg.GateResult("s", [_pg.Finding("citations", True, "x", "gone")])
+    _c = _pg.GateResult("s", [_pg.Finding("citations", True, "y", "gone")])
+    check("identical findings produce an identical signature (stall)",
+          _a.signature() == _b.signature())
+    check("different findings do not", _a.signature() != _c.signature())
+    check("a repair brief carries only blocking findings",
+          "x" in _pg.feedback(_a) and not _pg.feedback(_pg.GateResult("s", [])))
 
     print("\n[sandbox]")
     async def sb():

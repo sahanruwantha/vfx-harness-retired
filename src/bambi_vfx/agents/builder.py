@@ -17,6 +17,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import re
 import shutil
 import time
@@ -33,7 +34,7 @@ from claude_agent_sdk import (
     query,
 )
 
-from .. import transcript
+from .. import costlog, transcript
 from ..approach import review as approach_review
 from ..approach import revision_from_review
 from ..blender.session import BlenderError, BlenderSession
@@ -150,6 +151,11 @@ PASS_MEAN = 3.1
 # and leave turns as loose headroom. Observed: BR C $10.69 passing, BR G $15.95 while
 # truncated at 120 turns. Both default to unlimited in the SDK.
 MAX_BUDGET_USD = 25.0
+# Advisory token countdown shown to the model. None disables it; sized from measured
+# layer usage rather than one global guess, since an undersized budget causes
+# premature partial completion.
+TASK_BUDGET_TOKENS: int | None = None
+
 MAX_TURNS = 400
 MAX_CONTINUES = 3  # turn-cap nudges before we call the build truncated
 
@@ -299,12 +305,14 @@ def _preamble(shot: Shot) -> str:
 # --------------------------------------------------------------------------- #
 def _builder_options(shot: Shot, mcp_servers: dict, tool_names: list[str],
                      axes: list[tuple[str, str]],
-                     ref_rel: str | None = None) -> ClaudeAgentOptions:
+                     ref_rel: str | None = None,
+                     script_rel: str | None = None) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         model=MODEL,
         system_prompt=builder_system(axes, recipe_index()),
         cwd=str(shot.folder),
-        hooks=builder_hooks(shot.folder, [shot.folder, RECIPES_DIR], ref_rel=ref_rel),
+        hooks=builder_hooks(shot.folder, [shot.folder, RECIPES_DIR], ref_rel=ref_rel,
+                            script_rel=script_rel),
         mcp_servers=mcp_servers,
         # Edit was never advertised, so the obvious way to change one value in a 23KB
         # script was to Write the whole thing again.
@@ -322,6 +330,16 @@ def _builder_options(shot: Shot, mcp_servers: dict, tool_names: list[str],
         setting_sources=["project"],
         max_turns=MAX_TURNS,      # headroom only — MAX_BUDGET_USD is the real stop
         max_budget_usd=MAX_BUDGET_USD,
+        # Three different jobs, and they are not substitutes:
+        #   task_budget      ADVISORY — the model sees the countdown and can reserve room
+        #                    to finish and validate instead of being cut off mid-thought
+        #   max_budget_usd   ENFORCED financial ceiling
+        #   max_turns        runaway-loop backstop
+        # Advisory pacing does not fix a loop that cannot converge — layer 2 burned 46
+        # rounds and layer 5 sixteen because nothing could FAIL them on the axis that
+        # mattered, and a countdown would only have stopped them sooner with less to show.
+        # It is here because being cut off mid-script is strictly worse than landing early.
+        **({"task_budget": TASK_BUDGET_TOKENS} if TASK_BUDGET_TOKENS else {}),
         effort="high",
     )
 
@@ -388,9 +406,14 @@ def _critic_options(shot: Shot, axes: list[tuple[str, str]] | None = None) -> Cl
         max_buffer_size=32 * 1024 * 1024,  # a multi-image request exceeds the 1MB default
         setting_sources=[],
         max_turns=1,
-        # the judgement everything depends on; xhigh where the model supports it
-        # (degrades to high elsewhere)
-        effort="xhigh",
+        # The judgement everything depends on — but "xhigh" here was an assertion, never a
+        # measurement, and it is the single largest cost in the pipeline. Measured on layer
+        # 1: the critic produced 5-12k output per session for $4.18-11.31, i.e. $0.63-1.28
+        # per 1k output, against the builder's $0.07-0.09 — 9-18x more per token, while
+        # reading HALF the cache. Extended thinking is billed as output and does not appear
+        # in the output field, which is where the money goes. Configurable so the claim can
+        # be tested with `evals variance` instead of argued about.
+        effort=CRITIC_EFFORT,
         # Validated at the tool layer with automatic retries, instead of scraping the
         # last {...} out of free text — one critic already returned nothing parseable.
         output_format=({"type": "json_schema", "schema": _critic_schema(axes)}
@@ -426,6 +449,7 @@ async def ensure_axes(shot: Shot, verbose: bool = True) -> list[tuple[str, str]]
     prompt = (f"Define the critic rubric for shot '{shot.id}'. Read `brief.md` and these "
               f"reference images, then output the JSON axes array:\n{ref_list}")
     text = ""
+    costlog.bind(shot.folder, role="axes")
     async for message in query(prompt=prompt, options=_axes_options(shot)):
         if isinstance(message, AssistantMessage):
             for block in message.content:
@@ -517,6 +541,7 @@ async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True,
             f"script before writing it — a confidently wrong recipe is worse than none, "
             f"so if you cannot confirm the fix, write nothing for that error.")
     prompt = " ".join(parts)
+    costlog.bind(shot.folder, role="distiller", layer=m.id)
     async for message in query(prompt=prompt, options=options):
         if verbose:
             log_message(message)
@@ -731,6 +756,8 @@ def _repair_delta(pre: list, post: list) -> dict:
 
 # Claude's long-edge sweet spot. Beyond this an image costs tokens without adding
 # discriminable detail, and the critic scores several images per call.
+CRITIC_EFFORT = os.environ.get("BVFX_CRITIC_EFFORT", "xhigh")
+
 _CRITIC_MAX_PX = 1568
 
 
@@ -825,9 +852,18 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     for attempt in range(1, 4):
         acc = {}
         try:
+            costlog.bind(shot.folder, role="critic", layer=m.id,
+                         frame=getattr(m, "frame", None))
             async for message in query(prompt=_one_user_message(blocks),
                                        options=_critic_options(shot, axes)):
                 _structured_or_text(message, acc)
+                # The critic loop does NOT call log_message, which is where costlog was
+                # hooked — so critic sessions were never recorded, and the rows that DID
+                # appear under role="critic" were whatever else finished while the bind
+                # was active. An accounting hole found by using the accounting: the one
+                # experiment it existed for (is xhigh worth it?) came back with no cost
+                # data at all. Record at the source instead of at a shared log helper.
+                costlog.record(message)
             if acc.get("structured") or acc.get("text", "").strip():
                 break
             log(f"critic returned nothing (attempt {attempt}/3) — retrying", 1)
@@ -1065,6 +1101,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     # very first thing in the file is the prompt the builder was given — a transcript of
     # answers to an unrecorded question cannot be audited, and the contract is exactly
     # what changes between the runs we want to compare.
+    costlog.bind(shot.folder, role="builder", layer=str(getattr(layer, "id", m.id)))
     _tpath = transcript.bind(shot.folder, "build", label=f"layer{getattr(layer, 'id', m.id)}")
     if _tpath:
         log(f"transcript → {_tpath.relative_to(shot.folder)}", 1)
@@ -1077,7 +1114,8 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     reviewed = False          # one approach review per layer; a second plateau stops
     best = {"mean": -1.0, "round": 0, "render": None, "verdict": None}
     prev_mean = None
-    opts = _builder_options(shot, mcp_servers, tool_names, axes, ref_rel=m.ref)
+    opts = _builder_options(shot, mcp_servers, tool_names, axes, ref_rel=m.ref,
+                            script_rel=script_rel)
     if resume and resume.get("session_id"):
         opts.resume = resume["session_id"]      # SDK restores the CONVERSATION
     async with ClaudeSDKClient(options=opts) as builder:
@@ -1314,6 +1352,23 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     ok = canonical == "passed" or (passed and canonical == "reproduced")
     ledger.mark(m, "passed" if ok else "failed", best=best)
     if ok and layer is not None:
+        # The renders are final only now. A builder check authored mid-layer was proven
+        # against whatever render existed then, and a later attempt replaced it — three of
+        # layer 1's shipped as stale. Re-verify here, where "the render" stops moving.
+        try:
+            from ..checks import revalidate_layer
+            from ..eval.plan_gate import _builder_render
+            rv = revalidate_layer(shot.folder, str(getattr(layer, "id", m.id)),
+                                  lambda c: _builder_render(shot.folder, c))
+            if rv["dropped"]:
+                log(f"builder checks: {rv['kept']} held, {len(rv['dropped'])} dropped as "
+                    f"stale (authored against a render a later attempt replaced)", 1)
+                for cid, why in rv["dropped"]:
+                    log(f"  dropped {cid}: {why}", 2)
+            elif rv["kept"]:
+                log(f"builder checks: all {rv['kept']} still hold on the final renders", 1)
+        except Exception as e:
+            log(f"! builder-check revalidation skipped: {str(e)[:120]}", 1)
         abl = await _ablate(shot, layer, prior_paths, script_rel, session)
         ledger.record_ablation(m, abl)
         if abl.get("moved"):
@@ -1442,7 +1497,7 @@ async def build_layer(shot: Shot, layer, session: BlenderSession, *,
     try:  # compaction-proof contract, re-injected on every request
         fps = {}
         try:
-            from .ledger import load_milestones
+            from ..ledger import load_milestones
             fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
         except Exception as e:
             log(f"! no measured fingerprints in the layer contract: {str(e)[:60]}", 1)
@@ -1471,7 +1526,7 @@ async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str,
     Render the primary judge frame WITHOUT this layer's script, then WITH it, and compare.
     Two renders, no model.
     """
-    from .metrics import look_vector
+    from ..metrics import look_vector
     frame, _ref = layer.judges[0]
     try:
         session.run(_RESET); session.run(_preamble(shot))
@@ -1511,7 +1566,7 @@ def _metric_report(shot: Shot, render_rel: str, ref_rel: str) -> str:
     """Objective ref-deltas for the reviewer — technique problems show up as structural
     metrics (points, detail) rather than exposure."""
     try:
-        from .metrics import compare, look_pair, report
+        from ..metrics import compare, look_pair, report
         d = compare(*look_pair(str(shot.folder / render_rel),
                                str(shot.folder / ref_rel)))
         return report(d) if d else ""

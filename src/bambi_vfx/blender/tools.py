@@ -17,6 +17,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from PIL import Image, ImageDraw
 
 from ..escalate import ask as _ask
+from ..metrics import _HOT_FLOOR_PPM
 from ..script_map import find_lines as _find_lines
 from ..script_map import outline as _outline
 from .session import BlenderError, BlenderSession
@@ -92,22 +93,32 @@ def _region_metrics(im: Image.Image) -> dict:
         var = sum((v - mean) ** 2 for v in vals) / n
         bands[name] = (mean, var ** 0.5)
     # halation: how much area glows dimmer around the hottest pixels (bloom spread).
+    # None, never 0.0, when there is not enough hot core to divide by — see
+    # metrics._HOT_FLOOR_PPM for why, for the measurement, and for the residual
+    # disagreement. The floor is shared as a DENSITY because this function reads plates at
+    # _MAX_W while metrics.py reads them at 960; a raw-pixel floor would have the same
+    # image measurable in one module and not the other purely on size.
     bright = sum(1 for p in px if p >= 240)
     halo = sum(1 for p in px if 120 <= p < 240)
-    halation = round(halo / bright, 1) if bright else 0.0
-    return {"bands": bands, "halation": halation}
+    dense = bright * 1e6 / (len(px) or 1)
+    halation = round(halo / bright, 1) if dense >= _HOT_FLOOR_PPM else None
+    return {"bands": bands, "halation": halation, "hot_px": bright,
+            "hot_core": round(dense)}
 
 
 def _metrics_line(im: Image.Image, ref: Image.Image | None = None) -> str:
     """`structure` = local stdev per band (fog wall = LOW; wispy/structured = HIGH).
-    `halation` = glow-area : hot-core ratio (hard dots = LOW; bloomy = HIGH).
+    `halation` = glow-area : hot-core ratio (hard dots = LOW; bloomy = HIGH), or `n/a`
+    when the frame carries too little hot core for that ratio to mean anything.
     With a ref, report deltas so tuning becomes numeric convergence, not guessing."""
     mm = _region_metrics(im)
     parts = []
     for band in ("top", "mid", "bot"):
         mean, sd = mm["bands"][band]
         parts.append(f"{band} μ{mean:.0f}/σ{sd:.0f}")
-    line = f"structure: {' · '.join(parts)} · halation {mm['halation']}"
+    hal = mm["halation"]
+    line = (f"structure: {' · '.join(parts)} · halation "
+            + (f"{hal}" if hal is not None else f"n/a (only {mm['hot_px']}px of hot core)"))
     if ref is not None:
         rm = _region_metrics(ref)
         deltas = []
@@ -115,8 +126,18 @@ def _metrics_line(im: Image.Image, ref: Image.Image | None = None) -> str:
             sd, rsd = mm["bands"][band][1], rm["bands"][band][1]
             if rsd > 4 and sd < rsd * 0.45:
                 deltas.append(f"{band} σ{sd:.0f} vs ref σ{rsd:.0f} → needs ~{rsd / max(sd, 1):.1f}× more structure")
-        if rm["halation"] > 1 and mm["halation"] < rm["halation"] * 0.45:
-            deltas.append(f"halation {mm['halation']} vs ref {rm['halation']} → crank bloom")
+        # "crank bloom" is the right instruction only when there IS a core and its glow is
+        # too tight. Read off a candidate with no blown pixels at all it sent the builder
+        # to the glare node when the scene had nothing bright enough to glare — bloom
+        # scales what exists, so on an unlit frame it multiplies zero. Say which it is.
+        rh = rm["halation"]
+        if rh is not None and rh > 1:
+            if hal is None:
+                deltas.append(f"halation n/a vs ref {rh} → only {mm['hot_px']}px reach the "
+                              f"hot-core threshold (ref {rm['hot_px']}px): raise emitter or "
+                              f"key intensity until something blows out, THEN judge bloom")
+            elif hal < rh * 0.45:
+                deltas.append(f"halation {hal} vs ref {rh} → crank bloom")
         if deltas:
             line += "\nref gap: " + "; ".join(deltas)
     return line
@@ -868,9 +889,96 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
                              f"reliably; widen the region or raise scale")
         return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 
+    @tool(
+        "propose_checks",
+        "Record what you learned about VERIFYING this layer, as executable checks. You are "
+        "the only stage that can: the planner authored every check before any scene existed, "
+        "from reference images alone, so its checks compare pixels to a plate and most can "
+        "only run after the final grade. You have the built scene.\n"
+        "Each check must PASS on your render and FAIL on the state before your layer ran — "
+        "that is what proves your layer did the work, and it is why this cannot be gamed: "
+        "you do not choose the adversary, the previous layer's render is.\n"
+        "checks: [{id, metric, op, lo/hi, regions, note}]. Survivors are appended to "
+        "checks.json and become contract. Propose few and real.",
+        {"type": "object",
+         "properties": {"checks": {"type": "array", "items": {"type": "object"}},
+                        "after": {"type": "string"}, "before": {"type": "string"}},
+         "required": ["checks", "after"]},
+    )
+    async def propose_checks(args):
+        from ..checks import Check, verify_necessity
+        if not shot_dir:
+            return _text("propose_checks needs a shot dir", is_error=True)
+        root = Path(shot_dir)
+        after = root / args["after"]
+        if not after.is_file():
+            return _text(f"render {args['after']} does not exist", is_error=True)
+        before = (root / args["before"]) if args.get("before") else None
+        # Every check must name the plate it is about, or the gate cannot re-run it. The
+        # first version of this tool took `after`/`before` renders and never populated
+        # `ref`, so four perfectly good builder checks landed in checks.json and all four
+        # failed the gate on plumbing rather than on merit.
+        judge: dict[int, str] = {}
+        first_ref = ""
+        try:
+            for lay in json.loads((root / "layers.json").read_text()):
+                if str(lay.get("id")) != str(layer_id):
+                    continue
+                js = lay.get("judge") or []
+                judge = {int(j["frame"]): j["ref"] for j in js if j.get("ref")}
+                first_ref = js[0].get("ref", "") if js else ""
+        except Exception as e:
+            return _text(f"could not read judge refs from layers.json: {str(e)[:100]}",
+                         is_error=True)
+        kept, lines = [], []
+        for d in list(args.get("checks") or [])[:20]:
+            cid = str(d.get("id", "?"))
+            try:
+                ref_rel = (d.get("ref") or judge.get(int(d["frame"]))
+                           if d.get("frame") is not None else d.get("ref")) or first_ref
+                d = {**d, "ref": ref_rel}
+                c = Check.from_dict({**d, "layer": str(layer_id or d.get("layer", "")),
+                                     "lo": d.get("lo", float("-inf")),
+                                     "hi": d.get("hi", float("inf"))})
+                if not ref_rel:
+                    lines.append(f"  REJECTED {cid:10} no judge frame to name as its ref")
+                    continue
+                v = verify_necessity(c, after, before)
+            except Exception as e:
+                lines.append(f"  REJECTED {cid:10} {str(e)[:80]}")
+                continue
+            if v.ok:
+                kept.append({**d, "layer": str(layer_id or d.get("layer", "")),
+                             # Record the render this was proven against. A later attempt
+                             # replaces the renders, and a proof that does not say which
+                             # picture it came from cannot be told apart from a wrong one.
+                             "proof": {"ref": round(v.ref_value, 4),
+                                       "adversary": [round(x, 4) for x in v.bad_values[:1]],
+                                       "on": args["after"]},
+                             "origin": "builder",
+                             # No prior layer means no adversary — the FIRST layer's checks
+                             # are the least verified in the system, and saying so is the
+                             # point. Silence here would let them count as adversaried.
+                             "note": (d.get("note", "") + (
+                                 "  [no prior-layer adversary: first layer]"
+                                 if not v.bad_values else "")).strip()})
+                lines.append(f"  KEPT     {cid:10} {c.metric} {c.target()} · after "
+                             f"{v.ref_value:.4g}"
+                             + (f" · before {v.bad_values[0]:.4g}" if v.bad_values else ""))
+            else:
+                lines.append(f"  REJECTED {cid:10} {v.reasons[0][:120]}")
+        if kept:
+            spec = root / "checks.json"
+            cur = json.loads(spec.read_text()) if spec.is_file() else []
+            have = {x.get("id") for x in cur}
+            cur += [k for k in kept if k.get("id") not in have]
+            spec.write_text(json.dumps(cur, indent=1) + "\n", encoding="utf-8")
+        return _text(f"{len(kept)} check(s) added to checks.json.\n" + "\n".join(lines))
+
     # ask_supervisor is deliberately PLAN-ONLY: a layer that discovers an
     # ambiguity is already building on earlier layers' answer to it.
-    tools = [*tools, script_map, find_in_script, worklist, measure_regions]
+    tools = [*tools, script_map, find_in_script, worklist, measure_regions,
+             propose_checks]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)
     names = [f"mcp__{SERVER_NAME}__{t.name}" for t in tools]
     return server, names

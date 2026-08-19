@@ -31,6 +31,14 @@ YOUR TOOLS and what each is FOR:
   - find_recipe — the studio cookbook of vetted, verified techniques. Search it
     BEFORE deciding any approach is unknown.
   - WebSearch / WebFetch — external research, ONLY for tickets you mark [unknown].
+  - measure_checks — RUN MANY candidate done-checks in ONE call (up to 40). This is the
+    DEFAULT. Authoring fifty checks one at a time cost 91 round-trips, 112 turns and 133k
+    output tokens in a single repair round, almost all of it narration between independent
+    measurements that have nothing to do with each other. Draft the batch, run it, fix what
+    comes back REJECTED, run the fixed ones again. Do not narrate between checks.
+  - measure_check — the single-check form. Use it while EXPLORING one region or threshold,
+    not for verifying a set you have already drafted. A numeric done-check may not enter a
+    ticket until one of these returns OK.
   - spike — a one-shot headless Blender lab. Any technique that came from research
     must be PROVEN here (mechanism-level, seconds) before it enters a ticket.
   - Read / Glob / Grep — the shot folder and prior work. Write — plan.md and its
@@ -249,6 +257,58 @@ WORKFLOW, in order:
    Every §4 moment appears exactly once. Strip frames must cover the FULL build range
    with no unjudged gap >24 frames.
 
+   (d) `checks.json` — EVERY numeric done-check in this plan, as records rather than
+   prose, each one already RUN through `measure_check`:
+
+     [{"id": "L5a-1", "layer": "5", "axis": "hero_mass_under_light",
+       "frame": 440, "ref": "refs/f440_final.jpg",
+       "metric": "region_ratio", "regions": {"a": [0.44,0.35,0.50,0.85],
+                                             "b": [0.50,0.35,0.56,0.85]},
+       "op": "band", "lo": 1.35, "hi": 2.2,
+       "stage": "pre_grade",
+       "rejects": ["../barrel_roll/renders/5_best.png"],
+       "proof": {"ref": 1.372, "adversary": [1.06]},
+       "note": "one flank keyed, the other falls away"}, ...]
+
+   Regions are NORMALISED [x0,y0,x1,y1] in 0..1, so a check means the same thing at any
+   render scale and "the shadow pier" stops being a phrase somebody has to interpret.
+   `stage` is `pre_grade` or `post_grade`: an absolute value measured off a GRADED
+   reference cannot be enforced on a layer that runs before any view transform exists.
+
+   Three rules, and the gate re-runs every one of them — so a check that was not actually
+   run will be caught:
+
+     1. the REFERENCE must satisfy it. A target its own plate fails is unreachable: the
+        layer loops until its budget is gone, or hits it by breaking something the
+        reference contains.
+     2. the artifact named in `rejects` must FAIL it. This is the part that is real work.
+        A check graded against "some bad render" looks discriminating while being blind to
+        its actual target — scoring a sky on band sigma passed only because a LAYOUT render
+        with no sky at all failed it, while the banded fog-wall it was written to catch
+        sailed straight through. Name the render that shows the defect you are guarding
+        against.
+     3. the gap between reference and adversary must exceed the metric's own resampling
+        noise, which `measure_check` measures for you. Below that the check is a coin flip.
+     4. `proof` must REPRODUCE from the spec you ship. Paste it exactly as measure_check
+        returns it, and if you then change a region or a threshold, RUN IT AGAIN. A check
+        shipped with a region measuring 18.50/13.01 while carrying "ref 23.74, adversary
+        5.67" in its note had been tested in one form and shipped in another, and only the
+        gate noticed. Recording the proof as prose is what let that happen.
+     5. the verdict must survive a small nudge to the region box. A threshold threaded
+        between a reference at 22.36 and an adversary at 21.36 inverts on a 1% shift, so it
+        is measuring where you put the box rather than what is in the picture. Prefer a
+        region large enough that a builder reproducing it slightly differently agrees.
+
+   These three have already caught, on a plan that passed every other gate: a pier ratio of
+   1.35-2.2 against a plate reading 1.06; a whole-frame G/R < 1.08 against a plate reading
+   1.139 — in a plan that had ALREADY caught that same failure at another frame and written
+   it up as a resolved decision before repeating it 600 lines later; and a `mean >= 14`
+   FLOOR aimed at a defect that was a CEILING.
+
+   Write the prose done-check in the ticket AND the record here. If a check cannot be
+   expressed as a record, it is not checkable by the build stage either — say so in the
+   ticket and give the builder something it can actually run.
+
    (c) `critic_axes.json` — the 5-7 look axes THIS shot lives or dies by:
      [{"key": "<snake_case>", "desc": "<one concrete line>"}, …]
    Specific to this shot's content and style, not generic. YOU write these: you have the
@@ -370,10 +430,21 @@ measurement, a file, or a contract violation.
 
 
 def _refs_block(shot) -> str:
-    """Stills are the ONLY visual input. A real brief arrives as images plus prose."""
+    """Stills are the ONLY visual input. A real brief arrives as images plus prose.
+
+    They are ATTACHED to this message as images, in the order listed — see
+    planner._kickoff_blocks. This function used to emit the list alone, which made the
+    docstring above a statement of intent rather than of fact.
+    """
     lines = [f"  - refs/{p.name}" for p in shot.refs] or ["  (none)"]
-    return ("Reference stills (the complete visual target — there is no source video):\n"
-            + "\n".join(lines))
+    return ("Reference stills (the complete visual target — there is no source video). "
+            "Every one is ATTACHED to this message as an image, in this order:\n"
+            + "\n".join(lines)
+            + "\n\nLook at them before you plan. The fingerprints carry exposure and "
+              "density; the pictures carry everything else — camera height and angle, "
+              "which faces take light and which fall into shadow, what the silhouette "
+              "does against the sky, how light behaves in the air. A target you can only "
+              "state as a number is a target that came from half the brief.")
 
 
 def planner_user_prompt(shot) -> str:
@@ -388,6 +459,45 @@ def planner_user_prompt(shot) -> str:
         f"Do the full scene read, resolve conflicts, break the build into layers and "
         f"tickets with confidence tags, research and spike the [unknown]s, and write "
         f"`plan.md`."
+    )
+
+
+REPAIR_ADDENDUM = """\
+
+REPAIR MODE — a deterministic gate has already run against `{draft}` and found defects
+that are MEASUREMENTS against the artifacts on disk, not opinions. This pass is narrow:
+close them, carry everything else forward unchanged, and write the superseding `plan.md`.
+
+{findings}
+
+Three rules, because the cheapest way to satisfy a gate is to lie to it:
+
+- A finding is closed by making the plan TRUE, not by making the check quiet. Deleting a
+  target, dropping a citation, or softening a number into prose all clear the gate and
+  leave the plan weaker than it was. The only finding that licenses removing a target is
+  one that says the target is unreachable — there, removal IS the repair, because a layer
+  aiming at an unmeasurable number spends its whole budget converging on nothing.
+- A dead citation usually means link rot, not a false claim. The measurement it points at
+  was real when it was written. Re-point it at a live path if the evidence still exists
+  (check `../*/` siblings and any archive), and if it does not, restate the measured value
+  inline with a note that the source is gone. Do not silently drop it: a number nobody can
+  re-derive is exactly what the gate exists to find.
+- If you believe a finding is WRONG, say so in §0 with the evidence, and leave the plan as
+  it is. A gate that cannot be contradicted by evidence is a gate that encodes its own
+  bugs into every plan. Overriding one and saying why is a legitimate outcome of this pass.
+
+Change nothing the gate did not raise.
+"""
+
+
+def repair_user_prompt(shot, draft_name: str, n: int) -> str:
+    """Kickoff for a gate-driven repair round."""
+    return (
+        f"Repair the plan for shot '{shot.id}' ({shot.frames} frames @ {shot.fps}fps "
+        f"on {shot.engine}). This is repair round {n}.\n\n"
+        f"Read `brief.md` and the current plan `{draft_name}`, then close the gate "
+        f"findings listed in your instructions and write the superseding `plan.md`. "
+        f"Open §0 with one line per finding: fixed, or overridden with evidence."
     )
 
 

@@ -171,9 +171,13 @@ def metric_scale_consistency(images: list[Path], scales=RENDER_SCALES,
         f"acceptance verdict: accept_agent skips the critic entirely when a blocking "
         f"metric trips.")
     # The contract is about BLOCKING metrics. Comparison now goes through look_pair, so
-    # neither image is ever upscaled and the systematic asymmetry is gone — but halation_*
-    # counts pixels above brightness thresholds, so ANY resampling filter moves it, and no
-    # common width makes that invariant. Failing forever on a property we have accepted is
+    # neither image is ever upscaled and the systematic asymmetry is gone — but hot_core and
+    # points_* count pixels above brightness thresholds, so ANY resampling filter moves them,
+    # and no common width makes that invariant. (halation_* used to be the example here. It
+    # is quieter now not because it became stable but because metrics._HOT_FLOOR_PPM stops
+    # it reporting where it never could: the sweep's remaining threshold-counting drift now
+    # surfaces as hot_core, which is the honest name for what was always moving.)
+    # Failing forever on a property we have accepted is
     # how a check gets ignored; a blocking metric drifting is the thing that can actually
     # flip a verdict, because accept_agent skips the critic outright when one trips.
     return Result(
@@ -181,8 +185,8 @@ def metric_scale_consistency(images: list[Path], scales=RENDER_SCALES,
         detail=(f"{len(failures)} of {len(images)} full-resolution plate(s) show "
                 f"scale-dependent readings when compared against THEMSELVES"
                 + (" — but no BLOCKING metric among them, which is the bar: "
-                   "threshold-counting metrics like halation_* move under any resampling "
-                   "filter and cannot be made invariant."
+                   "threshold-counting metrics like hot_core and points_* move under any "
+                   "resampling filter and cannot be made invariant."
                    if n_block == 0 else "") + "\n      "
                 f"SEVERITY: {severity}\n      "
                 + "\n      ".join(failures)

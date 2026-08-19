@@ -21,6 +21,27 @@ Every metric here was added because it caught a real defect by hand:
     streak_continuity fast motion ghosting into discrete copies instead of smearing,
                       on BOTH shots — a render setting, not a shot bug
     structure_*       flat fog-wall skies vs wispy structured cloud
+    aniso_top         the same claim, actually delivered — see below
+    local_range       a render sharp at every depth, with no atmospheric falloff
+
+Two entries are here for reasons other than "it caught a defect", and are marked as such.
+
+`hot_core` never caught anything; it exists so that suppressing an unmeasurable `halation`
+does not also suppress a real one. See _HOT_FLOOR_PPM.
+
+`aniso_top` exists because the `structure_*` line above is a claim this module could not
+back. structure_* is a STANDARD DEVIATION — a histogram statistic — so it cannot see
+spatial arrangement at all, and a sky of flat horizontal bands and a turbulent cloudscape
+with the same value distribution score identically. Measured: a layer-5 render against
+refs/f001_open.jpg reads structure_top 35.1 vs 30.5, 15% apart against a 45% tolerance,
+i.e. silent, on two skies with nothing in common to look at. aniso_top separates that pair
+at 76% and blocks.
+
+The wider gap this opened, still open: every metric in this file is a histogram or an edge
+count over ONE image, so a flat card and a solid tower with the same pixel statistics are
+indistinguishable to all of them. `render_pass` already renders `depth` and `normal` and
+nothing here consumes either. Until something does, "does the built thing read as
+three-dimensional" is unmeasured — which is the axis a layer spent sixteen rounds failing.
 """
 
 from __future__ import annotations
@@ -37,6 +58,7 @@ SPEC: dict[str, tuple[float, bool, str]] = {
     "black_pct":         (0.30, False, "crushed blacks"),
     "detail":            (0.35, True,  "high-frequency detail at every scale"),
     "points":            (0.50, True,  "distinct small light sources"),
+    "hot_core":          (0.50, False, "how much blown-out core there is to glow FROM"),
     "halation":          (0.50, False, "glow spread around hot cores"),
     "halation_top":      (0.55, False, "glow spread, upper third"),
     "halation_mid":      (0.55, False, "glow spread, middle third"),
@@ -49,10 +71,74 @@ SPEC: dict[str, tuple[float, bool, str]] = {
     "points_top":        (0.60, False, "light sources in the upper third"),
     "points_mid":        (0.60, False, "light sources in the middle third"),
     "points_bot":        (0.60, True,  "light sources in the lower third (city/horizon)"),
+    # Blocking, and structure_top beside it is not, which is the point. structure_top is a
+    # standard deviation and cannot see spatial arrangement at all; on the layer-5 render
+    # against f001_open it reads 15% apart against its own 45% tolerance — silent — on two
+    # skies with nothing in common. aniso_top separates the same pair at 71%. It is the only
+    # metric here that catches a banded fog-wall sky, so advice status would leave the defect
+    # measurable and unenforceable, which is the condition that let sixteen rounds run.
+    # Tolerance 0.40 against a measured worst-case self-inconsistency of 16% (2.5x margin).
+    "aniso_top":         (0.40, True,  "sky texture: banded fog wall vs turbulent cloud"),
+    # NOT blocking: it moves with `detail`, which is already blocking and already fires on
+    # the same frames, so a veto here would mostly duplicate an existing veto. It earns its
+    # place as the readout that says WHICH KIND of excess — local contrast (no atmospheric
+    # falloff) rather than edge density.
+    "local_range":       (0.45, False, "local contrast — haze suppresses it, sharp-everywhere does not"),
     "structure_top":     (0.45, False, "texture/structure in the upper third"),
     "structure_mid":     (0.45, False, "texture/structure in the middle third"),
     "structure_bot":     (0.45, False, "texture/structure in the lower third"),
 }
+
+
+# halation is a RATIO with a tiny count in the denominator, and it was reporting a number
+# whatever that count happened to be. Measured on barrel_roll/refs/f045_pullback.jpg, one
+# unchanged image read at six widths:
+#
+#     width   hot px (>=240)   halo px   halation
+#       320          0            799       0.0
+#       480          1           1799    1799.0
+#       512          0           2022       0.0
+#       640          0           3155       0.0
+#       960          4           7078    1769.5
+#
+# Same picture, same glow, and the metric says either "none at all" or "1800x" depending
+# on nothing but resampling. `if hot else 0.0` was reporting UNMEASURABLE as ZERO, and 0.0
+# is not a neutral value here — it is the strongest possible claim the metric can make.
+# That is the mechanism behind the 245375% delta recorded in Delta.__str__ below; the note
+# there records the symptom, this records the cause.
+#
+# The denominator is a count, so its sampling noise is ~1/sqrt(hot). Requiring that noise
+# to sit at a quarter of the metric's own 0.50 tolerance — a reading should not be able to
+# move a quarter of the way to a verdict on resampling alone — gives 1/sqrt(hot) <= 0.125,
+# so hot >= 64 at the 960-wide sampling grid this module measures on.
+#
+# That derivation is confirmed by the corpus rather than assumed. Across all 15 shot
+# references the readings fall into two disjoint groups with nothing between them:
+#
+#     hot >= 133  ->  halation 2.3 .. 24.1   (11 refs, and stable across width)
+#     hot <=  56  ->  halation 0.0, or 94 .. 1770
+#
+# 64 lands in the empty gap between 56 and 133. The noise argument and the corpus pick the
+# same line, which is the only reason to trust either.
+#
+# Stated as a DENSITY rather than a count, because a threshold in raw pixels would make the
+# answer depend on how large the image happens to be — which is the defect above wearing a
+# different hat. 64 samples of a 960x540 grid (480*270 = 129,600 samples) is ~500 per
+# million, so the floor is exactly "hot_core >= 500" and it shares units with that metric.
+# Blown regions span many pixels, so reading the same plate at 2048 oversamples the same
+# cores rather than earning new evidence.
+#
+# This narrows the disagreement between the two measurement paths in this repo (here at
+# 960, blender.tools._region_metrics at _MAX_W) without closing it, and the residue is
+# worth knowing about. Measured across the 10 barrel_roll plates, 9 land on the same side
+# of the floor; f100_city reads 486 ppm at 960 and 669 at 2048 and straddles it. The bias
+# has a direction: a >=240 threshold is nonlinear under resampling, so downscaling averages
+# a small bright core with its dark neighbours and pushes it under. Plates well clear of
+# the floor agree within ~2% (8646/8874, 5868/5863, 4392/4327); only sparse cores move
+# (35/73, 130/209, 69/135). So a plate NEAR the floor can still be called measurable by one
+# path and not the other. That is a borderline reading reported as borderline, which is the
+# behaviour being bought here — not the old failure, where one plate read 0.0 and 1769.5.
+_HOT_FLOOR_PPM = 500
 
 
 def _prep(im: Image.Image, width: int = 960) -> Image.Image:
@@ -124,6 +210,43 @@ def look_vector(img: Image.Image | str, width: int = 960) -> dict[str, float]:
         m = sum(vals) / max(len(vals), 1)
         out[f"structure_{name}"] = (sum((v - m) ** 2 for v in vals) / max(len(vals), 1)) ** 0.5
 
+    # aniso_top: vertical vs horizontal gradient energy in the upper band.
+    #
+    # structure_top is a STANDARD DEVIATION, so it is a histogram statistic and throws away
+    # spatial arrangement entirely: a sky of flat horizontal bands and a turbulent cloudscape
+    # with the same value distribution score identically. Measured on the layer-5 render
+    # against refs/f001_open.jpg, structure_top reads 35.1 vs 30.46 — 15% apart against its
+    # own 45% tolerance, i.e. SILENT — on two skies that share nothing to look at. The
+    # module docstring credits structure_* with catching "flat fog-wall skies vs wispy
+    # structured cloud". On this pair it does not.
+    #
+    # Sky texture is spatial, so measure a spatial property. Banded cloud is continuous
+    # along its bands and abrupt across them, so crossing them vertically dominates: the
+    # render reads 1.43 against the reference's 0.84. Turbulent cloud is near-isotropic.
+    # (My first guess had this backwards — I expected banding to raise the HORIZONTAL term.
+    # It is the hard band BOUNDARIES that carry the energy, not the bands.)
+    gtx = gty = tn = 0
+    for y in range(1, max(2, H // 3 - 1), 2):
+        for x in range(1, W - 1, 2):
+            v = gp[x, y]
+            gtx += abs(gp[x + 1, y] - v); gty += abs(gp[x, y + 1] - v); tn += 1
+    out["aniso_top"] = gty / max(gtx, 1e-9)
+
+    # local_range: median of (max - min) within a small block — LOCAL contrast, as opposed
+    # to detail's edge density and structure's global spread. A frame with atmosphere has
+    # its local contrast suppressed by distance haze; one rendered with everything equally
+    # sharp at every depth does not. The block is a fraction of width so it stays the same
+    # fraction of the picture at any measuring resolution.
+    blk = max(8, W // 60)
+    ranges = []
+    for by in range(0, max(1, H - blk), blk * 2):
+        for bx in range(0, max(1, W - blk), blk * 2):
+            b = [gp[x, y] for y in range(by, by + blk, 3) for x in range(bx, bx + blk, 3)]
+            if b:
+                ranges.append(max(b) - min(b))
+    ranges.sort()
+    out["local_range"] = float(ranges[len(ranges) // 2]) if ranges else 0.0
+
     # detail: mean absolute gradient — one number for "is there information here"
     gx = gy = 0
     cnt = 0
@@ -165,23 +288,32 @@ def look_vector(img: Image.Image | str, width: int = 960) -> dict[str, float]:
                 pts += 1
     out["points"] = pts * 1e6 / n_px
 
-    # halation: glow area per unit of hot core
+    # halation: glow area per unit of hot core, PLUS the size of the core it divides by.
+    # Two numbers because they answer different questions and only one of them is always
+    # answerable. See _HOT_FLOOR_PPM: below that density the ratio is an artifact of its
+    # denominator, so it is omitted rather than reported as 0.0.
     hot = halo = 0
     for y in range(0, H, 2):
         for x in range(0, W, 2):
             v = gp[x, y]
             if v >= 240: hot += 1
             elif v >= 120: halo += 1
-    out["halation"] = halo / hot if hot else 0.0
+    out["hot_core"] = hot * 1e6 / n
+    if out["hot_core"] >= _HOT_FLOOR_PPM:
+        out["halation"] = halo / hot
     for name, (y0, y1) in (("top", (0, H // 3)), ("mid", (H // 3, 2 * H // 3)),
                            ("bot", (2 * H // 3, H))):
-        bh = bl = 0
+        bh = bl = bn = 0
         for y in range(y0, y1, 2):
             for x in range(0, W, 2):
                 v = gp[x, y]
+                bn += 1
                 if v >= 240: bh += 1
                 elif v >= 120: bl += 1
-        out[f"halation_{name}"] = bl / bh if bh else 0.0
+        # Against the BAND's own sample count, so a third of the frame is held to the same
+        # density as the whole of it rather than to a third of the evidence.
+        if bn and bh * 1e6 / bn >= _HOT_FLOOR_PPM:
+            out[f"halation_{name}"] = bl / bh
 
     # chroma_spread: colour variety among LIT pixels (all-one-colour windows -> ~0)
     rb = [cp[x, y][0] - cp[x, y][2] for y in range(0, H, 3) for x in range(0, W, 3)
@@ -204,7 +336,12 @@ _FLOOR: dict[str, float] = {
     "exposure_mean": 6.0, "clipped_pct": 1.0, "black_pct": 5.0,
     "detail": 0.5, "detail_top": 0.5, "detail_mid": 0.5, "detail_bot": 0.5,
     "points": 200.0, "points_top": 200.0, "points_mid": 200.0, "points_bot": 200.0,
+    "hot_core": 200.0,
     "halation": 0.5, "halation_top": 0.8, "halation_mid": 0.8, "halation_bot": 0.8,
+    # aniso_top is a ratio around 1, so its floor is absolute-in-ratio-units: 0.25 keeps the
+    # near-black acceptance moment quiet (f195_black's own reading swings 16% under
+    # resampling alone) while passing the 0.50-0.59 gaps the real defect produces.
+    "aniso_top": 0.25, "local_range": 6.0,
     "chroma_spread": 3.0, "streak_continuity": 0.15,
     "structure_top": 4.0, "structure_mid": 4.0, "structure_bot": 4.0,
 }
@@ -223,7 +360,9 @@ class Delta:
         arrow = "LOW" if self.rel < 0 else "HIGH"
         # A percentage against a ~zero reference is meaningless and shouts over the real
         # findings: the first live feedback read "halation_mid 1963 vs ref 0 (245375%
-        # HIGH)", burying detail_bot 77% LOW, which was the actual defect.
+        # HIGH)", burying detail_bot 77% LOW, which was the actual defect. This clause
+        # stops that reading from SHOUTING; it does not stop it from being wrong. The ref 0
+        # was never a measurement — see _HOT_FLOOR_PPM, which now keeps it out of the vector.
         if abs(self.ref) < _FLOOR.get(self.key, 0.5):
             return (f"{self.key} {self.got:g} vs ref ~0 "
                     f"(reference has none of this — {self.hint})")
@@ -238,6 +377,10 @@ def compare(cand: dict, ref: dict, spec: dict = SPEC) -> list[Delta]:
     the reference doesn't care about produces no delta no matter what the render does."""
     out = []
     for key, (tol, blocking, hint) in spec.items():
+        # An ABSENT key means "this frame could not support that measurement", which is not
+        # the same as a value and must never be substituted for with one. look_vector omits
+        # halation rather than dividing by a 4-pixel core; the correct response to a missing
+        # measurement is to say nothing, so silence here is the point rather than a shortcut.
         if key not in cand or key not in ref:
             continue
         r, c = ref[key], cand[key]

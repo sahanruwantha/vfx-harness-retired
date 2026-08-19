@@ -92,6 +92,14 @@ async def measure(shot: Shot, *, layer_id: str | None = None,
         "mean": verdict.get("mean"),
         "pass": bool(verdict.get("pass")),
         "scores": verdict.get("scores", {}),
+        # The issue text is the point of this experiment, not a side effect. A score that
+        # drops on black proves the critic READ the image; it says nothing about whether
+        # the ADVICE was read off it. On this shot the black frame drew six confident,
+        # specific fixes — "3/4 front-left, 60-70% of hero height, fill at 1/6-1/8 the key,
+        # cooler in hue" — which are the same numbers layer 5 chased for sixteen rounds
+        # against real renders. Persist them so that comparison can be made rather than
+        # remembered.
+        "issues": verdict.get("issues", []),
         "per_axis": per_axis,
         "language_prior_axes": priors,
         "gate": ("Phase 2 is premature for: " + ", ".join(priors)

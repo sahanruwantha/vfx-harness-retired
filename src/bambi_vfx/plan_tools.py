@@ -47,6 +47,18 @@ _SPIKE_TIMEOUT = 180     # s, hard cap for one headless blender run
 _JPEG_Q = 85
 
 
+def _metric_list() -> str:
+    """The metric vocabulary, GENERATED from the registry.
+
+    It was hardcoded into the tool descriptions, so `region_lit_variance` existed in
+    METRICS and was advertised nowhere — the same shape as contact_sheet being defined and
+    never registered. A capability nothing names is indistinguishable from one that does
+    not exist.
+    """
+    from .checks import METRICS
+    return " · ".join(sorted(METRICS))
+
+
 def _text(s: str, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": s}], **({"is_error": True} if is_error else {})}
 
@@ -255,9 +267,12 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
 
     @tool(
         "measure_ref",
-        "Objective fingerprint of a reference STILL (exposure mean/clipped/black + "
-        "per-band structure σ + halation). Use these MEASURED numbers as the plan's "
-        "look targets — never invent fingerprint values.",
+        "A reference STILL and its objective fingerprint together — the IMAGE plus "
+        "exposure mean/clipped/black, per-band structure σ and halation. Use these "
+        "MEASURED numbers as the plan's look targets — never invent fingerprint values. "
+        "Read the picture for everything the numbers cannot carry: camera height and "
+        "angle, which faces are lit and which fall into shadow, what the silhouette "
+        "does, how the light behaves in the air.",
         {"type": "object", "properties": {"path": {"type": "string"}},
          "required": ["path"]},
     )
@@ -270,7 +285,140 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
         line = f"{args['path']}\n{_stats(im)}\n{_metrics_line(im)}"
         log(f"plan-lab measure {args['path']}: "
             f"{_stats(im).removeprefix('exposure: ')}", 1)
-        return _text(line)
+        # The image travels WITH its numbers. This tool used to return text only, so
+        # "measured it" and "looked at it" were separable — and the one plan written that
+        # way scored 26 mentions of halation (which measure_ref reports) against ZERO for
+        # camera angle, shadow side or solid form (which only the picture carries). Those
+        # are exactly the properties no exposure statistic can express, and the resulting
+        # render read as a flat card. A planner can still decline to look; it can no
+        # longer measure without being shown.
+        return {"content": [
+            {"type": "text", "text": line},
+            {"type": "image", "data": _b64(im), "mimeType": "image/jpeg"},
+        ]}
+
+    @tool(
+        "measure_check",
+        "RUN a candidate done-check before you commit it to a ticket. Returns its value on "
+        "the reference, its value on the adversary you name, this metric's own resampling "
+        "noise, and a verdict. A check may not enter the plan until this returns OK.\n"
+        f"metric: {_metric_list()}.\n"
+        "regions: normalised [x0,y0,x1,y1] in 0..1 — key 'r' for the single-region metrics, "
+        "'a' and 'b' for region_ratio (a/b). op: '>=' | '<=' | 'band' with lo/hi.\n"
+        "rejects: paths to renders this check EXISTS TO REJECT — name the artifact showing "
+        "the defect you are guarding against. Without it the check is graded against "
+        "whatever bad renders happen to exist, and a check that only rejects an easy "
+        "unrelated failure looks discriminating while being blind to its real target.",
+        {"type": "object",
+         "properties": {"id": {"type": "string"}, "metric": {"type": "string"},
+                        "op": {"type": "string"}, "lo": {"type": "number"},
+                        "hi": {"type": "number"}, "ref": {"type": "string"},
+                        "regions": {"type": "object"},
+                        "rejects": {"type": "array", "items": {"type": "string"}}},
+         "required": ["metric", "op", "ref"]},
+    )
+    async def measure_check(args):
+        from .checks import Check, verify
+        try:
+            c = Check.from_dict({**args, "lo": args.get("lo", float("-inf")),
+                                 "hi": args.get("hi", float("inf"))})
+            ref = _resolve(args["ref"])
+            if not ref.is_file():
+                return _text(f"reference {args['ref']} does not exist", is_error=True)
+            corpus = sorted(q for sib in shot_folder.parent.glob("*/renders")
+                            if sib.parent.name != shot_folder.name
+                            and not sib.parent.name.startswith("_")
+                            for q in sib.glob("*_best.png"))
+            v = await anyio.to_thread.run_sync(
+                lambda: verify(c, ref, corpus, root=Path.cwd()))
+        except Exception as e:
+            log(f"plan-lab x measure_check {args.get('id')}: {str(e)[:120]}", 1)
+            return _text(f"measure_check failed: {e}", is_error=True)
+        head = "OK - this check is fit to commit" if v.ok else "REJECTED - do NOT commit this"
+        body = [f"{head}",
+                f"  target      {c.target()} on {c.metric}",
+                f"  reference   {args['ref']} reads {v.ref_value:.4g}"
+                f"  -> {'satisfies' if v.ref_value is not None and c.holds(v.ref_value) else 'FAILS'}"]
+        if v.bad_values:
+            caught = not all(c.holds(x) for x in v.bad_values)
+            body.append(
+                f"  adversary   reads {min(v.bad_values):.4g}..{max(v.bad_values):.4g}"
+                f"  -> {'REJECTED by the check (good)' if caught else 'PASSES the check (BAD)'}")
+        if v.floor:
+            body.append(f"  noise floor {v.floor:.4g} (this metric's own movement under resampling)")
+        body += [f"  ! {r}" for r in v.reasons]
+        if v.ok and v.ref_value is not None:
+            adv = f"[{v.bad_values[0]:.4g}]" if v.bad_values else "[]"
+            body += ["", "  COPY THIS into the check's `proof` field, unedited:",
+                     f'    "proof": {{"ref": {v.ref_value:.4g}, "adversary": {adv}}}',
+                     "  The gate re-runs the spec you ship and compares it to these numbers. "
+                     "If you", "  change the regions or thresholds afterwards, RUN IT AGAIN — "
+                     "a proof that does", "  not reproduce means the spec you tested is not "
+                     "the spec you shipped."]
+        log(f"plan-lab measure_check {args.get('id', c.metric)}: "
+            f"{'OK' if v.ok else 'REJECTED'}", 1)
+        return _text("\n".join(body))
+
+    @tool(
+        "measure_checks",
+        "Run MANY candidate done-checks in ONE call. Same rules and same verdicts as "
+        "measure_check, but authoring 50 checks one at a time cost 91 round-trips, 112 "
+        "turns and 133k output tokens in a single repair round — the model was narrating "
+        "between independent measurements that have no bearing on each other. Batch them.\n"
+        "Pass `checks`: a list of the same objects measure_check takes (metric, op, lo/hi, "
+        "ref, regions, rejects). Returns one compact line per check plus a paste-ready "
+        "`proof` block for the ones that pass. Up to 40 per call.",
+        {"type": "object",
+         "properties": {"checks": {"type": "array", "items": {"type": "object"}}},
+         "required": ["checks"]},
+    )
+    async def measure_checks(args):
+        from .checks import Check, verify
+        specs = list(args.get("checks") or [])[:40]
+        if not specs:
+            return _text("no checks supplied", is_error=True)
+        corpus = sorted(q for sib in shot_folder.parent.glob("*/renders")
+                        if sib.parent.name != shot_folder.name
+                        and not sib.parent.name.startswith("_")
+                        for q in sib.glob("*_best.png"))
+
+        def _run() -> tuple[list[str], dict]:
+            lines, proofs, n_ok = [], {}, 0
+            for d in specs:
+                cid = str(d.get("id", "?"))
+                try:
+                    c = Check.from_dict({**d, "lo": d.get("lo", float("-inf")),
+                                         "hi": d.get("hi", float("inf"))})
+                    ref = _resolve(d.get("ref", ""))
+                    if not ref.is_file():
+                        lines.append(f"  REJECTED {cid:10} ref {d.get('ref')} does not exist")
+                        continue
+                    v = verify(c, ref, corpus, root=Path.cwd())
+                except Exception as e:
+                    lines.append(f"  REJECTED {cid:10} {str(e)[:90]}")
+                    continue
+                if v.ok:
+                    n_ok += 1
+                    proofs[cid] = {"ref": round(v.ref_value, 4),
+                                   "adversary": [round(x, 4) for x in v.bad_values[:1]]}
+                    lines.append(f"  OK       {cid:10} {c.metric} {c.target()} "
+                                 f"· ref {v.ref_value:.4g}"
+                                 + (f" · adv {v.bad_values[0]:.4g}" if v.bad_values else ""))
+                else:
+                    why = v.reasons[0].split("—")[0].strip() if v.reasons else "failed"
+                    detail = (v.reasons[0].split("—", 1)[1].strip()[:150]
+                              if v.reasons and "—" in v.reasons[0] else "")
+                    lines.append(f"  REJECTED {cid:10} {why}: {detail}")
+            return lines, proofs, n_ok
+
+        lines, proofs, n_ok = await anyio.to_thread.run_sync(_run)
+        head = (f"{n_ok}/{len(specs)} fit to commit. REJECTED ones must be fixed or dropped "
+                f"— the gate re-runs every rule.")
+        tail = ("\n\nPaste these `proof` values into the matching records, unedited. If you "
+                "then change a region or threshold, RUN IT AGAIN:\n"
+                + json.dumps(proofs, indent=1)) if proofs else ""
+        log(f"plan-lab measure_checks: {n_ok}/{len(specs)} ok", 1)
+        return _text(head + "\n" + "\n".join(lines) + tail)
 
     @tool(
         "spike",
@@ -341,7 +489,24 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
                    why_it_matters=args.get("why_it_matters", ""))
         return _text(f"Recorded as Q{qid}. Continue planning on: {args['assumption']}")
 
-    server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0",
-                                   tools=[measure_ref, spike, ask_supervisor])
-    names = [f"mcp__{SERVER_NAME}__{t}" for t in ("measure_ref", "spike", "ask_supervisor")]
+    # probe_video / contact_sheet / extract_frames were DEFINED and never registered, so
+    # they were unreachable on every shot — not just stills-only ones. contact_sheet's own
+    # description reads "This is how you do the scene read", and it has never once been
+    # callable. Nothing detected that, because an absent tool is indistinguishable from a
+    # tool the model chose not to call.
+    #
+    # Registered conditionally on the shot actually having video: a stills-only shot should
+    # not carry three tools whose every call can only fail, and a shot WITH video must not
+    # silently lose its scene read. The exclusion is now a decision with a reason instead
+    # of an omission.
+    video = sorted((shot_folder / "refs").glob("*.mp4")) if (shot_folder / "refs").is_dir() \
+        else []
+    tools = [measure_ref, measure_check, measure_checks, spike, ask_supervisor]
+    if video:
+        tools = [probe_video, contact_sheet, extract_frames, *tools]
+    server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)
+    names = [f"mcp__{SERVER_NAME}__{t.name}" for t in tools]
+    log(f"plan tools: {', '.join(t.name for t in tools)}"
+        + (f"  ({len(video)} video ref(s))" if video else "  (stills only — video tools "
+                                                          "not registered)"), 1)
     return server, names

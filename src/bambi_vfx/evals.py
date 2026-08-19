@@ -3,6 +3,8 @@ actually helped.
 
     python -m bambi_vfx.evals freeze   shots/barrel_roll --label before-context-editing
     python -m bambi_vfx.evals check    shots/barrel_roll            # free, no model
+    python -m bambi_vfx.evals plan                                  # free, gate the plan
+    python -m bambi_vfx.evals grounding                             # free, plan vs plates
     python -m bambi_vfx.evals checks                                # free, Blender only
     python -m bambi_vfx.evals variance shots/barrel_roll --n 6      # cheap, real critic
     python -m bambi_vfx.evals blank    shots/barrel_roll --layer 5  # cheap, real critic
@@ -262,11 +264,75 @@ def _cmd_panels(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_grounding(argv: list[str]) -> int:
+    """Is every number in the plan re-derivable from the plate it claims to describe?
+
+    Free — no model, no Blender. Defaults to every shot, because the one thing this found
+    on barrel_roll (a target that is unreachable at any resolution) is exactly the kind of
+    defect that is invisible in one shot and obvious across several.
+    """
+    import glob
+
+    from .eval import grounding as _grounding
+
+    ap = argparse.ArgumentParser(prog="bambi_vfx.evals grounding")
+    ap.add_argument("folder", nargs="?", help="shot folder (default: every shot)")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    folders = [Path(args.folder)] if args.folder else \
+        [Path(p).parent for p in sorted(glob.glob("shots/*/acceptance.json"))]
+    if not folders:
+        print("no shot has an acceptance.json yet — nothing to ground")
+        return 1
+    recs = [_grounding.audit(f) for f in folders]
+    if args.json:
+        print(json.dumps(recs, indent=2))
+    else:
+        print("\n\n".join(_grounding.report(r) for r in recs))
+    bad = sum(r.get("n_mismatch", 0) + r.get("n_unmeasurable", 0) + r.get("n_error", 0)
+              for r in recs)
+    return 3 if bad or any("error" in r for r in recs) else 0
+
+
+def _cmd_plan(argv: list[str]) -> int:
+    """The deterministic bar a plan must clear before anything is built on it.
+
+    Free — no model, no Blender. Checks the plan against the artifacts on disk rather
+    than against its own claims: fingerprints re-derive from their plates, citations
+    resolve, `✓spiked` tickets cite a lab file, and layers/axes/moments agree.
+    """
+    import glob
+
+    from .eval import plan_gate as _pg
+
+    ap = argparse.ArgumentParser(prog="bambi_vfx.evals plan")
+    ap.add_argument("folder", nargs="?", help="shot folder (default: every shot)")
+    ap.add_argument("--plan", default="plan.md", help="plan file to gate")
+    ap.add_argument("--feedback", action="store_true",
+                    help="print the repair brief a --until-clean round would receive")
+    args = ap.parse_args(argv)
+
+    folders = [Path(args.folder)] if args.folder else \
+        [Path(p).parent for p in sorted(glob.glob("shots/*/plan.md"))]
+    if not folders:
+        print("no shot has a plan.md yet — nothing to gate")
+        return 1
+    results = [_pg.run(f, args.plan) for f in folders]
+    if args.feedback:
+        print("\n\n".join(_pg.feedback(r) or f"{r.shot}: clean" for r in results))
+    else:
+        print("\n\n".join(_pg.report(r) for r in results))
+    return 3 if any(not r.clean for r in results) else 0
+
+
 _COMMANDS = {
     "freeze": _baseline.main,
     "variance": _variance.main,
     "blank": _blank.main,
     "check": _cmd_check,
+    "plan": _cmd_plan,
+    "grounding": _cmd_grounding,
     "checks": _cmd_checks,
     "compare": _cmd_compare,
     "panels": _cmd_panels,
