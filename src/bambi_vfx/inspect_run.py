@@ -17,10 +17,10 @@ whether the canonical replay agreed with the live session. Those get read out pe
 and summarised as a single trajectory word.
 
 ARE THE IMPROVEMENTS WORKING is deliberately answered as adoption first, effect second.
-`render_pass`, `check_scene` and `diff_frames` were built, verified against Blender and
-written into the builder prompt. If the builder never calls them, no downstream
-measurement of their effect means anything — and the fix is the prompt, not the tool. So a
-zero-call count is reported as a FINDING, not as an absence.
+`render_pass`, `check_scene`, `diff_frames`, and `verify_change` were built, verified
+against Blender and written into the builder prompt. If the builder never calls them, no
+downstream measurement of their effect means anything — and the fix is the prompt, not
+the tool. So a zero-call count is reported as a FINDING, not as an absence.
 """
 
 from __future__ import annotations
@@ -41,7 +41,8 @@ _DIAGNOSTIC = {
                    "mode, so an axis is judged on the signal it is about",
     "check_scene": "judgment-free facts — visibility, framing, motion, mesh, scale — "
                    "instead of asserting them",
-    "diff_frames": "show whether an edit changed anything at all",
+    "diff_frames": "compare explicit image paths when diagnosing a render change",
+    "verify_change": "prove one live edit changed pixels without managing render paths",
 }
 
 
@@ -100,34 +101,42 @@ def adoption(recs: list[dict]) -> dict:
         # it is "not measured", and conflating them would invent evidence that the tools
         # were ignored on runs that could not have called them.
         measured = "adoption" in tools
+        applicable = tools.get("applicability") or dict.fromkeys(_DIAGNOSTIC, True)
         per_layer[str(rec.get("layer"))] = {
-            "measured": measured, "calls": got,
+            "measured": measured, "calls": got, "applicability": applicable,
             "looked": tools.get("looked"), "measured_calls": tools.get("measured"),
             "verified": tools.get("verified"),
             "total": tools.get("total", 0),
         }
         if measured:
-            totals.update(got)
+            totals.update({tool: count for tool, count in got.items()
+                           if applicable.get(tool, True)})
     measured_layers = [k for k, v in per_layer.items() if v["measured"]]
     return {
         "per_layer": per_layer,
         "totals": dict(totals),
         "measured_layers": measured_layers,
         "unmeasured_layers": [k for k, v in per_layer.items() if not v["measured"]],
-        "never_used": [t for t in _DIAGNOSTIC
-                       if measured_layers and not totals.get(t)],
+        "never_used": [t for t in _DIAGNOSTIC if measured_layers and not totals.get(t)
+                       and any(per_layer[layer]["applicability"].get(t, True)
+                               for layer in measured_layers)],
     }
 
 
-def transcripts(shot_folder: Path) -> list[dict]:
+def transcripts(shot_folder: Path, *, run_ids: set[str] | None = None) -> list[dict]:
     """What durable records exist, and what is in them — without loading them whole."""
     out = []
-    for p in transcript.find(shot_folder):
+    paths = transcript.find(shot_folder)
+    if run_ids is not None:
+        paths = [path for path in paths if any(path.stem.endswith(run_id)
+                                               for run_id in run_ids)]
+    for p in paths:
         events = transcript.read(p)
         kinds = Counter(e.get("kind") for e in events)
         tools = Counter(e.get("tool") for e in events if e.get("kind") == "tool_use")
         errs = [e for e in events if e.get("kind") == "tool_result" and e.get("is_error")]
         crits = [e for e in events if e.get("kind") == "critic"]
+        focus = [e for e in events if e.get("kind") == "critic_focus"]
         imgs = sum(1 for e in events
                    for c in (e.get("content") if isinstance(e.get("content"), list) else [])
                    if isinstance(c, dict) and c.get("type") == "image")
@@ -138,6 +147,7 @@ def transcripts(shot_folder: Path) -> list[dict]:
             "tools": dict(tools.most_common()),
             "tool_errors": len(errs),
             "critic_calls": len(crits),
+            "focus_panels": sum(len(e.get("panels") or []) for e in focus),
             "critic_means": [c.get("mean") for c in crits],
             "unparseable": kinds.get("unparseable", 0),
             # How many renders the model was actually shown. The pixels live under
@@ -147,7 +157,7 @@ def transcripts(shot_folder: Path) -> list[dict]:
     return out
 
 
-def collect(shot_folder: str | Path) -> dict:
+def collect(shot_folder: str | Path, *, history: bool = False) -> dict:
     folder = Path(shot_folder)
     recs = layers(folder)
     shot = _load_json(folder / "shot.json")
@@ -162,12 +172,18 @@ def collect(shot_folder: str | Path) -> dict:
             "trajectory": _trajectory(means),
             "rounds": len(means),
             "canonical_pass": all(c.get("pass") for c in canon) if canon else None,
+            "canonical_conflict": any(c.get("judge_conflict") for c in canon),
+            "canonical_reproduced": any(c.get("decided_by") == "pixel_reproduction"
+                                         for c in canon),
             "canonical": [{"frame": c.get("frame"), "mean": c.get("mean"),
-                           "pass": c.get("pass")} for c in canon],
+                           "pass": c.get("pass"),
+                           "judge_conflict": c.get("judge_conflict", False),
+                           "decided_by": c.get("decided_by", "critic")} for c in canon],
             "cost_usd": rec.get("cost_usd", 0.0), "turns": rec.get("turns", 0),
             "minutes": round((rec.get("seconds") or 0) / 60, 1),
             "hooks_fired": sorted(k for k, v in (rec.get("hooks") or {}).items() if v),
-            "no_metric_feedback": not (rec.get("hooks") or {}).get("metric_feedback"),
+            "no_metric_feedback": (not rec.get("revalidation")
+                                   and not (rec.get("hooks") or {}).get("metric_feedback")),
             # None, not 0. A report written before the tool telemetry existed has no
             # counts, and printing "0 tool calls" for a layer that made hundreds is the
             # same mistake as counting an unmeasured layer as an unused tool.
@@ -182,7 +198,9 @@ def collect(shot_folder: str | Path) -> dict:
         "minutes": round(sum(p["minutes"] for p in per), 1),
         "passed": sum(1 for p in per if p["status"] == "passed"),
         "adoption": adoption(recs),
-        "transcripts": transcripts(folder),
+        "transcripts": transcripts(
+            folder, run_ids=None if history else
+            {str(rec.get("run_id")) for rec in recs if rec.get("run_id")}),
         "acceptance": {"passed": acc.get("passed"), "total": acc.get("total"),
                        "repair_plan": [c.get("layer") for c in (acc.get("repair_plan") or [])],
                        "superseded": acc.get("superseded") or []},
@@ -203,7 +221,11 @@ def _findings(d: dict) -> list[str]:
             out.append(f"layer {p['layer']} regressed between rounds "
                        f"({' → '.join(str(m) for m in p['means'])}) — a fix for one axis "
                        f"is breaking another.")
-        if p["canonical_pass"] is False:
+        if p.get("canonical_conflict"):
+            out.append(f"layer {p['layer']} has a JUDGE CONFLICT: executable evidence "
+                       f"and the critic disagree, with no evidence-backed repair. Re-run "
+                       f"the judge or review it; do not rebuild blindly.")
+        elif p["canonical_pass"] is False:
             out.append(f"layer {p['layer']} passed LIVE but its canonical replay did not "
                        f"reproduce — the script does not rebuild the scene it was scored on.")
         if p["no_metric_feedback"] and p["status"] != "?":
@@ -264,8 +286,11 @@ def report(d: dict) -> str:
 
     L += ["", "   layers"]
     for p in d["layers"]:
-        mark = {"passed": "✅", "failed": "✗"}.get(p["status"], "·")
-        can = ("replay ok" if p["canonical_pass"] else
+        mark = {"passed": "✅", "failed": "✗", "judge_conflict": "⚠"}.get(
+            p["status"], "·")
+        can = ("JUDGE CONFLICT" if p.get("canonical_conflict") else
+               "pixel reproduction ok" if p.get("canonical_reproduced") else
+               "replay ok" if p["canonical_pass"] else
                "REPLAY FAILED" if p["canonical_pass"] is False else "no replay")
         L.append(f"     {mark} {p['layer']!s:<3} {(p['title'] or '')[:34]:<34} "
                  f"{_means(p['means']):<24} {p['trajectory']:<32} {can}")
@@ -296,7 +321,8 @@ def report(d: dict) -> str:
     for t in d["transcripts"]:
         L.append(f"     {t['file']:<34} {t['events']:>6} events · {t['kb']:>5}KB · "
                  f"{t['critic_calls']} critic call(s) · {t['tool_errors']} tool error(s) · "
-                 f"{t['images_shown']} image(s) shown")
+                 f"{t['images_shown']} image(s) shown · "
+                 f"{t.get('focus_panels', 0)} focus panel(s)")
         if t["critic_means"]:
             L.append(f"        means {', '.join(str(m) for m in t['critic_means'])}")
     return "\n".join(L)
@@ -351,12 +377,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--layer", help="print the action timeline for this layer's transcript")
     ap.add_argument("--stage", default="build", help="stage for --layer (build/plan/accept)")
     ap.add_argument("--tools", action="store_true", help="adoption only")
+    ap.add_argument("--history", action="store_true",
+                    help="include transcripts from prior attempts")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
 
     shot = load_shot(a.folder)
     if a.layer:
-        hits = [p for p in transcript.find(shot.folder, stage=a.stage)
+        current = next((rec for rec in layers(shot.folder)
+                        if str(rec.get("layer")) == str(a.layer)), {})
+        run_id = None if a.history else current.get("run_id")
+        hits = [p for p in transcript.find(shot.folder, stage=a.stage, run_id=run_id)
                 if f"layer{a.layer}-" in p.name or p.stem.endswith(f"layer{a.layer}")]
         if not hits:
             have = ", ".join(p.name for p in transcript.find(shot.folder)) or "none"
@@ -365,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
             print(timeline(p))
         return 0
 
-    d = collect(shot.folder)
+    d = collect(shot.folder, history=a.history)
     if a.json:
         print(json.dumps(d, indent=2))
         return 0

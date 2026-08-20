@@ -1,6 +1,6 @@
 """What a plan was derived from, and whether it still matches.
 
-Plan artifacts (plan.md, layers.json, acceptance.json, critic_axes.json) carry no record
+Plan artifacts (`plans/global.md`, strict layer plans, and the machine contracts) carry no record
 of the brief they came from. Two failures follow. Editing brief.md leaves a stale plan
 with nothing saying it no longer matches its source — and this pipeline's whole contract
 is that the plan encodes the brief, so a silent divergence there mis-specifies every
@@ -24,7 +24,31 @@ STAMP = "plan.provenance.json"
 
 # Everything the plan is a function of. A change to any of these invalidates it.
 INPUTS = ("brief.md",)
-ARTIFACTS = ("plan.md", "layers.json", "acceptance.json", "critic_axes.json")
+CORE_ARTIFACTS = (
+    "plans/global.md", "layers.json", "acceptance.json", "critic_axes.json",
+    "checks.json", "scene_checks.json",
+)
+# ``runtime_checks.json`` is intentionally absent: it is append-only build evidence, not
+# planner output.  Hashing it as a plan artifact made every valid builder addition report
+# the plan as stale.
+
+
+def _artifact_names(folder: Path) -> tuple[str, ...]:
+    """Return the strict plan surface; legacy plan.md is intentionally ignored."""
+    names = list(CORE_ARTIFACTS)
+    try:
+        layers = json.loads((folder / "layers.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        layers = []
+    for row in layers:
+        script = Path(str(row.get("script", ""))).stem
+        if script:
+            rel = f"plans/{script}.md"
+            if (folder / rel).is_file():
+                names.append(rel)
+    if (folder / "plan_amendments.jsonl").is_file():
+        names.append("plan_amendments.jsonl")
+    return tuple(dict.fromkeys(names))
 
 
 def _digest(path: Path) -> str | None:
@@ -49,7 +73,7 @@ def stamp(folder: str | Path, *, model: str = "", note: str = "") -> Path:
         "model": model,
         "note": note,
         "inputs": {n: _digest(folder / n) for n in INPUTS},
-        "artifacts": {n: _digest(folder / n) for n in ARTIFACTS},
+        "artifacts": {n: _digest(folder / n) for n in _artifact_names(folder)},
     }
     out = folder / STAMP
     atomic_write(out, json.dumps(rec, indent=2) + "\n")

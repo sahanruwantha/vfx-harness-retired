@@ -27,6 +27,7 @@ inventing a finer granularity than the data supports.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,30 @@ def bind(shot_folder: str | Path, role: str, **meta: Any) -> None:
 
 def unbind() -> None:
     _ctx.clear()
+
+
+def is_bound() -> bool:
+    return bool(_ctx)
+
+
+@contextmanager
+def scoped(*, role: str, phase: str, **meta: Any):
+    """Temporarily change cost attribution without leaking it into the next phase.
+
+    Critic calls are nested inside a long-lived builder client.  A plain ``bind`` for the
+    critic used to remain active until process exit, so the later finalizer was charged to
+    the critic.  Restoring the complete prior context in ``finally`` makes every phase
+    boundary explicit even when an SDK call raises.
+    """
+    previous = dict(_ctx)
+    if not previous.get("folder"):
+        raise RuntimeError("costlog.scoped requires an existing bound run")
+    _ctx.update({"role": role, "phase": phase, **meta})
+    try:
+        yield
+    finally:
+        _ctx.clear()
+        _ctx.update(previous)
 
 
 def record(m: Any) -> None:
@@ -76,6 +101,7 @@ def record(m: Any) -> None:
             "output": get("output_tokens", 0),
             "cache_read": get("cache_read_input_tokens", 0),
             "cache_create": get("cache_creation_input_tokens", 0),
+            "session_id": getattr(m, "session_id", None),
         }
         out = Path(_ctx["folder"]) / "logs" / NAME
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +109,51 @@ def record(m: Any) -> None:
             fh.write(json.dumps(row) + "\n")
     except Exception as e:
         log(f"! cost row not recorded: {str(e)[:120]}", 1)
+
+
+def attempt_totals(shot_folder: str | Path, *, run_id: str, attempt: int) -> dict:
+    """Aggregate every model session belonging to one concrete layer attempt."""
+    path = Path(shot_folder) / "logs" / NAME
+    rows = []
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("run_id") == run_id and row.get("attempt") == attempt:
+                rows.append(row)
+    # A streaming SDK client can emit several ResultMessages for one session and reports
+    # cumulative usage each time.  Sum sessions, but take the maximum snapshot within a
+    # session; otherwise a two-round builder is charged for round 1 twice.
+    sessions: dict[str, list[dict]] = {}
+    for index, row in enumerate(rows):
+        key = str(row.get("session_id") or f"legacy-row-{index}")
+        sessions.setdefault(key, []).append(row)
+    collapsed = []
+    for group in sessions.values():
+        latest = group[-1]
+        collapsed.append({
+            **latest,
+            "cost_usd": max(float(row.get("cost_usd") or 0.0) for row in group),
+            "turns": max(int(row.get("turns") or 0) for row in group),
+            **{key: max(int(row.get(key) or 0) for row in group)
+               for key in ("input", "output", "cache_read", "cache_create")},
+        })
+    token_keys = ("input", "output", "cache_read", "cache_create")
+    return {
+        "cost_usd": sum(float(row.get("cost_usd") or 0.0) for row in collapsed),
+        "turns": sum(int(row.get("turns") or 0) for row in collapsed),
+        "tokens": {key: sum(int(row.get(key) or 0) for row in collapsed) for key in token_keys},
+        "sessions": len(collapsed),
+        "by_role": {
+            role: round(sum(float(row.get("cost_usd") or 0.0) for row in collapsed
+                            if row.get("role") == role), 6)
+            for role in sorted({str(row.get("role")) for row in collapsed})
+        },
+    }
 
 
 def summarise(shot_folder: str | Path) -> str:

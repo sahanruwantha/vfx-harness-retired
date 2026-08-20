@@ -37,10 +37,12 @@ The checks, each free and each with a known-bad fixture in the test suite:
                   numbers are real; this asks whether the checks can fail anything. Both are
                   needed: this plan scored 95/95 on grounding while carrying a check its own
                   plate cannot pass. See checks.py — the contract, re-run by the gate.
-    contracts     layers.json, acceptance.json and critic_axes.json must agree: an axis a
-                  layer OWNS must exist in the rubric, and every ref must be a real file.
-                  A layer owning an axis the critic does not score cannot be judged on it,
-                  and nothing else in the pipeline notices.
+    contracts     plans/global.md, the next just-in-time layer plan, layers.json,
+                  acceptance.json, critic_axes.json and live-scene
+                  contracts must agree: an axis a layer OWNS must exist in the rubric,
+                  every ref must be real, and a scene fact must belong to a frame/axis its
+                  layer actually judges. A layer owning an axis the critic does not score
+                  cannot be judged on it, and nothing else in the pipeline notices.
 
 Severity is either `blocking` (a build on this plan is aiming at something that is not
 there) or `warn` (the plan is weaker than it claims, but buildable).
@@ -186,16 +188,6 @@ def _builder_render(folder: Path, c) -> Path | None:
     return best if best.is_file() else None
 
 
-def _prior_render(folder: Path, c) -> Path | None:
-    """The state before this layer ran — its adversary. None for the first layer."""
-    try:
-        n = int(c.layer)
-    except (TypeError, ValueError):
-        return None
-    p = folder / "renders" / f"{n - 1}_best.png"
-    return p if n > 1 and p.is_file() else None
-
-
 def _check_done(folder: Path) -> tuple[list[Finding], dict]:
     """Do the plan's own done-checks work? Every check in checks.json is RE-RUN here.
 
@@ -207,7 +199,7 @@ def _check_done(folder: Path) -> tuple[list[Finding], dict]:
     # its proof recomputed, the three rules applied. The prose parser below is the fallback
     # for plans written before the contract existed, and is strictly weaker: it binds two
     # predicates where the contract binds all of them.
-    from ..checks import load, verify, verify_necessity
+    from ..checks import load, verify
     spec = folder / "checks.json"
     if not spec.is_file():
         # A contract nothing enforces is a suggestion. Without this the planner can satisfy
@@ -226,7 +218,15 @@ def _check_done(folder: Path) -> tuple[list[Finding], dict]:
                         and not sib.parent.name.startswith("_")
                         for p in sib.glob("*_best.png"))
         out, n_weak = [], 0
-        spec_by_id = {str(d.get("id")): d for d in json.loads(spec.read_text())}
+        raw_checks = json.loads(spec.read_text())
+        mixed = [str(row.get("id", "?")) for row in raw_checks
+                 if (row.get("origin") or "planner") != "planner"]
+        if mixed:
+            return [Finding(
+                "done-checks", True, "checks.json",
+                f"contains non-planner rows: {', '.join(mixed[:8])}",
+                "planner contracts are immutable; move builder-authored evidence to "
+                "runtime_checks.json")], {"checks": len(raw_checks)}
         try:
             checks = load(spec)
         except Exception as e:
@@ -238,25 +238,9 @@ def _check_done(folder: Path) -> tuple[list[Finding], dict]:
                 out.append(Finding("done-checks", True, c.id,
                                    f"names reference '{c.ref}', which does not exist"))
                 continue
-            # TWO CLASSES, TWO VERIFICATIONS. A planner check is a claim about the
-            # REFERENCE PLATE; a builder check is a claim about the RENDER it just made.
-            # Applying the planner's rules to a builder check compares its proof against
-            # the wrong artifact — the first four builder checks reported "proof does not
-            # reproduce: claims 19.04, measures 53.26" purely because 19.04 was measured on
-            # the render and 53.26 on the plate. Same number, different picture.
-            if str(spec_by_id.get(c.id, {}).get("origin")) == "builder":
-                after = _builder_render(folder, c)
-                if after is None:
-                    out.append(Finding("done-checks", True, c.id,
-                                       "builder check names no render to verify against"))
-                    continue
-                v = verify_necessity(c, after, _prior_render(folder, c))
-                if not v.bad_values:
-                    n_weak += 1        # first layer: nothing before it to reject
-            else:
-                v = verify(c, ref, corpus, root=Path.cwd())
-                if not c.rejects:
-                    n_weak += 1
+            v = verify(c, ref, corpus, root=Path.cwd())
+            if not c.rejects:
+                n_weak += 1
             if not v.ok:
                 out.append(Finding("done-checks", True, f"{c.id} ({c.metric})",
                                    v.reasons[0] if v.reasons else "failed verification",
@@ -304,8 +288,7 @@ def _check_coverage(folder: Path) -> tuple[list[Finding], dict]:
     runnable: dict[str, int] = {}
     for c in specs:
         lid = str(c.get("layer") or "")
-        ok = (c.get("origin") == "builder"         # measured on the layer's own render
-              or c.get("stage") != "post_grade"
+        ok = (c.get("stage") != "post_grade"
               or lid == last)
         runnable[lid] = runnable.get(lid, 0) + (1 if ok else 0)
     out = []
@@ -441,7 +424,10 @@ def _check_evidence(folder: Path, plan: str) -> tuple[list[Finding], dict]:
     return out, {"tickets": len(tickets), "spiked": n_spiked, "researched": n_research}
 
 
-def _check_contracts(folder: Path) -> tuple[list[Finding], dict]:
+def _check_contracts(folder: Path, *, require_scene_checks: bool = False
+                     ) -> tuple[list[Finding], dict]:
+    from ..scene_checks import validate_row as validate_scene_check
+
     out = []
     missing = [n for n in ("layers.json", "critic_axes.json", "acceptance.json")
                if not (folder / n).is_file()]
@@ -461,9 +447,25 @@ def _check_contracts(folder: Path) -> tuple[list[Finding], dict]:
         return [Finding("contracts", True, "plan artifacts", f"unreadable: {e}")], {}
 
     axis_keys = {a["key"] for a in axes}
+    layer_ids = {str(lay.get("id")) for lay in layers}
+    layer_axes = {str(lay.get("id")): set(lay.get("owns") or []) for lay in layers}
+    layer_frames = {
+        str(lay.get("id")): {
+            int(item.get("frame")) for item in
+            ([lay.get("judge")] if isinstance(lay.get("judge"), dict)
+             else lay.get("judge") or [])
+            if item.get("frame") is not None
+        }
+        for lay in layers
+    }
     owned: set[str] = set()
     for lay in layers:
         lid = lay.get("id", "?")
+        if not lay.get("owns"):
+            out.append(Finding(
+                "contracts", True, f"layer {lid}",
+                "owns no critic axis; legacy unscoped judging is not supported",
+                "assign at least one visible, independently answerable axis"))
         for ax in lay.get("owns", []):
             owned.add(ax)
             if ax not in axis_keys:
@@ -493,24 +495,156 @@ def _check_contracts(folder: Path) -> tuple[list[Finding], dict]:
                 "contracts", True, f"acceptance {m.get('id')}",
                 f"reference '{ref}' does not exist",
                 "this moment cannot be judged at all"))
-    return out, {"layers": len(layers), "axes": len(axis_keys), "moments": len(accept)}
+
+    scene_path = folder / "scene_checks.json"
+    scene_rows = []
+    if not scene_path.is_file():
+        out.append(Finding(
+            "contracts", require_scene_checks, "scene_checks.json",
+            "no live-scene contracts supplied",
+            "exact dimensions, placements, counts and mesh-state facts will be left to a "
+            "vision judge; add scene_checks.json for numeric scene clauses"))
+    else:
+        try:
+            scene_rows = json.loads(scene_path.read_text(encoding="utf-8"))
+            if not isinstance(scene_rows, list):
+                raise ValueError("top level must be a JSON list")
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            out.append(Finding("contracts", True, "scene_checks.json",
+                               f"unreadable: {exc}"))
+            scene_rows = []
+        seen: set[str] = set()
+        for row in scene_rows:
+            rid = str(row.get("id") or "<missing>") if isinstance(row, dict) else "<invalid>"
+            if not isinstance(row, dict):
+                out.append(Finding("contracts", True, "scene_checks.json",
+                                   "every record must be an object"))
+                continue
+            error = validate_scene_check(row)
+            if error:
+                out.append(Finding("contracts", True, rid, error,
+                                   "fix the scene contract schema before building"))
+            if rid in seen:
+                out.append(Finding("contracts", True, rid, "duplicate scene-check id"))
+            seen.add(rid)
+            lid = str(row.get("layer", ""))
+            axis = str(row.get("axis", ""))
+            if lid not in layer_ids:
+                out.append(Finding("contracts", True, rid,
+                                   f"names nonexistent layer {lid!r}"))
+            elif axis not in layer_axes.get(lid, set()):
+                out.append(Finding(
+                    "contracts", True, rid,
+                    f"axis {axis!r} is not owned by layer {lid}",
+                    "route the contract to the layer answerable for that property"))
+            if row.get("frame") is not None and lid in layer_frames:
+                try:
+                    frame = int(row["frame"])
+                except (TypeError, ValueError):
+                    out.append(Finding("contracts", True, rid, "frame is not an integer"))
+                else:
+                    if frame not in layer_frames[lid]:
+                        out.append(Finding(
+                            "contracts", True, rid,
+                            f"frame {frame} is not judged by layer {lid}",
+                            "add the frame to the layer judge list or move the contract"))
+    return out, {"layers": len(layers), "axes": len(axis_keys), "moments": len(accept),
+                 "scene_checks": len(scene_rows)}
 
 
-def run(folder: Path, plan_name: str = "plan.md") -> GateResult:
+def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
+    """Require the next executable layer plan and validate the feedback ledger."""
+    from ..brief import load_shot
+    from ..layer_plans import layer_plan_path, load_amendments
+    from ..ledger import load_layers
+
+    out: list[Finding] = []
+    legacy = folder / "plan.md"
+    if legacy.is_file():
+        out.append(Finding(
+            "hierarchy", True, "plan.md",
+            "legacy monolithic plan coexists with strict layer plans and can poison "
+            "builder retrieval",
+            "archive it outside the shot folder; strict planning has no compatibility "
+            "fallback and builders consume only plans/<layer>.md"))
+    global_path = folder / "plans" / "global.md"
+    if not global_path.is_file():
+        return [*out, Finding(
+            "hierarchy", True, "plans/global.md", "strict global plan is missing",
+            "plan.md is not supported; run `bambi plan <shot>` to migrate")], {}
+    try:
+        load_amendments(folder)
+    except (OSError, ValueError) as exc:
+        out.append(Finding("hierarchy", True, "plan_amendments.jsonl", str(exc),
+                           "repair the JSONL record; invalid feedback cannot be ignored"))
+    try:
+        layers = load_layers(load_shot(folder))
+    except Exception as exc:
+        return [*out, Finding("hierarchy", True, "layers.json", str(exc))], {}
+
+    passed: set[str] = set()
+    outcomes = folder / "plans" / "outcomes"
+    for path in sorted(outcomes.glob("*.json")) if outcomes.is_dir() else []:
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if row.get("status") == "passed":
+                passed.add(str(row.get("layer")))
+        except (OSError, json.JSONDecodeError) as exc:
+            out.append(Finding("hierarchy", True, str(path.relative_to(folder)),
+                               f"unreadable sealed outcome: {exc}"))
+    ledger_passed: set[str] = set()
+    ledger_path = folder / "shot.json"
+    if ledger_path.is_file():
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            ledger_passed = {
+                str(lid) for lid, row in (ledger.get("milestones") or {}).items()
+                if isinstance(row, dict) and row.get("status") == "passed"
+            }
+        except (OSError, json.JSONDecodeError) as exc:
+            out.append(Finding("hierarchy", True, "shot.json", f"unreadable: {exc}"))
+    for lid in sorted(ledger_passed - passed):
+        out.append(Finding(
+            "hierarchy", True, f"plans/outcomes/{int(lid):02d}.json",
+            f"ledger marks layer {lid} passed but its sealed planning outcome is missing",
+            "revalidate that layer and publish its authoritative outcome before planning "
+            "downstream work"))
+    next_layer = next((layer for lid, layer in layers.items() if lid not in passed), None)
+    required = 0
+    if next_layer is not None:
+        required = 1
+        path = layer_plan_path(folder, next_layer)
+        if not path.is_file():
+            out.append(Finding(
+                "hierarchy", True, str(path.relative_to(folder)),
+                f"next unpassed layer {next_layer.id} has no just-in-time plan",
+                f"run `bambi plan {folder} --layer {next_layer.id}`"))
+        elif len(path.read_text(encoding="utf-8", errors="replace").strip()) < 200:
+            out.append(Finding("hierarchy", True, str(path.relative_to(folder)),
+                               "layer plan is too small to be executable"))
+    return out, {"layer_plans_required": required, "layers_passed": len(passed)}
+
+
+def run(folder: Path, plan_name: str = "plans/global.md", *,
+        require_scene_checks: bool = False) -> GateResult:
     folder = Path(folder)
     res = GateResult(shot=folder.name)
     plan_path = folder / plan_name
     if not plan_path.is_file():
-        res.findings.append(Finding("contracts", True, plan_name, "does not exist"))
+        res.findings.append(Finding(
+            "contracts", True, plan_name, "does not exist",
+            "legacy plan.md is not supported; generate plans/global.md"))
         return res
     plan = plan_path.read_text(encoding="utf-8", errors="replace")
 
-    for finds, stats in (_check_done(folder),
+    for finds, stats in (_check_hierarchical_plans(folder),
+                         _check_done(folder),
                          _check_coverage(folder),
                          _check_grounded(folder),
                          _check_citations(folder, plan),
                          _check_evidence(folder, plan),
-                         _check_contracts(folder)):
+                         _check_contracts(folder,
+                                          require_scene_checks=require_scene_checks)):
         res.findings += finds
         res.stats.update(stats)
     return res
@@ -533,7 +667,8 @@ def report(res: GateResult) -> str:
             +             f"{s.get('tickets', 0)} tickets ({s.get('spiked', 0)} spiked, "
             f"{s.get('researched', 0)} researched) · "
             f"{s.get('layers', 0)} layers / {s.get('axes', 0)} axes / "
-            f"{s.get('moments', 0)} moments")
+            f"{s.get('moments', 0)} moments / "
+            f"{s.get('scene_checks', 0)} scene contracts")
     if not res.findings:
         lines.append("   nothing to fix")
         return "\n".join(lines)

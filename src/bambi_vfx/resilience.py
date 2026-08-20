@@ -3,7 +3,7 @@
 A plan pass costs ~$9 and ~25 minutes. Two consecutive repair rounds were lost to this:
 
     Exception: Claude Code returned an error result: success
-    cost=$0.0007 · 0 tool calls · plan.md byte-identical before and after
+    cost=$0.0007 · 0 tool calls · target artifact byte-identical before and after
 
 The exception says "success", the cost says nothing happened, and the actual cause was in
 the session's own assistant text, one line down:
@@ -26,7 +26,7 @@ Hence classification before backoff. A retry loop that cannot tell "come back la
     UNKNOWN    retried ONCE, then raised. An unrecognised error is more likely a real bug
                than a blip, and hammering it hides the stack trace that would fix it.
 
-Success is judged by the POST-CONDITION the caller names (for a plan pass: did plan.md get
+Success is judged by the POST-CONDITION the caller names (for a plan pass: did its target get
 written), never by the absence of an exception — because the exception said "success".
 """
 

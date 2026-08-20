@@ -10,12 +10,16 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
+import shutil
 from pathlib import Path
 
 import anyio
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from PIL import Image, ImageDraw
 
+from ..checks import METRICS
+from ..compare_panels import crop_pixels, save_context_sheet, save_focus_sheet, validate_crop
 from ..escalate import ask as _ask
 from ..metrics import _HOT_FLOOR_PPM
 from ..script_map import find_lines as _find_lines
@@ -58,7 +62,7 @@ def _b64(im: Image.Image) -> str:
     return base64.standard_b64encode(buf.getvalue()).decode()
 
 
-def _stats(im: Image.Image) -> str:
+def _stats(im: Image.Image, *, look_actions: bool = True) -> str:
     """Objective exposure readout so the agent stops eyeballing blowout/whiteout."""
     px = list(im.convert("L").getdata())
     n = len(px) or 1
@@ -71,9 +75,9 @@ def _stats(im: Image.Image) -> str:
             black += 1
     line = (f"exposure: mean {total / n:.0f}/255 · clipped(blown) {100 * clipped / n:.0f}% · "
             f"black {100 * black / n:.0f}%")
-    if clipped / n > 0.12:
+    if look_actions and clipped / n > 0.12:
         line += "  ⚠ highlights BLOWN — lower emission/light strength or exposure"
-    if black / n > 0.85:
+    if look_actions and black / n > 0.85:
         line += "  ⚠ frame almost entirely black — add light/emission or open exposure"
     return line
 
@@ -106,7 +110,8 @@ def _region_metrics(im: Image.Image) -> dict:
             "hot_core": round(dense)}
 
 
-def _metrics_line(im: Image.Image, ref: Image.Image | None = None) -> str:
+def _metrics_line(im: Image.Image, ref: Image.Image | None = None, *,
+                  look_actions: bool = True) -> str:
     """`structure` = local stdev per band (fog wall = LOW; wispy/structured = HIGH).
     `halation` = glow-area : hot-core ratio (hard dots = LOW; bloomy = HIGH), or `n/a`
     when the frame carries too little hot core for that ratio to mean anything.
@@ -117,8 +122,13 @@ def _metrics_line(im: Image.Image, ref: Image.Image | None = None) -> str:
         mean, sd = mm["bands"][band]
         parts.append(f"{band} μ{mean:.0f}/σ{sd:.0f}")
     hal = mm["halation"]
-    line = (f"structure: {' · '.join(parts)} · halation "
-            + (f"{hal}" if hal is not None else f"n/a (only {mm['hot_px']}px of hot core)"))
+    line = f"structure: {' · '.join(parts)}"
+    if look_actions:
+        line += (" · halation "
+                 + (f"{hal}" if hal is not None
+                    else f"n/a (only {mm['hot_px']}px of hot core)"))
+    else:
+        line += " · look feedback deferred (this layer does not own emission/bloom)"
     if ref is not None:
         rm = _region_metrics(ref)
         deltas = []
@@ -131,7 +141,7 @@ def _metrics_line(im: Image.Image, ref: Image.Image | None = None) -> str:
         # to the glare node when the scene had nothing bright enough to glare — bloom
         # scales what exists, so on an unlit frame it multiplies zero. Say which it is.
         rh = rm["halation"]
-        if rh is not None and rh > 1:
+        if look_actions and rh is not None and rh > 1:
             if hal is None:
                 deltas.append(f"halation n/a vs ref {rh} → only {mm['hot_px']}px reach the "
                               f"hot-core threshold (ref {rm['hot_px']}px): raise emitter or "
@@ -205,6 +215,7 @@ def _check_report(kind: str, r: dict) -> str:
                      f"({r.get('hits')} hit · {r.get('occluded')} occluded · "
                      f"{r.get('missed')} missed of {r.get('samples')} rays)")
     elif kind == "framing":
+        lines.append("  coordinates: [x0,y0,x1,y1], origin TOP-LEFT (x right, y down)")
         for fr in r.get("frames", []):
             lines.append(f"  f{fr.get('frame')}: bbox {fr.get('bbox')} · "
                          f"w {fr.get('width')} h {fr.get('height')} · "
@@ -229,7 +240,7 @@ def _check_report(kind: str, r: dict) -> str:
                      f"Inf {r.get('inf')} · negative {r.get('negative')} · "
                      f"passes {r.get('passes_enabled')}")
     elif kind in ("bbox", "subject_bbox"):
-        lines.append(f"  bbox {r.get('bbox')} (0..1, origin BOTTOM-LEFT) · "
+        lines.append(f"  bbox {r.get('bbox')} (0..1, origin TOP-LEFT; x right, y down) · "
                      f"w {r.get('width')} h {r.get('height')} · centre {r.get('centre')}")
         lines.append("  hand this straight to render_pass(crop=…, res_pct=400) — an "
                      "oracle crop measures far better than a guessed one.")
@@ -238,10 +249,11 @@ def _check_report(kind: str, r: dict) -> str:
     return "\n".join(lines)
 
 
-def _image(path: str, caption: str) -> dict:
+def _image(path: str, caption: str, *, look_actions: bool = True) -> dict:
     im = _load(path)
     return {"content": [
-        {"type": "text", "text": f"{caption}\n{_stats(im)}\n{_metrics_line(im)}"},
+        {"type": "text", "text": (f"{caption}\n{_stats(im, look_actions=look_actions)}\n"
+                                  f"{_metrics_line(im, look_actions=look_actions)}")},
         {"type": "image", "data": _b64(im), "mimeType": "image/jpeg"},
     ]}
 
@@ -280,7 +292,46 @@ _METRIC_H = 320
 _DISPLAY_H = 1024
 
 # (frame, ref) -> the (mode, scale) it was last measured at, so a change is announced.
-_LAST_COMPARE: dict = {}
+_LOOK_METRICS = {
+    "hot_core", "halation", "halation_top", "halation_mid", "halation_bot",
+    "points", "points_top", "points_mid", "points_bot", "chroma_spread",
+}
+_LOOK_AXIS_WORDS = ("light", "exposure", "grade", "halation", "emission", "palette")
+
+
+def _layer_feedback_policy(shot_dir: Path | None, layer_id: str | None) -> dict:
+    """Derive comparison advice from the axes this layer can actually change."""
+    axes: list[str] = []
+    if shot_dir and layer_id and (shot_dir / "layers.json").is_file():
+        try:
+            for row in json.loads((shot_dir / "layers.json").read_text(encoding="utf-8")):
+                if str(row.get("id")) == str(layer_id):
+                    axes = [str(axis).lower() for axis in (row.get("owns") or [])]
+                    break
+        except (OSError, json.JSONDecodeError):
+            axes = []
+    joined = " ".join(axes)
+    return {
+        "axes": axes,
+        # Empty ownership is invalid in the strict contract and earns no speculative
+        # look feedback. There is intentionally no legacy all-feedback fallback.
+        "look_actions": bool(axes) and any(word in joined for word in _LOOK_AXIS_WORDS),
+    }
+
+
+def _comparison_lock_error(locks: dict, key: tuple, settings: tuple) -> str | None:
+    """Lock one frame/crop's render settings for the duration of a build round."""
+    previous = locks.get(key)
+    if previous is None:
+        locks[key] = settings
+        return None
+    if previous == settings:
+        return None
+    return (f"comparison settings are LOCKED for round {key[0]}: first call used "
+            f"mode={previous[0]} scale={previous[1]} res_pct={previous[2]}; requested "
+            f"mode={settings[0]} scale={settings[1]} res_pct={settings[2]}. Reuse the "
+            f"first settings so before/after metrics remain comparable; settings may "
+            f"change only after the next critic round begins")
 
 
 def _to_metric_size(im: Image.Image) -> Image.Image:
@@ -298,13 +349,15 @@ def _to_display_size(im: Image.Image) -> Image.Image:
     return im.resize((w, _DISPLAY_H), Image.LANCZOS)
 
 
-def _compare_image(cand_path: str, ref_path: Path, caption: str) -> dict:
+def _compare_image(cand_path: str, ref_path: Path, caption: str, *,
+                   look_actions: bool = True) -> dict:
     cand_raw = Image.open(cand_path).convert("RGB")
     ref_raw = Image.open(ref_path).convert("RGB")
 
     # MEASURE on identically-resampled copies…
     cand_m, ref_m = _to_metric_size(cand_raw), _to_metric_size(ref_raw)
-    text = f"{caption}\n{_stats(cand_m)}\n{_metrics_line(cand_m, ref_m)}"
+    text = (f"{caption}\n{_stats(cand_m, look_actions=look_actions)}\n"
+            f"{_metrics_line(cand_m, ref_m, look_actions=look_actions)}")
 
     # …and state the SIGNED GAP, not just the two numbers. The builder was reading its own
     # absolute values ("exposure: mean 22/255") and having to remember or re-derive the
@@ -317,6 +370,8 @@ def _compare_image(cand_path: str, ref_path: Path, caption: str) -> dict:
         from ..metrics import compare as _mcompare
         from ..metrics import look_pair as _lp
         deltas = _mcompare(*_lp(cand_path, str(ref_path)))
+        if not look_actions:
+            deltas = [delta for delta in deltas if delta.key not in _LOOK_METRICS]
         if deltas:
             text += ("\ngap vs reference (signed — fix the sign, not just the number):\n"
                      + "\n".join(f"  {d}" for d in deltas[:6]))
@@ -362,11 +417,15 @@ def _compare_image(cand_path: str, ref_path: Path, caption: str) -> dict:
 
 
 def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None = None,
-                        shot_dir: str | Path | None = None, layer_id: str | None = None):
+                        shot_dir: str | Path | None = None, layer_id: str | None = None,
+                        comparison_state: dict | None = None):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
     `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…)."""
     assets_dir = Path(assets_dir) if assets_dir else None
     shot_dir = Path(shot_dir) if shot_dir else None
+    comparison_state = comparison_state if comparison_state is not None else {"round": 1}
+    comparison_locks: dict = {}
+    feedback_policy = _layer_feedback_policy(shot_dir, layer_id)
 
     async def _call(cmd, **args):
         return await anyio.to_thread.run_sync(lambda: session.call(cmd, **args))
@@ -382,7 +441,8 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         "bounded volumetric domain (clouds/nebula/fog); bvfx_volumetric_world(...) for "
         "a tinted haze sky; bvfx_glare_bloom(...) for EEVEE-Next bloom; "
         "bvfx_emission(name,color,strength). To DEBUG a material/world, use inspect_nodes "
-        "instead of rendering repeatedly to guess.",
+        "instead of rendering repeatedly to guess. Tag contract objects with "
+        "bvfx_role(obj,'pedestal.plinth',owner_layer='1'); semantic roles survive renames.",
         {"type": "object", "properties": {"script": {"type": "string"}}, "required": ["script"]},
     )
     async def run_bpy(args):
@@ -470,7 +530,8 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         except BlenderError as e:
             return _text(str(e), is_error=True)
         cap = f"frame {r['frame']} ({r['mode']})" + _warn_suffix(r)
-        return _image(r["image_path"], cap)
+        return _image(r["image_path"], cap,
+                      look_actions=feedback_policy["look_actions"])
 
     @tool(
         "render_pass",
@@ -483,7 +544,7 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         "Workbench diagnostic. `light='<LightObject>'` (comma list allowed) renders with "
         "ONLY those light objects and hides the rest, so you can see what one lamp "
         "actually contributes. `crop` is "
-        "[x0,y0,x1,y1] in 0..1 from the BOTTOM-LEFT and is a true optical zoom, so pair "
+        "[x0,y0,x1,y1] in 0..1 from the TOP-LEFT and is a true optical zoom, so pair "
         "it with res_pct (e.g. 400) to see fine detail at real resolution instead of "
         "upscaling a thumbnail. Every mode returns a caption saying what to look for.",
         {"type": "object",
@@ -498,7 +559,7 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
                        "description": "light OBJECT name(s), comma-separated; all other "
                                       "lights are hidden for this render"},
              "crop": {"type": "array", "items": {"type": "number"},
-                      "description": "[x0,y0,x1,y1] in 0..1, origin BOTTOM-LEFT"},
+                      "description": "[x0,y0,x1,y1] in 0..1, origin TOP-LEFT"},
              "res_pct": {"type": "integer",
                          "description": "resolution percentage; >100 zooms a crop"},
              "scale": {"type": "number"},
@@ -514,7 +575,7 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         )
         if bad_crop:
             return _text("crop must be [x0,y0,x1,y1] in 0..1 with x0<x1 and y0<y1 "
-                         "(origin BOTTOM-LEFT)", is_error=True)
+                         "(origin TOP-LEFT; x right, y down)", is_error=True)
         try:
             r = await _call("render", frame=int(args["frame"]),
                             mode="eevee",
@@ -601,18 +662,100 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
                     "both at the same scale before trusting it.")
         return _image(r["image_path"], cap)
 
+    # A usable no-op check cannot require the model to recover internal render paths from
+    # image-only tool results. Keep the baseline in the tool process and re-render with the
+    # exact same settings after the edit, so the diff answers one question and only one.
+    change_baselines: dict[str, tuple[Path, int, str, float]] = {}
+
+    @tool(
+        "verify_change",
+        "Prove whether an edit changed the intended frame, without managing image paths. "
+        "Call action='baseline' BEFORE run_bpy with a short label, frame, mode and scale. "
+        "After the edit call action='compare' with the same label; the tool re-renders the "
+        "stored frame at the IDENTICAL settings and returns |before-after| plus mean/max "
+        "delta. A near-black result means the edit was a visible no-op. Use this whenever "
+        "you are changing a node, light, visibility state, modifier, or small feature and "
+        "cannot prove from a numeric scene check that the intended pixels moved.",
+        {"type": "object",
+         "properties": {
+             "action": {"type": "string", "enum": ["baseline", "compare"]},
+             "label": {"type": "string"},
+             "frame": {"type": "integer"},
+             "mode": {"type": "string", "enum": ["solid", "wire", "draft", "eevee"]},
+             "scale": {"type": "number"},
+         },
+         "required": ["action", "label"]},
+    )
+    async def verify_change(args):
+        label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(args["label"]).strip())[:60]
+        if not label:
+            return _text("label must contain at least one letter or number", is_error=True)
+        if args["action"] == "baseline":
+            if args.get("frame") is None:
+                return _text("baseline requires frame", is_error=True)
+            frame = int(args["frame"])
+            mode = str(args.get("mode", "draft"))
+            scale = float(args.get("scale", 0.5))
+            try:
+                rendered = await _call("render", frame=frame, mode=mode, scale=scale)
+            except BlenderError as e:
+                return _text(str(e), is_error=True)
+            src = Path(rendered["image_path"])
+            root = (shot_dir / ".artifacts") if shot_dir else src.parent
+            root.mkdir(parents=True, exist_ok=True)
+            dest = root / f"baseline_{label}_f{frame:04d}_{mode}.png"
+            shutil.copyfile(src, dest)
+            change_baselines[label] = (dest, frame, mode, scale)
+            return _image(str(dest), f"change baseline '{label}' captured at f{frame} "
+                          f"mode={mode} scale={scale:g}. Make ONE edit, then call "
+                          f"verify_change(action='compare', label='{label}').")
+
+        prior = change_baselines.get(label)
+        if prior is None:
+            return _text(f"no baseline named {label!r}; call action='baseline' first",
+                         is_error=True)
+        before, frame, mode, scale = prior
+        try:
+            rendered = await _call("render", frame=frame, mode=mode, scale=scale)
+        except BlenderError as e:
+            return _text(str(e), is_error=True)
+        after = Path(rendered["image_path"])
+        dest = before.with_name(f"change_{label}_f{frame:04d}.png")
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: subtract_png(str(before), str(after), str(dest)))
+        except OSError as e:
+            return _text(f"could not verify change {label!r}: {e}", is_error=True)
+        verdict = ("VISIBLE CHANGE" if result["did_work"] else
+                   "VISIBLE NO-OP — do not keep tuning this control; inspect the graph, "
+                   "keyframe, visibility, or light linkage")
+        cap = (f"change '{label}' at f{frame}, mode={mode}, scale={scale:g}: {verdict}. "
+               f"Mean delta {result['mean_delta']}/255 · max {result['max_delta']}/255. "
+               f"Bright regions are the pixels the edit moved.")
+        return _image(result["image_path"], cap)
+
     @tool(
         "compare_frame",
-        "Render a frame and place it SIDE-BY-SIDE with a reference image (YOURS | "
-        "REFERENCE) so you judge the match directly — composition, palette, atmosphere. "
-        "Pass `reference` as a path under the shot folder (e.g. refs/M1_green.jpg). Same "
-        "mode/scale as render_frame; returns one image + your render's exposure readout.",
+        "Render a frame against its reference. With no crop, returns the standard full "
+        "SIDE-BY-SIDE comparison. With `crop=[x0,y0,x1,y1]` (normalized TOP-LEFT), "
+        "returns BOTH a full-frame context map with that region outlined and a true "
+        "optical high-resolution focus sheet. `views` controls aligned side_by_side, "
+        "50/50 wipe, overlay, and difference views. Get a measured crop from "
+        "check_scene(kind='bbox'); never replace full-frame context with a cherry-picked "
+        "zoom.",
         {"type": "object",
          "properties": {
              "frame": {"type": "integer"},
              "reference": {"type": "string", "description": "e.g. refs/M1_green.jpg"},
              "mode": {"type": "string", "enum": ["solid", "wire", "draft", "eevee"]},
              "scale": {"type": "number"},
+             "crop": {"type": "array", "items": {"type": "number"},
+                      "description": "[x0,y0,x1,y1] in 0..1, origin TOP-LEFT"},
+             "res_pct": {"type": "integer", "minimum": 100, "maximum": 800,
+                         "description": "optical crop resolution; defaults from crop size"},
+             "views": {"type": "array", "maxItems": 4,
+                       "items": {"type": "string",
+                                 "enum": ["side_by_side", "wipe", "overlay", "difference"]}},
          },
          "required": ["frame", "reference"]},
     )
@@ -623,27 +766,83 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
             return _text(f"reference not found: {ref_path}", is_error=True)
         mode = args.get("mode", "eevee")
         scale = float(args.get("scale", 0.4))
+        crop = args.get("crop")
+        if crop is not None:
+            try:
+                crop = list(validate_crop(crop))
+            except ValueError as exc:
+                return _text(str(exc) + " (origin TOP-LEFT; x right, y down)", is_error=True)
+        views = args.get("views") or ["side_by_side", "wipe"]
+        res_pct = None
+        if crop is not None:
+            fraction = max(crop[2] - crop[0], crop[3] - crop[1])
+            requested_pct = int(args.get("res_pct") or round(110 / fraction))
+            res_pct = min(800, max(100, requested_pct))
+        round_id = int(comparison_state.get("round", 1))
+        # Mode and base scale are round-wide: changing them on another frame would make
+        # improvement/regression comparisons non-equivalent. Optical crop resolution is
+        # additionally locked per crop because it legitimately depends on crop size.
+        lock_error = _comparison_lock_error(
+            comparison_locks, (round_id, "base"), (mode, scale, None))
+        if not lock_error:
+            lock_key = (round_id, int(args["frame"]), str(ref),
+                        tuple(crop) if crop else None)
+            lock_error = _comparison_lock_error(comparison_locks, lock_key,
+                                                (mode, scale, res_pct))
+        if lock_error:
+            return _text(lock_error, is_error=True)
         try:
             r = await _call("render", frame=int(args["frame"]), mode=mode, scale=scale)
         except BlenderError as e:
             return _text(str(e), is_error=True)
-        out = _compare_image(r["image_path"], ref_path,
-                             f"frame {r['frame']} ({mode})  vs  {ref}" + _warn_suffix(r))
-        # Structure and exposure are now scale-invariant, but halation is not and cannot
-        # be: a 672px render genuinely holds less high-frequency detail than a 1920px one.
-        # So changing mode or scale between two readings of the SAME frame moves the
-        # numbers for reasons that have nothing to do with the edit in between — which is
-        # exactly what happened when one layer compared f45 at 0.6, then at 1.0, having
-        # altered a shader node in between, and could not tell which change moved what.
-        key = (int(args["frame"]), str(ref))
-        prev = _LAST_COMPARE.get(key)
-        _LAST_COMPARE[key] = (mode, scale)
-        if prev and prev != (mode, scale):
-            out["content"][0]["text"] += (
-                f"\n⚠ last comparison of f{key[0]} used mode={prev[0]} scale={prev[1]}, "
-                f"this one mode={mode} scale={scale}. Halation is not comparable across "
-                f"that change — hold mode and scale FIXED while iterating, or you cannot "
-                f"tell your edit from the render settings.")
+        if crop is None:
+            out = _compare_image(r["image_path"], ref_path,
+                                 f"frame {r['frame']} ({mode})  vs  {ref}"
+                                 + _warn_suffix(r),
+                                 look_actions=feedback_policy["look_actions"])
+        else:
+            try:
+                zoom = await _call("render", frame=int(args["frame"]), mode=mode,
+                                   scale=scale, crop=crop, res_pct=res_pct)
+                stem = f"compare_focus_f{int(args['frame']):04d}"
+                context_path = session.artifacts / f"{stem}_context.jpg"
+                focus_path = session.artifacts / f"{stem}_detail.jpg"
+                context = save_context_sheet(r["image_path"], ref_path, crop, context_path)
+                focus = save_focus_sheet(zoom["image_path"], ref_path, crop, focus_path, views)
+            except (BlenderError, OSError, ValueError) as exc:
+                return _text(f"focus comparison failed: {exc}", is_error=True)
+            candidate_crop = Image.open(zoom["image_path"]).convert("RGB")
+            reference_crop = Image.open(ref_path).convert("RGB")
+            reference_crop = crop_pixels(reference_crop, crop)
+            # Crop metrics share one DOWNSTREAM geometry and never enlarge the smaller
+            # source. Otherwise a tiny reference crop is interpolated to look smoother
+            # than an optical candidate crop and the detail comparison is biased again.
+            metric_h = min(_METRIC_H, candidate_crop.height, reference_crop.height)
+            metric_aspect = min(candidate_crop.width / max(candidate_crop.height, 1),
+                                reference_crop.width / max(reference_crop.height, 1))
+            metric_size = (max(1, round(metric_h * metric_aspect)), max(1, metric_h))
+            candidate_metric = candidate_crop.resize(metric_size, Image.Resampling.LANCZOS)
+            reference_metric = reference_crop.resize(metric_size, Image.Resampling.LANCZOS)
+            text = (
+                f"frame {r['frame']} ({mode}) focus comparison vs {ref}\n"
+                f"crop {crop} (normalized TOP-LEFT) · optical res_pct={res_pct} · "
+                f"views={focus['views']}\n"
+                f"FIRST IMAGE: mandatory full-frame context with the inspected region "
+                f"outlined. SECOND IMAGE: aligned focus views.\n"
+                f"candidate crop source {focus['candidate_source_px']} · reference crop "
+                f"{focus['reference_crop_px']} · compared at {focus['comparison_px']} · "
+                f"upscaled={focus['upscaled']} · mean abs diff {focus['mean_abs_diff']}/255\n"
+                f"{_stats(candidate_metric, look_actions=feedback_policy['look_actions'])}\n"
+                f"{_metrics_line(candidate_metric, reference_metric, look_actions=feedback_policy['look_actions'])}"
+                + _warn_suffix(zoom)
+            )
+            out = {"content": [
+                {"type": "text", "text": text},
+                {"type": "image", "data": _b64(_load(context["image_path"])),
+                 "mimeType": "image/jpeg"},
+                {"type": "image", "data": _b64(_load(focus["image_path"])),
+                 "mimeType": "image/jpeg"},
+            ]}
         return out
 
     @tool(
@@ -710,7 +909,7 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         return _text(f"imported {name}: objects={r.get('result')} bbox_dims={dims}")
 
     tools = [run_bpy, inspect_scene, inspect_nodes, list_keyframes, render_frame,
-             render_frames, render_pass, check_scene, diff_frames]
+             render_frames, render_pass, check_scene, diff_frames, verify_change]
     if shot_dir is not None:
         tools.append(compare_frame)
     if assets_dir is not None:
@@ -756,15 +955,21 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         {"type": "object",
          "properties": {"question": {"type": "string"},
                         "assumption": {"type": "string"},
-                        "why_it_matters": {"type": "string"}},
-         "required": ["question", "assumption"]},
+                        "why_it_matters": {"type": "string"},
+                        "affected_layers": {"type": "array", "items": {"type": "string"}},
+                        "affected_axes": {"type": "array", "items": {"type": "string"}},
+                        "global_decision": {"type": "boolean"}},
+         "required": ["question", "assumption", "affected_layers"]},
     )
     async def ask_supervisor(args):
         if not shot_dir:
             return {"content": [{"type": "text", "text": "no shot folder — cannot ask"}]}
         qid = _ask(shot_dir, layer=layer_id or "?", question=args["question"],
                    assumption=args["assumption"],
-                   why_it_matters=args.get("why_it_matters", ""))
+                   why_it_matters=args.get("why_it_matters", ""),
+                   affected_layers=args.get("affected_layers") or [],
+                   affected_axes=args.get("affected_axes") or [],
+                   global_decision=bool(args.get("global_decision")))
         return {"content": [{"type": "text", "text":
                 f"Recorded as Q{qid}. Continue on your stated assumption: "
                 f"{args['assumption']}"}]}
@@ -892,17 +1097,52 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
     @tool(
         "propose_checks",
         "Record what you learned about VERIFYING this layer, as executable checks. You are "
-        "the only stage that can: the planner authored every check before any scene existed, "
-        "from reference images alone, so its checks compare pixels to a plate and most can "
-        "only run after the final grade. You have the built scene.\n"
+        "the only stage with the built scene. First read checks.json and "
+        "runtime_checks.json; do not duplicate an authoritative check that already proves "
+        "the work. Propose only an evidence gap you actually discovered.\n"
         "Each check must PASS on your render and FAIL on the state before your layer ran — "
         "that is what proves your layer did the work, and it is why this cannot be gamed: "
         "you do not choose the adversary, the previous layer's render is.\n"
-        "checks: [{id, metric, op, lo/hi, regions, note}]. Survivors are appended to "
-        "checks.json and become contract. Propose few and real.",
+        "after and before are existing image artifact paths relative to the shot folder, "
+        "never descriptions or labels. Survivors are appended to the "
+        "runtime_checks.json evidence ledger; planner contracts remain immutable in "
+        "checks.json. Propose few and real.",
         {"type": "object",
-         "properties": {"checks": {"type": "array", "items": {"type": "object"}},
-                        "after": {"type": "string"}, "before": {"type": "string"}},
+         "properties": {
+             "checks": {
+                 "type": "array",
+                 "maxItems": 20,
+                 "items": {
+                     "type": "object",
+                     "properties": {
+                         "id": {"type": "string"},
+                         "metric": {"type": "string", "enum": sorted(METRICS)},
+                         "op": {"type": "string", "enum": [">=", "<=", "band"]},
+                         "lo": {"type": "number"},
+                         "hi": {"type": "number"},
+                         "frame": {"type": "integer"},
+                         "axis": {"type": "string"},
+                         "stage": {"type": "string",
+                                   "enum": ["pre_grade", "post_grade", "any"]},
+                         "ref": {"type": "string"},
+                         "regions": {
+                             "type": "object",
+                             "additionalProperties": {
+                                 "type": "array", "minItems": 4, "maxItems": 4,
+                                 "items": {"type": "number"},
+                             },
+                         },
+                         "note": {"type": "string"},
+                     },
+                     "required": ["id", "metric", "op"],
+                     "additionalProperties": False,
+                 },
+             },
+             "after": {"type": "string",
+                       "description": "Existing candidate image path relative to shot"},
+             "before": {"type": "string",
+                        "description": "Existing pre-layer image path relative to shot"},
+         },
          "required": ["checks", "after"]},
     )
     async def propose_checks(args):
@@ -912,12 +1152,20 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
         root = Path(shot_dir)
         after = root / args["after"]
         if not after.is_file():
-            return _text(f"render {args['after']} does not exist", is_error=True)
+            available = sorted(
+                (p for base in (root / ".artifacts", root / "renders")
+                 if base.is_dir() for p in base.glob("*.png")),
+                key=lambda p: p.stat().st_mtime, reverse=True)[:6]
+            hint = ", ".join(p.relative_to(root).as_posix() for p in available) or "none"
+            return _text(
+                f"render path {args['after']!r} does not exist. Pass an existing image "
+                f"artifact path, not a description. Recent candidates: {hint}",
+                is_error=True)
         before = (root / args["before"]) if args.get("before") else None
         # Every check must name the plate it is about, or the gate cannot re-run it. The
         # first version of this tool took `after`/`before` renders and never populated
-        # `ref`, so four perfectly good builder checks landed in checks.json and all four
-        # failed the gate on plumbing rather than on merit.
+        # `ref`, so four good builder checks landed in the runtime evidence ledger and all
+        # four failed validation on plumbing rather than on merit.
         judge: dict[int, str] = {}
         first_ref = ""
         try:
@@ -968,12 +1216,12 @@ def build_blender_tools(session: BlenderSession, assets_dir: str | Path | None =
             else:
                 lines.append(f"  REJECTED {cid:10} {v.reasons[0][:120]}")
         if kept:
-            spec = root / "checks.json"
+            spec = root / "runtime_checks.json"
             cur = json.loads(spec.read_text()) if spec.is_file() else []
             have = {x.get("id") for x in cur}
             cur += [k for k in kept if k.get("id") not in have]
             spec.write_text(json.dumps(cur, indent=1) + "\n", encoding="utf-8")
-        return _text(f"{len(kept)} check(s) added to checks.json.\n" + "\n".join(lines))
+        return _text(f"{len(kept)} check(s) added to runtime_checks.json.\n" + "\n".join(lines))
 
     # ask_supervisor is deliberately PLAN-ONLY: a layer that discovers an
     # ambiguity is already building on earlier layers' answer to it.

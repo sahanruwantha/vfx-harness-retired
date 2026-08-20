@@ -91,10 +91,10 @@ def motion_from_positions(frames: Sequence[int],
 
 
 def framing_from_ndc(corners: Iterable[Sequence[float]]) -> dict:
-    """NDC bbox from camera-space corners. Origin is BOTTOM-LEFT, matching Blender.
+    """Frame bbox from Blender camera-space corners, returned in TOP-LEFT coordinates.
 
-    Each corner is (x, y, z) in world_to_camera_view units: x,y in 0..1 on screen,
-    z > 0 in front of the camera.
+    Input is Blender's world_to_camera_view convention (bottom-left). Public bambi_vfx
+    rectangles are always [x0,y0,x1,y1] with origin top-left, x right and y down.
     """
     pts = [tuple(c) for c in corners]
     if not pts:
@@ -106,7 +106,8 @@ def framing_from_ndc(corners: Iterable[Sequence[float]]) -> dict:
     use = in_front or pts
     xs, ys = [p[0] for p in use], [p[1] for p in use]
     x0, x1 = min(xs), max(xs)
-    y0, y1 = min(ys), max(ys)
+    bottom_y0, bottom_y1 = min(ys), max(ys)
+    y0, y1 = 1.0 - bottom_y1, 1.0 - bottom_y0
     width, height = x1 - x0, y1 - y0
     return {
         "ok": True,

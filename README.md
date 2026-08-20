@@ -17,7 +17,7 @@ plan → build (×N layers) → acceptance → render
 
 | stage | command | what it does |
 |---|---|---|
-| **plan** | `bambi plan <shot>` | Reads `brief.md` + refs (attached as images), emits `plan.md` plus four machine-readable companions: `layers.json`, `acceptance.json`, `critic_axes.json`, [`checks.json`](#executable-checks--the-contract-a-layer-is-held-to). Two-pass by default: opus-5 drafts, opus-5 audits. `--until-clean` adds a repair loop against the deterministic [plan gate](#checking-the-plan-itself). Any ambiguity becomes a **question answered before building starts**, never mid-build. |
+| **plan** | `bambi plan <shot>` | Reads `brief.md` + refs, emits the strict global dependency map `plans/global.md`, Layer 1's execution plan, and five machine-readable companions: `layers.json`, `acceptance.json`, `critic_axes.json`, [`checks.json`](#executable-checks--the-contract-a-layer-is-held-to), and [`scene_checks.json`](#live-scene-contracts). Before a later layer, `bambi plan <shot> --layer N` creates its just-in-time plan from sealed prior outcomes and approved amendments. There is no `plan.md` fallback. |
 | **build** | `bambi build <shot> --layer 1` | Builds ONE layer as an additive delta script (`build/01_layout.py` …). Iterates live in Blender, then writes a script that must rebuild it from empty. |
 | **acceptance** | `bambi accept <shot>` | Replays the whole chain from an empty scene and judges the approval moments on the full rubric. `--repair` routes a failure back to the layer that owns the failing axis. |
 | **render** | `bambi render <shot>` | Runs the accepted chain and encodes the frame range to mp4. |
@@ -25,16 +25,21 @@ plan → build (×N layers) → acceptance → render
 Supporting commands: `bambi_vfx.escalate` (answer plan questions), `bambi_vfx.agents.asset_builder`
 (image→3D asset caching), `bambi_vfx.verify_recipes` (audit the cookbook), `bambi_vfx.skills`.
 
+This is a strict migration. A shot with only `plan.md`, missing per-layer plans, an
+unscoped critic rubric, or name-based `scene_checks.json` selectors is rejected. The
+harness does not translate or silently fall back to the old contracts.
+
 ## How the flow actually runs
 
 ```
-brief.md + refs/  ──►  PLAN ──►  gate ──►  repair ──┐
+brief.md + refs/  ──►  GLOBAL PLAN ─► gate ─► repair ─┐
                         (draft → verify)   ▲         │  loop until clean,
                                            └─────────┘  stalled, or budget
 
-                  ──►  BUILD layer N  ──►  critic (owned axes only)
+        prior outcomes ─► PLAN layer N ─► gate ─► BUILD layer N
+                                                  ──► critic (owned axes only)
                         │                  metrics (can fail outright)
-                        │                  propose_checks  ──►  checks.json
+                        │                  propose_checks  ──►  runtime_checks.json
                         └─► canonical replay from empty ──► ablation ──► pass
 
                   ──►  ACCEPT (full rubric, whole chain)  ──►  RENDER
@@ -49,6 +54,36 @@ accuracy from 104/110 to 95/95 with no prompt change at all.
 So the rule throughout: **evidence a tool deposits on disk survives; evidence a model is
 asked to record does not.** `spike` writes a file to the lab and its citations are precise
 and true. `WebSearch` writes nothing, and no plan has ever carried a link.
+
+### Layer feedback loop
+
+The global plan is only a dependency map. Immediately before Layer N, the planner reads
+sealed `plans/outcomes/*.json`, approved records in `plan_amendments.jsonl`, the current
+scripts, and recent run logs, then writes only `plans/<layer>.md`. A passed ledger layer
+without its sealed outcome is a gate failure, so downstream planning cannot lose the
+measured result. Shot-root `plan.md` has no compatibility path: if it coexists with strict
+plans, the plan gate blocks the build because broad retrieval can otherwise promote stale
+whole-shot instructions back into execution authority.
+
+The Agent SDK owns automatic context compaction. The harness does not copy an entire plan
+into memory to compete with it: generated `CLAUDE.md` is a compact continuation contract
+that preserves `LIVE_BUILD`, the exact authoritative layer-plan path, owned axes, judge
+frames, semantic roles, and measured state. `PreCompact` checkpoints `layer_state.json`
+and gives the summarizer a continuation capsule; the later SDK `compact_boundary` message
+is recorded separately, so logs distinguish “compaction started” from “compaction really
+completed.” Each builder response also records context usage and the automatic-compaction
+threshold in the transcript.
+
+Within a build round, comparison mode and base scale are locked; optical crop resolution
+is additionally locked per crop. Feedback is ownership-aware: layout is not told to fix
+bloom/emission/grade, and a layer with no motion-related owned axis gets no motion strip.
+Layer 1 stops speculative revisions once every authoritative contract passes and the judge
+has no evidence-backed owned-axis defect. Restoring an earlier best scene remains in
+`LIVE_BUILD`; that phase has no Write/Edit tools. Script publication runs in a separate
+`FINALIZE_SCRIPT` session with Write but no Edit, while canonical repair has Edit but no
+Write. A passed schema-2 outcome whose complete manifest is unchanged takes a deterministic
+`REVALIDATE` path: replay from empty, rerun authoritative checks, compare against sealed
+canonical pixels, and skip both builder and critic sessions when everything matches.
 
 ### Where reasoning happens, and where it does not
 
@@ -75,8 +110,9 @@ the way it will finally be rendered.
 
 Each layer declares:
 
-- **`owns`** — the look axes it is responsible for. The critic marks every other axis `"n/a"`,
-  so a layout layer is not penalised for absent lighting.
+- **`owns`** — the look axes it is responsible for. The layer critic receives only those
+  axes and must score each numerically, so a layout layer is not penalised for absent
+  lighting and the scoring denominator cannot drift between repeats.
 - **`judges`** — every frame it answers for. A layer passes only if **all** of them clear.
   Single-frame judging is what once let a blacked-out stretch of a shot through.
 
@@ -88,7 +124,8 @@ The pipeline refuses rather than proceeding on unreviewed work:
 - judging acceptance on a partial chain (`IncompleteChain`, exit 7)
 - rendering a chain with missing or unaccepted layers (`IncompleteRender`, exit 7)
 - building when `brief.md` has changed since the plan was written (exit 8)
-- building with unanswered plan questions (exit 5)
+- building with unanswered questions that affect this layer or one of its owned axes
+  (exit 5); downstream-only questions do not block unrelated earlier layers
 
 Each has a `--force` for debugging, which names exactly what it is overriding.
 
@@ -103,6 +140,51 @@ Critic scores are noisy — the same render against the same reference has score
 3.0 and 2.0 — so a verdict landing near the pass line goes to **best-of-three with a median**.
 Objective metrics (`bambi_vfx/metrics.py`) run alongside and can decide a moment outright.
 
+Canonical replay does **not** ask that noisy critic whether a script reproduced an already
+accepted live frame. It compares the canonical pixels with the accepted pixels directly
+(tight MAE/p99/changed-pixel tolerances). A matching one-frame replay is `reproduced`; a
+second aesthetic vote cannot turn identical output into a determinism failure.
+
+Before any critic call, the layer's executable image checks and live-scene contracts are
+evaluated on the exact candidate and attached as a verified evidence card. A critic may
+still judge qualitative read, silhouette and resemblance, but an exact dimension/count/
+position complaint must cite a **failed** check. A claim with no failed check, or one
+contradicting a passing check, is recorded and discarded rather than sent to the builder.
+If the remaining sub-pass score has no evidence-backed issue, the layer ends as
+**`judge_conflict`**: it blocks downstream work without paying for a blind repair or
+misreporting the script as broken.
+
+Small features no longer have to be judged from the full-frame thumbnail alone. A critic
+may request at most two normalized TOP-LEFT focus regions, only for an in-scope axis scored
+3 or below. The harness rejects out-of-frame, near-full-frame and passing-axis requests,
+optically rerenders accepted crops, and sends aligned candidate/reference pairs plus a
+50/50 wipe to a focus-review pass. The full reference and candidate remain attached and
+control context/composition; focus panels are supplemental, recorded in the verdict and
+must be cited by id when they support an issue. This keeps zoom useful without making it a
+crop-selection loophole.
+
+### Live-scene contracts
+
+`scene_checks.json` measures facts Blender knows exactly instead of asking the critic to
+estimate them from a downscaled render: projected bounding-box dimensions and placement,
+object counts, mesh density, smooth-shading coverage and inward-facing shell normals.
+Planner-authored records are authoritative and evaluated at the exact judge frame:
+
+```json
+{ "id": "L1-scene-ring-width", "layer": "1", "axis": "layout", "frame": 1,
+  "kind": "bbox_width", "roles": ["hero.ring.outer"],
+  "op": "band", "lo": 0.16, "hi": 0.18, "origin": "planner" }
+```
+
+A PASS proves the semantic-role scene fact, not photographic legibility. Object names are
+labels and are not accepted as contract selectors; builders tag stable interfaces with
+`bvfx_role(obj, "department.subject.part", owner_layer="N")`. Three rib objects may
+exist while one disappears into the wall; that remains a valid qualitative failure. The
+critic must describe the visible residual (for example, insufficient separation) without
+contradicting the measured fact (for example, claiming the rib is absent). This separation
+keeps deterministic facts out of the noisy vision vote without weakening art-direction
+judgment.
+
 ## Executable checks — the contract a layer is held to
 
 A done-condition written in prose is a sentence nobody runs. Three shipped in one plan
@@ -113,8 +195,10 @@ decision, and repeated it six hundred lines later; and a `mean >= 14` **floor** 
 defect that was a **ceiling**, which the known-bad render passes comfortably.
 
 So a check is a **record**, not a sentence, and it may not enter a plan until it has been
-RUN. `checks.json` is the fourth machine-readable companion, and `bambi evals plan` re-runs
-every rule against the artifacts on disk:
+RUN. `checks.json` contains immutable planner contracts, and `bambi evals plan` re-runs
+every rule against the artifacts on disk. Builder-discovered checks are appended to the
+separate `runtime_checks.json` ledger and revalidated against the final shipped render;
+mixing origins in `checks.json` is a blocking schema error:
 
 ```json
 { "id": "L2c-3", "layer": "2", "axis": "hero_facade_cells", "frame": 1,
@@ -124,6 +208,11 @@ every rule against the artifacts on disk:
   "rejects": ["renders/2@f1_canonical_f1.png"],
   "proof": {"ref": 0.157, "adversary": [0.0819]} }
 ```
+
+All normalized frame rectangles use one convention: `[x0,y0,x1,y1]`, origin at the
+**top-left**, x increasing right and y increasing down. This applies to `checks.json`,
+`measure_regions`, camera bbox/framing output, and `render_pass(crop=...)`. Blender's
+bottom-left render-border convention is converted internally and must not leak into plans.
 
 Five rules, each earned by a defect that got past the others:
 
@@ -161,9 +250,9 @@ the author does not choose the adversary — the previous layer's render is. Lay
 seven, with separations like σ **50.53** against layout's **9.03**.
 
 Builder checks are **re-verified when the renders stop moving** (layer pass, before
-ablation) and dropped if they no longer hold: a check authored mid-layer describes whatever
-render was in front of it, and a later attempt replaces every render. Layer 1 shipped three
-stale ones before this existed.
+ablation, or at a terminal judge conflict) and dropped if they no longer hold: a check
+authored mid-layer describes whatever render was in front of it, and a later attempt replaces
+every render. Layer 1 shipped three stale ones before this existed.
 
 ## Where judgement is allowed
 
@@ -304,6 +393,11 @@ squint past: `pass='diffuse_direct'` renders modelling by light with emission re
 form, `light='<LightObject>'` for one lamp's contribution, and `crop` + `res_pct=400` for a
 true optical zoom instead of an upscaled thumbnail. Every mode ships a caption naming what to
 look for — a visual channel with no text to read it by measured *worse* than not adding it.
+`compare_frame(crop=…, res_pct=…, views=…)` applies the same mechanism directly against the
+reference: its first result is mandatory full-frame context with the crop outlined; its
+second is an aligned optical-detail sheet supporting side-by-side, wipe, overlay and
+difference views. Both images use the same normalized crop, and the comparison never
+upscales either source.
 
 Two probes keep that honest, because both caught real defects:
 
@@ -374,20 +468,26 @@ failing layer rather than stacking work on it, and propagates that layer's exit 
 ```
 shots/<shot>/
   brief.md refs/            inputs: the spec and the reference board
-  plan.md layers.json …     the plan, plus plan.provenance.json (hashes of its inputs)
+  plans/global.md           dependency map (never an execution prompt)
+  plans/NN_<layer>.md       one just-in-time execution plan per ready layer
+  plans/outcomes/NN.json    sealed prior-layer evidence for downstream planning
+  plan_amendments.jsonl     explicit proposed/approved/rejected plan feedback
+  layers.json …             machine contracts + plan.provenance.json input hashes
   build/NN_*.py             one delta script per layer — the real artifact
-  checks.json               executable checks — the contract, re-run by the gate
+  checks.json               immutable planner pixel contracts — re-run by the gate
+  runtime_checks.json       append-only builder evidence — final-render revalidated
+  scene_checks.json         exact projected geometry/count/mesh-state contracts
   answers.md                supervisor decisions; these are LAW and outrank inference
   shot.json                 the ledger: verdicts, rounds, run/attempt ids, acceptance
   renders/                  judged frames, motion strips, the final mp4
   logs/
     run_layerN.json         per-layer report: rounds, cost, tokens, cache hit, hooks, tools
-    transcript/*.jsonl      every message: prompts in, text/thinking out, tool calls,
-                            tool results, critic verdicts   ← the durable record
+    transcript/*.jsonl      every message, critic verdict, context-usage snapshot,
+                            pre_compact and SDK compact_boundary event ← durable record
     console/<run-id>.log    the run's console narrative, exactly as it scrolled past
-    layer_state.json        per-frame conclusions that survive a compaction or crash
-    cost.jsonl              one row per model session, labelled by ROLE — a layer total
-                            cannot say whether the builder or the critic spent it
+    layer_state.json        per-frame conclusions + latest PreCompact checkpoint
+    cost.jsonl              one row per model session with run, attempt, phase, role and
+                            session id; run reports aggregate the complete attempt
     tool_failures.jsonl     every tool call that raised, with the input that raised it
     journals/               the run_bpy calls a layer made, for replay
     recipe_use.jsonl        which cookbook entries were pulled
@@ -408,18 +508,19 @@ Read them with one command rather than six greps:
 
 ```bash
 bambi inspect shots/barrel_roll             # the digest
-bambi inspect shots/barrel_roll --layer 3   # action timeline
+bambi inspect shots/barrel_roll --layer 3   # latest-attempt action timeline
+bambi inspect shots/barrel_roll --layer 3 --history  # include earlier attempts
 bambi inspect shots/barrel_roll --tools     # tool adoption
 ```
 
 The digest leads with **findings**, not data: a layer whose score never moved, one that
 regressed between rounds, one whose canonical replay did not reproduce, one that got no
 objective metric feedback, one that measured more than it looked — and any diagnostic tool
-the builder never called. That last one is reported as a finding on purpose: `render_pass`,
-`check_scene` and `diff_frames` exist and are documented in the builder prompt, so zero
-calls means the *prompt* is not landing, not that the tool is unnecessary. A layer whose
-report predates the telemetry is reported as **unmeasured**, never as zero, so neglect is
-never inferred from a run that could not have been measured.
+the builder never called when it was applicable. `diff_frames` is not required for a
+static no-edit revalidation, and `verify_change` is not required until a baseline is
+followed by scene mutation; these are reported as **not applicable**, not neglected.
+Applicable zero-call tools still point to a prompt/adoption problem. A layer whose report
+predates the telemetry is **unmeasured**, never zero.
 
 Transcripts strip base64 image payloads to a one-line placeholder recording size and mime
 type — a live probe put 780KB of base64 in and got an 18KB file out — while keeping

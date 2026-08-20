@@ -7,7 +7,7 @@ Standard flow is TWO-PASS, an A/B-tested division of labour:
   pass 2  VERIFY  (default claude-opus-5)   — adversarial audit of the draft:
           frame claims re-derived, still↔source twins metric-matched, spike
           citations evidence-checked, gaps measured, missed prior work salvaged.
-          Empirically the stronger reviewer. Writes the superseding plan.md.
+          Empirically the stronger reviewer. Writes the superseding plans/global.md.
 
   loop    REPAIR (--until-clean)              — the two passes are both model passes,
           so "solid" was the model's own opinion of its own work. --until-clean runs
@@ -25,8 +25,8 @@ Meanwhile spike citations are precise and TRUE. The difference is that `spike` w
 file to the lab and `WebSearch` writes nothing: evidence a tool physically deposits
 survives, evidence the model is merely asked to record does not.
 
-The draft is kept alongside (`plan.draft.md` + its lab dir) as the audit trail, and each
-repair round snapshots its input as `plan.roundN.md`.
+The draft is kept alongside (`plans/global.draft.md` + its lab dir) as the audit trail,
+and each repair round snapshots its input as `plans/global.roundN.md`.
 `--single` runs one from-scratch pass (the pre-two-pass behavior);
 `--verify-only` skips pass 1 and audits an existing draft.
 
@@ -41,6 +41,7 @@ Usage:
     python -m bambi_vfx.agents.planner <shot-folder> --verify-only
     common flags: [--draft-model M] [--verify-model M] [--blender BIN]
                   [--max-turns N] [--tag T] [--max-rounds N]
+    python -m bambi_vfx.agents.planner <shot-folder> --layer 2  # JIT layer plan
 
     bambi evals plan <shot-folder>        # run the gate alone — free, no model
     bambi evals plan --feedback           # the repair brief a round would receive
@@ -57,12 +58,21 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 from .. import costlog, transcript
 from ..brief import load_shot
 from ..config import Settings
+from ..layer_plans import (
+    amendment_block,
+    global_plan_path,
+    layer_plan_path,
+    prior_outcomes_block,
+)
+from ..ledger import load_layers
 from ..log import log, log_message
 from ..plan_tools import build_plan_tools
 from ..prompts import (
+    LAYER_PLANNER_ADDENDUM,
     PLANNER_SYSTEM,
     REPAIR_ADDENDUM,
     VERIFIER_ADDENDUM,
+    layer_user_prompt,
     planner_user_prompt,
     repair_user_prompt,
     verifier_user_prompt,
@@ -80,6 +90,13 @@ DRAFT_MODEL = "claude-opus-5"
 # when the layer owned a narrow subject.
 VERIFY_MODEL = "claude-opus-5"
 MODEL = VERIFY_MODEL  # single-pass default
+
+
+def _planner_tool_policy(repair: bool) -> tuple[list[str], list[str]]:
+    """Repair patches directly; draft/verify may explore but cannot mutate in place."""
+    allowed = ["Edit"] if repair else []
+    denied = ["Bash", *(["Task", "Agent"] if repair else ["Edit"])]
+    return allowed, denied
 
 
 # The reference board is the visual half of the brief, and the harness used to hand over
@@ -117,12 +134,13 @@ async def generate_plan(folder: str | Path, *, model: str = MODEL,
                         tag: str | None = None,
                         verify_draft: str | None = None,
                         repair: tuple[str, int] | None = None) -> Path:
-    """Run ONE planning session. With `tag`, outputs are isolated:
-    plan.md → plan.<tag>.md, lab artifacts → logs/plan_lab_<tag>/.
+    """Run ONE global planning session. With `tag`, outputs are isolated:
+    plans/global.md → plans/global.<tag>.md, lab artifacts → logs/plan_lab_<tag>/.
     With `verify_draft`, the session runs in VERIFY MODE against that draft file.
     With `repair=(findings, round)`, it runs in REPAIR MODE against `verify_draft`."""
     shot = load_shot(folder)
-    plan_path = shot.folder / "plan.md"
+    plan_path = global_plan_path(shot.folder)
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
     lab_dir = shot.folder / "logs" / (f"plan_lab_{tag}" if tag else "plan_lab")
 
     pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
@@ -143,14 +161,19 @@ async def generate_plan(folder: str | Path, *, model: str = MODEL,
         kickoff = planner_user_prompt(shot)
         mode = "PLAN (from scratch)"
 
+    # Repair is a PATCHING job, not a fresh authorship job. Round 4 spent 38 minutes
+    # delegating exact edits to subagents that did not have Edit, then rewrote a 1,390-line
+    # plan through Write. Give the repair session the precise tool directly and remove the
+    # delegation escape hatch; draft/verify keep their existing exploration behaviour.
+    repair_tools, denied = _planner_tool_policy(bool(repair))
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Read", "Glob", "Grep", "Write",
+        allowed_tools=["Read", "Glob", "Grep", "Write", *repair_tools,
                        "WebSearch", "WebFetch", *pnames, *rnames],
-        disallowed_tools=["Edit", "Bash"],
+        disallowed_tools=denied,
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,  # sheets/frames as base64 image blocks
         setting_sources=[],                # isolate from user/project settings
@@ -204,12 +227,91 @@ async def generate_plan(folder: str | Path, *, model: str = MODEL,
         transcript.unbind()
         costlog.unbind()
     if tag:
-        final = shot.folder / f"plan.{tag}.md"
+        final = plan_path.with_name(f"global.{tag}.md")
         plan_path.rename(final)
         plan_path = final
     lines = plan_path.read_text(encoding='utf-8').count('\n')
-    log(f"plan written: {plan_path.name} ({lines} lines)")
+    log(f"plan written: {plan_path.relative_to(shot.folder)} ({lines} lines)")
     return plan_path
+
+
+async def generate_layer_plan(folder: str | Path, layer_id: str, *,
+                              model: str = MODEL, blender: str = "blender",
+                              max_turns: int = 100) -> Path:
+    """Generate one execution plan after prior layers have produced measured outcomes.
+
+    This is intentionally a separate session and output contract. It cannot mutate the
+    global plan or machine contracts, and there is no monolithic-plan fallback.
+    """
+    shot = load_shot(folder)
+    global_path = global_plan_path(shot.folder)
+    if not global_path.is_file():
+        raise FileNotFoundError(
+            f"{global_path} missing — generate and gate the strict global plan first")
+    layers = load_layers(shot)
+    try:
+        layer = layers[str(layer_id)]
+    except KeyError as exc:
+        raise KeyError(f"unknown layer {layer_id!r}; available: {', '.join(layers)}") from exc
+    target = layer_plan_path(shot.folder, layer)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rel_target = target.relative_to(shot.folder).as_posix()
+    feedback = "\n\n".join(x for x in (
+        prior_outcomes_block(shot.folder, str(layer.id)),
+        amendment_block(shot.folder, str(layer.id)),
+    ) if x)
+    # Do not carry the global planner's monolithic output contract into a layer session.
+    # The layer doctrine is intentionally self-contained and much smaller.
+    system = LAYER_PLANNER_ADDENDUM.format(
+        layer_id=layer.id, layer_title=layer.title, target=rel_target)
+    kickoff = layer_user_prompt(shot, layer, rel_target, feedback)
+    lab_dir = shot.folder / "logs" / f"plan_lab_layer_{int(layer.id):02d}"
+    pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
+    rserver, rnames = build_recipe_tools()
+    options = ClaudeAgentOptions(
+        model=model,
+        system_prompt=system,
+        cwd=str(shot.folder),
+        mcp_servers={"plan": pserver, "recipes": rserver},
+        allowed_tools=["Read", "Glob", "Grep", "Write", "WebSearch", "WebFetch",
+                       *pnames, *rnames],
+        disallowed_tools=["Bash", "Edit"],
+        permission_mode="bypassPermissions",
+        max_buffer_size=32 * 1024 * 1024,
+        setting_sources=[],
+        max_turns=max_turns,
+        effort="high",
+    )
+    before = target.stat().st_mtime_ns if target.is_file() else -1
+    blocks = _kickoff_blocks(kickoff, shot)
+    costlog.bind(shot.folder, role="plan:layer", model=model, tag=str(layer.id))
+    transcript.bind(shot.folder, "plan", label=f"layer-{layer.id}")
+    transcript.prompt(kickoff, role="kickoff", mode="PLAN_LAYER", model=model,
+                      layer=layer.id, refs=[p.name for p in shot.refs])
+
+    async def _attempt() -> str:
+        said: list[str] = []
+        async for message in query(prompt=_one_user_message(blocks), options=options):
+            log_message(message)
+            for blk in getattr(message, "content", None) or []:
+                if text := getattr(blk, "text", None):
+                    said.append(text)
+        return "\n".join(said)[-4000:]
+
+    def _wrote() -> bool:
+        return target.is_file() and target.stat().st_mtime_ns != before
+
+    try:
+        log(f"plan agent [LAYER {layer.id}]: {layer.title} → {rel_target}")
+        await run_session(_attempt, succeeded=_wrote, label=f"plan layer {layer.id}")
+    finally:
+        transcript.unbind()
+        costlog.unbind()
+    text = target.read_text(encoding="utf-8")
+    if len(text.strip()) < 200:
+        raise ValueError(f"{target} is too small to be an executable layer plan")
+    log(f"layer plan written: {rel_target} ({text.count(chr(10))} lines)")
+    return target
 
 
 async def generate_plan_two_pass(folder: str | Path, *,
@@ -222,7 +324,7 @@ async def generate_plan_two_pass(folder: str | Path, *,
     Keeps the draft (plan.<tag->draft.md + its lab) as the audit trail."""
     shot = load_shot(folder)
     dtag = f"{tag}-draft" if tag else "draft"
-    draft_path = shot.folder / f"plan.{dtag}.md"
+    draft_path = global_plan_path(shot.folder).with_name(f"global.{dtag}.md")
 
     if verify_only:
         if not draft_path.is_file():
@@ -236,7 +338,7 @@ async def generate_plan_two_pass(folder: str | Path, *,
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
     final = await generate_plan(folder, model=verify_model, blender=blender,
                                 max_turns=max_turns, tag=tag,
-                                verify_draft=draft_path.name)
+                                verify_draft=draft_path.relative_to(shot.folder).as_posix())
     log(f"two-pass complete → {final.name} (draft kept: {draft_path.name})")
     return final
 
@@ -275,11 +377,14 @@ async def generate_plan_until_clean(folder: str | Path, *,
     final = await generate_plan_two_pass(
         folder, draft_model=draft_model, verify_model=verify_model, blender=blender,
         max_turns=max_turns, tag=tag, verify_only=verify_only)
-    plan_name = final.name
+    plan_name = final.relative_to(shot.folder).as_posix()
 
     prev_sig, outcome = None, "budget"
     for rnd in range(1, max_rounds + 1):
-        res = plan_gate.run(shot.folder, plan_name)
+        # New plans use the current five-artifact contract.  The standalone gate keeps
+        # missing scene checks warning-only for legacy shots, but a planner running now
+        # must not claim CLEAN while leaving numeric scene facts to the vision judge.
+        res = plan_gate.run(shot.folder, plan_name, require_scene_checks=True)
         log(f"══ gate {rnd}/{max_rounds} ══")
         log(plan_gate.report(res), 1)
         if res.clean:
@@ -293,18 +398,18 @@ async def generate_plan_until_clean(folder: str | Path, *,
             break
         prev_sig = sig
         # Snapshot the plan being repaired: the repair session reads one file and writes
-        # plan.md, and without this it would be reading the file it is replacing.
-        snap = shot.folder / f"plan.round{rnd}.md"
+        # plans/global.md, and otherwise it would read the file it is replacing.
+        snap = global_plan_path(shot.folder).with_name(f"global.round{rnd}.md")
         snap.write_text(final.read_text(encoding="utf-8"), encoding="utf-8")
         log(f"══ repair {rnd}/{max_rounds} · {verify_model} · "
             f"{len(res.blocking)} blocking finding(s) → {snap.name} ══")
         final = await generate_plan(folder, model=verify_model, blender=blender,
                                     max_turns=max_turns, tag=tag,
-                                    verify_draft=snap.name,
+                                    verify_draft=snap.relative_to(shot.folder).as_posix(),
                                     repair=(plan_gate.feedback(res), rnd))
-        plan_name = final.name
+        plan_name = final.relative_to(shot.folder).as_posix()
     else:
-        res = plan_gate.run(shot.folder, plan_name)
+        res = plan_gate.run(shot.folder, plan_name, require_scene_checks=True)
         log("══ gate (final) ══")
         log(plan_gate.report(res), 1)
         outcome = "clean" if res.clean else "budget"
@@ -321,10 +426,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Plan a shot. Default: two-pass (draft → adversarial verify).")
     ap.add_argument("folder", help="shot folder (contains brief.md, refs/)")
+    ap.add_argument("--layer", help="generate only this layer's just-in-time plan")
     ap.add_argument("--single", action="store_true",
                     help="one from-scratch pass with --model (no verify)")
     ap.add_argument("--verify-only", action="store_true",
-                    help="skip drafting; audit the existing plan.<tag->draft.md")
+                    help="skip drafting; audit the existing plans/global.<tag->draft.md")
     ap.add_argument("--model", default=MODEL, help="model for --single runs")
     ap.add_argument("--draft-model", default=DRAFT_MODEL)
     ap.add_argument("--verify-model", default=VERIFY_MODEL)
@@ -332,7 +438,7 @@ def main() -> None:
                     help="blender executable for the spike lab")
     ap.add_argument("--max-turns", type=int, default=100, help="turn cap per pass")
     ap.add_argument("--tag", default=None,
-                    help="isolate outputs per run: plan.<tag>.md + logs/plan_lab_<tag>/")
+                    help="isolate outputs: plans/global.<tag>.md + logs/plan_lab_<tag>/")
     ap.add_argument("--until-clean", action="store_true",
                     help="after the two passes, run the deterministic plan gate and "
                          "repair until it clears, stalls, or hits --max-rounds")
@@ -340,7 +446,14 @@ def main() -> None:
                     help="repair rounds for --until-clean (default 3)")
     args = ap.parse_args()
 
-    if args.single:
+    if args.layer and (args.single or args.verify_only or args.until_clean or args.tag):
+        ap.error("--layer is a dedicated JIT pass; do not combine it with global-pass flags")
+
+    if args.layer:
+        plan_path = anyio.run(lambda: generate_layer_plan(
+            args.folder, args.layer, model=args.model, blender=args.blender,
+            max_turns=args.max_turns))
+    elif args.single:
         plan_path = anyio.run(lambda: generate_plan(
             args.folder, model=args.model, blender=args.blender,
             max_turns=args.max_turns, tag=args.tag))
@@ -359,8 +472,9 @@ def main() -> None:
     log(f"wrote {plan_path}")
     # Record what this plan was derived from, so a later brief edit is detectable
     # instead of silently leaving every layer built to a spec that no longer exists.
-    from .provenance import stamp
-    used = args.model if args.single else f"{args.draft_model}→{args.verify_model}"
+    from ..provenance import stamp
+    used = args.model if (args.single or args.layer) else \
+        f"{args.draft_model}→{args.verify_model}"
     log(f"provenance → {stamp(args.folder, model=used, note='tag=' + str(args.tag))}")
 
 

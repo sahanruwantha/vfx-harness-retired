@@ -45,6 +45,16 @@ _MEANING = {
 }
 
 
+def _can_advance(status: str, *, dry_run: bool) -> bool:
+    """Whether the driver may continue after a layer command.
+
+    A dry run deliberately executes no builder, so it cannot change a pending ledger
+    verdict into ``passed``.  Treating that unchanged verdict like a real build failure
+    made ``--dry-run`` stop after its first unbuilt layer instead of previewing the run.
+    """
+    return dry_run or status == "passed"
+
+
 def _run(args: list[str], *, dry: bool, tee: Path | None = None) -> int:
     """Run a stage, mirroring its console output to `tee` as it happens.
 
@@ -121,6 +131,17 @@ def main() -> None:
         if lid in done:
             continue
         log(f"════ LAYER {lid} — {layers[lid].title} ════")
+        log(f"──── just-in-time plan · layer {lid} ────")
+        rc = _run([py, "-m", "bambi_vfx.agents.planner", str(shot.folder),
+                   "--layer", lid, "--blender", a.blender], dry=a.dry_run, tee=console)
+        if rc:
+            log(f"✗ layer {lid} planning exited {rc}; build was not started")
+            raise SystemExit(rc)
+        rc = _run([py, "-m", "bambi_vfx.evals", "plan", str(shot.folder)],
+                  dry=a.dry_run, tee=console)
+        if rc:
+            log(f"✗ layer {lid} plan did not clear the deterministic gate")
+            raise SystemExit(rc)
         rc = _run([py, "-m", "bambi_vfx.agents.builder", str(shot.folder),
                    "--layer", lid, "--rounds", str(a.rounds), "--blender", a.blender],
                   dry=a.dry_run, tee=console)
@@ -139,12 +160,15 @@ def main() -> None:
         # truncation and chain breaks raise. The chain guard caught it 0.2s into layer 3,
         # which is the system working, but the driver should not have needed rescuing.
         status = Ledger(shot).status(layers[lid].as_milestone())
-        if status != "passed":
+        if not _can_advance(status, dry_run=a.dry_run):
             log(f"✗ layer {lid} finished cleanly but its verdict is '{status}' — not "
                 f"building on it")
             log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
                 f"See {shot.folder}/logs/run_layer{lid}.json, then resume with --from {lid}")
             raise SystemExit(9)
+        if a.dry_run:
+            log(f"↷ layer {lid} would run (ledger remains '{status}')")
+            continue
         log(f"✓ layer {lid} passed ({(time.monotonic() - t0) / 60:.0f} min elapsed)")
 
     if not a.skip_accept:

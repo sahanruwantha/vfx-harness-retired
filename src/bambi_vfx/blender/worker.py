@@ -556,6 +556,26 @@ def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0)
     return rig, cam
 
 
+def _bvfx_role(obj, role, owner_layer=None):
+    """Attach a stable semantic contract role to an object.
+
+    Object names remain useful labels, but they are not an API: Blender suffixes names
+    during duplication and artists rename objects while iterating.  Custom properties
+    survive both operations and let scene contracts address intent instead of spelling.
+    """
+    if isinstance(obj, str):
+        obj = bpy.data.objects.get(obj)
+    if obj is None:
+        raise ValueError("bvfx_role: object does not exist")
+    role = str(role or "").strip()
+    if not role or any(ch.isspace() for ch in role):
+        raise ValueError("bvfx_role: role must be a non-empty dotted token without spaces")
+    obj["bvfx_role"] = role
+    if owner_layer is not None:
+        obj["bvfx_owner_layer"] = str(owner_layer)
+    return obj
+
+
 _HELPERS = {
     "bvfx_emission": _bvfx_emission,
     "bvfx_emissive_windows": _bvfx_emissive_windows,
@@ -569,6 +589,7 @@ _HELPERS = {
     "bvfx_fcurves": _bvfx_fcurves,
     "bvfx_interp": _bvfx_interp,
     "bvfx_camera_rig": _bvfx_camera_rig,
+    "bvfx_role": _bvfx_role,
 }
 
 
@@ -708,7 +729,11 @@ def h_run(a: dict) -> dict:
     # Only successful code is journalled: the builder currently re-authors the whole
     # layer from memory at finalize (~28KB of live calls -> a 23KB script), which is
     # duplicated effort AND the only reason live and canonical can diverge.
-    _JOURNAL.append(a["code"])
+    # Measurements use the same execution engine but are not authored scene mutations.
+    # Journalling them bloats finalisation input and makes a canonical replay run probes
+    # that were never part of the build. Callers mark those with journal=False.
+    if a.get("journal", True):
+        _JOURNAL.append(a["code"])
     after = _scene_stats()
     result = ns.get("RESULT")
     try:

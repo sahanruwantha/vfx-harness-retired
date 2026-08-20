@@ -73,7 +73,14 @@ def write(shot_folder: str | Path, layer, *, status: str, rounds: list,
 def summary(rec: dict) -> str:
     """The block printed at the end of a layer — everything I used to grep for."""
     h = rec.get("hooks", {})
-    can = " · ".join(f"f{c['frame']}:{c['mean']}{'✅' if c['pass'] else '✗'}"
+    def _canonical_mark(c: dict) -> str:
+        if c.get("judge_conflict"):
+            return "⚠judge-conflict"
+        if c.get("decided_by") == "pixel_reproduction":
+            return "✅reproduced"
+        return "✅" if c.get("pass") else "✗"
+
+    can = " · ".join(f"f{c['frame']}:{c['mean']}{_canonical_mark(c)}"
                      for c in rec.get("canonical", [])) or "—"
     rounds = " → ".join(str(r.get("mean")) for r in rec.get("rounds", [])) or "—"
     lines = [
@@ -109,6 +116,12 @@ def summary(rec: dict) -> str:
     if rec.get("journal"):
         j = rec["journal"]
         lines.append(f"   journal    {j.get('calls', 0)} calls, {j.get('chars', 0) // 1024}KB")
+    focus = [panel for verdict in [*rec.get("rounds", []), *rec.get("canonical", [])]
+             for panel in (verdict.get("focus_panels") or [])]
+    if focus:
+        labels = ", ".join(
+            f"{panel.get('id')}@{panel.get('crop')}" for panel in focus[:4])
+        lines.append(f"   focus      {len(focus)} optical panel(s) — {labels}")
     tu = rec.get("tools") or {}
     if tu:
         top = " · ".join(f"{k.split('__')[-1]} {v}"
@@ -122,7 +135,8 @@ def summary(rec: dict) -> str:
         # them the prompt is what needs changing, and that is invisible unless it is said
         # here. Reported for every layer, because "adopted on layer 2, forgotten by layer
         # 6" is the shape this kind of drift actually takes.
-        unused = tu.get("unused_new_tools") or []
+        unused = tu.get("unused_required_tools") or []
+        not_applicable = tu.get("not_applicable_tools") or []
         used = {k: v for k, v in (tu.get("adoption") or {}).items() if v}
         if used:
             lines.append("   diagnostics " + " · ".join(f"{k} {v}" for k, v in used.items()))
@@ -130,8 +144,10 @@ def summary(rec: dict) -> str:
             lines.append(f"   ⚠ NEVER CALLED: {', '.join(unused)} — these exist to show "
                          f"the builder what it is judged on (render_pass), prove claims "
                          f"it would otherwise assert (check_scene) and show whether an "
-                         f"edit did anything (diff_frames). Unused means the PROMPT is "
-                         f"not landing, not that the tools are unnecessary.")
+                         f"edit did anything (verify_change/diff_frames). Unused means the PROMPT is "
+                         f"not landing for an applicable diagnostic.")
+        if not_applicable:
+            lines.append(f"   diagnostics n/a: {', '.join(not_applicable)}")
         # LOOKING vs MEASURING. On barrel_roll every layer that passed called
         # compare_frame 7-41 times; the layer that failed three times called it 3-5 and
         # called measure_regions 17-44 instead — the only layer where measuring
@@ -151,7 +167,10 @@ def summary(rec: dict) -> str:
                      f"({sum(1 for r in rec['reviews'] if r.get('replace'))} said REPLACE)")
     # hooks: silence is the interesting signal, so name what did NOT happen too
     fired = [f"{k}={v}" for k, v in sorted(h.items()) if v]
-    lines.append(f"   hooks      {' · '.join(fired) if fired else 'NOTHING FIRED — verify the hooks are wired'}")
-    if not h.get("metric_feedback"):
+    if rec.get("revalidation"):
+        lines.append("   hooks      n/a (deterministic revalidation; no agent tool loop)")
+    else:
+        lines.append(f"   hooks      {' · '.join(fired) if fired else 'NOTHING FIRED — verify the hooks are wired'}")
+    if not h.get("metric_feedback") and not rec.get("revalidation"):
         lines.append("   ⚠ the builder received NO objective metric feedback this layer")
     return "\n".join(lines)

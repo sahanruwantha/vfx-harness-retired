@@ -1,7 +1,7 @@
 """Stage 2.5 — the asset agent.
 
 Builds the bespoke/hero 3D assets a shot needs, sourced from the shot's OWN
-references (never text-to-image'd fresh). The agent reads plan.md's asset work-list
+references (never text-to-image'd fresh). The agent reads plans/global.md's asset work-list
 and the refs/, and for each genuinely-modelled hero asset it picks the reference
 view(s) that show it, then calls the `prepare_asset` tool — which isolates the
 subject, runs image→3D via Meshy, normalizes to a committed model.glb, and returns a
@@ -44,9 +44,9 @@ You are the ASSET agent in an automated 3D/VFX bambi_vfx. You build the bespoke,
 hero 3D MODELS a shot needs — reconstructed from the shot's OWN reference images,
 so they are pixel-faithful to the brief, never invented from a text prompt.
 
-INPUTS in your working directory (the SHOT FOLDER): `plan.md` (the build breakdown),
+INPUTS in your working directory (the SHOT FOLDER): `plans/global.md` (the dependency map),
 `brief.md`, and `refs/` (the reference images — the source of truth). Use paths
-RELATIVE to this folder — read `plan.md`, `brief.md`, `refs/M4_end.jpg` directly; do
+RELATIVE to this folder — read `plans/global.md`, `brief.md`, `refs/M4_end.jpg` directly; do
 NOT prefix with the repo root.
 
 FINDING THE WORK-LIST: the plan is organised as layers and tickets. An asset is needed
@@ -159,7 +159,7 @@ async def build_assets(folder: str | Path, *, verbose: bool = True) -> None:
         effort="medium",  # asset routing/view-picking — not deep reasoning; keeps it snappy
     )
     kickoff = (
-        f"Build the bespoke hero 3D assets for shot '{shot.id}'. Read `plan.md` and find "
+        f"Build the bespoke hero 3D assets for shot '{shot.id}'. Read `plans/global.md` and find "
         f"every ticket that imports an asset (grep `bvfx_import_asset(` / `.glb`) — those "
         f"exact names are your work-list. Read `brief.md`, then look at refs/. For each "
         f"genuinely-modelled asset, pick reference views and call prepare_asset; skip "
@@ -181,7 +181,7 @@ async def build_assets(folder: str | Path, *, verbose: bool = True) -> None:
 def main() -> None:
     load_environment()
     ap = argparse.ArgumentParser(description="Build a shot's bespoke 3D assets from refs.")
-    ap.add_argument("folder", help="shot folder (contains brief.md, plan.md, refs/)")
+    ap.add_argument("folder", help="shot folder (contains brief.md, plans/global.md, refs/)")
     args = ap.parse_args()
     print(f"asset stage: {args.folder}")
     anyio.run(build_assets, args.folder)

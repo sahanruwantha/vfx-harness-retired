@@ -229,9 +229,24 @@ class Ledger:
                 script = load_layers(self.shot)[m.id].script
             except (KeyError, FileNotFoundError, json.JSONDecodeError):
                 script = f"build/{m.id.lower()}.py"   # milestone with no plan layer
+        previous_attempt = int(slot.get("attempt", 0))
+        if previous_attempt:
+            slot.setdefault("history", []).append({
+                "run_id": slot.get("run_id"),
+                "attempt": previous_attempt,
+                "status": slot.get("status"),
+                "started": slot.get("started"),
+                "updated": slot.get("updated"),
+                "rounds": list(slot.get("rounds") or []),
+                "best": slot.get("best"),
+                "script_sha": slot.get("script_sha"),
+            })
+        # ``rounds`` is current-attempt state.  Historical rounds have their own durable
+        # records above; retaining them here made attempt 5's report look like seven new
+        # rounds and contaminated convergence analysis with unrelated runs.
         slot.update(frame=m.frame, ref=m.ref, status="in_progress",
-                    script=script, rounds=slot.get("rounds", []),
-                    run_id=RUN_ID, attempt=int(slot.get("attempt", 0)) + 1,
+                    script=script, rounds=[], reviews=[], ablation={}, resume=None,
+                    run_id=RUN_ID, attempt=previous_attempt + 1,
                     started=_now())
         self.save()
 
@@ -249,6 +264,14 @@ class Ledger:
             "pass": verdict.get("pass", False),
             "round_s": verdict.get("round_s"),  # wall-time telemetry (for eval)
             "issues": verdict.get("issues", []),
+            "contradicted_issues": verdict.get("contradicted_issues", []),
+            "judge_conflict": bool(verdict.get("judge_conflict")),
+            "evidence": verdict.get("evidence", []),
+            "focus_requested": verdict.get("focus_requested", []),
+            "focus_panels": verdict.get("focus_panels", []),
+            "focus_error": verdict.get("focus_error"),
+            "reproduction": verdict.get("reproduction"),
+            "decided_by": verdict.get("decided_by", "critic"),
             # what the adjudication panel saw, when one was convened — a barely-passed
             # verdict must be distinguishable from a solid one after the fact
             "panel": verdict.get("panel"),

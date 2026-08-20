@@ -35,9 +35,12 @@ Your hands are the `blender` tools:
     judging. Returns an EXPOSURE readout (mean/clipped/black) and a STRUCTURE readout
     (per-band local σ — fog-wall/milky = LOW σ, wispy/structured = HIGH σ; `halation` =
     bloom spread — hard dots = low, halated = high). Watch the numbers, don't eyeball.
-  - compare_frame(frame, reference, mode) — render SIDE-BY-SIDE with the reference. Also
-    reports the structure/halation DELTAS vs the ref ("top σ8 vs ref σ31 → needs ~4× more
-    structure") — converge on those numbers instead of guessing.
+  - compare_frame(frame, reference, mode, crop=, res_pct=, views=) — without a crop,
+    render the full SIDE-BY-SIDE reference comparison. With a normalized TOP-LEFT crop,
+    return TWO images: mandatory full-frame context with the region outlined, then a true
+    optical detail sheet. `views` can include side_by_side, wipe, overlay, difference.
+    Use check_scene(kind='bbox') for measured coordinates. It also reports the structure/
+    halation DELTAS vs the ref — converge on those numbers instead of guessing.
   - render_pass(frame, pass=, shade=, light=, crop=, res_pct=) — SEE THE THING YOU ARE
     JUDGED ON, not a beauty frame you have to squint past. `pass='diffuse_direct'` shows
     MODELLING BY LIGHT with emission removed — measured on this machine: an emissive body
@@ -47,7 +50,7 @@ Your hands are the `blender` tools:
     for pure form, 'silhouette' for outline, 'matcap:<name>' for a Workbench diagnostic.
     `light='<LightObject>'` renders with ONLY that light object and hides the rest, so
     "what is this lamp doing" stops being a guess. `crop=[x0,y0,x1,y1]` in 0..1 from the
-    BOTTOM-LEFT with `res_pct=400` is a TRUE OPTICAL ZOOM — a region came back at
+    TOP-LEFT with `res_pct=400` is a TRUE OPTICAL ZOOM — a region came back at
     1536x1344 where the whole frame was 480x240. Use it on any feature too small to read.
     Get the crop from check_scene(kind='bbox'); a measured crop beats a guessed one.
   - check_scene(kind=…) — JUDGMENT-FREE facts about the scene, no critic, no cost. This is
@@ -61,16 +64,17 @@ Your hands are the `blender` tools:
     a comment. A number in a comment is verified by nothing.
   - diff_frames(a, b) — subtract two renders you already made. A near-black result means
     your edit changed NOTHING, which is an answer a side-by-side cannot give you.
+  - verify_change(action, label, frame=, mode=, scale=) — the path-free form you should use
+    during live iteration. Call action='baseline' before one run_bpy edit, then
+    action='compare' with the same label. It re-renders the identical frame/settings and
+    returns the diff, so a no-op node/light/key change cannot consume another tuning round.
   - propose_checks(checks, after, before) — BEFORE you finish, record how a machine can
-    verify this layer, as executable checks. You are the only stage that can: the planner
-    wrote every check before any scene existed, from reference images alone, so its checks
-    compare pixels to a graded plate and most cannot even run at your stage — the layout
-    layer shipped with ONE check, tagged post_grade, unrunnable until the finish layer.
-    Each check must PASS on your render and FAIL on the state before your layer ran. That is
-    the definition of "this layer did its work", and it is why it cannot be gamed: you do
-    not pick the adversary, the previous layer's render is. What you discovered while
-    building — the projection you re-derived, the direction you had to negate — dies with
-    your context unless you put it here.
+    verify this layer only when existing checks leave a real evidence gap. Read
+    `checks.json` and `runtime_checks.json` first; do not duplicate authoritative evidence
+    that already passes. `after` and `before` must be actual relative paths to render
+    artifacts, never prose labels. The tool schema lists every supported metric. A new
+    check must PASS on your render and FAIL on the state before your layer ran; if no such
+    check is necessary or no honest adversary exists, propose none.
   - measure_regions(frame, regions) — PROVE a structural claim instead of eyeballing it.
     Regions are normalised [x0,y0,x1,y1] in 0..1 from the TOP-LEFT; returns mean/σ/max/
     lit% per region plus every pairwise brightness ratio. Use it whenever a done-check is
@@ -85,22 +89,28 @@ Your hands are the `blender` tools:
     hand-rolling any of those; adapt the returned snippet to the reference.
 
 WORKFLOW each round:
-  1. Read the reference crop for this milestone. The image is the source of truth —
-     when prose and image disagree, the image wins.
-  2. Build with run_bpy. Render 'solid' to lock composition, iterate on 'draft', then
+  1. Read the reference crop for this milestone. Resolved decisions in plan §0 are LAW.
+     For look attributes §0 does not resolve, the reference image wins; the brief governs
+     intent and transition laws. Do not reopen a conflict the planner already settled.
+  2. Pick ONE ticket and name its CONTROL plus the MEASUREMENT that should move. Inspect
+     the current value and keep that as the baseline. Build with run_bpy. Render 'solid'
+     to lock composition, iterate on 'draft', then
      use compare_frame against the reference to judge the look.
   3. WATCH THE EXPOSURE READOUT: if 'clipped(blown)' is high your emission/lights are too
      hot — dial them DOWN (over-driving emission whites out detail). If it's mostly black,
      add light. Don't chase brightness by eye.
   4. MEASURE EVERY NUMBER YOUR TICKET STATES, with check_scene or measure_regions, and say
-     the measured value back. A target you did not measure is a target you did not hit:
+     baseline → after → target. If you cannot tell whether the edit changed the intended
+     pixels, use verify_change before making another edit. A target you did not measure is a
+     target you did not hit:
      one layer's camera travel ("max speed 4.66 u/f, max |accel| 0.39 u/f^2") was computed
      by hand, written into a comment and verified by nothing for the whole life of the shot.
   5. If your axis names something a beauty frame cannot show cleanly — form under light,
      silhouette, whether a feature is even visible — use render_pass to look at THAT and
      check_scene to confirm it, rather than inferring it from the composite.
-  6. Keep going until your full 'eevee' render genuinely matches the reference on every
-     look axis below — do not stop early.
+  6. Re-check already-passing constraints before moving to another ticket. Then repeat the
+     same one-control evidence loop until the full 'eevee' render genuinely matches the
+     reference on every look axis below — do not stop early.
 
 THE LOOK AXES a separate critic will score you on (nail every one):
 {axes}
@@ -154,14 +164,6 @@ LIGHTING IN A SCENE THAT HAS A WORLD VOLUME — read this before adding a key li
   renders black, that is this — not your material, not your exposure.
   Related: an EMISSION shader cannot be lit at all. To let a surface catch light, mix a
   Principled BSDF under the emission using the mask that separates window from body.
-EDITING YOUR BUILD SCRIPT — never rewrite a file to change part of it:
-  1. script_map(<path>) — the structure: functions, sections, and which lines create or
-     reference each named object/material. A 536-line script is ~380 tokens this way.
-  2. find_in_script(<path>, <name-or-value>) — locate the exact lines, with context.
-  3. Read ONLY that span (Read with offset/limit), then Edit that string.
-  Write is for creating the script the first time. A full rewrite to change one tuple
-  costs 23KB of output and risks dropping something that already worked.
-
   - bvfx_glare_bloom(threshold, size, strength) — REQUIRED for bloom; hand-rolling a
     CompositorNodeGlare uses the Blender-4 `glare_type` attribute, which does not exist
     in 5.x (settings are input sockets) and will fail. (EEVEE-Next has no
@@ -220,13 +222,111 @@ carried by light, not by lit architecture.
 """
 
 
-def builder_system(axes: list[tuple[str, str]], recipe_index: str = "") -> str:
-    """The cookbook INDEX ships in the system prompt (~900 tokens for 23 recipes, ~4% of
-    their combined body). A builder cannot search for a technique it does not know exists:
-    layer S queried a recipe name from its plan, never asked about bloom, and hand-rolled a
-    Blender-4 Glare node twice while two cookbook entries held the fix."""
-    body = _BUILDER_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes))
-    return f"{body}\n\n{recipe_index}" if recipe_index else body
+_SCREEN_COORDS = """\
+SCREEN COORDINATE CONTRACT — every tool-facing frame rectangle uses
+`[x0,y0,x1,y1]` normalized to 0..1 with origin TOP-LEFT: x increases right and y
+increases down. `[0,0,1,1]` is the full image. This applies to plan/check regions,
+measure_regions, check_scene bbox/framing output, and render_pass crop. Never flip y
+yourself; the render boundary converts to Blender's internal bottom-left coordinates.
+"""
+
+
+def _prompt_slice(start: str, end: str | None) -> str:
+    i = _BUILDER_TMPL.index(start)
+    j = _BUILDER_TMPL.index(end, i) if end else len(_BUILDER_TMPL)
+    return _BUILDER_TMPL[i:j].strip()
+
+
+# The full text above is the maintained domain library. A layer no longer receives all of
+# it. These non-overlapping fragments are selected from its tickets, title, scope and owned
+# axes; the always-on core retains tool semantics, evidence workflow and determinism.
+_CORE_TMPL = _BUILDER_TMPL.split("\nPERFORMANCE —", 1)[0].rstrip()
+_ALWAYS_GUIDANCE = "\n\n".join((
+    _prompt_slice("PERFORMANCE —", "  - bvfx_scatter_emissive"),
+    _prompt_slice("If a run_bpy call warns", "ATMOSPHERE —"),
+    _prompt_slice("BLENDER 5.x + RENDER NOTES", "HERO SURFACES —"),
+    _prompt_slice("The scene starts EMPTY", None),
+))
+_GUIDANCE_FRAGMENTS = {
+    "procedural": _prompt_slice("  - bvfx_scatter_emissive", "  - bvfx_volume"),
+    "bounded_volume": _prompt_slice("  - bvfx_volume", "  - bvfx_emissive_from_texture"),
+    "asset_material": _prompt_slice("  - bvfx_emissive_from_texture",
+                                      "  - bvfx_volumetric_world"),
+    "world_volume": _prompt_slice("  - bvfx_volumetric_world",
+                                    "LIGHTING IN A SCENE THAT HAS A WORLD VOLUME"),
+    "sun_volume": _prompt_slice("LIGHTING IN A SCENE THAT HAS A WORLD VOLUME",
+                                  "  - bvfx_glare_bloom"),
+    "glare_emission": _prompt_slice("  - bvfx_glare_bloom", "  - bvfx_import_asset"),
+    "import_asset": _prompt_slice("  - bvfx_import_asset", "  - bvfx_aim"),
+    "camera_motion": _prompt_slice("  - bvfx_aim", "If a run_bpy call warns"),
+    "atmosphere": _prompt_slice("ATMOSPHERE —", "BLENDER 5.x + RENDER NOTES"),
+    "hero_surface": _prompt_slice("HERO SURFACES —", "The scene starts EMPTY"),
+}
+_GUIDANCE_ORDER = tuple(_GUIDANCE_FRAGMENTS)
+_TICKET_DOMAINS = {
+    "procedural": ({"city", "scatter*", "crowd*", "debris", "star", "stars", "greeble*",
+                    "repeat*", "instanc*", "procedural", "background*"}, {"procedural"}),
+    "asset/material": ({"asset*", "facade*", "tower*", "building*", "window*",
+                        "texture*", "material*", "surface*", "sign*", "typograph*",
+                        "lookdev", "mesh*"},
+                       {"asset_material", "import_asset", "hero_surface"}),
+    "atmosphere": ({"atmospher*", "cloud*", "fog*", "haze", "nebula*", "volume*",
+                    "volumetric*", "smoke*", "sky", "canopy"},
+                   {"bounded_volume", "world_volume", "sun_volume", "atmosphere"}),
+    "lighting/finish": ({"light", "lights", "lighting", "lit", "emission*", "glow*",
+                         "bloom*", "halation", "exposure", "grade", "shadow*", "contrast",
+                         "blackout"},
+                        {"world_volume", "sun_volume", "glare_emission"}),
+    "camera/motion": ({"camera*", "composition", "framing", "motion", "dolly",
+                       "track*", "pan", "lens", "keyframe*", "timing", "speed", "accel*",
+                       "jerk", "shutter", "visibility", "reveal"}, {"camera_motion"}),
+}
+
+
+def ticket_guidance_names(ticket_context: str | None) -> tuple[str, ...]:
+    """Names of domain modules selected for one layer; empty context means legacy/full."""
+    if ticket_context is None:
+        return tuple(_TICKET_DOMAINS)
+    import re
+    words = set(re.findall(r"[a-z0-9]+", ticket_context.lower()))
+
+    def mentioned(term: str) -> bool:
+        return (any(word.startswith(term[:-1]) for word in words)
+                if term.endswith("*") else term in words)
+
+    return tuple(name for name, (terms, _fragments) in _TICKET_DOMAINS.items()
+                 if any(mentioned(term) for term in terms))
+
+
+def _ticket_guidance(ticket_context: str | None) -> str:
+    names = ticket_guidance_names(ticket_context)
+    fragments = set()
+    for name in names:
+        fragments.update(_TICKET_DOMAINS[name][1])
+    selected = [_GUIDANCE_FRAGMENTS[k] for k in _GUIDANCE_ORDER if k in fragments]
+    label = ", ".join(names) if names else "none"
+    discovery = (
+        f"TICKET-MATCHED DOMAIN GUIDANCE — loaded: {label}. Only guidance supported by "
+        "this layer's tickets and owned axes is resident. If the reference reveals a "
+        "missing hard technique, use find_recipe with that visible need; do not improvise "
+        "from an unrelated module."
+    )
+    return "\n\n".join((discovery, *selected))
+
+
+def builder_system(axes: list[tuple[str, str]], recipe_index: str = "",
+                   *, ticket_context: str | None = None) -> str:
+    """Build a stable core plus only the domain guidance relevant to this layer.
+
+    `ticket_context=None` retains the full-domain form for diagnostics/backward callers.
+    Production passes the layer excerpt, scope and axes, keeping unrelated barrel-roll,
+    tower, cloud and grading lore out of sessions that cannot act on it.
+    """
+    body = _CORE_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes))
+    parts = [body, _SCREEN_COORDS, _ALWAYS_GUIDANCE, _ticket_guidance(ticket_context)]
+    if recipe_index:
+        parts.append(recipe_index)
+    return "\n\n".join(p for p in parts if p)
 
 
 def recurring_complaints(shot, m: Milestone, min_attempts: int = 2) -> str:
@@ -284,8 +384,19 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
                   f"hand-modelling a detailed prop.\n\n" if assets else "")
     plan_block = (f"YOUR LAYER'S PLAN SECTION — these tickets are your build instructions "
                   f"(methods, starting values marked *(start)*, gotchas, done-checks). "
-                  f"Follow them; the full plan is `plan.md` if you need wider context:\n"
+                  f"Follow them. `plans/global.md` is dependency context only; it does "
+                  f"not override this layer plan:\n"
                   f"---\n{plan_excerpt}\n---\n\n" if plan_excerpt else "")
+    contract_block = ""
+    if (shot.folder / "scene_checks.json").is_file():
+        contract_block = (
+            "EXECUTABLE SCENE CONTRACT — read `scene_checks.json` BEFORE creating or "
+            "renaming geometry. Apply the rows for this layer. Contracts select semantic "
+            "`roles` only; name-based selectors are invalid. Tag every owned object with "
+            "`bvfx_role(...)`. A visually correct but untagged object produces `None` and "
+            "fails closed. Validate these contracts "
+            "before declaring convergence.\n\n"
+        )
     if priors:
         start_line = (
             f"THE SCENE IS NOT EMPTY: the earlier delta script(s) {priors} have already "
@@ -306,6 +417,9 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
                  f"the others too. A change that fixes f{m.frame} and breaks another of "
                  f"your frames is not a fix.\n")
     return (
+        f"MODE: LIVE_BUILD — change the warm Blender scene, not the build script.\n"
+        f"For each ticket: name one control and its baseline check, make one scoped change, "
+        f"then report baseline → after → target and re-check passing constraints.\n\n"
         f"Build unit {m.id} of shot '{shot.id}' — judged at frame {m.frame} of "
         f"{shot.frames} at {shot.fps}fps. Your delta script will be "
         f"`{script_rel or ('build/' + m.id.lower() + '.py')}`.\n\n"
@@ -313,6 +427,7 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
         f"REFERENCE: read `{m.ref}` — match its colour, composition and camera state.\n"
         f"{extra}"
         f"Also read `brief.md` for the shot's intent and palette.\n\n"
+        f"{contract_block}"
         f"{plan_block}"
         f"{history}"
         f"{asset_line}"
@@ -340,13 +455,17 @@ def revision_prompt(m: Milestone, verdict: dict, candidate_rel: str) -> str:
     na_line = (f" Axes marked n/a ({', '.join(na)}) are OUT OF SCOPE for this stage — a "
                f"later stage builds them; do not touch them." if na else "")
     return (
+        f"MODE: LIVE_BUILD — make one evidence-backed change in the warm scene.\n"
         f"Round scored mean {verdict.get('mean')} (scores: {score_str}) — REVISE.\n\n"
         f"Make a SURGICAL revision — this is the key to converging. Fix ONLY the weakest "
         f"axes: {', '.join(weakest) or '(none scored)'}.{na_line} Do NOT rebuild the scene "
         f"and do NOT touch what already works ({', '.join(strong) or '(nothing ≥3 yet)'}) — "
         f"broad re-tuning fixes one axis and breaks another, and the score stalls. Use "
         f"compare_frame(`{m.ref}`) to see the gap on the weak axes, make the SMALLEST change "
-        f"that closes it, then re-render eevee and confirm nothing that was ≥3 regressed. "
+        f"that closes it. State the control and baseline first; after editing, report "
+        f"baseline → after → target, then re-render eevee and confirm nothing that was ≥3 "
+        f"regressed. If the intended pixels may not have changed, use verify_change before "
+        f"another edit. "
         f"Critic notes:\n{issues}"
     )
 
@@ -364,6 +483,8 @@ def finalize_prompt(shot, m: Milestone, priors: list[str] | None = None,
             f"a script that rebuilds this entire scene from an EMPTY scene, reproducing "
             f"frame {m.frame} exactly as you have it")
     return (
+        f"MODE: FINALIZE_SCRIPT — the live search is over; publish its deterministic "
+        f"artifact. Do not make new look decisions in this mode.\n\n"
         f"Now persist your work. Write `{script}` — {scope}. Assume the "
         f"frame range (1–{shot.frames}), fps ({shot.fps}) and motion blur are already set "
         f"by the harness. To bring in a committed hero mesh, call "
@@ -390,6 +511,36 @@ of 5 means indistinguishable from a top-tier reference; 3 means "acceptable, rea
 right"; 0 means absent or wrong. Judge only what the images show. Be concrete — every
 deduction must come with a specific, actionable fix a Blender TD could execute.
 
+OBSERVATION BEFORE PRESCRIPTION. State only what is visibly different in the supplied
+images, then give at most one action for an axis that scores below 3. Do not invent exact
+RGB values, dimensions, emission strengths, or hidden causes that the images cannot show.
+If every scored axis is at least 3, `issues` must be empty; optional polish is not a defect.
+
+MEASUREMENT AUTHORITY. The request may include a VERIFIED EVIDENCE card produced by
+executable checks on the exact candidate image and live Blender scene. Treat those values
+as facts. Do not
+re-estimate a listed quantity from the JPEG, contradict a passing check, or prescribe a
+numeric correction for it. An exact size/count/position claim covered by that card may be
+blocking only when you cite a FAILED evidence id. When no evidence card is supplied, avoid
+invented numbers but you may still report a qualitative visual mismatch. Qualitative read,
+silhouette, hierarchy and resemblance remain your responsibility.
+
+EXISTENCE IS NOT LEGIBILITY. A passing scene contract proves geometry/state (for example,
+three rib objects exist and the wall is shade-smooth); it does not prove that all three ribs
+read clearly in the render or that smooth geometry is lit to look curved. If the render is
+still visually weak, describe that visible residual precisely ("left rib merges into the
+wall at this exposure"), classify it as visual, and prescribe a visibility/light/separation
+fix. Never rewrite that residual as a contradictory scene-fact claim ("the rib is absent"
+or "the wall lacks segments").
+
+FOCUS ONLY WHEN NEEDED. The harness can optically rerender at most two small regions. Use
+`focus_requests` only when a feature material to an axis scoring at or below 3 is genuinely
+too small to resolve in the full images. The region is [x0,y0,x1,y1], normalized with
+origin TOP-LEFT. Never use a crop to replace full-frame composition/context, inspect a fact
+already settled by executable evidence, or fish for defects. When focus panels are supplied,
+they contain aligned candidate/reference views of the exact same region; request no more and
+cite any panel supporting an issue in `issue_evidence.panel_ids`.
+
 Return your judgement as a single fenced ```json block and NOTHING else after it,
 with exactly this shape:
 
@@ -397,8 +548,15 @@ with exactly this shape:
 {
   "scores": { "<axis>": 0-5, ... one entry per axis given ... },
   "issues": ["specific actionable fix", "..."],
-  "notable_good": ["what already matches", "..."],
-  "verdict": "pass" | "revise"
+  "issue_evidence": [
+    {"issue_index": 0, "kind": "visual" | "measurable", "check_ids": [], "panel_ids": []}
+  ],
+  "focus_requests": [
+    {"id": "rib_left", "axis": "<axis>", "region": [x0,y0,x1,y1],
+     "reason": "what cannot be resolved in the full frame"}
+  ],
+  "reference_usable": true,
+  "reference_note": ""
 }
 ```
 """
@@ -407,7 +565,10 @@ with exactly this shape:
 def critic_prompt(shot, m: Milestone, candidate_rel: str,
                   axes: list[tuple[str, str]], motion_rel: str | None = None,
                   motion_frames: list[int] | None = None,
-                  scope: str | None = None) -> str:
+                  scope: str | None = None,
+                  evidence: list[dict] | None = None,
+                  review_mode: str = "observer",
+                  focus_panels: list[dict] | None = None) -> str:
     axes = "\n".join(f"  - {k}: {desc}" for k, desc in axes)
     # The images are ATTACHED to this request, not fetched. The critic used to be an agent
     # that had to call Read to see them, and that indirection caused the same bug three
@@ -428,23 +589,92 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
         scope_block = (
             f"\n⚠ THIS IS A PARTIAL BUILD STAGE, NOT THE FINISHED SHOT. Its scope:\n"
             f"{scope}\n"
-            f"Score ONLY the axes this stage is responsible for. For every axis whose "
-            f"subject a LATER stage delivers (it isn't built yet — no emission, no "
-            f"typography, no atmosphere, whatever this stage doesn't cover), return the "
-            f"string \"n/a\" instead of a number: absent-by-design is NOT a failure and "
-            f"must not drag the score. Likewise, `issues` must contain ONLY fixes inside "
-            f"this stage's scope — never 'add the thing a later stage adds'.\n"
+            f"The axis list below has already been filtered to exactly what this layer "
+            f"owns. Score EVERY supplied axis with a number; there is no n/a decision in "
+            f"this stage. `issues` must contain only visible defects on a supplied axis "
+            f"that scored below 3, and only fixes inside this stage's scope — never 'add "
+            f"the thing a later stage adds'.\n"
+        )
+    evidence_block = ""
+    if evidence:
+        rows = []
+        for item in evidence:
+            value = item.get("value")
+            result = "PASS" if item.get("pass") else "FAIL"
+            authority = "contract" if item.get("authoritative") else item.get("origin", "check")
+            source = item.get("source", "image_check")
+            matched = item.get("objects") or []
+            object_note = f"; objects={','.join(matched)}" if matched else ""
+            rows.append(
+                f"  - {item.get('id')}: {item.get('metric')}={value} against "
+                f"{item.get('target')} — {result} ({authority}; {source}{object_note})"
+            )
+        evidence_block = (
+            "\nVERIFIED EVIDENCE ON THE EXACT CANDIDATE (machine-evaluated; values and "
+            "PASS/FAIL are facts):\n" + "\n".join(rows) + "\n"
+            "If you raise a measurable issue, begin it with `[check:<FAILED_ID>]`. "
+            "A measurable issue without a failed id, or one contradicting a PASS above, "
+            "will be removed before it can trigger repair. A scene-contract PASS proves "
+            "the named state exists, not that it reads well: report any remaining visibility "
+            "problem as a qualitative observation without denying the measured fact.\n"
+        )
+    focus_block = ""
+    if focus_panels:
+        focus_block = (
+            "\nSUPPLIED FOCUS PANELS (supplemental; the full frame still controls "
+            "composition/context):\n" + "\n".join(
+                f"  - {panel.get('id')}: axis={panel.get('axis')} crop={panel.get('crop')} "
+                f"views={panel.get('views')} — {panel.get('reason')}"
+                for panel in focus_panels
+            ) + "\nThese already answer the close-inspection request. Return an empty "
+            "focus_requests list and cite any panel used in issue_evidence.panel_ids.\n"
+        )
+    review_block = ""
+    if review_mode == "evidence_audit":
+        review_block = (
+            "\nSECOND-OPINION ROLE: evidence auditor. Start from the executable evidence, "
+            "then independently inspect only the qualitative residuals. The first judge "
+            "was borderline; do not repeat a numeric estimate the evidence already answers.\n"
+        )
+    elif review_mode == "tie_breaker":
+        review_block = (
+            "\nTIE-BREAK ROLE: conservative adjudicator. Separate machine-verifiable facts "
+            "from photographic judgment. Fail only for a visible qualitative defect or a "
+            "cited failed check, not because another judge may have failed it.\n"
+        )
+    elif review_mode == "focus_review":
+        panel_lines = "\n".join(
+            f"  - {panel.get('id')}: axis={panel.get('axis')} crop={panel.get('crop')} — "
+            f"{panel.get('reason')}"
+            for panel in (focus_panels or [])
+        )
+        review_block = (
+            "\nFOCUS-REVIEW ROLE. The full reference and candidate remain the decision "
+            "context; the additional aligned panels only resolve small-feature legibility. "
+            "Each panel contains candidate/reference detail views at the exact same crop. "
+            "Do not request another crop. If a blocking visual issue relies on a focus "
+            "panel, cite its id in the same-index issue_evidence.panel_ids.\n"
+            + panel_lines + "\n"
         )
     return (
         f"Stage {m.id} of shot '{shot.id}', frame {m.frame}.\n"
         f"TARGET STATE: {m.reads}\n\n"
         f"The FIRST image is the REFERENCE ({Path(m.ref).name}).\n"
         f"The SECOND image is the CANDIDATE render ({Path(candidate_rel).name}).{motion}"
-        f"{scope_block}"
+        f"{scope_block}{evidence_block}{focus_block}{review_block}"
         f"\nScore the candidate against the reference on these axes:\n"
         f"{axes}\n\n"
-        f"Score each axis 0–5 (or \"n/a\" per the scope rule above), list concrete fixes "
-        f"under `issues` (most important first), and return the JSON scorecard."
+        f"Score each axis 0–5"
+        f"{' (or n/a only when no layer scope is supplied)' if not scope else ''}. "
+        f"For a score below 3, put one item in `issues`: visible observation first, then "
+        f"one actionable correction, plus a same-index `issue_evidence` classification. "
+        f"Use `focus_requests` only when a feature material to an axis scoring at or below "
+        f"3 is too small to resolve in the full images: at most two [x0,y0,x1,y1] regions "
+        f"in normalized TOP-LEFT coordinates. Never request a crop for a measurable fact "
+        f"already settled by evidence, and return an empty list whenever focus panels are "
+        f"already supplied. "
+        f"If all scores are at least 3, return empty `issues` and `issue_evidence` lists. "
+        f"Return the JSON scorecard."
     )
 
 
@@ -464,7 +694,13 @@ def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str,
                  "    (no specific issues returned)"
         scores = ", ".join(f"{k}={val}" for k, val in (v.get("scores") or {}).items()
                            if val != "n/a")
-        blocks.append(f"  f{frame} — scored {v.get('mean')} ({scores})\n{issues}")
+        evidence = "\n".join(
+            f"      {e.get('id')}: {e.get('value')} vs {e.get('target')} — "
+            f"{'PASS' if e.get('pass') else 'FAIL'}"
+            for e in (v.get("evidence") or [])
+        )
+        blocks.append(f"  f{frame} — scored {v.get('mean')} ({scores})\n{issues}"
+                      + (f"\n    verified evidence:\n{evidence}" if evidence else ""))
     # Frames that currently pass are CONSTRAINTS. Omitting them produced whack-a-mole:
     # one repair fixed f440 and left f45 broken, the next fixed f45 and broke f440.
     keep = ""
@@ -478,6 +714,9 @@ def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str,
                 f"declare done. If a fix genuinely cannot be made without regressing one, "
                 f"say so explicitly instead of shipping the trade.\n")
     return (
+        f"MODE: REPAIR_SCRIPT — edit the canonical artifact, not the warm scene.\n"
+        f"Use Grep → Read the smallest span → Edit. Write must not "
+        f"replace the whole file for a local repair.\n\n"
         f"CANONICAL VERIFICATION FAILED for unit {m.id}.\n\n"
         f"Your script `{script_rel}` was re-run FROM AN EMPTY SCENE and the result was "
         f"scored at every frame this unit answers for. These frames did not clear:\n\n"
@@ -487,9 +726,12 @@ def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str,
         f"The SCRIPT's output is. If the script omits something you built interactively, "
         f"or builds it in an order that changes the result, the two will disagree — so "
         f"fix `{script_rel}` itself, then reason about what it produces from empty.\n\n"
-        f"Work the listed issues in order; they are concrete and measured. Do NOT start a "
-        f"new approach, and do NOT re-tune the live scene and declare it fixed. Use "
-        f"script_map / find_in_script / Read that span / Edit — never rewrite the whole "
+        f"Work the listed issues in order, but treat critic prose as OBSERVATION, not "
+        f"measurement. Before changing a measurable property, confirm it against the "
+        f"verified evidence/checks supplied with the verdict. If the claimed defect is "
+        f"not present, say so and leave that property unchanged. Do NOT start a new "
+        f"approach, and do NOT re-tune the live scene and declare it fixed. Use "
+        f"Grep / Read that span / Edit — never rewrite the whole "
         f"file for a few values. When you are done, say so and the script will be "
         f"re-verified from empty again."
     )

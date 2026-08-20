@@ -21,8 +21,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
 
+from . import costlog
 from .log import log, log_message
 from .recipes import recipe_index, search_recipes
 
@@ -105,6 +106,8 @@ async def review(shot, layer, render_rel: str, verdict: dict, script_rel: str,
         async for m in query(prompt=prompt, options=_options(shot.folder)):
             if verbose:
                 log_message(m)
+            elif isinstance(m, ResultMessage):
+                costlog.record(m)
             if isinstance(m, AssistantMessage):
                 for b in m.content:
                     if isinstance(b, TextBlock):

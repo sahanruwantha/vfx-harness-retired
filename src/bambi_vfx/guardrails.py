@@ -290,20 +290,30 @@ def compaction_notice(shot_folder: str | Path) -> HookMatcher:
     and what has already been ruled out.
     """
     async def _pre(inp, tool_use_id, ctx):
-        bump("compaction")
+        bump("compaction_started")
         trigger = (inp or {}).get("trigger", "?")
-        log(f"⚠ CONTEXT COMPACTED mid-layer (trigger={trigger}) — the transcript is being "
-            f"summarised; conclusions live in logs/{LAYER_STATE}")
+        log(f"⚠ CONTEXT COMPACTION STARTING (trigger={trigger}) — checkpointing "
+            f"conclusions in logs/{LAYER_STATE}")
         block = ""
         try:
-            from .layer_state import as_prompt_block
+            from . import transcript
+            from .layer_state import as_prompt_block, checkpoint
+            checkpoint(shot_folder, trigger=trigger)
             block = as_prompt_block(shot_folder)
+            transcript.event("pre_compact", trigger=trigger,
+                             state_file=f"logs/{LAYER_STATE}")
         except Exception as e:
             log(f"! layer state unavailable at compaction: {str(e)[:70]}")
-        if not block:
-            return {}
+        capsule = (
+            "## Pre-compaction continuation capsule\n"
+            "- MODE remains LIVE_BUILD: mutate only the warm scene with run_bpy; never "
+            "Write or Edit the build script.\n"
+            "- Re-read the authoritative layer plan named in CLAUDE.md; never use "
+            "shot-root plan.md.\n"
+            "- Continue from durable measured state below; do not retry ruled-out work.\n"
+        ) + (block or "- No judged round has been recorded yet.\n")
         return {"hookSpecificOutput": {"hookEventName": "PreCompact",
-                                       "additionalContext": block}}
+                                       "additionalContext": capsule}}
 
     return HookMatcher(matcher=None, hooks=[_pre])
 
@@ -359,7 +369,8 @@ def distiller_hooks(*roots, cwd: str | Path | None = None) -> dict:
     return {"PreToolUse": [path_sandbox(*roots, cwd=cwd), recipe_write_guard()]}
 
 
-def completion_gate(shot_folder: str | Path, script_rel: str | None) -> HookMatcher:
+def completion_gate(shot_folder: str | Path, script_rel: str | None,
+                    phase: dict[str, str] | None = None) -> HookMatcher:
     """Stop: a layer has not finished until its ARTIFACTS exist.
 
     "Write the delta script before you finish" was prompt text, and prompt text is what
@@ -376,6 +387,11 @@ def completion_gate(shot_folder: str | Path, script_rel: str | None) -> HookMatc
 
     async def _check(inp, tool_use_id, ctx):
         if not script_rel:
+            return {}
+        # LIVE_BUILD must be allowed to end before the harness can switch the shared
+        # phase to FINALIZE_SCRIPT. Requiring the script here while the phase guard
+        # forbids writing it creates an infinite Stop/deny loop.
+        if (phase or {}).get("mode", "finalize") == "live":
             return {}
         target = folder / script_rel
         if target.is_file() and target.stat().st_size > 0:
@@ -415,16 +431,69 @@ def failure_recorder(shot_folder: str | Path) -> HookMatcher:
     return HookMatcher(matcher=None, hooks=[_record])
 
 
+def builder_phase_guard(phase: dict[str, str], script_rel: str | None) -> HookMatcher:
+    """Keep live search, first publication, and canonical repair from bleeding together.
+
+    The old system prompt contained both "write the script once at finalize" and "Edit the
+    script through script_map". Both were true, in different phases, but the tool surface
+    never changed. This guard makes the mode header executable for the one artifact whose
+    mutation matters: live work cannot publish it, and repair cannot replace it wholesale.
+    """
+    target = Path(script_rel).as_posix() if script_rel else ""
+
+    async def _check(inp, tool_use_id, ctx) -> dict:
+        if not target:
+            return {}
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        if tool not in ("Write", "Edit"):
+            return {}
+        args = (inp.get("tool_input") if isinstance(inp, dict) else getattr(inp, "tool_input", {})) or {}
+        raw = str(args.get("file_path") or args.get("path") or "").replace("\\", "/")
+        if not (raw == target or raw.endswith("/" + target)):
+            return {}
+        mode = phase.get("mode", "live")
+        reason = ""
+        if mode == "live":
+            reason = (
+                f"MODE LIVE_BUILD: change the warm scene with run_bpy; do not write or edit "
+                f"{target}. The harness will request FINALIZE_SCRIPT after the best scene "
+                f"has been selected."
+            )
+        elif mode == "finalize" and tool == "Edit":
+            reason = (
+                f"MODE FINALIZE_SCRIPT: publish {target} once from the accepted run_bpy "
+                f"journal with Write. Local Edit belongs to REPAIR_SCRIPT after canonical "
+                f"replay identifies a defect."
+            )
+        elif mode == "repair" and tool == "Write":
+            reason = (
+                f"MODE REPAIR_SCRIPT: do not replace all of {target}. Use Grep, Read "
+                f"the smallest span, then Edit that span."
+            )
+        if not reason:
+            return {}
+        bump("phase_write_blocked")
+        log(f"⛔ {tool} blocked for {target} in {mode} mode", 1)
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }}
+
+    return HookMatcher(matcher=None, hooks=[_check])
+
+
 def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = None,
-                  script_rel: str | None = None) -> dict:
+                  script_rel: str | None = None,
+                  phase: dict[str, str] | None = None) -> dict:
     """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback.
     PostToolUseFailure: durable failure log. Stop: the artifacts must exist."""
     from .sandbox import path_sandbox
     return {
         "PreToolUse": [path_sandbox(*roots, cwd=shot_folder), api_guardrails(),
-                       script_sanity(), web_allowlist()],
+                       script_sanity(), web_allowlist(),
+                       builder_phase_guard(phase or {"mode": "live"}, script_rel)],
         "PostToolUse": [metrics_feedback(shot_folder, ref_rel)],
         "PostToolUseFailure": [failure_recorder(shot_folder)],
-        "Stop": [completion_gate(shot_folder, script_rel)],
+        "Stop": [completion_gate(shot_folder, script_rel, phase)],
         "PreCompact": [compaction_notice(shot_folder)],
     }

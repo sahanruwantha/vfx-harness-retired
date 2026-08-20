@@ -308,15 +308,15 @@ def _cmd_plan(argv: list[str]) -> int:
 
     ap = argparse.ArgumentParser(prog="bambi_vfx.evals plan")
     ap.add_argument("folder", nargs="?", help="shot folder (default: every shot)")
-    ap.add_argument("--plan", default="plan.md", help="plan file to gate")
+    ap.add_argument("--plan", default="plans/global.md", help="global plan file to gate")
     ap.add_argument("--feedback", action="store_true",
                     help="print the repair brief a --until-clean round would receive")
     args = ap.parse_args(argv)
 
     folders = [Path(args.folder)] if args.folder else \
-        [Path(p).parent for p in sorted(glob.glob("shots/*/plan.md"))]
+        [Path(p).parent.parent for p in sorted(glob.glob("shots/*/plans/global.md"))]
     if not folders:
-        print("no shot has a plan.md yet — nothing to gate")
+        print("no shot has plans/global.md yet — nothing to gate")
         return 1
     results = [_pg.run(f, args.plan) for f in folders]
     if args.feedback:

@@ -35,7 +35,8 @@ def _now() -> str:
 
 
 def ask(shot_folder: str | Path, *, layer: str, question: str, assumption: str,
-        why_it_matters: str = "") -> int:
+        why_it_matters: str = "", affected_layers: list[str] | None = None,
+        affected_axes: list[str] | None = None, global_decision: bool = False) -> int:
     """Record a question, keep working on `assumption`. Returns the question id."""
     folder = Path(shot_folder)
     path = folder / QUESTIONS
@@ -44,9 +45,17 @@ def ask(shot_folder: str | Path, *, layer: str, question: str, assumption: str,
     for q in existing:
         if q["question"].strip().lower() == question.strip().lower():
             return q["id"]
+    affected_layers = sorted({str(value) for value in (affected_layers or []) if str(value)})
+    affected_axes = sorted({str(value) for value in (affected_axes or []) if str(value)})
+    if not global_decision and not affected_layers and not affected_axes:
+        raise ValueError(
+            "question must declare affected_layers, affected_axes, or global_decision=true"
+        )
     qid = (max((q["id"] for q in existing), default=0)) + 1
     rec = {"id": qid, "layer": layer, "question": question.strip(),
            "assumption": assumption.strip(), "why": why_it_matters.strip(),
+           "affected_layers": affected_layers, "affected_axes": affected_axes,
+           "global_decision": bool(global_decision),
            "asked": _now(), "answer": None}
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec) + "\n")
@@ -123,6 +132,30 @@ def open_block(shot_folder: str | Path) -> str:
              "consistent with them rather than choosing differently):"]
     lines += [f"  - {q['question']}  →  assuming: {q['assumption']}" for q in unanswered]
     return "\n".join(lines)
+
+
+def unanswered_for_layer(shot_folder: str | Path, layer) -> list[dict]:
+    """Open decisions that can actually change this layer or the whole shot.
+
+    The legacy ``layer`` field identifies who *asked* the question (usually ``PLAN``);
+    it is intentionally not used for routing.  Strict records carry an impact set.
+    """
+    layer_id = str(getattr(layer, "id", layer))
+    axes = {str(axis) for axis in (getattr(layer, "owns", ()) or ())}
+    out = []
+    for q in load(shot_folder):
+        if q.get("answer"):
+            continue
+        if not any(key in q for key in ("affected_layers", "affected_axes", "global_decision")):
+            raise ValueError(
+                f"Q{q.get('id', '?')} uses the removed question schema; add affected_layers, "
+                "affected_axes, or global_decision"
+            )
+        if (q.get("global_decision")
+                or layer_id in {str(value) for value in (q.get("affected_layers") or [])}
+                or axes.intersection(str(value) for value in (q.get("affected_axes") or []))):
+            out.append(q)
+    return out
 
 
 def main() -> None:

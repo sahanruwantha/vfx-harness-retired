@@ -107,7 +107,7 @@ def check_visibility(name: str, frame: int, samples: int = 27) -> dict:
 
 
 def check_framing(name: str, frames: list[int]) -> dict:
-    """world_to_camera_view → NDC bbox, width, centre. Origin bottom-left."""
+    """world_to_camera_view → public bbox, width, centre. Origin top-left."""
     import bpy
     from bpy_extras.object_utils import world_to_camera_view
     from mathutils import Vector
@@ -285,7 +285,7 @@ def check_passes(frame: int, scale: float = 0.25) -> dict:
 
 
 def subject_bbox(name: str, frame: int) -> dict:
-    """Oracle crop box in Blender NDC (origin bottom-left). Five lines, no render."""
+    """Oracle crop box in public normalized coordinates (origin top-left)."""
     rec = check_framing(name, [int(frame)])
     fr = rec["frames"][0] if rec.get("frames") else {}
     return {

@@ -52,8 +52,29 @@ def search_recipes(query: str, k: int = 3) -> list[dict]:
     return [rec for rec, s in sorted(scored, key=lambda x: -x[1]) if s > 0][:k]
 
 
-def recipe_index(verified_only: bool = False) -> str:
-    """One line per recipe: name + when. This goes in the SYSTEM PROMPT, always.
+_CONTEXT_STOP = {
+    "about", "after", "again", "against", "also", "before", "being", "build",
+    "built", "every", "frame", "from", "into", "layer", "must", "only", "other",
+    "reference", "scene", "should", "that", "their", "then", "there", "these",
+    "this", "through", "ticket", "using", "when", "where", "which", "with",
+}
+
+
+def _context_terms(context: str) -> list[str]:
+    return sorted({t for t in re.findall(r"[a-z0-9]+", context.lower())
+                   if len(t) > 3 and t not in _CONTEXT_STOP})
+
+
+def _context_score(rec: dict, terms: list[str]) -> int:
+    """Metadata relevance without `_score`'s baseline or broad body false positives."""
+    head = (rec["name"] + " " + " ".join(rec["tags"]) + " " + rec["when"]).lower()
+    words = set(re.findall(r"[a-z0-9]+", head))
+    return sum(1 for t in terms if t in words)
+
+
+def recipe_index(verified_only: bool = False, *, context: str | None = None,
+                 limit: int = 8) -> str:
+    """One line per recipe: name + when, optionally filtered to one layer's tickets.
 
     Retrieval was never the weak link — `find_recipe("make the city look real")` returns
     night-city-field just fine. Discovery was: the builder can only query for a recipe it
@@ -65,6 +86,17 @@ def recipe_index(verified_only: bool = False) -> str:
     demand. Same trade here: the index is ~4% of the library's tokens.
     """
     recs = [r for r in _all() if r["verified"] or not verified_only]
+    if context is not None:
+        terms = _context_terms(context)
+        ranked = sorted(recs, key=lambda r: (-_context_score(r, terms), r["name"]))
+        # Blender API mistakes are cross-cutting and expensive; retain that one discovery
+        # line even when a ticket is about composition or modelling. Everything else must
+        # earn its system-prompt space from the current layer's words.
+        selected = [r for r in ranked if _context_score(r, terms) > 0][:max(0, limit - 1)]
+        api = next((r for r in recs if r["name"] == "blender-5-api"), None)
+        if api and api not in selected:
+            selected.append(api)
+        recs = selected[:limit]
     if not recs:
         return ""
     lines = [f"  - {r['name']} — {r['when']}" for r in recs if r["when"]]

@@ -47,6 +47,23 @@ _SPIKE_TIMEOUT = 180     # s, hard cap for one headless blender run
 _JPEG_Q = 85
 
 
+class _CheckBatchBudget:
+    """Two exploratory single checks, then a mandatory batch; scoped per plan session."""
+
+    def __init__(self, limit: int = 2):
+        self.limit = limit
+        self.singles = 0
+
+    def take_single(self) -> bool:
+        if self.singles >= self.limit:
+            return False
+        self.singles += 1
+        return True
+
+    def reset_after_batch(self) -> None:
+        self.singles = 0
+
+
 def _metric_list() -> str:
     """The metric vocabulary, GENERATED from the registry.
 
@@ -181,6 +198,12 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
         im.save(out, format="JPEG", quality=_JPEG_Q)
         return out
 
+    # Exploration is useful; turning fifty independent checks into fifty narrated tool
+    # turns is not. This counter is scoped to one plan-agent session. Two single probes let
+    # the planner learn a metric/region; after that the batch tool is the only path until a
+    # batch has run, at which point two more targeted follow-ups are available.
+    check_budget = _CheckBatchBudget()
+
     @tool(
         "probe_video",
         "ffprobe a reference video (path relative to the shot folder, e.g. "
@@ -303,7 +326,8 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
         "the reference, its value on the adversary you name, this metric's own resampling "
         "noise, and a verdict. A check may not enter the plan until this returns OK.\n"
         f"metric: {_metric_list()}.\n"
-        "regions: normalised [x0,y0,x1,y1] in 0..1 — key 'r' for the single-region metrics, "
+        "regions: normalised [x0,y0,x1,y1] in 0..1, origin TOP-LEFT (x right, y down) — "
+        "key 'r' for the single-region metrics, "
         "'a' and 'b' for region_ratio (a/b). op: '>=' | '<=' | 'band' with lo/hi.\n"
         "rejects: paths to renders this check EXISTS TO REJECT — name the artifact showing "
         "the defect you are guarding against. Without it the check is graded against "
@@ -318,6 +342,14 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
          "required": ["metric", "op", "ref"]},
     )
     async def measure_check(args):
+        if not check_budget.take_single():
+            log("plan-lab x measure_check: single-call exploration cap reached", 1)
+            return _text(
+                "SINGLE-CHECK EXPLORATION CAP REACHED. Draft the remaining candidates as "
+                "one CHECK MANIFEST and call measure_checks(checks=[...]). The cap resets "
+                "after a batch so you can probe up to two rejected cases precisely.",
+                is_error=True,
+            )
         from .checks import Check, verify
         try:
             c = Check.from_dict({**args, "lo": args.get("lo", float("-inf")),
@@ -412,6 +444,7 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
             return lines, proofs, n_ok
 
         lines, proofs, n_ok = await anyio.to_thread.run_sync(_run)
+        check_budget.reset_after_batch()
         head = (f"{n_ok}/{len(specs)} fit to commit. REJECTED ones must be fixed or dropped "
                 f"— the gate re-runs every rule.")
         tail = ("\n\nPaste these `proof` values into the matching records, unedited. If you "
@@ -474,19 +507,26 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender",
         "Raise a question ONLY the client can settle — an ambiguity in the brief, a "
         "contradiction between the brief and the stills, or a taste call that is theirs. "
         "Does not block: state the assumption you will plan on and continue. A human "
-        "answers before the build starts, and the answer becomes law for every layer. "
+        "answers before an AFFECTED layer starts. Name the affected layer ids and/or "
+        "owned axes; use global_decision only when every layer truly depends on it. "
         "Do NOT use it for anything measure_ref or a spike could answer.",
         {"type": "object",
          "properties": {"question": {"type": "string"},
                         "assumption": {"type": "string"},
-                        "why_it_matters": {"type": "string"}},
-         "required": ["question", "assumption"]},
+                        "why_it_matters": {"type": "string"},
+                        "affected_layers": {"type": "array", "items": {"type": "string"}},
+                        "affected_axes": {"type": "array", "items": {"type": "string"}},
+                        "global_decision": {"type": "boolean"}},
+         "required": ["question", "assumption", "affected_layers"]},
     )
     async def ask_supervisor(args):
         from .escalate import ask as _ask
         qid = _ask(shot_folder, layer="PLAN", question=args["question"],
                    assumption=args["assumption"],
-                   why_it_matters=args.get("why_it_matters", ""))
+                   why_it_matters=args.get("why_it_matters", ""),
+                   affected_layers=args.get("affected_layers") or [],
+                   affected_axes=args.get("affected_axes") or [],
+                   global_decision=bool(args.get("global_decision")))
         return _text(f"Recorded as Q{qid}. Continue planning on: {args['assumption']}")
 
     # probe_video / contact_sheet / extract_frames were DEFINED and never registered, so

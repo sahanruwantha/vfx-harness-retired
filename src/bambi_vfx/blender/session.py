@@ -136,8 +136,9 @@ class BlenderSession:
     def ping(self) -> dict:
         return self.call("ping")
 
-    def run(self, code: str) -> dict:
-        return self.call("run", code=code)
+    def run(self, code: str, *, journal: bool = True) -> dict:
+        """Execute Blender Python; read-only probes can opt out of the replay journal."""
+        return self.call("run", code=code, journal=journal)
 
     def inspect(self, section: str = "all") -> str:
         return self.call("inspect", section=section)["text"]

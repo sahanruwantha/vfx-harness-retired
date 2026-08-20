@@ -204,7 +204,7 @@ def freeze(shot: Shot, *, label: str = "", note: str = "",
                 renders[f"renders/{p.name}"] = _sha(p)
 
     plan_files = {n: _sha(shot.folder / n) for n in
-                  ("brief.md", "plan.md", "layers.json", "acceptance.json",
+                  ("brief.md", "plans/global.md", "layers.json", "acceptance.json",
                    "critic_axes.json", "plan.provenance.json")}
 
     return {

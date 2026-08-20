@@ -239,11 +239,13 @@ def message(m) -> None:
         sub = getattr(m, "subtype", None)
         # api_retry storms are the signature of a bad key (ten 401s with backoff, ~190s
         # per call) and of rate limiting. Both look like a hang from outside.
-        if sub in ("init", "api_retry", "error"):
+        if sub in ("init", "api_retry", "error", "compact_boundary"):
             _emit("system", subtype=sub,
                   session_id=data.get("session_id"), model=data.get("model"),
                   error=data.get("error"), error_status=data.get("error_status"),
-                  attempt=data.get("attempt"))
+                  attempt=data.get("attempt"), trigger=data.get("trigger"),
+                  pre_tokens=data.get("pre_tokens"),
+                  compact_metadata=data.get("compact_metadata"))
         return
 
 

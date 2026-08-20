@@ -1,9 +1,9 @@
 """Write the per-shot CLAUDE.md that survives compaction.
 
-Everything task-specific currently arrives in the KICKOFF message — the oldest message in
-the conversation and the first thing compaction summarises away. Layer G ran 121 turns
-with 28KB of run_bpy payloads and megabytes of render output; it compacted, and its
-instructions were in the message least likely to survive.
+The kickoff carries the complete execution ticket, while this file carries the small set
+of durable pointers and invariants needed to resume safely after compaction.  It is not a
+second copy of the plan: duplicated plans drift, and a stale monolithic plan was the
+actual source of Layer 1 scope drift in the observed run.
 
 The SDK docs are explicit about the remedy: "Persistent rules belong in CLAUDE.md (loaded
 via settingSources) rather than in the initial prompt, because CLAUDE.md content is
@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .brief import Shot
 from .escalate import answers_block, open_block
+from .layer_plans import layer_plan_path
 
 _HEADER = "<!-- generated per layer run by bambi_vfx.shot_context — safe to overwrite -->"
 
@@ -50,12 +51,35 @@ def write_layer_context(shot: Shot, layer, axes: list[tuple[str, str]],
         print(f"! prior layer state unavailable: {e}", flush=True)
     if prior_state:
         supervisor = prior_state + "\n" + supervisor
+    try:
+        from .layer_plans import amendment_block, prior_outcomes_block
+        hierarchical = "\n\n".join(
+            block for block in (
+                amendment_block(shot.folder, str(layer.id)),
+                prior_outcomes_block(shot.folder, str(layer.id)),
+            ) if block
+        )
+        if hierarchical:
+            supervisor = hierarchical + "\n\n" + supervisor
+    except Exception as e:
+        raise RuntimeError(f"hierarchical plan feedback is invalid: {e}") from e
+    plan_path = layer_plan_path(shot.folder, layer)
+    plan_rel = plan_path.relative_to(shot.folder).as_posix()
     body = f"""{_HEADER}
 # Layer {layer.id} — {layer.title}
 
 You are building ONE layer of shot `{shot.id}` ({shot.frames}f @ {shot.fps}fps).
 This file is re-injected on every request: if the conversation is summarised, THESE
 facts remain true and authoritative.
+
+## Current mode and source authority
+- MODE is `LIVE_BUILD`. Change the warm Blender scene only through `run_bpy`.
+- The only execution plan is `{plan_rel}`. Re-read that exact file after any context
+  reset. `plans/global.md` is dependency context only, never an execution checklist.
+- Shot-root `plan.md` is an unsupported legacy artifact and must never be read or treated
+  as authority. There is no monolithic-plan fallback.
+- Do not call `Write` or `Edit` in this mode. The harness journals successful `run_bpy`
+  mutations and later starts a separate `FINALIZE_SCRIPT` session to publish `{layer.script}`.
 
 ## What this layer must deliver
 {layer.reads}
@@ -70,8 +94,9 @@ of them clear. A change that fixes one and breaks another is not a fix.
 {judge_rows}
 
 ## Axes you are scored on
-Only these. Every other axis is marked "n/a" — including elements that are correctly
-ABSENT at your frames because another layer adds or removes them.
+Only these are sent to the layer critic, and every one is scored numerically. Elements
+that are correctly absent because another layer adds or removes them must not depress
+these axes.
 
 {axis_rows}
 
@@ -79,17 +104,19 @@ ABSENT at your frames because another layer adds or removes them.
 - Use the `bvfx_*` helpers over raw bpy where one exists. Hand-rolled equivalents use
   Blender-4 APIs that fail on 5.2, and a PreToolUse guardrail will block the known ones.
 - `find_recipe` before inventing a technique; the cookbook has verified, measured code.
-- Build LIVE in the session and verify with renders. Write the delta script at the end
-  from your run_bpy transcript, not from memory.
-- To change your build script: script_map -> find_in_script -> Read that span -> Edit.
-  Write only creates it the first time; never rewrite a whole script for one value.
+- Build LIVE in the session and verify with renders. Script publication is a later harness
+  phase with a different tool surface; do not try to anticipate or perform it here.
 - Objective metrics beat opinion. If a render's measured gap to the reference is reported
   to you, treat it as fact and fix the number.
+- Scene contracts prefer semantic roles over object names. Tag owned objects with
+  `bvfx_role(obj, "department.subject.part", owner_layer="{layer.id}")`; names are labels,
+  while `bvfx_role` is the stable interface that survives renames.
 
 {supervisor}## Summary instructions
 When summarising this conversation, ALWAYS preserve:
-- the layer id, its owned axes, and every judge frame listed above
-- object and material NAMES created so far (later layers reference them by name)
+- MODE `LIVE_BUILD`, authoritative plan `{plan_rel}`, layer id, owned axes, and every
+  judge frame listed above
+- semantic `bvfx_role` values and material interfaces created so far
 - measured values already converged on, and values already ruled out with their measurement
 - which of the judge frames currently pass and which do not
 """

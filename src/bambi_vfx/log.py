@@ -110,7 +110,8 @@ _MCP = "mcp__blender__"
 # LOOKING: tools that put pixels in front of the model. `render_pass` belongs here and
 # not in a category of its own — a diffuse-direct or clay render is still the model
 # looking at the frame, just at the channel its axis is about.
-_LOOK = ("compare_frame", "render_frame", "render_frames", "render_pass", "diff_frames")
+_LOOK = ("compare_frame", "render_frame", "render_frames", "render_pass", "diff_frames",
+         "verify_change")
 # MEASURING: reducing the frame to numbers the model then optimises against.
 _MEASURE = ("measure_regions", "measure_ref")
 # VERIFYING: judgment-free facts about the SCENE rather than the image — visibility,
@@ -121,14 +122,14 @@ _MEASURE = ("measure_regions", "measure_ref")
 _VERIFY = ("check_scene",)
 # The Phase 1/2 additions, tracked by name so "did the builder ever reach for them" is
 # answerable from the ledger instead of by grepping a transcript.
-_NEW_TOOLS = ("render_pass", "check_scene", "diff_frames")
+_NEW_TOOLS = ("render_pass", "check_scene", "diff_frames", "verify_change")
 
 
 def reset_tool_use() -> None:
     TOOL_USE.clear()
 
 
-def tool_use_summary() -> dict:
+def tool_use_summary(*, motion_owned: bool = False, revalidation: bool = False) -> dict:
     """Per-tool counts, the look-vs-measure ratio layer outcomes correlate with, and
     whether the newer diagnostic tools were used at all."""
     if not TOOL_USE:
@@ -138,14 +139,22 @@ def tool_use_summary() -> dict:
         return sum(TOOL_USE.get(_MCP + x, 0) for x in names)
 
     looked, measured, verified = n(*_LOOK), n(*_MEASURE), n(*_VERIFY)
+    mutations = TOOL_USE.get(_MCP + "run_bpy", 0)
+    applicable = {
+        "render_pass": not revalidation,
+        "check_scene": not revalidation,
+        "diff_frames": not revalidation and (motion_owned or mutations >= 2),
+        "verify_change": not revalidation and mutations >= 2,
+    }
+    adoption = {t: TOOL_USE.get(_MCP + t, 0) for t in _NEW_TOOLS}
     out = {"calls": dict(TOOL_USE.most_common()), "total": sum(TOOL_USE.values()),
            "looked": looked, "measured": measured, "verified": verified,
            "compared": n("compare_frame"),
-           # Adoption, per tool. A zero here is not neutral: it means a capability that
-           # was built, verified against Blender and documented in the builder prompt is
-           # being ignored, and the prompt is the thing to fix — not the tool.
-           "adoption": {t: TOOL_USE.get(_MCP + t, 0) for t in _NEW_TOOLS},
-           "unused_new_tools": [t for t in _NEW_TOOLS if not TOOL_USE.get(_MCP + t)]}
+           "adoption": adoption,
+           "applicability": applicable,
+           "unused_required_tools": [t for t in _NEW_TOOLS
+                                     if applicable[t] and not adoption[t]],
+           "not_applicable_tools": [t for t in _NEW_TOOLS if not applicable[t]]}
     if measured:
         out["look_per_measure"] = round(looked / measured, 2)
     return out
@@ -197,10 +206,13 @@ def log_message(m) -> None:
     transcript.message(m)
 
     if SystemMessage is not None and isinstance(m, SystemMessage):
-        if getattr(m, "subtype", None) == "init":
+        subtype = getattr(m, "subtype", None)
+        if subtype == "init":
             data = getattr(m, "data", {}) or {}
             sid = str(data.get("session_id", "?"))[:8]
             log(f"● session {sid} started (model {data.get('model', '?')})")
+        elif subtype == "compact_boundary":
+            log("↻ context compaction completed; continuing from the SDK summary")
         return
 
     if isinstance(m, AssistantMessage):

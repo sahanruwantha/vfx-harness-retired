@@ -1,7 +1,7 @@
 """Stage 3 — the build + critic loop for one PLAN LAYER.
 
 A BUILD agent drives a warm Blender session (run_bpy / render_*) to implement one
-layer from plan.md (its tickets are the spec), iterating against a reference-scored
+layer from its strict `plans/<layer>.md` ticket (the execution spec), iterating against a reference-scored
 CRITIC until the layer's judge frame clears the bar. On pass it persists the layer's
 deterministic delta script (build/NN_<layer>.py); the harness re-runs the whole chain
 from an empty scene to confirm it reproduces — the scripts, not the live scene, are
@@ -50,8 +50,9 @@ from ..build_prompts import (
     recurring_complaints,
     revision_prompt,
 )
+from ..compare_panels import save_focus_sheet, validate_crop
 from ..config import PROJECT_ROOT, Settings, load_environment
-from ..escalate import load as load_questions
+from ..escalate import unanswered_for_layer
 from ..guardrails import builder_hooks, distiller_hooks
 from ..layer_state import record_round as state_round
 from ..layer_state import start as state_start
@@ -68,7 +69,7 @@ from ..preflight import empty_success, warn_if_broken
 from ..provenance import check as provenance_check
 from ..recipes import RECIPES_DIR, build_recipe_tools, log_recipe_use, recipe_index
 from ..runid import RUN_ID
-from ..runlog import reset_counts
+from ..runlog import bump, reset_counts
 from ..runlog import summary as run_summary
 from ..runlog import write as write_run
 from ..sandbox import sandbox_hooks
@@ -85,6 +86,7 @@ MODEL = "claude-opus-5"
 # (`python -m bambi_vfx.evals variance <shot>`). Until then the panel is being convened on
 # a noise estimate that belongs to a different model.
 CRITIC_MODEL = "claude-opus-5"
+_FOCUS_RENDER_LOCK = anyio.Lock()
 
 AXES_SYSTEM = """\
 You define the CRITIC RUBRIC for one VFX shot. Read brief.md and the reference images,
@@ -256,30 +258,9 @@ def _run_prior_paths(session: BlenderSession, paths: list[Path]) -> list[str]:
 
 
 def _plan_layer_excerpt(shot: Shot, layer) -> str:
-    """The layer's own section of plan.md — its tickets ARE the build instructions."""
-    plan = shot.folder / "plan.md"
-    if not plan.is_file():
-        return ""
-    text = plan.read_text(encoding="utf-8")
-    script_name = Path(layer.script).name
-    lines = text.splitlines()
-    id_pat = re.compile(rf"(?:LAYER\s+{re.escape(layer.id)}\b|\b{re.escape(layer.id)}\s*·)")
-    start = None
-    for i, ln in enumerate(lines):
-        if not ln.startswith("### "):
-            continue
-        # script name is unambiguous; a bare id needs word-ish boundaries
-        if script_name in ln or id_pat.search(ln) or (layer.title and layer.title in ln):
-            start = i
-            break
-    if start is None:
-        return ""
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        if lines[j].startswith("### ") or lines[j].startswith("## "):
-            end = j
-            break
-    return "\n".join(lines[start:end]).strip()
+    """The layer's just-in-time execution plan; giant-plan fallback is forbidden."""
+    from ..layer_plans import read_layer_plan
+    return read_layer_plan(shot.folder, layer)
 
 
 def _preamble(shot: Shot) -> str:
@@ -306,23 +287,31 @@ def _preamble(shot: Shot) -> str:
 def _builder_options(shot: Shot, mcp_servers: dict, tool_names: list[str],
                      axes: list[tuple[str, str]],
                      ref_rel: str | None = None,
-                     script_rel: str | None = None) -> ClaudeAgentOptions:
+                     script_rel: str | None = None,
+                     phase: dict[str, str] | None = None,
+                     ticket_context: str | None = None) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         model=MODEL,
-        system_prompt=builder_system(axes, recipe_index()),
+        system_prompt=builder_system(
+            axes,
+            recipe_index(context=ticket_context) if ticket_context is not None
+            else recipe_index(),
+            ticket_context=ticket_context,
+        ),
         cwd=str(shot.folder),
         hooks=builder_hooks(shot.folder, [shot.folder, RECIPES_DIR], ref_rel=ref_rel,
-                            script_rel=script_rel),
+                            script_rel=script_rel, phase=phase),
         mcp_servers=mcp_servers,
-        # Edit was never advertised, so the obvious way to change one value in a 23KB
-        # script was to Write the whole thing again.
-        allowed_tools=["Read", "Edit", "Write", "Glob", "Grep", "WebFetch", *tool_names],
+        # LIVE_BUILD owns the warm Blender scene, never the artifact on disk.  Write/Edit
+        # are absent rather than merely prompt-discouraged; publication and repair use
+        # dedicated sessions below with mutually exclusive mutation surfaces.
+        allowed_tools=["Read", "Glob", "Grep", "WebFetch", *tool_names],
         # allowed_tools is an AUTO-APPROVE list, not a whitelist: under bypassPermissions
         # every unlisted tool still runs. Deny explicitly or it is available.
         # WebFetch is allowed but hook-restricted to Blender docs (see guardrails):
         # with no lookup at all the builder re-guesses a failing API verbatim.
-        disallowed_tools=["Bash", "Task", "Agent", "NotebookEdit", "KillShell",
-                          "BashOutput"],
+        disallowed_tools=["Write", "Edit", "Bash", "Task", "Agent", "NotebookEdit",
+                          "KillShell", "BashOutput"],
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,  # renders/read-images can exceed the 1MB default
         # "project" loads shots/<id>/CLAUDE.md on EVERY request, so the layer contract
@@ -344,6 +333,58 @@ def _builder_options(shot: Shot, mcp_servers: dict, tool_names: list[str],
     )
 
 
+_SCRIPT_SYSTEM = """\
+You are a narrow build-artifact agent. Follow the requested MODE exactly. You do not have
+Blender tools and must not redesign the scene. In FINALIZE_SCRIPT, publish the complete
+requested script once with Write and never Edit it. In REPAIR_SCRIPT, make only the stated
+local correction with Edit and never replace the whole file. Read only the named script,
+journal, plan, and verdict evidence needed for that operation. Your working directory is
+already the shot folder: use every named relative path verbatim. Never prefix a path with
+the repository root or guess an alternative location.
+"""
+
+
+def _script_options(shot: Shot, *, mode: str, script_rel: str) -> ClaudeAgentOptions:
+    finalize = mode == "finalize"
+    phase = {"mode": mode}
+    return ClaudeAgentOptions(
+        model=MODEL, system_prompt=_SCRIPT_SYSTEM, cwd=str(shot.folder),
+        hooks=builder_hooks(shot.folder, [shot.folder], script_rel=script_rel, phase=phase),
+        allowed_tools=(["Read", "Write", "Glob"] if finalize
+                       else ["Read", "Edit", "Grep"]),
+        disallowed_tools=(["Edit", "Bash", "WebFetch", "WebSearch", "Task", "Agent",
+                           "NotebookEdit"] if finalize else
+                          ["Write", "Bash", "WebFetch", "WebSearch", "Task", "Agent",
+                           "NotebookEdit"]),
+        permission_mode="bypassPermissions", setting_sources=[], max_turns=20,
+        max_budget_usd=MAX_BUDGET_USD, max_buffer_size=32 * 1024 * 1024, effort="high",
+    )
+
+
+async def _run_script_agent(shot: Shot, *, mode: str, script_rel: str,
+                            prompt: str, verbose: bool) -> dict:
+    """Run one phase-pure file session and return its terminal SDK accounting."""
+    info = {"subtype": "unknown", "turns": 0, "cost": 0.0, "session_id": None,
+            "tokens": {}}
+    async for message in query(prompt=prompt,
+                               options=_script_options(shot, mode=mode,
+                                                       script_rel=script_rel)):
+        if verbose:
+            log_message(message)
+        elif isinstance(message, ResultMessage):
+            costlog.record(message)
+        if isinstance(message, ResultMessage):
+            usage = getattr(message, "usage", None) or {}
+            info = {
+                "session_id": getattr(message, "session_id", None),
+                "subtype": getattr(message, "subtype", "unknown"),
+                "turns": getattr(message, "num_turns", 0) or 0,
+                "cost": getattr(message, "total_cost_usd", None) or 0.0,
+                "tokens": usage if isinstance(usage, dict) else {},
+            }
+    return info
+
+
 def _axes_options(shot: Shot) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         model=MODEL, system_prompt=AXES_SYSTEM, cwd=str(shot.folder),
@@ -356,11 +397,13 @@ def _axes_options(shot: Shot) -> ClaudeAgentOptions:
     )
 
 
-def _critic_schema(axes: list[tuple[str, str]]) -> dict:
+def _critic_schema(axes: list[tuple[str, str]], *, allow_na: bool = True) -> dict:
     """Force the verdict shape instead of regex-scraping the last {...} out of prose.
-    Each axis is a 0-5 integer OR the string "n/a" for out-of-scope/absent-by-design."""
-    score = {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 5},
-                       {"type": "string", "enum": ["n/a"]}]}
+    Layer builds pass only their owned axes, so scope is no longer a model decision there.
+    Full-rubric/acceptance calls may still need n/a for beat-specific axes."""
+    numeric = {"type": "integer", "minimum": 0, "maximum": 5}
+    score = ({"anyOf": [numeric, {"type": "string", "enum": ["n/a"]}]}
+             if allow_na else numeric)
     return {
         "type": "object",
         "properties": {
@@ -368,7 +411,53 @@ def _critic_schema(axes: list[tuple[str, str]]) -> dict:
                        "properties": {k: score for k, _ in axes},
                        "required": [k for k, _ in axes],
                        "additionalProperties": False},
-            "issues": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+            "issues": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 4,
+                "description": "Blocking actions only for axes scored below 3. Empty when "
+                               "the verdict passes. Describe visible evidence before the "
+                               "action; do not invent exact Blender parameters.",
+            },
+            "issue_evidence": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "issue_index": {"type": "integer", "minimum": 0, "maximum": 3},
+                        "kind": {"type": "string", "enum": ["visual", "measurable"]},
+                        "check_ids": {"type": "array", "items": {"type": "string"}},
+                        "panel_ids": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["issue_index", "kind", "check_ids", "panel_ids"],
+                    "additionalProperties": False,
+                },
+                "description": "One classification per issue. Exact dimensions, counts "
+                               "and positions are measurable and require a failed check id; "
+                               "qualitative appearance is visual.",
+            },
+            "focus_requests": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "short stable id"},
+                        "axis": {"type": "string", "enum": [k for k, _ in axes]},
+                        "region": {"type": "array", "items": {"type": "number",
+                                                                  "minimum": 0,
+                                                                  "maximum": 1},
+                                   "minItems": 4, "maxItems": 4},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["id", "axis", "region", "reason"],
+                    "additionalProperties": False,
+                },
+                "description": "At most two normalized TOP-LEFT regions needed to resolve "
+                               "a material below-3/uncertain visual decision. Empty when "
+                               "the supplied images are sufficient.",
+            },
             # Asked EXPLICITLY because the critic will otherwise mention a bad reference
             # in `issues` and score anyway: handed a render of a night city against a
             # green meadow, it wrote "cannot be the shot's look reference" and returned
@@ -385,12 +474,14 @@ def _critic_schema(axes: list[tuple[str, str]]) -> dict:
             "reference_note": {"type": "string",
                                "description": "one line; required when unusable"},
         },
-        "required": ["scores", "issues", "reference_usable", "reference_note"],
+        "required": ["scores", "issues", "issue_evidence", "focus_requests",
+                     "reference_usable", "reference_note"],
         "additionalProperties": False,
     }
 
 
-def _critic_options(shot: Shot, axes: list[tuple[str, str]] | None = None) -> ClaudeAgentOptions:
+def _critic_options(shot: Shot, axes: list[tuple[str, str]] | None = None,
+                    *, allow_na: bool = True) -> ClaudeAgentOptions:
     # NO TOOLS. The images arrive attached to the request (see _critique), so the critic
     # has nothing to fetch and cannot score a frame it never saw. This deleted three
     # layers of machinery that existed only to police the old tool loop: the sandbox
@@ -405,7 +496,11 @@ def _critic_options(shot: Shot, axes: list[tuple[str, str]] | None = None) -> Cl
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,  # a multi-image request exceeds the 1MB default
         setting_sources=[],
-        max_turns=1,
+        # Structured output can require a final protocol turn after the model has
+        # finished reasoning. In the real Layer 1 run, both first attempts exhausted a
+        # two-turn ceiling and both retries succeeded. Three turns are protocol headroom,
+        # not an invitation to loop: the critic has no tools and only one user message.
+        max_turns=3,
         # The judgement everything depends on — but "xhigh" here was an assertion, never a
         # measurement, and it is the single largest cost in the pipeline. Measured on layer
         # 1: the critic produced 5-12k output per session for $4.18-11.31, i.e. $0.63-1.28
@@ -416,7 +511,8 @@ def _critic_options(shot: Shot, axes: list[tuple[str, str]] | None = None) -> Cl
         effort=CRITIC_EFFORT,
         # Validated at the tool layer with automatic retries, instead of scraping the
         # last {...} out of free text — one critic already returned nothing parseable.
-        output_format=({"type": "json_schema", "schema": _critic_schema(axes)}
+        output_format=({"type": "json_schema",
+                        "schema": _critic_schema(axes, allow_na=allow_na)}
                        if axes else None),
     )
 
@@ -438,33 +534,15 @@ async def ensure_axes(shot: Shot, verbose: bool = True) -> list[tuple[str, str]]
 
     Written by the PLAN stage (critic_axes.json): the planner has the deepest scene read
     AND knows the layer breakdown, so it is the only stage that can guarantee every axis
-    has an owning layer. The derive-from-refs path below is a fallback for shots planned
-    before that, and cannot produce `owns`.
+    has an owning layer. Missing axes are a migration failure, not an invitation for the
+    builder to invent a different rubric.
     """
     path = shot.folder / "critic_axes.json"
     if path.is_file():
         return load_axes(shot)
-    log("no critic_axes.json from the plan — falling back to deriving from brief + refs")
-    ref_list = "\n".join(f"  - {p.name}" for p in shot.refs) or "  (none)"
-    prompt = (f"Define the critic rubric for shot '{shot.id}'. Read `brief.md` and these "
-              f"reference images, then output the JSON axes array:\n{ref_list}")
-    text = ""
-    costlog.bind(shot.folder, role="axes")
-    async for message in query(prompt=prompt, options=_axes_options(shot)):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text += block.text
-    try:
-        data = _extract_json_list(text)
-        clean = [{"key": a["key"], "desc": a["desc"]} for a in data if a.get("key") and a.get("desc")]
-        if clean:
-            path.write_text(json.dumps(clean, indent=2) + "\n")
-    except Exception as e:  # fall back to defaults
-        log(f"axes derive failed ({str(e)[:80]}); using defaults")
-    axes = load_axes(shot)
-    log(f"critic axes: {', '.join(k for k, _ in axes)}")
-    return axes
+    raise FileNotFoundError(
+        f"{path} missing — legacy builder-side rubric derivation has been removed; "
+        "generate and gate the strict global plan")
 
 
 def _warn_unowned_axes(shot: Shot, axes: list[tuple[str, str]]) -> None:
@@ -479,12 +557,10 @@ def _warn_unowned_axes(shot: Shot, axes: list[tuple[str, str]]) -> None:
     An axis owned only by the LAST layer is fine and deliberately NOT flagged: with
     `owns` in force the earlier layers simply aren't judged on it, which is the point.
     """
-    try:
-        layers = load_layers(shot)
-    except FileNotFoundError:
-        return
+    layers = load_layers(shot)
     if not any(g.owns for g in layers.values()):
-        return  # plan predates ownership — the scope block still narrows the rubric
+        raise ValueError("strict layers.json contract requires owned axes; legacy unscoped "
+                         "judging is not supported")
     keys = {k for k, _ in axes}
     orphan = sorted(keys - {a for g in layers.values() for a in g.owns})
     if orphan:
@@ -495,6 +571,60 @@ def _warn_unowned_axes(shot: Shot, axes: list[tuple[str, str]]) -> None:
     unknown = sorted({a for g in layers.values() for a in g.owns} - keys)
     if unknown:
         log(f"! layers claim axes not in the rubric: {unknown}")
+
+
+def _owned_axes(axes: list[tuple[str, str]], layer) -> list[tuple[str, str]]:
+    """Deterministically scope a layer before prompting or schema construction."""
+    owned = set(getattr(layer, "owns", ()) or ())
+    return [row for row in axes if row[0] in owned]
+
+
+_MOTION_AXIS_WORDS = ("motion", "animation", "continuity", "timing", "trajectory",
+                      "interpolation", "velocity", "monotonic", "easing")
+
+
+def _axes_need_motion(axes: list[tuple[str, str]]) -> bool:
+    """A motion strip is useful only when an owned axis can score temporal behavior."""
+    text = " ".join(f"{key} {description}" for key, description in axes).lower()
+    return any(word in text for word in _MOTION_AXIS_WORDS)
+
+
+def _evidence_convergence_stop(layer, verdict: dict) -> bool:
+    """Stop Layer 1 revisions when executable evidence has nothing left to repair.
+
+    This does not manufacture a PASS: canonical verification may still record a judge
+    conflict.  It prevents an evidence-free low score from sending the builder into more
+    geometry edits after every authoritative contract is green.
+    """
+    if str(getattr(layer, "id", "")) != "1" or verdict.get("pass"):
+        return False
+    authoritative = [row for row in (verdict.get("evidence") or [])
+                     if row.get("authoritative")]
+    return bool(authoritative and all(row.get("pass") for row in authoritative)
+                and not verdict.get("issues") and not verdict.get("reference_unusable"))
+
+
+def _builder_ticket_context(plan_excerpt: str, scope: str | None,
+                            axes: list[tuple[str, str]], layer=None) -> str:
+    """Local retrieval query for prompt modules; never sent as extra prompt text.
+
+    The full excerpt contains gotchas and regression notes about other departments. Feeding
+    all of that to retrieval makes a finish ticket look like camera+city+asset work again.
+    Headings, scope/done clauses, approach lines and explicit recipe calls express what this
+    layer can actually change; the builder still receives the complete excerpt at kickoff.
+    """
+    ticket_lines = []
+    for line in plan_excerpt.splitlines():
+        stripped = line.strip()
+        if (stripped.startswith(("### ", "**Scope", "**Done", "**G"))
+                or "build/approach:" in stripped
+                or "find_recipe(" in stripped):
+            ticket_lines.append(stripped)
+    layer_bits = [str(getattr(layer, key, "") or "")
+                  for key in ("title", "reads", "script")]
+    axis_bits = [f"{name}: {description}" for name, description in axes]
+    return "\n".join(x for x in ("\n".join(ticket_lines), scope or "", *layer_bits,
+                                  *axis_bits) if x)
 
 
 async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True,
@@ -541,10 +671,23 @@ async def distill_recipe(shot: Shot, m: Milestone, verbose: bool = True,
             f"script before writing it — a confidently wrong recipe is worse than none, "
             f"so if you cannot confirm the fix, write nothing for that error.")
     prompt = " ".join(parts)
-    costlog.bind(shot.folder, role="distiller", layer=m.id)
-    async for message in query(prompt=prompt, options=options):
-        if verbose:
-            log_message(message)
+    async def _run_distiller():
+        async for message in query(prompt=prompt, options=options):
+            if verbose:
+                log_message(message)
+            elif isinstance(message, ResultMessage):
+                costlog.record(message)
+
+    if costlog.is_bound():
+        with costlog.scoped(role="distiller", phase="distill"):
+            await _run_distiller()
+    else:
+        costlog.bind(shot.folder, role="distiller", phase="distill", layer=m.id,
+                     run_id=RUN_ID)
+        try:
+            await _run_distiller()
+        finally:
+            costlog.unbind()
 
 
 # API errors the builder hit and worked around. The distiller only ever harvested from
@@ -602,6 +745,20 @@ async def _drain_once(client: ClaudeSDKClient, verbose: bool) -> dict:
     async for message in client.receive_response():
         if verbose:
             log_message(message)
+        else:
+            # Quiet means no console noise, not no durable evidence.  Previously every
+            # non-result message vanished from quiet transcripts, including the SDK's
+            # compact_boundary notification.
+            transcript.message(message)
+            if isinstance(message, ResultMessage):
+                # Accounting is correctness data, not console decoration. Quiet runs
+                # still record their sessions even though they skip the pretty-printer.
+                costlog.record(message)
+        if (type(message).__name__ == "SystemMessage"
+                and getattr(message, "subtype", None) == "compact_boundary"):
+            bump("compaction_completed")
+            if not verbose:
+                log("↻ context compaction completed; continuing from the SDK summary")
         _collect_errors(message)
         _collect_approach(message)
         if isinstance(message, ResultMessage):
@@ -649,6 +806,27 @@ async def _drain(client: ClaudeSDKClient, verbose: bool, *,
     if info["subtype"] == "error_max_turns":
         log(f"! builder still truncated after {continues} continuations "
             f"({info['turns']} turns, ${info['cost']:.2f})")
+    try:
+        usage = await client.get_context_usage()
+        compact = {
+            "total_tokens": usage.get("totalTokens"),
+            "max_tokens": usage.get("maxTokens"),
+            "raw_max_tokens": usage.get("rawMaxTokens"),
+            "percentage": usage.get("percentage"),
+            "auto_compact": usage.get("isAutoCompactEnabled"),
+            "auto_compact_threshold": usage.get("autoCompactThreshold"),
+            "memory_files": [
+                {k: row.get(k) for k in ("path", "type", "tokens") if k in row}
+                for row in (usage.get("memoryFiles") or [])
+            ],
+        }
+        transcript.event("context_usage", **compact)
+        if float(compact.get("percentage") or 0) >= 70:
+            log(f"⚠ context {compact['percentage']:.1f}% full "
+                f"({compact['total_tokens']}/{compact['max_tokens']} tokens)")
+    except Exception as exc:
+        # Context telemetry is diagnostic and must never make a completed build fail.
+        transcript.event("context_usage_unavailable", error=str(exc)[:160])
     return info
 
 
@@ -700,18 +878,186 @@ def _verdict(verdict: dict) -> dict:
     return verdict
 
 
-# A canonical render may sit slightly under the live best and still be the same picture —
-# judge noise is real. But 1/n was derived from "one axis point moves the mean by 1/n",
-# which at n=1 licenses a FULL POINT: a 4 becoming a 3 counted as "reproduced". That is a
-# different verdict, not noise, and on a one-axis layer it is the entire verdict.
-_REPRO_TOL_MAX = 0.5
+def _focus_requests(verdict: dict, axes: list[tuple[str, str]]) -> list[dict]:
+    """Validate critic-selected crops before they can trigger renders or extra judging.
+
+    A request is supplemental evidence, not an escape hatch from scoring the full frame:
+    it must name an in-scope axis that is actually borderline/failing, be a genuine zoom
+    rather than nearly the whole image, and use the public top-left coordinate convention.
+    """
+    allowed = {key for key, _desc in axes}
+    scores = verdict.get("scores") or {}
+    out, seen = [], set()
+    for index, item in enumerate(verdict.get("focus_requests") or []):
+        if not isinstance(item, dict) or len(out) >= 2:
+            continue
+        axis = str(item.get("axis") or "")
+        score = scores.get(axis)
+        if axis not in allowed or not isinstance(score, (int, float)) or score > 3:
+            continue
+        try:
+            crop = list(validate_crop(item.get("region")))
+        except ValueError:
+            continue
+        if crop[2] - crop[0] < 0.02 or crop[3] - crop[1] < 0.02:
+            continue  # below this, even the capped optical render has too few real pixels
+        if crop[2] - crop[0] > 0.75 or crop[3] - crop[1] > 0.75:
+            continue
+        raw_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(item.get("id") or "")).strip("_")
+        panel_id = (raw_id or f"focus_{index + 1}")[:40]
+        if panel_id in seen:
+            panel_id = f"{panel_id}_{index + 1}"
+        seen.add(panel_id)
+        reason = " ".join(str(item.get("reason") or "").split())[:180]
+        if not reason:
+            continue
+        out.append({"id": panel_id, "axis": axis, "crop": crop, "reason": reason})
+    return out
 
 
-def _repro_tolerance(n_scored: int) -> float:
-    """How far a canonical re-render may fall below the live best and still count as
-    'the script reproduces it'. Widens as the axis count shrinks (one axis point moves
-    the mean by 1/n), but never far enough to absorb a whole grade."""
-    return min(_REPRO_TOL_MAX, max(0.3, 1.0 / n_scored)) if n_scored else 0.3
+async def _make_focus_panels(shot: Shot, m: Milestone, session: BlenderSession,
+                             requests: list[dict], candidate_rel: str = "candidate") -> list[dict]:
+    """Optically rerender requested crops and align each with the same reference crop."""
+    panels = []
+    reference = shot.folder / m.ref
+    async with _FOCUS_RENDER_LOCK:
+        for item in requests[:2]:
+            crop = item["crop"]
+            fraction = max(crop[2] - crop[0], crop[3] - crop[1])
+            res_pct = min(800, max(150, round(110 / fraction)))
+            rendered = await anyio.to_thread.run_sync(
+                lambda c=crop, pct=res_pct: session.render_full(
+                    frame=m.frame, mode="eevee", scale=0.5,
+                    **{"pass": "beauty"}, shade="beauty", crop=c, res_pct=pct)
+            )
+            candidate_tag = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(candidate_rel).stem)[:60]
+            dest = (shot.folder / "renders"
+                    / f"{candidate_tag}_focus_{item['id']}_f{m.frame}.jpg")
+            meta = await anyio.to_thread.run_sync(
+                lambda r=rendered, c=crop, d=dest: save_focus_sheet(
+                    r["image_path"], reference, c, d, ("side_by_side", "wipe"))
+            )
+            panels.append({
+                **item,
+                "res_pct": res_pct,
+                "image_rel": str(dest.relative_to(shot.folder)),
+                "candidate_source_px": meta["candidate_source_px"],
+                "reference_crop_px": meta["reference_crop_px"],
+                "comparison_px": meta["comparison_px"],
+                "views": meta["views"],
+                "upscaled": meta["upscaled"],
+                "mean_abs_diff": meta["mean_abs_diff"],
+            })
+    return panels
+
+
+_CHECK_TAG = re.compile(r"^\s*\[check:([^\]]+)\]\s*", re.IGNORECASE)
+_MEASURABLE_CLAIM = re.compile(
+    r"(?:\b\d+(?:\.\d+)?\s*(?:%|px\b|[wh]\b|x\b)|"
+    r"\b(?:width|height|diameter|radius|scale(?:d|\s+up|\s+down)?|enlarge|shrink|"
+    r"segments?|object\s+count|shade[- ]smooth|smooth\s+shading|normals?|"
+    r"cent(?:er|re)(?:ed)?\s+at|position(?:ed)?\s+at)\b)",
+    re.IGNORECASE,
+)
+
+
+def _filter_critic_issues(verdict: dict, evidence: list[dict] | None) -> dict:
+    """Keep visual issues, but require machine support for measurable ones.
+
+    Repeating a vision call cannot cure a systematic dimension hallucination.  The
+    beacon-wake panel twice called a 0.1634-W ring 0.11-W even though the target band was
+    0.160-0.180.  A measurable prescription now needs a failed executable check; a
+    missing id or a cited PASS becomes a recorded judge conflict, never builder work.
+    """
+    enforce_evidence = evidence is not None
+    facts = {str(e.get("id")): e for e in (evidence or []) if e.get("id")}
+    meta = {int(m.get("issue_index", -1)): m
+            for m in (verdict.get("issue_evidence") or [])
+            if isinstance(m, dict) and isinstance(m.get("issue_index"), int)}
+    original = list(verdict.get("issues") or [])
+    kept, contradicted = [], []
+    for index, issue in enumerate(original):
+        text = str(issue)
+        m = meta.get(index, {})
+        ids = [str(x) for x in (m.get("check_ids") or [])]
+        tag = _CHECK_TAG.match(text)
+        if tag and tag.group(1) not in ids:
+            ids.append(tag.group(1))
+        # Classification is not delegated entirely to the judge.  The beacon critic
+        # labelled a numerical "0.11 W; scale up 1.5x" prescription as ordinary visual
+        # prose, which would bypass the evidence rule if its self-report were trusted.
+        # A visible residual can still survive by describing the read and a non-geometric
+        # fix (separation/light), while explicit dimension/state prescriptions are facts.
+        textual_measurement = bool(_MEASURABLE_CLAIM.search(text))
+        kind = "measurable" if tag or textual_measurement else (m.get("kind") or "visual")
+        # Full-shot acceptance currently supplies its own metric report rather than a
+        # layer evidence card. Preserve those critic issues; the strict citation rule is
+        # for layer calls where the harness explicitly passed a card (even an empty one).
+        if kind != "measurable" or not enforce_evidence:
+            kept.append(text)
+            continue
+        failed = [cid for cid in ids if cid in facts and not facts[cid].get("pass")]
+        if failed:
+            kept.append(text)
+            continue
+        cited_pass = [cid for cid in ids if cid in facts and facts[cid].get("pass")]
+        reason = (f"cites passing check(s) {', '.join(cited_pass)}"
+                  if cited_pass else
+                  "has no failed executable check")
+        contradicted.append({"issue": text, "check_ids": ids, "reason": reason})
+    verdict["issues"] = kept
+    verdict["contradicted_issues"] = contradicted
+    # A sub-pass score with no surviving reason is not actionable evidence. Preserve the
+    # score for audit, but route it to a cheap re-judge/human instead of a repair agent.
+    if not verdict.get("pass") and not kept and (contradicted or not original):
+        verdict["judge_conflict"] = True
+    return verdict
+
+
+def _audit_panel_citations(verdict: dict, focus_panels: list[dict] | None) -> dict:
+    """Keep focus provenance honest; a model cannot cite a panel it was not shown."""
+    valid = {str(panel.get("id")) for panel in (focus_panels or []) if panel.get("id")}
+    invalid = []
+    for meta in verdict.get("issue_evidence") or []:
+        if not isinstance(meta, dict):
+            continue
+        cited = [str(panel_id) for panel_id in (meta.get("panel_ids") or [])]
+        bad = [panel_id for panel_id in cited if panel_id not in valid]
+        if bad:
+            invalid.append({"issue_index": meta.get("issue_index"), "panel_ids": bad})
+        meta["panel_ids"] = [panel_id for panel_id in cited if panel_id in valid]
+    verdict["invalid_panel_citations"] = invalid
+    return verdict
+
+
+def _apply_evidence_gate(verdict: dict, evidence: list[dict] | None) -> dict:
+    """Let proven planner contracts overrule a critic pass.
+
+    Evidence is symmetric: a passing check prevents an invented measurable repair, and a
+    failing authoritative check prevents a flattering visual score from shipping it.
+    Builder-authored checks are shown to the critic but remain advisory because the author
+    chose both the measurement and its band.
+    """
+    failures = [item for item in (evidence or [])
+                if item.get("authoritative") and not item.get("pass")]
+    verdict["evidence_failures"] = failures
+    if not failures:
+        return verdict
+    issues = list(verdict.get("issues") or [])
+    for item in failures:
+        tag = f"[check:{item['id']}]"
+        if any(str(issue).lstrip().startswith(tag) for issue in issues):
+            continue
+        issues.append(
+            f"{tag} executable contract fails: {item.get('metric')} reads "
+            f"{item.get('value')} against {item.get('target')}; correct the property "
+            f"measured by this check"
+        )
+    verdict["issues"] = issues[:6]
+    verdict["pass"] = False
+    verdict["judge_conflict"] = False
+    verdict["decided_by"] = "checks"
+    return verdict
 
 
 def _repair_delta(pre: list, post: list) -> dict:
@@ -741,15 +1087,25 @@ def _repair_delta(pre: list, post: list) -> dict:
     common = [f for f in failed if f in now]
     was_worst = min((was.get(f) or 0) for f in common) if common else None
     now_worst = min((now.get(f) or 0) for f in common) if common else None
+    def contract_failures(rows: list) -> int:
+        return sum(1 for (_frame_ref, verdict) in rows
+                   for item in (verdict.get("evidence") or [])
+                   if item.get("authoritative") and not item.get("pass"))
+
+    was_contract = contract_failures(pre)
+    now_contract = contract_failures(post)
     progressed = (
         (was_worst is not None and now_worst > was_worst)
         or len(still) < len(failed)
+        or (was_contract > 0 and now_contract < was_contract)
     )
     return {
         "was": was, "now": now,
         "broke": sorted(f for (f, _r), v in post if f in was_pass and not v.get("pass")),
         "was_worst": was_worst, "now_worst": now_worst,
         "was_failing": len(failed), "now_failing": len(still),
+        "was_contract_failures": was_contract,
+        "now_contract_failures": now_contract,
         "progressed": progressed,
     }
 
@@ -807,9 +1163,13 @@ def _structured_or_text(message, acc: dict) -> None:
 async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
                     axes: list[tuple[str, str]], session: BlenderSession, verbose: bool,
                     scope: str | None = None, prior_rel: str | None = None,
-                    prior_mean: float | None = None) -> dict:
+                    prior_mean: float | None = None,
+                    evidence: list[dict] | None = None,
+                    review_mode: str = "observer",
+                    focus_panels: list[dict] | None = None) -> dict:
     motion_rel, motion_frames = None, None
-    if shot.frontmatter.get("type") == "motion" and shot.frames > 1:
+    if (shot.frontmatter.get("type") == "motion" and shot.frames > 1
+            and _axes_need_motion(axes)):
         try:  # a motion strip so motion/finish axes are judged across frames, not a still
             stem = candidate_rel.split("/")[-1].split(".")[0]
             motion_rel, motion_frames = _stash_motion_strip(session, shot, m, stem)
@@ -817,7 +1177,9 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
             log(f"motion strip skipped: {str(e)[:80]}", 1)
     log(f"critic[{CRITIC_MODEL}]: scoring {candidate_rel} vs {m.ref}"
         + (f" (+motion {motion_frames})" if motion_rel else ""), 1)
-    prompt = critic_prompt(shot, m, candidate_rel, axes, motion_rel, motion_frames, scope)
+    prompt = critic_prompt(shot, m, candidate_rel, axes, motion_rel, motion_frames, scope,
+                           evidence=evidence, review_mode=review_mode,
+                           focus_panels=focus_panels)
 
     # ATTACH the images instead of asking an agent to fetch them. A missing file is now a
     # loud failure here rather than a confident score on a frame that was never seen.
@@ -830,6 +1192,17 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
               _image_block(ref_abs),
               {"type": "text", "text": "SECOND — the CANDIDATE render:"},
               _image_block(cand_abs)]
+    for panel in (focus_panels or [])[:2]:
+        panel_abs = shot.folder / panel["image_rel"]
+        if not panel_abs.is_file():
+            raise BlenderError(f"critic focus panel missing at {panel_abs}")
+        blocks += [{
+            "type": "text",
+            "text": (f"FOCUS PANEL {panel['id']} — axis {panel['axis']}, crop "
+                     f"{panel['crop']} (TOP-LEFT normalized), optical res_pct "
+                     f"{panel['res_pct']}. It contains aligned CANDIDATE | REFERENCE "
+                     f"and a 50/50 wipe. Reason: {panel['reason']}"),
+        }, _image_block(panel_abs)]
     if motion_rel and (shot.folder / motion_rel).is_file():
         blocks += [{"type": "text",
                     "text": f"THIRD — the MOTION STRIP, frames {motion_frames}:"},
@@ -852,18 +1225,16 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     for attempt in range(1, 4):
         acc = {}
         try:
-            costlog.bind(shot.folder, role="critic", layer=m.id,
-                         frame=getattr(m, "frame", None))
-            async for message in query(prompt=_one_user_message(blocks),
-                                       options=_critic_options(shot, axes)):
-                _structured_or_text(message, acc)
-                # The critic loop does NOT call log_message, which is where costlog was
-                # hooked — so critic sessions were never recorded, and the rows that DID
-                # appear under role="critic" were whatever else finished while the bind
-                # was active. An accounting hole found by using the accounting: the one
-                # experiment it existed for (is xhigh worth it?) came back with no cost
-                # data at all. Record at the source instead of at a shared log helper.
-                costlog.record(message)
+            critic_role = "focus_critic" if review_mode == "focus_review" else "critic"
+            with costlog.scoped(role=critic_role, phase=review_mode,
+                                frame=getattr(m, "frame", None)):
+                async for message in query(prompt=_one_user_message(blocks),
+                                           options=_critic_options(
+                                               shot, axes, allow_na=scope is None)):
+                    _structured_or_text(message, acc)
+                    # The critic loop does NOT call log_message, which is where costlog was
+                    # hooked — so record at the source while the scoped role is active.
+                    costlog.record(message)
             if acc.get("structured") or acc.get("text", "").strip():
                 break
             log(f"critic returned nothing (attempt {attempt}/3) — retrying", 1)
@@ -874,6 +1245,16 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
     if not (acc.get("structured") or acc.get("text", "").strip()):
         raise BlenderError(f"critic returned no verdict for {m.id} after 3 attempts")
     verdict = _verdict(acc.get("structured") or _extract_json(acc["text"]))
+    verdict = _audit_panel_citations(verdict, focus_panels)
+    verdict = _filter_critic_issues(verdict, evidence)
+    verdict = _apply_evidence_gate(verdict, evidence)
+    verdict["evidence"] = evidence or []
+    # A PASS followed by six urgent "fix" bullets is internally inconsistent and was a
+    # major source of misleading run logs. Preserve such notes as non-blocking polish for
+    # audit, but never route them into a repair path or present them as contractual defects.
+    if verdict.get("pass") and verdict.get("issues"):
+        verdict["polish"] = list(verdict["issues"])
+        verdict["issues"] = []
     if verdict.get("reference_unusable"):
         log(f"✗ critic says the REFERENCE is unusable for {m.id}: "
             f"{verdict.get('reference_note', '(no note)')} — fix {m.ref} in the plan; "
@@ -885,6 +1266,10 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
         f"{'PASS ✅' if verdict['pass'] else 'REVISE ✎'}", 1)
     for issue in verdict.get("issues", [])[:6]:
         log(f"· fix: {issue}", 2)
+    for item in verdict.get("contradicted_issues", [])[:6]:
+        log(f"· discarded measurable claim: {item['issue']} ({item['reason']})", 2)
+    if verdict.get("judge_conflict"):
+        log("⚠ critic score has no evidence-backed blocking issue — judge conflict", 1)
     # The judge's answer is what every control decision downstream hangs on, and it was
     # the one output with no durable home: `_critique` drains its own stream and never
     # calls log_message, so nothing but this console line recorded WHICH image scored
@@ -896,13 +1281,22 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
                      model=CRITIC_MODEL,
                      mean=verdict.get("mean"),
                      verdict="pass" if verdict.get("pass") else "revise",
+                     decided_by=verdict.get("decided_by", "critic"),
                      scores=verdict.get("scores", {}),
                      scored_axes=verdict.get("scored_axes", []),
                      na_axes=na,
                      borderline=_borderline(verdict),
                      reference_unusable=bool(verdict.get("reference_unusable")),
                      issues=verdict.get("issues", []),
+                     contradicted_issues=verdict.get("contradicted_issues", []),
+                     invalid_panel_citations=verdict.get("invalid_panel_citations", []),
+                     judge_conflict=bool(verdict.get("judge_conflict")),
+                     evidence=evidence or [],
+                     focus_requests=verdict.get("focus_requests", []),
+                     focus_panels=[{k: v for k, v in panel.items() if k != "image_abs"}
+                                   for panel in (focus_panels or [])],
                      scope="layer" if scope else "full-rubric",
+                     review_mode=review_mode,
                      motion_strip=motion_rel)
     return verdict
 
@@ -914,8 +1308,7 @@ async def _critique(shot: Shot, m: Milestone, candidate_rel: str,
 #   and 2 of 12 draws flipped the verdict — a 17% flip rate on an unchanged image.
 #
 # A FIXED band was the wrong shape. Noise in the MEAN falls as 1/sqrt(n), so one constant
-# is simultaneously too narrow on a 3-axis layer and wasteful on an 8-axis one — the same
-# mistake _repro_tolerance and the granularity-aware PASS_MEAN already corrected. Two
+# is simultaneously too narrow on a 3-axis layer and wasteful on an 8-axis one. Two
 # sigma of the mean at this sd: n=3 → 0.70, n=4 → 0.60, n=6 → 0.49, n=8 → 0.43. The old
 # flat 0.4 was only defensible at n≈8, and most layers here are narrower than that.
 #
@@ -957,6 +1350,29 @@ def _borderline(verdict: dict) -> bool:
             or min(scores) == PASS_MIN)
 
 
+def _needs_critic_panel(verdict: dict) -> bool:
+    """Whether another subjective opinion could change the decision.
+
+    An authoritative executable check is deterministic for this scene state.  Paying a
+    second critic to look at the same pixels cannot turn that failed contract into a pass;
+    it only duplicates cost and creates another transient-failure point.
+    """
+    return (not verdict.get("reference_unusable")
+            and verdict.get("decided_by") != "checks"
+            and _borderline(verdict))
+
+
+def _round_rank(verdict: dict | None) -> tuple[bool, float]:
+    """Rank a round by validity first, aesthetic score second.
+
+    The evidence gate can force REVISE while retaining the critic's visual mean.  A
+    contract-failing 4.0 must never beat a contract-passing 4.0 merely because it was
+    encountered first.
+    """
+    verdict = verdict or {}
+    return bool(verdict.get("pass")), float(verdict.get("mean", -1.0))
+
+
 async def _judge(shot: Shot, m: Milestone, candidate_rel: str,
                  axes: list[tuple[str, str]], session: BlenderSession, verbose: bool,
                  scope: str | None = None, **kw) -> dict:
@@ -968,14 +1384,43 @@ async def _judge(shot: Shot, m: Milestone, candidate_rel: str,
     whole chain proceeded. Here a borderline verdict goes to best-of-three on the
     pass/fail question, which is where the noise actually hurts.
     """
-    first = await _critique(shot, m, candidate_rel, axes, session, verbose, scope, **kw)
-    if first.get("reference_unusable") or not _borderline(first):
+    critic_kw = dict(kw)
+    critic_kw.pop("review_mode", None)
+    critic_kw.pop("focus_panels", None)
+    first = await _critique(shot, m, candidate_rel, axes, session, verbose, scope,
+                            review_mode="observer", **critic_kw)
+    focus_panels = []
+    requests = (_focus_requests(first, axes)
+                if not first.get("reference_unusable")
+                and first.get("decided_by") != "checks" else [])
+    if requests:
+        log(f"critic requested {len(requests)} aligned focus panel(s) — rendering optical "
+            f"crops before deciding", 1)
+        try:
+            focus_panels = await _make_focus_panels(
+                shot, m, session, requests, candidate_rel=candidate_rel)
+            transcript.event("critic_focus",
+                             milestone=m.id, frame=m.frame, candidate=candidate_rel,
+                             reference=m.ref, requests=requests, panels=focus_panels)
+            focused = await _critique(
+                shot, m, candidate_rel, axes, session, verbose, scope,
+                review_mode="focus_review", focus_panels=focus_panels, **critic_kw)
+            focused["focus_requested"] = requests
+            focused["focus_panels"] = focus_panels
+            first = focused
+        except Exception as exc:
+            first["focus_error"] = str(exc)[:200]
+            log(f"! focus panel review unavailable: {str(exc)[:120]} — retaining the "
+                f"full-frame verdict", 1)
+    if not _needs_critic_panel(first):
         return first
     log(f"borderline verdict (mean {first['mean']}, "
         f"{len(first.get('scored_axes', []))} axis/axes) — seeking a second opinion", 1)
     panel = [first]
     for _extra in range(2, 4):
-        v = await _critique(shot, m, candidate_rel, axes, session, verbose, scope, **kw)
+        mode = "evidence_audit" if _extra == 2 else "tie_breaker"
+        v = await _critique(shot, m, candidate_rel, axes, session, verbose, scope,
+                            review_mode=mode, focus_panels=focus_panels or None, **critic_kw)
         panel.append(v)
         votes = [p["pass"] for p in panel]
         if len(panel) == 2 and votes[0] == votes[1]:
@@ -994,7 +1439,12 @@ async def _judge(shot: Shot, m: Milestone, candidate_rel: str,
     for p in panel:
         if p["pass"] == agreed:
             out["issues"], out["scores"] = p.get("issues", []), p.get("scores", {})
+            out["contradicted_issues"] = p.get("contradicted_issues", [])
             break
+    agreeing = [p for p in panel if p["pass"] == agreed]
+    out["judge_conflict"] = bool(
+        not agreed and agreeing and all(p.get("judge_conflict") for p in agreeing)
+    )
     log(f"panel of {len(panel)}: means {[p['mean'] for p in panel]} · "
         f"votes {['PASS' if v else 'REVISE' for v in votes]} → "
         f"{'PASS ✅' if agreed else 'REVISE ✎'} (median {out['mean']})", 1)
@@ -1011,6 +1461,75 @@ def _stash_render(session: BlenderSession, shot: Shot, m: Milestone, tag: str,
     dest = dest_dir / f"{m.id}_{tag}.png"
     shutil.copyfile(src, dest)
     return f"renders/{dest.name}"
+
+
+def _image_reproduction(live: str | Path, canonical: str | Path) -> dict:
+    """Judgment-free answer to "did the script reproduce the accepted pixels?".
+
+    Reproduction is not a second aesthetic review.  The old implementation asked the
+    critic again and called a score delta determinism; an unchanged image had already
+    measured a two-point critic spread.  EEVEE can move a few antialiased edge values
+    across clean replays, so this uses a deliberately tight near-equality band rather
+    than requiring a byte-identical PNG container.
+    """
+    from PIL import Image, ImageChops, ImageStat
+
+    a, b = Path(live), Path(canonical)
+    result = {"live": str(a), "canonical": str(b), "match": False}
+    if not a.is_file() or not b.is_file():
+        result["reason"] = "missing image"
+        return result
+    with Image.open(a) as ia, Image.open(b) as ib:
+        ia, ib = ia.convert("RGB"), ib.convert("RGB")
+        result["size"] = [ia.width, ia.height]
+        if ia.size != ib.size:
+            result["reason"] = f"size mismatch {ia.size} vs {ib.size}"
+            return result
+        diff = ImageChops.difference(ia, ib)
+        hist = diff.histogram()
+        counts = [0] * 256
+        for index, count in enumerate(hist):
+            counts[index % 256] += count
+        total = max(1, ia.width * ia.height * 3)
+        cumulative = 0
+        p99 = 255
+        for value, count in enumerate(counts):
+            cumulative += count
+            if cumulative >= 0.99 * total:
+                p99 = value
+                break
+        mae = sum(stat * n for stat, n in enumerate(counts)) / total
+        changed = sum(counts[5:]) / total
+        rms = sum(ImageStat.Stat(diff).rms) / 3
+        result.update(mae=round(mae, 4), rms=round(rms, 4), p99=p99,
+                      changed_gt4=round(changed, 6))
+        result["match"] = bool(mae <= 1.0 and p99 <= 3 and changed <= 0.005)
+        if not result["match"]:
+            result["reason"] = "pixel delta exceeds reproduction tolerance"
+    return result
+
+
+def _render_evidence(shot: Shot, layer, m: Milestone, render_rel: str,
+                     session: BlenderSession) -> list[dict]:
+    if layer is None:
+        return []
+    evidence = []
+    stage = ("post_grade" if any("grade" in str(axis).lower()
+                                 for axis in (getattr(layer, "owns", ()) or ()))
+             else "pre_grade")
+    try:
+        from ..checks import layer_evidence
+        evidence.extend(layer_evidence(shot.folder, str(layer.id), frame=m.frame, ref=m.ref,
+                                       render=render_rel, stage=stage))
+    except Exception as exc:
+        log(f"! image evidence unavailable: {str(exc)[:90]}", 1)
+    try:
+        from ..scene_checks import layer_evidence as scene_layer_evidence
+        evidence.extend(scene_layer_evidence(shot.folder, str(layer.id), frame=m.frame,
+                                             session=session))
+    except Exception as exc:
+        log(f"! live-scene evidence unavailable: {str(exc)[:90]}", 1)
+    return evidence
 
 
 def _stash_motion_strip(session: BlenderSession, shot: Shot, m: Milestone, tag: str,
@@ -1057,6 +1576,109 @@ def _stash_motion_strip(session: BlenderSession, shot: Shot, m: Milestone, tag: 
 # --------------------------------------------------------------------------- #
 # The loop                                                                     #
 # --------------------------------------------------------------------------- #
+def _blender_version(session: BlenderSession) -> str:
+    try:
+        row = session.run("RESULT = bpy.app.version_string", journal=False)
+        return str(row.get("result") or row.get("RESULT") or "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _try_revalidate(shot: Shot, m: Milestone, script_rel: str,
+                    prior_paths: list[Path], session: BlenderSession, *, layer,
+                    ledger: Ledger, t_layer: float) -> Ledger | None:
+    """Replay an unchanged sealed layer without launching builder or critic models."""
+    if layer is None:
+        return None
+    from ..layer_plans import load_layer_outcome, record_revalidation
+    from ..revalidation import eligibility, input_manifest
+
+    outcome = load_layer_outcome(shot.folder, str(layer.id))
+    blender_version = _blender_version(session)
+    manifest = input_manifest(shot.folder, layer, blender_version=blender_version)
+    eligible, reasons = eligibility(outcome, manifest, shot.folder)
+    if not eligible:
+        if outcome:
+            log(f"revalidation fast path unavailable: {'; '.join(reasons[:3])}", 1)
+        return None
+
+    log("REVALIDATE: sealed inputs are unchanged; replaying scripts and authoritative "
+        "evidence before any model launch")
+    try:
+        session.run(_RESET)
+        session.run(_preamble(shot))
+        _run_prior_paths(session, prior_paths)
+        session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
+    except Exception as exc:
+        log(f"REVALIDATE miss: deterministic replay failed ({str(exc)[:120]})", 1)
+        return None
+
+    sealed = {int(row["frame"]): row for row in outcome.get("canonical") or []}
+    canonical = []
+    frame_results = []
+    judges = list(layer.judges)
+    for frame, ref in judges:
+        m_i = (m if len(judges) == 1 else
+               layer.milestone_at(frame, ref, plan_strips(shot)))
+        render_rel = _stash_render(session, shot, m_i, f"revalidate_f{frame}")
+        evidence = _render_evidence(shot, layer, m_i, render_rel, session)
+        authoritative = [row for row in evidence if row.get("authoritative")]
+        prior = sealed.get(int(frame)) or {}
+        reproduction = _image_reproduction(
+            shot.folder / str(prior.get("render", "")), shot.folder / render_rel)
+        passed = bool(authoritative and all(row.get("pass") for row in authoritative)
+                      and reproduction.get("match"))
+        verdict = {
+            "scores": {}, "mean": float((outcome.get("best") or {}).get("mean") or 4.0),
+            "pass": passed, "issues": [], "evidence": evidence,
+            "decided_by": "deterministic_revalidation", "reproduction": reproduction,
+            "render": render_rel,
+        }
+        canonical.append(((frame, ref), verdict))
+        frame_results.append({
+            "frame": frame, "pass": passed,
+            "authoritative_total": len(authoritative),
+            "authoritative_passed": sum(bool(row.get("pass")) for row in authoritative),
+            "reproduction": reproduction,
+        })
+    if not all(row[1]["pass"] for row in canonical):
+        bad = [str(frame) for (frame, _ref), verdict in canonical if not verdict["pass"]]
+        log(f"REVALIDATE miss: evidence or canonical pixels changed at f{', f'.join(bad)}; "
+            "falling back to the full builder", 1)
+        return None
+
+    best = dict(outcome.get("best") or {})
+    ledger.record_round(m, kind="revalidate", index=0,
+                        render=canonical[0][1]["render"],
+                        verdict=canonical[0][1])
+    ledger.mark(m, "passed", best=best)
+    attempt = int(ledger._slot(m).get("attempt") or 0)
+    record_revalidation(shot.folder, str(layer.id), run_id=RUN_ID,
+                        attempt=attempt, evidence=frame_results)
+    rec_path = write_run(
+        shot.folder, layer, status="passed",
+        rounds=[{"kind": "revalidate", "mean": canonical[0][1]["mean"], "pass": True}],
+        canonical=[{"frame": frame, "mean": verdict["mean"], "pass": True,
+                    "decided_by": "deterministic_revalidation",
+                    "evidence": verdict["evidence"],
+                    "reproduction": verdict["reproduction"]}
+                   for (frame, _ref), verdict in canonical],
+        cost=0.0, turns=0, seconds=time.monotonic() - t_layer,
+        extra={"run_id": RUN_ID, "attempt": attempt, "revalidation": True,
+               "cost_sessions": 0, "cost_by_role": {},
+               "tools": {"calls": {}, "total": 0, "adoption": {},
+                         "applicability": dict.fromkeys(
+                             ("render_pass", "check_scene", "diff_frames", "verify_change"),
+                             False),
+                         "unused_required_tools": [],
+                         "not_applicable_tools": ["render_pass", "check_scene",
+                                                  "diff_frames", "verify_change"]}})
+    log("\n" + run_summary(json.loads(rec_path.read_text(encoding="utf-8"))))
+    log("REVALIDATE PASS: authoritative evidence and sealed pixels are unchanged; "
+        "builder and critic sessions skipped")
+    return ledger
+
+
 async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: list[Path],
                      session: BlenderSession, *, rounds: int = 2, verbose: bool = True,
                      plan_excerpt: str = "", scope: str | None = None,
@@ -1065,11 +1687,23 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     m.ref; the canonical check covers every frame `layer` claims (see _verify_script)."""
     ledger = Ledger(shot)
     ledger.begin(m)
+    t_layer = time.monotonic()
 
-    axes = await ensure_axes(shot, verbose)  # per-shot critic rubric (from the plan)
-    _warn_unowned_axes(shot, axes)
-    bserver, bnames = build_blender_tools(session, assets_dir=shot.folder / "assets",
-                                          shot_dir=shot.folder, layer_id=getattr(layer, 'id', m.id))
+    revalidated = _try_revalidate(shot, m, script_rel, prior_paths, session,
+                                  layer=layer, ledger=ledger, t_layer=t_layer)
+    if revalidated is not None:
+        return revalidated
+
+    all_axes = await ensure_axes(shot, verbose)  # per-shot critic rubric (from the plan)
+    _warn_unowned_axes(shot, all_axes)
+    # A layer's ownership is already deterministic in layers.json. Passing every rubric
+    # axis and asking the critic to decide which were n/a made the denominator move between
+    # identical repeats. Filter before the builder prompt, critic prompt, and JSON schema.
+    axes = _owned_axes(all_axes, layer)
+    comparison_state = {"round": 1}
+    bserver, bnames = build_blender_tools(
+        session, assets_dir=shot.folder / "assets", shot_dir=shot.folder,
+        layer_id=getattr(layer, 'id', m.id), comparison_state=comparison_state)
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: (log_recipe_use(shot.folder, names),
                               _RECIPES_USED.extend(names)))
@@ -1093,7 +1727,6 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     else:
         priors = _run_prior_paths(session, prior_paths)
 
-    t_layer = time.monotonic()
     # Per-layer, not per-process: the counts are attributed to one layer's report.
     reset_tool_use()
     reset_counts()
@@ -1101,8 +1734,12 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     # very first thing in the file is the prompt the builder was given — a transcript of
     # answers to an unrecorded question cannot be audited, and the contract is exactly
     # what changes between the runs we want to compare.
-    costlog.bind(shot.folder, role="builder", layer=str(getattr(layer, "id", m.id)))
-    _tpath = transcript.bind(shot.folder, "build", label=f"layer{getattr(layer, 'id', m.id)}")
+    _attempt = int(ledger._slot(m).get("attempt") or 0)
+    costlog.bind(shot.folder, role="builder", phase="live_build",
+                 layer=str(getattr(layer, "id", m.id)), run_id=RUN_ID,
+                 attempt=_attempt)
+    _tpath = transcript.bind(shot.folder, "build", label=f"layer{getattr(layer, 'id', m.id)}",
+                             run_id=RUN_ID)
     if _tpath:
         log(f"transcript → {_tpath.relative_to(shot.folder)}", 1)
     # Conclusions that outlive the transcript: a compaction or a crash-resume costs the
@@ -1114,8 +1751,11 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     reviewed = False          # one approach review per layer; a second plateau stops
     best = {"mean": -1.0, "round": 0, "render": None, "verdict": None}
     prev_mean = None
+    phase = {"mode": "live"}
+    ticket_context = _builder_ticket_context(plan_excerpt, scope, axes, layer)
     opts = _builder_options(shot, mcp_servers, tool_names, axes, ref_rel=m.ref,
-                            script_rel=script_rel)
+                            script_rel=script_rel, phase=phase,
+                            ticket_context=ticket_context)
     if resume and resume.get("session_id"):
         opts.resume = resume["session_id"]      # SDK restores the CONVERSATION
     async with ClaudeSDKClient(options=opts) as builder:
@@ -1177,20 +1817,32 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             # image is nearly free now that images are attached rather than fetched.
             prior = (best.get("render") if best.get("render")
                      and best["render"] != render_rel else None)
+            evidence = _render_evidence(shot, layer, m, render_rel, session)
             verdict = await _judge(shot, m, render_rel, axes, session, verbose, scope,
-                                   prior_rel=prior, prior_mean=best["mean"])
+                                   prior_rel=prior, prior_mean=best["mean"],
+                                   evidence=evidence)
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
+            convergence_stop = _evidence_convergence_stop(layer, verdict)
+            if convergence_stop:
+                verdict["convergence_stop"] = "authoritative_layer1_evidence"
             ledger.record_round(m, kind="iter", index=rnd, render=render_rel, verdict=verdict)
             state_round(shot.folder, frame=m.frame, mean=verdict["mean"],
                         passed=verdict["pass"], scores=verdict.get("scores"),
                         issues=verdict.get("issues"), approach=_APPROACH.get("text"))
-            # best-of-N: keep the highest-scoring round (render AND scene snapshot)
-            if verdict["mean"] > best["mean"]:
+            # best-of-N: a valid round outranks an invalid round before aesthetic mean.
+            # In particular, do not restore a contract-failing 4.0 over a later passing
+            # 4.0 during finalize (the scene graph and pixels may differ independently).
+            if _round_rank(verdict) > _round_rank(best.get("verdict")):
                 best = {"mean": verdict["mean"], "round": rnd, "render": render_rel,
                         "verdict": verdict, "snap": snap}
                 shutil.copyfile(shot.folder / render_rel, shot.folder / "renders" / f"{m.id}_best.png")
             if verdict["pass"]:
                 passed = True
+                break
+            if convergence_stop:
+                log("Layer 1 convergence stop: every authoritative contract passes and "
+                    "the critic supplied no evidence-backed actionable defect; finalizing "
+                    "instead of making another speculative geometry edit", 1)
                 break
             # A plateau is where a professional CHANGES TECHNIQUE, not where they stop.
             # This used to `break`: layer G tuned to 2.83 twice while city_texture sat at
@@ -1200,13 +1852,15 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             prev_mean = verdict["mean"]
             if rnd >= rounds:
                 break
+            comparison_state["round"] = rnd + 1
             if plateaued and layer is not None and not reviewed:
                 reviewed = True
                 log(f"plateau ({verdict['mean']} ≤ prev) — escalating to APPROACH REVIEW")
-                out = await approach_review(shot, layer, render_rel, verdict, script_rel,
-                                            metric_report=_metric_report(shot, render_rel,
-                                                                         layer.judge_ref),
-                                            verbose=verbose)
+                with costlog.scoped(role="approach_reviewer", phase="approach_review"):
+                    out = await approach_review(
+                        shot, layer, render_rel, verdict, script_rel,
+                        metric_report=_metric_report(shot, render_rel, layer.judge_ref),
+                        verbose=verbose)
                 if not out["text"]:
                     break                       # review unavailable: old behaviour
                 ledger.record_review(m, rnd, out)
@@ -1227,8 +1881,10 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             await builder.query(
                 f"NOTE: the scene has been RESTORED to your round-{best['round']} state "
                 f"(the best-scoring round, mean {best['mean']}) — your later revision "
-                f"scored worse and was discarded. Write the build script to reproduce "
-                f"THIS restored scene.")
+                f"scored worse and was discarded. Inspect and acknowledge THIS restored "
+                f"scene only. Do NOT write or edit {script_rel} yet: MODE is still "
+                f"LIVE_BUILD, and the harness will send a separate FINALIZE_SCRIPT "
+                f"request after it captures the journal.")
             await _drain(builder, verbose)
 
         # Persist the deterministic recipe regardless — it's the artifact of record.
@@ -1244,9 +1900,12 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                     f"({info['chars'] // 1024}KB) → {jrel}")
         except Exception as e:  # never block finalize on a nicety
             log(f"journal unavailable ({str(e)[:60]})")
-        await builder.query(finalize_prompt(shot, m, priors=priors, script_rel=script_rel,
-                                            journal_rel=journal_rel))
-        fin = await _drain(builder, verbose)
+        phase["mode"] = "finalize"
+        with costlog.scoped(role="finalizer", phase="finalize_script"):
+            fin = await _run_script_agent(
+                shot, mode="finalize", script_rel=script_rel,
+                prompt=finalize_prompt(shot, m, priors=priors, script_rel=script_rel,
+                                       journal_rel=journal_rel), verbose=verbose)
         if fin["subtype"] in _TRUNCATED:
             # The script is probably half-written; verifying it would record a look
             # failure for a budget problem (the same lie truncation told at kickoff).
@@ -1271,6 +1930,8 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
         # for feedback the pipeline was already holding.
         canonical = await _verify_script(shot, m, script_rel, prior_paths, session, axes,
                                          ledger, verbose, live_best_mean=best["mean"],
+                                         live_best_render=(best.get("render") if passed else None),
+                                         live_best_verdict=(best.get("verdict") if passed else None),
                                          scope=scope, layer=layer,
                                          out_verdicts=canon_verdicts)
 
@@ -1302,13 +1963,12 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             shutil.copyfile(shot.folder / script_rel, backup)
             pre_verdicts = list(canon_verdicts or [])
             pre_canonical = canonical
-            await builder.query(canonical_repair_prompt(m, failed, script_rel,
-                                                        holding=holding))
-            # last_info, NOT a throwaway: the layer report reads cost/turns from it, so
-            # assigning to a local under-reported this layer as $14.64/37 turns when it
-            # had actually spent $23.20 across five drains — within $1.80 of the cap,
-            # invisible in the record.
-            last_info = await _drain(builder, verbose)
+            phase["mode"] = "repair"
+            with costlog.scoped(role="repair", phase="repair_script", repair=attempt):
+                last_info = await _run_script_agent(
+                    shot, mode="repair", script_rel=script_rel,
+                    prompt=canonical_repair_prompt(m, failed, script_rel,
+                                                   holding=holding), verbose=verbose)
             if last_info["subtype"] in _TRUNCATED:
                 log(f"✗ canonical repair TRUNCATED ({last_info['subtype']}) — stopping "
                     f"here", 1)
@@ -1319,7 +1979,10 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
             canon_verdicts.clear()
             canonical = await _verify_script(shot, m, script_rel, prior_paths, session,
                                              axes, ledger, verbose,
-                                             live_best_mean=best["mean"], scope=scope,
+                                             live_best_mean=best["mean"],
+                                             live_best_render=(best.get("render") if passed else None),
+                                             live_best_verdict=(best.get("verdict") if passed else None),
+                                             scope=scope,
                                              layer=layer, out_verdicts=canon_verdicts)
             delta = _repair_delta(pre_verdicts, canon_verdicts or [])
             was, now, broke = delta["was"], delta["now"], delta["broke"]
@@ -1350,11 +2013,13 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     # finalize-from-best-snapshot the clean rebuild often outscores every live round:
     # SH G20 rounds 2.67/3.00, canonical 3.67 — previously recorded as a failure).
     ok = canonical == "passed" or (passed and canonical == "reproduced")
-    ledger.mark(m, "passed" if ok else "failed", best=best)
-    if ok and layer is not None:
+    status = "passed" if ok else ("judge_conflict" if canonical == "judge_conflict"
+                                  else "failed")
+    if layer is not None:
         # The renders are final only now. A builder check authored mid-layer was proven
         # against whatever render existed then, and a later attempt replaced it — three of
-        # layer 1's shipped as stale. Re-verify here, where "the render" stops moving.
+        # layer 1's shipped as stale. Re-verify here, where "the render" stops moving,
+        # even when a noisy critic disagrees with it.
         try:
             from ..checks import revalidate_layer
             from ..eval.plan_gate import _builder_render
@@ -1369,6 +2034,16 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
                 log(f"builder checks: all {rv['kept']} still hold on the final renders", 1)
         except Exception as e:
             log(f"! builder-check revalidation skipped: {str(e)[:120]}", 1)
+        from ..layer_plans import write_layer_outcome
+        outcome = write_layer_outcome(
+            shot.folder, layer, status=status, best=best, canonical=canon_verdicts,
+            run_id=RUN_ID, attempt=ledger._slot(m).get("attempt"),
+            blender_version=_blender_version(session))
+        log(f"layer outcome → {outcome.relative_to(shot.folder)}", 1)
+    # Publishing the sealed outcome is part of completion. Marking the ledger first could
+    # let a later layer advance with no feedback artifact if the outcome write failed.
+    ledger.mark(m, status, best=best)
+    if ok and layer is not None:
         abl = await _ablate(shot, layer, prior_paths, script_rel, session)
         ledger.record_ablation(m, abl)
         if abl.get("moved"):
@@ -1416,25 +2091,40 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     # HOOKS did — a hook that never fires is silent by accident and invisible otherwise.
     try:
         slot = ledger._slot(m)
+        attempt_cost = costlog.attempt_totals(
+            shot.folder, run_id=RUN_ID, attempt=int(slot.get("attempt") or 0))
         rec_path = write_run(
             shot.folder, layer if layer is not None else m, status=slot.get("status", "?"),
-            rounds=[{"kind": r.get("kind"), "mean": r.get("mean"), "pass": r.get("pass")}
+            rounds=[{"kind": r.get("kind"), "mean": r.get("mean"), "pass": r.get("pass"),
+                     "focus_requested": r.get("focus_requested", []),
+                     "focus_panels": r.get("focus_panels", [])}
                     for r in slot.get("rounds", []) if r.get("kind") != "canonical"],
-            canonical=[{"frame": f, "mean": v["mean"], "pass": v["pass"]}
+            canonical=[{"frame": f, "mean": v["mean"], "pass": v["pass"],
+                        "decided_by": v.get("decided_by", "critic"),
+                        "judge_conflict": bool(v.get("judge_conflict")),
+                        "evidence": v.get("evidence", []),
+                        "focus_requested": v.get("focus_requested", []),
+                        "focus_panels": v.get("focus_panels", []),
+                        "reproduction": v.get("reproduction")}
                        for (f, _r), v in (canon_verdicts or [])],
             ablation=slot.get("ablation", {}), reviews=slot.get("reviews", []),
             recipes=_RECIPES_USED, journal=_JOURNAL_INFO,
-            cost=last_info.get("cost", 0.0), turns=last_info.get("turns", 0),
+            cost=attempt_cost["cost_usd"], turns=attempt_cost["turns"],
             seconds=time.monotonic() - t_layer,
-            tokens=last_info.get("tokens", {}),
+            tokens={"input_tokens": attempt_cost["tokens"]["input"],
+                    "output_tokens": attempt_cost["tokens"]["output"],
+                    "cache_read_input_tokens": attempt_cost["tokens"]["cache_read"],
+                    "cache_creation_input_tokens": attempt_cost["tokens"]["cache_create"]},
             approach=_APPROACH.get("text"),
             extra={"run_id": RUN_ID, "attempt": slot.get("attempt"),
                    "session_id": last_info.get("session_id"),
+                   "cost_sessions": attempt_cost["sessions"],
+                   "cost_by_role": attempt_cost["by_role"],
                    # WHICH tools the builder reached for. The four layers that passed
                    # barrel_roll called compare_frame 7-41 times; the one that failed
                    # three times called it 3-5 and measured 17-44 instead. Recovering
                    # that took grepping a console log that no longer exists.
-                   "tools": tool_use_summary()})
+                   "tools": tool_use_summary(motion_owned=_axes_need_motion(axes))})
         import json as _json
         _rec = _json.loads(rec_path.read_text())
         log("\n" + run_summary(_rec))
@@ -1450,6 +2140,7 @@ async def build_unit(shot: Shot, m: Milestone, script_rel: str, prior_paths: lis
     except Exception as e:
         log(f"! run report unavailable: {str(e)[:80]}")
     transcript.unbind()
+    costlog.unbind()
     _ERRORS.clear()
     _RECIPES_USED.clear()
     _APPROACH.clear()
@@ -1460,7 +2151,7 @@ async def build_layer(shot: Shot, layer, session: BlenderSession, *,
                      rounds: int = 2, verbose: bool = True,
                      resume_ok: bool = False, force: bool = False) -> Ledger:
     """Build one PLAN LAYER: chain lower-numbered layer scripts, implement this layer's
-    tickets (its plan.md section is the spec), judge at its primary frame/ref."""
+    tickets (its per-layer plan is the spec), judge at its primary frame/ref."""
     excerpt = _plan_layer_excerpt(shot, layer)
     # EVERY layer is one layer of many, so every layer gets a scope block. Judging any
     # layer on the whole rubric scores it for work later layers do (BR layer G: floor on
@@ -1470,9 +2161,9 @@ async def build_layer(shot: Shot, layer, session: BlenderSession, *,
     done = "\n".join(ln for ln in excerpt.splitlines()
                       if ln.startswith(("**Scope", "**Judge artifact", "**Done")))
     owned = (f"  THIS LAYER OWNS: {', '.join(layer.owns)}.\n"
-             f"  Score ONLY those axes; every other axis is \"n/a\"."
+             f"  The critic receives ONLY those axes and scores every one numerically."
              if layer.owns else
-             "  Score only what THIS layer's scope covers; everything else is \"n/a\".")
+             "  Score only what THIS layer's scope covers.")
     # Name what the LATER layers deliver, by title. `owns` scopes the critic by AXIS, and
     # that is not fine-grained enough: layer 2 owns hero_tower_read, so every tower-shaped
     # thing in a wide frame counts against it — including the background city, which is
@@ -1485,12 +2176,12 @@ async def build_layer(shot: Shot, layer, session: BlenderSession, *,
     not_yet = (f"  STILL TO COME, and therefore NOT this layer's to deliver or be marked "
                f"down for: {'; '.join(later)}. Judge the SUBJECT this layer built. If a "
                f"weakness in an owned axis comes from something a later layer delivers, "
-               f"say so in `issues` and do NOT let it depress the score.\n"
+               f"do NOT treat it as a defect in the subject this layer built.\n"
                if later else "")
     scope = (f"  Layer {layer.id} — {layer.title} (one build stage of many; later layers "
              f"add the rest of the look).\n  {layer.reads}\n{done}\n{owned}\n{not_yet}"
-             f"  Elements that are correctly ABSENT at this frame (they appear or "
-             f"disappear in other layers) are \"n/a\", never 0.").strip()
+             f"  Elements that are correctly absent because another layer adds or removes "
+             f"them must not depress any supplied axis.").strip()
     if len(layer.judges) > 1:
         log(f"layer {layer.id} answers for {len(layer.judges)} frames: "
             + ", ".join(f"f{f} vs {r}" for f, r in layer.judges))
@@ -1579,10 +2270,11 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
                          prior_paths: list[Path], session: BlenderSession,
                          axes: list[tuple[str, str]], ledger: Ledger, verbose: bool,
                          live_best_mean: float | None = None,
+                         live_best_render: str | None = None,
+                         live_best_verdict: dict | None = None,
                          scope: str | None = None,
                          layer=None, out_verdicts: list | None = None) -> str:
-    """-> "passed" (canonical clears the bar itself) | "reproduced" (matches the live
-    best within noise) | "failed".
+    """-> passed | reproduced | judge_conflict | failed.
 
     Scores EVERY frame the layer answers for, not just the primary. Iteration renders one
     frame for speed; the deliverable has to hold at all of them, and a layer is only as
@@ -1615,10 +2307,50 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
         render_rel = _stash_render(session, shot, m_i, f"canonical_f{frame}"
                                    if len(judges) > 1 else "canonical")
         shots_.append((frame, ref, m_i, render_rel))
+
+    # A one-frame layer that already passed live has one reproduction question: did its
+    # script rebuild those accepted pixels? Answer that with pixels, not another aesthetic
+    # vote. Multi-frame layers still need their additional claimed frames judged because
+    # live iteration only rendered the primary one.
+    if len(shots_) == 1 and live_best_render and live_best_verdict:
+        frame, ref, m_i, render_rel = shots_[0]
+        reproduction = _image_reproduction(shot.folder / live_best_render,
+                                           shot.folder / render_rel)
+        if reproduction.get("match"):
+            evidence = _render_evidence(shot, layer, m_i, render_rel, session)
+            blocking = [item for item in evidence
+                        if item.get("authoritative") and not item.get("pass")]
+            if blocking:
+                log(f"canonical reproduces live pixels, but {len(blocking)} authoritative "
+                    f"check(s) fail — quality remains undecided", 1)
+            else:
+                verdict = {
+                    "scores": dict(live_best_verdict.get("scores") or {}),
+                    "mean": live_best_verdict.get("mean", live_best_mean or 0.0),
+                    "pass": True,
+                    "issues": [],
+                    "scored_axes": list(live_best_verdict.get("scored_axes") or []),
+                    "na_axes": list(live_best_verdict.get("na_axes") or []),
+                    "decided_by": "pixel_reproduction",
+                    "reproduction": reproduction,
+                    "evidence": evidence,
+                }
+                ledger.record_round(m, kind="canonical", index=0, render=render_rel,
+                                    verdict=verdict)
+                wrapped = [((frame, ref), verdict)]
+                if out_verdicts is not None:
+                    out_verdicts.extend(wrapped)
+                log(f"canonical pixels reproduce accepted live render "
+                    f"(MAE {reproduction['mae']}, p99 {reproduction['p99']}, "
+                    f">4 delta {reproduction['changed_gt4']:.2%}) — no second quality vote",
+                    1)
+                return "reproduced"
     results: list = [None] * len(shots_)
 
     async def _score(i, m_i, render_rel):
-        results[i] = await _judge(shot, m_i, render_rel, axes, session, verbose, scope)
+        evidence = _render_evidence(shot, layer, m_i, render_rel, session)
+        results[i] = await _judge(shot, m_i, render_rel, axes, session, verbose, scope,
+                                  evidence=evidence)
 
     if len(shots_) == 1:
         await _score(0, shots_[0][2], shots_[0][3])
@@ -1642,14 +2374,11 @@ async def _verify_script(shot: Shot, m: Milestone, script_rel: str,
         log(f"canonical clears every claimed frame (worst f{worst_frame} "
             f"{verdict['mean']})", 1)
         return "passed"
-    # reproduction tolerance: within judge noise of the live best still counts as
-    # "the script reproduces what passed" — widened for low-axis-count layers, where a
-    # single point of variance swings the mean by 1/n (SH G10: 4.0 → 3.0 on one axis).
-    tol = _repro_tolerance(len(verdict.get("scored_axes", [])))
-    if live_best_mean is not None and verdict["mean"] >= live_best_mean - tol:
-        log(f"canonical {verdict['mean']} within noise (±{tol:.2f}) of live best "
-            f"{live_best_mean} — reproduction verified")
-        return "reproduced"
+    failures = [v for _, v in verdicts if not v.get("pass")]
+    if failures and all(v.get("judge_conflict") for v in failures):
+        log("canonical checks and critic disagree with no evidence-backed repair — "
+            "recording JUDGE_CONFLICT", 1)
+        return "judge_conflict"
     return "failed"
 
 
@@ -1677,7 +2406,11 @@ async def _run(folder: str, layer_id: str, rounds: int, blender: str,
     # on an unanswered assumption is how barrel_roll ended up 16:9 against 2:1 references
     # — by the time a later layer could notice, the camera had been committed three layers
     # earlier and every composition score was measured against the wrong crop.
-    unanswered = [q for q in load_questions(shot.folder) if not q.get("answer")]
+    layers = load_layers(shot)
+    g = layers.get(layer_id) or layers.get(layer_id.upper())
+    if g is None:
+        raise SystemExit(f"unknown layer {layer_id!r}; known: {', '.join(layers)}")
+    unanswered = unanswered_for_layer(shot.folder, g)
     if unanswered and not force:
         log(f"✗ {len(unanswered)} unanswered question(s) from the plan — answer them "
             f"before building (or pass --force to build on the assumptions):")
@@ -1692,10 +2425,6 @@ async def _run(folder: str, layer_id: str, rounds: int, blender: str,
                              assets_dir=shot.folder / "assets",
                              cwd=shot.folder).start()
     try:
-        layers = load_layers(shot)
-        g = layers.get(layer_id) or layers.get(layer_id.upper())
-        if g is None:
-            raise SystemExit(f"unknown layer {layer_id!r}; known: {', '.join(layers)}")
         # Name EVERY judge frame. The banner used to print only the first, while the very
         # next line said "answers for 4 frames" — and single-frame judging is precisely
         # the bug that let a blacked-out stretch of barrel_roll through, so a banner that

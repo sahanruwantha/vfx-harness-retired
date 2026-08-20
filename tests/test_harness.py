@@ -31,13 +31,31 @@ def check(name, cond, detail=""):
 
 def main():
     from bambi_vfx.agents.builder import (
+        _apply_evidence_gate,
+        _audit_panel_citations,
+        _axes_need_motion,
+        _builder_options,
+        _builder_ticket_context,
+        _critic_options,
+        _critic_schema,
+        _evidence_convergence_stop,
+        _filter_critic_issues,
+        _focus_requests,
+        _image_reproduction,
+        _needs_critic_panel,
+        _owned_axes,
         _plan_layer_excerpt,
-        _repro_tolerance,
+        _round_rank,
+        _script_options,
         _verdict,
     )
-    from bambi_vfx.blender.tools import build_blender_tools
+    from bambi_vfx.blender.tools import (
+        _comparison_lock_error,
+        _layer_feedback_policy,
+        build_blender_tools,
+    )
     from bambi_vfx.brief import load_shot
-    from bambi_vfx.escalate import answer, answers_block, ask
+    from bambi_vfx.escalate import answer, answers_block, ask, unanswered_for_layer
     from bambi_vfx.escalate import load as lq
     from bambi_vfx.guardrails import api_guardrails, web_allowlist
     from bambi_vfx.ledger import (
@@ -50,12 +68,23 @@ def main():
     )
     from bambi_vfx.metrics import compare, look_pair, look_vector
     from bambi_vfx.recipes import _all, recipe_index, search_recipes
+    from bambi_vfx.run_shot import _can_advance
     from bambi_vfx.sandbox import _relocate, path_sandbox
     from bambi_vfx.script_map import find_lines, outline
     from bambi_vfx.shot_context import clear_layer_context, write_layer_context
 
     shot = load_shot("shots/barrel_roll")
     layers, axes, moments = load_layers(shot), load_axes(shot), load_milestones(shot)
+
+    print("\n[whole-shot dry run]")
+    check("dry-run advances past an unchanged pending verdict",
+          _can_advance("pending", dry_run=True))
+    check("a real run still stops on a pending verdict",
+          not _can_advance("pending", dry_run=False))
+    check("a real run advances only after a pass",
+          _can_advance("passed", dry_run=False))
+    check("a judge conflict blocks downstream layers without pretending to pass",
+          not _can_advance("judge_conflict", dry_run=False))
 
     print("\n[plan artifacts]")
     # Count derived, not hardcoded: inserting the lighting stage renumbered 5..8 into
@@ -69,8 +98,38 @@ def main():
     check("every layer multi-frame aware", all(len(l.judges) >= 1 for l in layers.values()))
     check("every judge ref exists",
           all((shot.folder / r).is_file() for l in layers.values() for _f, r in l.judges))
-    check("plan excerpt resolves for all layers",
-          all(len(_plan_layer_excerpt(shot, l)) > 200 for l in layers.values()))
+    _strict_shot = load_shot("shots/beacon_wake")
+    _strict_layers = load_layers(_strict_shot)
+    check("strict per-layer plans resolve for the migrated shot",
+          all(len(_plan_layer_excerpt(_strict_shot, l)) > 200
+              for l in _strict_layers.values()))
+    check("strict shot exposes no legacy monolithic plan to builder retrieval",
+          not (_strict_shot.folder / "plan.md").exists())
+    _ctx_path = write_layer_context(_strict_shot, _strict_layers["1"],
+                                    load_axes(_strict_shot), {})
+    _ctx = _ctx_path.read_text()
+    check("durable context names one authoritative layer plan and LIVE_BUILD mode",
+          "MODE is `LIVE_BUILD`" in _ctx
+          and "`plans/01_layout_set.md`" in _ctx
+          and "never be read" in _ctx)
+    check("durable live context never asks the builder to publish a script",
+          "Write the delta script at the end" not in _ctx
+          and "Do not call `Write` or `Edit`" in _ctx)
+    clear_layer_context(_strict_shot)
+    from bambi_vfx.eval.plan_gate import _check_hierarchical_plans
+    _legacy_root = Path(tempfile.mkdtemp())
+    (_legacy_root / "plan.md").write_text("legacy\n")
+    _legacy_findings, _ = _check_hierarchical_plans(_legacy_root)
+    check("plan gate blocks a discoverable legacy plan instead of warning",
+          any(f.blocking and f.where == "plan.md" for f in _legacy_findings))
+    _legacy_plan = _plan_layer_excerpt
+    try:
+        _legacy_plan(shot, layers["1"])
+        _legacy_rejected = False
+    except FileNotFoundError:
+        _legacy_rejected = True
+    check("a monolithic-plan-only shot is rejected rather than backfilled",
+          _legacy_rejected)
     check("acceptance moments load", len(moments) == 10, f"{len(moments)}")
     check("layers inherit plan strips",
           len(layers["1"].as_milestone(plan_strips(shot)).strip) > 0)
@@ -98,8 +157,277 @@ def main():
     check("single-axis pass needs min>=3", _verdict({"scores": {"a": 3}})["pass"])
     check("single-axis 2 fails", not _verdict({"scores": {"a": 2}})["pass"])
     check("n/a excluded from mean", _verdict({"scores": {"a": 4, "b": "n/a"}})["mean"] == 4.0)
-    check("tolerance capped at 0.5", _repro_tolerance(1) == 0.5, f"{_repro_tolerance(1)}")
-    check("full grade drop is NOT reproduced", 4.0 - _repro_tolerance(1) > 3.0)
+    _all_axes = [("camera", "frame"), ("sky", "cloud"), ("grade", "finish")]
+    _camera_layer = type("Layer", (), {"owns": ("camera",)})()
+    check("layer ownership filters axes before prompting",
+          _owned_axes(_all_axes, _camera_layer) == [("camera", "frame")])
+    _scoped_score = _critic_schema([("camera", "frame")], allow_na=False)[
+        "properties"]["scores"]["properties"]["camera"]
+    _full_score = _critic_schema([("camera", "frame")], allow_na=True)[
+        "properties"]["scores"]["properties"]["camera"]
+    check("scoped critic schema requires a numeric score",
+          _scoped_score.get("type") == "integer" and "anyOf" not in _scoped_score)
+    check("full-rubric schema can still mark beat-specific axes n/a", "anyOf" in _full_score)
+    check("critic schema classifies the evidence behind every issue",
+          "issue_evidence" in _critic_schema([("camera", "frame")])["required"])
+    _focus_schema = _critic_schema([("camera", "frame")])
+    check("critic schema can request bounded aligned focus regions",
+          "focus_requests" in _focus_schema["required"]
+          and _focus_schema["properties"]["focus_requests"]["maxItems"] == 2)
+    _valid_focus = _focus_requests(
+        {"scores": {"camera": 2}, "focus_requests": [{
+            "id": "left rib", "axis": "camera", "region": [0.1, 0.2, 0.3, 0.7],
+            "reason": "rib foot is below reliable full-frame detail"
+        }]}, [("camera", "frame")])
+    check("valid focus requests preserve axis, reason and top-left crop",
+          len(_valid_focus) == 1 and _valid_focus[0]["id"] == "left_rib"
+          and _valid_focus[0]["crop"] == [0.1, 0.2, 0.3, 0.7], str(_valid_focus))
+    _bad_focus = _focus_requests(
+        {"scores": {"camera": 4}, "focus_requests": [
+            {"id": "fishing", "axis": "camera", "region": [0, 0, 0.2, 0.2],
+             "reason": "axis already passes"},
+            {"id": "whole", "axis": "camera", "region": [0, 0, 0.9, 0.9],
+             "reason": "not a focus crop"},
+        ]}, [("camera", "frame")])
+    check("passing axes and near-full-frame fishing cannot trigger focus renders",
+          not _bad_focus, str(_bad_focus))
+    _panel_audit = _audit_panel_citations(
+        {"issue_evidence": [{"issue_index": 0, "panel_ids": ["shown", "invented"]}]},
+        [{"id": "shown"}])
+    check("a critic cannot cite a focus panel it was never shown",
+          _panel_audit["issue_evidence"][0]["panel_ids"] == ["shown"]
+          and _panel_audit["invalid_panel_citations"][0]["panel_ids"] == ["invented"],
+          str(_panel_audit))
+
+    print("\n[critic evidence overrides invented measurements]")
+    _pass_evidence = [{"id": "bbox_ring", "pass": True}]
+    _claimed = {"pass": False,
+                "issues": ["[check:bbox_ring] ring is only 0.11 W; enlarge it"],
+                "issue_evidence": [{"issue_index": 0, "kind": "measurable",
+                                    "check_ids": ["bbox_ring"]}]}
+    _filtered = _filter_critic_issues(_claimed, _pass_evidence)
+    check("a measurable claim contradicting a PASS cannot trigger repair",
+          not _filtered["issues"] and _filtered["judge_conflict"]
+          and len(_filtered["contradicted_issues"]) == 1, str(_filtered))
+    _misclassified = _filter_critic_issues(
+        {"pass": False, "issues": ["ring is 0.11 W; scale up 1.5x"],
+         "issue_evidence": [{"issue_index": 0, "kind": "visual", "check_ids": []}]},
+        _pass_evidence)
+    check("numeric geometry prose cannot bypass evidence by self-labelling as visual",
+          not _misclassified["issues"] and _misclassified["judge_conflict"],
+          str(_misclassified))
+    _failed = _filter_critic_issues(
+        {"pass": False, "issues": ["[check:bbox_ring] ring is too small; enlarge it"],
+         "issue_evidence": [{"issue_index": 0, "kind": "measurable",
+                             "check_ids": ["bbox_ring"]}]},
+        [{"id": "bbox_ring", "pass": False}])
+    check("a measurable claim backed by a FAIL remains actionable",
+          len(_failed["issues"]) == 1 and not _failed.get("judge_conflict"), str(_failed))
+    _visual = _filter_critic_issues(
+        {"pass": False, "issues": ["rib silhouette reads as a seam"],
+         "issue_evidence": [{"issue_index": 0, "kind": "visual", "check_ids": []}]},
+        _pass_evidence)
+    check("qualitative visual criticism remains actionable", _visual["issues"])
+    _full_rubric = _filter_critic_issues(
+        {"pass": False, "issues": ["subject appears undersized"],
+         "issue_evidence": [{"issue_index": 0, "kind": "measurable", "check_ids": []}]},
+        None)
+    check("full-rubric calls without a layer evidence card retain their issues",
+          _full_rubric["issues"] and not _full_rubric.get("judge_conflict"))
+    _gated = _apply_evidence_gate(
+        {"pass": True, "issues": [], "scores": {"layout": 4}},
+        [{"id": "bbox_ring", "metric": "bbox_width", "value": 0.11,
+          "target": "0.16..0.18", "pass": False, "authoritative": True}])
+    check("a failed authoritative contract overrules a flattering critic",
+          not _gated["pass"] and _gated["decided_by"] == "checks"
+          and _gated["issues"][0].startswith("[check:bbox_ring]"), str(_gated))
+    check("authoritative check failures skip redundant subjective panels",
+          not _needs_critic_panel(_gated))
+    check("a passing round outranks an equal-mean contract failure",
+          _round_rank({"pass": True, "mean": 4.0})
+          > _round_rank({"pass": False, "mean": 4.0}))
+
+    print("\n[canonical reproduction is pixels, not a second opinion]")
+    from PIL import Image as _EvidenceImage
+    with tempfile.TemporaryDirectory() as _evdir:
+        _evroot = Path(_evdir)
+        _live = _evroot / "live.png"
+        _same = _evroot / "same.png"
+        _near = _evroot / "near.png"
+        _different = _evroot / "different.png"
+        _EvidenceImage.new("RGB", (32, 18), (40, 40, 40)).save(_live)
+        _EvidenceImage.new("RGB", (32, 18), (40, 40, 40)).save(_same)
+        _near_im = _EvidenceImage.new("RGB", (32, 18), (40, 40, 40))
+        _near_im.putpixel((2, 2), (42, 42, 42))
+        _near_im.save(_near)
+        _EvidenceImage.new("RGB", (32, 18), (80, 80, 80)).save(_different)
+        check("identical canonical pixels reproduce", _image_reproduction(_live, _same)["match"])
+        check("tiny antialias movement still reproduces", _image_reproduction(_live, _near)["match"])
+        check("a materially different frame does not reproduce",
+              not _image_reproduction(_live, _different)["match"])
+
+        from bambi_vfx.checks import layer_evidence
+        (_evroot / "checks.json").write_text(json.dumps([{
+            "id": "bright", "layer": "1", "axis": "layout", "frame": 1,
+            "ref": "refs/r.png", "metric": "region_mean", "regions": {"r": [0, 0, 1, 1]},
+            "op": "band", "lo": 35, "hi": 45, "stage": "pre_grade",
+            "rejects": ["bad.png"], "proof": {"ref": 40, "adversary": [0]}
+        }]), encoding="utf-8")
+        _evidence = layer_evidence(_evroot, "1", frame=1, ref="refs/r.png", render=_live)
+        check("canonical checks are evaluated on the exact judged render",
+              len(_evidence) == 1 and _evidence[0]["pass"]
+              and _evidence[0]["authoritative"], str(_evidence))
+        (_evroot / "runtime_checks.json").write_text(json.dumps([{
+            "id": "runtime-bright", "layer": "1", "axis": "layout", "frame": 1,
+            "ref": "refs/r.png", "metric": "frame_mean", "op": ">=", "lo": 35,
+            "origin": "builder",
+        }]), encoding="utf-8")
+        _split_evidence = layer_evidence(
+            _evroot, "1", frame=1, ref="refs/r.png", render=_live)
+        check("planner contracts and runtime evidence load from separate ledgers",
+              {row["id"] for row in _split_evidence} == {"bright", "runtime-bright"}
+              and sum(row["authoritative"] for row in _split_evidence) == 1,
+              str(_split_evidence))
+
+        from bambi_vfx.scene_checks import _blender_probe
+        from bambi_vfx.scene_checks import layer_evidence as _scene_evidence
+
+        _scene_rows = [
+            {"id": "ring-width", "layer": "1", "axis": "layout", "frame": 1,
+             "kind": "bbox_width", "roles": ["hero.ring.outer"], "op": "band",
+             "lo": 0.16, "hi": 0.18, "origin": "planner"},
+            {"id": "ribs", "layer": "1", "axis": "layout", "frame": 1,
+             "kind": "object_count", "roles": ["architecture.rib.*"], "op": "eq", "value": 3,
+             "origin": "builder"},
+        ]
+        (_evroot / "scene_checks.json").write_text(json.dumps(_scene_rows), encoding="utf-8")
+
+        class _FakeSceneSession:
+            def run(self, code, *, journal=True):
+                compile(code, "<scene-check-probe>", "exec")
+                check("live-scene probes stay out of the canonical replay journal",
+                      journal is False)
+                return {"result": [
+                    {"id": "ring-width", "value": 0.1634, "objects": ["ring_outer"],
+                     "roles": ["hero.ring.outer"],
+                     "error": ""},
+                    {"id": "ribs", "value": 3,
+                     "objects": ["rib_centre", "rib_left", "rib_right"],
+                     "roles": ["architecture.rib.center", "architecture.rib.left",
+                               "architecture.rib.right"], "error": ""},
+                ]}
+
+        _scene = _scene_evidence(_evroot, "1", frame=1, session=_FakeSceneSession())
+        check("live-scene facts are evaluated and attached to the evidence card",
+              len(_scene) == 2 and all(item["pass"] for item in _scene), str(_scene))
+        check("planner scene contracts are authoritative; builder contracts remain advisory",
+              _scene[0]["authoritative"] and not _scene[1]["authoritative"], str(_scene))
+        check("scene evidence preserves matched objects for existence/legibility judgement",
+              _scene[1]["objects"] == ["rib_centre", "rib_left", "rib_right"], str(_scene))
+        compile(_blender_probe(_scene_rows, 1), "<scene-check-probe>", "exec")
+        check("generated Blender scene probe is syntactically valid", True)
+
+        from bambi_vfx.scene_checks import validate_row as _validate_scene_row
+        check("name-based scene selectors are rejected with no compatibility path",
+              "removed" in (_validate_scene_row({
+                  "id": "legacy", "kind": "object_count", "objects": ["rib_*"],
+                  "op": "eq", "value": 3,
+              }) or ""))
+
+        _locks = {}
+        check("first comparison settings establish the round lock",
+              _comparison_lock_error(_locks, (1, 1, "full"), ("eevee", 0.5, 50)) is None)
+        check("identical comparison settings remain legal",
+              _comparison_lock_error(_locks, (1, 1, "full"), ("eevee", 0.5, 50)) is None)
+        check("comparison settings cannot drift within a round",
+              "LOCKED" in (_comparison_lock_error(
+                  _locks, (1, 1, "full"), ("workbench", 0.5, 50)) or ""))
+        check("the round-wide base lock also covers other frames",
+              _comparison_lock_error(
+                  _locks, (1, "base"), ("eevee", 0.5, None)) is None
+              and "LOCKED" in (_comparison_lock_error(
+                  _locks, (1, "base"), ("solid", 0.5, None)) or ""))
+        check("a new round may establish new settings",
+              _comparison_lock_error(
+                  _locks, (2, 1, "full"), ("workbench", 0.5, 50)) is None)
+        check("layout comparison suppresses look-action advice",
+              not _layer_feedback_policy(_strict_shot.folder, "1")["look_actions"])
+        check("finish comparison enables look-action advice",
+              _layer_feedback_policy(_strict_shot.folder, "6")["look_actions"])
+        check("layout owns no motion axis, so it skips motion strips",
+              not _axes_need_motion(_owned_axes(load_axes(_strict_shot), _strict_layers["1"])))
+        check("animation owns a motion axis, so it receives motion strips",
+              _axes_need_motion(_owned_axes(load_axes(_strict_shot), _strict_layers["3"])))
+
+        _all_green = {"pass": False, "issues": [], "reference_unusable": False,
+                      "evidence": [{"authoritative": True, "pass": True}]}
+        check("Layer 1 stops speculative revision after authoritative convergence",
+              _evidence_convergence_stop(_strict_layers["1"], _all_green))
+        check("the same evidence cannot prematurely stop a later layer",
+              not _evidence_convergence_stop(_strict_layers["2"], _all_green))
+
+        from bambi_vfx.compare_panels import focus_views, save_context_sheet, save_focus_sheet
+
+        _ref_full = _evroot / "focus_ref.png"
+        _candidate_full = _evroot / "focus_candidate_full.png"
+        _candidate_crop = _evroot / "focus_candidate_crop.png"
+        _EvidenceImage.new("RGB", (200, 100), (0, 0, 180)).save(_ref_full)
+        _EvidenceImage.new("RGB", (200, 100), (180, 0, 0)).save(_candidate_full)
+        _EvidenceImage.new("RGB", (400, 240), (180, 0, 0)).save(_candidate_crop)
+        _crop = [0.25, 0.2, 0.75, 0.8]
+        _views, _meta = focus_views(
+            _candidate_crop, _ref_full, _crop,
+            ("side_by_side", "wipe", "overlay", "difference"))
+        _wipe = dict(_views)["wipe"]
+        check("focus wipe keeps candidate left and matched reference right",
+              _wipe.getpixel((_wipe.width // 4, _wipe.height // 2))[0] > 150
+              and _wipe.getpixel((3 * _wipe.width // 4, _wipe.height // 2))[2] > 150)
+        check("focus alignment never upscales either source", not _meta["upscaled"], str(_meta))
+        _focus_out = save_focus_sheet(_candidate_crop, _ref_full, _crop,
+                                      _evroot / "focus_sheet.jpg")
+        _context_out = save_context_sheet(_candidate_full, _ref_full, _crop,
+                                          _evroot / "focus_context.jpg")
+        check("focus comparison writes both detail and mandatory context artifacts",
+              Path(_focus_out["image_path"]).is_file()
+              and Path(_context_out["image_path"]).is_file())
+        _mismatch = _evroot / "focus_mismatch.png"
+        _EvidenceImage.new("RGB", (300, 100), (180, 0, 0)).save(_mismatch)
+        try:
+            focus_views(_mismatch, _ref_full, _crop)
+            _mismatch_rejected = False
+        except ValueError:
+            _mismatch_rejected = True
+        check("an aspect-mismatched crop cannot masquerade as an aligned wipe",
+              _mismatch_rejected)
+
+        from bambi_vfx.revalidation import digest as _digest
+        from bambi_vfx.revalidation import eligibility as _eligible
+        from bambi_vfx.revalidation import input_manifest as _input_manifest
+        _sealed = _evroot / "sealed.png"
+        _ref_sealed = _evroot / "ref.png"
+        _EvidenceImage.new("RGB", (16, 9), (20, 20, 20)).save(_sealed)
+        _EvidenceImage.new("RGB", (16, 9), (30, 30, 30)).save(_ref_sealed)
+        _manifest = {"complete": "boundary"}
+        _outcome = {
+            "schema": 2, "status": "passed", "revalidation_manifest": _manifest,
+            "canonical": [{"frame": 1, "render": "sealed.png",
+                           "render_sha256": _digest(_sealed), "ref": "ref.png",
+                           "ref_sha256": _digest(_ref_sealed),
+                           "qualitative_defects": []}],
+        }
+        check("an unchanged schema-2 sealed outcome is revalidation-eligible",
+              _eligible(_outcome, _manifest, _evroot)[0])
+        check("a changed deterministic input invalidates the fast path",
+              not _eligible(_outcome, {"complete": "changed"}, _evroot)[0])
+        _fake_layer = type("Layer", (), {
+            "id": "1", "script": "build/01_layout.py", "judges": ((1, "ref.png"),),
+        })()
+        (_evroot / "layers.json").write_text(json.dumps([
+            {"id": "1", "script": "build/01_layout.py"}]), encoding="utf-8")
+        _m1 = _input_manifest(_evroot, _fake_layer, blender_version="5.2")
+        (_evroot / "runtime_checks.json").write_text("[]\n", encoding="utf-8")
+        _m2 = _input_manifest(_evroot, _fake_layer, blender_version="5.2")
+        check("runtime evidence is part of the revalidation cache key", _m1 != _m2)
 
     print("\n[metrics]")
     ref = str(shot.folder / "refs/f100_city.jpg")
@@ -277,6 +605,16 @@ def main():
           any(f.blocking and "typo_axis" in f.what for f in _f), f"{_f}")
     check("an axis no layer owns is a warn, not a block",
           all(not f.blocking for f in _f if "no layer owns" in f.what), f"{_f}")
+    _f, _ = _pg._check_contracts(_lab, require_scene_checks=True)
+    check("new planning cannot pass clean without live-scene contracts",
+          any(f.blocking and f.where == "scene_checks.json" for f in _f), f"{_f}")
+    (_lab / "scene_checks.json").write_text(json.dumps([{
+        "id": "bad-scene-check", "layer": "1", "axis": "lighting", "frame": 1,
+        "kind": "guess_from_jpeg", "roles": ["hero"], "op": "min", "lo": 1
+    }]))
+    _f, _ = _pg._check_contracts(_lab)
+    check("an unsupported live-scene contract cannot enter a build",
+          any(f.blocking and "unsupported kind" in f.what for f in _f), f"{_f}")
 
     print("\n[planner inputs]")
     # The planner writes every target the rest of the run aims at, and the harness used to
@@ -432,19 +770,73 @@ def main():
     # condition the harness evaluates, so "finished" stops being the model's own opinion.
     import tempfile as _tf2
 
-    from bambi_vfx.guardrails import builder_hooks, completion_gate
+    from bambi_vfx.guardrails import (
+        builder_hooks,
+        builder_phase_guard,
+        compaction_notice,
+        completion_gate,
+    )
+    from bambi_vfx.layer_state import load as _load_layer_state
+    from bambi_vfx.layer_state import start as _start_layer_state
     _sf = Path(_tf2.mkdtemp())
-    _gate = completion_gate(_sf, "build/01_layout.py").hooks[0]
+    _phase = {"mode": "live"}
+    _gate = completion_gate(_sf, "build/01_layout.py", _phase).hooks[0]
     _r = anyio.run(lambda: _gate({}, None, None))
-    check("Stop BLOCKS when the layer published no script",
+    check("LIVE_BUILD can stop so the harness can enter finalize",
+          not _r.get("decision"), f"{_r}")
+    _phase["mode"] = "finalize"
+    _r = anyio.run(lambda: _gate({}, None, None))
+    check("FINALIZE_SCRIPT blocks when the layer published no script",
           _r.get("decision") == "block" and "01_layout.py" in _r.get("reason", ""), f"{_r}")
     (_sf / "build").mkdir(parents=True)
     (_sf / "build/01_layout.py").write_text("import bpy\n")
     check("...and allows finishing once it exists",
           not anyio.run(lambda: _gate({}, None, None)).get("decision"))
-    _empty = completion_gate(_sf, "build/99_missing.py").hooks[0]
+    _empty = completion_gate(_sf, "build/99_missing.py", _phase).hooks[0]
     check("an empty file does not count as published",
           anyio.run(lambda: _empty({}, None, None)).get("decision") == "block")
+
+    _phase = {"mode": "live"}
+    _phase_hook = builder_phase_guard(_phase, "build/01_layout.py").hooks[0]
+
+    def _phase_call(tool):
+        return anyio.run(_phase_hook, {
+            "tool_name": tool,
+            "tool_input": {"file_path": str(_sf / "build/01_layout.py")},
+        }, None, None).get("hookSpecificOutput", {}).get("permissionDecision")
+
+    check("LIVE_BUILD cannot publish the script", _phase_call("Write") == "deny")
+    _phase["mode"] = "finalize"
+    check("FINALIZE_SCRIPT allows first publication", _phase_call("Write") is None)
+    check("FINALIZE_SCRIPT does not patch before replay", _phase_call("Edit") == "deny")
+    _phase["mode"] = "repair"
+    check("REPAIR_SCRIPT blocks full replacement", _phase_call("Write") == "deny")
+    check("REPAIR_SCRIPT allows a local patch", _phase_call("Edit") is None)
+    _live_opts = _builder_options(shot, {}, [], [], script_rel="build/01_layout.py")
+    _final_opts = _script_options(shot, mode="finalize",
+                                  script_rel="build/01_layout.py")
+    _repair_opts = _script_options(shot, mode="repair",
+                                   script_rel="build/01_layout.py")
+    check("LIVE_BUILD has no file mutation tools in its tool surface",
+          {"Write", "Edit"} <= set(_live_opts.disallowed_tools)
+          and not {"Write", "Edit"}.intersection(_live_opts.allowed_tools))
+    check("FINALIZE_SCRIPT can publish but cannot patch",
+          "Write" in _final_opts.allowed_tools and "Edit" in _final_opts.disallowed_tools)
+    check("REPAIR_SCRIPT can patch but cannot replace",
+          "Edit" in _repair_opts.allowed_tools and "Write" in _repair_opts.disallowed_tools)
+    check("critic has enough structured-output protocol headroom",
+          _critic_options(shot, [("composition", "framing")]).max_turns >= 3)
+
+    _start_layer_state(_sf, "1", [(1, "refs/frame.png")])
+    _precompact = compaction_notice(_sf).hooks[0]
+    _compact_result = anyio.run(
+        _precompact, {"trigger": "auto"}, None, None)
+    _compact_context = (_compact_result.get("hookSpecificOutput") or {}).get(
+        "additionalContext", "")
+    check("PreCompact durably checkpoints layer state",
+          _load_layer_state(_sf).get("precompact", {}).get("trigger") == "auto")
+    check("PreCompact continuation capsule preserves mode and plan authority",
+          "LIVE_BUILD" in _compact_context and "shot-root plan.md" in _compact_context)
 
     # A failed run_bpy can half-mutate the live scene while the only account of what was
     # attempted lives in a context window compaction will discard.
@@ -566,11 +958,13 @@ def main():
     (_sd / "renders").mkdir()
     _img = _sd / "renders" / "9@f1_canonical_f1.png"
     _I3.new("RGB", (128, 64), (200, 200, 200)).save(_img)
-    (_sd / "checks.json").write_text(json.dumps([
+    (_sd / "runtime_checks.json").write_text(json.dumps([
         {"id": "holds", "layer": "9", "frame": 1, "origin": "builder", "metric": "frame_mean",
          "op": ">=", "lo": 100, "ref": "refs/x.jpg", "proof": {"ref": 200}},
         {"id": "stale", "layer": "9", "frame": 1, "origin": "builder", "metric": "frame_mean",
          "op": "<=", "hi": 20, "ref": "refs/x.jpg", "proof": {"ref": 5}},
+    ]))
+    (_sd / "checks.json").write_text(json.dumps([
         {"id": "planner", "layer": "9", "origin": "planner", "metric": "frame_mean",
          "op": ">=", "lo": 999, "ref": "refs/x.jpg"},
     ]))
@@ -612,6 +1006,34 @@ def main():
     _sum = _cl.summarise(_cs)
     check("the summary splits spend by role — the cut the aggregate could not give",
           "critic" in _sum and "builder" in _sum and "$12.40" in _sum, _sum)
+    _cs2 = Path(_tf2.mkdtemp())
+    _cl.bind(_cs2, role="builder", phase="live_build", layer="1",
+             run_id="R1", attempt=5)
+    _cl.record(_R())
+    with _cl.scoped(role="critic", phase="critic"):
+        _cl.record(_R())
+    with _cl.scoped(role="finalizer", phase="finalize_script"):
+        _cl.record(_R())
+    _cl.record(_R())
+    _cl.unbind()
+    _tot = _cl.attempt_totals(_cs2, run_id="R1", attempt=5)
+    check("nested phase binding restores the builder after critic/finalizer",
+          _tot["sessions"] == 4 and _tot["by_role"] == {
+              "builder": 6.2, "critic": 3.1, "finalizer": 3.1}, str(_tot))
+    check("attempt totals aggregate every phase instead of the last session",
+          abs(_tot["cost_usd"] - 12.4) < 1e-9 and _tot["turns"] == 8, str(_tot))
+    _cs3 = Path(_tf2.mkdtemp())
+    class _C(_R):
+        def __init__(self, cost, turns):
+            self.total_cost_usd, self.num_turns = cost, turns
+            self.session_id = "same-streaming-session"
+    _cl.bind(_cs3, role="builder", phase="live_build", layer="1",
+             run_id="R2", attempt=1)
+    _cl.record(_C(1.0, 4)); _cl.record(_C(1.8, 7)); _cl.unbind()
+    _cumulative = _cl.attempt_totals(_cs3, run_id="R2", attempt=1)
+    check("cumulative ResultMessages from one streaming session are not double-counted",
+          _cumulative["sessions"] == 1 and _cumulative["cost_usd"] == 1.8
+          and _cumulative["turns"] == 7, str(_cumulative))
     check("a broken row never breaks the run",
           (_cl.bind(_cs, role="x"), _cl.record(object()), _cl.unbind(), True)[3])
 
@@ -667,6 +1089,20 @@ def main():
     check("different findings do not", _a.signature() != _c.signature())
     check("a repair brief carries only blocking findings",
           "x" in _pg.feedback(_a) and not _pg.feedback(_pg.GateResult("s", [])))
+
+    from bambi_vfx.agents.planner import _planner_tool_policy
+    from bambi_vfx.plan_tools import _CheckBatchBudget
+    _allow, _deny = _planner_tool_policy(True)
+    check("plan repair gets Edit directly", "Edit" in _allow and "Edit" not in _deny)
+    check("plan repair cannot delegate mechanical edits", {"Task", "Agent"} <= set(_deny))
+    _allow, _deny = _planner_tool_policy(False)
+    check("draft and verify cannot mutate existing artifacts", "Edit" in _deny)
+    _budget = _CheckBatchBudget()
+    check("two exploratory single checks are allowed",
+          _budget.take_single() and _budget.take_single())
+    check("a third single check is redirected to batching", not _budget.take_single())
+    _budget.reset_after_batch()
+    check("a batch reopens targeted exploration", _budget.take_single())
 
     print("\n[sandbox]")
     async def sb():
@@ -762,15 +1198,50 @@ def main():
     check("every recipe indexed", all(r["name"] in recipe_index() for r in recs if r["when"]))
     check("search finds by intent", "night-city-field" in
           [h["name"] for h in search_recipes("make the city look real")])
+    filtered_index = recipe_index(context="camera barrel roll timing", limit=5)
+    check("ticket-aware recipe index keeps the relevant discovery",
+          "camera-roll-rig" in filtered_index, filtered_index)
+    check("ticket-aware recipe index is bounded", filtered_index.count("\n  - ") <= 5)
+
+    print("\n[builder context is ticket-aware]")
+    from bambi_vfx.build_prompts import builder_system, ticket_guidance_names
+    cam_context = _builder_ticket_context(
+        "Camera performs a barrel roll with smooth timing", "composition and motion",
+        [("camera_motion", "stable framing during roll")])
+    cam_prompt = builder_system(
+        [("camera_motion", "stable framing during roll")],
+        recipe_index(context=cam_context), ticket_context=cam_context)
+    full_prompt = builder_system(
+        [("camera_motion", "stable framing during roll")], recipe_index())
+    check("camera tickets load camera guidance",
+          ticket_guidance_names(cam_context) == ("camera/motion",))
+    check("camera prompt carries the rig but not unrelated cloud/facade lore",
+          "bvfx_camera_rig" in cam_prompt and "DENSE ROLLING CLOUD" not in cam_prompt
+          and "HERO SURFACES" not in cam_prompt)
+    check("ticket selection materially reduces resident context",
+          len(cam_prompt) < len(full_prompt) * 0.8,
+          f"camera={len(cam_prompt)} full={len(full_prompt)}")
+    check("coordinate contract is always resident",
+          "SCREEN COORDINATE CONTRACT" in cam_prompt and "origin TOP-LEFT" in cam_prompt)
 
     print("\n[escalation]")
     q = Path(tempfile.mkdtemp())
-    qid = ask(q, layer="PLAN", question="aspect?", assumption="2:1")
-    ask(q, layer="PLAN", question="aspect?", assumption="2:1")
+    qid = ask(q, layer="PLAN", question="aspect?", assumption="2:1",
+              global_decision=True)
+    ask(q, layer="PLAN", question="aspect?", assumption="2:1",
+        global_decision=True)
     check("duplicate suppressed", len(lq(q)) == 1)
     check("open question blocks", not lq(q)[0].get("answer"))
     answer(q, qid, "2:1")
     check("answer becomes law", "2:1" in answers_block(q))
+    ask(q, layer="PLAN", question="timing?", assumption="ease",
+        affected_layers=["3"], affected_axes=["animation"])
+    _layout = type("Layer", (), {"id": "1", "owns": ("layout",)})()
+    _anim = type("Layer", (), {"id": "3", "owns": ("animation",)})()
+    check("a downstream question does not block an unrelated early layer",
+          unanswered_for_layer(q, _layout) == [])
+    check("a question blocks the layer named by its impact metadata",
+          [row["question"] for row in unanswered_for_layer(q, _anim)] == ["timing?"])
 
     print("\n[layer context]")
     # Pick the layer by what it OWNS, not by id — ids shift whenever the stack is
@@ -1156,12 +1627,12 @@ def main():
     # inline. If build_agent's wording moves, the eval silently starts measuring the
     # critic under a prompt production never sends.
     ba_src = Path("src/bambi_vfx/agents/builder.py").read_text(encoding="utf-8")
-    sc = EV.layer_scope(shot, layers["1"])
+    sc = EV.layer_scope(_strict_shot, _strict_layers["1"])
     check("layer scope mirrors build_agent's block",
           all(mark in ba_src and mark in sc
               for mark in ("THIS LAYER OWNS:", "one build stage of many")), sc[:120])
     check("layer scope names the layer's own axes",
-          all(a in sc for a in layers["1"].owns))
+          all(a in sc for a in _strict_layers["1"].owns))
     # The band stopped being a constant when it became granularity-aware, and this
     # module's import of the old flat `_ADJUDICATE_BAND` was never updated — so the ONE
     # module whose job is to re-measure judge noise could not be imported at all, and
@@ -1250,7 +1721,9 @@ def main():
     # world_to_camera_view: x,y in 0..1 on screen, z>0 in front of the camera.
     on = framing_from_ndc([(0.4, 0.4, 5.0), (0.6, 0.7, 5.0)])
     check("an on-screen bbox reports width, height and centre",
-          on["on_screen"] == 1.0 and on["width"] == 0.2 and on["centre"] == [0.5, 0.55])
+          on["on_screen"] == 1.0 and on["width"] == 0.2
+          and on["bbox"] == [0.4, 0.3, 0.6, 0.6] and on["centre"] == [0.5, 0.45],
+          str(on))
     off = framing_from_ndc([(1.8, 0.4, 5.0), (2.0, 0.7, 5.0)])
     check("an off-screen bbox reports 0% on screen", off["on_screen"] == 0.0)
     behind = framing_from_ndc([(0.5, 0.5, -3.0)])
@@ -1284,6 +1757,7 @@ def main():
     rep_bb = _check_report("bbox", {"ok": True, "bbox": [0.4, 0.2, 0.6, 0.9],
                                     "width": 0.2, "height": 0.7, "centre": [0.5, 0.55]})
     check("the bbox report says what to DO with the box", "render_pass" in rep_bb)
+    check("the bbox report declares the shared top-left origin", "TOP-LEFT" in rep_bb)
 
     print("\n[render modes · every mode ships a caption]")
     # A visual channel with no caption measured WORSE than not adding the channel at
@@ -1304,6 +1778,23 @@ def main():
     cap = _rext.caption_for("beauty", "beauty", "key", [0.1, 0.2, 0.3, 0.4], 400)
     check("a light group, a crop and a zoom are all declared in the caption",
           "key" in cap and "crop" in cap and "400" in cap)
+    check("crop captions use the public top-left convention",
+          "top-left" in cap and "bottom-left" not in cap)
+    class _RenderSettings:
+        use_border = False
+        use_crop_to_border = False
+        border_min_x = border_min_y = 0.0
+        border_max_x = border_max_y = 1.0
+        resolution_percentage = 100
+    class _Scene:
+        render = _RenderSettings()
+    _crop_scene = _Scene()
+    _rext._apply_crop(_crop_scene, [0.1, 0.2, 0.3, 0.4], 400, 0.5)
+    check("top-left crop converts only at Blender's border boundary",
+          _crop_scene.render.border_min_x == 0.1
+          and _crop_scene.render.border_max_x == 0.3
+          and _crop_scene.render.border_min_y == 0.6
+          and _crop_scene.render.border_max_y == 0.8)
     # Socket names were MEASURED on 5.2 (Diffuse Direct / Emission, not DiffDir / Emit).
     # Getting these wrong renders a perfect copy of the beauty frame under a caption
     # promising isolation — the worst possible outcome, so pin them.
@@ -1381,12 +1872,38 @@ def main():
     check("a frame missing after repair is not scored as zero",
           d["now_worst"] == 3.0 and d["broke"] == [], f"worst {d['now_worst']}")
 
+    _contract_pre = [((1, "r1.png"), {"mean": 2.0, "pass": False, "evidence": [
+        {"id": "ring", "authoritative": True, "pass": False}]})]
+    _contract_post = [((1, "r1.png"), {"mean": 2.0, "pass": False, "evidence": [
+        {"id": "ring", "authoritative": True, "pass": True}]})]
+    d = _repair_delta(_contract_pre, _contract_post)
+    check("clearing an executable contract is progress even when critic score is flat",
+          d["progressed"] and d["was_contract_failures"] == 1
+          and d["now_contract_failures"] == 0, str(d))
+
     print("\n[tool usage is recorded, and measuring-instead-of-looking is flagged]")
     # Answering "which tools did the builder use" required grepping a console log that
     # only survived by luck — three of the four had already been cleaned. The counts now
     # live in the run report. Fixtures below are the REAL profiles from barrel_roll.
     from bambi_vfx.log import TOOL_USE, reset_tool_use, tool_use_summary
     from bambi_vfx.runlog import summary as _rsum
+    _conflict_summary = _rsum({
+        "layer": "1", "title": "layout", "status": "judge_conflict",
+        "canonical": [{"frame": 1, "mean": 2.0, "pass": False,
+                       "judge_conflict": True}],
+    })
+    check("run reports distinguish judge conflict from a broken replay",
+          "JUDGE_CONFLICT" in _conflict_summary and "judge-conflict" in _conflict_summary,
+          _conflict_summary)
+    _revalidation_summary = _rsum({
+        "layer": "1", "title": "layout", "status": "passed", "revalidation": True,
+        "canonical": [{"frame": 1, "mean": 4.0, "pass": True,
+                       "decided_by": "deterministic_revalidation"}],
+    })
+    check("deterministic revalidation does not invent missing-hook/feedback warnings",
+          "NOTHING FIRED" not in _revalidation_summary
+          and "NO objective metric feedback" not in _revalidation_summary,
+          _revalidation_summary)
     reset_tool_use()
     check("no tool calls -> no telemetry", tool_use_summary() == {})
     TOOL_USE["mcp__blender__compare_frame"] = 4
@@ -1421,15 +1938,16 @@ def main():
 
     print("\n[the look/measure ratio counts the NEW tools too]")
     # The ratio is the leading indicator of a layer in trouble, and adding render_pass /
-    # diff_frames without teaching it about them made it blind in the exact direction that
+    # diff/verify tools without teaching it about them made it blind in the exact direction that
     # matters: a builder doing the right thing (isolating a pass to see what it is judged
     # on) would have been counted as not looking, and warned about for it.
     reset_tool_use()
     TOOL_USE["mcp__blender__render_pass"] = 12
     TOOL_USE["mcp__blender__diff_frames"] = 3
+    TOOL_USE["mcp__blender__verify_change"] = 2
     TOOL_USE["mcp__blender__measure_regions"] = 10
     s6 = tool_use_summary()
-    check("render_pass and diff_frames count as LOOKING", s6["looked"] == 15, str(s6))
+    check("render_pass and change diffs count as LOOKING", s6["looked"] == 17, str(s6))
     check("  ... so a pass-isolating builder is not warned at it",
           s6["look_per_measure"] > 1.0, str(s6.get("look_per_measure")))
     # check_scene is its own category on purpose: the failure the ratio detects is
@@ -1445,15 +1963,22 @@ def main():
           s7.get("look_per_measure") is None, str(s7.get("look_per_measure")))
 
     print("\n[adoption of the diagnostic tools is reported, not assumed]")
-    check("names the tools that were never called",
-          set(s7["unused_new_tools"]) == {"render_pass", "diff_frames"},
-          str(s7["unused_new_tools"]))
+    check("names only applicable tools that were never called",
+          s7["unused_required_tools"] == ["render_pass"], str(s7))
+    check("static no-edit work marks change diagnostics not applicable",
+          set(s7["not_applicable_tools"]) == {"diff_frames", "verify_change"}, str(s7))
     check("counts the ones that were", s7["adoption"]["check_scene"] == 9)
     unused_txt = _rsum(_rec(s7))
     check("the layer report says so loudly", "NEVER CALLED" in unused_txt, unused_txt)
     check("  ... and blames the PROMPT, not the tool", "PROMPT" in unused_txt)
     reset_tool_use()
-    for t in ("render_pass", "check_scene", "diff_frames"):
+    TOOL_USE["mcp__blender__run_bpy"] = 2
+    _edited = tool_use_summary()
+    check("multiple scene mutations make change verification applicable",
+          {"diff_frames", "verify_change"} <= set(_edited["unused_required_tools"]),
+          str(_edited))
+    reset_tool_use()
+    for t in ("render_pass", "check_scene", "diff_frames", "verify_change"):
         TOOL_USE[f"mcp__blender__{t}"] = 5
     all_used = _rsum(_rec(tool_use_summary()))
     check("silent when every diagnostic tool saw use", "NEVER CALLED" not in all_used)
@@ -1543,9 +2068,11 @@ def main():
           _old["never_used"] == [] and _old["unmeasured_layers"] == ["1"], str(_old))
     _new = adoption([{"layer": "1", "tools": {"total": 90, "adoption":
                                               {"render_pass": 0, "check_scene": 4,
-                                               "diff_frames": 0}}}])
+                                               "diff_frames": 0,
+                                               "verify_change": 0}}}])
     check("a measured layer that skipped a tool IS a finding",
-          set(_new["never_used"]) == {"render_pass", "diff_frames"}, str(_new))
+          set(_new["never_used"]) == {"render_pass", "diff_frames", "verify_change"},
+          str(_new))
     _f = _findings({"layers": [{"layer": "3", "trajectory": "FLAT — rounds are not moving "
                                 "the score", "rounds": 6, "turns": 20,
                                 "means": [2.0] * 6, "canonical_pass": True,
@@ -1644,6 +2171,21 @@ def main():
           recurring_complaints(shot, layers["5"].as_milestone(), min_attempts=99) == "")
     check("the kickoff actually carries it",
           "ATTEMPTED" in builder_kickoff(shot, layers["5"].as_milestone(), history=h5))
+    check("the kickoff declares LIVE_BUILD mode",
+          builder_kickoff(shot, layers["1"].as_milestone()).startswith("MODE: LIVE_BUILD"))
+    _scene_contract = shot.folder / "scene_checks.json"
+    _scene_contract_before = (_scene_contract.read_text(encoding="utf-8")
+                              if _scene_contract.is_file() else None)
+    try:
+        _scene_contract.write_text("[]\n", encoding="utf-8")
+        check("the kickoff makes scene object selectors an explicit interface",
+              "read `scene_checks.json` BEFORE" in
+              builder_kickoff(shot, layers["1"].as_milestone()))
+    finally:
+        if _scene_contract_before is None:
+            _scene_contract.unlink(missing_ok=True)
+        else:
+            _scene_contract.write_text(_scene_contract_before, encoding="utf-8")
 
     print("\n[the plan agent knows the departments]")
     # Everything learned on barrel_roll lived only as hand-edits to that shot's plan, so a

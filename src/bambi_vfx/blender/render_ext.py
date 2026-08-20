@@ -84,7 +84,7 @@ def caption_for(pass_name: str, shade: str, light: str | None, crop: list | None
                          f"light object(s) in the scene — so this is identical to the "
                          f"beauty render, not an isolation")
     if crop:
-        extra.append(f"optical crop {crop} (Blender NDC, origin bottom-left)")
+        extra.append(f"optical crop {crop} (normalized frame, origin top-left)")
     if res_pct and res_pct > 100:
         extra.append(f"resolution_percentage={res_pct} (real zoom, not an upscale)")
     if extra:
@@ -261,11 +261,13 @@ def _apply_crop(sc, crop, res_pct, scale) -> list:
     if crop:
         x0, y0, x1, y1 = [float(v) for v in crop]
         if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
-            raise ValueError("crop must be [x0,y0,x1,y1] in 0..1, origin bottom-left")
+            raise ValueError("crop must be [x0,y0,x1,y1] in 0..1, origin top-left")
         r.use_border = True
         r.use_crop_to_border = True
-        r.border_min_x, r.border_min_y = x0, y0
-        r.border_max_x, r.border_max_y = x1, y1
+        # Blender render borders use bottom-left. Keep that implementation detail here so
+        # every planner/builder/check API can use the same image-space convention.
+        r.border_min_x, r.border_min_y = x0, 1.0 - y1
+        r.border_max_x, r.border_max_y = x1, 1.0 - y0
     if res_pct is not None:
         r.resolution_percentage = max(1, min(1000, int(res_pct)))
     else:

@@ -35,8 +35,9 @@ Rule 3 is what would have rejected scoring a fog-wall sky on `structure_top`: th
 separates two skies with nothing in common by 15% against its own 45% tolerance, while
 `aniso_top` separates the same pair by 76%.
 
-REGIONS are normalised (x0, y0, x1, y1) in 0..1, so a check means the same thing at any
-render scale, and so "the shadow pier" stops being a phrase a reader has to interpret.
+REGIONS are normalised (x0, y0, x1, y1) in 0..1 with origin TOP-LEFT (x right, y down),
+so a check means the same thing at any render scale, and so "the shadow pier" stops being
+a phrase a reader has to interpret.
 """
 
 from __future__ import annotations
@@ -395,6 +396,84 @@ def load(path: Path) -> list[Check]:
     return [Check.from_dict(d) for d in json.loads(Path(path).read_text())]
 
 
+def layer_evidence(shot_folder: str | Path, layer_id: str, *, frame: int,
+                   ref: str, render: str | Path,
+                   stage: str = "pre_grade") -> list[dict]:
+    """Evaluate this layer's executable checks on the image being judged.
+
+    The critic used to receive exact framing bands in prose and then estimate them from
+    a downscaled JPEG.  On ``beacon_wake`` it called a measured 0.1634-W ring 0.11-W
+    twice and sent a correct script through an $11 repair.  Checks are the machine's
+    measurements, so put their *current* values beside the image instead of leaving the
+    critic to rediscover them by eye.
+
+    A check without an explicit frame is matched by its reference path.  Builder checks
+    historically omitted ``frame`` but did record ``ref``; applying such a check to every
+    frame of a multi-frame layer would manufacture evidence for the wrong beat.
+    """
+    root = Path(shot_folder)
+    image = Path(render)
+    if not image.is_absolute():
+        image = root / image
+    if not image.is_file():
+        return []
+    rows = []
+    for name, required_origin in (("checks.json", "planner"),
+                                  ("runtime_checks.json", "builder")):
+        spec = root / name
+        if not spec.is_file():
+            continue
+        try:
+            loaded = json.loads(spec.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        # The split is a contract, not a naming convention.  Cross-origin rows are
+        # ignored here and rejected by the plan gate instead of silently regaining the
+        # mixed-provenance design through hand edits.
+        rows.extend(row for row in loaded if (row.get("origin") or "planner") == required_origin)
+
+    out = []
+    for row in rows:
+        if str(row.get("layer", "")) != str(layer_id):
+            continue
+        if row.get("frame") is not None:
+            try:
+                if int(row["frame"]) != int(frame):
+                    continue
+            except (TypeError, ValueError):
+                continue
+        elif row.get("ref") and str(row.get("ref")) != str(ref):
+            continue
+        check = Check.from_dict(row)
+        if check.stage not in ("any", stage):
+            continue
+        try:
+            value = evaluate(check, image)
+            passed = check.holds(value)
+            error = ""
+        except Exception as exc:
+            value, passed = None, False
+            error = str(exc)[:160]
+        origin = str(row.get("origin") or "planner")
+        proof = row.get("proof") or {}
+        out.append({
+            "id": check.id,
+            "axis": check.axis,
+            "metric": check.metric,
+            "value": round(value, 4) if isinstance(value, (int, float)) else None,
+            "target": check.target(),
+            "pass": passed,
+            "origin": origin,
+            # Planner checks earn authority by naming and rejecting a known-bad image.
+            # Builder checks remain useful evidence, but do not silently become an
+            # independent acceptance oracle by marking their own homework.
+            "authoritative": bool(origin != "builder" and check.rejects
+                                  and proof.get("adversary")),
+            **({"error": error} if error else {}),
+        })
+    return out
+
+
 def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
     """Did THIS LAYER do its work? Pass on the layer's render, fail on the state before it.
 
@@ -461,7 +540,7 @@ def revalidate_layer(shot_folder: Path, layer_id: str,
     longer builds, and inventing a new threshold for it here would be authoring a check
     nobody ran.
     """
-    spec = Path(shot_folder) / "checks.json"
+    spec = Path(shot_folder) / "runtime_checks.json"
     if not spec.is_file():
         return {"kept": 0, "dropped": []}
     rows = json.loads(spec.read_text())

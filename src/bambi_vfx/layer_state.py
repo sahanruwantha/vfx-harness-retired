@@ -5,11 +5,11 @@ edits ago, full scene listings, node dumps — and the builder re-reads that gro
 each turn. Layer 1 of one run made ~10 compare_frame calls and dozens of run_bpy calls in
 a single session.
 
-The Python SDK (0.2.136) exposes no context-editing API, so stale tool results cannot be
-cleared programmatically from here. What CAN be done is make the layer's conclusions
-survive independently of the transcript: the current measured state per judge frame, what
-has been tried, and what has been ruled out with the measurement that ruled it out. Then
-a compaction — or a resume after a crash — costs the transcript, not the knowledge.
+The Agent SDK owns automatic compaction.  The harness cannot replace that loop, but it can
+make the layer's conclusions survive independently of the transcript: the current measured
+state per judge frame, what has been tried, and what has been ruled out with the measurement
+that ruled it out. Then a compaction — or a resume after a crash — costs transcript detail,
+not the knowledge needed to continue.
 
 Written after every round, and re-injected into the layer contract that CLAUDE.md carries.
 """
@@ -104,6 +104,21 @@ def as_prompt_block(shot_folder: str | Path) -> str:
         for r in st["ruled_out"][-6:]:
             lines.append(f"    {r}")
     return "\n".join(lines) + "\n"
+
+
+def checkpoint(shot_folder: str | Path, *, trigger: str) -> dict:
+    """Durably mark the state handed to the compactor before it starts.
+
+    ``PreCompact`` is the last guaranteed callback before old conversation detail is
+    summarized.  The measured state is already written after every judging round; this
+    marker proves which version was available at the boundary and is also useful after a
+    crash where no matching ``compact_boundary`` message was emitted.
+    """
+    st = load(shot_folder) or {"frames": {}, "tried": [], "ruled_out": []}
+    st["precompact"] = {"at": _now(), "trigger": str(trigger)}
+    st["updated"] = _now()
+    _write(shot_folder, st)
+    return st
 
 
 def _write(shot_folder: str | Path, st: dict) -> None:
