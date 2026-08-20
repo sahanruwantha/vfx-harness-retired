@@ -61,8 +61,7 @@ STAGES = ("pre_grade", "post_grade", "any")
 def _crop(im: Image.Image, box) -> Image.Image:
     W, H = im.size
     x0, y0, x1, y1 = box
-    return im.crop((int(W * x0), int(H * y0), max(int(W * x0) + 1, int(W * x1)),
-                    max(int(H * y0) + 1, int(H * y1))))
+    return im.crop((int(W * x0), int(H * y0), max(int(W * x0) + 1, int(W * x1)), max(int(H * y0) + 1, int(H * y1))))
 
 
 def _px(im: Image.Image) -> list[int]:
@@ -74,10 +73,14 @@ def _region_stats(im: Image.Image, box) -> dict:
     p = _px(_crop(im, box))
     n = len(p) or 1
     mean = sum(p) / n
-    return {"mean": mean, "min": min(p), "max": max(p),
-            "sigma": (sum((v - mean) ** 2 for v in p) / n) ** 0.5,
-            "p5": sorted(p)[int(0.05 * (n - 1))],
-            "lit_pct": 100 * sum(1 for v in p if v >= 120) / n}
+    return {
+        "mean": mean,
+        "min": min(p),
+        "max": max(p),
+        "sigma": (sum((v - mean) ** 2 for v in p) / n) ** 0.5,
+        "p5": sorted(p)[int(0.05 * (n - 1))],
+        "lit_pct": 100 * sum(1 for v in p if v >= 120) / n,
+    }
 
 
 def _lit_variance(im: Image.Image, box, n: int = 6) -> float:
@@ -128,7 +131,8 @@ def _green_excess(im: Image.Image, box=None) -> float:
     for y in range(0, H, 2):
         for x in range(0, W, 2):
             r, g, _ = px[x, y]
-            R += r; G += g
+            R += r
+            G += g
     return G / max(R, 1)
 
 
@@ -141,23 +145,25 @@ def _m_frame(key):
 
 
 METRICS: dict[str, tuple[tuple[str, ...], object]] = {
-    "frame_mean":      ((), _m_frame("exposure_mean")),
+    "frame_mean": ((), _m_frame("exposure_mean")),
     "frame_black_pct": ((), _m_frame("black_pct")),
-    "frame_detail":    ((), _m_frame("detail")),
-    "frame_halation":  ((), _m_frame("halation")),
+    "frame_detail": ((), _m_frame("detail")),
+    "frame_halation": ((), _m_frame("halation")),
     "frame_aniso_top": ((), _m_frame("aniso_top")),
-    "frame_points":    ((), _m_frame("points")),
-    "green_excess":    ((), lambda im, rg: _green_excess(im)),
-    "region_mean":     (("r",), lambda im, rg: _region_stats(im, rg["r"])["mean"]),
-    "region_min":      (("r",), lambda im, rg: _region_stats(im, rg["r"])["min"]),
-    "region_p5":       (("r",), lambda im, rg: _region_stats(im, rg["r"])["p5"]),
-    "region_max":      (("r",), lambda im, rg: _region_stats(im, rg["r"])["max"]),
-    "region_sigma":    (("r",), lambda im, rg: _region_stats(im, rg["r"])["sigma"]),
-    "region_lit_pct":  (("r",), lambda im, rg: _region_stats(im, rg["r"])["lit_pct"]),
+    "frame_points": ((), _m_frame("points")),
+    "green_excess": ((), lambda im, rg: _green_excess(im)),
+    "region_mean": (("r",), lambda im, rg: _region_stats(im, rg["r"])["mean"]),
+    "region_min": (("r",), lambda im, rg: _region_stats(im, rg["r"])["min"]),
+    "region_p5": (("r",), lambda im, rg: _region_stats(im, rg["r"])["p5"]),
+    "region_max": (("r",), lambda im, rg: _region_stats(im, rg["r"])["max"]),
+    "region_sigma": (("r",), lambda im, rg: _region_stats(im, rg["r"])["sigma"]),
+    "region_lit_pct": (("r",), lambda im, rg: _region_stats(im, rg["r"])["lit_pct"]),
     "region_green_excess": (("r",), lambda im, rg: _green_excess(im, rg["r"])),
     "region_lit_variance": (("r",), lambda im, rg: _lit_variance(im, rg["r"])),
-    "region_ratio":    (("a", "b"), lambda im, rg: _region_stats(im, rg["a"])["mean"]
-                        / max(_region_stats(im, rg["b"])["mean"], 1e-6)),
+    "region_ratio": (
+        ("a", "b"),
+        lambda im, rg: _region_stats(im, rg["a"])["mean"] / max(_region_stats(im, rg["b"])["mean"], 1e-6),
+    ),
 }
 
 
@@ -165,12 +171,17 @@ METRICS: dict[str, tuple[tuple[str, ...], object]] = {
 class Check:
     id: str
     metric: str
-    op: str                       # ">=" | "<=" | "band"
+    op: str  # ">=" | "<=" | "band"
     lo: float = float("-inf")
     hi: float = float("inf")
     ref: str = ""
     frame: int | None = None
     layer: str = ""
+    owner_layer: str = ""
+    fault_owner: str = ""
+    activates_at: str = ""
+    lifecycle: str = "layer"
+    valid_through: str | None = None
     axis: str = ""
     stage: str = "any"
     regions: dict = field(default_factory=dict)
@@ -203,13 +214,28 @@ class Check:
         op = d.get("op", "band")
         lo = float(d.get("lo", float("-inf")))
         hi = float(d.get("hi", float("inf")))
-        return Check(id=str(d.get("id", "?")), metric=str(d.get("metric", "")), op=op,
-                     lo=lo, hi=hi, ref=d.get("ref", ""), frame=d.get("frame"),
-                     layer=str(d.get("layer", "")), axis=d.get("axis", ""),
-                     stage=d.get("stage", "any"),
-                     regions={k: tuple(v) for k, v in (d.get("regions") or {}).items()},
-                     rejects=list(d.get("rejects") or []),
-                     proof=dict(d.get("proof") or {}), note=d.get("note", ""))
+        owner = str(d.get("owner_layer") or d.get("layer") or "")
+        return Check(
+            id=str(d.get("id", "?")),
+            metric=str(d.get("metric", "")),
+            op=op,
+            lo=lo,
+            hi=hi,
+            ref=d.get("ref", ""),
+            frame=d.get("frame"),
+            layer=owner,
+            owner_layer=owner,
+            fault_owner=str(d.get("fault_owner") or owner),
+            activates_at=str(d.get("activates_at") or owner),
+            lifecycle=str(d.get("lifecycle") or "layer"),
+            valid_through=(str(d["valid_through"]) if d.get("valid_through") is not None else None),
+            axis=d.get("axis", ""),
+            stage=d.get("stage", "any"),
+            regions={k: tuple(v) for k, v in (d.get("regions") or {}).items()},
+            rejects=list(d.get("rejects") or []),
+            proof=dict(d.get("proof") or {}),
+            note=d.get("note", ""),
+        )
 
 
 def evaluate(check: Check, image: str | Path) -> float:
@@ -229,8 +255,7 @@ def evaluate(check: Check, image: str | Path) -> float:
         return float(fn(_prep(im.convert("RGB"), 960), check.regions))
 
 
-def noise_floor(check: Check, image: str | Path,
-                scales=(0.5, 0.75, 1.0)) -> float:
+def noise_floor(check: Check, image: str | Path, scales=(0.5, 0.75, 1.0)) -> float:
     """How much this metric moves on ONE unchanged image under resampling alone.
 
     Measured, never declared. An author who could state their own noise floor would state
@@ -240,10 +265,10 @@ def noise_floor(check: Check, image: str | Path,
     with Image.open(str(image)) as src:
         base = src.convert("RGB")
         import tempfile
+
         for s in scales:
             d = Path(tempfile.mkdtemp()) / f"s{s}.png"
-            base.resize((max(8, round(base.width * s)),
-                         max(8, round(base.height * s))), Image.LANCZOS).save(d)
+            base.resize((max(8, round(base.width * s)), max(8, round(base.height * s))), Image.LANCZOS).save(d)
             with contextlib.suppress(Exception):
                 vals.append(evaluate(check, d))
     return (max(vals) - min(vals)) if len(vals) > 1 else 0.0
@@ -262,9 +287,9 @@ def _find_reject(rel: str, ref: Path, root: Path | None) -> Path | None:
     p = Path(rel)
     if p.is_absolute():
         return p if p.is_file() else None
-    shot = Path(ref).parent.parent                     # <shot>/refs/x.jpg -> <shot>
+    shot = Path(ref).parent.parent  # <shot>/refs/x.jpg -> <shot>
     for base in (shot, shot.parent, Path(root or "."), Path.cwd()):
-        q = (base / p)
+        q = base / p
         if q.is_file():
             return q
     return None
@@ -290,15 +315,15 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
     v = Verdict(check.id, True)
     named = [q for q in (_find_reject(r, ref, root) for r in check.rejects) if q]
     if check.rejects and not named:
-        return Verdict(check.id, False,
-                       reasons=[f"names adversaries that do not resolve: {check.rejects}"])
+        return Verdict(check.id, False, reasons=[f"names adversaries that do not resolve: {check.rejects}"])
     if named:
         known_bad = named
     else:
         v.reasons.append(
             "WEAK — this check names no adversary, so rule 2 grades it against whatever "
             "known-bad renders exist. Declare `rejects` with the artifact showing the "
-            "defect it targets, or it can pass by rejecting an easy unrelated failure")
+            "defect it targets, or it can pass by rejecting an easy unrelated failure"
+        )
     try:
         v.ref_value = evaluate(check, ref)
     except Exception as e:
@@ -311,7 +336,8 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
             f"UNREACHABLE — the reference {Path(ref).name} reads {v.ref_value:.3g} and the "
             f"check demands {check.target()}. No correct render can pass it; the layer "
             f"aiming at it loops until its budget is gone or satisfies it by breaking "
-            f"something the reference contains")
+            f"something the reference contains"
+        )
 
     for b in known_bad:
         try:
@@ -326,7 +352,8 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
             f"({min(v.bad_values):.3g}..{max(v.bad_values):.3g}). A check that accepts the "
             f"artifact it was written to reject cannot fail the defect it exists for; look "
             f"at its DIRECTION, since a floor where the defect was a ceiling accepts "
-            f"exactly the wrong picture")
+            f"exactly the wrong picture"
+        )
 
     # 4. the shipped spec must reproduce the proof recorded with it. A check whose stated
     #    evidence does not come back is a check that was tested in a form nobody kept.
@@ -340,7 +367,8 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
                     f"PROOF DOES NOT REPRODUCE — the record claims the reference reads "
                     f"{float(claimed):.4g} and this spec measures {v.ref_value:.4g}. The spec "
                     f"that was tested is not the spec that shipped; re-run measure_check on "
-                    f"the regions actually written here and record what it returns")
+                    f"the regions actually written here and record what it returns"
+                )
         adv = check.proof.get("adversary")
         if adv and v.bad_values:
             want, got = float(adv[0]), v.bad_values[0]
@@ -349,7 +377,8 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
                 v.ok = False
                 v.reasons.append(
                     f"PROOF DOES NOT REPRODUCE — the record claims the adversary reads "
-                    f"{want:.4g} and this spec measures {got:.4g}")
+                    f"{want:.4g} and this spec measures {got:.4g}"
+                )
 
     # 5. a region check must survive a small nudge to its own box. L3c-2's region is a
     #    4%-tall strip straddling the horizon, so a 3% shift swung its adversary 2.4x
@@ -362,8 +391,7 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
             for shift in (-dy, dy):
                 alt = dict(check.regions)
                 alt[name] = (x0, max(0.0, y0 + shift), x1, min(1.0, y1 + shift))
-                probe = Check(check.id, check.metric, check.op, check.lo, check.hi,
-                              regions=alt)
+                probe = Check(check.id, check.metric, check.op, check.lo, check.hi, regions=alt)
                 try:
                     r2, b2 = evaluate(probe, ref), evaluate(probe, known_bad[0])
                 except Exception:
@@ -374,7 +402,8 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
                         f"FRAGILE — nudging region '{name}' by {shift:+.3f} in y makes this "
                         f"check stop working (reference {r2:.4g}, adversary {b2:.4g}). The "
                         f"verdict is an artifact of exactly where the box was put, so a "
-                        f"builder reproducing it slightly differently gets a different answer")
+                        f"builder reproducing it slightly differently gets a different answer"
+                    )
                     break
             if not v.ok:
                 break
@@ -388,17 +417,49 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
             v.reasons.append(
                 f"INDISCRIMINATE — reference and known-bad differ by {gap:.3g}, within this "
                 f"metric's own resampling noise of {v.floor:.3g}. The check cannot tell them "
-                f"apart, so passing it is a coin flip")
+                f"apart, so passing it is a coin flip"
+            )
     return v
 
 
 def load(path: Path) -> list[Check]:
-    return [Check.from_dict(d) for d in json.loads(Path(path).read_text())]
+    """Load strict planner image contracts; legacy list documents are rejected."""
+    from .contracts import load_document, validate_lifecycle
+
+    rows = load_document(path, "checks")
+    errors = [
+        (str(row.get("id", "?")), validate_lifecycle(row))
+        for row in rows
+        if isinstance(row, dict) and validate_lifecycle(row)
+    ]
+    if errors:
+        rid, error = errors[0]
+        raise ValueError(f"{rid}: {error}")
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError("every image contract must be an object")
+    for row in rows:
+        focus = row.get("focus")
+        if focus is None:
+            continue
+        if not isinstance(focus, dict) or focus.get("required") is not True:
+            raise ValueError(f"{row.get('id')}: focus must be an object with required=true")
+        crop = focus.get("crop")
+        if (
+            not isinstance(crop, list)
+            or len(crop) != 4
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in crop)
+            or not all(0 <= float(v) <= 1 for v in crop)
+            or not (crop[0] < crop[2] and crop[1] < crop[3])
+        ):
+            raise ValueError(f"{row.get('id')}: focus.crop must be a normalized TOP-LEFT box")
+        if not str(focus.get("reason") or "").strip():
+            raise ValueError(f"{row.get('id')}: focus.reason is required")
+    return [Check.from_dict(d) for d in rows]
 
 
-def layer_evidence(shot_folder: str | Path, layer_id: str, *, frame: int,
-                   ref: str, render: str | Path,
-                   stage: str = "pre_grade") -> list[dict]:
+def layer_evidence(
+    shot_folder: str | Path, layer_id: str, *, frame: int, ref: str, render: str | Path, stage: str = "pre_grade"
+) -> list[dict]:
     """Evaluate this layer's executable checks on the image being judged.
 
     The critic used to receive exact framing bands in prose and then estimate them from
@@ -417,25 +478,48 @@ def layer_evidence(shot_folder: str | Path, layer_id: str, *, frame: int,
         image = root / image
     if not image.is_file():
         return []
-    rows = []
-    for name, required_origin in (("checks.json", "planner"),
-                                  ("runtime_checks.json", "builder")):
-        spec = root / name
-        if not spec.is_file():
-            continue
+    planner_rows, runtime_rows = [], []
+    try:
+        from .contracts import active_for, load_document
+
+        load(root / "checks.json")  # validates lifecycle and required focus metadata
+        planner_rows = [
+            row
+            for row in load_document(root / "checks.json", "checks")
+            if isinstance(row, dict) and active_for(row, layer_id, frame)
+        ]
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return [
+            {
+                "id": "image-contract-document",
+                "axis": "",
+                "metric": "schema",
+                "value": None,
+                "target": "schema=2",
+                "pass": False,
+                "origin": "planner",
+                "source": "image_contract",
+                "authoritative": True,
+                "error": str(exc)[:160],
+            }
+        ]
+    runtime = root / "runtime_checks.json"
+    if runtime.is_file():
         try:
-            loaded = json.loads(spec.read_text(encoding="utf-8"))
+            loaded = json.loads(runtime.read_text(encoding="utf-8"))
+            runtime_rows = [
+                row
+                for row in loaded
+                if isinstance(row, dict)
+                and row.get("origin") == "builder"
+                and str(row.get("layer", "")) == str(layer_id)
+            ]
         except (OSError, json.JSONDecodeError):
-            continue
-        # The split is a contract, not a naming convention.  Cross-origin rows are
-        # ignored here and rejected by the plan gate instead of silently regaining the
-        # mixed-provenance design through hand edits.
-        rows.extend(row for row in loaded if (row.get("origin") or "planner") == required_origin)
+            runtime_rows = []
+    rows = [*planner_rows, *runtime_rows]
 
     out = []
     for row in rows:
-        if str(row.get("layer", "")) != str(layer_id):
-            continue
         if row.get("frame") is not None:
             try:
                 if int(row["frame"]) != int(frame):
@@ -456,21 +540,26 @@ def layer_evidence(shot_folder: str | Path, layer_id: str, *, frame: int,
             error = str(exc)[:160]
         origin = str(row.get("origin") or "planner")
         proof = row.get("proof") or {}
-        out.append({
-            "id": check.id,
-            "axis": check.axis,
-            "metric": check.metric,
-            "value": round(value, 4) if isinstance(value, (int, float)) else None,
-            "target": check.target(),
-            "pass": passed,
-            "origin": origin,
-            # Planner checks earn authority by naming and rejecting a known-bad image.
-            # Builder checks remain useful evidence, but do not silently become an
-            # independent acceptance oracle by marking their own homework.
-            "authoritative": bool(origin != "builder" and check.rejects
-                                  and proof.get("adversary")),
-            **({"error": error} if error else {}),
-        })
+        out.append(
+            {
+                "id": check.id,
+                "axis": check.axis,
+                "metric": check.metric,
+                "value": round(value, 4) if isinstance(value, (int, float)) else None,
+                "target": check.target(),
+                "pass": passed,
+                "origin": origin,
+                # Planner checks earn authority by naming and rejecting a known-bad image.
+                # Builder checks remain useful evidence, but do not silently become an
+                # independent acceptance oracle by marking their own homework.
+                "authoritative": bool(origin != "builder" and check.rejects and proof.get("adversary")),
+                "owner_layer": check.owner_layer,
+                "fault_owner": check.fault_owner,
+                "activates_at": check.activates_at,
+                "lifecycle": check.lifecycle,
+                **({"error": error} if error else {}),
+            }
+        )
     return out
 
 
@@ -506,7 +595,8 @@ def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
         v.ok = False
         v.reasons.append(
             f"DOES NOT HOLD — this layer's own render reads {v.ref_value:.4g} against "
-            f"{check.target()}. The check does not describe what was built")
+            f"{check.target()}. The check does not describe what was built"
+        )
     if before is not None and Path(before).is_file():
         try:
             prior = evaluate(check, before)
@@ -519,12 +609,12 @@ def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
                 v.reasons.append(
                     f"NOT NECESSARY — the state BEFORE this layer ran already reads "
                     f"{prior:.4g} and passes. A check that holds both before and after "
-                    f"proves nothing about this layer; it belongs to an earlier one")
+                    f"proves nothing about this layer; it belongs to an earlier one"
+                )
     return v
 
 
-def revalidate_layer(shot_folder: Path, layer_id: str,
-                     render_for: Callable[[Check], Path | None]) -> dict:
+def revalidate_layer(shot_folder: Path, layer_id: str, render_for: Callable[[Check], Path | None]) -> dict:
     """Re-run this layer's BUILDER checks against the renders that actually shipped, and
     drop the ones that no longer hold.
 
@@ -549,8 +639,7 @@ def revalidate_layer(shot_folder: Path, layer_id: str,
         if d.get("origin") != "builder" or str(d.get("layer")) != str(layer_id):
             keep.append(d)
             continue
-        c = Check.from_dict({**d, "lo": d.get("lo", float("-inf")),
-                             "hi": d.get("hi", float("inf"))})
+        c = Check.from_dict({**d, "lo": d.get("lo", float("-inf")), "hi": d.get("hi", float("inf"))})
         img = render_for(c)
         if img is None:
             dropped.append((c.id, "no shipped render for its frame"))
@@ -568,6 +657,7 @@ def revalidate_layer(shot_folder: Path, layer_id: str,
             dropped.append((c.id, f"reads {v:.4g} against {c.target()} on the final render"))
     if dropped:
         spec.write_text(json.dumps(keep, indent=1) + "\n", encoding="utf-8")
-    return {"kept": sum(1 for d in keep if d.get("origin") == "builder"
-                        and str(d.get("layer")) == str(layer_id)),
-            "dropped": dropped}
+    return {
+        "kept": sum(1 for d in keep if d.get("origin") == "builder" and str(d.get("layer")) == str(layer_id)),
+        "dropped": dropped,
+    }

@@ -171,6 +171,11 @@ def summary(rec: dict) -> str:
         lines.append("   hooks      n/a (deterministic revalidation; no agent tool loop)")
     else:
         lines.append(f"   hooks      {' · '.join(fired) if fired else 'NOTHING FIRED — verify the hooks are wired'}")
-    if not h.get("metric_feedback") and not rec.get("revalidation"):
+    look_feedback_applicable = (tu.get("look_feedback_applicable", True)
+                                if tu else True)
+    if (look_feedback_applicable and not h.get("metric_feedback")
+            and not rec.get("revalidation")):
         lines.append("   ⚠ the builder received NO objective metric feedback this layer")
+    elif not look_feedback_applicable and not rec.get("revalidation"):
+        lines.append("   metric feedback n/a — this layer owns no appearance/look axis")
     return "\n".join(lines)

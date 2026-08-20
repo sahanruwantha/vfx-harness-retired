@@ -114,26 +114,32 @@ def _planner_tool_policy(repair: bool) -> tuple[list[str], list[str]]:
 # The critic has had this guarantee for a while — it "cannot score a frame it never saw"
 # — and there is no argument for holding the stage that WRITES the targets to a lower bar
 # than the stage that checks them.
-_KICKOFF_MAX_PX = 1568          # same budget the critic uses; ~1600 tokens per still
+_KICKOFF_MAX_PX = 1568  # same budget the critic uses; ~1600 tokens per still
 
 
 def _kickoff_blocks(text: str, shot) -> list[dict]:
     """The kickoff prose followed by every reference still, in shot order."""
     from .builder import _image_block
+
     blocks: list[dict] = [{"type": "text", "text": text}]
     for p in shot.refs:
         try:
             blocks.append(_image_block(p, _KICKOFF_MAX_PX))
-        except Exception as e:      # a corrupt plate must not cost the whole pass
+        except Exception as e:  # a corrupt plate must not cost the whole pass
             log(f"! could not attach {p.name}: {str(e)[:120]}", 1)
     return blocks
 
 
-async def generate_plan(folder: str | Path, *, model: str = MODEL,
-                        blender: str = "blender", max_turns: int = 100,
-                        tag: str | None = None,
-                        verify_draft: str | None = None,
-                        repair: tuple[str, int] | None = None) -> Path:
+async def generate_plan(
+    folder: str | Path,
+    *,
+    model: str = MODEL,
+    blender: str = "blender",
+    max_turns: int = 100,
+    tag: str | None = None,
+    verify_draft: str | None = None,
+    repair: tuple[str, int] | None = None,
+) -> Path:
     """Run ONE global planning session. With `tag`, outputs are isolated:
     plans/global.md → plans/global.<tag>.md, lab artifacts → logs/plan_lab_<tag>/.
     With `verify_draft`, the session runs in VERIFY MODE against that draft file.
@@ -148,8 +154,7 @@ async def generate_plan(folder: str | Path, *, model: str = MODEL,
 
     if repair:
         findings, rnd = repair
-        system = PLANNER_SYSTEM + REPAIR_ADDENDUM.format(draft=verify_draft,
-                                                         findings=findings)
+        system = PLANNER_SYSTEM + REPAIR_ADDENDUM.format(draft=verify_draft, findings=findings)
         kickoff = repair_user_prompt(shot, verify_draft, rnd)
         mode = f"REPAIR round {rnd} (against {verify_draft})"
     elif verify_draft:
@@ -171,31 +176,35 @@ async def generate_plan(folder: str | Path, *, model: str = MODEL,
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Read", "Glob", "Grep", "Write", *repair_tools,
-                       "WebSearch", "WebFetch", *pnames, *rnames],
+        allowed_tools=["Read", "Glob", "Grep", "Write", *repair_tools, "WebSearch", "WebFetch", *pnames, *rnames],
         disallowed_tools=denied,
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,  # sheets/frames as base64 image blocks
-        setting_sources=[],                # isolate from user/project settings
+        setting_sources=[],  # isolate from user/project settings
         max_turns=max_turns,
         effort="high",
     )
 
     stills = [p.name for p in shot.refs]
     videos = sorted(p.name for p in (shot.folder / "refs").glob("*.mp4"))
-    log(f"plan agent [{mode}]: shot '{shot.id}' ({shot.frames}f @ {shot.fps}fps, "
-        f"{shot.engine}), model {model}" + (f", tag '{tag}'" if tag else ""))
+    log(
+        f"plan agent [{mode}]: shot '{shot.id}' ({shot.frames}f @ {shot.fps}fps, "
+        f"{shot.engine}), model {model}" + (f", tag '{tag}'" if tag else "")
+    )
     log(f"refs: {len(stills)} stills {stills} + {len(videos)} videos {videos}", 1)
-    log(f"lab: blender '{blender}' · artifacts → {lab_dir.relative_to(shot.folder)}/ · "
-        f"web research ENABLED · max_turns {max_turns}", 1)
+    log(
+        f"lab: blender '{blender}' · artifacts → {lab_dir.relative_to(shot.folder)}/ · "
+        f"web research ENABLED · max_turns {max_turns}",
+        1,
+    )
 
-    costlog.bind(shot.folder, role="plan:" + mode.split()[0].lower(),
-                 model=model, tag=tag)
+    costlog.bind(shot.folder, role="plan:" + mode.split()[0].lower(), model=model, tag=tag)
     tpath = transcript.bind(shot.folder, "plan", label=tag or mode)
     if tpath:
         log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
-    transcript.prompt(kickoff, role="kickoff", mode=mode, model=model, tag=tag,
-                      refs=stills, videos=videos, max_turns=max_turns)
+    transcript.prompt(
+        kickoff, role="kickoff", mode=mode, model=model, tag=tag, refs=stills, videos=videos, max_turns=max_turns
+    )
     blocks = _kickoff_blocks(kickoff, shot)
     log(f"kickoff: {len(blocks) - 1} reference still(s) ATTACHED as images", 1)
     # The post-condition, not the absence of an exception. Two repair rounds were lost to a
@@ -230,14 +239,14 @@ async def generate_plan(folder: str | Path, *, model: str = MODEL,
         final = plan_path.with_name(f"global.{tag}.md")
         plan_path.rename(final)
         plan_path = final
-    lines = plan_path.read_text(encoding='utf-8').count('\n')
+    lines = plan_path.read_text(encoding="utf-8").count("\n")
     log(f"plan written: {plan_path.relative_to(shot.folder)} ({lines} lines)")
     return plan_path
 
 
-async def generate_layer_plan(folder: str | Path, layer_id: str, *,
-                              model: str = MODEL, blender: str = "blender",
-                              max_turns: int = 100) -> Path:
+async def generate_layer_plan(
+    folder: str | Path, layer_id: str, *, model: str = MODEL, blender: str = "blender", max_turns: int = 24
+) -> Path:
     """Generate one execution plan after prior layers have produced measured outcomes.
 
     This is intentionally a separate session and output contract. It cannot mutate the
@@ -246,8 +255,7 @@ async def generate_layer_plan(folder: str | Path, layer_id: str, *,
     shot = load_shot(folder)
     global_path = global_plan_path(shot.folder)
     if not global_path.is_file():
-        raise FileNotFoundError(
-            f"{global_path} missing — generate and gate the strict global plan first")
+        raise FileNotFoundError(f"{global_path} missing — generate and gate the strict global plan first")
     layers = load_layers(shot)
     try:
         layer = layers[str(layer_id)]
@@ -256,14 +264,17 @@ async def generate_layer_plan(folder: str | Path, layer_id: str, *,
     target = layer_plan_path(shot.folder, layer)
     target.parent.mkdir(parents=True, exist_ok=True)
     rel_target = target.relative_to(shot.folder).as_posix()
-    feedback = "\n\n".join(x for x in (
-        prior_outcomes_block(shot.folder, str(layer.id)),
-        amendment_block(shot.folder, str(layer.id)),
-    ) if x)
+    feedback = "\n\n".join(
+        x
+        for x in (
+            prior_outcomes_block(shot.folder, str(layer.id)),
+            amendment_block(shot.folder, str(layer.id)),
+        )
+        if x
+    )
     # Do not carry the global planner's monolithic output contract into a layer session.
     # The layer doctrine is intentionally self-contained and much smaller.
-    system = LAYER_PLANNER_ADDENDUM.format(
-        layer_id=layer.id, layer_title=layer.title, target=rel_target)
+    system = LAYER_PLANNER_ADDENDUM.format(layer_id=layer.id, layer_title=layer.title, target=rel_target)
     kickoff = layer_user_prompt(shot, layer, rel_target, feedback)
     lab_dir = shot.folder / "logs" / f"plan_lab_layer_{int(layer.id):02d}"
     pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
@@ -273,8 +284,7 @@ async def generate_layer_plan(folder: str | Path, layer_id: str, *,
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Read", "Glob", "Grep", "Write", "WebSearch", "WebFetch",
-                       *pnames, *rnames],
+        allowed_tools=["Read", "Write", *pnames, *rnames],
         disallowed_tools=["Bash", "Edit"],
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,
@@ -286,8 +296,9 @@ async def generate_layer_plan(folder: str | Path, layer_id: str, *,
     blocks = _kickoff_blocks(kickoff, shot)
     costlog.bind(shot.folder, role="plan:layer", model=model, tag=str(layer.id))
     transcript.bind(shot.folder, "plan", label=f"layer-{layer.id}")
-    transcript.prompt(kickoff, role="kickoff", mode="PLAN_LAYER", model=model,
-                      layer=layer.id, refs=[p.name for p in shot.refs])
+    transcript.prompt(
+        kickoff, role="kickoff", mode="PLAN_LAYER", model=model, layer=layer.id, refs=[p.name for p in shot.refs]
+    )
 
     async def _attempt() -> str:
         said: list[str] = []
@@ -310,16 +321,25 @@ async def generate_layer_plan(folder: str | Path, layer_id: str, *,
     text = target.read_text(encoding="utf-8")
     if len(text.strip()) < 200:
         raise ValueError(f"{target} is too small to be an executable layer plan")
+    if text.count("\n") + 1 > 160:
+        raise ValueError(
+            f"{target} has {text.count(chr(10)) + 1} lines; layer plans are capped at 160. "
+            "Keep evidence in machine contracts/outcomes and rewrite this as an execution index"
+        )
     log(f"layer plan written: {rel_target} ({text.count(chr(10))} lines)")
     return target
 
 
-async def generate_plan_two_pass(folder: str | Path, *,
-                                 draft_model: str = DRAFT_MODEL,
-                                 verify_model: str = VERIFY_MODEL,
-                                 blender: str = "blender", max_turns: int = 100,
-                                 tag: str | None = None,
-                                 verify_only: bool = False) -> Path:
+async def generate_plan_two_pass(
+    folder: str | Path,
+    *,
+    draft_model: str = DRAFT_MODEL,
+    verify_model: str = VERIFY_MODEL,
+    blender: str = "blender",
+    max_turns: int = 100,
+    tag: str | None = None,
+    verify_only: bool = False,
+) -> Path:
     """The standard flow: draft from scratch, then adversarially verify.
     Keeps the draft (plan.<tag->draft.md + its lab) as the audit trail."""
     shot = load_shot(folder)
@@ -332,24 +352,32 @@ async def generate_plan_two_pass(folder: str | Path, *,
         log(f"two-pass: reusing existing draft {draft_path.name}")
     else:
         log(f"══ two-pass 1/2 · DRAFT · {draft_model} ══")
-        await generate_plan(folder, model=draft_model, blender=blender,
-                            max_turns=max_turns, tag=dtag)
+        await generate_plan(folder, model=draft_model, blender=blender, max_turns=max_turns, tag=dtag)
 
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
-    final = await generate_plan(folder, model=verify_model, blender=blender,
-                                max_turns=max_turns, tag=tag,
-                                verify_draft=draft_path.relative_to(shot.folder).as_posix())
+    final = await generate_plan(
+        folder,
+        model=verify_model,
+        blender=blender,
+        max_turns=max_turns,
+        tag=tag,
+        verify_draft=draft_path.relative_to(shot.folder).as_posix(),
+    )
     log(f"two-pass complete → {final.name} (draft kept: {draft_path.name})")
     return final
 
 
-async def generate_plan_until_clean(folder: str | Path, *,
-                                    draft_model: str = DRAFT_MODEL,
-                                    verify_model: str = VERIFY_MODEL,
-                                    blender: str = "blender", max_turns: int = 100,
-                                    tag: str | None = None,
-                                    verify_only: bool = False,
-                                    max_rounds: int = 3) -> Path:
+async def generate_plan_until_clean(
+    folder: str | Path,
+    *,
+    draft_model: str = DRAFT_MODEL,
+    verify_model: str = VERIFY_MODEL,
+    blender: str = "blender",
+    max_turns: int = 100,
+    tag: str | None = None,
+    verify_only: bool = False,
+    max_rounds: int = 3,
+) -> Path:
     """Draft → verify → GATE → repair → gate → … until the plan clears or stops moving.
 
     The loop exists because "solid" was previously a model's own opinion of its own work,
@@ -375,8 +403,14 @@ async def generate_plan_until_clean(folder: str | Path, *,
 
     shot = load_shot(folder)
     final = await generate_plan_two_pass(
-        folder, draft_model=draft_model, verify_model=verify_model, blender=blender,
-        max_turns=max_turns, tag=tag, verify_only=verify_only)
+        folder,
+        draft_model=draft_model,
+        verify_model=verify_model,
+        blender=blender,
+        max_turns=max_turns,
+        tag=tag,
+        verify_only=verify_only,
+    )
     plan_name = final.relative_to(shot.folder).as_posix()
 
     prev_sig, outcome = None, "budget"
@@ -393,20 +427,26 @@ async def generate_plan_until_clean(folder: str | Path, *,
         sig = res.signature()
         if sig == prev_sig:
             outcome = "stalled"
-            log(f"! gate findings are unchanged from round {rnd - 1} — the repair pass is "
-                f"not converging. Stopping rather than paying for the same answer again.")
+            log(
+                f"! gate findings are unchanged from round {rnd - 1} — the repair pass is "
+                f"not converging. Stopping rather than paying for the same answer again."
+            )
             break
         prev_sig = sig
         # Snapshot the plan being repaired: the repair session reads one file and writes
         # plans/global.md, and otherwise it would read the file it is replacing.
         snap = global_plan_path(shot.folder).with_name(f"global.round{rnd}.md")
         snap.write_text(final.read_text(encoding="utf-8"), encoding="utf-8")
-        log(f"══ repair {rnd}/{max_rounds} · {verify_model} · "
-            f"{len(res.blocking)} blocking finding(s) → {snap.name} ══")
-        final = await generate_plan(folder, model=verify_model, blender=blender,
-                                    max_turns=max_turns, tag=tag,
-                                    verify_draft=snap.relative_to(shot.folder).as_posix(),
-                                    repair=(plan_gate.feedback(res), rnd))
+        log(f"══ repair {rnd}/{max_rounds} · {verify_model} · {len(res.blocking)} blocking finding(s) → {snap.name} ══")
+        final = await generate_plan(
+            folder,
+            model=verify_model,
+            blender=blender,
+            max_turns=max_turns,
+            tag=tag,
+            verify_draft=snap.relative_to(shot.folder).as_posix(),
+            repair=(plan_gate.feedback(res), rnd),
+        )
         plan_name = final.relative_to(shot.folder).as_posix()
     else:
         res = plan_gate.run(shot.folder, plan_name, require_scene_checks=True)
@@ -415,66 +455,91 @@ async def generate_plan_until_clean(folder: str | Path, *,
         outcome = "clean" if res.clean else "budget"
 
     n = len(res.blocking)
-    log(f"plan loop {outcome.upper()}: {final.name}"
-        + ("" if outcome == "clean" else
-           f" — {n} blocking finding(s) REMAIN. `bambi evals plan {shot.folder}` lists "
-           f"them; building on this plan means building toward them."))
+    log(
+        f"plan loop {outcome.upper()}: {final.name}"
+        + (
+            ""
+            if outcome == "clean"
+            else f" — {n} blocking finding(s) REMAIN. `bambi evals plan {shot.folder}` lists "
+            f"them; building on this plan means building toward them."
+        )
+    )
     return final
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Plan a shot. Default: two-pass (draft → adversarial verify).")
+    ap = argparse.ArgumentParser(description="Plan a shot. Default: two-pass (draft → adversarial verify).")
     ap.add_argument("folder", help="shot folder (contains brief.md, refs/)")
     ap.add_argument("--layer", help="generate only this layer's just-in-time plan")
-    ap.add_argument("--single", action="store_true",
-                    help="one from-scratch pass with --model (no verify)")
-    ap.add_argument("--verify-only", action="store_true",
-                    help="skip drafting; audit the existing plans/global.<tag->draft.md")
+    ap.add_argument("--single", action="store_true", help="one from-scratch pass with --model (no verify)")
+    ap.add_argument(
+        "--verify-only", action="store_true", help="skip drafting; audit the existing plans/global.<tag->draft.md"
+    )
     ap.add_argument("--model", default=MODEL, help="model for --single runs")
     ap.add_argument("--draft-model", default=DRAFT_MODEL)
     ap.add_argument("--verify-model", default=VERIFY_MODEL)
-    ap.add_argument("--blender", default=Settings.from_environment().blender_bin,
-                    help="blender executable for the spike lab")
-    ap.add_argument("--max-turns", type=int, default=100, help="turn cap per pass")
-    ap.add_argument("--tag", default=None,
-                    help="isolate outputs: plans/global.<tag>.md + logs/plan_lab_<tag>/")
-    ap.add_argument("--until-clean", action="store_true",
-                    help="after the two passes, run the deterministic plan gate and "
-                         "repair until it clears, stalls, or hits --max-rounds")
-    ap.add_argument("--max-rounds", type=int, default=3,
-                    help="repair rounds for --until-clean (default 3)")
+    ap.add_argument(
+        "--blender", default=Settings.from_environment().blender_bin, help="blender executable for the spike lab"
+    )
+    ap.add_argument(
+        "--max-turns", type=int, default=None, help="turn cap per pass (default: 24 for --layer, 100 globally)"
+    )
+    ap.add_argument("--tag", default=None, help="isolate outputs: plans/global.<tag>.md + logs/plan_lab_<tag>/")
+    ap.add_argument(
+        "--until-clean",
+        action="store_true",
+        help="after the two passes, run the deterministic plan gate and "
+        "repair until it clears, stalls, or hits --max-rounds",
+    )
+    ap.add_argument("--max-rounds", type=int, default=3, help="repair rounds for --until-clean (default 3)")
     args = ap.parse_args()
 
     if args.layer and (args.single or args.verify_only or args.until_clean or args.tag):
         ap.error("--layer is a dedicated JIT pass; do not combine it with global-pass flags")
 
     if args.layer:
-        plan_path = anyio.run(lambda: generate_layer_plan(
-            args.folder, args.layer, model=args.model, blender=args.blender,
-            max_turns=args.max_turns))
+        plan_path = anyio.run(
+            lambda: generate_layer_plan(
+                args.folder, args.layer, model=args.model, blender=args.blender, max_turns=args.max_turns or 24
+            )
+        )
     elif args.single:
-        plan_path = anyio.run(lambda: generate_plan(
-            args.folder, model=args.model, blender=args.blender,
-            max_turns=args.max_turns, tag=args.tag))
+        plan_path = anyio.run(
+            lambda: generate_plan(
+                args.folder, model=args.model, blender=args.blender, max_turns=args.max_turns or 100, tag=args.tag
+            )
+        )
     elif args.until_clean:
-        plan_path = anyio.run(lambda: generate_plan_until_clean(
-            args.folder, draft_model=args.draft_model,
-            verify_model=args.verify_model, blender=args.blender,
-            max_turns=args.max_turns, tag=args.tag,
-            verify_only=args.verify_only, max_rounds=args.max_rounds))
+        plan_path = anyio.run(
+            lambda: generate_plan_until_clean(
+                args.folder,
+                draft_model=args.draft_model,
+                verify_model=args.verify_model,
+                blender=args.blender,
+                max_turns=args.max_turns or 100,
+                tag=args.tag,
+                verify_only=args.verify_only,
+                max_rounds=args.max_rounds,
+            )
+        )
     else:
-        plan_path = anyio.run(lambda: generate_plan_two_pass(
-            args.folder, draft_model=args.draft_model,
-            verify_model=args.verify_model, blender=args.blender,
-            max_turns=args.max_turns, tag=args.tag,
-            verify_only=args.verify_only))
+        plan_path = anyio.run(
+            lambda: generate_plan_two_pass(
+                args.folder,
+                draft_model=args.draft_model,
+                verify_model=args.verify_model,
+                blender=args.blender,
+                max_turns=args.max_turns or 100,
+                tag=args.tag,
+                verify_only=args.verify_only,
+            )
+        )
     log(f"wrote {plan_path}")
     # Record what this plan was derived from, so a later brief edit is detectable
     # instead of silently leaving every layer built to a spec that no longer exists.
     from ..provenance import stamp
-    used = args.model if (args.single or args.layer) else \
-        f"{args.draft_model}→{args.verify_model}"
+
+    used = args.model if (args.single or args.layer) else f"{args.draft_model}→{args.verify_model}"
     log(f"provenance → {stamp(args.folder, model=used, note='tag=' + str(args.tag))}")
 
 

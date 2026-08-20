@@ -157,7 +157,7 @@ def check_motion(name: str, frames: list[int]) -> dict:
     return rec
 
 
-def check_mesh(name: str) -> dict:
+def check_mesh(name: str, allow_boundary: bool = False) -> dict:
     import bmesh
 
     obj = _obj(name)
@@ -170,7 +170,10 @@ def check_mesh(name: str) -> dict:
         bm.verts.ensure_lookup_table()
         bm.edges.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
-        nonman = sum(1 for e in bm.edges if not e.is_manifold)
+        boundary = sum(1 for e in bm.edges if len(e.link_faces) == 1)
+        branch = sum(1 for e in bm.edges if len(e.link_faces) > 2)
+        wire = sum(1 for e in bm.edges if len(e.link_faces) == 0)
+        nonman = boundary + branch + wire
         loose = sum(1 for v in bm.verts if not v.link_edges)
         degen = sum(1 for f in bm.faces if f.calc_area() < 1e-12)
         ngons = sum(1 for f in bm.faces if len(f.verts) > 4)
@@ -194,13 +197,19 @@ def check_mesh(name: str) -> dict:
         counts = {
             "verts": len(bm.verts), "edges": len(bm.edges), "faces": len(bm.faces),
             "nonmanifold_edges": nonman, "loose_verts": loose,
+            "boundary_edges": boundary, "branch_edges": branch,
+            "wire_edges": wire,
             "degenerate_faces": degen, "ngons": ngons, "poles": poles,
             "islands": islands,
         }
     finally:
         bm.free()
-    issues = mesh_issues(counts)
-    return {"ok": not issues, "object": name, "counts": counts, "issues": issues}
+    issue_counts = dict(counts)
+    if allow_boundary:
+        issue_counts["nonmanifold_edges"] = branch + wire
+    issues = mesh_issues(issue_counts)
+    return {"ok": not issues, "object": name, "counts": counts,
+            "allow_boundary": bool(allow_boundary), "issues": issues}
 
 
 def check_scale(name: str) -> dict:
@@ -314,7 +323,7 @@ def dispatch(kind: str, args: dict) -> dict:
             raise ValueError("check_motion needs frames=[...] with at least 2 entries")
         return check_motion(args["object"], [int(f) for f in frames])
     if k == "mesh":
-        return check_mesh(args["object"])
+        return check_mesh(args["object"], bool(args.get("allow_boundary", False)))
     if k == "scale":
         return check_scale(args["object"])
     if k == "passes":

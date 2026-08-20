@@ -269,7 +269,9 @@ WORKFLOW, in order:
    (d) `checks.json` — EVERY numeric done-check in this plan, as records rather than
    prose, each one already RUN through `measure_check`:
 
-     [{"id": "L5a-1", "layer": "5", "axis": "hero_mass_under_light",
+     {"schema": 2, "checks": [
+      {"id": "L5a-1", "owner_layer": "5", "fault_owner": "5",
+       "activates_at": "5", "lifecycle": "layer", "axis": "hero_mass_under_light",
        "frame": 440, "ref": "refs/f440_final.jpg",
        "metric": "region_ratio", "regions": {"a": [0.44,0.35,0.50,0.85],
                                              "b": [0.50,0.35,0.56,0.85]},
@@ -277,7 +279,7 @@ WORKFLOW, in order:
        "stage": "pre_grade",
        "rejects": ["../barrel_roll/renders/5_best.png"],
        "proof": {"ref": 1.372, "adversary": [1.06]},
-       "note": "one flank keyed, the other falls away"}, ...]
+       "note": "one flank keyed, the other falls away"}, ...]}
 
    Regions are NORMALISED [x0,y0,x1,y1] in 0..1 with origin TOP-LEFT (x right, y down),
    so a check means the same thing at any render scale and "the shadow pier" stops being a
@@ -321,23 +323,30 @@ WORKFLOW, in order:
 
    (e) `scene_checks.json` — exact facts Blender should measure from the live scene instead
    of asking a vision model to estimate them from a JPEG. Write one record for EVERY numeric
-   layout/camera/geometry/count/smoothness clause in `layers.json`:
+   cross-layer geometry/material/control/compositor clause in `layers.json`:
 
-     [{"id": "L1-scene-hero-width", "layer": "1", "axis": "layout",
+     {"schema": 2, "contracts": [
+      {"id": "L1-scene-hero-width", "owner_layer": "1", "fault_owner": "1",
+       "activates_at": "1", "lifecycle": "persistent", "axis": "layout",
        "frame": 1, "kind": "bbox_width", "roles": ["hero.*"],
-       "op": "band", "lo": 0.28, "hi": 0.34, "origin": "planner",
-       "note": "projected union width in normalized frame coordinates"}, ...]
+       "op": "band", "lo": 0.28, "hi": 0.34,
+       "note": "projected union width in normalized frame coordinates"}, ...]}
 
    Supported `kind`: `bbox_width`, `bbox_height`, `bbox_center_x`, `bbox_center_y`,
    `bbox_top_y`, `bbox_bottom_y`, `object_count`, `mesh_vertex_count`,
-   `smooth_fraction`, `radial_inward_fraction`. `roles` accepts semantic `bvfx_role`
-   values and shell-style patterns such as `architecture.rib.*`. Object names are labels
-   and MUST NOT appear as selectors. Supported operators are `band`
+   `smooth_fraction`, `radial_inward_fraction`, `object_property`, `material_count`,
+   `material_user_count`, `material_assignment_fraction`, `node_count`,
+   `node_socket_value`, `node_link_count`, `animation_count`, `compositor_enabled`, and
+   `control_render_response`.
+   Selectors use semantic `bvfx_role` / `bvfx_control` values and shell patterns. Object,
+   material, and node names are labels and MUST NOT appear as selectors. Every record
+   declares `owner_layer`, `fault_owner`, `activates_at`, and `lifecycle`; lifecycle is
+   `layer`, `window` (with `valid_through`), or `persistent`. Supported operators are `band`
    (`lo`/`hi`), `eq` (`value`, optional `tol`), `min` (`lo`) and `max` (`hi`). Projected
    coordinates use the same NORMALISED TOP-LEFT convention as `checks.json`.
 
-   Planner-origin scene checks are authoritative because the planner chooses the target
-   before the builder works. Do not use them for subjective claims such as "hero reads
+   Every schema-2 interface contract is authoritative because it is gated before the
+   builder works. Do not use contracts for subjective claims such as "hero reads
    powerfully" or "rib foot is visible": geometry can exist without reading in the render,
    and those residuals belong to the critic. Use them for the underlying fact — dimensions,
    placement, count, mesh density, smooth flags and inward shell normals. Never let the
@@ -480,14 +489,16 @@ def _refs_block(shot) -> str:
     docstring above a statement of intent rather than of fact.
     """
     lines = [f"  - refs/{p.name}" for p in shot.refs] or ["  (none)"]
-    return ("Reference stills (the complete visual target — there is no source video). "
-            "Every one is ATTACHED to this message as an image, in this order:\n"
-            + "\n".join(lines)
-            + "\n\nLook at them before you plan. The fingerprints carry exposure and "
-              "density; the pictures carry everything else — camera height and angle, "
-              "which faces take light and which fall into shadow, what the silhouette "
-              "does against the sky, how light behaves in the air. A target you can only "
-              "state as a number is a target that came from half the brief.")
+    return (
+        "Reference stills (the complete visual target — there is no source video). "
+        "Every one is ATTACHED to this message as an image, in this order:\n"
+        + "\n".join(lines)
+        + "\n\nLook at them before you plan. The fingerprints carry exposure and "
+        "density; the pictures carry everything else — camera height and angle, "
+        "which faces take light and which fall into shadow, what the silhouette "
+        "does against the sky, how light behaves in the air. A target you can only "
+        "state as a number is a target that came from half the brief."
+    )
 
 
 def planner_user_prompt(shot) -> str:
@@ -572,19 +583,21 @@ LAYER_PLANNER_ADDENDUM = """\
 JUST-IN-TIME LAYER MODE — plan exactly Layer {layer_id}: {layer_title}.
 
 The global dependency map and machine contracts already exist. Earlier layer outcomes are
-sealed facts, and approved amendments are explicit changes to the specification. Read:
-`plans/global.md`, `layers.json`, `acceptance.json`, `critic_axes.json`, `checks.json`,
-`scene_checks.json`, `plans/outcomes/*.json`, `plan_amendments.jsonl`, current build scripts,
-and recent run logs. Then write exactly `{target}`. Do not edit the global plan or any
+sealed facts, and approved amendments are explicit changes to the specification. Read only
+the exact files named by the kickoff; the kickoff already carries a compact prior-outcome
+summary. Do not audit broad log directories or copy transcripts into the plan. Then write
+exactly `{target}`. Do not edit the global plan or any
 machine contract in this mode. If those artifacts conflict, stop and report the conflict;
 the correct repair is an approved amendment or global re-plan, not a hidden local override.
 
-The layer plan must include: scope and explicit non-scope; dependencies and sealed inputs;
-all owned axes and judge frames; one ticket per independently controllable value; semantic
-`bvfx_role` values it creates/reads; starting values with evidence; executable image and
-live-scene checks; comparison settings locked for the round; known failure history; and an
-automatic stop clause once authoritative checks pass and no evidence-backed owned-axis
-defect remains. Do not ask the layout layer to fix bloom, emission, grade, or motion.
+The plan is an execution index, not an evidence archive: maximum 160 lines. Include scope
+and explicit non-scope; dependencies and sealed interfaces; owned axes and judge frames;
+one compact ticket per independently controllable value; semantic `bvfx_role` and
+`bvfx_control` values it creates/reads; contract IDs instead of copied check prose;
+comparison settings locked for the round; the relevant failed approach in at most five
+lines; and an automatic stop clause once authoritative checks pass and no evidence-backed
+owned-axis defect remains. Runtime checks are evaluation-only and may never be promoted to
+hard plan requirements. Do not ask a layer to repair controls owned by another layer.
 """
 
 
@@ -593,8 +606,10 @@ def layer_user_prompt(shot, layer, target: str, feedback: str) -> str:
     return (
         f"Plan only Layer {layer.id} — {layer.title} — for shot '{shot.id}'. "
         f"Write exactly `{target}`.\n\n"
-        f"Read `brief.md`, `plans/global.md`, all machine contracts, prior layer outcomes, "
-        f"approved amendments, current scripts, and recent run logs. {_refs_block(shot)}\n\n"
+        f"Read `brief.md`, `plans/global.md`, `layers.json`, `critic_axes.json`, "
+        f"`checks.json`, `scene_checks.json`, `plan_amendments.jsonl`, and only the build "
+        f"scripts for this layer and its declared predecessors. Do not scan logs. "
+        f"{_refs_block(shot)}\n\n"
         f"Layer contract: judges={list(layer.judges)}, owns={list(layer.owns)}, "
         f"script=`{layer.script}`.\n\n{feedback or 'No prior outcome/amendment feedback.'}"
     )

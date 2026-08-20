@@ -13,6 +13,61 @@ from pathlib import Path
 
 from .ledger import Milestone
 
+LOOK_AXIS_WORDS = (
+    "light",
+    "exposure",
+    "grade",
+    "halation",
+    "emission",
+    "bloom",
+    "palette",
+    "material",
+    "surface",
+    "texture",
+    "color",
+    "colour",
+    "finish",
+    "look",
+)
+
+METRIC_GROUPS = frozenset({"exposure", "detail", "emitters", "halation", "color", "motion"})
+
+
+def axis_feedback_groups(axes: list[tuple[str, str]]) -> frozenset[str]:
+    """Return only the image-feedback families owned by these axis identifiers.
+
+    This is intentionally a positive capability map.  A layout layer therefore cannot
+    receive a bloom prescription merely because the finished reference contains bloom,
+    while a material layer can still receive texture/detail feedback without being told
+    to compensate with exposure.  Descriptions are excluded because negated prose such
+    as ``no lighting`` previously inverted ownership.
+    """
+    keys = " ".join(str(key).lower() for key, _description in axes)
+    groups: set[str] = set()
+    if any(word in keys for word in ("material", "surface", "texture", "palette", "color", "colour", "substance")):
+        groups.update(("detail", "color"))
+    if any(word in keys for word in ("light", "lighting", "illumination", "exposure")):
+        groups.update(("exposure", "detail", "emitters", "color"))
+    if any(word in keys for word in ("emission", "emitter", "practical")):
+        groups.update(("exposure", "emitters"))
+    if any(word in keys for word in ("fx", "volume", "volumetric", "beam", "haze", "atmosphere", "fog")):
+        groups.update(("exposure", "detail", "emitters"))
+    if any(word in keys for word in ("motion", "animation", "continuity", "timing")):
+        groups.add("motion")
+    if any(word in keys for word in ("grade", "finish", "halation", "bloom", "look")):
+        groups.update(METRIC_GROUPS)
+    return frozenset(groups)
+
+
+def axes_own_look(axes: list[tuple[str, str]]) -> bool:
+    """Classify ownership from axis identifiers only, never descriptive prose.
+
+    Descriptions routinely say "not materials, not light". Substring-scanning that prose
+    inverted the policy during the first live validation run.
+    """
+    return bool(axis_feedback_groups(axes))
+
+
 _BUILDER_TMPL = """\
 You are the BUILD agent in an automated 3D/VFX bambi_vfx. You construct a Blender
 scene to hit ONE milestone frame so it matches its reference image. You are a
@@ -21,6 +76,8 @@ volumetrics, and camera transforms — and you VERIFY by rendering.
 
 Paths are RELATIVE to your working directory (the shot folder): read `refs/M1_green.jpg`,
 `brief.md` directly — do NOT prefix with the repo root.
+
+{ownership_rule}
 
 Your hands are the `blender` tools:
   - run_bpy(script)      — the only way to change the scene. In scope ALWAYS (no imports
@@ -68,10 +125,18 @@ Your hands are the `blender` tools:
     during live iteration. Call action='baseline' before one run_bpy edit, then
     action='compare' with the same label. It re-renders the identical frame/settings and
     returns the diff, so a no-op node/light/key change cannot consume another tuning round.
+  - probe_control(graph, material_role, node_role, values, frame, reference, crop=,
+    socket_direction='auto') —
+    sweep a numeric semantic shader/compositor control transactionally. It renders every
+    value at locked settings, returns a table plus the best split panel, and ALWAYS restores
+    the original value. It resolves ordinary input controls and Value-node output controls;
+    set socket_direction explicitly only when both directions expose the same socket. Use
+    this for parameter search; then commit the chosen value exactly once with run_bpy. Do
+    not implement trial/revert loops manually.
   - propose_checks(checks, after, before) — BEFORE you finish, record how a machine can
-    verify this layer only when existing checks leave a real evidence gap. Read
-    `checks.json` and `runtime_checks.json` first; do not duplicate authoritative evidence
-    that already passes. `after` and `before` must be actual relative paths to render
+    verify this layer only when authoritative scene contracts leave a real evidence gap.
+    `runtime_checks.json` is evaluation-only and MUST NOT be read as build guidance.
+    `after` and `before` must be actual relative paths to render
     artifacts, never prose labels. The tool schema lists every supported metric. A new
     check must PASS on your render and FAIL on the state before your layer ran; if no such
     check is necessary or no honest adversary exists, propose none.
@@ -96,9 +161,9 @@ WORKFLOW each round:
      the current value and keep that as the baseline. Build with run_bpy. Render 'solid'
      to lock composition, iterate on 'draft', then
      use compare_frame against the reference to judge the look.
-  3. WATCH THE EXPOSURE READOUT: if 'clipped(blown)' is high your emission/lights are too
-     hot — dial them DOWN (over-driving emission whites out detail). If it's mostly black,
-     add light. Don't chase brightness by eye.
+  3. Act only on metrics owned by this layer. Appearance readouts are deliberately
+     suppressed when lighting/look is out of scope; never compensate for a later layer by
+     tuning lamps, albedo, emission, bloom, or exposure here.
   4. MEASURE EVERY NUMBER YOUR TICKET STATES, with check_scene or measure_regions, and say
      baseline → after → target. If you cannot tell whether the edit changed the intended
      pixels, use verify_change before making another edit. A target you did not measure is a
@@ -241,21 +306,20 @@ def _prompt_slice(start: str, end: str | None) -> str:
 # it. These non-overlapping fragments are selected from its tickets, title, scope and owned
 # axes; the always-on core retains tool semantics, evidence workflow and determinism.
 _CORE_TMPL = _BUILDER_TMPL.split("\nPERFORMANCE —", 1)[0].rstrip()
-_ALWAYS_GUIDANCE = "\n\n".join((
-    _prompt_slice("PERFORMANCE —", "  - bvfx_scatter_emissive"),
-    _prompt_slice("If a run_bpy call warns", "ATMOSPHERE —"),
-    _prompt_slice("BLENDER 5.x + RENDER NOTES", "HERO SURFACES —"),
-    _prompt_slice("The scene starts EMPTY", None),
-))
+_ALWAYS_GUIDANCE = "\n\n".join(
+    (
+        _prompt_slice("PERFORMANCE —", "  - bvfx_scatter_emissive"),
+        _prompt_slice("If a run_bpy call warns", "ATMOSPHERE —"),
+        _prompt_slice("BLENDER 5.x + RENDER NOTES", "HERO SURFACES —"),
+        _prompt_slice("The scene starts EMPTY", None),
+    )
+)
 _GUIDANCE_FRAGMENTS = {
     "procedural": _prompt_slice("  - bvfx_scatter_emissive", "  - bvfx_volume"),
     "bounded_volume": _prompt_slice("  - bvfx_volume", "  - bvfx_emissive_from_texture"),
-    "asset_material": _prompt_slice("  - bvfx_emissive_from_texture",
-                                      "  - bvfx_volumetric_world"),
-    "world_volume": _prompt_slice("  - bvfx_volumetric_world",
-                                    "LIGHTING IN A SCENE THAT HAS A WORLD VOLUME"),
-    "sun_volume": _prompt_slice("LIGHTING IN A SCENE THAT HAS A WORLD VOLUME",
-                                  "  - bvfx_glare_bloom"),
+    "asset_material": _prompt_slice("  - bvfx_emissive_from_texture", "  - bvfx_volumetric_world"),
+    "world_volume": _prompt_slice("  - bvfx_volumetric_world", "LIGHTING IN A SCENE THAT HAS A WORLD VOLUME"),
+    "sun_volume": _prompt_slice("LIGHTING IN A SCENE THAT HAS A WORLD VOLUME", "  - bvfx_glare_bloom"),
     "glare_emission": _prompt_slice("  - bvfx_glare_bloom", "  - bvfx_import_asset"),
     "import_asset": _prompt_slice("  - bvfx_import_asset", "  - bvfx_aim"),
     "camera_motion": _prompt_slice("  - bvfx_aim", "If a run_bpy call warns"),
@@ -264,22 +328,82 @@ _GUIDANCE_FRAGMENTS = {
 }
 _GUIDANCE_ORDER = tuple(_GUIDANCE_FRAGMENTS)
 _TICKET_DOMAINS = {
-    "procedural": ({"city", "scatter*", "crowd*", "debris", "star", "stars", "greeble*",
-                    "repeat*", "instanc*", "procedural", "background*"}, {"procedural"}),
-    "asset/material": ({"asset*", "facade*", "tower*", "building*", "window*",
-                        "texture*", "material*", "surface*", "sign*", "typograph*",
-                        "lookdev", "mesh*"},
-                       {"asset_material", "import_asset", "hero_surface"}),
-    "atmosphere": ({"atmospher*", "cloud*", "fog*", "haze", "nebula*", "volume*",
-                    "volumetric*", "smoke*", "sky", "canopy"},
-                   {"bounded_volume", "world_volume", "sun_volume", "atmosphere"}),
-    "lighting/finish": ({"light", "lights", "lighting", "lit", "emission*", "glow*",
-                         "bloom*", "halation", "exposure", "grade", "shadow*", "contrast",
-                         "blackout"},
-                        {"world_volume", "sun_volume", "glare_emission"}),
-    "camera/motion": ({"camera*", "composition", "framing", "motion", "dolly",
-                       "track*", "pan", "lens", "keyframe*", "timing", "speed", "accel*",
-                       "jerk", "shutter", "visibility", "reveal"}, {"camera_motion"}),
+    "procedural": (
+        {
+            "city",
+            "scatter*",
+            "crowd*",
+            "debris",
+            "star",
+            "stars",
+            "greeble*",
+            "repeat*",
+            "instanc*",
+            "procedural",
+            "background*",
+        },
+        {"procedural"},
+    ),
+    "asset/material": (
+        {
+            "asset*",
+            "facade*",
+            "tower*",
+            "building*",
+            "window*",
+            "texture*",
+            "material*",
+            "surface*",
+            "sign*",
+            "typograph*",
+            "lookdev",
+            "mesh*",
+        },
+        {"asset_material", "import_asset", "hero_surface"},
+    ),
+    "atmosphere": (
+        {"atmospher*", "cloud*", "fog*", "haze", "nebula*", "volume*", "volumetric*", "smoke*", "sky", "canopy"},
+        {"bounded_volume", "world_volume", "sun_volume", "atmosphere"},
+    ),
+    "lighting/finish": (
+        {
+            "light",
+            "lights",
+            "lighting",
+            "lit",
+            "emission*",
+            "glow*",
+            "bloom*",
+            "halation",
+            "exposure",
+            "grade",
+            "shadow*",
+            "contrast",
+            "blackout",
+        },
+        {"world_volume", "sun_volume", "glare_emission"},
+    ),
+    "camera/motion": (
+        {
+            "camera*",
+            "composition",
+            "framing",
+            "motion",
+            "dolly",
+            "track*",
+            "pan",
+            "lens",
+            "keyframe*",
+            "timing",
+            "speed",
+            "accel*",
+            "jerk",
+            "shutter",
+            "visibility",
+            "reveal",
+        },
+        {"camera_motion"},
+    ),
 }
 
 
@@ -288,14 +412,15 @@ def ticket_guidance_names(ticket_context: str | None) -> tuple[str, ...]:
     if ticket_context is None:
         return tuple(_TICKET_DOMAINS)
     import re
+
     words = set(re.findall(r"[a-z0-9]+", ticket_context.lower()))
 
     def mentioned(term: str) -> bool:
-        return (any(word.startswith(term[:-1]) for word in words)
-                if term.endswith("*") else term in words)
+        return any(word.startswith(term[:-1]) for word in words) if term.endswith("*") else term in words
 
-    return tuple(name for name, (terms, _fragments) in _TICKET_DOMAINS.items()
-                 if any(mentioned(term) for term in terms))
+    return tuple(
+        name for name, (terms, _fragments) in _TICKET_DOMAINS.items() if any(mentioned(term) for term in terms)
+    )
 
 
 def _ticket_guidance(ticket_context: str | None) -> str:
@@ -314,15 +439,25 @@ def _ticket_guidance(ticket_context: str | None) -> str:
     return "\n\n".join((discovery, *selected))
 
 
-def builder_system(axes: list[tuple[str, str]], recipe_index: str = "",
-                   *, ticket_context: str | None = None) -> str:
+def builder_system(axes: list[tuple[str, str]], recipe_index: str = "", *, ticket_context: str | None = None) -> str:
     """Build a stable core plus only the domain guidance relevant to this layer.
 
     `ticket_context=None` retains the full-domain form for diagnostics/backward callers.
     Production passes the layer excerpt, scope and axes, keeping unrelated barrel-roll,
     tower, cloud and grading lore out of sessions that cannot act on it.
     """
-    body = _CORE_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes))
+    look_owned = axes_own_look(axes)
+    ownership_rule = (
+        "OWNERSHIP MODE — APPEARANCE/LOOK IS IN SCOPE. Exposure and reference-image "
+        "appearance deltas are actionable for the axes below."
+        if look_owned
+        else "OWNERSHIP MODE — FORM/LAYOUT ONLY. Do not tune lighting, material albedo, "
+        "emission, bloom, grade, or exposure to chase the finished reference. "
+        "compare_frame hides those unowned metrics. Use exactly one "
+        "render_pass(shade='matcap:check_normal+y') fixed form diagnostic, satisfy the "
+        "authoritative scene contracts, then hand off to the critic."
+    )
+    body = _CORE_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes), ownership_rule=ownership_rule)
     parts = [body, _SCREEN_COORDS, _ALWAYS_GUIDANCE, _ticket_guidance(ticket_context)]
     if recipe_index:
         parts.append(recipe_index)
@@ -343,6 +478,7 @@ def recurring_complaints(shot, m: Milestone, min_attempts: int = 2) -> str:
     something the layer keeps getting wrong, as opposed to one round's noise.
     """
     from .ledger import Ledger
+
     try:
         rounds = Ledger(shot)._slot(m).get("rounds", [])
     except Exception:
@@ -357,12 +493,10 @@ def recurring_complaints(shot, m: Milestone, min_attempts: int = 2) -> str:
         for issue in r.get("issues") or []:
             key = " ".join(str(issue).lower().split()[:6])
             seen.setdefault(key, set()).add(a)
-    repeated = sorted((k for k, v in seen.items() if len(v) >= min_attempts),
-                      key=lambda k: -len(seen[k]))
+    repeated = sorted((k for k, v in seen.items() if len(v) >= min_attempts), key=lambda k: -len(seen[k]))
     if not repeated:
         return ""
-    lines = "\n".join(f"    - {k}…  (raised under {len(seen[k])} separate attempts)"
-                      for k in repeated[:6])
+    lines = "\n".join(f"    - {k}…  (raised under {len(seen[k])} separate attempts)" for k in repeated[:6])
     return (
         f"\nTHIS LAYER HAS BEEN ATTEMPTED {len(attempts)} TIMES BEFORE AND FAILED. These "
         f"notes were raised again under a LATER attempt, so a previous build already "
@@ -370,23 +504,37 @@ def recurring_complaints(shot, m: Milestone, min_attempts: int = 2) -> str:
         f"Read them as the layer's standing defects, not as one critic's opinion. If your "
         f"approach does not specifically address each one, it will fail the same way. If "
         f"you believe a note is wrong or impossible, say so explicitly in your APPROACH "
-        f"line and explain why — do not silently skip it.\n")
+        f"line and explain why — do not silently skip it.\n"
+    )
 
 
-def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
-                    script_rel: str | None = None, plan_excerpt: str = "",
-                    also_judged: list | None = None, history: str = "") -> str:
+def builder_kickoff(
+    shot,
+    m: Milestone,
+    priors: list[str] | None = None,
+    script_rel: str | None = None,
+    plan_excerpt: str = "",
+    also_judged: list | None = None,
+    history: str = "",
+) -> str:
     adir = shot.folder / "assets"
-    assets = sorted(p.name for p in adir.iterdir() if (p / "model.glb").is_file()) \
-        if adir.is_dir() else []
-    asset_line = (f"AVAILABLE ASSETS — import with import_asset() using these EXACT names "
-                  f"(do NOT guess a name): {assets}. Prefer the committed hero mesh over "
-                  f"hand-modelling a detailed prop.\n\n" if assets else "")
-    plan_block = (f"YOUR LAYER'S PLAN SECTION — these tickets are your build instructions "
-                  f"(methods, starting values marked *(start)*, gotchas, done-checks). "
-                  f"Follow them. `plans/global.md` is dependency context only; it does "
-                  f"not override this layer plan:\n"
-                  f"---\n{plan_excerpt}\n---\n\n" if plan_excerpt else "")
+    assets = sorted(p.name for p in adir.iterdir() if (p / "model.glb").is_file()) if adir.is_dir() else []
+    asset_line = (
+        f"AVAILABLE ASSETS — import with import_asset() using these EXACT names "
+        f"(do NOT guess a name): {assets}. Prefer the committed hero mesh over "
+        f"hand-modelling a detailed prop.\n\n"
+        if assets
+        else ""
+    )
+    plan_block = (
+        f"YOUR LAYER'S PLAN SECTION — these tickets are your build instructions "
+        f"(methods, starting values marked *(start)*, gotchas, done-checks). "
+        f"Follow them. `plans/global.md` is dependency context only; it does "
+        f"not override this layer plan:\n"
+        f"---\n{plan_excerpt}\n---\n\n"
+        if plan_excerpt
+        else ""
+    )
     contract_block = ""
     if (shot.folder / "scene_checks.json").is_file():
         contract_block = (
@@ -403,19 +551,24 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
             f"run — everything they build exists right now. Your job is THIS unit's "
             f"DELTA only: add/key/modify per your instructions; do NOT rebuild what "
             f"exists, and do NOT break what earlier units already got judged on. "
-            f"inspect_scene/list_keyframes first to see what you have.")
+            f"inspect_scene/list_keyframes first to see what you have."
+        )
     else:
-        start_line = (f"Start from the empty scene, build to hit frame {m.frame}, and "
-                      f"render eevee to check yourself against the reference. Iterate "
-                      f"until it matches.")
+        start_line = (
+            f"Start from the empty scene, build to hit frame {m.frame}, and "
+            f"render eevee to check yourself against the reference. Iterate "
+            f"until it matches."
+        )
     extra = ""
     if also_judged:
         rows = "\n".join(f"    f{f} vs `{r}`" for f, r in also_judged)
-        extra = (f"\nTHIS LAYER ALSO ANSWERS FOR these frames — the finished script is "
-                 f"scored at EVERY one of them and passes only if all clear:\n{rows}\n"
-                 f"Iterate against f{m.frame}, but before you finalize, render and check "
-                 f"the others too. A change that fixes f{m.frame} and breaks another of "
-                 f"your frames is not a fix.\n")
+        extra = (
+            f"\nTHIS LAYER ALSO ANSWERS FOR these frames — the finished script is "
+            f"scored at EVERY one of them and passes only if all clear:\n{rows}\n"
+            f"Iterate against f{m.frame}, but before you finalize, render and check "
+            f"the others too. A change that fixes f{m.frame} and breaks another of "
+            f"your frames is not a fix.\n"
+        )
     return (
         f"MODE: LIVE_BUILD — change the warm Blender scene, not the build script.\n"
         f"For each ticket: name one control and its baseline check, make one scoped change, "
@@ -444,16 +597,19 @@ def builder_kickoff(shot, m: Milestone, priors: list[str] | None = None,
 def revision_prompt(m: Milestone, verdict: dict, candidate_rel: str) -> str:
     raw = verdict.get("scores", {})
     # scores may contain "n/a" for axes outside this stage's scope — rank numerics only
-    scores = {k: float(v) for k, v in raw.items()
-              if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    scores = {k: float(v) for k, v in raw.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
     na = [k for k in raw if k not in scores]
     ranked = sorted(scores.items(), key=lambda kv: kv[1])
-    weakest = [k for k, _ in ranked[:2]]                    # the 1–2 lowest in-scope axes
-    strong = [k for k, v in scores.items() if v >= 3]       # already good — protect these
+    weakest = [k for k, _ in ranked[:2]]  # the 1–2 lowest in-scope axes
+    strong = [k for k, v in scores.items() if v >= 3]  # already good — protect these
     issues = "\n".join(f"  - {s}" for s in verdict.get("issues", [])) or "  (none given)"
     score_str = ", ".join(f"{k}={raw[k]}" for k in raw)
-    na_line = (f" Axes marked n/a ({', '.join(na)}) are OUT OF SCOPE for this stage — a "
-               f"later stage builds them; do not touch them." if na else "")
+    na_line = (
+        f" Axes marked n/a ({', '.join(na)}) are OUT OF SCOPE for this stage — a "
+        f"later stage builds them; do not touch them."
+        if na
+        else ""
+    )
     return (
         f"MODE: LIVE_BUILD — make one evidence-backed change in the warm scene.\n"
         f"Round scored mean {verdict.get('mean')} (scores: {score_str}) — REVISE.\n\n"
@@ -470,18 +626,21 @@ def revision_prompt(m: Milestone, verdict: dict, candidate_rel: str) -> str:
     )
 
 
-def finalize_prompt(shot, m: Milestone, priors: list[str] | None = None,
-                    script_rel: str | None = None, journal_rel: str | None = None) -> str:
+def finalize_prompt(
+    shot, m: Milestone, priors: list[str] | None = None, script_rel: str | None = None, journal_rel: str | None = None
+) -> str:
     script = script_rel or f"build/{m.id.lower()}.py"
     if priors:
         scope = (
             f"a DELTA script: the harness re-runs {priors} first, then your script. "
             f"Reproduce ONLY the changes you made this session (keys, ramps, new/modified "
-            f"objects/materials) — do not repeat what the earlier scripts already build")
+            f"objects/materials) — do not repeat what the earlier scripts already build"
+        )
     else:
         scope = (
             f"a script that rebuilds this entire scene from an EMPTY scene, reproducing "
-            f"frame {m.frame} exactly as you have it")
+            f"frame {m.frame} exactly as you have it"
+        )
     return (
         f"MODE: FINALIZE_SCRIPT — the live search is over; publish its deterministic "
         f"artifact. Do not make new look decisions in this mode.\n\n"
@@ -491,12 +650,16 @@ def finalize_prompt(shot, m: Milestone, priors: list[str] | None = None,
         f"`bvfx_import_asset('<name>')` (the import_asset TOOL is NOT in scope inside the "
         f"script) — do not hardcode asset file paths. Use your Write tool. Write only that "
         f"file."
-        + (f"\n\nSTART FROM THE TRANSCRIPT, don't rewrite from memory: `{journal_rel}` "
-           f"holds every run_bpy call you made this session that succeeded, in order. "
-           f"Read it and PRUNE — drop probes, measurements and tweaks that were later "
-           f"superseded, keep the calls whose effect survives in the current scene, and "
-           f"merge them into clean ordered code. Re-deriving this from memory is how the "
-           f"script drifts from the scene you actually built." if journal_rel else "")
+        + (
+            f"\n\nSTART FROM THE TRANSCRIPT, don't rewrite from memory: `{journal_rel}` "
+            f"holds every run_bpy call you made this session that succeeded, in order. "
+            f"Read it and PRUNE — drop probes, measurements and tweaks that were later "
+            f"superseded, keep the calls whose effect survives in the current scene, and "
+            f"merge them into clean ordered code. Re-deriving this from memory is how the "
+            f"script drifts from the scene you actually built."
+            if journal_rel
+            else ""
+        )
     )
 
 
@@ -562,13 +725,18 @@ with exactly this shape:
 """
 
 
-def critic_prompt(shot, m: Milestone, candidate_rel: str,
-                  axes: list[tuple[str, str]], motion_rel: str | None = None,
-                  motion_frames: list[int] | None = None,
-                  scope: str | None = None,
-                  evidence: list[dict] | None = None,
-                  review_mode: str = "observer",
-                  focus_panels: list[dict] | None = None) -> str:
+def critic_prompt(
+    shot,
+    m: Milestone,
+    candidate_rel: str,
+    axes: list[tuple[str, str]],
+    motion_rel: str | None = None,
+    motion_frames: list[int] | None = None,
+    scope: str | None = None,
+    evidence: list[dict] | None = None,
+    review_mode: str = "observer",
+    focus_panels: list[dict] | None = None,
+) -> str:
     axes = "\n".join(f"  - {k}: {desc}" for k, desc in axes)
     # The images are ATTACHED to this request, not fetched. The critic used to be an agent
     # that had to call Read to see them, and that indirection caused the same bug three
@@ -622,11 +790,13 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
     if focus_panels:
         focus_block = (
             "\nSUPPLIED FOCUS PANELS (supplemental; the full frame still controls "
-            "composition/context):\n" + "\n".join(
+            "composition/context):\n"
+            + "\n".join(
                 f"  - {panel.get('id')}: axis={panel.get('axis')} crop={panel.get('crop')} "
                 f"views={panel.get('views')} — {panel.get('reason')}"
                 for panel in focus_panels
-            ) + "\nThese already answer the close-inspection request. Return an empty "
+            )
+            + "\nThese already answer the close-inspection request. Return an empty "
             "focus_requests list and cite any panel used in issue_evidence.panel_ids.\n"
         )
     review_block = ""
@@ -644,8 +814,7 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
         )
     elif review_mode == "focus_review":
         panel_lines = "\n".join(
-            f"  - {panel.get('id')}: axis={panel.get('axis')} crop={panel.get('crop')} — "
-            f"{panel.get('reason')}"
+            f"  - {panel.get('id')}: axis={panel.get('axis')} crop={panel.get('crop')} — {panel.get('reason')}"
             for panel in (focus_panels or [])
         )
         review_block = (
@@ -653,8 +822,7 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
             "context; the additional aligned panels only resolve small-feature legibility. "
             "Each panel contains candidate/reference detail views at the exact same crop. "
             "Do not request another crop. If a blocking visual issue relies on a focus "
-            "panel, cite its id in the same-index issue_evidence.panel_ids.\n"
-            + panel_lines + "\n"
+            "panel, cite its id in the same-index issue_evidence.panel_ids.\n" + panel_lines + "\n"
         )
     return (
         f"Stage {m.id} of shot '{shot.id}', frame {m.frame}.\n"
@@ -678,8 +846,7 @@ def critic_prompt(shot, m: Milestone, candidate_rel: str,
     )
 
 
-def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str,
-                            holding: list | None = None) -> str:
+def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str, holding: list | None = None) -> str:
     """Hand a CANONICAL failure back to the builder that wrote the script.
 
     The distinction this prompt has to land is the one the builder gets wrong by default:
@@ -690,29 +857,29 @@ def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str,
     """
     blocks = []
     for frame, v in failed:
-        issues = "\n".join(f"    - {s}" for s in (v.get("issues") or [])[:6]) or \
-                 "    (no specific issues returned)"
-        scores = ", ".join(f"{k}={val}" for k, val in (v.get("scores") or {}).items()
-                           if val != "n/a")
+        issues = "\n".join(f"    - {s}" for s in (v.get("issues") or [])[:6]) or "    (no specific issues returned)"
+        scores = ", ".join(f"{k}={val}" for k, val in (v.get("scores") or {}).items() if val != "n/a")
         evidence = "\n".join(
-            f"      {e.get('id')}: {e.get('value')} vs {e.get('target')} — "
-            f"{'PASS' if e.get('pass') else 'FAIL'}"
+            f"      {e.get('id')}: {e.get('value')} vs {e.get('target')} — {'PASS' if e.get('pass') else 'FAIL'}"
             for e in (v.get("evidence") or [])
         )
-        blocks.append(f"  f{frame} — scored {v.get('mean')} ({scores})\n{issues}"
-                      + (f"\n    verified evidence:\n{evidence}" if evidence else ""))
+        blocks.append(
+            f"  f{frame} — scored {v.get('mean')} ({scores})\n{issues}"
+            + (f"\n    verified evidence:\n{evidence}" if evidence else "")
+        )
     # Frames that currently pass are CONSTRAINTS. Omitting them produced whack-a-mole:
     # one repair fixed f440 and left f45 broken, the next fixed f45 and broke f440.
     keep = ""
     if holding:
-        rows = "\n".join(f"    f{f} — currently {v.get('mean')}, PASSING"
-                          for f, v in holding)
-        keep = (f"\nTHESE FRAMES ALREADY PASS. They are constraints, not context:\n"
-                f"{rows}\n"
-                f"A change that fixes a failing frame and breaks one of these is NOT a "
-                f"fix — it is a trade, and the unit still fails. Re-check them before you "
-                f"declare done. If a fix genuinely cannot be made without regressing one, "
-                f"say so explicitly instead of shipping the trade.\n")
+        rows = "\n".join(f"    f{f} — currently {v.get('mean')}, PASSING" for f, v in holding)
+        keep = (
+            f"\nTHESE FRAMES ALREADY PASS. They are constraints, not context:\n"
+            f"{rows}\n"
+            f"A change that fixes a failing frame and breaks one of these is NOT a "
+            f"fix — it is a trade, and the unit still fails. Re-check them before you "
+            f"declare done. If a fix genuinely cannot be made without regressing one, "
+            f"say so explicitly instead of shipping the trade.\n"
+        )
     return (
         f"MODE: REPAIR_SCRIPT — edit the canonical artifact, not the warm scene.\n"
         f"Use Grep → Read the smallest span → Edit. Write must not "
@@ -720,8 +887,10 @@ def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str,
         f"CANONICAL VERIFICATION FAILED for unit {m.id}.\n\n"
         f"Your script `{script_rel}` was re-run FROM AN EMPTY SCENE and the result was "
         f"scored at every frame this unit answers for. These frames did not clear:\n\n"
-        + "\n\n".join(blocks) + "\n"
-        + keep + "\n"
+        + "\n\n".join(blocks)
+        + "\n"
+        + keep
+        + "\n"
         f"Read that carefully: the live scene you have been tuning is NOT what failed. "
         f"The SCRIPT's output is. If the script omits something you built interactively, "
         f"or builds it in an order that changes the result, the two will disagree — so "

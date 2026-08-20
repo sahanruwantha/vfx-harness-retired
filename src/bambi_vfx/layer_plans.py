@@ -20,7 +20,10 @@ GLOBAL_PLAN = "global.md"
 AMENDMENTS = "plan_amendments.jsonl"
 _AMENDMENT_STATUSES = {"proposed", "approved", "rejected", "superseded"}
 _AMENDMENT_CLASSES = {
-    "build_defect", "plan_defect", "reference_ambiguity", "scope_mismatch",
+    "build_defect",
+    "plan_defect",
+    "reference_ambiguity",
+    "scope_mismatch",
     "tooling_defect",
 }
 
@@ -49,6 +52,12 @@ def read_layer_plan(folder: str | Path, layer) -> str:
     text = path.read_text(encoding="utf-8").strip()
     if len(text) < 200:
         raise ValueError(f"{path} is too small to be an executable layer plan")
+    lines = text.count("\n") + 1
+    if lines > 160:
+        raise ValueError(
+            f"{path} has {lines} lines; strict layer plans are capped at 160. Machine "
+            "contracts and sealed outcomes carry evidence; the plan is only an execution index"
+        )
     return text
 
 
@@ -74,8 +83,7 @@ def load_amendments(folder: str | Path) -> list[dict]:
 def validate_amendment(row: dict) -> str | None:
     if not isinstance(row, dict):
         return "record must be an object"
-    for key in ("id", "layer", "status", "classification", "original", "replacement",
-                "evidence", "impact"):
+    for key in ("id", "layer", "status", "classification", "original", "replacement", "evidence", "impact"):
         if not row.get(key):
             return f"missing {key}"
     if row["status"] not in _AMENDMENT_STATUSES:
@@ -90,8 +98,11 @@ def validate_amendment(row: dict) -> str | None:
 
 
 def amendment_block(folder: str | Path, layer_id: str) -> str:
-    rows = [row for row in load_amendments(folder)
-            if str(row.get("layer")) == str(layer_id) and row.get("status") == "approved"]
+    rows = [
+        row
+        for row in load_amendments(folder)
+        if str(row.get("layer")) == str(layer_id) and row.get("status") == "approved"
+    ]
     if not rows:
         return ""
     lines = ["## Approved plan amendments"]
@@ -133,14 +144,44 @@ def prior_outcomes_block(folder: str | Path, layer_id: str) -> str:
     return "\n".join(lines)
 
 
-def write_layer_outcome(folder: str | Path, layer, *, status: str, best: dict,
-                        canonical: list, run_id: str, attempt: int | None = None,
-                        blender_version: str) -> Path:
+def write_layer_outcome(
+    folder: str | Path,
+    layer,
+    *,
+    status: str,
+    best: dict,
+    canonical: list,
+    run_id: str,
+    attempt: int | None = None,
+    blender_version: str,
+) -> Path:
     """Seal measured state for the next layer's just-in-time planning input."""
     from .revalidation import OUTCOME_SCHEMA, canonical_records, input_manifest
 
-    evidence = [item for _frame_ref, verdict in canonical
-                for item in (verdict.get("evidence") or []) if item.get("authoritative")]
+    evidence = [
+        item
+        for _frame_ref, verdict in canonical
+        for item in (verdict.get("evidence") or [])
+        if item.get("authoritative")
+    ]
+    interfaces = [
+        {
+            key: item.get(key)
+            for key in (
+                "id",
+                "metric",
+                "value",
+                "target",
+                "pass",
+                "owner_layer",
+                "fault_owner",
+                "activates_at",
+                "lifecycle",
+            )
+        }
+        for item in evidence
+        if item.get("source") == "interface_contract" and str(item.get("owner_layer")) == str(layer.id)
+    ]
     decisions = [verdict.get("decided_by", "critic") for _fr, verdict in canonical]
     record = {
         "schema": OUTCOME_SCHEMA,
@@ -156,8 +197,8 @@ def write_layer_outcome(folder: str | Path, layer, *, status: str, best: dict,
         "authoritative_total": len(evidence),
         "authoritative_passed": sum(bool(item.get("pass")) for item in evidence),
         "failed_contracts": [item.get("id") for item in evidence if not item.get("pass")],
-        "revalidation_manifest": input_manifest(
-            folder, layer, blender_version=blender_version),
+        "interfaces": interfaces,
+        "revalidation_manifest": input_manifest(folder, layer, blender_version=blender_version),
         "canonical": canonical_records(folder, layer, canonical),
     }
     path = Path(folder) / PLAN_DIR / "outcomes" / f"{int(layer.id):02d}.json"
@@ -174,8 +215,7 @@ def load_layer_outcome(folder: str | Path, layer_id: str) -> dict:
     return row if isinstance(row, dict) else {}
 
 
-def record_revalidation(folder: str | Path, layer_id: str, *, run_id: str,
-                        attempt: int, evidence: list[dict]) -> Path:
+def record_revalidation(folder: str | Path, layer_id: str, *, run_id: str, attempt: int, evidence: list[dict]) -> Path:
     """Append the latest replay result without changing the sealed pass boundary."""
     path = Path(folder) / PLAN_DIR / "outcomes" / f"{int(layer_id):02d}.json"
     row = load_layer_outcome(folder, layer_id)

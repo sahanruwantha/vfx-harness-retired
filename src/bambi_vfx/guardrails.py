@@ -231,12 +231,45 @@ def script_sanity() -> HookMatcher:
                     f"handle `x is None`, or call inspect_nodes(...) first to see which "
                     f"node types actually exist. For the usual targets the bvfx_* helpers "
                     f"already handle the miss."}}
+
+        indexed = []
+        ensured: dict[tuple[str, str], list[int]] = {}
+        for node in _ast.walk(tree):
+            if (isinstance(node, _ast.Call)
+                    and isinstance(node.func, _ast.Attribute)
+                    and node.func.attr == "ensure_lookup_table"
+                    and isinstance(node.func.value, _ast.Attribute)
+                    and isinstance(node.func.value.value, _ast.Name)
+                    and node.func.value.attr in {"faces", "verts", "edges"}):
+                key = (node.func.value.value.id, node.func.value.attr)
+                ensured.setdefault(key, []).append(node.lineno)
+            if not isinstance(node, _ast.Subscript) or not isinstance(node.value, _ast.Attribute):
+                continue
+            owner = node.value.value
+            seq = node.value.attr
+            if isinstance(owner, _ast.Name) and seq in {"faces", "verts", "edges"}:
+                indexed.append((owner.id, seq, node.lineno))
+        missing_lookup = []
+        for owner, seq, line in indexed:
+            if not any(ensure_line < line for ensure_line in ensured.get((owner, seq), [])):
+                missing_lookup.append(f"{owner}.{seq}[...] at line {line}")
+        if missing_lookup:
+            bump("bmesh_lookup_blocked")
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    "BLOCKED before partial mesh mutation: indexed bmesh access requires "
+                    "the matching lookup table in this same run_bpy call. Before "
+                    + ", ".join(missing_lookup)
+                    + ", call `<bm>.<faces|verts|edges>.ensure_lookup_table()`."
+            }}
         return {}
     return HookMatcher(matcher=None, hooks=[_check])
 
 
-def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatcher:
-    """After every render, append objective ref-deltas to the tool result.
+def metrics_feedback(shot_folder: str | Path, ref_rel: str | None, *,
+                     look_actions: bool = True) -> HookMatcher:
+    """After owned-look renders, append objective ref-deltas to the tool result.
 
     The builder otherwise has to *decide* to measure. Pushing the numbers in makes
     'you are 54% over-exposed' unmissable instead of something a critic might mention.
@@ -250,7 +283,7 @@ def metrics_feedback(shot_folder: str | Path, ref_rel: str | None) -> HookMatche
         # near-identical report (and against a possibly DIFFERENT ref, the layer's
         # primary one) is noise that makes the builder reconcile two sets of numbers.
         # render_frame takes no reference, so it is the case that still needs pushing.
-        if not tool.endswith("render_frame") or not ref_rel:
+        if not look_actions or not tool.endswith("render_frame") or not ref_rel:
             return {}
         ref = folder / ref_rel
         if not ref.is_file():
@@ -431,7 +464,7 @@ def failure_recorder(shot_folder: str | Path) -> HookMatcher:
     return HookMatcher(matcher=None, hooks=[_record])
 
 
-def builder_phase_guard(phase: dict[str, str], script_rel: str | None) -> HookMatcher:
+def builder_phase_guard(phase: dict[str, Any], script_rel: str | None) -> HookMatcher:
     """Keep live search, first publication, and canonical repair from bleeding together.
 
     The old system prompt contained both "write the script once at finalize" and "Edit the
@@ -442,16 +475,27 @@ def builder_phase_guard(phase: dict[str, str], script_rel: str | None) -> HookMa
     target = Path(script_rel).as_posix() if script_rel else ""
 
     async def _check(inp, tool_use_id, ctx) -> dict:
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        mode = phase.get("mode", "live")
+        if (mode == "live" and phase.get("scene_contracts_passed")
+                and tool.endswith("run_bpy")):
+            bump("convergence_mutation_blocked")
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason":
+                    "AUTHORITATIVE SCENE CONTRACTS ALREADY PASS. Further speculative "
+                    "geometry mutation is blocked. Call one FULL-FRAME compare_frame now: "
+                    "its authoritative image-contract gate will either reopen one scoped "
+                    "repair or mark the scene ready for critic handoff."
+            }}
         if not target:
             return {}
-        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
         if tool not in ("Write", "Edit"):
             return {}
         args = (inp.get("tool_input") if isinstance(inp, dict) else getattr(inp, "tool_input", {})) or {}
         raw = str(args.get("file_path") or args.get("path") or "").replace("\\", "/")
         if not (raw == target or raw.endswith("/" + target)):
             return {}
-        mode = phase.get("mode", "live")
         reason = ""
         if mode == "live":
             reason = (
@@ -482,17 +526,58 @@ def builder_phase_guard(phase: dict[str, str], script_rel: str | None) -> HookMa
     return HookMatcher(matcher=None, hooks=[_check])
 
 
+def execution_authority_guard(shot_folder: str | Path,
+                              phase: dict[str, Any]) -> HookMatcher:
+    """Keep evaluation ledgers from becoming live build instructions."""
+    root = Path(shot_folder).resolve()
+    runtime = (root / "runtime_checks.json").resolve()
+
+    async def _check(inp, tool_use_id, ctx) -> dict:
+        if phase.get("mode", "live") != "live":
+            return {}
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        if tool not in {"Read", "Grep", "Edit", "Write"}:
+            return {}
+        args = (inp.get("tool_input") if isinstance(inp, dict) else getattr(inp, "tool_input", {})) or {}
+        raw = str(args.get("file_path") or args.get("path") or "")
+        if not raw and tool != "Grep":
+            return {}
+        candidate = Path(raw or ".")
+        candidate = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        exposes_runtime = candidate == runtime
+        if tool == "Grep":
+            # A recursive grep of the shot root is also a read of runtime_checks.json.
+            exposes_runtime = runtime.is_relative_to(candidate)
+        if not exposes_runtime:
+            return {}
+        bump("runtime_authority_blocked")
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason":
+                "runtime_checks.json is evaluation-only evidence from earlier attempts; "
+                "it is not live execution authority and may contain stale observations. "
+                "Use the current layer plan, scene_checks contracts, check_scene, and the "
+                "current render instead. propose_checks is the only supported writer."
+        }}
+
+    return HookMatcher(matcher=None, hooks=[_check])
+
+
 def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = None,
                   script_rel: str | None = None,
-                  phase: dict[str, str] | None = None) -> dict:
+                  phase: dict[str, Any] | None = None) -> dict:
     """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback.
     PostToolUseFailure: durable failure log. Stop: the artifacts must exist."""
     from .sandbox import path_sandbox
+    active_phase = phase or {"mode": "live"}
     return {
         "PreToolUse": [path_sandbox(*roots, cwd=shot_folder), api_guardrails(),
                        script_sanity(), web_allowlist(),
-                       builder_phase_guard(phase or {"mode": "live"}, script_rel)],
-        "PostToolUse": [metrics_feedback(shot_folder, ref_rel)],
+                       execution_authority_guard(shot_folder, active_phase),
+                       builder_phase_guard(active_phase, script_rel)],
+        "PostToolUse": [metrics_feedback(
+            shot_folder, ref_rel,
+            look_actions=bool(active_phase.get("look_actions", True)))],
         "PostToolUseFailure": [failure_recorder(shot_folder)],
         "Stop": [completion_gate(shot_folder, script_rel, phase)],
         "PreCompact": [compaction_notice(shot_folder)],

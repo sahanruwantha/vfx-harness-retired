@@ -47,11 +47,20 @@ def _prior_outcome_digests(folder: Path, current: int) -> dict[str, str | None]:
             continue
         # A later REVALIDATE updates only this audit field.  It must not invalidate every
         # downstream layer when the sealed inputs and pixels remained identical.
-        stable = {key: row.get(key) for key in (
-            "schema", "layer", "script", "status", "authoritative_total",
-            "authoritative_passed", "failed_contracts", "revalidation_manifest",
-            "canonical",
-        )}
+        stable = {
+            key: row.get(key)
+            for key in (
+                "schema",
+                "layer",
+                "script",
+                "status",
+                "authoritative_total",
+                "authoritative_passed",
+                "failed_contracts",
+                "revalidation_manifest",
+                "canonical",
+            )
+        }
         payload = json.dumps(stable, sort_keys=True, separators=(",", ":")).encode()
         out[str(layer_id)] = hashlib.sha256(payload).hexdigest()
     return out
@@ -76,8 +85,9 @@ def _runtime_checks_digest(folder: Path, current: int) -> str | None:
     return hashlib.sha256(payload).hexdigest()
 
 
-def input_manifest(folder: str | Path, layer, *, blender_version: str,
-                   comparison_mode: str = "eevee", comparison_scale: float = 0.5) -> dict:
+def input_manifest(
+    folder: str | Path, layer, *, blender_version: str, comparison_mode: str = "eevee", comparison_scale: float = 0.5
+) -> dict:
     """Hash the complete deterministic boundary for one layer."""
     root = Path(folder)
     current = int(layer.id)
@@ -135,21 +145,41 @@ def canonical_records(folder: str | Path, layer, canonical: list) -> list[dict]:
     root = Path(folder)
     records = []
     for (frame, ref), verdict in canonical:
-        rel = (f"renders/{layer.id}_canonical.png" if len(canonical) == 1 else
-               f"renders/{layer.id}_canonical_f{int(frame)}.png")
+        rel = (
+            f"renders/{layer.id}_canonical.png"
+            if len(canonical) == 1
+            else f"renders/{layer.id}_canonical_f{int(frame)}.png"
+        )
         evidence = verdict.get("evidence") or []
-        records.append({
-            "frame": int(frame),
-            "ref": str(ref),
-            "ref_sha256": digest(root / ref),
-            "render": rel,
-            "render_sha256": digest(root / rel),
-            "authoritative": [
-                {"id": row.get("id"), "pass": bool(row.get("pass"))}
-                for row in evidence if row.get("authoritative")
-            ],
-            "qualitative_defects": list(verdict.get("issues") or []),
-        })
+        records.append(
+            {
+                "frame": int(frame),
+                "ref": str(ref),
+                "ref_sha256": digest(root / ref),
+                "render": rel,
+                "render_sha256": digest(root / rel),
+                "authoritative": [
+                    {
+                        key: row.get(key)
+                        for key in (
+                            "id",
+                            "metric",
+                            "value",
+                            "target",
+                            "pass",
+                            "source",
+                            "owner_layer",
+                            "fault_owner",
+                            "activates_at",
+                            "lifecycle",
+                        )
+                    }
+                    for row in evidence
+                    if row.get("authoritative")
+                ],
+                "qualitative_defects": list(verdict.get("issues") or []),
+            }
+        )
     return records
 
 

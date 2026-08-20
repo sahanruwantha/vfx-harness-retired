@@ -182,8 +182,10 @@ def collect(shot_folder: str | Path, *, history: bool = False) -> dict:
             "cost_usd": rec.get("cost_usd", 0.0), "turns": rec.get("turns", 0),
             "minutes": round((rec.get("seconds") or 0) / 60, 1),
             "hooks_fired": sorted(k for k, v in (rec.get("hooks") or {}).items() if v),
-            "no_metric_feedback": (not rec.get("revalidation")
-                                   and not (rec.get("hooks") or {}).get("metric_feedback")),
+            "no_metric_feedback": (
+                not rec.get("revalidation")
+                and (rec.get("tools") or {}).get("look_feedback_applicable", True)
+                and not (rec.get("hooks") or {}).get("metric_feedback")),
             # None, not 0. A report written before the tool telemetry existed has no
             # counts, and printing "0 tool calls" for a layer that made hundreds is the
             # same mistake as counting an unmeasured layer as an unused tool.

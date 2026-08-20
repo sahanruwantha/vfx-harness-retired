@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFont
 
 VIEWS = ("side_by_side", "wipe", "overlay", "difference")
 _BG = (18, 18, 22)
@@ -52,10 +52,49 @@ def _fit_pair(candidate: Image.Image, reference: Image.Image,
             reference.resize((width, height), Image.Resampling.LANCZOS))
 
 
-def _label(image: Image.Image, text: str, color: tuple[int, int, int]) -> None:
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((0, 0, min(image.width, 12 + 7 * len(text)), 25), fill=(0, 0, 0))
-    draw.text((6, 6), text, fill=color)
+def _font(image: Image.Image, divisor: int = 24):
+    size = max(18, min(46, image.width // divisor))
+    try:
+        return ImageFont.truetype("DejaVuSans-Bold.ttf", size=size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def _label(image: Image.Image, text: str, color: tuple[int, int, int]) -> Image.Image:
+    font = _font(image)
+    bar = max(42, min(76, image.height // 7))
+    labelled = Image.new("RGB", (image.width, image.height + bar), (4, 4, 8))
+    labelled.paste(image, (0, bar))
+    draw = ImageDraw.Draw(labelled)
+    draw.rectangle((0, bar - 7, image.width, bar), fill=color)
+    font_size = getattr(font, "size", 16)
+    draw.text((14, max(5, (bar - font_size) // 2 - 2)), text, fill=(255, 255, 255),
+              font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+    return labelled
+
+
+def mark_pair(image: Image.Image, seam: int, left: str = "CANDIDATE — LEFT",
+              right: str = "REFERENCE — RIGHT") -> Image.Image:
+    """Embed unmistakable, color-coded source identity into comparison pixels."""
+    font = _font(image, 44)
+    bar = max(48, min(82, image.height // 6))
+    labelled = Image.new("RGB", (image.width, image.height + bar), (4, 4, 8))
+    labelled.paste(image, (0, bar))
+    draw = ImageDraw.Draw(labelled)
+    yellow, cyan = (255, 212, 0), (0, 220, 255)
+    draw.rectangle((0, 0, seam - 1, bar), fill=(24, 20, 0))
+    draw.rectangle((seam, 0, image.width, bar), fill=(0, 20, 26))
+    draw.rectangle((0, bar - 8, seam - 1, bar), fill=yellow)
+    draw.rectangle((seam, bar - 8, image.width, bar), fill=cyan)
+    draw.line((seam, 0, seam, labelled.height), fill=(255, 60, 255), width=6)
+    y = max(5, (bar - getattr(font, "size", 16)) // 2 - 2)
+    draw.text((14, y), left, fill=(255, 255, 255), font=font,
+              stroke_width=2, stroke_fill=(0, 0, 0))
+    box = draw.textbbox((0, 0), right, font=font, stroke_width=2)
+    rw = box[2] - box[0]
+    draw.text((max(seam + 14, image.width - rw - 14), y), right,
+              fill=(255, 255, 255), font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+    return labelled
 
 
 def focus_views(candidate_crop: str | Path, reference_full: str | Path, crop,
@@ -88,24 +127,22 @@ def focus_views(candidate_crop: str | Path, reference_full: str | Path, crop,
             image = Image.new("RGB", (2 * width, height), _BG)
             image.paste(candidate, (0, 0))
             image.paste(reference, (width, 0))
-            _label(image, "CANDIDATE", (255, 255, 0))
-            draw = ImageDraw.Draw(image)
-            draw.rectangle((width, 0, min(2 * width, width + 82), 25), fill=(0, 0, 0))
-            draw.text((width + 6, 6), "REFERENCE", fill=(0, 255, 255))
+            image = mark_pair(image, width)
         elif view == "wipe":
             image = candidate.copy()
             seam = width // 2
             image.paste(reference.crop((seam, 0, width, height)), (seam, 0))
             draw = ImageDraw.Draw(image)
             draw.line((seam, 0, seam, height), fill=(255, 80, 255), width=3)
-            _label(image, "CANDIDATE | REFERENCE WIPE", (255, 255, 255))
+            image = mark_pair(image, seam, "CANDIDATE — LEFT OF WIPE",
+                              "REFERENCE — RIGHT OF WIPE")
         elif view == "overlay":
             image = Image.blend(candidate, reference, 0.5)
-            _label(image, "50/50 OVERLAY", (255, 255, 255))
+            image = _label(image, "50/50 OVERLAY", (255, 255, 255))
         else:
             raw = ImageChops.difference(candidate, reference)
             image = ImageEnhance.Contrast(raw).enhance(2.0)
-            _label(image, "2x DIFFERENCE", (255, 255, 255))
+            image = _label(image, "2x DIFFERENCE", (255, 255, 255))
         out.append((view, image))
 
     diff = ImageChops.difference(candidate, reference).convert("L")
@@ -164,9 +201,8 @@ def save_context_sheet(candidate_full: str | Path, reference_full: str | Path, c
         box = (offset + round(x0 * width), round(y0 * height),
                offset + round(x1 * width), round(y1 * height))
         draw.rectangle(box, outline=(255, 80, 255), width=4)
-    _label(sheet, "CANDIDATE CONTEXT", (255, 255, 0))
-    draw.rectangle((width, 0, min(2 * width, width + 126), 25), fill=(0, 0, 0))
-    draw.text((width + 6, 6), "REFERENCE CONTEXT", fill=(0, 255, 255))
+    sheet = mark_pair(sheet, width, "CANDIDATE CONTEXT — LEFT",
+                      "REFERENCE CONTEXT — RIGHT")
     destination = Path(dest)
     destination.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(destination, quality=90)

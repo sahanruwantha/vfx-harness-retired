@@ -124,7 +124,8 @@ def _bvfx_volumetric_world(color=(0.02, 0.05, 0.03), bg_strength=0.3,
     return w
 
 
-def _bvfx_glare_bloom(threshold=0.6, size=0.75, strength=0.7, gtype="Bloom", **_):
+def _bvfx_glare_bloom(threshold=0.6, size=0.75, strength=0.7, gtype="Bloom",
+                      role="compositor.glare.baseline", owner_layer=None, **_):
     """EEVEE-Next has no bloom toggle — add a compositor Glare so emission blooms.
     Blender 5.x: the compositor is a NODE GROUP on scene.compositing_node_group whose
     output is a Group Output node, and the Glare node's settings are INPUT SOCKETS
@@ -135,6 +136,10 @@ def _bvfx_glare_bloom(threshold=0.6, size=0.75, strength=0.7, gtype="Bloom", **_
     rl = ng.nodes.new("CompositorNodeRLayers")
     glare = ng.nodes.new("CompositorNodeGlare")
     gout = ng.nodes.new("NodeGroupOutput")
+    _bvfx_role(ng, "compositor.pipeline", owner_layer)
+    _bvfx_role(rl, "compositor.input.render_layers", owner_layer)
+    _bvfx_role(glare, role, owner_layer)
+    _bvfx_role(gout, "compositor.output.image", owner_layer)
     for sock, val in (("Type", gtype), ("Threshold", threshold), ("Size", size),
                       ("Strength", strength)):
         s = glare.inputs.get(sock)
@@ -557,7 +562,7 @@ def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0)
 
 
 def _bvfx_role(obj, role, owner_layer=None):
-    """Attach a stable semantic contract role to an object.
+    """Attach a stable semantic contract role to any Blender custom-property host.
 
     Object names remain useful labels, but they are not an API: Blender suffixes names
     during duplication and artists rename objects while iterating.  Custom properties
@@ -576,6 +581,13 @@ def _bvfx_role(obj, role, owner_layer=None):
     return obj
 
 
+def _bvfx_control(target, role, owner_layer=None):
+    """Tag a shader/compositor node as a stable downstream control interface."""
+    _bvfx_role(target, role, owner_layer)
+    target["bvfx_control"] = str(role)
+    return target
+
+
 _HELPERS = {
     "bvfx_emission": _bvfx_emission,
     "bvfx_emissive_windows": _bvfx_emissive_windows,
@@ -590,6 +602,7 @@ _HELPERS = {
     "bvfx_interp": _bvfx_interp,
     "bvfx_camera_rig": _bvfx_camera_rig,
     "bvfx_role": _bvfx_role,
+    "bvfx_control": _bvfx_control,
 }
 
 

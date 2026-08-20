@@ -154,31 +154,36 @@ If the remaining sub-pass score has no evidence-backed issue, the layer ends as
 **`judge_conflict`**: it blocks downstream work without paying for a blind repair or
 misreporting the script as broken.
 
-Small features no longer have to be judged from the full-frame thumbnail alone. A critic
-may request at most two normalized TOP-LEFT focus regions, only for an in-scope axis scored
-3 or below. The harness rejects out-of-frame, near-full-frame and passing-axis requests,
-optically rerenders accepted crops, and sends aligned candidate/reference pairs plus a
-50/50 wipe to a focus-review pass. The full reference and candidate remain attached and
-control context/composition; focus panels are supplemental, recorded in the verdict and
-must be cited by id when they support an issue. This keeps zoom useful without making it a
-crop-selection loophole.
+Small features no longer have to be judged from the full-frame thumbnail alone. A planner
+can mark a check's normalized TOP-LEFT `focus` as required; the harness optically renders
+that aligned candidate/reference panel **before the first judge**. A critic can still
+request at most two additional regions for an in-scope axis scored 3 or below. The full
+reference and candidate remain attached and control context/composition; focus panels are
+supplemental, recorded in the verdict and must be cited by id when they support an issue.
 
 ### Live-scene contracts
 
-`scene_checks.json` measures facts Blender knows exactly instead of asking the critic to
-estimate them from a downscaled render: projected bounding-box dimensions and placement,
-object counts, mesh density, smooth-shading coverage and inward-facing shell normals.
-Planner-authored records are authoritative and evaluated at the exact judge frame:
+`scene_checks.json` is a schema-2 interface document. It measures facts Blender knows
+exactly instead of asking the critic to estimate them: projected geometry, object and mesh
+state, semantic material assignment, shader/compositor nodes, links, socket values, and
+animation state. Contracts declare who owns and repairs the state, when it activates, and
+whether it is layer-local, windowed, or persistent:
 
 ```json
-{ "id": "L1-scene-ring-width", "layer": "1", "axis": "layout", "frame": 1,
-  "kind": "bbox_width", "roles": ["hero.ring.outer"],
-  "op": "band", "lo": 0.16, "hi": 0.18, "origin": "planner" }
+{ "schema": 2, "contracts": [
+  { "id": "L1-scene-ring-width", "owner_layer": "1", "fault_owner": "1",
+    "activates_at": "1", "lifecycle": "persistent", "axis": "layout", "frame": 1,
+    "kind": "bbox_width", "roles": ["hero.ring.outer"],
+    "op": "band", "lo": 0.16, "hi": 0.18 }
+]}
 ```
 
 A PASS proves the semantic-role scene fact, not photographic legibility. Object names are
 labels and are not accepted as contract selectors; builders tag stable interfaces with
-`bvfx_role(obj, "department.subject.part", owner_layer="N")`. Three rib objects may
+`bvfx_role(obj, "department.subject.part", owner_layer="N")` and adjustable nodes with
+`bvfx_control(node, "control.subject.gain", owner_layer="N")`. Before Layer N starts,
+every active persistent interface owned by an earlier layer is replayed at its own frame;
+a failure stops at `fault_owner` instead of inviting downstream compensation. Three ribs may
 exist while one disappears into the wall; that remains a valid qualitative failure. The
 critic must describe the visible residual (for example, insufficient separation) without
 contradicting the measured fact (for example, claiming the rib is absent). This separation
@@ -198,16 +203,39 @@ So a check is a **record**, not a sentence, and it may not enter a plan until it
 RUN. `checks.json` contains immutable planner contracts, and `bambi evals plan` re-runs
 every rule against the artifacts on disk. Builder-discovered checks are appended to the
 separate `runtime_checks.json` ledger and revalidated against the final shipped render;
-mixing origins in `checks.json` is a blocking schema error:
+mixing origins in `checks.json` is a blocking schema error. The runtime ledger is
+**evaluation-only**: live builders cannot Read it or recursively Grep across it, and
+builder-authored prose notes are not persisted as future instructions. Current execution
+authority is the layer plan plus `scene_checks.json`, never observations from an older
+attempt:
 
 ```json
-{ "id": "L2c-3", "layer": "2", "axis": "hero_facade_cells", "frame": 1,
-  "ref": "refs/f001_open.jpg", "metric": "region_lit_variance",
-  "regions": {"r": [0.38, 0.60, 0.62, 0.95]},
-  "op": "band", "lo": 0.13, "hi": 0.30, "stage": "pre_grade",
-  "rejects": ["renders/2@f1_canonical_f1.png"],
-  "proof": {"ref": 0.157, "adversary": [0.0819]} }
+{ "schema": 2, "checks": [
+  { "id": "L2c-3", "owner_layer": "2", "fault_owner": "2",
+    "activates_at": "2", "lifecycle": "layer",
+    "axis": "hero_facade_cells", "frame": 1,
+    "ref": "refs/f001_open.jpg", "metric": "region_lit_variance",
+    "regions": {"r": [0.38, 0.60, 0.62, 0.95]},
+    "op": "band", "lo": 0.13, "hi": 0.30, "stage": "pre_grade",
+    "rejects": ["renders/2@f1_canonical_f1.png"],
+    "proof": {"ref": 0.157, "adversary": [0.0819]} }
+]}
 ```
+
+The legacy top-level list and legacy `layer` field are rejected; there is no compatibility
+branch. Just-in-time layer plans are capped at 160 lines and index these contracts and
+sealed outcomes instead of copying logs. Numeric shader/compositor search uses
+`probe_control`, which sweeps semantic controls at locked render settings and always
+restores the original value before the builder commits one selected value. Controls may
+live on node inputs or outputs (for example Blender Value nodes); automatic resolution
+tries inputs first and then outputs, while `socket_direction` can make that choice explicit.
+Persistent `control_render_response` contracts go beyond graph existence by rendering a
+transactional low/high sweep and requiring the declared image region to visibly respond.
+
+The builder's durable worklist is also part of the handoff contract. If it contains any
+unfinished item when judgment begins, the evidence gate overrides a visual PASS and routes
+the item through a scoped repair round. A compaction-safe note can therefore no longer be
+silently discarded between the builder and critic.
 
 All normalized frame rectangles use one convention: `[x0,y0,x1,y1]`, origin at the
 **top-left**, x increasing right and y increasing down. This applies to `checks.json`,
@@ -397,7 +425,18 @@ look for — a visual channel with no text to read it by measured *worse* than n
 reference: its first result is mandatory full-frame context with the crop outlined; its
 second is an aligned optical-detail sheet supporting side-by-side, wipe, overlay and
 difference views. Both images use the same normalized crop, and the comparison never
-upscales either source.
+upscales either source. Candidate and reference identity is embedded into the pixels with
+full-width color-coded headers, a separator, and redundant `C`/`R` badges. Mode and base
+scale lock on the first comparison of a critic round; crop calls inherit them when omitted,
+while `res_pct` changes only optical crop resolution.
+
+For a form/layout layer, appearance metrics and advice are removed from every render path,
+including post-tool hooks. `render_pass` is forced to the fixed
+`matcap:check_normal+y` diagnostic, so a builder cannot spend the layout round tuning lamps,
+albedo, emission, bloom, or exposure to imitate finish work owned by later layers. After a
+mutation makes every authoritative scene contract pass, further `run_bpy` mutation closes
+for that live turn: the builder observes the fixed diagnostic and hands the scene to the
+critic. Only a critic-backed revision round reopens geometry mutation.
 
 Two probes keep that honest, because both caught real defects:
 
@@ -475,7 +514,7 @@ shots/<shot>/
   layers.json …             machine contracts + plan.provenance.json input hashes
   build/NN_*.py             one delta script per layer — the real artifact
   checks.json               immutable planner pixel contracts — re-run by the gate
-  runtime_checks.json       append-only builder evidence — final-render revalidated
+  runtime_checks.json       evaluation-only builder evidence — never live build authority
   scene_checks.json         exact projected geometry/count/mesh-state contracts
   answers.md                supervisor decisions; these are LAW and outrank inference
   shot.json                 the ledger: verdicts, rounds, run/attempt ids, acceptance

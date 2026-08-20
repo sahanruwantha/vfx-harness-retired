@@ -129,7 +129,9 @@ def reset_tool_use() -> None:
     TOOL_USE.clear()
 
 
-def tool_use_summary(*, motion_owned: bool = False, revalidation: bool = False) -> dict:
+def tool_use_summary(*, motion_owned: bool = False, revalidation: bool = False,
+                     automatic_scene_checks: int = 0,
+                     look_feedback_applicable: bool = True) -> dict:
     """Per-tool counts, the look-vs-measure ratio layer outcomes correlate with, and
     whether the newer diagnostic tools were used at all."""
     if not TOOL_USE:
@@ -138,8 +140,13 @@ def tool_use_summary(*, motion_owned: bool = False, revalidation: bool = False) 
     def n(*names):
         return sum(TOOL_USE.get(_MCP + x, 0) for x in names)
 
-    looked, measured, verified = n(*_LOOK), n(*_MEASURE), n(*_VERIFY)
-    mutations = TOOL_USE.get(_MCP + "run_bpy", 0)
+    looked, measured = n(*_LOOK), n(*_MEASURE)
+    verified = n(*_VERIFY) + int(automatic_scene_checks)
+    # A denied PreToolUse call is visible in TOOL_USE but never changed Blender. When
+    # automatic scene probes are available, their count is the accepted-mutation count;
+    # using raw run_bpy calls made one blocked bmesh script falsely require a change diff.
+    mutations = (int(automatic_scene_checks) if automatic_scene_checks
+                 else TOOL_USE.get(_MCP + "run_bpy", 0))
     applicable = {
         "render_pass": not revalidation,
         "check_scene": not revalidation,
@@ -147,9 +154,12 @@ def tool_use_summary(*, motion_owned: bool = False, revalidation: bool = False) 
         "verify_change": not revalidation and mutations >= 2,
     }
     adoption = {t: TOOL_USE.get(_MCP + t, 0) for t in _NEW_TOOLS}
+    adoption["check_scene"] += int(automatic_scene_checks)
     out = {"calls": dict(TOOL_USE.most_common()), "total": sum(TOOL_USE.values()),
            "looked": looked, "measured": measured, "verified": verified,
            "compared": n("compare_frame"),
+           "automatic": {"scene_contract_probe": int(automatic_scene_checks)},
+           "look_feedback_applicable": bool(look_feedback_applicable),
            "adoption": adoption,
            "applicability": applicable,
            "unused_required_tools": [t for t in _NEW_TOOLS
