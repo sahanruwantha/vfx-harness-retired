@@ -473,16 +473,41 @@ def recurring_complaints(shot, m: Milestone, min_attempts: int = 2) -> str:
     the first had been told "the hero is not light-linked" and "the podium is overlit"
     twice. The critique-feedback path added earlier only carries WITHIN an attempt.
 
-    Deliberately reports issues by RECURRENCE across attempts rather than dumping every
-    round: a note that survived two independent attempts is the one that describes
-    something the layer keeps getting wrong, as opposed to one round's noise.
+    A failed canonical verdict is already the adjudicated end-of-attempt result, so it is
+    handed to the very next attempt. Ordinary live-round notes still require recurrence
+    across attempts before they become standing defects.
     """
     from .ledger import Ledger
 
     try:
-        rounds = Ledger(shot)._slot(m).get("rounds", [])
+        slot = Ledger(shot)._slot(m)
     except Exception:
         return ""
+    history = list(slot.get("history") or [])
+    rounds = [row for attempt in history for row in (attempt.get("rounds") or [])]
+    rounds.extend(slot.get("rounds") or [])
+
+    # Ledger.begin() archives the previous attempt and clears slot.rounds before this
+    # function is called. Reading only slot.rounds made the handoff path permanently
+    # empty in production even though its unit fixture passed.
+    for attempt in reversed(history):
+        if attempt.get("status") not in {"failed", "judge_conflict"}:
+            continue
+        canonical_issues = []
+        for row in attempt.get("rounds") or []:
+            if row.get("kind") != "canonical" or row.get("pass"):
+                continue
+            canonical_issues.extend(str(issue) for issue in (row.get("issues") or []))
+        canonical_issues = list(dict.fromkeys(canonical_issues))[:6]
+        if canonical_issues:
+            lines = "\n".join(f"    - {issue}" for issue in canonical_issues)
+            return (
+                f"\nTHE PREVIOUS ATTEMPT FAILED CANONICAL REPLAY. Its unresolved, "
+                f"frame-scored defects are immediate repair inputs:\n{lines}\n"
+                "Start from the replayed prior artifact and address these mechanisms. "
+                "Do not rebuild the same approach from scratch or wait for the critic to "
+                "rediscover them. Preserve frames that already passed.\n"
+            )
     attempts = {r.get("attempt") for r in rounds if r.get("attempt")}
     if len(attempts) < min_attempts:
         return ""
@@ -699,10 +724,15 @@ or "the wall lacks segments").
 FOCUS ONLY WHEN NEEDED. The harness can optically rerender at most two small regions. Use
 `focus_requests` only when a feature material to an axis scoring at or below 3 is genuinely
 too small to resolve in the full images. The region is [x0,y0,x1,y1], normalized with
-origin TOP-LEFT. Never use a crop to replace full-frame composition/context, inspect a fact
-already settled by executable evidence, or fish for defects. When focus panels are supplied,
-they contain aligned candidate/reference views of the exact same region; request no more and
-cite any panel supporting an issue in `issue_evidence.panel_ids`.
+origin TOP-LEFT. Every request MUST name `source_frame` and `source`. For
+`source="candidate_frame"`, region is local to that one shot frame. For
+`source="motion_strip"`, region is global to the attached horizontal strip and must remain
+inside exactly one panel; the harness maps it back to source_frame before rerendering. Never
+copy a strip panel's x position into candidate-frame coordinates. Never use a crop to replace
+full-frame composition/context, inspect a fact already settled by executable evidence, or
+fish for defects. When focus panels are supplied, they contain aligned candidate/reference
+views of the exact same frame and region; request no more and cite any panel supporting an
+issue in `issue_evidence.panel_ids`.
 
 Return your judgement as a single fenced ```json block and NOTHING else after it,
 with exactly this shape:
@@ -715,7 +745,8 @@ with exactly this shape:
     {"issue_index": 0, "kind": "visual" | "measurable", "check_ids": [], "panel_ids": []}
   ],
   "focus_requests": [
-    {"id": "rib_left", "axis": "<axis>", "region": [x0,y0,x1,y1],
+    {"id": "rib_left", "axis": "<axis>", "source": "candidate_frame" | "motion_strip",
+     "source_frame": 40, "region": [x0,y0,x1,y1],
      "reason": "what cannot be resolved in the full frame"}
   ],
   "reference_usable": true,
@@ -736,6 +767,7 @@ def critic_prompt(
     evidence: list[dict] | None = None,
     review_mode: str = "observer",
     focus_panels: list[dict] | None = None,
+    focus_frames: list[int] | None = None,
 ) -> str:
     axes = "\n".join(f"  - {k}: {desc}" for k, desc in axes)
     # The images are ATTACHED to this request, not fetched. The critic used to be an agent
@@ -793,6 +825,7 @@ def critic_prompt(
             "composition/context):\n"
             + "\n".join(
                 f"  - {panel.get('id')}: axis={panel.get('axis')} crop={panel.get('crop')} "
+                f"source_frame=f{panel.get('source_frame')} reference={panel.get('reference')} "
                 f"views={panel.get('views')} — {panel.get('reason')}"
                 for panel in focus_panels
             )
@@ -814,7 +847,8 @@ def critic_prompt(
         )
     elif review_mode == "focus_review":
         panel_lines = "\n".join(
-            f"  - {panel.get('id')}: axis={panel.get('axis')} crop={panel.get('crop')} — {panel.get('reason')}"
+            f"  - {panel.get('id')}: axis={panel.get('axis')} source_frame="
+            f"f{panel.get('source_frame')} crop={panel.get('crop')} — {panel.get('reason')}"
             for panel in (focus_panels or [])
         )
         review_block = (
@@ -838,7 +872,10 @@ def critic_prompt(
         f"one actionable correction, plus a same-index `issue_evidence` classification. "
         f"Use `focus_requests` only when a feature material to an axis scoring at or below "
         f"3 is too small to resolve in the full images: at most two [x0,y0,x1,y1] regions "
-        f"in normalized TOP-LEFT coordinates. Never request a crop for a measurable fact "
+        f"in normalized TOP-LEFT coordinates. Focusable source frames with matching "
+        f"references are {focus_frames or [m.frame]}. Name source_frame and whether region "
+        f"uses candidate_frame coordinates or global motion_strip coordinates. A motion-strip "
+        f"region must stay inside one panel. Never request a crop for a measurable fact "
         f"already settled by evidence, and return an empty list whenever focus panels are "
         f"already supplied. "
         f"If all scores are at least 3, return empty `issues` and `issue_evidence` lists. "
@@ -846,7 +883,13 @@ def critic_prompt(
     )
 
 
-def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str, holding: list | None = None) -> str:
+def canonical_repair_prompt(
+    m: Milestone,
+    failed: list,
+    script_rel: str,
+    holding: list | None = None,
+    rejected_repairs: list[str] | None = None,
+) -> str:
     """Hand a CANONICAL failure back to the builder that wrote the script.
 
     The distinction this prompt has to land is the one the builder gets wrong by default:
@@ -880,6 +923,19 @@ def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str, holding
             f"declare done. If a fix genuinely cannot be made without regressing one, "
             f"say so explicitly instead of shipping the trade.\n"
         )
+    rejected = ""
+    if rejected_repairs:
+        attempts = "\n\n".join(
+            f"  REJECTED ATTEMPT {index}:\n{details}" for index, details in enumerate(rejected_repairs, 1)
+        )
+        rejected = (
+            "\nPREVIOUS REPAIR ATTEMPTS WERE TRANSACTIONALLY REVERTED:\n"
+            f"{attempts}\n"
+            "You are editing the last accepted pre-repair script. Do not repeat a rejected "
+            "delta unchanged. Use the observed regression/no-progress result to choose a "
+            "different light path, placement, control, or other root mechanism while "
+            "preserving the passing frames.\n"
+        )
     return (
         f"MODE: REPAIR_SCRIPT — edit the canonical artifact, not the warm scene.\n"
         f"Use Grep → Read the smallest span → Edit. Write must not "
@@ -890,6 +946,7 @@ def canonical_repair_prompt(m: Milestone, failed: list, script_rel: str, holding
         + "\n\n".join(blocks)
         + "\n"
         + keep
+        + rejected
         + "\n"
         f"Read that carefully: the live scene you have been tuning is NOT what failed. "
         f"The SCRIPT's output is. If the script omits something you built interactively, "

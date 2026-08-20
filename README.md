@@ -77,6 +77,8 @@ threshold in the transcript.
 Within a build round, comparison mode and base scale are locked; optical crop resolution
 is additionally locked per crop. Feedback is ownership-aware: layout is not told to fix
 bloom/emission/grade, and a layer with no motion-related owned axis gets no motion strip.
+When a layer does own motion, one shared strip spans every declared judge beat plus each
+interval midpoint; a local rest/hold strip cannot stand in for sequence-wide continuity.
 Layer 1 stops speculative revisions once every authoritative contract passes and the judge
 has no evidence-backed owned-axis defect. Restoring an earlier best scene remains in
 `LIVE_BUILD`; that phase has no Write/Edit tools. Script publication runs in a separate
@@ -137,8 +139,10 @@ also declare `reference_usable`; handed a mismatched plate it fails the verdict 
 quietly grading against the brief's prose.
 
 Critic scores are noisy — the same render against the same reference has scored 4.0, 3.0,
-3.0 and 2.0 — so a verdict landing near the pass line goes to **best-of-three with a median**.
-Objective metrics (`bambi_vfx/metrics.py`) run alongside and can decide a moment outright.
+3.0 and 2.0 — so a verdict landing next to the 2/3 pass boundary goes to
+**best-of-three with a median**. A one-axis 4 or 5 is not called borderline merely because
+the layer owns one axis. Objective metrics (`bambi_vfx/metrics.py`) run alongside and can
+decide a moment outright.
 
 Canonical replay does **not** ask that noisy critic whether a script reproduced an already
 accepted live frame. It compares the canonical pixels with the accepted pixels directly
@@ -160,6 +164,15 @@ that aligned candidate/reference panel **before the first judge**. A critic can 
 request at most two additional regions for an in-scope axis scored 3 or below. The full
 reference and candidate remain attached and control context/composition; focus panels are
 supplemental, recorded in the verdict and must be cited by id when they support an issue.
+Every request declares a source frame and coordinate space. Candidate-frame coordinates
+are local to that frame; motion-strip coordinates are mapped from the horizontal montage
+into exactly one panel and rerendered at that panel's frame against its matching reference.
+Cross-panel, reference-less, and visually empty requests are rejected, so a strip x-position
+cannot silently crop unrelated background from the primary judge frame.
+
+Motion checks segment leading hold, one active interval, and trailing hold. Holds at the
+ends are valid choreography; only a reversal or stop-and-restart inside the active interval
+marks a broken move.
 
 ### Live-scene contracts
 
@@ -435,8 +448,15 @@ including post-tool hooks. `render_pass` is forced to the fixed
 `matcap:check_normal+y` diagnostic, so a builder cannot spend the layout round tuning lamps,
 albedo, emission, bloom, or exposure to imitate finish work owned by later layers. After a
 mutation makes every authoritative scene contract pass, further `run_bpy` mutation closes
-for that live turn: the builder observes the fixed diagnostic and hands the scene to the
-critic. Only a critic-backed revision round reopens geometry mutation.
+for that live turn only when at least one active completion contract is owned by the
+current layer. Passing persistent upstream interfaces proves healthy inputs; it cannot seal
+an untouched downstream department. Image-only or subjective layers keep mutation open
+until they voluntarily hand off to the critic. Only a critic-backed revision round reopens
+a sealed mutation gate.
+
+Ablation follows the same ownership rule: static layers compare their primary judge frame,
+while motion-owned layers compare every declared judge frame. An intentionally unchanged
+rest pose therefore cannot make a real animation layer look like a no-op.
 
 Two probes keep that honest, because both caught real defects:
 

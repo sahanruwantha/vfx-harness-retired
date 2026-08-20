@@ -32,6 +32,7 @@ def check(name, cond, detail=""):
 
 def main():
     from bambi_vfx.agents.builder import (
+        _ablation_frames,
         _apply_evidence_gate,
         _audit_panel_citations,
         _axes_need_motion,
@@ -41,12 +42,17 @@ def main():
         _critic_schema,
         _evidence_convergence_stop,
         _filter_critic_issues,
+        _focus_references,
         _focus_requests,
         _image_reproduction,
+        _layer_motion_frames,
         _needs_critic_panel,
         _owned_axes,
         _plan_layer_excerpt,
+        _repair_action,
+        _repair_change_summary,
         _required_focus_requests,
+        _retry_warm_start,
         _round_rank,
         _script_options,
         _verdict,
@@ -60,10 +66,12 @@ def main():
         _merge_worklist_items,
         _metrics_line,
         _pixel_contract_gate,
+        _scene_completion_state,
         _stats,
         build_blender_tools,
     )
     from bambi_vfx.brief import load_shot
+    from bambi_vfx.checks import _metric_regions
     from bambi_vfx.escalate import answer, answers_block, ask, unanswered_for_layer
     from bambi_vfx.escalate import load as lq
     from bambi_vfx.guardrails import api_guardrails, web_allowlist
@@ -165,6 +173,14 @@ def main():
     print("\n[verdict + tolerance]")
     check("single-axis pass needs min>=3", _verdict({"scores": {"a": 3}})["pass"])
     check("single-axis 2 fails", not _verdict({"scores": {"a": 2}})["pass"])
+    check(
+        "a perfect single-axis score does not buy a redundant second opinion",
+        not _needs_critic_panel(_verdict({"scores": {"a": 4}})),
+    )
+    check(
+        "a single-axis score on the 2/3 boundary still gets adjudicated",
+        _needs_critic_panel(_verdict({"scores": {"a": 3}})),
+    )
     check("n/a excluded from mean", _verdict({"scores": {"a": 4, "b": "n/a"}})["mean"] == 4.0)
     _all_axes = [("camera", "frame"), ("sky", "cloud"), ("grade", "finish")]
     _camera_layer = type("Layer", (), {"owns": ("camera",)})()
@@ -180,6 +196,14 @@ def main():
         _scoped_score.get("type") == "integer" and "anyOf" not in _scoped_score,
     )
     check("full-rubric schema can still mark beat-specific axes n/a", "anyOf" in _full_score)
+    _semantic_ratio = _metric_regions(
+        "region_ratio",
+        {"orb_high": (0.4, 0.2, 0.6, 0.4), "orb_low": (0.4, 0.6, 0.6, 0.8)},
+    )
+    check(
+        "region ratios accept semantic numerator/denominator names",
+        _semantic_ratio["a"] == _semantic_ratio["orb_high"] and _semantic_ratio["b"] == _semantic_ratio["orb_low"],
+    )
     check(
         "critic schema classifies the evidence behind every issue",
         "issue_evidence" in _critic_schema([("camera", "frame")])["required"],
@@ -190,6 +214,11 @@ def main():
         "focus_requests" in _focus_schema["required"]
         and _focus_schema["properties"]["focus_requests"]["maxItems"] == 2,
     )
+    _focus_item_schema = _focus_schema["properties"]["focus_requests"]["items"]
+    check(
+        "focus requests must declare frame and coordinate space",
+        {"source", "source_frame"}.issubset(_focus_item_schema["required"]),
+    )
     _valid_focus = _focus_requests(
         {
             "scores": {"camera": 2},
@@ -197,29 +226,99 @@ def main():
                 {
                     "id": "left rib",
                     "axis": "camera",
+                    "source": "candidate_frame",
+                    "source_frame": 1,
                     "region": [0.1, 0.2, 0.3, 0.7],
                     "reason": "rib foot is below reliable full-frame detail",
                 }
             ],
         },
         [("camera", "frame")],
+        focus_references={1: "refs/f1.png"},
     )
     check(
         "valid focus requests preserve axis, reason and top-left crop",
         len(_valid_focus) == 1
         and _valid_focus[0]["id"] == "left_rib"
+        and _valid_focus[0]["source_frame"] == 1
         and _valid_focus[0]["crop"] == [0.1, 0.2, 0.3, 0.7],
         str(_valid_focus),
     )
+    _lighting_milestone = _strict_layers["4"].as_milestone(plan_strips(_strict_shot))
+    _frame_local_refs = _focus_references(_strict_shot, _lighting_milestone, allowed_frames=[40])
+    check(
+        "canonical frame-local focus cannot inspect a different judged frame",
+        set(_frame_local_refs) == {40},
+        str(_frame_local_refs),
+    )
+    _strip_focus = _focus_requests(
+        {
+            "scores": {"camera": 2},
+            "focus_requests": [
+                {
+                    "id": "f80 ring cross",
+                    "axis": "camera",
+                    "source": "motion_strip",
+                    "source_frame": 80,
+                    "region": [0.585, 0.12, 0.7, 0.82],
+                    "reason": "the f80 strip panel is too small to resolve",
+                }
+            ],
+        },
+        [("camera", "frame")],
+        focus_references={1: "refs/f1.png", 40: "refs/f40.png", 80: "refs/f80.png", 120: "refs/f120.png"},
+        motion_frames=[1, 20, 40, 60, 80, 100, 120],
+    )
+    check(
+        "strip-global f80 coordinates map to an f80-local optical crop",
+        len(_strip_focus) == 1
+        and _strip_focus[0]["source_frame"] == 80
+        and _strip_focus[0]["crop"] == [0.095, 0.12, 0.9, 0.82],
+        str(_strip_focus),
+    )
+    _cross_panel_focus = _focus_requests(
+        {
+            "scores": {"camera": 2},
+            "focus_requests": [
+                {
+                    "id": "ambiguous",
+                    "axis": "camera",
+                    "source": "motion_strip",
+                    "source_frame": 80,
+                    "region": [0.56, 0.2, 0.59, 0.6],
+                    "reason": "crosses the f60/f80 seam",
+                }
+            ],
+        },
+        [("camera", "frame")],
+        focus_references={80: "refs/f80.png"},
+        motion_frames=[1, 20, 40, 60, 80, 100, 120],
+    )
+    check("cross-panel strip crops are rejected as ambiguous", not _cross_panel_focus, str(_cross_panel_focus))
     _bad_focus = _focus_requests(
         {
             "scores": {"camera": 4},
             "focus_requests": [
-                {"id": "fishing", "axis": "camera", "region": [0, 0, 0.2, 0.2], "reason": "axis already passes"},
-                {"id": "whole", "axis": "camera", "region": [0, 0, 0.9, 0.9], "reason": "not a focus crop"},
+                {
+                    "id": "fishing",
+                    "axis": "camera",
+                    "source": "candidate_frame",
+                    "source_frame": 1,
+                    "region": [0, 0, 0.2, 0.2],
+                    "reason": "axis already passes",
+                },
+                {
+                    "id": "whole",
+                    "axis": "camera",
+                    "source": "candidate_frame",
+                    "source_frame": 1,
+                    "region": [0, 0, 0.9, 0.9],
+                    "reason": "not a focus crop",
+                },
             ],
         },
         [("camera", "frame")],
+        focus_references={1: "refs/f1.png"},
     )
     check("passing axes and near-full-frame fishing cannot trigger focus renders", not _bad_focus, str(_bad_focus))
     _panel_audit = _audit_panel_citations(
@@ -707,6 +806,39 @@ def main():
             "animation owns a motion axis, so it receives motion strips",
             _axes_need_motion(_owned_axes(load_axes(_strict_shot), _strict_layers["3"])),
         )
+        _motion_milestone = _strict_layers["3"].as_milestone(plan_strips(_strict_shot))
+        check(
+            "a multi-beat motion judge sees every judge frame and every interval",
+            _layer_motion_frames(_strict_layers["3"], _motion_milestone, _strict_shot.frames)
+            == [1, 20, 40, 60, 80, 100, 120],
+        )
+        check(
+            "motion ablation evaluates every owned judge frame instead of only the rest pose",
+            _ablation_frames(_strict_shot, _strict_layers["3"]) == [1, 40, 80, 120],
+        )
+        check(
+            "static ablation remains a single primary-frame comparison",
+            _ablation_frames(_strict_shot, _strict_layers["1"]) == [1],
+        )
+
+        _inherited_only = _scene_completion_state([{"authoritative": True, "pass": True, "owner_layer": "1"}], "3")
+        _current_owned = _scene_completion_state(
+            [
+                {"authoritative": True, "pass": True, "owner_layer": "1"},
+                {"authoritative": True, "pass": True, "owner_layer": "3"},
+            ],
+            "3",
+        )
+        check(
+            "passing inherited interfaces cannot seal an untouched downstream layer",
+            _inherited_only["interfaces_ready"] and not _inherited_only["may_seal"],
+            str(_inherited_only),
+        )
+        check(
+            "a passing current-layer contract can seal its own mutation gate",
+            _current_owned["interfaces_ready"] and _current_owned["may_seal"],
+            str(_current_owned),
+        )
 
         _all_green = {
             "pass": False,
@@ -723,7 +855,7 @@ def main():
             not _evidence_convergence_stop(_strict_layers["2"], _all_green),
         )
 
-        from bambi_vfx.compare_panels import focus_views, save_context_sheet, save_focus_sheet
+        from bambi_vfx.compare_panels import focus_signal, focus_views, save_context_sheet, save_focus_sheet
 
         _ref_full = _evroot / "focus_ref.png"
         _candidate_full = _evroot / "focus_candidate_full.png"
@@ -731,6 +863,17 @@ def main():
         _EvidenceImage.new("RGB", (200, 100), (0, 0, 180)).save(_ref_full)
         _EvidenceImage.new("RGB", (200, 100), (180, 0, 0)).save(_candidate_full)
         _EvidenceImage.new("RGB", (400, 240), (180, 0, 0)).save(_candidate_crop)
+        check(
+            "flat empty focus crops are rejected as having no visual signal",
+            not focus_signal(_EvidenceImage.new("RGB", (80, 80), (20, 20, 20)))["has_signal"],
+        )
+        _signal_probe = _EvidenceImage.new("RGB", (80, 80), (20, 20, 20))
+        for _x in range(20, 60):
+            _signal_probe.putpixel((_x, 40), (240, 240, 240))
+        check(
+            "a small real feature keeps a focus crop judgeable",
+            focus_signal(_signal_probe)["has_signal"],
+        )
         _crop = [0.25, 0.2, 0.75, 0.8]
         _views, _meta = focus_views(
             _candidate_crop, _ref_full, _crop, ("side_by_side", "wipe", "overlay", "difference")
@@ -2491,6 +2634,23 @@ def main():
         "a constant-velocity move is unbroken with zero accel",
         m_ok["unbroken"] and m_ok["max_accel"] == 0.0 and m_ok["max_speed"] == 1.0,
     )
+    m_held = motion_from_positions(
+        [1, 12, 24, 30, 36, 40, 80, 120],
+        [(0, 0, 0), (0, 0, 0), (0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0), (3, 0, 0), (3, 0, 0)],
+    )
+    check(
+        "intentional hold-move-hold choreography is one unbroken move",
+        m_held["unbroken"]
+        and m_held["active_frame_span"] == [24, 40]
+        and m_held["leading_hold_segments"] == 2
+        and m_held["trailing_hold_segments"] == 2,
+        str(m_held),
+    )
+    m_restart = motion_from_positions(
+        [1, 2, 3, 4, 5],
+        [(0, 0, 0), (1, 0, 0), (2, 0, 0), (2, 0, 0), (3, 0, 0)],
+    )
+    check("a stop and restart inside the active interval still fails", not m_restart["unbroken"])
     # Non-uniform frame gaps are the normal case for a judge-frame list, so speed must
     # be per FRAME and not per sample — otherwise a strip of [1, 24, 48] reports a
     # 24x-too-large speed and every travel target is met by accident.
@@ -2662,10 +2822,29 @@ def main():
     # failing frame AND break a passing one. The caller reverts on `broke` first.
     d = _repair_delta(vs((45, 4.0, True), (440, 1.0, False)), vs((45, 2.0, False), (440, 3.0, True)))
     check("a trade against a passing frame is reported as broken", d["broke"] == [45], str(d["broke"]))
+    check(
+        "a regressed first repair rolls back and uses the remaining attempt",
+        _repair_action(d, attempt=1, max_attempts=2) == "rollback_retry",
+    )
+    check(
+        "a regressed final repair rolls back and stops",
+        _repair_action(d, attempt=2, max_attempts=2) == "rollback_stop",
+    )
 
     check(
         "nothing broken when every passing frame holds",
         _repair_delta(vs((45, 4.0, True), (440, 1.0, False)), vs((45, 4.0, True), (440, 2.0, False)))["broke"] == [],
+    )
+    _accepted_delta = _repair_delta(
+        vs((45, 4.0, True), (440, 1.0, False)),
+        vs((45, 4.0, True), (440, 2.0, False)),
+    )
+    check("a monotonic repair remains committed", _repair_action(_accepted_delta, 1, 2) == "accept")
+    _rejected_summary = _repair_change_summary("energy = 10\n", "energy = 20\n")
+    check(
+        "the next repair receives the rejected script delta",
+        "-energy = 10" in _rejected_summary and "+energy = 20" in _rejected_summary,
+        _rejected_summary,
     )
 
     # A frame absent from the post-repair verdicts has no score to compare. Scoring its
@@ -3118,6 +3297,40 @@ def main():
     check(
         "needs >=2 attempts before it says anything",
         recurring_complaints(shot, layers["5"].as_milestone(), min_attempts=99) == "",
+    )
+    _history_file = shot.folder / "shot.json"
+    _history_before = _history_file.read_text(encoding="utf-8")
+    try:
+        _history_data = json.loads(_history_before)
+        _history_data["milestones"]["1"]["history"] = [
+            {
+                "attempt": 1,
+                "status": "failed",
+                "rounds": [
+                    {
+                        "attempt": 1,
+                        "kind": "canonical",
+                        "pass": False,
+                        "issues": ["pier inner face remains flat at f120"],
+                    }
+                ],
+            }
+        ]
+        _history_data["milestones"]["1"]["rounds"] = []
+        _history_file.write_text(json.dumps(_history_data), encoding="utf-8")
+        _archived = recurring_complaints(shot, layers["1"].as_milestone(), min_attempts=99)
+        check(
+            "an archived canonical failure reaches the very next attempt",
+            "PREVIOUS ATTEMPT FAILED CANONICAL" in _archived and "pier inner face" in _archived,
+            _archived,
+        )
+    finally:
+        _history_file.write_text(_history_before, encoding="utf-8")
+    _retry_file = Path(tempfile.mkdtemp()) / "04_lighting.py"
+    _retry_file.write_text("# prior measured artifact\n", encoding="utf-8")
+    check("failed artifacts warm-start a retry", _retry_warm_start("failed", _retry_file))
+    check(
+        "passed artifacts use deterministic revalidation, not warm start", not _retry_warm_start("passed", _retry_file)
     )
     check(
         "the kickoff actually carries it", "ATTEMPTED" in builder_kickoff(shot, layers["5"].as_milestone(), history=h5)

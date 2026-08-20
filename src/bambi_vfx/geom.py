@@ -22,8 +22,7 @@ def _scale(v: Sequence[float], s: float) -> tuple[float, float, float]:
     return (v[0] * s, v[1] * s, v[2] * s)
 
 
-def motion_from_positions(frames: Sequence[int],
-                          positions: Sequence[Sequence[float]]) -> dict:
+def motion_from_positions(frames: Sequence[int], positions: Sequence[Sequence[float]]) -> dict:
     """Velocity / accel / jerk from a sampled world-space path.
 
     `frames` and `positions` are parallel. Speed is distance per frame (u/f), matching
@@ -32,10 +31,18 @@ def motion_from_positions(frames: Sequence[int],
     if len(frames) != len(positions):
         raise ValueError("frames and positions must be the same length")
     if len(frames) < 2:
-        return {"ok": False, "reason": "need at least 2 samples",
-                "n": len(frames), "max_speed": 0.0, "max_accel": 0.0,
-                "max_jerk": 0.0, "unbroken": True, "peak_speed_frame": None,
-                "speeds": [], "accels": []}
+        return {
+            "ok": False,
+            "reason": "need at least 2 samples",
+            "n": len(frames),
+            "max_speed": 0.0,
+            "max_accel": 0.0,
+            "max_jerk": 0.0,
+            "unbroken": True,
+            "peak_speed_frame": None,
+            "speeds": [],
+            "accels": [],
+        }
 
     vels: list[tuple[float, float, float]] = []
     speeds: list[float] = []
@@ -62,19 +69,25 @@ def motion_from_positions(frames: Sequence[int],
         dt = frames[i + 3] - frames[i + 2]
         jerks.append(_len(_scale(_sub(accel_vecs[i + 1], accel_vecs[i]), 1.0 / dt)))
 
-    # Unbroken: the path never reverses (dot of consecutive velocity vectors >= 0)
-    # and never stops mid-move then restarts.
+    # Unbroken: leading/trailing holds are legitimate choreography.  Only the active
+    # interval must remain contiguous and never reverse.  The previous pairwise rule
+    # called HOLD → MOVE a broken restart whenever the hold had more than one sample.
     unbroken = True
-    for i in range(len(vels) - 1):
-        dot = (vels[i][0] * vels[i + 1][0]
-               + vels[i][1] * vels[i + 1][1]
-               + vels[i][2] * vels[i + 1][2])
-        if dot < -1e-9:
+    active = [index for index, speed in enumerate(speeds) if speed > 1e-6]
+    active_span = None
+    leading_hold = trailing_hold = 0
+    if active:
+        start, end = active[0], active[-1]
+        active_span = [int(frames[start]), int(frames[end + 1])]
+        leading_hold = start
+        trailing_hold = len(speeds) - end - 1
+        if any(speed <= 1e-6 for speed in speeds[start : end + 1]):
             unbroken = False
-            break
-        if speeds[i] < 1e-9 and speeds[i + 1] > 1e-6 and i not in (0, len(speeds) - 1):
-            unbroken = False
-            break
+        for i in range(start, end):
+            dot = vels[i][0] * vels[i + 1][0] + vels[i][1] * vels[i + 1][1] + vels[i][2] * vels[i + 1][2]
+            if dot < -1e-9:
+                unbroken = False
+                break
 
     peak_i = max(range(len(speeds)), key=lambda i: speeds[i])
     return {
@@ -87,6 +100,9 @@ def motion_from_positions(frames: Sequence[int],
         "peak_speed_frame": speed_at[peak_i],
         "speeds": [round(s, 4) for s in speeds],
         "accels": [round(a, 4) for a in accels],
+        "active_frame_span": active_span,
+        "leading_hold_segments": leading_hold,
+        "trailing_hold_segments": trailing_hold,
     }
 
 
@@ -98,8 +114,15 @@ def framing_from_ndc(corners: Iterable[Sequence[float]]) -> dict:
     """
     pts = [tuple(c) for c in corners]
     if not pts:
-        return {"ok": False, "reason": "no corners", "on_screen": 0.0,
-                "width": 0.0, "height": 0.0, "centre": None, "bbox": None}
+        return {
+            "ok": False,
+            "reason": "no corners",
+            "on_screen": 0.0,
+            "width": 0.0,
+            "height": 0.0,
+            "centre": None,
+            "bbox": None,
+        }
 
     in_front = [p for p in pts if p[2] > 0]
     on = [p for p in in_front if 0.0 <= p[0] <= 1.0 and 0.0 <= p[1] <= 1.0]
@@ -142,8 +165,7 @@ def mesh_issues(counts: dict) -> list[str]:
 def scale_issues(scale: Sequence[float], apply_eps: float = 1e-4) -> list[str]:
     issues = []
     if any(abs(s - 1.0) > apply_eps for s in scale[:3]):
-        issues.append(f"scale {tuple(round(s, 4) for s in scale[:3])} is not (1,1,1) "
-                      f"— apply scale before judging size")
+        issues.append(f"scale {tuple(round(s, 4) for s in scale[:3])} is not (1,1,1) — apply scale before judging size")
     if any(s <= 0 for s in scale[:3]):
         issues.append(f"non-positive scale {tuple(scale[:3])}")
     return issues

@@ -60,6 +60,26 @@ def _merge_worklist_items(state: dict, new_items: list[str]) -> dict:
     return state
 
 
+def _scene_completion_state(evidence: list[dict], layer_id: str) -> dict:
+    """Separate healthy inherited inputs from authority to seal the current layer.
+
+    Persistent upstream interfaces must pass, but they cannot prove that a downstream
+    department has performed its own work.  Only an active contract owned by the current
+    layer may close the live mutation gate.  Layers with image-only/subjective completion
+    keep mutation open until they voluntarily hand off to the critic.
+    """
+    authoritative = [row for row in evidence if row.get("authoritative")]
+    current = [row for row in authoritative if str(row.get("owner_layer") or "") == str(layer_id)]
+    failures = [row for row in authoritative if not row.get("pass")]
+    return {
+        "authoritative": authoritative,
+        "current": current,
+        "failures": failures,
+        "interfaces_ready": bool(authoritative) and not failures,
+        "may_seal": bool(current) and not failures,
+    }
+
+
 def _load(path: str) -> Image.Image:
     im = Image.open(path).convert("RGB")
     if im.width > _MAX_W:
@@ -248,11 +268,16 @@ def _check_report(kind: str, r: dict) -> str:
                 f"centre {fr.get('centre')} · on-screen {fr.get('on_screen')}"
             )
     elif kind == "motion":
+        holds = (
+            f" · holds {r.get('leading_hold_segments', 0)} before/{r.get('trailing_hold_segments', 0)} after"
+            if r.get("active_frame_span")
+            else ""
+        )
         lines.append(
             f"  max speed {r.get('max_speed')} u/f (f{r.get('peak_speed_frame')}) · "
             f"max |accel| {r.get('max_accel')} u/f^2 · "
             f"max |jerk| {r.get('max_jerk')} u/f^3 · "
-            f"{'one unbroken move' if r.get('unbroken') else 'BROKEN move'}"
+            f"{'one unbroken move' if r.get('unbroken') else 'BROKEN move'}{holds}"
         )
     elif kind == "mesh":
         c = r.get("counts", {})
@@ -599,6 +624,9 @@ def build_blender_tools(
             r = await _call("run", code=args["script"])
         except BlenderError as e:
             return _text(str(e), is_error=True)
+        # A successful script may have changed pixels even when this layer has no scene
+        # completion contract. Never carry an earlier comparison verdict across it.
+        comparison_state["pixel_contracts_passed"] = False
         out = r.get("stdout", "")
         res = r.get("result")
         el, oa, va = r.get("elapsed_s"), r.get("objects_added"), r.get("verts_added")
@@ -643,27 +671,44 @@ def build_blender_tools(
                         )
                     )
                     authoritative = [row for row in evidence if row.get("authoritative")]
+                state = _scene_completion_state(evidence, str(layer_id))
+                authoritative = state["authoritative"]
                 passed = [row for row in authoritative if row.get("pass")]
-                failed = [row for row in authoritative if not row.get("pass")]
+                failed = state["failures"]
                 if authoritative:
                     from ..runlog import bump
 
                     bump("automatic_scene_contract_probe")
                     contract_note = f"\nAUTHORITATIVE SCENE CONTRACTS: {len(passed)}/{len(authoritative)} pass"
                     if failed:
+                        comparison_state["scene_interfaces_ready"] = False
+                        comparison_state["scene_contracts_passed"] = False
+                        comparison_state["current_scene_contracts_present"] = bool(state["current"])
                         contract_note += " · failing:\n" + "\n".join(
                             f"  {row.get('id', '?')}: {row.get('metric')}="
                             f"{row.get('value')} target {row.get('target')} — "
                             f"{row.get('definition', 'see scene_checks contract')}"
                             for row in failed[:6]
                         )
-                    else:
+                    elif state["may_seal"]:
+                        comparison_state["scene_interfaces_ready"] = True
+                        comparison_state["current_scene_contracts_present"] = True
                         comparison_state["scene_contracts_passed"] = True
                         contract_note += (
                             "\nSCENE CONTRACTS PASS: call one FULL-FRAME compare_frame now. "
                             "It evaluates authoritative pixel/judgeability contracts. A "
                             "failure reopens one repair; a pass marks the critic handoff. "
                             "Further run_bpy edits are blocked until that comparison."
+                        )
+                    else:
+                        comparison_state["scene_interfaces_ready"] = True
+                        comparison_state["current_scene_contracts_present"] = False
+                        comparison_state["scene_contracts_passed"] = False
+                        contract_note += (
+                            "\nINHERITED INTERFACES PASS, but this layer owns no active "
+                            "scene completion contract. They prove healthy inputs, not "
+                            "that the current layer is finished; live mutation remains "
+                            "open until the builder hands its scoped work to the critic."
                         )
             except Exception as exc:
                 contract_note = (
@@ -1060,7 +1105,7 @@ def build_blender_tools(
         except BlenderError as e:
             return _text(str(e), is_error=True)
         gate_note = ""
-        if crop is None and comparison_state.get("scene_contracts_passed") and shot_dir:
+        if crop is None and comparison_state.get("scene_interfaces_ready") and shot_dir:
             try:
                 gate_pass, gate_rows = await anyio.to_thread.run_sync(
                     lambda: _pixel_contract_gate(
@@ -1071,10 +1116,18 @@ def build_blender_tools(
                 gate_note = f"\nAUTHORITATIVE IMAGE CONTRACTS: {passed_rows}/{len(gate_rows)} pass"
                 if gate_pass:
                     comparison_state["pixel_contracts_passed"] = True
-                    gate_note += (
-                        "\nCRITIC HANDOFF READY: scene and image contracts pass. "
-                        "Do not mutate again without critic-backed evidence."
-                    )
+                    if comparison_state.get("current_scene_contracts_present"):
+                        comparison_state["scene_contracts_passed"] = True
+                        gate_note += (
+                            "\nCRITIC HANDOFF READY: current-layer scene and image "
+                            "contracts pass. Do not mutate again without critic-backed evidence."
+                        )
+                    else:
+                        gate_note += (
+                            "\nIMAGE CONTRACTS PASS, but this layer has no scene "
+                            "completion contract. Mutation remains open; finish the scoped "
+                            "work, verify it, then hand off voluntarily to the critic."
+                        )
                 else:
                     comparison_state["scene_contracts_passed"] = False
                     comparison_state["pixel_contracts_passed"] = False

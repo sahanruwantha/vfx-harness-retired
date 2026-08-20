@@ -167,6 +167,23 @@ METRICS: dict[str, tuple[tuple[str, ...], object]] = {
 }
 
 
+def _metric_regions(metric: str, regions: dict) -> dict:
+    """Resolve semantic region labels into the metric's positional operands."""
+    if metric != "region_ratio" or ("a" in regions and "b" in regions):
+        return regions
+    if "numerator" in regions and "denominator" in regions:
+        return {**regions, "a": regions["numerator"], "b": regions["denominator"]}
+    if len(regions) == 2:
+        # JSON preserves author order. This lets checks say `orb_high` / `orb_low` while
+        # retaining the declared numerator/denominator direction without a parallel map.
+        first, second = regions.values()
+        return {**regions, "a": first, "b": second}
+    raise KeyError(
+        "metric 'region_ratio' needs exactly two semantic regions (first/second = "
+        "numerator/denominator), explicit numerator+denominator, or legacy a+b"
+    )
+
+
 @dataclass
 class Check:
     id: str
@@ -246,13 +263,14 @@ def evaluate(check: Check, image: str | Path) -> float:
     if spec is None:
         raise KeyError(f"unknown metric '{check.metric}'; known: {sorted(METRICS)}")
     needs, fn = spec
-    missing = [k for k in needs if k not in check.regions]
+    regions = _metric_regions(check.metric, check.regions)
+    missing = [k for k in needs if k not in regions]
     if missing:
         raise KeyError(f"metric '{check.metric}' needs region(s) {missing}")
     if check.metric.startswith("frame_"):
-        return float(fn(str(image), check.regions))
+        return float(fn(str(image), regions))
     with Image.open(str(image)) as im:
-        return float(fn(_prep(im.convert("RGB"), 960), check.regions))
+        return float(fn(_prep(im.convert("RGB"), 960), regions))
 
 
 def noise_floor(check: Check, image: str | Path, scales=(0.5, 0.75, 1.0)) -> float:

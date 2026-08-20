@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageStat
 
 VIEWS = ("side_by_side", "wipe", "overlay", "difference")
 _BG = (18, 18, 22)
@@ -33,23 +33,51 @@ def validate_crop(crop) -> tuple[float, float, float, float]:
 def crop_pixels(image: Image.Image, crop) -> Image.Image:
     x0, y0, x1, y1 = validate_crop(crop)
     width, height = image.size
-    box = (round(x0 * width), round(y0 * height),
-           max(round(x0 * width) + 1, round(x1 * width)),
-           max(round(y0 * height) + 1, round(y1 * height)))
+    box = (
+        round(x0 * width),
+        round(y0 * height),
+        max(round(x0 * width) + 1, round(x1 * width)),
+        max(round(y0 * height) + 1, round(y1 * height)),
+    )
     return image.crop(box)
 
 
-def _fit_pair(candidate: Image.Image, reference: Image.Image,
-              max_height: int = 900, max_pair_width: int = 3000
-              ) -> tuple[Image.Image, Image.Image]:
+def focus_signal(image: Image.Image) -> dict:
+    """Conservative content test used to reject genuinely empty optical crops."""
+    gray = image.convert("L")
+    if max(gray.size) > 320:
+        scale = 320 / max(gray.size)
+        gray = gray.resize(
+            (max(1, round(gray.width * scale)), max(1, round(gray.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    stats = ImageStat.Stat(gray)
+    lo, hi = gray.getextrema()
+    edges = gray.filter(ImageFilter.FIND_EDGES)
+    if edges.width > 4 and edges.height > 4:
+        edges = edges.crop((2, 2, edges.width - 2, edges.height - 2))
+    edge_mean = ImageStat.Stat(edges).mean[0]
+    stddev = stats.stddev[0]
+    dynamic_range = hi - lo
+    return {
+        "stddev": round(stddev, 3),
+        "edge_mean": round(edge_mean, 3),
+        "dynamic_range": int(dynamic_range),
+        "has_signal": bool(stddev >= 2.0 or edge_mean >= 1.0 or dynamic_range >= 8),
+    }
+
+
+def _fit_pair(
+    candidate: Image.Image, reference: Image.Image, max_height: int = 900, max_pair_width: int = 3000
+) -> tuple[Image.Image, Image.Image]:
     """Downsample both to one geometry; never upscale either source."""
-    aspect = min(candidate.width / max(candidate.height, 1),
-                 reference.width / max(reference.height, 1))
-    height = min(candidate.height, reference.height, max_height,
-                 max(1, int((max_pair_width / 2) / max(aspect, 1e-6))))
+    aspect = min(candidate.width / max(candidate.height, 1), reference.width / max(reference.height, 1))
+    height = min(candidate.height, reference.height, max_height, max(1, int((max_pair_width / 2) / max(aspect, 1e-6))))
     width = max(1, round(height * aspect))
-    return (candidate.resize((width, height), Image.Resampling.LANCZOS),
-            reference.resize((width, height), Image.Resampling.LANCZOS))
+    return (
+        candidate.resize((width, height), Image.Resampling.LANCZOS),
+        reference.resize((width, height), Image.Resampling.LANCZOS),
+    )
 
 
 def _font(image: Image.Image, divisor: int = 24):
@@ -68,13 +96,20 @@ def _label(image: Image.Image, text: str, color: tuple[int, int, int]) -> Image.
     draw = ImageDraw.Draw(labelled)
     draw.rectangle((0, bar - 7, image.width, bar), fill=color)
     font_size = getattr(font, "size", 16)
-    draw.text((14, max(5, (bar - font_size) // 2 - 2)), text, fill=(255, 255, 255),
-              font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+    draw.text(
+        (14, max(5, (bar - font_size) // 2 - 2)),
+        text,
+        fill=(255, 255, 255),
+        font=font,
+        stroke_width=2,
+        stroke_fill=(0, 0, 0),
+    )
     return labelled
 
 
-def mark_pair(image: Image.Image, seam: int, left: str = "CANDIDATE — LEFT",
-              right: str = "REFERENCE — RIGHT") -> Image.Image:
+def mark_pair(
+    image: Image.Image, seam: int, left: str = "CANDIDATE — LEFT", right: str = "REFERENCE — RIGHT"
+) -> Image.Image:
     """Embed unmistakable, color-coded source identity into comparison pixels."""
     font = _font(image, 44)
     bar = max(48, min(82, image.height // 6))
@@ -88,18 +123,26 @@ def mark_pair(image: Image.Image, seam: int, left: str = "CANDIDATE — LEFT",
     draw.rectangle((seam, bar - 8, image.width, bar), fill=cyan)
     draw.line((seam, 0, seam, labelled.height), fill=(255, 60, 255), width=6)
     y = max(5, (bar - getattr(font, "size", 16)) // 2 - 2)
-    draw.text((14, y), left, fill=(255, 255, 255), font=font,
-              stroke_width=2, stroke_fill=(0, 0, 0))
+    draw.text((14, y), left, fill=(255, 255, 255), font=font, stroke_width=2, stroke_fill=(0, 0, 0))
     box = draw.textbbox((0, 0), right, font=font, stroke_width=2)
     rw = box[2] - box[0]
-    draw.text((max(seam + 14, image.width - rw - 14), y), right,
-              fill=(255, 255, 255), font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+    draw.text(
+        (max(seam + 14, image.width - rw - 14), y),
+        right,
+        fill=(255, 255, 255),
+        font=font,
+        stroke_width=2,
+        stroke_fill=(0, 0, 0),
+    )
     return labelled
 
 
-def focus_views(candidate_crop: str | Path, reference_full: str | Path, crop,
-                views: list[str] | tuple[str, ...] = ("side_by_side", "wipe")
-                ) -> tuple[list[tuple[str, Image.Image]], dict]:
+def focus_views(
+    candidate_crop: str | Path,
+    reference_full: str | Path,
+    crop,
+    views: list[str] | tuple[str, ...] = ("side_by_side", "wipe"),
+) -> tuple[list[tuple[str, Image.Image]], dict]:
     """Return aligned view images plus provenance/quality metadata."""
     crop = validate_crop(crop)
     selected = list(dict.fromkeys(views))[:4]
@@ -112,6 +155,8 @@ def focus_views(candidate_crop: str | Path, reference_full: str | Path, crop,
     candidate_raw = Image.open(candidate_crop).convert("RGB")
     reference_raw = Image.open(reference_full).convert("RGB")
     reference_crop = crop_pixels(reference_raw, crop)
+    candidate_signal = focus_signal(candidate_raw)
+    reference_signal = focus_signal(reference_crop)
     candidate_aspect = candidate_raw.width / max(candidate_raw.height, 1)
     reference_aspect = reference_crop.width / max(reference_crop.height, 1)
     if abs(candidate_aspect - reference_aspect) / max(reference_aspect, 1e-6) > 0.02:
@@ -134,8 +179,7 @@ def focus_views(candidate_crop: str | Path, reference_full: str | Path, crop,
             image.paste(reference.crop((seam, 0, width, height)), (seam, 0))
             draw = ImageDraw.Draw(image)
             draw.line((seam, 0, seam, height), fill=(255, 80, 255), width=3)
-            image = mark_pair(image, seam, "CANDIDATE — LEFT OF WIPE",
-                              "REFERENCE — RIGHT OF WIPE")
+            image = mark_pair(image, seam, "CANDIDATE — LEFT OF WIPE", "REFERENCE — RIGHT OF WIPE")
         elif view == "overlay":
             image = Image.blend(candidate, reference, 0.5)
             image = _label(image, "50/50 OVERLAY", (255, 255, 255))
@@ -154,15 +198,25 @@ def focus_views(candidate_crop: str | Path, reference_full: str | Path, crop,
         "comparison_px": [width, height],
         "views": selected,
         "mean_abs_diff": round(sum(pixels) / max(1, len(pixels)), 3),
-        "upscaled": (width > candidate_raw.width or height > candidate_raw.height
-                     or width > reference_crop.width or height > reference_crop.height),
+        "upscaled": (
+            width > candidate_raw.width
+            or height > candidate_raw.height
+            or width > reference_crop.width
+            or height > reference_crop.height
+        ),
+        "signal": {"candidate": candidate_signal, "reference": reference_signal},
+        "has_signal": candidate_signal["has_signal"] or reference_signal["has_signal"],
     }
     return out, meta
 
 
-def save_focus_sheet(candidate_crop: str | Path, reference_full: str | Path, crop,
-                     dest: str | Path,
-                     views: list[str] | tuple[str, ...] = ("side_by_side", "wipe")) -> dict:
+def save_focus_sheet(
+    candidate_crop: str | Path,
+    reference_full: str | Path,
+    crop,
+    dest: str | Path,
+    views: list[str] | tuple[str, ...] = ("side_by_side", "wipe"),
+) -> dict:
     panels, meta = focus_views(candidate_crop, reference_full, crop, views)
     gap = 8
     width = max(image.width for _name, image in panels)
@@ -178,8 +232,7 @@ def save_focus_sheet(candidate_crop: str | Path, reference_full: str | Path, cro
     return {**meta, "image_path": str(destination), "sheet_px": list(sheet.size)}
 
 
-def save_context_sheet(candidate_full: str | Path, reference_full: str | Path, crop,
-                       dest: str | Path) -> dict:
+def save_context_sheet(candidate_full: str | Path, reference_full: str | Path, crop, dest: str | Path) -> dict:
     crop = validate_crop(crop)
     candidate = Image.open(candidate_full).convert("RGB")
     reference = Image.open(reference_full).convert("RGB")
@@ -187,8 +240,7 @@ def save_context_sheet(candidate_full: str | Path, reference_full: str | Path, c
     reference_aspect = reference.width / max(reference.height, 1)
     if abs(candidate_aspect - reference_aspect) / max(reference_aspect, 1e-6) > 0.02:
         raise ValueError(
-            f"context comparison requires matching aspect; candidate is {candidate.size}, "
-            f"reference is {reference.size}"
+            f"context comparison requires matching aspect; candidate is {candidate.size}, reference is {reference.size}"
         )
     candidate, reference = _fit_pair(candidate, reference, max_height=500)
     width, height = candidate.size
@@ -198,13 +250,10 @@ def save_context_sheet(candidate_full: str | Path, reference_full: str | Path, c
     draw = ImageDraw.Draw(sheet)
     x0, y0, x1, y1 = crop
     for offset in (0, width):
-        box = (offset + round(x0 * width), round(y0 * height),
-               offset + round(x1 * width), round(y1 * height))
+        box = (offset + round(x0 * width), round(y0 * height), offset + round(x1 * width), round(y1 * height))
         draw.rectangle(box, outline=(255, 80, 255), width=4)
-    sheet = mark_pair(sheet, width, "CANDIDATE CONTEXT — LEFT",
-                      "REFERENCE CONTEXT — RIGHT")
+    sheet = mark_pair(sheet, width, "CANDIDATE CONTEXT — LEFT", "REFERENCE CONTEXT — RIGHT")
     destination = Path(dest)
     destination.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(destination, quality=90)
-    return {"image_path": str(destination), "crop": list(crop),
-            "sheet_px": list(sheet.size)}
+    return {"image_path": str(destination), "crop": list(crop), "sheet_px": list(sheet.size)}

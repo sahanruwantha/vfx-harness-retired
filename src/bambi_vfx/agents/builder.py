@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import io
 import json
 import os
 import re
 import shutil
 import time
+from itertools import pairwise
 from pathlib import Path
 
 import anyio
@@ -411,7 +413,12 @@ def _axes_options(shot: Shot) -> ClaudeAgentOptions:
     )
 
 
-def _critic_schema(axes: list[tuple[str, str]], *, allow_na: bool = True) -> dict:
+def _critic_schema(
+    axes: list[tuple[str, str]],
+    *,
+    allow_na: bool = True,
+    focus_frames: list[int] | None = None,
+) -> dict:
     """Force the verdict shape instead of regex-scraping the last {...} out of prose.
     Layer builds pass only their owned axes, so scope is no longer a model decision there.
     Full-rubric/acceptance calls may still need n/a for beat-specific axes."""
@@ -460,6 +467,16 @@ def _critic_schema(axes: list[tuple[str, str]], *, allow_na: bool = True) -> dic
                     "properties": {
                         "id": {"type": "string", "description": "short stable id"},
                         "axis": {"type": "string", "enum": [k for k, _ in axes]},
+                        "source": {
+                            "type": "string",
+                            "enum": ["candidate_frame", "motion_strip"],
+                            "description": "coordinate space used by region",
+                        },
+                        "source_frame": {
+                            "type": "integer",
+                            **({"enum": sorted(set(focus_frames))} if focus_frames else {"minimum": 1}),
+                            "description": "shot frame whose detail must be rerendered",
+                        },
                         "region": {
                             "type": "array",
                             "items": {"type": "number", "minimum": 0, "maximum": 1},
@@ -468,12 +485,14 @@ def _critic_schema(axes: list[tuple[str, str]], *, allow_na: bool = True) -> dic
                         },
                         "reason": {"type": "string"},
                     },
-                    "required": ["id", "axis", "region", "reason"],
+                    "required": ["id", "axis", "source", "source_frame", "region", "reason"],
                     "additionalProperties": False,
                 },
                 "description": "At most two normalized TOP-LEFT regions needed to resolve "
-                "a material below-3/uncertain visual decision. Empty when "
-                "the supplied images are sufficient.",
+                "a material below-3/uncertain visual decision. source=candidate_frame "
+                "uses coordinates local to source_frame; source=motion_strip uses global "
+                "strip coordinates and must remain inside that frame's one panel. Empty "
+                "when the supplied images are sufficient.",
             },
             # Asked EXPLICITLY because the critic will otherwise mention a bad reference
             # in `issues` and score anyway: handed a render of a night city against a
@@ -496,7 +515,11 @@ def _critic_schema(axes: list[tuple[str, str]], *, allow_na: bool = True) -> dic
 
 
 def _critic_options(
-    shot: Shot, axes: list[tuple[str, str]] | None = None, *, allow_na: bool = True
+    shot: Shot,
+    axes: list[tuple[str, str]] | None = None,
+    *,
+    allow_na: bool = True,
+    focus_frames: list[int] | None = None,
 ) -> ClaudeAgentOptions:
     # NO TOOLS. The images arrive attached to the request (see _critique), so the critic
     # has nothing to fetch and cannot score a frame it never saw. This deleted three
@@ -538,7 +561,14 @@ def _critic_options(
         effort=CRITIC_EFFORT,
         # Validated at the tool layer with automatic retries, instead of scraping the
         # last {...} out of free text — one critic already returned nothing parseable.
-        output_format=({"type": "json_schema", "schema": _critic_schema(axes, allow_na=allow_na)} if axes else None),
+        output_format=(
+            {
+                "type": "json_schema",
+                "schema": _critic_schema(axes, allow_na=allow_na, focus_frames=focus_frames),
+            }
+            if axes
+            else None
+        ),
     )
 
 
@@ -925,7 +955,61 @@ def _verdict(verdict: dict) -> dict:
     return verdict
 
 
-def _focus_requests(verdict: dict, axes: list[tuple[str, str]]) -> list[dict]:
+def _focus_references(
+    shot: Shot,
+    m: Milestone,
+    allowed_frames: list[int] | tuple[int, ...] | set[int] | None = None,
+) -> dict[int, str]:
+    """Reference-bearing frames that can produce an aligned optical focus panel.
+
+    Live layer review may inspect any judged frame.  A canonical *per-frame* review is
+    different: its verdict is attributed to one frame and used by the transactional
+    repair guard for that frame.  In that mode callers restrict this map so a defect at
+    f120 cannot silently turn the recorded f40 verdict into a failure.
+    """
+    references = {int(m.frame): str(m.ref)}
+    layer_id = str(m.id).split("@", 1)[0]
+    try:
+        layer = load_layers(shot).get(layer_id)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError):
+        layer = None
+    if layer is not None:
+        references.update({int(frame): str(ref) for frame, ref in layer.judges})
+    allowed = {int(frame) for frame in allowed_frames} if allowed_frames is not None else None
+    return {
+        frame: ref
+        for frame, ref in references.items()
+        if 1 <= frame <= shot.frames and (shot.folder / ref).is_file()
+        if allowed is None or frame in allowed
+    }
+
+
+def _motion_strip_crop(crop: list[float], frames: list[int], source_frame: int) -> list[float]:
+    """Map one strip-global crop into a single frame-local crop.
+
+    A request crossing a panel seam is ambiguous by construction: there is no single
+    Blender frame/reference pair that can be optically rerendered for it.
+    """
+    if not frames:
+        raise ValueError("motion-strip focus requires strip frames")
+    x0, y0, x1, y1 = crop
+    count = len(frames)
+    first = min(count - 1, int(x0 * count))
+    last = min(count - 1, int(max(x0, x1 - 1e-9) * count))
+    if first != last:
+        raise ValueError("motion-strip focus crop crosses a panel boundary")
+    if int(frames[first]) != int(source_frame):
+        raise ValueError(f"motion-strip crop selects f{frames[first]}, not declared f{source_frame}")
+    return [round(x0 * count - first, 6), y0, round(x1 * count - first, 6), y1]
+
+
+def _focus_requests(
+    verdict: dict,
+    axes: list[tuple[str, str]],
+    *,
+    focus_references: dict[int, str],
+    motion_frames: list[int] | None = None,
+) -> list[dict]:
     """Validate critic-selected crops before they can trigger renders or extra judging.
 
     A request is supplemental evidence, not an escape hatch from scoring the full frame:
@@ -942,13 +1026,27 @@ def _focus_requests(verdict: dict, axes: list[tuple[str, str]]) -> list[dict]:
         score = scores.get(axis)
         if axis not in allowed or not isinstance(score, (int, float)) or score > 3:
             continue
+        source = str(item.get("source") or "")
         try:
-            crop = list(validate_crop(item.get("region")))
+            source_frame = int(item.get("source_frame"))
+        except (TypeError, ValueError):
+            continue
+        if source not in {"candidate_frame", "motion_strip"} or source_frame not in focus_references:
+            continue
+        try:
+            requested_crop = list(validate_crop(item.get("region")))
+            crop = (
+                _motion_strip_crop(requested_crop, list(motion_frames or []), source_frame)
+                if source == "motion_strip"
+                else requested_crop
+            )
+            crop = list(validate_crop(crop))
         except ValueError:
             continue
         if crop[2] - crop[0] < 0.02 or crop[3] - crop[1] < 0.02:
             continue  # below this, even the capped optical render has too few real pixels
-        if crop[2] - crop[0] > 0.75 or crop[3] - crop[1] > 0.75:
+        max_span = 0.9 if source == "motion_strip" else 0.75
+        if crop[2] - crop[0] > max_span or crop[3] - crop[1] > 0.75:
             continue
         raw_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(item.get("id") or "")).strip("_")
         panel_id = (raw_id or f"focus_{index + 1}")[:40]
@@ -958,45 +1056,79 @@ def _focus_requests(verdict: dict, axes: list[tuple[str, str]]) -> list[dict]:
         reason = " ".join(str(item.get("reason") or "").split())[:180]
         if not reason:
             continue
-        out.append({"id": panel_id, "axis": axis, "crop": crop, "reason": reason})
+        out.append(
+            {
+                "id": panel_id,
+                "axis": axis,
+                "source": source,
+                "source_frame": source_frame,
+                "requested_crop": requested_crop,
+                "crop": crop,
+                "reference": focus_references[source_frame],
+                "reason": reason,
+            }
+        )
     return out
 
 
 async def _make_focus_panels(
-    shot: Shot, m: Milestone, session: BlenderSession, requests: list[dict], candidate_rel: str = "candidate"
+    shot: Shot,
+    m: Milestone,
+    session: BlenderSession,
+    requests: list[dict],
+    candidate_rel: str = "candidate",
 ) -> list[dict]:
-    """Optically rerender requested crops and align each with the same reference crop."""
+    """Optically rerender frame-local crops against that frame's matching reference."""
     panels = []
-    reference = shot.folder / m.ref
-    async with _FOCUS_RENDER_LOCK:
-        for item in requests[:2]:
-            crop = item["crop"]
-            fraction = max(crop[2] - crop[0], crop[3] - crop[1])
-            res_pct = min(800, max(150, round(110 / fraction)))
-            rendered = await anyio.to_thread.run_sync(
-                lambda c=crop, pct=res_pct: session.render_full(
-                    frame=m.frame, mode="eevee", scale=0.5, **{"pass": "beauty"}, shade="beauty", crop=c, res_pct=pct
+    rendered_other_frame = False
+    try:
+        async with _FOCUS_RENDER_LOCK:
+            for item in requests[:2]:
+                crop = item["crop"]
+                source_frame = int(item["source_frame"])
+                rendered_other_frame = rendered_other_frame or source_frame != int(m.frame)
+                reference = shot.folder / item["reference"]
+                fraction = max(crop[2] - crop[0], crop[3] - crop[1])
+                res_pct = min(800, max(150, round(110 / fraction)))
+                rendered = await anyio.to_thread.run_sync(
+                    lambda c=crop, pct=res_pct, f=source_frame: session.render_full(
+                        frame=f,
+                        mode="eevee",
+                        scale=0.5,
+                        **{"pass": "beauty"},
+                        shade="beauty",
+                        crop=c,
+                        res_pct=pct,
+                    )
                 )
-            )
-            candidate_tag = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(candidate_rel).stem)[:60]
-            dest = shot.folder / "renders" / f"{candidate_tag}_focus_{item['id']}_f{m.frame}.jpg"
-            meta = await anyio.to_thread.run_sync(
-                lambda r=rendered, c=crop, d=dest: save_focus_sheet(
-                    r["image_path"], reference, c, d, ("side_by_side", "wipe")
+                candidate_tag = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(candidate_rel).stem)[:60]
+                dest = shot.folder / "renders" / f"{candidate_tag}_focus_{item['id']}_f{source_frame}.jpg"
+                meta = await anyio.to_thread.run_sync(
+                    lambda r=rendered, c=crop, d=dest, ref=reference: save_focus_sheet(
+                        r["image_path"], ref, c, d, ("side_by_side", "wipe")
+                    )
                 )
-            )
-            panels.append(
-                {
-                    **item,
-                    "res_pct": res_pct,
-                    "image_rel": str(dest.relative_to(shot.folder)),
-                    "candidate_source_px": meta["candidate_source_px"],
-                    "reference_crop_px": meta["reference_crop_px"],
-                    "comparison_px": meta["comparison_px"],
-                    "views": meta["views"],
-                    "upscaled": meta["upscaled"],
-                    "mean_abs_diff": meta["mean_abs_diff"],
-                }
+                if not meta["has_signal"]:
+                    dest.unlink(missing_ok=True)
+                    raise ValueError(f"focus {item['id']} is empty in both candidate and reference at f{source_frame}")
+                panels.append(
+                    {
+                        **item,
+                        "res_pct": res_pct,
+                        "image_rel": str(dest.relative_to(shot.folder)),
+                        "candidate_source_px": meta["candidate_source_px"],
+                        "reference_crop_px": meta["reference_crop_px"],
+                        "comparison_px": meta["comparison_px"],
+                        "views": meta["views"],
+                        "upscaled": meta["upscaled"],
+                        "mean_abs_diff": meta["mean_abs_diff"],
+                        "signal": meta["signal"],
+                    }
+                )
+    finally:
+        if rendered_other_frame:
+            await anyio.to_thread.run_sync(
+                lambda: session.run(f"bpy.context.scene.frame_set({int(m.frame)})", journal=False)
             )
     return panels
 
@@ -1013,6 +1145,12 @@ def _required_focus_requests(shot: Shot, layer_id: str, frame: int, axes: list[t
     path = shot.folder / "checks.json"
     if not path.is_file():
         return []
+    try:
+        reference_by_frame = {
+            int(judge_frame): str(ref) for judge_frame, ref in load_layers(shot)[str(layer_id)].judges
+        }
+    except (KeyError, FileNotFoundError, ValueError, json.JSONDecodeError):
+        reference_by_frame = {}
     owned_axes = {str(key) for key, _description in axes}
     requests = []
     for row in load_document(path, "checks"):
@@ -1024,6 +1162,9 @@ def _required_focus_requests(shot: Shot, layer_id: str, frame: int, axes: list[t
         axis = str(row.get("axis") or "")
         if axis not in owned_axes:
             continue
+        reference = reference_by_frame.get(int(frame))
+        if not reference or not (shot.folder / reference).is_file():
+            raise ValueError(f"check {row.get('id')} requires focus at f{frame}, but that frame has no layer reference")
         try:
             crop = list(validate_crop(focus.get("crop")))
         except (TypeError, ValueError) as exc:
@@ -1035,7 +1176,11 @@ def _required_focus_requests(shot: Shot, layer_id: str, frame: int, axes: list[t
             {
                 "id": str(focus.get("id") or row.get("id"))[:40],
                 "axis": axis,
+                "source": "candidate_frame",
+                "source_frame": int(frame),
+                "requested_crop": crop,
                 "crop": crop,
+                "reference": reference,
                 "reason": reason[:180],
             }
         )
@@ -1212,6 +1357,32 @@ def _repair_delta(pre: list, post: list) -> dict:
     }
 
 
+def _repair_action(delta: dict, attempt: int, max_attempts: int | None = None) -> str:
+    """Choose the transactional disposition of one canonical repair.
+
+    A rejected patch is rolled back, but rejection is evidence about an approach—not a
+    reason to throw away an unused repair attempt.  The old loop stopped immediately on
+    regression, which made ``MAX_CANON_REPAIRS = 2`` misleading: Layer 4 used one
+    geometric approach, regressed a protected frame, and was denied its second attempt.
+    """
+    max_attempts = MAX_CANON_REPAIRS if max_attempts is None else max_attempts
+    rejected = bool(delta.get("broke")) or not bool(delta.get("progressed"))
+    if not rejected:
+        return "accept"
+    return "rollback_retry" if attempt < max_attempts else "rollback_stop"
+
+
+def _repair_change_summary(before: str, after: str, limit: int = 3200) -> str:
+    """Small, prompt-safe account of a rejected script edit for the next repair agent."""
+    changed = [
+        line
+        for line in difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm="")
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    ]
+    text = "\n".join(changed)
+    return text[:limit] + ("\n…" if len(text) > limit else "")
+
+
 # Claude's long-edge sweet spot. Beyond this an image costs tokens without adding
 # discriminable detail, and the critic scores several images per call.
 CRITIC_EFFORT = os.environ.get("BVFX_CRITIC_EFFORT", "xhigh")
@@ -1275,14 +1446,17 @@ async def _critique(
     evidence: list[dict] | None = None,
     review_mode: str = "observer",
     focus_panels: list[dict] | None = None,
+    motion_evidence: tuple[str, list[int]] | None = None,
+    focus_frames: list[int] | tuple[int, ...] | set[int] | None = None,
 ) -> dict:
-    motion_rel, motion_frames = None, None
-    if shot.frontmatter.get("type") == "motion" and shot.frames > 1 and _axes_need_motion(axes):
+    motion_rel, motion_frames = motion_evidence or (None, None)
+    if motion_rel is None and shot.frontmatter.get("type") == "motion" and shot.frames > 1 and _axes_need_motion(axes):
         try:  # a motion strip so motion/finish axes are judged across frames, not a still
             stem = candidate_rel.split("/")[-1].split(".")[0]
             motion_rel, motion_frames = _stash_motion_strip(session, shot, m, stem)
         except Exception as e:
             log(f"motion strip skipped: {str(e)[:80]}", 1)
+    focus_references = _focus_references(shot, m, focus_frames)
     log(
         f"critic[{CRITIC_MODEL}]: scoring {candidate_rel} vs {m.ref}"
         + (f" (+motion {motion_frames})" if motion_rel else ""),
@@ -1299,6 +1473,7 @@ async def _critique(
         evidence=evidence,
         review_mode=review_mode,
         focus_panels=focus_panels,
+        focus_frames=sorted(focus_references),
     )
 
     # ATTACH the images instead of asking an agent to fetch them. A missing file is now a
@@ -1323,7 +1498,8 @@ async def _critique(
                 "type": "text",
                 "text": (
                     f"FOCUS PANEL {panel['id']} — axis {panel['axis']}, crop "
-                    f"{panel['crop']} (TOP-LEFT normalized), optical res_pct "
+                    f"{panel['crop']} within source frame f{panel['source_frame']} "
+                    f"against {panel['reference']} (TOP-LEFT normalized), optical res_pct "
                     f"{panel['res_pct']}. It contains aligned CANDIDATE | REFERENCE "
                     f"and a 50/50 wipe. Reason: {panel['reason']}"
                 ),
@@ -1360,7 +1536,13 @@ async def _critique(
             critic_role = "focus_critic" if review_mode == "focus_review" else "critic"
             with costlog.scoped(role=critic_role, phase=review_mode, frame=getattr(m, "frame", None)):
                 async for message in query(
-                    prompt=_one_user_message(blocks), options=_critic_options(shot, axes, allow_na=scope is None)
+                    prompt=_one_user_message(blocks),
+                    options=_critic_options(
+                        shot,
+                        axes,
+                        allow_na=scope is None,
+                        focus_frames=sorted(focus_references),
+                    ),
                 ):
                     _structured_or_text(message, acc)
                     # The critic loop does NOT call log_message, which is where costlog was
@@ -1479,12 +1661,10 @@ def _borderline(verdict: dict) -> bool:
     if not scores:
         return False
     if len(scores) <= 2:
-        # With one or two axes the mean IS a single integer score and the measured spread
-        # is a full 2 points, so every value near the line is a coin flip — even a lone 4
-        # carried a 7.4% chance a panel would have said REVISE. Two extra critic calls
-        # (~$0.06) against a ~$6 layer that seven more layers get stacked on: always
-        # convene the panel here rather than guess which single scores are safe.
-        return True
+        # Only scores adjacent to the 2/3 decision boundary can flip the verdict with one
+        # point of ordinary judge noise.  Treating a perfect 4/5 on one owned axis as
+        # "borderline" doubled every canonical critic call without changing a decision.
+        return any(score in (2, 3) for score in scores)
     return abs(verdict.get("mean", 0.0) - PASS_MEAN) <= _adjudicate_band(len(scores)) or min(scores) == PASS_MIN
 
 
@@ -1530,6 +1710,21 @@ async def _judge(
     critic_kw = dict(kw)
     critic_kw.pop("review_mode", None)
     critic_kw.pop("focus_panels", None)
+    motion_evidence = critic_kw.pop("motion_evidence", None)
+    motion_frames_override = critic_kw.pop("motion_frames_override", None)
+    focus_frames_override = critic_kw.pop("focus_frames_override", None)
+    if (
+        motion_evidence is None
+        and shot.frontmatter.get("type") == "motion"
+        and shot.frames > 1
+        and _axes_need_motion(axes)
+    ):
+        try:
+            stem = candidate_rel.split("/")[-1].split(".")[0]
+            motion_evidence = _stash_motion_strip(session, shot, m, stem, frames_override=motion_frames_override)
+        except Exception as exc:
+            log(f"motion strip skipped: {str(exc)[:80]}", 1)
+    focus_references = _focus_references(shot, m, focus_frames_override)
     required = _required_focus_requests(shot, str(m.id).split("@", 1)[0], int(m.frame), axes)
     focus_panels = []
     if required:
@@ -1554,10 +1749,17 @@ async def _judge(
         scope,
         review_mode="observer",
         focus_panels=focus_panels or None,
+        motion_evidence=motion_evidence,
+        focus_frames=focus_frames_override,
         **critic_kw,
     )
     requests = (
-        _focus_requests(first, axes)
+        _focus_requests(
+            first,
+            axes,
+            focus_references=focus_references,
+            motion_frames=(motion_evidence[1] if motion_evidence else None),
+        )
         if not first.get("reference_unusable") and first.get("decided_by") != "checks"
         else []
     )
@@ -1584,6 +1786,8 @@ async def _judge(
                 scope,
                 review_mode="focus_review",
                 focus_panels=focus_panels,
+                motion_evidence=motion_evidence,
+                focus_frames=focus_frames_override,
                 **critic_kw,
             )
             focused["focus_requested"] = requests
@@ -1612,6 +1816,8 @@ async def _judge(
             scope,
             review_mode=mode,
             focus_panels=focus_panels or None,
+            motion_evidence=motion_evidence,
+            focus_frames=focus_frames_override,
             **critic_kw,
         )
         panel.append(v)
@@ -1784,7 +1990,32 @@ def _worklist_evidence(shot_folder: str | Path, layer_id: str) -> list[dict]:
     ]
 
 
-def _stash_motion_strip(session: BlenderSession, shot: Shot, m: Milestone, tag: str, span: int = 6, scale: float = 0.4):
+def _layer_motion_frames(layer, m: Milestone, total_frames: int) -> list[int] | None:
+    """Return one strip that spans the whole temporal unit, not one local moment.
+
+    A motion-owned layer with several judge frames is a sequence contract.  Showing the
+    primary frame's local acceptance strip can contain only a deliberate hold and still
+    invite a high continuity score.  Preserve every judge frame and add the midpoint of
+    each interval so starts, transitions and settles all have temporal evidence.
+    """
+    judges = sorted({int(frame) for frame, _ref in (getattr(layer, "judges", ()) or ())})
+    if len(judges) > 1:
+        mids = [round((left + right) / 2) for left, right in pairwise(judges)]
+        return sorted({frame for frame in [*judges, *mids] if 1 <= frame <= total_frames})
+    if m.strip:
+        return sorted({int(frame) for frame in m.strip if 1 <= int(frame) <= total_frames})
+    return None
+
+
+def _stash_motion_strip(
+    session: BlenderSession,
+    shot: Shot,
+    m: Milestone,
+    tag: str,
+    span: int = 6,
+    scale: float = 0.4,
+    frames_override: list[int] | None = None,
+):
     """Montage a few frames around the judge frame so the critic can judge MOTION — a
     single still can't show blur or continuity. Returns (rel_path, frames).
 
@@ -1797,11 +2028,13 @@ def _stash_motion_strip(session: BlenderSession, shot: Shot, m: Milestone, tag: 
     """
     from PIL import Image
 
-    if m.strip:
+    if frames_override:
+        frames = sorted({f for f in frames_override if 1 <= f <= shot.frames})
+    elif m.strip:
         frames = sorted({f for f in m.strip if 1 <= f <= shot.frames})
     else:
         frames = sorted({m.frame, min(shot.frames, m.frame + span), min(shot.frames, m.frame + 2 * span)})
-    MAX = 6  # keep the montage readable and the render cheap
+    MAX = 8  # enough for four judge beats plus the transitions between them
     if len(frames) > MAX:
         # Thin the middle, but the JUDGE FRAME is never droppable — it is the frame the
         # verdict is about. (A naive sorted(...)[:MAX] silently cut f72 off SH's M1.)
@@ -1958,6 +2191,11 @@ def _try_revalidate(
     return ledger
 
 
+def _retry_warm_start(previous_status: str, script_path: Path) -> bool:
+    """Whether a fresh retry should replay its last artifact into the warm scene."""
+    return previous_status in {"failed", "judge_conflict", "truncated", "in_progress"} and script_path.is_file()
+
+
 async def build_unit(
     shot: Shot,
     m: Milestone,
@@ -1975,6 +2213,10 @@ async def build_unit(
     """The build+critic engine for ONE unit of work. Iteration is judged at m.frame vs
     m.ref; the canonical check covers every frame `layer` claims (see _verify_script)."""
     ledger = Ledger(shot)
+    previous_slot = dict(ledger._slot(m))
+    previous_status = str(previous_slot.get("status") or "")
+    retry_script = shot.folder / script_rel
+    warm_start_candidate = _retry_warm_start(previous_status, retry_script)
     ledger.begin(m)
     t_layer = time.monotonic()
 
@@ -2045,6 +2287,27 @@ async def build_unit(
         if interfaces:
             log(f"prior interface preflight: {len(interfaces)}/{len(interfaces)} pass", 1)
 
+    warm_started = False
+    if warm_start_candidate:
+        # A failed canonical script is still valuable measured work.  Starting the next
+        # attempt from priors alone made the builder spend another hour recreating the
+        # same rig, while the artifact containing its best state sat unused on disk.
+        # Replay it through the journal so finalisation still sees a complete L4 delta.
+        # If it no longer executes, restore the clean prior chain and fall back loudly.
+        try:
+            session.run(retry_script.read_text(encoding="utf-8"))
+            warm_started = True
+            log(
+                f"retry warm start: replayed prior {previous_status} artifact {script_rel}; "
+                "builder will repair this scene instead of rebuilding it",
+                1,
+            )
+        except BlenderError as exc:
+            log(f"retry warm start rejected ({str(exc)[:120]}); restoring clean prior layers", 1)
+            session.run(_RESET)
+            session.run(_preamble(shot))
+            priors = _run_prior_paths(session, prior_paths)
+
     # Per-layer, not per-process: the counts are attributed to one layer's report.
     reset_tool_use()
     reset_counts()
@@ -2092,6 +2355,13 @@ async def build_unit(
         # attempt rebuilt a six-light rig not knowing the first had twice been told the
         # hero was not light-linked and the podium was overlit.
         hist = recurring_complaints(shot, m)
+        if warm_started:
+            hist += (
+                f"\nRETRY WARM START: `{script_rel}` from the previous {previous_status} "
+                "attempt has already been replayed into the live scene and journal. Inspect "
+                "and repair that state; do not delete it and rebuild the same rig. The final "
+                "script must still contain the complete layer delta.\n"
+            )
         if hist:
             log(f"prior attempts: surfacing {hist.count('    - ')} recurring complaint(s) to the builder", 1)
         _kickoff = builder_kickoff(
@@ -2170,6 +2440,7 @@ async def build_unit(
                 prior_rel=prior,
                 prior_mean=best["mean"],
                 evidence=evidence,
+                motion_frames_override=_layer_motion_frames(layer, m, shot.frames),
             )
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             convergence_stop = _evidence_convergence_stop(layer, verdict)
@@ -2320,6 +2591,7 @@ async def build_unit(
         # Repair rounds, bounded. The target here is the SCRIPT's output from an empty
         # scene — not the live scene the builder has been tuning, which is why it must be
         # re-verified canonically or the loop would keep re-passing live and failing here.
+        rejected_repairs: list[str] = []
         for attempt in range(1, MAX_CANON_REPAIRS + 1):
             if canonical != "failed":
                 break
@@ -2345,6 +2617,7 @@ async def build_unit(
             backup = shot.folder / "logs" / f"{m.id}_prerepair{attempt}.py"
             backup.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(shot.folder / script_rel, backup)
+            pre_script = backup.read_text(encoding="utf-8")
             pre_verdicts = list(canon_verdicts or [])
             pre_canonical = canonical
             phase["mode"] = "repair"
@@ -2353,7 +2626,13 @@ async def build_unit(
                     shot,
                     mode="repair",
                     script_rel=script_rel,
-                    prompt=canonical_repair_prompt(m, failed, script_rel, holding=holding),
+                    prompt=canonical_repair_prompt(
+                        m,
+                        failed,
+                        script_rel,
+                        holding=holding,
+                        rejected_repairs=rejected_repairs,
+                    ),
                     verbose=verbose,
                 )
             if last_info["subtype"] in _TRUNCATED:
@@ -2381,33 +2660,48 @@ async def build_unit(
             )
             delta = _repair_delta(pre_verdicts, canon_verdicts or [])
             was, now, broke = delta["was"], delta["now"], delta["broke"]
-            if broke:
-                # ENFORCE it. Telling the builder "these frames already pass, a trade is
-                # not a fix" is a request, and it was ignored: the layer-3 pilot went
-                # f100 3.0 PASS / f440 2.0 into a repair and came out 2.0 / 2.0 — the
-                # repair broke the good frame and fixed nothing. This module's own
-                # preamble says a rule stated in a prompt gets ignored; I wrote the
-                # instruction anyway instead of the guard. Revert the script and stop:
-                # the pre-repair version is strictly better than what we now hold.
+            action = _repair_action(delta, attempt)
+            if action != "accept":
+                # ENFORCE monotonicity transactionally.  A regressed or inert patch is
+                # never retained, but an unused attempt remains useful when the next
+                # agent is shown which approach was rejected and why.
+                post_script = (shot.folder / script_rel).read_text(encoding="utf-8")
+                if broke:
+                    reason = (
+                        f"repair {attempt} regressed protected frame(s) "
+                        f"{', '.join('f' + str(f) for f in broke)} "
+                        f"({{ {', '.join(f'{f}: ({was[f]}, {now.get(f)})' for f in broke)} }})."
+                    )
+                else:
+                    reason = (
+                        f"repair {attempt} moved neither the worst failing frame "
+                        f"({delta['was_worst']} → {delta['now_worst']}) nor the failing-frame count "
+                        f"({delta['was_failing']} → {delta['now_failing']})."
+                    )
+                change_summary = _repair_change_summary(pre_script, post_script)
+                rejected_repairs.append(
+                    reason
+                    + (
+                        f"\nRejected script delta (do not repeat this mechanism unchanged):\n{change_summary}"
+                        if change_summary
+                        else ""
+                    )
+                )
                 shutil.copyfile(backup, shot.folder / script_rel)
                 log(
-                    f"✗ repair {attempt} REGRESSED f{', f'.join(map(str, broke))} "
-                    f"({ {f: (was[f], now.get(f)) for f in broke} }) — reverting "
-                    f"{script_rel} to its pre-repair state and stopping",
+                    f"✗ {reason} Reverting {script_rel} to its pre-repair state"
+                    + (
+                        "; trying the remaining repair approach"
+                        if action == "rollback_retry"
+                        else "; repair budget exhausted"
+                    ),
                     1,
                 )
                 canon_verdicts.clear()
                 canon_verdicts.extend(pre_verdicts)
                 canonical = pre_canonical
-                break
-            if canonical == "failed" and not delta["progressed"]:
-                log(
-                    f"repair {attempt} moved neither the worst failing frame "
-                    f"({delta['was_worst']} → {delta['now_worst']}) nor the count of "
-                    f"failing frames ({delta['was_failing']} → {delta['now_failing']}) "
-                    f"— stopping rather than paying for another identical round",
-                    1,
-                )
+                if action == "rollback_retry":
+                    continue
                 break
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with
@@ -2674,6 +2968,17 @@ async def build_layer(
     )
 
 
+def _ablation_frames(shot: Shot, layer) -> list[int]:
+    """Choose frames where this layer can actually have an effect.
+
+    Static layers use their primary judge.  A temporal layer uses every declared judge
+    frame, because its rest frame is often intentionally identical before and after.
+    """
+    judges = [int(frame) for frame, _ref in layer.judges]
+    axes = _owned_axes(load_axes(shot), layer)
+    return sorted(set(judges)) if len(judges) > 1 and _axes_need_motion(axes) else judges[:1]
+
+
 async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str, session: BlenderSession) -> dict:
     """Does this layer's script actually CHANGE its judge frames?
 
@@ -2683,52 +2988,55 @@ async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str, s
     (SH G60 scored 2.67 on typography and palette, neither of which is its work) while
     contributing nothing measurable at all.
 
-    Render the primary judge frame WITHOUT this layer's script, then WITH it, and compare.
-    Two renders, no model.
+    Render the frames where this department can contribute WITHOUT the layer's script,
+    then WITH it, and compare. No model.
     """
     from ..metrics import look_vector
 
-    frame, _ref = layer.judges[0]
+    frames = _ablation_frames(shot, layer)
     try:
         session.run(_RESET)
         session.run(_preamble(shot))
         _run_prior_paths(session, prior_paths)
         try:
-            without = look_vector(session.render(frame=frame, mode="eevee", scale=0.4))
+            without = {frame: look_vector(session.render(frame=frame, mode="eevee", scale=0.4)) for frame in frames}
         except Exception as e:
             # The FIRST layer has no priors, so "without it" is an empty scene with no
             # camera. That is not a skip — it is the strongest possible result: nothing
             # renders at all until this layer runs.
             if "no camera" in str(e).lower():
                 session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
-                session.render(frame=frame, mode="eevee", scale=0.4)  # must now work
+                for frame in frames:
+                    session.render(frame=frame, mode="eevee", scale=0.4)  # must now work
                 return {
                     "ok": True,
-                    "frame": frame,
+                    "frames": frames,
                     "moved": {},
                     "note": "scene cannot render at all without this layer (no camera) — it establishes the spine",
                 }
             raise
         session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
-        with_ = look_vector(session.render(frame=frame, mode="eevee", scale=0.4))
+        with_ = {frame: look_vector(session.render(frame=frame, mode="eevee", scale=0.4)) for frame in frames}
     except Exception as e:
         return {"ok": True, "note": f"ablation INCONCLUSIVE: {str(e)[:70]}"}
     moved = {}
-    for k, v in with_.items():
-        base = without.get(k, 0.0)
-        denom = max(abs(base), 1e-6)
-        if abs(v - base) > max(0.02 * denom, 1e-6):
-            moved[k] = round((v - base) / denom, 3)
+    for frame in frames:
+        for key, value in with_[frame].items():
+            base = without[frame].get(key, 0.0)
+            denom = max(abs(base), 1e-6)
+            if abs(value - base) > max(0.02 * denom, 1e-6):
+                label = key if len(frames) == 1 else f"f{frame}:{key}"
+                moved[label] = round((value - base) / denom, 3)
     top = sorted(moved.items(), key=lambda kv: -abs(kv[1]))[:4]
     changed = bool(top) and max(abs(v) for _k, v in top) > 0.05
     return {
         "ok": changed,
         "moved": dict(top),
-        "frame": frame,
+        "frames": frames,
         "note": (
             ""
             if changed
-            else f"f{frame} is essentially IDENTICAL with and without "
+            else f"frames {frames} are essentially IDENTICAL with and without "
             f"{Path(script_rel).name} — this layer may be a no-op"
         ),
     }
@@ -2795,6 +3103,19 @@ async def _verify_script(
         render_rel = _stash_render(session, shot, m_i, f"canonical_f{frame}" if len(judges) > 1 else "canonical")
         shots_.append((frame, ref, m_i, render_rel))
 
+    canonical_motion_evidence = None
+    if shot.frontmatter.get("type") == "motion" and shot.frames > 1 and _axes_need_motion(axes):
+        try:
+            canonical_motion_evidence = _stash_motion_strip(
+                session,
+                shot,
+                m,
+                f"{m.id}_canonical",
+                frames_override=_layer_motion_frames(layer, m, shot.frames),
+            )
+        except Exception as exc:
+            log(f"canonical motion strip skipped: {str(exc)[:80]}", 1)
+
     # A one-frame layer that already passed live has one reproduction question: did its
     # script rebuild those accepted pixels? Answer that with pixels, not another aesthetic
     # vote. Multi-frame layers still need their additional claimed frames judged because
@@ -2838,7 +3159,18 @@ async def _verify_script(
 
     async def _score(i, m_i, render_rel):
         evidence = _render_evidence(shot, layer, m_i, render_rel, session)
-        results[i] = await _judge(shot, m_i, render_rel, axes, session, verbose, scope, evidence=evidence)
+        results[i] = await _judge(
+            shot,
+            m_i,
+            render_rel,
+            axes,
+            session,
+            verbose,
+            scope,
+            evidence=evidence,
+            motion_evidence=canonical_motion_evidence,
+            focus_frames_override=[int(m_i.frame)],
+        )
 
     if len(shots_) == 1:
         await _score(0, shots_[0][2], shots_[0][3])

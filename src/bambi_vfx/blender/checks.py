@@ -32,6 +32,7 @@ scale_issues = _geom.scale_issues
 
 def _obj(name: str):
     import bpy
+
     obj = bpy.data.objects.get(name)
     if obj is None:
         raise KeyError(f"no object named {name!r}")
@@ -40,6 +41,7 @@ def _obj(name: str):
 
 def _camera():
     import bpy
+
     cam = bpy.context.scene.camera
     if cam is None:
         raise RuntimeError("no camera in the scene")
@@ -70,11 +72,15 @@ def check_visibility(name: str, frame: int, samples: int = 27) -> dict:
     for i in range(steps):
         for j in range(steps):
             for k in range(steps):
-                pts.append(Vector((
-                    x0 + (x1 - x0) * i / (steps - 1),
-                    y0 + (y1 - y0) * j / (steps - 1),
-                    z0 + (z1 - z0) * k / (steps - 1),
-                )))
+                pts.append(
+                    Vector(
+                        (
+                            x0 + (x1 - x0) * i / (steps - 1),
+                            y0 + (y1 - y0) * j / (steps - 1),
+                            z0 + (z1 - z0) * k / (steps - 1),
+                        )
+                    )
+                )
     hits = occluded = missed = 0
     for pt in pts:
         direction = pt - origin
@@ -82,8 +88,7 @@ def check_visibility(name: str, frame: int, samples: int = 27) -> dict:
         if dist < 1e-8:
             continue
         direction.normalize()
-        hit, _loc, _n, _i, hit_obj, _m = sc.ray_cast(deps, origin, direction,
-                                                     distance=dist + 1e-4)
+        hit, _loc, _n, _i, hit_obj, _m = sc.ray_cast(deps, origin, direction, distance=dist + 1e-4)
         if not hit:
             missed += 1
             continue
@@ -98,11 +103,13 @@ def check_visibility(name: str, frame: int, samples: int = 27) -> dict:
         "object": name,
         "frame": int(frame),
         "visible_fraction": round(frac, 3),
-        "hits": hits, "occluded": occluded, "missed": missed, "samples": n,
-        "issues": [] if frac >= 0.5 else [
-            f"{name} visible in {frac:.0%} of camera rays at f{frame} "
-            f"({occluded} occluded, {missed} missed)"
-        ],
+        "hits": hits,
+        "occluded": occluded,
+        "missed": missed,
+        "samples": n,
+        "issues": []
+        if frac >= 0.5
+        else [f"{name} visible in {frac:.0%} of camera rays at f{frame} ({occluded} occluded, {missed} missed)"],
     }
 
 
@@ -120,17 +127,14 @@ def check_framing(name: str, frames: list[int]) -> dict:
     for f in frames:
         sc.frame_set(int(f))
         bpy.context.view_layer.update()
-        corners = [world_to_camera_view(sc, cam, obj.matrix_world @ Vector(c))
-                   for c in obj.bound_box]
+        corners = [world_to_camera_view(sc, cam, obj.matrix_world @ Vector(c)) for c in obj.bound_box]
         rec = framing_from_ndc([(p.x, p.y, p.z) for p in corners])
         rec["frame"] = int(f)
         per.append(rec)
         if rec.get("on_screen", 0) < 0.5:
-            issues.append(f"f{f}: only {rec.get('on_screen', 0):.0%} of {name} "
-                          f"bbox corners on screen")
+            issues.append(f"f{f}: only {rec.get('on_screen', 0):.0%} of {name} bbox corners on screen")
         if rec.get("width", 0) < 0.02 and rec.get("on_screen", 0) > 0:
-            issues.append(f"f{f}: {name} spans {rec['width']:.3f} of frame width "
-                          f"— below a critic patch")
+            issues.append(f"f{f}: {name} spans {rec['width']:.3f} of frame width — below a critic patch")
     return {"ok": not issues, "object": name, "frames": per, "issues": issues}
 
 
@@ -151,7 +155,7 @@ def check_motion(name: str, frames: list[int]) -> dict:
     rec["positions"] = [[round(c, 4) for c in p] for p in positions]
     issues = []
     if not rec.get("unbroken", True):
-        issues.append(f"{name} path reverses or stops mid-move")
+        issues.append(f"{name} path reverses or stops and restarts inside its active move")
     rec["issues"] = issues
     rec["ok"] = rec.get("ok", False) and not issues
     return rec
@@ -162,8 +166,7 @@ def check_mesh(name: str, allow_boundary: bool = False) -> dict:
 
     obj = _obj(name)
     if obj.type != "MESH" or obj.data is None:
-        return {"ok": False, "object": name, "issues": [f"{name} is not a mesh"],
-                "counts": {}}
+        return {"ok": False, "object": name, "issues": [f"{name} is not a mesh"], "counts": {}}
     bm = bmesh.new()
     try:
         bm.from_mesh(obj.data)
@@ -195,11 +198,17 @@ def check_mesh(name: str, allow_boundary: bool = False) -> dict:
                         seen.add(oth.index)
                         stack.append(oth)
         counts = {
-            "verts": len(bm.verts), "edges": len(bm.edges), "faces": len(bm.faces),
-            "nonmanifold_edges": nonman, "loose_verts": loose,
-            "boundary_edges": boundary, "branch_edges": branch,
+            "verts": len(bm.verts),
+            "edges": len(bm.edges),
+            "faces": len(bm.faces),
+            "nonmanifold_edges": nonman,
+            "loose_verts": loose,
+            "boundary_edges": boundary,
+            "branch_edges": branch,
             "wire_edges": wire,
-            "degenerate_faces": degen, "ngons": ngons, "poles": poles,
+            "degenerate_faces": degen,
+            "ngons": ngons,
+            "poles": poles,
             "islands": islands,
         }
     finally:
@@ -208,8 +217,13 @@ def check_mesh(name: str, allow_boundary: bool = False) -> dict:
     if allow_boundary:
         issue_counts["nonmanifold_edges"] = branch + wire
     issues = mesh_issues(issue_counts)
-    return {"ok": not issues, "object": name, "counts": counts,
-            "allow_boundary": bool(allow_boundary), "issues": issues}
+    return {
+        "ok": not issues,
+        "object": name,
+        "counts": counts,
+        "allow_boundary": bool(allow_boundary),
+        "issues": issues,
+    }
 
 
 def check_scale(name: str) -> dict:
@@ -259,8 +273,7 @@ def check_passes(frame: int, scale: float = 0.25) -> dict:
         bpy.ops.render.render(write_still=True)
         img = bpy.data.images.get("Render Result")
         if img is None:
-            return {"ok": False, "frame": int(frame),
-                    "issues": ["no Render Result after render"], "passes": {}}
+            return {"ok": False, "frame": int(frame), "issues": ["no Render Result after render"], "passes": {}}
         # Combined pixels — 8-bit PNG won't carry NaN; the Render Result is float.
         px = list(img.pixels)
         n = len(px)
@@ -283,7 +296,9 @@ def check_passes(frame: int, scale: float = 0.25) -> dict:
             "ok": not issues,
             "frame": int(frame),
             "channels": n,
-            "nan": nan, "inf": inf, "negative": neg,
+            "nan": nan,
+            "inf": inf,
+            "negative": neg,
             "passes_enabled": [k for k, a in flags.items() if hasattr(vl, a)],
             "issues": issues,
         }
@@ -312,8 +327,7 @@ def subject_bbox(name: str, frame: int) -> dict:
 def dispatch(kind: str, args: dict) -> dict:
     k = (kind or "").lower()
     if k == "visibility":
-        return check_visibility(args["object"], int(args["frame"]),
-                                int(args.get("samples", 27)))
+        return check_visibility(args["object"], int(args["frame"]), int(args.get("samples", 27)))
     if k == "framing":
         frames = args.get("frames") or [int(args["frame"])]
         return check_framing(args["object"], [int(f) for f in frames])
@@ -357,10 +371,10 @@ def self_test() -> dict:
     bmesh.ops.create_circle(bm, cap_ends=True, segments=5, radius=1.0)  # pentagon = n-gon
     bm.verts.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
-    bm.verts.new((8.0, 8.0, 8.0))                                       # loose vert
+    bm.verts.new((8.0, 8.0, 8.0))  # loose vert
     edge = bm.edges[0]
     spur = bm.verts.new((0.0, 0.0, 2.0))
-    bm.faces.new((edge.verts[0], edge.verts[1], spur))                  # 3rd face on edge
+    bm.faces.new((edge.verts[0], edge.verts[1], spur))  # 3rd face on edge
     bm.verts.ensure_lookup_table()
     bm.faces.ensure_lookup_table()
     me = bpy.data.meshes.new("BadMesh")
@@ -395,9 +409,11 @@ def self_test() -> dict:
     wall.location = (0.0, -3.0, 1.0)
     bpy.context.view_layer.update()
     r = check_visibility("BadMesh", 1)
-    results["visibility"] = {"fired": r["visible_fraction"] < 0.5,
-                             "visible_fraction": r["visible_fraction"],
-                             "issues": r["issues"]}
+    results["visibility"] = {
+        "fired": r["visible_fraction"] < 0.5,
+        "visible_fraction": r["visible_fraction"],
+        "issues": r["issues"],
+    }
 
     # --- motion: A → B → A in three frames ---
     obj.location = (0.0, 0.0, 1.0)
@@ -407,18 +423,23 @@ def self_test() -> dict:
     obj.location = (0.0, 0.0, 1.0)
     obj.keyframe_insert("location", frame=3)
     r = check_motion("BadMesh", [1, 2, 3])
-    results["motion"] = {"fired": (not r.get("unbroken", True)) or r["max_accel"] > 1.0,
-                         "unbroken": r.get("unbroken"),
-                         "max_speed": r.get("max_speed"),
-                         "max_accel": r.get("max_accel"),
-                         "issues": r.get("issues")}
+    results["motion"] = {
+        "fired": (not r.get("unbroken", True)) or r["max_accel"] > 1.0,
+        "unbroken": r.get("unbroken"),
+        "max_speed": r.get("max_speed"),
+        "max_accel": r.get("max_accel"),
+        "issues": r.get("issues"),
+    }
 
     # --- passes: a render that completes; NaN fixture is engine-dependent so we
     # only require the check to return a structured result, and a synthetic
     # negative-count path is asserted in the harness. ---
     r = check_passes(1, scale=0.1)
-    results["passes"] = {"fired": True,  # structural: ran and returned `ok`
-                         "ok": r.get("ok"), "issues": r.get("issues", [])}
+    results["passes"] = {
+        "fired": True,  # structural: ran and returned `ok`
+        "ok": r.get("ok"),
+        "issues": r.get("issues", []),
+    }
 
     failed = [k for k, v in results.items() if k != "passes" and not v.get("fired")]
     results["gate"] = {"ok": not failed, "silent": failed}
