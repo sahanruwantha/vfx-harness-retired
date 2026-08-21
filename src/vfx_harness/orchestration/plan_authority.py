@@ -1,9 +1,9 @@
 """Transactional publication primitives for global plan authority.
 
-Planner agents still author through the shot-root compatibility surface during the first
-ADR-0004 migration slice.  A clean gate may publish that complete surface as one immutable,
-run-owned bundle.  Readers that opt into the new contract resolve a single atomic pointer and
-therefore never observe files from different plan generations.
+Planner agents author in an authored-input-only workspace owned by their current run. A clean
+gate may publish that complete surface as one immutable, run-owned bundle. Readers that opt
+into the new contract resolve a single atomic pointer and therefore never observe files from
+different plan generations.
 
 This module deliberately does not fall back from a malformed pointer to shot-root files.  A
 pointer is authority once present; corrupt or incomplete authority fails closed.
@@ -25,6 +25,7 @@ from vfx_harness.observability.run_artifacts import RunLayout
 
 POINTER_SCHEMA = "vfx-harness.plan-pointer/v1"
 BUNDLE_SCHEMA = "vfx-harness.plan-bundle/v1"
+WORKSPACE_SCHEMA = "vfx-harness.plan-workspace/v1"
 POINTER = Path("plans/current.json")
 
 _SOURCES = {
@@ -76,16 +77,75 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def _payloads(shot: Path, plan_path: Path | None) -> dict[str, bytes]:
+def prepare_staging(layout: RunLayout) -> Path:
+    """Create one run-scoped planner workspace from authored inputs only.
+
+    Prior plans, contracts, questions, builds, and run reports are deliberately absent. A
+    planner that needs prior authority must receive it through an explicit import operation;
+    directory proximity is never enough.
+    """
+    workspace = layout.scratch / "plan-workspace"
+    marker = workspace / ".plan-workspace.json"
+    if workspace.exists():
+        try:
+            record = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PlanPublicationError(f"existing plan workspace is unowned: {workspace}") from exc
+        if record != {
+            "schema": WORKSPACE_SCHEMA,
+            "run_id": layout.run_id,
+            "shot": str(layout.shot),
+        }:
+            raise PlanPublicationError(f"plan workspace ownership mismatch: {workspace}")
+        return workspace
+
+    brief = layout.shot / "brief.md"
+    refs = layout.shot / "refs"
+    if not brief.is_file() or not refs.is_dir():
+        raise PlanPublicationError("plan staging requires authored brief.md and refs/")
+    workspace.parent.mkdir(parents=True, exist_ok=True)
+    temp = Path(tempfile.mkdtemp(prefix=".plan-workspace.tmp-", dir=workspace.parent))
+    try:
+        shutil.copy2(brief, temp / "brief.md")
+        target_refs = temp / "refs"
+        target_refs.mkdir()
+        for source in sorted(path for path in refs.rglob("*") if path.is_file()):
+            relative = source.relative_to(refs)
+            target = target_refs / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # A hard link would make a staged Edit mutate the authored reference inode.
+            # Freshness requires byte isolation as well as path isolation.
+            shutil.copy2(source, target)
+        (temp / ".plan-workspace.json").write_text(
+            json.dumps(
+                {
+                    "schema": WORKSPACE_SCHEMA,
+                    "run_id": layout.run_id,
+                    "shot": str(layout.shot),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temp, workspace)
+    except BaseException:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise
+    return workspace
+
+
+def _payloads(source_root: Path, plan_path: Path | None) -> dict[str, bytes]:
     sources = dict(_SOURCES)
     if plan_path is not None:
-        sources["global.md"] = plan_path.resolve().relative_to(shot)
-    missing = [name for name, rel in sources.items() if not (shot / rel).is_file()]
+        sources["global.md"] = plan_path.resolve().relative_to(source_root)
+    missing = [name for name, rel in sources.items() if not (source_root / rel).is_file()]
     if missing:
         raise PlanPublicationError(
             "cannot publish incomplete plan authority; missing " + ", ".join(sorted(missing))
         )
-    return {name: (shot / rel).read_bytes() for name, rel in sources.items()}
+    return {name: (source_root / rel).read_bytes() for name, rel in sources.items()}
 
 
 def _bundle_root(layout: RunLayout, content_hash: str) -> Path:
@@ -142,6 +202,7 @@ def publish_current(
     *,
     outcome: str,
     plan_path: str | Path | None = None,
+    source_root: str | Path | None = None,
 ) -> PlanBundle:
     """Freeze a complete candidate and atomically select it as current authority.
 
@@ -153,13 +214,23 @@ def publish_current(
         raise PlanPublicationError("run layout belongs to a different shot")
     if outcome not in {"clean", "clean_with_assumptions", "clean_with_deferred"}:
         raise PlanPublicationError(f"non-publishable plan outcome: {outcome!r}")
+    source = Path(source_root).expanduser().resolve() if source_root is not None else shot
+    if source != shot:
+        expected = (layout.scratch / "plan-workspace").resolve()
+        if source != expected:
+            raise PlanPublicationError(
+                "run-scoped plan publication must use the producing run's plan workspace"
+            )
+        # Revalidate the marker even when a caller retained the path from an earlier step.
+        # A renamed or replaced directory must not be accepted merely because its path fits.
+        prepare_staging(layout)
     candidate_path = Path(plan_path).expanduser().resolve() if plan_path is not None else None
     if candidate_path is not None:
         try:
-            candidate_path.relative_to(shot)
+            candidate_path.relative_to(source)
         except ValueError as exc:
-            raise PlanPublicationError("plan path escapes the shot root") from exc
-    payloads = _payloads(shot, candidate_path)
+            raise PlanPublicationError("plan path escapes the publication source") from exc
+    payloads = _payloads(source, candidate_path)
     bundle = _write_bundle(layout, payloads, outcome=outcome)
     pointer = {
         "schema": POINTER_SCHEMA,

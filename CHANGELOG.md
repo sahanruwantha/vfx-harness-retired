@@ -20,6 +20,8 @@ live in the linked Harness Improvement Records.
   run-isolated repair snapshots as the first ADR-0004 migration slice.
 - Declared global planner role capabilities so draft, verify, and repair can all patch artifacts
   and call the bounded deterministic gate while their context is warm.
+- Moved global-plan authoring into an authored-input-only workspace owned by each run, preventing
+  prior shot-root plans, contracts, questions, and run files from leaking into a fresh pass.
 - Isolated generated output under `runs/<run-id>/` with stable log, report, evidence,
   checkpoint, scratch, and deliverable categories.
 - Added manifest, status, summary, artifact-index, and latest-run metadata for machine readers.
@@ -32,6 +34,7 @@ See [HIR-0002](docs/improvements/HIR-0002-structured-run-output.md),
 [HIR-0006](docs/improvements/HIR-0006-canonical-reference-fingerprints.md),
 [HIR-0007](docs/improvements/HIR-0007-temporal-and-ownership-evidence-coverage.md),
 [HIR-0008](docs/improvements/HIR-0008-transactional-plan-publication-foundation.md),
+[HIR-0009](docs/improvements/HIR-0009-run-scoped-plan-authoring.md),
 [ADR-0002](docs/decisions/ADR-0002-run-scoped-artifact-authority.md),
 [ADR-0003](docs/decisions/ADR-0003-explicit-metric-and-temporal-evidence-identity.md),
 and [ADR-0004](docs/decisions/ADR-0004-transactional-plan-authority.md).

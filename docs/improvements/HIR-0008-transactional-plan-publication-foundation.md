@@ -97,9 +97,6 @@ migration will update all consumers in one cut and remove the compatibility surf
 
 ## Remaining limitations
 
-- Planner SDK writes still land on the shot-root compatibility surface before a clean commit; an
-  interrupted run can therefore disturb legacy readers even though the previously published
-  bundle remains intact.
 - Existing build/evaluation consumers do not yet resolve `plans/current.json`.
 - Requirements, obligations, assumptions, migration sunsets, and verifier-output narrowing from
   ADR-0004 remain future slices.
@@ -112,3 +109,7 @@ The next prioritized slice is typed `requirements.json`, `obligations.json`, and
 `assumptions.json` with dependency-outcome due gates. It enables mechanical closure for deferred
 exact-return/final-lock evidence and provides the lifecycle substrate needed by migration sunsets,
 honest assumption outcomes, warning grouping, and the narrowed adversarial verifier charter.
+
+The formerly listed shot-root authoring limitation was closed by
+[HIR-0009](HIR-0009-run-scoped-plan-authoring.md): global roles now operate in an
+authored-input-only workspace inside the producing run.

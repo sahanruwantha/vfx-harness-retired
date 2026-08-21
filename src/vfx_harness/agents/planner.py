@@ -200,16 +200,23 @@ async def generate_plan(
     tag: str | None = None,
     verify_draft: str | None = None,
     repair: tuple[str, int] | None = None,
+    workspace: str | Path | None = None,
 ) -> Path:
     """Run ONE global planning session. With `tag`, outputs are isolated:
     plans/global.md → plans/global.<tag>.md, lab artifacts → active run scratch/plan-lab/.
     With `verify_draft`, the session runs in VERIFY MODE against that draft file.
     With `repair=(findings, round)`, it runs in REPAIR MODE against `verify_draft`."""
-    shot = load_shot(folder)
+    source_shot = load_shot(folder)
+    layout = run_artifacts.ensure(source_shot.folder, command="plan")
+    if workspace is None:
+        from vfx_harness.orchestration.plan_authority import prepare_staging
+
+        workspace = prepare_staging(layout)
+    workspace = Path(workspace).resolve()
+    shot = load_shot(workspace)
     model = model or Settings.from_environment(load_dotenv_file=False).planner_model
     plan_path = global_plan_path(shot.folder)
     plan_path.parent.mkdir(parents=True, exist_ok=True)
-    layout = run_artifacts.ensure(shot.folder, command="plan")
     lab_dir = layout.scratch / "plan-lab" / (tag or "global")
 
     if repair:
@@ -235,6 +242,7 @@ async def generate_plan(
         blender=blender,
         lab_dir=lab_dir,
         include_gate=capabilities.include_gate,
+        run_layout=layout,
     )
     rserver, rnames = build_recipe_tools()
 
@@ -256,7 +264,10 @@ async def generate_plan(
         setting_sources=[],  # isolate from user/project settings
         max_turns=max_turns,
         effort="high",
-        hooks=planner_hooks(shot.folder),
+        hooks=planner_hooks(
+            workspace,
+            readable_files=(verify_draft,) if repair and verify_draft else (),
+        ),
     )
 
     stills = [p.name for p in shot.refs]
@@ -267,15 +278,16 @@ async def generate_plan(
     )
     log(f"refs: {len(stills)} stills {stills} + {len(videos)} videos {videos}", 1)
     log(
-        f"lab: blender '{blender}' · artifacts → {lab_dir.relative_to(shot.folder)}/ · "
+        f"workspace: {workspace.relative_to(source_shot.folder)}/ · "
+        f"lab: {lab_dir.relative_to(source_shot.folder)}/ · "
         f"web research ENABLED · max_turns {max_turns}",
         1,
     )
 
-    costlog.bind(shot.folder, role="plan:" + mode.split()[0].lower(), model=model, tag=tag)
-    tpath = transcript.bind(shot.folder, "plan", label=tag or mode)
+    costlog.bind(source_shot.folder, role="plan:" + mode.split()[0].lower(), model=model, tag=tag)
+    tpath = transcript.bind(source_shot.folder, "plan", label=tag or mode)
     if tpath:
-        log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
+        log(f"transcript → {tpath.relative_to(source_shot.folder)}", 1)
     transcript.prompt(
         kickoff, role="kickoff", mode=mode, model=model, tag=tag, refs=stills, videos=videos, max_turns=max_turns
     )
@@ -457,15 +469,22 @@ async def generate_plan_two_pass(
     max_turns: int = 100,
     tag: str | None = None,
     verify_only: bool = False,
+    workspace: str | Path | None = None,
 ) -> Path:
     """The standard flow: draft from scratch, then adversarially verify.
     Keeps the draft (plan.<tag->draft.md + its lab) as the audit trail."""
     shot = load_shot(folder)
+    layout = run_artifacts.ensure(shot.folder, command="plan")
+    if workspace is None:
+        from vfx_harness.orchestration.plan_authority import prepare_staging
+
+        workspace = prepare_staging(layout)
+    workspace = Path(workspace).resolve()
     configured = Settings.from_environment(load_dotenv_file=False).planner_model
     draft_model = draft_model or configured
     verify_model = verify_model or configured
     dtag = f"{tag}-draft" if tag else "draft"
-    draft_path = global_plan_path(shot.folder).with_name(f"global.{dtag}.md")
+    draft_path = global_plan_path(workspace).with_name(f"global.{dtag}.md")
 
     if verify_only:
         if not draft_path.is_file():
@@ -473,7 +492,14 @@ async def generate_plan_two_pass(
         log(f"two-pass: reusing existing draft {draft_path.name}")
     else:
         log(f"══ two-pass 1/2 · DRAFT · {draft_model} ══")
-        await generate_plan(folder, model=draft_model, blender=blender, max_turns=max_turns, tag=dtag)
+        await generate_plan(
+            folder,
+            model=draft_model,
+            blender=blender,
+            max_turns=max_turns,
+            tag=dtag,
+            workspace=workspace,
+        )
 
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
     final = await generate_plan(
@@ -482,7 +508,8 @@ async def generate_plan_two_pass(
         blender=blender,
         max_turns=max_turns,
         tag=tag,
-        verify_draft=draft_path.relative_to(shot.folder).as_posix(),
+        verify_draft=draft_path.relative_to(workspace).as_posix(),
+        workspace=workspace,
     )
     log(f"two-pass complete → {final.name} (draft kept: {draft_path.name})")
     return final
@@ -529,6 +556,7 @@ async def generate_plan_until_clean(
 
     shot = load_shot(folder)
     layout = run_artifacts.ensure(shot.folder, command="plan")
+    workspace = plan_authority.prepare_staging(layout)
     final = await generate_plan_two_pass(
         folder,
         draft_model=draft_model,
@@ -537,15 +565,17 @@ async def generate_plan_until_clean(
         max_turns=max_turns,
         tag=tag,
         verify_only=verify_only,
+        workspace=workspace,
     )
-    plan_name = final.relative_to(shot.folder).as_posix()
+    plan_name = final.relative_to(workspace).as_posix()
 
     prev_sig, outcome = None, "budget"
     for rnd in range(1, max_rounds + 1):
         # New plans use the current five-artifact contract.  The standalone gate keeps
         # missing scene checks warning-only for legacy shots, but a planner running now
         # must not claim CLEAN while leaving numeric scene facts to the vision judge.
-        res = plan_gate.run(shot.folder, plan_name, require_scene_checks=True)
+        res = plan_gate.run(workspace, plan_name, require_scene_checks=True)
+        res.shot = shot.id
         log(f"══ gate {rnd}/{max_rounds} ══")
         log(plan_gate.report(res), 1)
         if res.clean:
@@ -574,18 +604,20 @@ async def generate_plan_until_clean(
             blender=blender,
             max_turns=max_turns,
             tag=tag,
-            verify_draft=snap_rel,
+            verify_draft=str(snap),
             repair=(plan_gate.feedback(res), rnd),
+            workspace=workspace,
         )
-        plan_name = final.relative_to(shot.folder).as_posix()
+        plan_name = final.relative_to(workspace).as_posix()
     else:
-        res = plan_gate.run(shot.folder, plan_name, require_scene_checks=True)
+        res = plan_gate.run(workspace, plan_name, require_scene_checks=True)
+        res.shot = shot.id
         log("══ gate (final) ══")
         log(plan_gate.report(res), 1)
         outcome = "clean" if res.clean else "budget"
 
     n = len(res.blocking)
-    report_path = plan_gate.write_report(shot.folder, res, outcome=outcome)
+    report_path = layout.write_report("plan_gate", res.to_dict(outcome=outcome))
     log(f"gate authority → {report_path.relative_to(shot.folder)}", 1)
     if outcome == "clean" and tag is None:
         bundle = plan_authority.publish_current(
@@ -593,6 +625,7 @@ async def generate_plan_until_clean(
             layout,
             outcome=outcome,
             plan_path=final,
+            source_root=workspace,
         )
         pointer_rel = plan_authority.POINTER.as_posix()
         layout.terminal_metadata.update(
@@ -706,7 +739,11 @@ def main() -> None:
         from vfx_harness.observability.provenance import stamp
 
         used = args.model if (args.single or args.layer) else f"{args.draft_model}→{args.verify_model}"
-        log(f"provenance → {stamp(args.folder, model=used, note='tag=' + str(args.tag))}")
+        provenance_root = shot.folder if args.layer else plan_path.parent.parent
+        log(
+            f"provenance → "
+            f"{stamp(provenance_root, model=used, note='tag=' + str(args.tag))}"
+        )
         if loop_result is not None and not loop_result.clean:
             raise PlanGateFailure(loop_result)
         if loop_result is not None:

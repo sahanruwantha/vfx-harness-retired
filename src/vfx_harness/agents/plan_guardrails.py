@@ -176,6 +176,71 @@ def planner_artifact_feedback(shot_folder: str | Path) -> HookMatcher:
     return HookMatcher(matcher=None, hooks=[_after])
 
 
+def planner_path_scope(
+    shot_folder: str | Path, *, readable_files: tuple[str | Path, ...] = ()
+) -> HookMatcher:
+    """Confine discovery to staging, with exact read-only evidence exceptions.
+
+    A repair may read the immutable snapshot it was assigned, but the snapshot's absolute
+    path must not become a route back to the shot root or neighbouring runs. Mutation never
+    crosses the workspace boundary.
+    """
+    root = Path(shot_folder).resolve()
+    read_exceptions = {Path(path).expanduser().resolve() for path in readable_files}
+
+    async def _check(inp, tool_use_id, ctx):
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        args = (inp.get("tool_input") if isinstance(inp, dict) else getattr(inp, "tool_input", {})) or {}
+        path_key = {
+            "Read": "file_path",
+            "Write": "file_path",
+            "Edit": "file_path",
+            "NotebookEdit": "notebook_path",
+            "Grep": "path",
+            "LSP": "path",
+            "Glob": "path",
+        }.get(tool)
+        if path_key is None:
+            return {}
+        raw = args.get(path_key)
+        if not raw:
+            target = root
+        else:
+            target = Path(str(raw)).expanduser()
+            target = (target if target.is_absolute() else root / target).resolve()
+
+        # Glob carries its effective path in ``pattern`` when ``path`` is omitted. Reject
+        # absolute/traversing patterns rather than relying on the tool's undocumented cwd
+        # handling to preserve the boundary.
+        if tool == "Glob":
+            pattern = str(args.get("pattern") or "")
+            pattern_path = Path(pattern).expanduser()
+            if pattern_path.is_absolute() or ".." in pattern_path.parts:
+                return _path_denial(tool, pattern, root)
+
+        inside = target == root or root in target.parents
+        read_only = tool in {"Read", "Grep", "LSP"}
+        if inside or (read_only and target in read_exceptions):
+            return {}
+        return _path_denial(tool, str(target), root)
+
+    return HookMatcher(matcher=None, hooks=[_check])
+
+
+def _path_denial(tool: str, target: str, root: Path) -> dict:
+    log(f"! planner path denied: {tool} on {target}", 1)
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            f"Fresh planning is confined to this run's workspace: {root}. The requested "
+            f"{tool} path ({target}) could expose or mutate shot-root state, prior plans, "
+            "or another run. Use the staged brief, refs, and current candidate only. A "
+            "repair may Read only the exact immutable snapshot named in its assignment."
+        ),
+    }}
+
+
 def planner_completion_gate(shot_folder: str | Path) -> HookMatcher:
     root = Path(shot_folder)
 
@@ -203,8 +268,11 @@ def planner_completion_gate(shot_folder: str | Path) -> HookMatcher:
     return HookMatcher(matcher=None, hooks=[_check])
 
 
-def planner_hooks(shot_folder: str | Path) -> dict:
+def planner_hooks(
+    shot_folder: str | Path, *, readable_files: tuple[str | Path, ...] = ()
+) -> dict:
     return {
+        "PreToolUse": [planner_path_scope(shot_folder, readable_files=readable_files)],
         "PostToolUse": [planner_artifact_feedback(shot_folder)],
         "Stop": [planner_completion_gate(shot_folder)],
     }

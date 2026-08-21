@@ -10,7 +10,7 @@ filenames, timestamps, or a scan of the shot directory.
 shots/<shot>/
   brief.md, refs/              authored inputs
   plans/current.json           atomically selected immutable plan generation
-  plans/, *.json contracts     temporary authoring compatibility surface
+  plans/, *.json contracts     legacy consumer compatibility surface; never planner staging
   build/, shot.json            accepted build and milestone ledger
   state/                        durable operational state shared across runs
   runs/                         generated output, isolated by invocation
@@ -47,6 +47,7 @@ runs/
     scratch/
       blender/
       plan-lab/
+      plan-workspace/          mutable global-plan candidate; authored inputs only
     deliverables/
 ```
 
@@ -66,6 +67,14 @@ names the producing run, bundle path, aggregate hash, and gate outcome. Bundle-a
 every member hash and fail closed on a malformed pointer. During the ADR-0004 migration, existing
 build consumers still read the shot-root compatibility files; the pointer is the durable
 publication record but does not yet make those legacy reads transactional.
+
+The planner's current working directory is
+`runs/<run-id>/scratch/plan-workspace/`. Staging copies `brief.md` and materializes `refs/`, but
+does not copy prior plans, contracts, questions, builds, or runs. Draft, verify, repair, hooks,
+and the plan gate share this workspace. A repair may read only the exact immutable snapshot named
+in its assignment outside the workspace; general Read/Glob/Grep discovery and every Write/Edit
+remain confined. Only a complete clean candidate can cross from scratch into the run's immutable
+plan bundle and then become selected by the atomic shot-root pointer.
 
 ## Reader protocol
 

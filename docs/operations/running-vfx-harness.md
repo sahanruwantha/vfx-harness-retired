@@ -33,13 +33,22 @@ successful agent session and must not be diagnosed as a VFX-quality problem.
 .venv/bin/vfx evals plan shots/<shot-id>
 ```
 
-Planning writes current authority to the shot root (`plans/`, `layers.json`, `acceptance.json`,
-`critic_axes.json`, `checks.json`, and `scene_checks.json`) and puts generated planning evidence
-inside its structured run. `--until-clean` exits 3 and records the run as failed if the gate
-stalls or exhausts its repair budget with blocking findings; the dirty plan remains on disk as
-diagnostic evidence. Planning status and summary records carry `outcome`, `blocking_count`, and
-`plan_gate_report`; read `reports/plan_gate.json` for the reusable finding set without rerunning
-the gate. Do not build while the deterministic plan gate reports blocking findings.
+Every global planning invocation creates an authored-input-only workspace at
+`runs/<run-id>/scratch/plan-workspace/`. Draft, verify, repair, write-time hooks, and the
+deterministic gate operate there; only `brief.md` and `refs/` are staged automatically. Prior
+plans, contracts, questions, builds, and run output are not implicit planning input. Planner
+writes outside this workspace are denied.
+
+A clean untagged `--until-clean` run freezes `plans/global.md` and its five machine contracts
+from that workspace into `runs/<run-id>/checkpoints/plans/bundles/<hash>/`, then atomically
+selects the complete generation through `plans/current.json`. A failed or interrupted run leaves
+the previous pointer unchanged and retains its own candidate as diagnostic run evidence.
+`--until-clean` exits 3 and records the run as failed if the gate stalls or exhausts its repair
+budget with blocking findings. Planning status and summary records carry `outcome`,
+`blocking_count`, and `plan_gate_report`; read `reports/plan_gate.json` for the reusable finding
+set without rerunning the gate. Existing build consumers have not yet completed the ADR-0004
+pointer migration, so do not build from a newly published bundle until that compatibility slice
+is complete. Never copy a bundle back onto the shot-root compatibility files by hand.
 
 New acceptance fingerprints are typed `{metric_set, values}` records using
 `vfx-harness.look-vector/v1`. Legacy prose remains readable, but a new plan must copy canonical

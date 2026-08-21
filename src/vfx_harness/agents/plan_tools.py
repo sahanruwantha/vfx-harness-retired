@@ -213,10 +213,11 @@ def build_plan_tools(
     blender: str = "blender",
     lab_dir: Path | None = None,
     include_gate: bool = False,
+    run_layout: run_artifacts.RunLayout | None = None,
 ):
     shot_folder = Path(shot_folder)
     work = Path(tempfile.mkdtemp(prefix="planlab-"))  # raw ffmpeg output
-    layout = run_artifacts.ensure(shot_folder, command="plan-lab")
+    layout = run_layout or run_artifacts.ensure(shot_folder, command="plan-lab")
     lab = (Path(lab_dir) if lab_dir else
            layout.scratch / "plan-lab" / "global")
     lab.mkdir(parents=True, exist_ok=True)
@@ -645,9 +646,13 @@ def build_plan_tools(
                 "run_gate call cap reached (4); finish the bounded planning sweep",
                 is_error=True,
             )
+        from vfx_harness.domain.brief import load_shot
         from vfx_harness.evaluation import plan_gate
 
         result = plan_gate.run(shot_folder, require_scene_checks=True)
+        # The filesystem leaf is deliberately named ``plan-workspace``; reports and
+        # feedback must retain the authored shot identity from brief.md instead.
+        result.shot = load_shot(shot_folder).id
         body = plan_gate.report(result)
         repair = plan_gate.feedback(result)
         return _text(body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""))
