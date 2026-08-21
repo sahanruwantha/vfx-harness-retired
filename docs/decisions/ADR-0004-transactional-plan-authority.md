@@ -43,6 +43,8 @@ artifacts.
 This ADR records the target authority model. Recording it does not publish that model or make
 the current shot-root artifacts compliant. The decision remains `proposed` until the migration
 is implemented and the acceptance evidence below passes; only then may it become `accepted`.
+[HIR-0008](../improvements/HIR-0008-transactional-plan-publication-foundation.md) records the
+accepted first implementation slice and its deliberately incomplete acceptance coverage.
 
 - **Immutable plan bundles, atomic pointer publication.** One plan generation is one
   immutable bundle (`global.md`, `layers.json`, `acceptance.json`, `checks.json`,
