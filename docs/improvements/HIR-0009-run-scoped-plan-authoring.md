@@ -72,7 +72,16 @@ root. Directory discovery silently promoted old generated state into the next ru
 - Hook fixtures prove only the assigned outside repair snapshot can be read, an inside plan can be
   written, and shot-root reads/writes plus traversing glob patterns are denied.
 - Focused authority/planner suites pass: 26 tests.
-- Full lint, test, CLI-help, and a new live planning run are required before release handoff.
+- `.venv/bin/ruff check src tests`, `.venv/bin/python -m pytest -q` (79 tests),
+  `.venv/bin/vfx --help`, and `git diff --check` pass.
+- Live run `20260821T161447Z-db0932` denied the verifier's attempted
+  `Glob ../*/plans/global.md` before execution, then completed `passed` / `clean` with zero
+  blocking findings. Its five remaining findings are projected-composition warnings, not
+  authority-isolation defects.
+- The live run spent $14.4639899 across draft and verify. It published immutable bundle
+  `176a7495d112f50a7b3eea889633b181e8d4c27c1546d8d0f73da51476d41a7b`; pointer resolution
+  revalidated the bundle, and the staged/published `global.md` hashes match while the legacy
+  shot-root `plans/global.md` hash remains different.
 
 ## Remaining limitation
 
