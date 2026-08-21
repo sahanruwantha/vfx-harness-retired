@@ -32,7 +32,7 @@ class Milestone:
     ref: str  # path relative to the shot folder, e.g. "refs/M1_green.jpg"
     reads: str  # the state that MUST read at this frame
     strip: tuple[int, ...] = ()   # extra frames judged with it (motion/continuity)
-    fingerprint: str = ""         # the plan's measured expectation for this moment
+    fingerprint: str | dict = ""  # typed canonical metrics; legacy prose remains readable
 
 
 # Fallback critic axes. Per shot, the real axes are DERIVED from the brief + refs and

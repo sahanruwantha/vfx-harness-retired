@@ -22,7 +22,6 @@ from PIL import Image
 
 from vfx_harness.evidence.checks import METRICS
 from vfx_harness.evidence.compare_panels import crop_pixels, save_context_sheet, save_focus_sheet, validate_crop
-from vfx_harness.evidence.metrics import _HOT_FLOOR_PPM
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.escalate import ask as _ask
 from vfx_harness.orchestration.script_map import find_lines as _find_lines
@@ -100,21 +99,18 @@ def _stats(im: Image.Image, *, feedback_groups=None) -> str:
     groups = set(feedback_groups) if feedback_groups is not None else {"exposure"}
     if "exposure" not in groups:
         return "exposure metrics suppressed — exposure is owned by another layer"
-    px = list(im.convert("L").getdata())
-    n = len(px) or 1
-    total = clipped = black = 0
-    for p in px:
-        total += p
-        if p >= 250:
-            clipped += 1
-        elif p <= 4:
-            black += 1
+    from vfx_harness.evidence.metrics import look_vector
+
+    metrics = look_vector(im)
+    mean = metrics["exposure_mean"]
+    clipped = metrics["clipped_pct"]
+    black = metrics["black_pct"]
     line = (
-        f"exposure: mean {total / n:.0f}/255 · clipped(blown) {100 * clipped / n:.0f}% · black {100 * black / n:.0f}%"
+        f"exposure: mean {mean:.0f}/255 · clipped(blown) {clipped:.0f}% · black {black:.0f}%"
     )
-    if clipped / n > 0.12:
+    if clipped > 12:
         line += "  ⚠ highlights BLOWN — lower emission/light strength or exposure"
-    if black / n > 0.85:
+    if black > 85:
         line += "  ⚠ frame almost entirely black — add light/emission or open exposure"
     return line
 
@@ -122,27 +118,21 @@ def _stats(im: Image.Image, *, feedback_groups=None) -> str:
 def _region_metrics(im: Image.Image) -> dict:
     """Perceptual metrics per horizontal band (top/mid/bottom thirds) + halation.
     Look-agnostic: measures image properties (structure, halation), not content."""
-    g = im.convert("L")
-    w, h = g.size
-    px = list(g.getdata())
-    bands = {}
-    for name, (y0, y1) in (("top", (0, h // 3)), ("mid", (h // 3, 2 * h // 3)), ("bot", (2 * h // 3, h))):
-        vals = [px[y * w + x] for y in range(y0, y1, 2) for x in range(0, w, 2)]
-        n = len(vals) or 1
-        mean = sum(vals) / n
-        var = sum((v - mean) ** 2 for v in vals) / n
-        bands[name] = (mean, var**0.5)
-    # halation: how much area glows dimmer around the hottest pixels (bloom spread).
-    # None, never 0.0, when there is not enough hot core to divide by — see
-    # metrics._HOT_FLOOR_PPM for why, for the measurement, and for the residual
-    # disagreement. The floor is shared as a DENSITY because this function reads plates at
-    # _MAX_W while metrics.py reads them at 960; a raw-pixel floor would have the same
-    # image measurable in one module and not the other purely on size.
-    bright = sum(1 for p in px if p >= 240)
-    halo = sum(1 for p in px if 120 <= p < 240)
-    dense = bright * 1e6 / (len(px) or 1)
-    halation = round(halo / bright, 1) if dense >= _HOT_FLOOR_PPM else None
-    return {"bands": bands, "halation": halation, "hot_px": bright, "hot_core": round(dense)}
+    from vfx_harness.evidence.metrics import look_vector
+
+    metrics = look_vector(im)
+    bands = {
+        name: (metrics[f"band_mean_{name}"], metrics[f"structure_{name}"])
+        for name in ("top", "mid", "bot")
+    }
+    sampled = 960 * max(1, round(im.height * 960 / im.width)) / 4
+    hot_core = metrics.get("hot_core", 0.0)
+    return {
+        "bands": bands,
+        "halation": metrics.get("halation"),
+        "hot_px": round(hot_core * sampled / 1e6),
+        "hot_core": round(hot_core),
+    }
 
 
 def _metrics_line(im: Image.Image, ref: Image.Image | None = None, *, feedback_groups=None) -> str:

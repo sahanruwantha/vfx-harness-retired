@@ -207,7 +207,13 @@ def _spike(blender: str, script: str, render_frame: int | None, timeout: int, py
 # --------------------------------------------------------------------------- #
 # the MCP server                                                               #
 # --------------------------------------------------------------------------- #
-def build_plan_tools(shot_folder: Path, *, blender: str = "blender", lab_dir: Path | None = None):
+def build_plan_tools(
+    shot_folder: Path,
+    *,
+    blender: str = "blender",
+    lab_dir: Path | None = None,
+    include_gate: bool = False,
+):
     shot_folder = Path(shot_folder)
     work = Path(tempfile.mkdtemp(prefix="planlab-"))  # raw ffmpeg output
     layout = run_artifacts.ensure(shot_folder, command="plan-lab")
@@ -237,6 +243,7 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender", lab_dir: Pa
     # the planner learn a metric/region; after that the batch tool is the only path until a
     # batch has run, at which point two more targeted follow-ups are available.
     check_budget = _CheckBatchBudget()
+    gate_calls = 0
 
     @tool(
         "probe_video",
@@ -353,7 +360,10 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender", lab_dir: Pa
         except Exception as e:
             log(f"plan-lab ✗ measure {args['path']}: {str(e)[:120]}", 1)
             return _text(f"measure failed: {e}", is_error=True)
-        line = f"{args['path']}\n{_stats(im)}\n{_metrics_line(im)}"
+        from vfx_harness.evidence.metrics import canonical_fingerprint
+
+        fingerprint = canonical_fingerprint(im)
+        line = f"{args['path']}\ncanonical fingerprint: {json.dumps(fingerprint, sort_keys=True)}"
         log(f"plan-lab measure {args['path']}: {_stats(im).removeprefix('exposure: ')}", 1)
         # The image travels WITH its numbers. This tool used to return text only, so
         # "measured it" and "looked at it" were separable — and the one plan written that
@@ -619,6 +629,29 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender", lab_dir: Pa
         )
         return _text(f"Recorded as Q{qid}. Continue planning on: {args['assumption']}")
 
+    @tool(
+        "run_gate",
+        "Run the free deterministic plan gate against the current working artifacts. "
+        "Use during draft, verify, or repair after a coherent artifact sweep so cross-file "
+        "defects are fixed while context is warm. Read-only and capped at four calls per "
+        "planning session.",
+        {"type": "object", "properties": {}},
+    )
+    async def run_gate(args):
+        nonlocal gate_calls
+        gate_calls += 1
+        if gate_calls > 4:
+            return _text(
+                "run_gate call cap reached (4); finish the bounded planning sweep",
+                is_error=True,
+            )
+        from vfx_harness.evaluation import plan_gate
+
+        result = plan_gate.run(shot_folder, require_scene_checks=True)
+        body = plan_gate.report(result)
+        repair = plan_gate.feedback(result)
+        return _text(body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""))
+
     # probe_video / contact_sheet / extract_frames were DEFINED and never registered, so
     # they were unreachable on every shot — not just stills-only ones. contact_sheet's own
     # description reads "This is how you do the scene read", and it has never once been
@@ -631,6 +664,8 @@ def build_plan_tools(shot_folder: Path, *, blender: str = "blender", lab_dir: Pa
     # of an omission.
     video = sorted((shot_folder / "refs").glob("*.mp4")) if (shot_folder / "refs").is_dir() else []
     tools = [measure_ref, measure_check, measure_checks, spike, ask_supervisor]
+    if include_gate:
+        tools.append(run_gate)
     if video:
         tools = [probe_video, contact_sheet, extract_frames, *tools]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)

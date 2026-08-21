@@ -26,7 +26,8 @@ file to the lab and `WebSearch` writes nothing: evidence a tool physically depos
 survives, evidence the model is merely asked to record does not.
 
 The draft is kept alongside (`plans/global.draft.md` + its lab dir) as the audit trail,
-and each repair round snapshots its input as `plans/global.roundN.md`.
+and each repair round snapshots its input under the active run's
+`checkpoints/plans/snapshots/` directory.
 `--single` runs one from-scratch pass (the pre-two-pass behavior);
 `--verify-only` skips pass 1 and audits an existing draft.
 
@@ -50,11 +51,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 
 import anyio
 from claude_agent_sdk import ClaudeAgentOptions, query
 
+from vfx_harness.agents.plan_guardrails import planner_hooks
 from vfx_harness.agents.plan_tools import build_plan_tools
 from vfx_harness.agents.prompts import (
     LAYER_PLANNER_ADDENDUM,
@@ -92,11 +95,69 @@ VERIFY_MODEL = DEFAULT_EXECUTION_MODEL
 MODEL = VERIFY_MODEL  # single-pass default
 
 
+@dataclass(frozen=True, slots=True)
+class PlanLoopResult:
+    """Terminal authority from the deterministic until-clean loop."""
+
+    path: Path
+    outcome: str
+    blocking_count: int
+
+    @property
+    def clean(self) -> bool:
+        return self.outcome == "clean" and self.blocking_count == 0
+
+
+class PlanGateFailure(SystemExit):
+    """Exit 3 while preserving a useful run-status detail instead of a traceback."""
+
+    def __init__(self, result: PlanLoopResult):
+        self.detail = (
+            f"plan loop {result.outcome} with {result.blocking_count} blocking "
+            f"finding(s) remaining in {result.path}"
+        )
+        self.run_metadata = {
+            "outcome": result.outcome,
+            "blocking_count": result.blocking_count,
+            "plan_gate_report": "reports/plan_gate.json",
+        }
+        super().__init__(3)
+
+    def __str__(self) -> str:
+        return self.detail
+
+
+@dataclass(frozen=True, slots=True)
+class PlanRoleCapabilities:
+    """Testable workflow contract for one global planning role."""
+
+    role: str
+    verbs: frozenset[str]
+    allowed_tools: frozenset[str]
+    denied_tools: frozenset[str]
+    include_gate: bool
+
+
+def plan_role_capabilities(role: str) -> PlanRoleCapabilities:
+    """Return the declared verbs and concrete affordances for a global plan role."""
+    if role not in {"draft", "verify", "repair"}:
+        raise ValueError(f"unknown global plan role: {role!r}")
+    denied = {"Bash"}
+    if role == "repair":
+        denied.update({"Task", "Agent"})
+    return PlanRoleCapabilities(
+        role=role,
+        verbs=frozenset({"author", "patch", "measure", "gate", "escalate"}),
+        allowed_tools=frozenset({"Edit"}),
+        denied_tools=frozenset(denied),
+        include_gate=True,
+    )
+
+
 def _planner_tool_policy(repair: bool) -> tuple[list[str], list[str]]:
-    """Repair patches directly; draft/verify may explore but cannot mutate in place."""
-    allowed = ["Edit"] if repair else []
-    denied = ["Bash", *(["Task", "Agent"] if repair else ["Edit"])]
-    return allowed, denied
+    """Compatibility adapter for callers that predate explicit role manifests."""
+    capabilities = plan_role_capabilities("repair" if repair else "draft")
+    return sorted(capabilities.allowed_tools), sorted(capabilities.denied_tools)
 
 
 # The reference board is the visual half of the brief, and the harness used to hand over
@@ -151,40 +212,51 @@ async def generate_plan(
     layout = run_artifacts.ensure(shot.folder, command="plan")
     lab_dir = layout.scratch / "plan-lab" / (tag or "global")
 
-    pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
-    rserver, rnames = build_recipe_tools()
-
     if repair:
         findings, rnd = repair
         system = PLANNER_SYSTEM + REPAIR_ADDENDUM.format(draft=verify_draft, findings=findings)
         kickoff = repair_user_prompt(shot, verify_draft, rnd)
         mode = f"REPAIR round {rnd} (against {verify_draft})"
+        role = "repair"
     elif verify_draft:
         system = PLANNER_SYSTEM + VERIFIER_ADDENDUM.format(draft=verify_draft)
         kickoff = verifier_user_prompt(shot, verify_draft)
         mode = f"VERIFY (auditing {verify_draft})"
+        role = "verify"
     else:
         system = PLANNER_SYSTEM
         kickoff = planner_user_prompt(shot)
         mode = "PLAN (from scratch)"
+        role = "draft"
 
-    # Repair is a PATCHING job, not a fresh authorship job. Round 4 spent 38 minutes
-    # delegating exact edits to subagents that did not have Edit, then rewrote a 1,390-line
-    # plan through Write. Give the repair session the precise tool directly and remove the
-    # delegation escape hatch; draft/verify keep their existing exploration behaviour.
-    repair_tools, denied = _planner_tool_policy(bool(repair))
+    capabilities = plan_role_capabilities(role)
+    pserver, pnames = build_plan_tools(
+        shot.folder,
+        blender=blender,
+        lab_dir=lab_dir,
+        include_gate=capabilities.include_gate,
+    )
+    rserver, rnames = build_recipe_tools()
+
+    # Every global role authors the same transaction and therefore needs the same patch and
+    # validation verbs. Repair additionally loses delegation so a bounded mechanical patch
+    # cannot escape into an agent that lacks its exact context or tools.
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Read", "Glob", "Grep", "Write", *repair_tools, "WebSearch", "WebFetch", *pnames, *rnames],
-        disallowed_tools=denied,
+        allowed_tools=[
+            "Read", "Glob", "Grep", "Write", *sorted(capabilities.allowed_tools),
+            "WebSearch", "WebFetch", *pnames, *rnames,
+        ],
+        disallowed_tools=sorted(capabilities.denied_tools),
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,  # sheets/frames as base64 image blocks
         setting_sources=[],  # isolate from user/project settings
         max_turns=max_turns,
         effort="high",
+        hooks=planner_hooks(shot.folder),
     )
 
     stills = [p.name for p in shot.refs]
@@ -426,7 +498,7 @@ async def generate_plan_until_clean(
     tag: str | None = None,
     verify_only: bool = False,
     max_rounds: int = 3,
-) -> Path:
+) -> PlanLoopResult:
     """Draft → verify → GATE → repair → gate → … until the plan clears or stops moving.
 
     The loop exists because "solid" was previously a model's own opinion of its own work,
@@ -444,17 +516,19 @@ async def generate_plan_until_clean(
                is not converging, and paying for another identical answer helps nobody
       budget   max_rounds reached with findings outstanding
 
-    Returns the plan path either way; the caller decides whether to build on it. This
-    function does not raise on a dirty plan, because a plan with known, listed defects is
-    more useful than no plan — what must never happen is a dirty plan looking clean.
+    Returns the plan path and deterministic terminal outcome either way. The caller keeps
+    the dirty plan as useful evidence but must publish a non-zero terminal result; what
+    must never happen is a dirty plan looking clean.
     """
     from vfx_harness.evaluation import plan_gate
+    from vfx_harness.orchestration import plan_authority
 
     configured = Settings.from_environment(load_dotenv_file=False).planner_model
     draft_model = draft_model or configured
     verify_model = verify_model or configured
 
     shot = load_shot(folder)
+    layout = run_artifacts.ensure(shot.folder, command="plan")
     final = await generate_plan_two_pass(
         folder,
         draft_model=draft_model,
@@ -486,18 +560,21 @@ async def generate_plan_until_clean(
             )
             break
         prev_sig = sig
-        # Snapshot the plan being repaired: the repair session reads one file and writes
-        # plans/global.md, and otherwise it would read the file it is replacing.
-        snap = global_plan_path(shot.folder).with_name(f"global.round{rnd}.md")
-        snap.write_text(final.read_text(encoding="utf-8"), encoding="utf-8")
-        log(f"══ repair {rnd}/{max_rounds} · {verify_model} · {len(res.blocking)} blocking finding(s) → {snap.name} ══")
+        # The repair input is immutable evidence owned by this run. Shot-global round names
+        # let a later invocation overwrite the only record of what an earlier repair saw.
+        snap = plan_authority.snapshot_repair_input(layout, rnd, final)
+        snap_rel = snap.relative_to(shot.folder).as_posix()
+        log(
+            f"══ repair {rnd}/{max_rounds} · {verify_model} · {len(res.blocking)} "
+            f"blocking finding(s) → {snap_rel} ══"
+        )
         final = await generate_plan(
             folder,
             model=verify_model,
             blender=blender,
             max_turns=max_turns,
             tag=tag,
-            verify_draft=snap.relative_to(shot.folder).as_posix(),
+            verify_draft=snap_rel,
             repair=(plan_gate.feedback(res), rnd),
         )
         plan_name = final.relative_to(shot.folder).as_posix()
@@ -508,6 +585,26 @@ async def generate_plan_until_clean(
         outcome = "clean" if res.clean else "budget"
 
     n = len(res.blocking)
+    report_path = plan_gate.write_report(shot.folder, res, outcome=outcome)
+    log(f"gate authority → {report_path.relative_to(shot.folder)}", 1)
+    if outcome == "clean" and tag is None:
+        bundle = plan_authority.publish_current(
+            shot.folder,
+            layout,
+            outcome=outcome,
+            plan_path=final,
+        )
+        pointer_rel = plan_authority.POINTER.as_posix()
+        layout.terminal_metadata.update(
+            {
+                "plan_pointer": pointer_rel,
+                "plan_bundle": bundle.root.relative_to(shot.folder).as_posix(),
+                "plan_content_hash": bundle.content_hash,
+            }
+        )
+        log(f"plan authority → {pointer_rel} ({bundle.content_hash[:16]})", 1)
+    elif outcome == "clean" and tag is not None:
+        log("tagged plan is gated evidence only; it does not replace plans/current.json", 1)
     log(
         f"plan loop {outcome.upper()}: {final.name}"
         + (
@@ -517,7 +614,7 @@ async def generate_plan_until_clean(
             f"them; building on this plan means building toward them."
         )
     )
-    return final
+    return PlanLoopResult(final, outcome, n)
 
 
 def main() -> None:
@@ -557,7 +654,8 @@ def main() -> None:
 
     shot = load_shot(args.folder)
     command = "plan-layer" if args.layer else "plan"
-    with run_artifacts.invocation(shot.folder, command, shot_id=shot.id):
+    loop_result: PlanLoopResult | None = None
+    with run_artifacts.invocation(shot.folder, command, shot_id=shot.id) as layout:
         if args.layer:
             plan_path = anyio.run(
                 lambda: generate_layer_plan(
@@ -577,7 +675,7 @@ def main() -> None:
                 )
             )
         elif args.until_clean:
-            plan_path = anyio.run(
+            loop_result = anyio.run(
                 lambda: generate_plan_until_clean(
                     args.folder,
                     draft_model=args.draft_model,
@@ -589,6 +687,7 @@ def main() -> None:
                     max_rounds=args.max_rounds,
                 )
             )
+            plan_path = loop_result.path
         else:
             plan_path = anyio.run(
                 lambda: generate_plan_two_pass(
@@ -608,6 +707,16 @@ def main() -> None:
 
         used = args.model if (args.single or args.layer) else f"{args.draft_model}→{args.verify_model}"
         log(f"provenance → {stamp(args.folder, model=used, note='tag=' + str(args.tag))}")
+        if loop_result is not None and not loop_result.clean:
+            raise PlanGateFailure(loop_result)
+        if loop_result is not None:
+            layout.terminal_metadata.update(
+                {
+                    "outcome": loop_result.outcome,
+                    "blocking_count": loop_result.blocking_count,
+                    "plan_gate_report": "reports/plan_gate.json",
+                }
+            )
 
 
 if __name__ == "__main__":

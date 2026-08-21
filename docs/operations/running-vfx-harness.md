@@ -35,8 +35,15 @@ successful agent session and must not be diagnosed as a VFX-quality problem.
 
 Planning writes current authority to the shot root (`plans/`, `layers.json`, `acceptance.json`,
 `critic_axes.json`, `checks.json`, and `scene_checks.json`) and puts generated planning evidence
-inside its structured run. Do not build while the deterministic plan gate reports blocking
-findings.
+inside its structured run. `--until-clean` exits 3 and records the run as failed if the gate
+stalls or exhausts its repair budget with blocking findings; the dirty plan remains on disk as
+diagnostic evidence. Planning status and summary records carry `outcome`, `blocking_count`, and
+`plan_gate_report`; read `reports/plan_gate.json` for the reusable finding set without rerunning
+the gate. Do not build while the deterministic plan gate reports blocking findings.
+
+New acceptance fingerprints are typed `{metric_set, values}` records using
+`vfx-harness.look-vector/v1`. Legacy prose remains readable, but a new plan must copy canonical
+metric ids and values returned by `measure_ref`.
 
 If planning raises client questions, inspect and answer them before the affected layer:
 
@@ -97,6 +104,7 @@ For the latest run, read:
 Then open only the necessary category:
 
 - `reports/layers/` for a layer verdict and aggregated telemetry;
+- `reports/plan_gate.json` for the final structured plan outcome and repair findings;
 - `evidence/renders/` and `evidence/comparisons/` for visual proof;
 - `logs/transcripts/` for prompts, tool calls, model output, and errors;
 - `logs/console.log` for the chronological operator narrative;

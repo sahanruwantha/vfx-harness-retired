@@ -17,7 +17,7 @@ import os
 import re
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,7 @@ ENV = "VFXH_RUN_DIR"
 SCHEMA = "vfx-harness.run/v1"
 LATEST_SCHEMA = "vfx-harness.latest-run/v1"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_RESERVED_STATUS_FIELDS = {"schema", "run_id", "state", "updated_at", "exit_code", "detail"}
 
 
 def _now() -> str:
@@ -51,6 +52,10 @@ class RunLayout:
     shot: Path
     run_id: str
     root: Path
+    # A stage may learn terminal authority before the invocation context exits. Keeping
+    # these structured fields beside the layout lets the context publish them atomically
+    # with status.json/summary.json instead of reducing them to an exception string.
+    terminal_metadata: dict[str, Any] = field(default_factory=dict, compare=False)
 
     @property
     def manifest(self) -> Path:
@@ -92,7 +97,7 @@ class RunLayout:
         return Path(path).resolve().relative_to(self.shot).as_posix()
 
     def set_status(self, state: str, *, exit_code: int | None = None,
-                   detail: str | None = None) -> None:
+                   detail: str | None = None, metadata: dict[str, Any] | None = None) -> None:
         rec: dict[str, Any] = {
             "schema": SCHEMA,
             "run_id": self.run_id,
@@ -103,6 +108,8 @@ class RunLayout:
             rec["exit_code"] = int(exit_code)
         if detail:
             rec["detail"] = str(detail)[:1000]
+        if metadata:
+            rec.update({key: value for key, value in metadata.items() if key not in _RESERVED_STATUS_FIELDS})
         _atomic_json(self.status, rec)
         _write_latest(self, state=state)
 
@@ -132,6 +139,14 @@ class RunLayout:
 
     def write_summary(self, value: dict[str, Any]) -> Path:
         out = self.reports / "summary.json"
+        _atomic_json(out, value)
+        return out
+
+    def write_report(self, name: str, value: dict[str, Any]) -> Path:
+        """Publish one named structured report inside this invocation."""
+        if not _SAFE_ID.fullmatch(name):
+            raise ValueError(f"invalid report name: {name!r}")
+        out = self.reports / f"{name}.json"
         _atomic_json(out, value)
         return out
 
@@ -174,7 +189,8 @@ def create(shot_folder: str | Path, run_id: str, *, shot_id: str | None = None,
         },
         "authority": {
             "authored_inputs": "../../brief.md and ../../refs/",
-            "active_plan": "../../plans/ and ../../*.json contracts",
+            "published_plan": "../../plans/current.json when present",
+            "plan_authoring_compatibility": "../../plans/ and ../../*.json contracts",
             "accepted_build": "../../build/ and ../../shot.json",
             "generated_output": "this directory",
         },
@@ -220,7 +236,12 @@ def invocation(shot_folder: str | Path, command: str, *,
     except BaseException as exc:
         if inherited is None:
             code = exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) else 1
-            layout.set_status("failed", exit_code=code, detail=str(exc))
+            metadata = {
+                key: value
+                for key, value in {**layout.terminal_metadata, **getattr(exc, "run_metadata", {})}.items()
+                if key not in _RESERVED_STATUS_FIELDS
+            }
+            layout.set_status("failed", exit_code=code, detail=str(exc), metadata=metadata)
             layout.write_summary({
                 "schema": "vfx-harness.run-summary/v1",
                 "run_id": layout.run_id,
@@ -228,18 +249,25 @@ def invocation(shot_folder: str | Path, command: str, *,
                 "state": "failed",
                 "exit_code": code,
                 "detail": str(exc)[:1000],
+                **metadata,
             })
             layout.write_inventory()
         raise
     else:
         if inherited is None:
-            layout.set_status("passed", exit_code=0)
+            metadata = {
+                key: value
+                for key, value in layout.terminal_metadata.items()
+                if key not in _RESERVED_STATUS_FIELDS
+            }
+            layout.set_status("passed", exit_code=0, metadata=metadata)
             layout.write_summary({
                 "schema": "vfx-harness.run-summary/v1",
                 "run_id": layout.run_id,
                 "command": command,
                 "state": "passed",
                 "exit_code": 0,
+                **metadata,
             })
             layout.write_inventory()
 

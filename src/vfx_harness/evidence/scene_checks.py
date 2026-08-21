@@ -31,8 +31,11 @@ OBJECT_KINDS = {
 MATERIAL_KINDS = {"material_count", "material_user_count", "material_assignment_fraction"}
 NODE_KINDS = {"node_count", "node_socket_value", "node_link_count"}
 STATE_KINDS = {"animation_count", "compositor_enabled"}
-FUNCTIONAL_KINDS = {"control_render_response"}
-SUPPORTED_KINDS = OBJECT_KINDS | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS | FUNCTIONAL_KINDS
+TEMPORAL_KINDS = {"onset_order", "radial_distance_trend", "transform_return_delta"}
+FUNCTIONAL_KINDS = {"control_render_response", "frame_delta"}
+SUPPORTED_KINDS = (
+    OBJECT_KINDS | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS | TEMPORAL_KINDS | FUNCTIONAL_KINDS
+)
 SUPPORTED_OPS = {"band", "eq", "min", "max"}
 
 KIND_DEFINITIONS = {
@@ -56,6 +59,12 @@ KIND_DEFINITIONS = {
     "animation_count": "animation datablocks on the selected semantic state",
     "compositor_enabled": "1 when compositing and a semantic compositor group exist",
     "control_render_response": "pixel response when a semantic numeric control is swept low to high",
+    "onset_order": (
+        "comparison-role onset frame minus selected-role onset frame; positive means selected roles start first"
+    ),
+    "radial_distance_trend": "least-squares slope of mean XY distance from origin across a frame window",
+    "transform_return_delta": "selected transform-component delta between two declared frames",
+    "frame_delta": "mean absolute rendered-pixel delta between two declared frames",
 }
 
 
@@ -149,6 +158,35 @@ def validate_row(row: dict) -> str | None:
             return "control_render_response metric must be mean_delta or mae"
         if row.get("socket_direction", "auto") not in {"auto", "input", "output"}:
             return "control_render_response socket_direction must be auto, input, or output"
+    if kind in TEMPORAL_KINDS | {"frame_delta"}:
+        frames = row.get("frames")
+        if (
+            not isinstance(frames, list)
+            or len(frames) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in frames)
+            or frames[0] >= frames[1]
+        ):
+            return f"{kind} requires two increasing positive integer frames"
+    if kind in TEMPORAL_KINDS and not _selectors(row, "roles"):
+        return f"{kind} requires non-empty roles"
+    if kind == "onset_order" and not _selectors(row, "compare_roles"):
+        return "onset_order requires compare_roles"
+    if kind == "transform_return_delta" and row.get("component", "location") not in {
+        "location",
+        "rotation",
+        "scale",
+    }:
+        return "transform_return_delta component must be location, rotation, or scale"
+    if kind == "frame_delta":
+        region = row.get("region")
+        if region is not None and (
+            not isinstance(region, list)
+            or len(region) != 4
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in region)
+            or not all(0 <= float(v) <= 1 for v in region)
+            or not (region[0] < region[2] and region[1] < region[3])
+        ):
+            return "frame_delta region must be a normalized TOP-LEFT box"
     if kind == "node_socket_value" and (
         not row.get("socket") or row.get("direction", "input") not in {"input", "output"}
     ):
@@ -196,7 +234,7 @@ def validate_row(row: dict) -> str | None:
 def _blender_probe(rows: list[dict], frame: int) -> str:
     payload = json.dumps(rows)
     return f"""\
-import bpy, fnmatch, json
+import bpy, fnmatch, json, math
 from bpy_extras.object_utils import world_to_camera_view
 _rows=json.loads({json.dumps(payload)}); _scene=bpy.context.scene; _scene.frame_set({int(frame)})
 _dg=bpy.context.evaluated_depsgraph_get(); _camera=_scene.camera; _out=[]
@@ -236,6 +274,27 @@ def _property(target,path):
         value=value[int(token)] if token.isdigit() else getattr(value,token)
     return float(value)
 def _animated(v): return int(bool(getattr(v,'animation_data',None)))
+def _state(items,frame):
+    _scene.frame_set(int(frame)); dg=bpy.context.evaluated_depsgraph_get(); out=[]
+    for item in items:
+        ev=item.evaluated_get(dg)
+        out.append((item.name,tuple(float(v) for row in ev.matrix_world for v in row),
+                    bool(ev.hide_render),bool(ev.hide_viewport)))
+    return out
+def _onset(items,start,end,epsilon):
+    base=_state(items,start)
+    for frame in range(int(start)+1,int(end)+1):
+        current=_state(items,frame)
+        for before,after in zip(base,current):
+            if before[0]!=after[0] or before[2:]!=after[2:]: return frame
+            if max(abs(a-b) for a,b in zip(before[1],after[1]))>epsilon: return frame
+    raise ValueError('selector has no evaluated transform/visibility onset in frame window')
+def _transforms(items,frame):
+    _scene.frame_set(int(frame)); dg=bpy.context.evaluated_depsgraph_get(); out={{}}
+    for item in items:
+        loc,rot,scale=item.evaluated_get(dg).matrix_world.decompose()
+        out[item.name]=(loc.copy(),rot.copy(),scale.copy())
+    return out
 for row in _rows:
     kind=row['kind']; value=None; error=''; objects=_objects(row) if row.get('roles') else []
     materials=_materials(row) if row.get('material_roles') else []; matched=[]
@@ -313,6 +372,30 @@ for row in _rows:
             if domain in ('all','world') and _scene.world: values += [_scene.world,_scene.world.node_tree]
             if domain in ('all','scene'): values += [_scene]
             value=sum(_animated(v) for v in values if v is not None)
+        elif kind=='onset_order':
+            other=_objects({{**row,'roles':_p(row,'compare_roles')}})
+            if not objects or not other: raise ValueError('onset selector matched no objects')
+            a,b=row['frames']; epsilon=float(row.get('motion_epsilon',1e-5))
+            value=_onset(other,a,b,epsilon)-_onset(objects,a,b,epsilon)
+        elif kind=='radial_distance_trend':
+            if not objects: raise ValueError('selector matched no objects')
+            a,b=row['frames']; samples=[]
+            for f in range(int(a),int(b)+1):
+                _scene.frame_set(int(f)); dg=bpy.context.evaluated_depsgraph_get()
+                samples.append(sum((o.evaluated_get(dg).matrix_world.translation.x**2+
+                                    o.evaluated_get(dg).matrix_world.translation.y**2)**.5
+                                   for o in objects)/len(objects))
+            xs=list(range(len(samples))); xm=sum(xs)/len(xs); ym=sum(samples)/len(samples)
+            value=sum((x-xm)*(y-ym) for x,y in zip(xs,samples))/max(sum((x-xm)**2 for x in xs),1e-12)
+        elif kind=='transform_return_delta':
+            if not objects: raise ValueError('selector matched no objects')
+            a,b=row['frames']; first=_transforms(objects,a); second=_transforms(objects,b)
+            component=row.get('component','location'); deltas=[]
+            for name in first:
+                if component=='location': deltas.append((second[name][0]-first[name][0]).length)
+                elif component=='scale': deltas.append((second[name][2]-first[name][2]).length)
+                else: deltas.append(first[name][1].rotation_difference(second[name][1]).angle)
+            value=max(deltas)
     except Exception as exc: value=None; error=str(exc)[:160]
     _out.append({{'id':row['id'],'value':value,'objects':[o.name for o in objects],
       'roles':[str(o.get('bvfx_role','')) for o in objects],'materials':[m.name for m in materials],
@@ -454,7 +537,7 @@ RESULT={{'before':before,'after':float(socket.default_value),'node':nodes[0].nam
 def functional_evidence(
     shot_folder: str | Path, layer_id: str, *, session, rows: list[dict] | None = None
 ) -> list[dict]:
-    """Functionally prove semantic controls by rendering a transactional low/high sweep."""
+    """Render transactional control sweeps or deterministic two-frame deltas."""
     selected = (
         rows
         if rows is not None
@@ -474,21 +557,30 @@ def functional_evidence(
         try:
             if error:
                 raise ValueError(error)
-            initial = session.run(_control_script(row), journal=False).get("result") or {}
-            original = float(initial["before"])
             images = []
-            for probe_value in row["probe_values"]:
-                session.run(_control_script(row, float(probe_value)), journal=False)
+            if row.get("kind") == "frame_delta":
+                probe_values = row["frames"]
+            else:
+                initial = session.run(_control_script(row), journal=False).get("result") or {}
+                original = float(initial["before"])
+                probe_values = row["probe_values"]
+            for probe_value in probe_values:
+                if row.get("kind") != "frame_delta":
+                    session.run(_control_script(row, float(probe_value)), journal=False)
+                    render_frame = int(row.get("frame", 1))
+                else:
+                    render_frame = int(probe_value)
                 rendered = session.render_full(
-                    frame=int(row.get("frame", 1)),
+                    frame=render_frame,
                     mode=str(row.get("probe_mode", "eevee")),
                     scale=float(row.get("probe_scale", 0.5)),
                 )
                 with Image.open(rendered["image_path"]) as source:
                     image = source.convert("RGB")
-                    x0, y0, x1, y1 = row["region"]
-                    images.append(
-                        image.crop(
+                    region = row.get("region")
+                    if region:
+                        x0, y0, x1, y1 = region
+                        image = image.crop(
                             (
                                 int(image.width * x0),
                                 int(image.height * y0),
@@ -496,9 +588,11 @@ def functional_evidence(
                                 max(int(image.height * y0) + 1, int(image.height * y1)),
                             )
                         )
-                    )
+                    images.append(image)
             low, high = images
-            if row.get("response_metric", "mean_delta") == "mae":
+            if row.get("kind") == "frame_delta" or row.get("response_metric", "mean_delta") == "mae":
+                if low.size != high.size:
+                    raise ValueError("rendered frames have different dimensions")
                 value = ImageStat.Stat(ImageChops.difference(low, high).convert("L")).mean[0]
             else:
                 low_mean = ImageStat.Stat(low.convert("L")).mean[0]
@@ -516,8 +610,8 @@ def functional_evidence(
             {
                 "id": str(row.get("id") or "<missing>"),
                 "axis": str(row.get("axis") or ""),
-                "metric": "control_render_response",
-                "definition": KIND_DEFINITIONS["control_render_response"],
+                "metric": str(row.get("kind") or "control_render_response"),
+                "definition": KIND_DEFINITIONS[str(row.get("kind") or "control_render_response")],
                 "value": round(value, 4) if isinstance(value, (int, float)) else None,
                 "target": _target(row),
                 "pass": not error and _holds(row, value),

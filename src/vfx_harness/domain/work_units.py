@@ -325,6 +325,7 @@ class MutationScope:
     roles: tuple[str, ...]
     controls: tuple[str, ...]
     script_spans: tuple[str, ...]
+    control_roles: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @classmethod
     def parse(cls, value: Any, where: str) -> MutationScope:
@@ -341,7 +342,30 @@ class MutationScope:
             raise ValueError(f"{where} mode 'none' cannot declare mutation targets")
         if mode == "scoped" and not any((roles, controls, spans)):
             raise ValueError(f"{where} scoped mutation needs roles, controls, or script_spans")
-        return cls(mode, roles, controls, spans)
+        raw_mapping = row.get("control_roles", {})
+        # Dataclass-to-JSON test/tooling paths serialize the empty tuple default as [].
+        # Treat only that empty shape as the same legacy omission; non-empty mappings are
+        # always objects in the authored schema.
+        if raw_mapping == []:
+            raw_mapping = {}
+        if not isinstance(raw_mapping, dict):
+            raise ValueError(f"{where}.control_roles must be an object")
+        mapping = []
+        for control, values in raw_mapping.items():
+            key = _text(control, f"{where}.control_roles key")
+            targets = _strings(values, f"{where}.control_roles.{key}", allow_empty=False)
+            if key not in controls:
+                raise ValueError(f"{where}.control_roles maps undeclared control {key!r}")
+            unknown = sorted(set(targets) - set(roles))
+            if unknown:
+                raise ValueError(
+                    f"{where}.control_roles.{key} maps roles outside mutation scope: {', '.join(unknown)}"
+                )
+            mapping.append((key, targets))
+        if mapping and set(raw_mapping) != set(controls):
+            missing = sorted(set(controls) - set(raw_mapping))
+            raise ValueError(f"{where}.control_roles does not map controls: {', '.join(missing)}")
+        return cls(mode, roles, controls, spans, tuple(sorted(mapping)))
 
 
 @dataclass(frozen=True)

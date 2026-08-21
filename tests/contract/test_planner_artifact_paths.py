@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from vfx_harness.agents.prompts import PLANNER_SYSTEM
-from vfx_harness.evaluation.plan_gate import _check_coverage
+from vfx_harness.evaluation.plan_gate import _check_coverage, _check_hierarchical_plans
 from vfx_harness.observability import run_artifacts, transcript
 
 
@@ -68,3 +68,41 @@ def test_layer_without_any_executable_contract_remains_uncovered(tmp_path) -> No
     assert len(findings) == 1
     assert findings[0].check == "coverage"
     assert stats["layers_uncovered"] == 1
+
+
+def test_plan_gate_reports_all_cross_layer_dependencies_in_one_pass(tmp_path) -> None:
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "plans" / "global.md").write_text("# plan\n", encoding="utf-8")
+    (tmp_path / "layers.json").write_text(
+        """{
+  "schema": 4,
+  "layers": [
+    {"id": "1", "stages": [
+      {"id": "layout", "depends_on": []}
+    ]},
+    {"id": "2", "stages": [
+      {"id": "lookdev", "depends_on": ["layout"]}
+    ]},
+    {"id": "3", "stages": [
+      {"id": "lighting", "depends_on": ["lookdev"]}
+    ]},
+    {"id": "4", "stages": [
+      {"id": "finish", "depends_on": ["lighting", "missing_peer"]}
+    ]}
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    findings, stats = _check_hierarchical_plans(tmp_path)
+
+    assert stats == {"unit_plans_required": 0, "layers_passed": 0}
+    assert [finding.where for finding in findings] == [
+        "layers.json.layers[1].stages.lookdev",
+        "layers.json.layers[2].stages.lighting",
+        "layers.json.layers[3].stages.finish",
+    ]
+    assert "layout" in findings[0].what
+    assert "lookdev" in findings[1].what
+    assert "lighting, missing_peer" in findings[2].what

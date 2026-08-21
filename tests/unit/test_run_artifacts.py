@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from vfx_harness.agents.planner import PlanGateFailure, PlanLoopResult
 from vfx_harness.observability import run_artifacts, transcript
 
 
@@ -103,6 +104,33 @@ def test_direct_cli_invocation_publishes_terminal_status_and_summary(
     assert summary["command"] == "plan"
     assert summary["state"] == "passed"
     assert layout.inventory.is_file()
+
+
+def test_dirty_plan_exit_publishes_failed_status_and_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot = tmp_path / "dirty-plan"
+    shot.mkdir()
+    plan = shot / "plans" / "global.md"
+    plan.parent.mkdir()
+    plan.write_text("# dirty but preserved\n", encoding="utf-8")
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "direct-dirty")
+    result = PlanLoopResult(plan, "budget", 2)
+
+    with (
+        pytest.raises(PlanGateFailure, match="2 blocking"),
+        run_artifacts.invocation(shot, "plan", shot_id="dirty-plan") as layout,
+    ):
+        raise PlanGateFailure(result)
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
+    assert status["state"] == "failed"
+    assert status["exit_code"] == 3
+    assert "2 blocking" in status["detail"]
+    assert summary["state"] == "failed"
+    assert summary["exit_code"] == 3
 
 
 def test_reader_refuses_shot_root_legacy_output(

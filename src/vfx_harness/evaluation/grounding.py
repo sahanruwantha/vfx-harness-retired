@@ -43,9 +43,12 @@ import json
 import re
 from pathlib import Path
 
-from vfx_harness.evidence.metrics import _HOT_FLOOR_PPM, look_vector
-
-from ..blender.tools import _load, _region_metrics
+from vfx_harness.evidence.metrics import (
+    _FLOOR,
+    _HOT_FLOOR_PPM,
+    METRIC_SET,
+    canonical_fingerprint,
+)
 
 # token -> (pattern, absolute floor below which a relative gap is meaningless)
 # The patterns accept both the glyphs _metrics_line emits (μ, σ) and the ASCII the planner
@@ -76,24 +79,60 @@ def measure(ref: Path) -> dict[str, float | None]:
     """Re-derive every claimable number from the still, through the SAME functions the
     planner's `measure_ref` tool ran. Reimplementing the measurement here would test this
     file against itself; calling the producer tests the plan against what it was shown."""
-    im = _load(str(ref))                       # _MAX_W resize, exactly as measure_ref saw it
-    px = list(im.convert("L").getdata())
-    n = len(px) or 1
+    values = canonical_fingerprint(str(ref))["values"]
     out: dict[str, float | None] = {
-        "mean": sum(px) / n,
-        "clipped_pct": 100 * sum(1 for p in px if p >= 250) / n,
-        "black_pct": 100 * sum(1 for p in px if p <= 4) / n,
+        "mean": values["exposure_mean"],
+        "clipped_pct": values["clipped_pct"],
+        "black_pct": values["black_pct"],
     }
-    rm = _region_metrics(im)
     for band in ("top", "mid", "bot"):
-        out[f"{band}_mu"], out[f"{band}_sigma"] = rm["bands"][band]
-    out["halation"] = rm["halation"]           # None when there is no core to divide by
-    out["_hot_px"] = rm["hot_px"]
-    out["_hot_core"] = rm["hot_core"]
-    v = look_vector(str(ref))
-    out["detail"] = v["detail"]
-    out["points"] = v["points"]
+        out[f"{band}_mu"] = values[f"band_mean_{band}"]
+        out[f"{band}_sigma"] = values[f"structure_{band}"]
+    out["halation"] = values.get("halation")
+    out["_hot_px"] = round(values.get("hot_core", 0.0) * 960 * 540 / 4e6)
+    out["_hot_core"] = values.get("hot_core", 0.0)
+    out["detail"] = values["detail"]
+    out["points"] = values["points"]
     return out
+
+
+def check_structured_fingerprint(fingerprint: dict, ref: Path) -> tuple[list[dict], list[str]]:
+    """Validate typed metric ids directly; no prose or regex can change their meaning."""
+    if fingerprint.get("metric_set") != METRIC_SET:
+        return [], [f"unsupported metric_set {fingerprint.get('metric_set')!r}; expected {METRIC_SET}"]
+    claimed = fingerprint.get("values")
+    if not isinstance(claimed, dict) or not claimed:
+        return [], ["structured fingerprint requires a non-empty values object"]
+    truth = canonical_fingerprint(str(ref))["values"]
+    rows, errors = [], []
+    for key, value in claimed.items():
+        if key not in truth:
+            if key == "halation":
+                rows.append({
+                    "key": key,
+                    "claimed": float(value),
+                    "actual": None,
+                    "verdict": "UNMEASURABLE",
+                    "why": "the canonical metric registry omitted halation because hot-core density is below its floor",
+                })
+            else:
+                errors.append(f"unknown or unavailable metric id {key!r}")
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            errors.append(f"metric {key!r} must be numeric")
+            continue
+        actual = float(truth[key])
+        floor = _FLOOR.get(key, 0.5)
+        gap = abs(float(value) - actual)
+        rel = gap / max(abs(actual), floor)
+        rows.append({
+            "key": key,
+            "claimed": float(value),
+            "actual": round(actual, 3),
+            "rel": round(rel, 3),
+            "verdict": "ok" if gap < floor or rel <= TOL else "MISMATCH",
+        })
+    return rows, errors
 
 
 def check_fingerprint(text: str, truth: dict) -> tuple[list[dict], list[str]]:
@@ -146,9 +185,24 @@ def audit(folder: Path) -> dict:
                                      "a plate no stage can compare against"})
             continue
         truth = measure(ref)
-        rows, unparsed = check_fingerprint(fp, truth)
+        schema_errors: list[str] = []
+        if isinstance(fp, dict):
+            rows, schema_errors = check_structured_fingerprint(fp, ref)
+            unparsed = []
+        elif isinstance(fp, str):
+            rows, unparsed = check_fingerprint(fp, truth)
+        else:
+            moments.append(
+                {
+                    "id": m.get("id"),
+                    "ref": m.get("ref"),
+                    "error": "fingerprint must be an object or legacy string",
+                }
+            )
+            continue
         moments.append({"id": m.get("id"), "ref": m.get("ref"), "claims": rows,
-                        "unparsed": unparsed, "hot_core": truth["_hot_core"]})
+                        "unparsed": unparsed, "schema_errors": schema_errors,
+                        "hot_core": truth["_hot_core"]})
     flat = [r for mo in moments for r in mo.get("claims", [])]
     return {
         "shot": folder.name,
@@ -157,7 +211,9 @@ def audit(folder: Path) -> dict:
         "n_ok": sum(1 for r in flat if r["verdict"] == "ok"),
         "n_mismatch": sum(1 for r in flat if r["verdict"] == "MISMATCH"),
         "n_unmeasurable": sum(1 for r in flat if r["verdict"] == "UNMEASURABLE"),
-        "n_error": sum(1 for mo in moments if "error" in mo),
+        "n_error": sum(1 for mo in moments if "error" in mo) + sum(
+            len(mo.get("schema_errors", [])) for mo in moments
+        ),
     }
 
 
@@ -170,7 +226,8 @@ def report(rec: dict) -> str:
             out.append(f"\n   {mo['id']}  {mo['ref']}\n     ✗ {mo['error']}")
             continue
         bad = [r for r in mo["claims"] if r["verdict"] != "ok"]
-        head = "✓" if not bad else "✗"
+        bad_schema = mo.get("schema_errors", [])
+        head = "✓" if not bad and not bad_schema else "✗"
         out.append(f"\n   {head} {mo['id']}  {mo['ref']}  "
                    f"({len(mo['claims']) - len(bad)}/{len(mo['claims'])} reproduce)")
         for r in bad:
@@ -180,6 +237,8 @@ def report(rec: dict) -> str:
             else:
                 out.append(f"       {r['key']:<12} claims {r['claimed']:<9g} "
                            f"plate reads {r['actual']:<9g} ({r['rel'] * 100:.0f}% off)")
+        for error in bad_schema:
+            out.append(f"       schema       {error}")
         if mo["unparsed"]:
             out.append(f"       · {len(mo['unparsed'])} number(s) not checked by any rule: "
                        f"{', '.join(mo['unparsed'][:6])}")

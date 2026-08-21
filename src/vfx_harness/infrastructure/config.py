@@ -15,7 +15,12 @@ from dotenv import load_dotenv
 
 ENV_FILE_VARIABLE = "VFXH_ENV_FILE"
 PACKAGE_ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = PACKAGE_ROOT.parents[1]
+# ``PACKAGE_ROOT`` is ``<checkout>/src/vfx_harness/infrastructure`` in a source
+# checkout.  ``parents[1]`` is therefore the ``src`` directory, not the checkout.
+# Keeping this as an explicit constant (rather than searching cwd/parents) preserves the
+# deterministic resolution contract while allowing the repository-root ``.env``, evals,
+# shots, and packaged knowledge paths to resolve where the project says they live.
+PROJECT_ROOT = PACKAGE_ROOT.parents[2]
 DEFAULT_EXECUTION_MODEL = "claude-sonnet-5"
 DEFAULT_CRITIC_MODEL = "claude-opus-5"
 
@@ -35,7 +40,8 @@ def environment_file(path: str | Path | None = None) -> Path | None:
         return candidate
 
     candidate = PROJECT_ROOT / ".env"
-    return candidate if candidate.is_file() else None
+    checkout = (PROJECT_ROOT / "pyproject.toml").is_file()
+    return candidate if checkout and candidate.is_file() else None
 
 
 def load_environment(path: str | Path | None = None) -> Path | None:

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from vfx_harness.agents.builder import builder_model, critic_model, script_model
-from vfx_harness.infrastructure.config import DEFAULT_CRITIC_MODEL, DEFAULT_EXECUTION_MODEL, Settings
+from vfx_harness.infrastructure import config
+from vfx_harness.infrastructure.config import (
+    DEFAULT_CRITIC_MODEL,
+    DEFAULT_EXECUTION_MODEL,
+    PROJECT_ROOT,
+    Settings,
+)
 from vfx_harness.orchestration.revalidation import input_manifest
 
 MODEL_VARIABLES = (
@@ -24,6 +31,22 @@ MODEL_VARIABLES = (
 def _clear(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in MODEL_VARIABLES:
         monkeypatch.delenv(name, raising=False)
+
+
+def test_project_root_is_checkout_root_not_src_directory() -> None:
+    checkout = Path(__file__).resolve().parents[2]
+
+    assert checkout == PROJECT_ROOT
+    assert (PROJECT_ROOT / "pyproject.toml").is_file()
+
+
+def test_non_checkout_layout_requires_explicit_env_file(tmp_path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("ANTHROPIC_API_KEY=secret\n", encoding="utf-8")
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+
+    assert config.environment_file() is None
+    assert config.environment_file(env_file) == env_file
 
 
 def test_default_lane_uses_sonnet_execution_and_opus_critic(monkeypatch):

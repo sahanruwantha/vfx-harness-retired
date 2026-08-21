@@ -1984,7 +1984,7 @@ def main():
     check("plan repair gets Edit directly", "Edit" in _allow and "Edit" not in _deny)
     check("plan repair cannot delegate mechanical edits", {"Task", "Agent"} <= set(_deny))
     _allow, _deny = _planner_tool_policy(False)
-    check("draft and verify cannot mutate existing artifacts", "Edit" in _deny)
+    check("draft and verify can patch their transaction", "Edit" in _allow and "Edit" not in _deny)
     _budget = _CheckBatchBudget()
     check("two exploratory single checks are allowed", _budget.take_single() and _budget.take_single())
     check("a third single check is redirected to batching", not _budget.take_single())

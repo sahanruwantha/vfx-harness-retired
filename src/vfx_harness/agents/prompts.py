@@ -250,6 +250,7 @@ WORKFLOW, in order:
            "plan": "plans/01_<name>/<NN_unit>.md", "depends_on": [],
            "mutates": {"mode": "scoped", "roles": ["<semantic role>"],
                        "controls": ["<semantic control>"],
+                       "control_roles": {"<semantic control>": ["<governed mutable role>"]},
                        "script_spans": ["build/units/01_<name>/01_<bounded_unit>.py"]},
            "protects": {"selector": "all_active_upstream_interfaces",
                         "resolve_to_explicit_ids_at": "freeze"},
@@ -317,7 +318,11 @@ WORKFLOW, in order:
    (b) SHOT-ROOT `acceptance.json` — §4 verbatim, in TIME order. Judged ONCE over the finished
    chain by the accept stage, never during the build:
      [{"id": "M1", "frame": <n>, "ref": "refs/<file>", "reads": "<what must read>",
-       "strip": [<frames>], "fingerprint": "<measured expectation>"}, …]
+       "strip": [<frames>], "fingerprint": {"metric_set": "vfx-harness.look-vector/v1",
+       "values": {"exposure_mean": 42.1, "structure_top": 18.3,
+       "halation": 12.7}}}, …]
+   Copy metric ids and values exactly from measure_ref's canonical fingerprint. Never
+   rename a metric in prose or attach a value to a different metric implementation.
    Every §4 moment appears exactly once. Strip frames must cover the FULL build range
    with no unjudged gap >24 frames.
 
@@ -392,7 +397,13 @@ WORKFLOW, in order:
    `smooth_fraction`, `radial_inward_fraction`, `object_property`, `material_count`,
    `material_user_count`, `material_assignment_fraction`, `node_count`,
    `node_socket_value`, `node_link_count`, `animation_count`, `compositor_enabled`, and
-   `control_render_response`.
+   `control_render_response`; temporal kinds are `onset_order`,
+   `radial_distance_trend`, `transform_return_delta`, and rendered `frame_delta`.
+   Temporal kinds declare `frames: [start, end]`. `onset_order` also declares
+   `compare_roles`; `transform_return_delta` declares `component` as location, rotation,
+   or scale. A unit declaring `temporal_evidence: "motion"` must bind at least one of
+   these exact contract ids. A camera/composition/framing owner should bind a bbox contract
+   at every judge frame against semantic proxy roles.
    Node kinds (`node_count`, `node_socket_value`, `node_link_count`) additionally require
    `graph`: `material`, `compositor`, or `world`. A material graph requires semantic
    `material_roles`; node selection uses semantic `node_roles` (not object `roles`).
@@ -596,6 +607,10 @@ creating a missing companion artifact. Before finishing, re-read every edited sp
 sure each changed check still carries the exact proof returned by measure_checks.
 `{draft}` is an immutable snapshot and evidence source: NEVER edit it. Apply the minimal
 changes to the working `plans/global.md` and its existing machine-readable companions.
+When a finding is one instance of a repeated structural pattern, sweep every sibling
+instance before stopping. Then call the read-only `run_gate` tool; iterate the bounded
+gate→fix→gate loop in this same warm session until it is clean or the tool reports a
+genuinely different blocker. Do not spend a new model round rediscovering the same pattern.
 
 {findings}
 

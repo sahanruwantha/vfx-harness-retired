@@ -472,7 +472,21 @@ def load(path: Path) -> list[Check]:
             raise ValueError(f"{row.get('id')}: focus.crop must be a normalized TOP-LEFT box")
         if not str(focus.get("reason") or "").strip():
             raise ValueError(f"{row.get('id')}: focus.reason is required")
-    return [Check.from_dict(d) for d in rows]
+    checks = [Check.from_dict(d) for d in rows]
+    for check in checks:
+        if check.metric not in METRICS:
+            raise ValueError(f"{check.id}: unknown metric {check.metric!r}; known: {sorted(METRICS)}")
+        if check.stage not in STAGES:
+            raise ValueError(f"{check.id}: stage must be one of {STAGES}")
+        if not check.ref:
+            raise ValueError(f"{check.id}: ref is required")
+        # Resolve operand names now; a missing region should return to the planner's warm
+        # session rather than surface during the first build evaluation.
+        regions = _metric_regions(check.metric, check.regions)
+        missing = [key for key in METRICS[check.metric][0] if key not in regions]
+        if missing:
+            raise ValueError(f"{check.id}: metric {check.metric!r} needs regions {missing}")
+    return checks
 
 
 def layer_evidence(

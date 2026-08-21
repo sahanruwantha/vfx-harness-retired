@@ -9,7 +9,8 @@ filenames, timestamps, or a scan of the shot directory.
 ```text
 shots/<shot>/
   brief.md, refs/              authored inputs
-  plans/, *.json contracts     current planning authority
+  plans/current.json           atomically selected immutable plan generation
+  plans/, *.json contracts     temporary authoring compatibility surface
   build/, shot.json            accepted build and milestone ledger
   state/                        durable operational state shared across runs
   runs/                         generated output, isolated by invocation
@@ -33,6 +34,7 @@ runs/
       cost.jsonl
     reports/
       summary.json
+      plan_gate.json
       layers/layer-<id>.json
     evidence/
       renders/
@@ -54,6 +56,17 @@ sorted catalog with path, category, size, and media type. `reports/summary.json`
 semantic digest. `latest.json` is a small pointer, not a symlink, so it works across platforms and
 copied evaluation fixtures.
 
+For planning runs, `reports/plan_gate.json` is the terminal deterministic authority. Its outcome,
+blocking count, and report path are repeated in `status.json` and the summary so readers can decide
+whether to open the full finding set without rerunning the gate.
+
+A clean untagged planning run also stores a content-addressed plan bundle under its
+`checkpoints/plans/bundles/` directory and atomically updates `plans/current.json`. The pointer
+names the producing run, bundle path, aggregate hash, and gate outcome. Bundle-aware readers verify
+every member hash and fail closed on a malformed pointer. During the ADR-0004 migration, existing
+build consumers still read the shot-root compatibility files; the pointer is the durable
+publication record but does not yet make those legacy reads transactional.
+
 ## Reader protocol
 
 1. Read `runs/latest.json`, or select a run with `vfx inspect --run <id>`.
@@ -72,6 +85,8 @@ copied evaluation fixtures.
   not repeat the shot ID, run ID, stage, and category already encoded by parent directories.
 - Publish JSON atomically. Append-only JSONL is reserved for event streams and queues.
 - Put resumable accepted state in `checkpoints/`; put disposable intermediary files in `scratch/`.
+- Put immutable plan bundles and repair-input snapshots under `checkpoints/plans/`; never write
+  shot-global `plans/global.roundN.md` snapshots.
 - Put cross-run state needed by a later invocation under `state/`, never under a prior run.
 - Refresh the artifact index and summary before publishing a terminal status.
 

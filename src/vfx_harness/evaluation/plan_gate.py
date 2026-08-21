@@ -55,6 +55,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from vfx_harness.domain.work_units import read_document
@@ -129,6 +130,12 @@ def _planned_outputs(folder: Path) -> set[str]:
         s = lay.get("script")
         if s:
             out.add(str(s).replace("\\", "/").lstrip("./"))
+        # Work-unit plans are scheduled deliverables. They are deliberately absent until
+        # their dependency frontier becomes ready, so citing the declared path as future
+        # work is not a dead evidence citation.
+        for unit in lay.get("stages") or []:
+            if isinstance(unit, dict) and unit.get("plan"):
+                out.add(str(unit["plan"]).replace("\\", "/").lstrip("./"))
     return out
 
 
@@ -165,6 +172,38 @@ class GateResult:
         Two rounds with the same signature means the repair pass changed nothing that
         matters, and continuing just pays for the same answer again."""
         return "|".join(sorted(f"{f.check}:{f.where}:{f.what[:60]}" for f in self.findings))
+
+    def to_dict(self, *, outcome: str | None = None) -> dict:
+        """The reusable authority record; terminal readers need not rerun the gate."""
+        return {
+            "schema": "vfx-harness.plan-gate/v1",
+            "shot": self.shot,
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "clean": self.clean,
+            "outcome": outcome or ("clean" if self.clean else "dirty"),
+            "blocking_count": len(self.blocking),
+            "warning_count": len(self.findings) - len(self.blocking),
+            "stats": self.stats,
+            "signature": self.signature(),
+            "findings": [
+                {
+                    "check": finding.check,
+                    "severity": "blocking" if finding.blocking else "warning",
+                    "where": finding.where,
+                    "what": finding.what,
+                    **({"fix": finding.fix} if finding.fix else {}),
+                }
+                for finding in self.findings
+            ],
+        }
+
+
+def write_report(folder: Path, result: GateResult, *, outcome: str) -> Path:
+    """Persist final gate authority in the active structured run."""
+    layout = run_artifacts.active(folder)
+    if layout is None:
+        raise RuntimeError("plan-gate report requires an active structured run")
+    return layout.write_report("plan_gate", result.to_dict(outcome=outcome))
 
 
 def _builder_render(folder: Path, c) -> Path | None:
@@ -359,6 +398,16 @@ def _check_grounded(folder: Path) -> tuple[list[Finding], dict]:
         if "error" in mo:
             out.append(Finding("grounded", True, f"{mo['id']}", mo["error"]))
             continue
+        for error in mo.get("schema_errors", []):
+            out.append(
+                Finding(
+                    "grounded",
+                    True,
+                    f"{mo['id']} fingerprint",
+                    error,
+                    "copy the canonical metric_set and metric ids returned by measure_ref",
+                )
+            )
         for r in mo["claims"]:
             if r["verdict"] == "MISMATCH":
                 out.append(
@@ -382,7 +431,7 @@ def _check_grounded(folder: Path) -> tuple[list[Finding], dict]:
                         "it converges on nothing and spends its whole budget doing so",
                     )
                 )
-    return out, {"claims": rec["n_claims"], "grounded": rec["n_ok"]}
+    return out, {"fingerprint_claims": rec["n_claims"], "grounded": rec["n_ok"]}
 
 
 def _check_citations(folder: Path, plan: str) -> tuple[list[Finding], dict]:
@@ -670,7 +719,30 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                                 "add the frame to the layer judge list or move the contract",
                             )
                         )
+            for temporal_frame in row.get("frames") or []:
+                if active in layer_frames and temporal_frame not in layer_frames[active]:
+                    out.append(
+                        Finding(
+                            "contracts",
+                            True,
+                            rid,
+                            f"temporal frame {temporal_frame} is not judged by activation layer {active}",
+                            "every temporal endpoint is a real judge frame; add it to the layer and unit judge lists",
+                        )
+                    )
     closure_claims = 0
+    dependency_findings = _check_unit_dependencies(folder)
+    if dependency_findings:
+        # Hierarchy already reports every invalid edge with a targeted repair. Claim
+        # closure cannot be evaluated until those edges are fixed, and repeating the
+        # typed loader's first exception here only adds a duplicate partial finding.
+        return out, {
+            "layers": len(layers),
+            "axes": len(axis_keys),
+            "moments": len(accept),
+            "scene_checks": len(scene_rows),
+            "claims": 0,
+        }
     try:
         from vfx_harness.evidence.claim_evidence import validate_claim_closure
         from vfx_harness.orchestration.ledger import load_layers
@@ -702,6 +774,183 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
         "scene_checks": len(scene_rows),
         "claims": closure_claims,
     }
+
+
+def _check_unit_dependencies(folder: Path) -> list[Finding]:
+    """Report every layer-local dependency that names no unit in its own layer.
+
+    This intentionally runs before the typed loader. It does not replace schema or cycle
+    validation; it makes one common structural failure exhaustive instead of allowing the
+    loader's first exception to hide identical failures in later layers.
+    """
+    try:
+        layers = read_document(folder / "layers.json")
+    except (OSError, ValueError):
+        return []
+
+    findings: list[Finding] = []
+    for layer_index, layer in enumerate(layers):
+        stages = layer.get("stages")
+        if not isinstance(stages, list):
+            continue
+        known = {
+            str(stage.get("id"))
+            for stage in stages
+            if isinstance(stage, dict) and str(stage.get("id") or "").strip()
+        }
+        for stage_index, stage in enumerate(stages):
+            if not isinstance(stage, dict) or not isinstance(stage.get("depends_on", []), list):
+                continue
+            unit_id = str(stage.get("id") or f"stages[{stage_index}]")
+            missing = sorted(
+                {
+                    str(dep)
+                    for dep in stage.get("depends_on", [])
+                    if isinstance(dep, str) and dep not in known
+                }
+            )
+            if not missing:
+                continue
+            findings.append(
+                Finding(
+                    "hierarchy",
+                    True,
+                    f"layers.json.layers[{layer_index}].stages.{unit_id}",
+                    f"depends on unknown units: {', '.join(missing)}",
+                    "depends_on is layer-local; remove cross-layer ids because accepted "
+                    "layer order and protected interfaces already carry that dependency",
+                )
+            )
+    return findings
+
+
+def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
+    """Check temporal, composition, and mutation ownership coverage across contracts."""
+    from vfx_harness.domain.contracts import load_document
+    from vfx_harness.evidence.scene_checks import TEMPORAL_KINDS
+
+    try:
+        layers = read_document(folder / "layers.json")
+    except (OSError, ValueError):
+        return [], {}
+    try:
+        scene_rows = load_document(folder / "scene_checks.json", "contracts")
+    except (OSError, ValueError, json.JSONDecodeError):
+        scene_rows = []
+    try:
+        image_rows = load_document(folder / "checks.json", "checks")
+    except (OSError, ValueError, json.JSONDecodeError):
+        image_rows = []
+
+    out: list[Finding] = []
+    temporal_ids = {
+        str(row.get("id"))
+        for row in scene_rows
+        if isinstance(row, dict) and row.get("kind") in TEMPORAL_KINDS | {"frame_delta"}
+    }
+    bbox_kinds = {
+        "bbox_width",
+        "bbox_height",
+        "bbox_center_x",
+        "bbox_center_y",
+        "bbox_top_y",
+        "bbox_bottom_y",
+    }
+    composition_tokens = ("camera", "composition", "framing", "staging")
+
+    motion_units = 0
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        lid = str(layer.get("id") or "")
+        owns = [str(axis).lower() for axis in layer.get("owns") or []]
+        judges = [
+            int(row["frame"])
+            for row in layer.get("judge") or []
+            if isinstance(row, dict) and isinstance(row.get("frame"), int)
+        ]
+        if any(token in axis for axis in owns for token in composition_tokens):
+            for frame in judges:
+                covered = any(
+                    isinstance(row, dict)
+                    and row.get("kind") in bbox_kinds
+                    and str(row.get("activates_at") or "") == lid
+                    and row.get("frame") == frame
+                    for row in scene_rows
+                )
+                if not covered:
+                    out.append(
+                        Finding(
+                            "composition-coverage",
+                            False,
+                            f"layer {lid} judge f{frame}",
+                            "camera/composition owner has no projected bounding-box contract",
+                            "bind bbox width and/or centre to a semantic proxy role at this judge frame",
+                        )
+                    )
+        for unit in layer.get("stages") or []:
+            if not isinstance(unit, dict):
+                continue
+            uid = str(unit.get("id") or "<missing>")
+            evaluation = unit.get("evaluation") or {}
+            if evaluation.get("temporal_evidence") == "motion":
+                motion_units += 1
+                bound = {
+                    str(binding.get("id"))
+                    for claim in evaluation.get("claims") or []
+                    if isinstance(claim, dict)
+                    for binding in claim.get("evidence") or []
+                    if isinstance(binding, dict) and binding.get("kind") == "scene_contract"
+                }
+                if not bound & temporal_ids:
+                    out.append(
+                        Finding(
+                            "temporal-coverage",
+                            True,
+                            f"layer {lid} unit {uid}",
+                            "declares temporal_evidence='motion' but binds no temporal executable contract",
+                            "bind onset_order, radial_distance_trend, transform_return_delta, or frame_delta evidence",
+                        )
+                    )
+            mutates = unit.get("mutates") or {}
+            controls = {str(value) for value in mutates.get("controls") or []}
+            mapping = mutates.get("control_roles")
+            if controls and not mapping:
+                out.append(
+                    Finding(
+                        "ownership",
+                        False,
+                        f"layer {lid} unit {uid}",
+                        f"declares {len(controls)} mutable control(s) without control_roles mapping",
+                        "map each control to the semantic roles it governs so scope coherence is checkable",
+                    )
+                )
+
+    fault_owners = [
+        str(row.get("fault_owner") or "") for row in image_rows if isinstance(row, dict)
+    ]
+    owner_layers = {
+        str(row.get("owner_layer") or "") for row in image_rows if isinstance(row, dict)
+    }
+    if len(fault_owners) >= 4:
+        counts = {owner: fault_owners.count(owner) for owner in set(fault_owners)}
+        concentrated, count = max(counts.items(), key=lambda item: item[1])
+        final_layer = str(layers[-1].get("id") or "") if layers and isinstance(layers[-1], dict) else ""
+        if (
+            concentrated
+            and count / len(fault_owners) >= 0.9
+            and (len(owner_layers) >= 2 or concentrated == final_layer)
+        ):
+            out.append(
+                Finding(
+                    "ownership",
+                    False,
+                    "checks.json fault_owner distribution",
+                    f"{count}/{len(fault_owners)} image checks route failures to layer {concentrated}",
+                    "separate activation from fault ownership and route each failure to the earliest answerable layer",
+                )
+            )
+    return out, {"motion_units": motion_units, "temporal_contracts": len(temporal_ids)}
 
 
 def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
@@ -750,6 +999,13 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
                 "repair the JSONL record; invalid feedback cannot be ignored",
             )
         )
+    dependency_findings = _check_unit_dependencies(folder)
+    if dependency_findings:
+        # ``load_layers`` raises on the first invalid layer. Returning its exception
+        # here would force one paid repair round per layer for the same repeated defect.
+        # The raw dependency pass is exhaustive, so one repair brief can fix the whole
+        # document before typed loading and claim closure resume.
+        return [*out, *dependency_findings], {"unit_plans_required": 0, "layers_passed": 0}
     try:
         layers = load_layers(load_shot(folder))
     except Exception as exc:
@@ -881,6 +1137,7 @@ def run(folder: Path, plan_name: str = "plans/global.md", *, require_scene_check
         _check_citations(folder, plan),
         _check_evidence(folder, plan),
         _check_contracts(folder, require_scene_checks=require_scene_checks),
+        _check_evidence_coherence(folder),
     ):
         res.findings += finds
         res.stats.update(stats)
@@ -894,7 +1151,7 @@ def report(res: GateResult) -> str:
     s = res.stats
     if s:
         lines.append(
-            f"   {s.get('grounded', 0)}/{s.get('claims', 0)} fingerprint claims reproduce · "
+            f"   {s.get('grounded', 0)}/{s.get('fingerprint_claims', 0)} fingerprint claims reproduce · "
             f"{s.get('citations_live', 0)}/{s.get('citations', 0)} citations resolve · "
             + (
                 f"{s['checks']} executable checks ({s.get('checks_unadversaried', 0)} without a named adversary) · "

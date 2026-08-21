@@ -51,6 +51,23 @@ from dataclasses import dataclass
 
 from PIL import Image
 
+METRIC_SET = "vfx-harness.look-vector/v1"
+FINGERPRINT_KEYS = (
+    "exposure_mean",
+    "clipped_pct",
+    "black_pct",
+    "band_mean_top",
+    "structure_top",
+    "band_mean_mid",
+    "structure_mid",
+    "band_mean_bot",
+    "structure_bot",
+    "hot_core",
+    "halation",
+    "detail",
+    "points",
+)
+
 # metric -> (relative tolerance, blocking?, human hint about which direction is "more")
 SPEC: dict[str, tuple[float, bool, str]] = {
     "exposure_mean":     (0.30, True,  "overall brightness"),
@@ -208,6 +225,7 @@ def look_vector(img: Image.Image | str, width: int = 960) -> dict[str, float]:
                            ("bot", (2 * H // 3, H))):
         vals = [gp[x, y] for y in range(y0, y1, 2) for x in range(0, W, 2)]
         m = sum(vals) / max(len(vals), 1)
+        out[f"band_mean_{name}"] = m
         out[f"structure_{name}"] = (sum((v - m) ** 2 for v in vals) / max(len(vals), 1)) ** 0.5
 
     # aniso_top: vertical vs horizontal gradient energy in the upper band.
@@ -329,6 +347,15 @@ def look_vector(img: Image.Image | str, width: int = 960) -> dict[str, float]:
             _VEC_CACHE.pop(next(iter(_VEC_CACHE)))     # plain FIFO; refs are few
         _VEC_CACHE[key] = dict(vec)
     return vec
+
+
+def canonical_fingerprint(img: Image.Image | str) -> dict:
+    """A typed reference fingerprint produced by the one canonical metric registry."""
+    values = look_vector(img)
+    return {
+        "metric_set": METRIC_SET,
+        "values": {key: values[key] for key in FINGERPRINT_KEYS if key in values},
+    }
 
 
 # Below this absolute difference a metric gap is noise, whatever the ratio says.
