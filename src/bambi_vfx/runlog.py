@@ -74,6 +74,8 @@ def summary(rec: dict) -> str:
     """The block printed at the end of a layer — everything I used to grep for."""
     h = rec.get("hooks", {})
     def _canonical_mark(c: dict) -> str:
+        if c.get("contract_gap"):
+            return "◇contract-gap"
         if c.get("judge_conflict"):
             return "⚠judge-conflict"
         if c.get("decided_by") == "pixel_reproduction":

@@ -205,8 +205,8 @@ def main():
         _semantic_ratio["a"] == _semantic_ratio["orb_high"] and _semantic_ratio["b"] == _semantic_ratio["orb_low"],
     )
     check(
-        "critic schema classifies the evidence behind every issue",
-        "issue_evidence" in _critic_schema([("camera", "frame")])["required"],
+        "critic schema requires typed observations",
+        "observations" in _critic_schema([("camera", "frame")])["required"],
     )
     _focus_schema = _critic_schema([("camera", "frame")])
     check(
@@ -322,48 +322,63 @@ def main():
     )
     check("passing axes and near-full-frame fishing cannot trigger focus renders", not _bad_focus, str(_bad_focus))
     _panel_audit = _audit_panel_citations(
-        {"issue_evidence": [{"issue_index": 0, "panel_ids": ["shown", "invented"]}]}, [{"id": "shown"}]
+        {"observations": [{"id": "rib", "panel_ids": ["shown", "invented"]}]}, [{"id": "shown"}]
     )
     check(
         "a critic cannot cite a focus panel it was never shown",
-        _panel_audit["issue_evidence"][0]["panel_ids"] == ["shown"]
+        _panel_audit["observations"][0]["panel_ids"] == ["shown"]
         and _panel_audit["invalid_panel_citations"][0]["panel_ids"] == ["invented"],
         str(_panel_audit),
     )
 
     print("\n[critic evidence overrides invented measurements]")
-    _pass_evidence = [{"id": "bbox_ring", "pass": True}]
+    def _observation(*, kind="measurable", claim_id="layout.ring_width", check_ids=None, action="enlarge it"):
+        return {
+            "id": "ring-width",
+            "kind": kind,
+            "axis": "layout",
+            "property": "ring_width",
+            "observation": "ring is only 0.11 W",
+            "action": action,
+            "moment": 1,
+            "roles": ["hero.ring"],
+            "claim_id": claim_id,
+            "check_ids": list(check_ids or []),
+            "panel_ids": [],
+        }
+
+    _bindings = {"layout.ring_width": frozenset({"bbox_ring"})}
+    _pass_evidence = [{"id": "bbox_ring", "pass": True, "authoritative": True}]
     _claimed = {
         "pass": False,
-        "issues": ["[check:bbox_ring] ring is only 0.11 W; enlarge it"],
-        "issue_evidence": [{"issue_index": 0, "kind": "measurable", "check_ids": ["bbox_ring"]}],
+        "observations": [_observation(check_ids=["bbox_ring"])],
     }
-    _filtered = _filter_critic_issues(_claimed, _pass_evidence)
+    _filtered = _filter_critic_issues(_claimed, _pass_evidence, claim_bindings=_bindings)
     check(
         "a measurable claim contradicting a PASS cannot trigger repair",
         not _filtered["issues"] and _filtered["judge_conflict"] and len(_filtered["contradicted_issues"]) == 1,
         str(_filtered),
     )
-    _misclassified = _filter_critic_issues(
+    _uncovered = _filter_critic_issues(
         {
             "pass": False,
-            "issues": ["ring is 0.11 W; scale up 1.5x"],
-            "issue_evidence": [{"issue_index": 0, "kind": "visual", "check_ids": []}],
+            "observations": [_observation(claim_id=None, check_ids=[])],
         },
         _pass_evidence,
+        claim_bindings=_bindings,
     )
     check(
-        "numeric geometry prose cannot bypass evidence by self-labelling as visual",
-        not _misclassified["issues"] and _misclassified["judge_conflict"],
-        str(_misclassified),
+        "an uncovered measurable defect becomes a contract gap rather than a fake contradiction",
+        not _uncovered["issues"] and _uncovered["contract_gap"] and not _uncovered.get("judge_conflict"),
+        str(_uncovered),
     )
     _failed = _filter_critic_issues(
         {
             "pass": False,
-            "issues": ["[check:bbox_ring] ring is too small; enlarge it"],
-            "issue_evidence": [{"issue_index": 0, "kind": "measurable", "check_ids": ["bbox_ring"]}],
+            "observations": [_observation(check_ids=["bbox_ring"])],
         },
-        [{"id": "bbox_ring", "pass": False}],
+        [{"id": "bbox_ring", "pass": False, "authoritative": True}],
+        claim_bindings=_bindings,
     )
     check(
         "a measurable claim backed by a FAIL remains actionable",
@@ -373,23 +388,30 @@ def main():
     _visual = _filter_critic_issues(
         {
             "pass": False,
-            "issues": ["rib silhouette reads as a seam"],
-            "issue_evidence": [{"issue_index": 0, "kind": "visual", "check_ids": []}],
+            "observations": [
+                _observation(
+                    kind="qualitative",
+                    claim_id="layout.ring_width",
+                    check_ids=[],
+                    action="separate the silhouette",
+                )
+            ],
         },
         _pass_evidence,
+        claim_bindings=_bindings,
+        qualified_claims={"layout.ring_width"},
     )
-    check("qualitative visual criticism remains actionable", _visual["issues"])
+    check("qualified qualitative criticism remains actionable", _visual["issues"])
     _full_rubric = _filter_critic_issues(
         {
             "pass": False,
-            "issues": ["subject appears undersized"],
-            "issue_evidence": [{"issue_index": 0, "kind": "measurable", "check_ids": []}],
+            "observations": [_observation(claim_id=None, check_ids=[])],
         },
         None,
     )
     check(
-        "full-rubric calls without a layer evidence card retain their issues",
-        _full_rubric["issues"] and not _full_rubric.get("judge_conflict"),
+        "full-rubric measurable defects without evidence remain explicit gaps",
+        _full_rubric["contract_gap"] and not _full_rubric["issues"],
     )
     _gated = _apply_evidence_gate(
         {"pass": True, "issues": [], "scores": {"layout": 4}},
@@ -938,10 +960,27 @@ def main():
                 "id": "1",
                 "script": "build/01_layout.py",
                 "judges": ((1, "ref.png"),),
+                "stages": (type("Unit", (), {"plan": "plans/01_layout.md"})(),),
             },
         )()
+        (_evroot / "plans").mkdir(exist_ok=True)
+        (_evroot / "plans" / "01_layout.md").write_text("unit plan\n", encoding="utf-8")
         (_evroot / "layers.json").write_text(
-            json.dumps([{"id": "1", "script": "build/01_layout.py"}]), encoding="utf-8"
+            json.dumps(
+                {
+                    "schema": 4,
+                    "layers": [
+                        {
+                            "id": "1",
+                            "script": "build/01_layout.py",
+                            "primary_judge": 1,
+                            "judge": [{"frame": 1, "ref": "ref.png"}],
+                            "stages": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
         )
         _m1 = _input_manifest(_evroot, _fake_layer, blender_version="5.2")
         (_evroot / "runtime_checks.json").write_text("[]\n", encoding="utf-8")
@@ -1132,7 +1171,66 @@ def main():
 
     (_lab / "critic_axes.json").write_text('[{"key": "lighting", "desc": "d"}]')
     (_lab / "acceptance.json").write_text("[]")
-    (_lab / "layers.json").write_text('[{"id": "1", "owns": ["lighting", "typo_axis"], "judge": []}]')
+    (_lab / "layers.json").write_text(
+        json.dumps(
+            {
+                "schema": 4,
+                "layers": [
+                    {
+                        "id": "1",
+                        "script": "build/01_test.py",
+                        "title": "test",
+                        "primary_judge": 1,
+                        "owns": ["lighting", "typo_axis"],
+                        "reads": "test",
+                        "judge": [{"frame": 1, "ref": "ref.png"}],
+                        "stages": [
+                            {
+                                "id": "complete",
+                                "title": "complete",
+                                "plan": "plans/01_test.md",
+                                "depends_on": [],
+                                "mutates": {
+                                    "mode": "scoped",
+                                    "roles": [],
+                                    "controls": [],
+                                    "script_spans": ["build/01_test.py"],
+                                },
+                                "protects": {
+                                    "selector": "all_active_upstream_interfaces",
+                                    "resolve_to_explicit_ids_at": "freeze",
+                                },
+                                "evaluation": {
+                                    "primary_judge": 1,
+                                    "judge": [{"frame": 1, "ref": "ref.png"}],
+                                    "temporal_evidence": "none",
+                                    "claims": [
+                                        {
+                                            "id": "test.contracts",
+                                            "proposition": "contracts pass",
+                                            "axis": "lighting",
+                                            "property": "illumination",
+                                            "subject_roles": ["hero"],
+                                            "subject_controls": [],
+                                            "moments": [1],
+                                            "kind": "atomic",
+                                            "required": True,
+                                            "authority": "executable_required",
+                                            "repair_owner": "complete",
+                                            "evidence": [
+                                                {"kind": "scene_contract", "id": "bad-scene-check"}
+                                            ],
+                                        }
+                                    ],
+                                },
+                                "completion": "all_required_claims_and_protected_contracts_pass",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
     _f, _ = _pg._check_contracts(_lab)
     check(
         "a layer owning an axis the rubric lacks is blocking",
@@ -1491,7 +1589,8 @@ def main():
     )
     check(
         "REPAIR_SCRIPT can patch but cannot replace",
-        "Edit" in _repair_opts.allowed_tools and "Write" in _repair_opts.disallowed_tools,
+        "Edit" in _repair_opts.allowed_tools
+        and {"Write", "Glob"} <= set(_repair_opts.disallowed_tools),
     )
     check(
         "critic has enough structured-output protocol headroom",

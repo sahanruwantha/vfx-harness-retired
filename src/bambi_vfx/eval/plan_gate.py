@@ -37,7 +37,7 @@ The checks, each free and each with a known-bad fixture in the test suite:
                   numbers are real; this asks whether the checks can fail anything. Both are
                   needed: this plan scored 95/95 on grounding while carrying a check its own
                   plate cannot pass. See checks.py — the contract, re-run by the gate.
-    contracts     plans/global.md, the next just-in-time layer plan, layers.json,
+    contracts     plans/global.md, the next just-in-time work-unit plan, layers.json,
                   acceptance.json, critic_axes.json and live-scene
                   contracts must agree: an axis a layer OWNS must exist in the rubric,
                   every ref must be real, and a scene fact must belong to a frame/axis its
@@ -57,6 +57,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..work_units import read_document
 from . import grounding as _grounding
 
 # A path-looking token in the plan prose. Two shapes, because plans cite both ways and a
@@ -118,8 +119,8 @@ def _planned_outputs(folder: Path) -> set[str]:
     the plan itself made rather than a convention this file assumes.
     """
     try:
-        layers = json.loads((folder / "layers.json").read_text())
-    except (OSError, json.JSONDecodeError):
+        layers = read_document(folder / "layers.json")
+    except (OSError, ValueError):
         return set()
     out = set()
     for lay in layers:
@@ -298,11 +299,11 @@ def _check_coverage(folder: Path) -> tuple[list[Finding], dict]:
     checked against its OWN render and the state before it ran.
     """
     try:
-        layers = json.loads((folder / "layers.json").read_text())
+        layers = read_document(folder / "layers.json")
         from ..contracts import load_document
 
         specs = load_document(folder / "checks.json", "checks")
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return [], {}
     if not layers:
         return [], {}
@@ -503,10 +504,10 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
             )
         ], {}
     try:
-        layers = json.loads((folder / "layers.json").read_text())
+        layers = read_document(folder / "layers.json")
         axes = json.loads((folder / "critic_axes.json").read_text())
         accept = json.loads((folder / "acceptance.json").read_text())
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, json.JSONDecodeError, ValueError) as e:
         return [Finding("contracts", True, "plan artifacts", f"unreadable: {e}")], {}
 
     axis_keys = {a["key"] for a in axes}
@@ -652,14 +653,48 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                                 "add the frame to the layer judge list or move the contract",
                             )
                         )
-    return out, {"layers": len(layers), "axes": len(axis_keys), "moments": len(accept), "scene_checks": len(scene_rows)}
+    closure_claims = 0
+    try:
+        from ..claim_evidence import validate_claim_closure
+        from ..ledger import load_layers
+
+        parsed_layers = tuple(load_layers(type("ShotRoot", (), {"folder": folder})()).values())
+        closure_claims = sum(
+            len(unit.evaluation.claims)
+            for layer in parsed_layers
+            for unit in layer.stages
+        )
+        closure = validate_claim_closure(folder, parsed_layers)
+        for finding in closure.findings:
+            out.append(
+                Finding(
+                    "claim-closure",
+                    True,
+                    finding.where,
+                    finding.what,
+                    "bind the atomic claim to exact typed evidence, or declare qualified "
+                    "qualitative/human authority; aggregate 'all checks pass' claims are invalid",
+                )
+            )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        out.append(Finding("claim-closure", True, "layers.json", f"unreadable claim graph: {exc}"))
+    return out, {
+        "layers": len(layers),
+        "axes": len(axis_keys),
+        "moments": len(accept),
+        "scene_checks": len(scene_rows),
+        "claims": closure_claims,
+    }
 
 
 def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
-    """Require the next executable layer plan and validate the feedback ledger."""
+    """Require plans for dependency-ready units and validate the feedback ledger."""
     from ..brief import load_shot
-    from ..layer_plans import layer_plan_path, load_amendments
+    from ..layer_plans import load_amendments, work_unit_plan_path
     from ..ledger import load_layers
+    from ..unit_state import load as load_unit_state
+    from ..unit_state import validate_current
+    from ..work_units import ready_units
 
     out: list[Finding] = []
     legacy = folder / "plan.md"
@@ -669,9 +704,9 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
                 "hierarchy",
                 True,
                 "plan.md",
-                "legacy monolithic plan coexists with strict layer plans and can poison builder retrieval",
+                "legacy monolithic plan coexists with strict work-unit plans and can poison builder retrieval",
                 "archive it outside the shot folder; strict planning has no compatibility "
-                "fallback and builders consume only plans/<layer>.md",
+                "fallback and builders consume only schema-declared unit plans",
             )
         )
     global_path = folder / "plans" / "global.md"
@@ -737,38 +772,67 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
     next_layer = next((layer for lid, layer in layers.items() if lid not in passed), None)
     required = 0
     if next_layer is not None:
-        required = 1
-        path = layer_plan_path(folder, next_layer)
-        if not path.is_file():
+        try:
+            state = load_unit_state(folder, str(next_layer.id))
+            validate_current(state, str(next_layer.id), next_layer.stages)
+        except ValueError as exc:
             out.append(
                 Finding(
                     "hierarchy",
                     True,
-                    str(path.relative_to(folder)),
-                    f"next unpassed layer {next_layer.id} has no just-in-time plan",
-                    f"run `bambi plan {folder} --layer {next_layer.id}`",
+                    f"logs/work_units/layer_{next_layer.id}.json",
+                    str(exc),
+                    "apply a transactional replan; stale unit state cannot authorize execution",
                 )
             )
-        else:
-            plan_text = path.read_text(encoding="utf-8", errors="replace").strip()
-            if len(plan_text) < 200:
-                out.append(
-                    Finding(
-                        "hierarchy", True, str(path.relative_to(folder)), "layer plan is too small to be executable"
-                    )
+            return out, {"unit_plans_required": 0, "layers_passed": len(passed)}
+        unit_passed = {
+            uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
+        }
+        ready = ready_units(next_layer.stages, unit_passed)
+        required = len(ready)
+        if not ready:
+            out.append(
+                Finding(
+                    "hierarchy",
+                    True,
+                    f"layer {next_layer.id} work-unit DAG",
+                    "no work unit is ready although the layer has not passed",
+                    "resolve a blocked dependency or apply a transactional replan",
                 )
-            elif plan_text.count("\n") + 1 > 160:
+            )
+        for unit in ready:
+            path = work_unit_plan_path(folder, unit)
+            if not path.is_file():
                 out.append(
                     Finding(
                         "hierarchy",
                         True,
                         str(path.relative_to(folder)),
-                        "layer plan exceeds the strict 160-line execution-index limit",
-                        "move evidence/history into machine contracts and sealed outcomes; "
-                        "keep only scope, controls, tickets, contract ids, and the stop rule",
+                        f"ready unit {next_layer.id}.{unit.id} has no just-in-time plan",
+                        f"run `bambi plan {folder} --layer {next_layer.id} --unit {unit.id}`",
                     )
                 )
-    return out, {"layer_plans_required": required, "layers_passed": len(passed)}
+            else:
+                plan_text = path.read_text(encoding="utf-8", errors="replace").strip()
+                if len(plan_text) < 200:
+                    out.append(
+                        Finding(
+                            "hierarchy", True, str(path.relative_to(folder)), "unit plan is too small to be executable"
+                        )
+                    )
+                elif plan_text.count("\n") + 1 > 160:
+                    out.append(
+                        Finding(
+                            "hierarchy",
+                            True,
+                            str(path.relative_to(folder)),
+                            "unit plan exceeds the strict 160-line execution-index limit",
+                            "move evidence/history into machine contracts and sealed outcomes; "
+                            "keep only scope, controls, tickets, contract ids, and the stop rule",
+                        )
+                    )
+    return out, {"unit_plans_required": required, "layers_passed": len(passed)}
 
 
 def run(folder: Path, plan_name: str = "plans/global.md", *, require_scene_checks: bool = False) -> GateResult:

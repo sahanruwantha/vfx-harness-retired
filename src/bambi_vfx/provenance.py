@@ -1,6 +1,6 @@
 """What a plan was derived from, and whether it still matches.
 
-Plan artifacts (`plans/global.md`, strict layer plans, and the machine contracts) carry no record
+Plan artifacts (`plans/global.md`, strict work-unit plans, and the machine contracts) carry no record
 of the brief they came from. Two failures follow. Editing brief.md leaves a stale plan
 with nothing saying it no longer matches its source — and this pipeline's whole contract
 is that the plan encodes the brief, so a silent divergence there mis-specifies every
@@ -35,17 +35,28 @@ CORE_ARTIFACTS = (
 
 def _artifact_names(folder: Path) -> tuple[str, ...]:
     """Return the strict plan surface; legacy plan.md is intentionally ignored."""
+    from .work_units import WorkUnit, read_document
+
     names = list(CORE_ARTIFACTS)
     try:
-        layers = json.loads((folder / "layers.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        layers = read_document(folder / "layers.json")
+    except (OSError, ValueError):
         layers = []
-    for row in layers:
-        script = Path(str(row.get("script", ""))).stem
-        if script:
-            rel = f"plans/{script}.md"
-            if (folder / rel).is_file():
-                names.append(rel)
+    for layer_index, row in enumerate(layers):
+        for unit_index, raw_unit in enumerate(row.get("stages") or []):
+            try:
+                unit = WorkUnit.parse(
+                    raw_unit,
+                    f"layers.json.layers[{layer_index}].stages[{unit_index}]",
+                )
+            except ValueError:
+                continue
+            if (folder / unit.plan).is_file():
+                names.append(unit.plan)
+            for claim in unit.evaluation.claims:
+                artifact = (claim.qualification or {}).get("artifact")
+                if artifact and (folder / artifact).is_file():
+                    names.append(artifact)
     if (folder / "plan_amendments.jsonl").is_file():
         names.append("plan_amendments.jsonl")
     return tuple(dict.fromkeys(names))

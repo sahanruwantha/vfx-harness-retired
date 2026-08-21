@@ -381,14 +381,16 @@ _LOOK_METRICS = {
 
 def _layer_feedback_policy(shot_dir: Path | None, layer_id: str | None) -> dict:
     """Derive comparison advice from the axes this layer can actually change."""
+    from ..work_units import read_document
+
     axes: list[str] = []
     if shot_dir and layer_id and (shot_dir / "layers.json").is_file():
         try:
-            for row in json.loads((shot_dir / "layers.json").read_text(encoding="utf-8")):
+            for row in read_document(shot_dir / "layers.json"):
                 if str(row.get("id")) == str(layer_id):
                     axes = [str(axis).lower() for axis in (row.get("owns") or [])]
                     break
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             axes = []
     from ..build_prompts import axis_feedback_groups
 
@@ -1750,6 +1752,7 @@ RESULT={{'before':before,'after':float(socket.default_value),'node':nodes[0].nam
     )
     async def propose_checks(args):
         from ..checks import Check, verify_necessity
+        from ..work_units import read_document
 
         if not shot_dir:
             return _text("propose_checks needs a shot dir", is_error=True)
@@ -1775,12 +1778,13 @@ RESULT={{'before':before,'after':float(socket.default_value),'node':nodes[0].nam
         judge: dict[int, str] = {}
         first_ref = ""
         try:
-            for lay in json.loads((root / "layers.json").read_text()):
+            for lay in read_document(root / "layers.json"):
                 if str(lay.get("id")) != str(layer_id):
                     continue
                 js = lay.get("judge") or []
                 judge = {int(j["frame"]): j["ref"] for j in js if j.get("ref")}
-                first_ref = js[0].get("ref", "") if js else ""
+                primary = lay.get("primary_judge")
+                first_ref = next((j.get("ref", "") for j in js if j.get("frame") == primary), "")
         except Exception as e:
             return _text(f"could not read judge refs from layers.json: {str(e)[:100]}", is_error=True)
         kept, lines = [], []

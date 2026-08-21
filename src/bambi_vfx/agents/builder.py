@@ -1,7 +1,7 @@
 """Stage 3 — the build + critic loop for one PLAN LAYER.
 
 A BUILD agent drives a warm Blender session (run_bpy / render_*) to implement one
-layer from its strict `plans/<layer>.md` ticket (the execution spec), iterating against a reference-scored
+layer from its strict schema-declared work-unit ticket (the execution spec), iterating against a reference-scored
 CRITIC until the layer's judge frame clears the bar. On pass it persists the layer's
 deterministic delta script (build/NN_<layer>.py); the harness re-runs the whole chain
 from an empty scene to confirm it reproduces — the scripts, not the live scene, are
@@ -16,12 +16,14 @@ from __future__ import annotations
 import argparse
 import base64
 import difflib
+import hashlib
 import io
 import json
 import os
 import re
 import shutil
 import time
+from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 
@@ -53,8 +55,9 @@ from ..build_prompts import (
     recurring_complaints,
     revision_prompt,
 )
+from ..claim_evidence import Observation, append_gap_record, reconcile_observations
 from ..compare_panels import save_focus_sheet, validate_crop
-from ..config import PROJECT_ROOT, Settings, load_environment
+from ..config import DEFAULT_CRITIC_MODEL, DEFAULT_EXECUTION_MODEL, PROJECT_ROOT, Settings, load_environment
 from ..escalate import unanswered_for_layer
 from ..guardrails import builder_hooks, distiller_hooks
 from ..layer_state import record_round as state_round
@@ -78,7 +81,7 @@ from ..runlog import write as write_run
 from ..sandbox import sandbox_hooks
 from ..shot_context import clear_layer_context, write_layer_context
 
-MODEL = "claude-opus-5"
+MODEL = DEFAULT_EXECUTION_MODEL
 # The critic scores renders and runs 3-4x per layer to the builder's one session, so it
 # dominates layer cost. It was fable-5 on that reasoning; it is opus-5 now because the
 # verdict is the pipeline's only measure of quality and a cheaper judge is a false economy
@@ -88,7 +91,7 @@ MODEL = "claude-opus-5"
 # were MEASURED ON FABLE-5. They are the wrong constants for this judge until re-measured
 # (`python -m bambi_vfx.evals variance <shot>`). Until then the panel is being convened on
 # a noise estimate that belongs to a different model.
-CRITIC_MODEL = "claude-opus-5"
+CRITIC_MODEL = DEFAULT_CRITIC_MODEL
 _FOCUS_RENDER_LOCK = anyio.Lock()
 
 AXES_SYSTEM = """\
@@ -180,6 +183,25 @@ class UnpassedPrior(RuntimeError):
     """A layer below this one was never accepted — building on it would compound it."""
 
 
+def builder_model() -> str:
+    """Configured live-builder/axes model; resolved after the CLI loads its environment."""
+    return Settings.from_environment(load_dotenv_file=False).builder_model
+
+
+def script_model() -> str:
+    """Configured finalizer and canonical-repair model."""
+    return Settings.from_environment(load_dotenv_file=False).script_model
+
+
+def critic_model() -> str:
+    """Configured authoritative visual judge model."""
+    return Settings.from_environment(load_dotenv_file=False).critic_model
+
+
+def distiller_model() -> str:
+    return Settings.from_environment(load_dotenv_file=False).distiller_model
+
+
 def _prior_layer_paths(shot: Shot, layer, *, force: bool = False) -> list[Path]:
     """Layer scripts that must run before this layer: all EXISTING build/NN_*.py with a
     lower numeric prefix, in order. Each layer stacks on the ones before it.
@@ -263,11 +285,11 @@ def _run_prior_paths(session: BlenderSession, paths: list[Path]) -> list[str]:
     return names
 
 
-def _plan_layer_excerpt(shot: Shot, layer) -> str:
+def _plan_layer_excerpt(shot: Shot, layer, unit=None) -> str:
     """The layer's just-in-time execution plan; giant-plan fallback is forbidden."""
-    from ..layer_plans import read_layer_plan
+    from ..layer_plans import read_layer_plan, read_work_unit_plan
 
-    return read_layer_plan(shot.folder, layer)
+    return read_work_unit_plan(shot.folder, layer, unit) if unit is not None else read_layer_plan(shot.folder, layer)
 
 
 def _preamble(shot: Shot) -> str:
@@ -302,7 +324,7 @@ def _builder_options(
     ticket_context: str | None = None,
 ) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
-        model=MODEL,
+        model=builder_model(),
         system_prompt=builder_system(
             axes,
             recipe_index(context=ticket_context) if ticket_context is not None else recipe_index(),
@@ -358,7 +380,7 @@ def _script_options(shot: Shot, *, mode: str, script_rel: str) -> ClaudeAgentOpt
     finalize = mode == "finalize"
     phase = {"mode": mode}
     return ClaudeAgentOptions(
-        model=MODEL,
+        model=script_model(),
         system_prompt=_SCRIPT_SYSTEM,
         cwd=str(shot.folder),
         hooks=builder_hooks(shot.folder, [shot.folder], script_rel=script_rel, phase=phase),
@@ -366,7 +388,7 @@ def _script_options(shot: Shot, *, mode: str, script_rel: str) -> ClaudeAgentOpt
         disallowed_tools=(
             ["Edit", "Bash", "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"]
             if finalize
-            else ["Write", "Bash", "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"]
+            else ["Write", "Glob", "Bash", "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"]
         ),
         permission_mode="bypassPermissions",
         setting_sources=[],
@@ -378,28 +400,34 @@ def _script_options(shot: Shot, *, mode: str, script_rel: str) -> ClaudeAgentOpt
 
 
 async def _run_script_agent(shot: Shot, *, mode: str, script_rel: str, prompt: str, verbose: bool) -> dict:
-    """Run one phase-pure file session and return its terminal SDK accounting."""
-    info = {"subtype": "unknown", "turns": 0, "cost": 0.0, "session_id": None, "tokens": {}}
-    async for message in query(prompt=prompt, options=_script_options(shot, mode=mode, script_rel=script_rel)):
-        if verbose:
-            log_message(message)
-        elif isinstance(message, ResultMessage):
-            costlog.record(message)
-        if isinstance(message, ResultMessage):
-            usage = getattr(message, "usage", None) or {}
-            info = {
-                "session_id": getattr(message, "session_id", None),
-                "subtype": getattr(message, "subtype", "unknown"),
-                "turns": getattr(message, "num_turns", 0) or 0,
-                "cost": getattr(message, "total_cost_usd", None) or 0.0,
-                "tokens": usage if isinstance(usage, dict) else {},
-            }
-    return info
+    """Run one phase-pure file session and return its terminal SDK accounting.
+
+    ``query()`` is deliberately not used here.  On ``error_max_turns`` its subprocess
+    raises after yielding the terminal result, which used to escape the canonical repair
+    transaction after Edit had already mutated the artifact.  A streaming client keeps
+    the same narrow session alive across the checkpoint, just as the live builder does.
+    """
+    async with ClaudeSDKClient(options=_script_options(shot, mode=mode, script_rel=script_rel)) as agent:
+        await agent.query(prompt)
+        info = await _drain_once(agent, verbose)
+        if info["subtype"] == "error_max_turns":
+            log(
+                f"⏸ {mode} agent hit its turn checkpoint ({info['turns']} turns) — "
+                "continuing once to finish the in-progress artifact operation",
+                1,
+            )
+            await agent.query(
+                f"MODE remains {mode.upper()}_SCRIPT. Continue from the exact file state "
+                "you just left. Do not discover more files or broaden the repair. Finish "
+                f"the smallest necessary operation on `{script_rel}`, summarize it, and stop."
+            )
+            info = await _drain_once(agent, verbose)
+        return info
 
 
 def _axes_options(shot: Shot) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
-        model=MODEL,
+        model=builder_model(),
         system_prompt=AXES_SYSTEM,
         cwd=str(shot.folder),
         hooks=sandbox_hooks(shot.folder, cwd=shot.folder),
@@ -433,31 +461,49 @@ def _critic_schema(
                 "required": [k for k, _ in axes],
                 "additionalProperties": False,
             },
-            "issues": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 4,
-                "description": "Blocking actions only for axes scored below 3. Empty when "
-                "the verdict passes. Describe visible evidence before the "
-                "action; do not invent exact Blender parameters.",
-            },
-            "issue_evidence": {
+            "observations": {
                 "type": "array",
                 "maxItems": 4,
                 "items": {
                     "type": "object",
                     "properties": {
-                        "issue_index": {"type": "integer", "minimum": 0, "maximum": 3},
-                        "kind": {"type": "string", "enum": ["visual", "measurable"]},
+                        "id": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["qualitative", "measurable"]},
+                        "axis": {"type": "string", "enum": [k for k, _ in axes]},
+                        "property": {"type": "string"},
+                        "observation": {"type": "string"},
+                        "action": {"type": "string"},
+                        "moment": {
+                            "type": "integer",
+                            **({"enum": sorted(set(focus_frames))} if focus_frames else {"minimum": 1}),
+                        },
+                        "roles": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                        },
+                        "claim_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                         "check_ids": {"type": "array", "items": {"type": "string"}},
                         "panel_ids": {"type": "array", "items": {"type": "string"}},
                     },
-                    "required": ["issue_index", "kind", "check_ids", "panel_ids"],
+                    "required": [
+                        "id",
+                        "kind",
+                        "axis",
+                        "property",
+                        "observation",
+                        "action",
+                        "moment",
+                        "roles",
+                        "claim_id",
+                        "check_ids",
+                        "panel_ids",
+                    ],
                     "additionalProperties": False,
                 },
-                "description": "One classification per issue. Exact dimensions, counts "
-                "and positions are measurable and require a failed check id; "
-                "qualitative appearance is visual.",
+                "description": "One typed observation for each axis scored below 3. "
+                "Bind planned defects to one exact claim and its evidence ids. Use a null "
+                "claim_id only for a coverage defect absent from the supplied claim manifest.",
             },
             "focus_requests": {
                 "type": "array",
@@ -509,7 +555,7 @@ def _critic_schema(
             },
             "reference_note": {"type": "string", "description": "one line; required when unusable"},
         },
-        "required": ["scores", "issues", "issue_evidence", "focus_requests", "reference_usable", "reference_note"],
+        "required": ["scores", "observations", "focus_requests", "reference_usable", "reference_note"],
         "additionalProperties": False,
     }
 
@@ -526,7 +572,7 @@ def _critic_options(
     # layers of machinery that existed only to police the old tool loop: the sandbox
     # redirect for critic reads, the request/result id pairing, and the blind-critic guard.
     return ClaudeAgentOptions(
-        model=CRITIC_MODEL,
+        model=critic_model(),
         system_prompt=CRITIC_SYSTEM,
         cwd=str(shot.folder),
         allowed_tools=[],
@@ -648,9 +694,17 @@ _MOTION_AXIS_WORDS = (
 
 
 def _axes_need_motion(axes: list[tuple[str, str]]) -> bool:
-    """A motion strip is useful only when an owned axis can score temporal behavior."""
+    """Legacy-free helper for unlayered acceptance/eval calls only.
+
+    Staged layers use their explicit ``temporal_evidence`` policy.  This heuristic remains
+    for acceptance milestones, which do not have work-unit manifests.
+    """
     text = " ".join(f"{key} {description}" for key, description in axes).lower()
     return any(word in text for word in _MOTION_AXIS_WORDS)
+
+
+def _layer_needs_motion(layer) -> bool:
+    return getattr(layer, "temporal_evidence", None) == "motion"
 
 
 def _evidence_convergence_stop(layer, verdict: dict) -> bool:
@@ -717,7 +771,7 @@ async def distill_recipe(
     log(f"distilling reusable recipes from {' + '.join(what)}…")
     repo = PROJECT_ROOT
     options = ClaudeAgentOptions(
-        model=MODEL,
+        model=distiller_model(),
         system_prompt=DISTILL_SYSTEM,
         cwd=str(repo),
         hooks=distiller_hooks(RECIPES_DIR, shot.folder, cwd=repo),
@@ -1189,66 +1243,114 @@ def _required_focus_requests(shot: Shot, layer_id: str, frame: int, axes: list[t
     return requests
 
 
-_CHECK_TAG = re.compile(r"^\s*\[check:([^\]]+)\]\s*", re.IGNORECASE)
-_MEASURABLE_CLAIM = re.compile(
-    r"(?:\b\d+(?:\.\d+)?\s*(?:%|px\b|[wh]\b|x\b)|"
-    r"\b(?:width|height|diameter|radius|scale(?:d|\s+up|\s+down)?|enlarge|shrink|"
-    r"segments?|object\s+count|shade[- ]smooth|smooth\s+shading|normals?|"
-    r"cent(?:er|re)(?:ed)?\s+at|position(?:ed)?\s+at)\b)",
-    re.IGNORECASE,
-)
+def _claim_context(
+    shot: Shot, m: Milestone, *, enabled: bool
+) -> tuple[list[dict], dict[str, frozenset[str]], set[str]]:
+    """Return only claims that are active at this exact judge moment.
 
-
-def _filter_critic_issues(verdict: dict, evidence: list[dict] | None) -> dict:
-    """Keep visual issues, but require machine support for measurable ones.
-
-    Repeating a vision call cannot cure a systematic dimension hallucination.  The
-    beacon-wake panel twice called a 0.1634-W ring 0.11-W even though the target band was
-    0.160-0.180.  A measurable prescription now needs a failed executable check; a
-    missing id or a cited PASS becomes a recorded judge conflict, never builder work.
+    The critic sees a read-only manifest.  It may point at a claim, but only the harness
+    resolves that claim to evidence and decides whether repair is authorized.
     """
-    enforce_evidence = evidence is not None
-    facts = {str(e.get("id")): e for e in (evidence or []) if e.get("id")}
-    meta = {
-        int(m.get("issue_index", -1)): m
-        for m in (verdict.get("issue_evidence") or [])
-        if isinstance(m, dict) and isinstance(m.get("issue_index"), int)
+    if not enabled:
+        return [], {}, set()
+    milestone_parts = str(m.id).split("@", 1)
+    layer_id = milestone_parts[0]
+    unit_id = milestone_parts[1] if len(milestone_parts) == 2 and not milestone_parts[1].startswith("f") else None
+    try:
+        layer = load_layers(shot)[layer_id]
+    except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
+        return [], {}, set()
+    claims, bindings, qualified = [], {}, set()
+    for unit in layer.stages:
+        if unit_id is not None and unit.id != unit_id:
+            continue
+        for claim in unit.evaluation.claims:
+            if int(m.frame) not in claim.moments:
+                continue
+            claims.append(
+                {
+                    "id": claim.id,
+                    "proposition": claim.proposition,
+                    "axis": claim.axis,
+                    "property": claim.property,
+                    "roles": list(claim.subject_roles),
+                    "controls": list(claim.subject_controls),
+                    "authority": claim.authority,
+                    "evidence_ids": list(claim.binding_ids),
+                }
+            )
+            bindings[claim.id] = frozenset(claim.binding_ids)
+            if claim.authority == "qualified_qualitative_required":
+                qualified.add(claim.id)
+    return claims, bindings, qualified
+
+
+def _filter_critic_issues(
+    verdict: dict,
+    evidence: list[dict] | None,
+    *,
+    claim_bindings: dict[str, frozenset[str]] | None = None,
+    qualified_claims: set[str] | None = None,
+) -> dict:
+    """Reconcile typed critic observations against exact claim/evidence bindings.
+
+    A passing check is a contradiction only for the property that explicitly owns it.
+    An uncovered measurable defect is a plan defect (``contract_gap``), never an
+    instruction for the builder to make an unplanned scene mutation.
+    """
+    parsed, parse_errors = [], []
+    for index, raw in enumerate(verdict.get("observations") or []):
+        try:
+            parsed.append(Observation.parse(raw, f"observations[{index}]"))
+        except ValueError as exc:
+            parse_errors.append({"state": "protocol_error", "reason": str(exc), "observation": raw})
+    if not verdict.get("pass") and not parsed and not parse_errors:
+        parse_errors.append(
+            {
+                "state": "protocol_error",
+                "reason": "a failing scorecard must include at least one typed observation",
+                "observation": {},
+            }
+        )
+    if verdict.get("pass") and parsed:
+        parse_errors.append(
+            {
+                "state": "protocol_error",
+                "reason": "a passing scorecard must not include blocking observations",
+                "observation": {},
+            }
+        )
+    reconciled = reconcile_observations(
+        parsed,
+        evidence or [],
+        claim_bindings=claim_bindings,
+        qualified_claims=qualified_claims or set(),
+    )
+    rows = reconciled["observations"] + parse_errors
+    by_state = {
+        state: [row for row in rows if row.get("state") == state]
+        for state in ("actionable", "contradicted", "contract_gap", "unverified_qualitative", "protocol_error")
     }
-    original = list(verdict.get("issues") or [])
-    kept, contradicted = [], []
-    for index, issue in enumerate(original):
-        text = str(issue)
-        m = meta.get(index, {})
-        ids = [str(x) for x in (m.get("check_ids") or [])]
-        tag = _CHECK_TAG.match(text)
-        if tag and tag.group(1) not in ids:
-            ids.append(tag.group(1))
-        # Classification is not delegated entirely to the judge.  The beacon critic
-        # labelled a numerical "0.11 W; scale up 1.5x" prescription as ordinary visual
-        # prose, which would bypass the evidence rule if its self-report were trusted.
-        # A visible residual can still survive by describing the read and a non-geometric
-        # fix (separation/light), while explicit dimension/state prescriptions are facts.
-        textual_measurement = bool(_MEASURABLE_CLAIM.search(text))
-        kind = "measurable" if tag or textual_measurement else (m.get("kind") or "visual")
-        # Full-shot acceptance currently supplies its own metric report rather than a
-        # layer evidence card. Preserve those critic issues; the strict citation rule is
-        # for layer calls where the harness explicitly passed a card (even an empty one).
-        if kind != "measurable" or not enforce_evidence:
-            kept.append(text)
-            continue
-        failed = [cid for cid in ids if cid in facts and not facts[cid].get("pass")]
-        if failed:
-            kept.append(text)
-            continue
-        cited_pass = [cid for cid in ids if cid in facts and facts[cid].get("pass")]
-        reason = f"cites passing check(s) {', '.join(cited_pass)}" if cited_pass else "has no failed executable check"
-        contradicted.append({"issue": text, "check_ids": ids, "reason": reason})
-    verdict["issues"] = kept
-    verdict["contradicted_issues"] = contradicted
-    # A sub-pass score with no surviving reason is not actionable evidence. Preserve the
-    # score for audit, but route it to a cheap re-judge/human instead of a repair agent.
-    if not verdict.get("pass") and not kept and (contradicted or not original):
-        verdict["judge_conflict"] = True
+    verdict["observation_reconciliation"] = rows
+    verdict["issues"] = [
+        str(row["observation"]["action"])
+        for row in by_state["actionable"]
+    ]
+    verdict["contradicted_issues"] = [
+        {
+            "issue": row["observation"]["observation"],
+            "check_ids": row.get("check_ids", []),
+            "reason": row["reason"],
+        }
+        for row in by_state["contradicted"]
+    ]
+    verdict["contract_gaps"] = by_state["contract_gap"]
+    verdict["unverified_observations"] = by_state["unverified_qualitative"]
+    verdict["protocol_errors"] = by_state["protocol_error"]
+    verdict["contract_gap"] = bool(by_state["contract_gap"])
+    verdict["needs_human"] = bool(by_state["unverified_qualitative"])
+    if not verdict.get("pass") and not verdict["issues"]:
+        verdict["judge_conflict"] = bool(by_state["contradicted"] or by_state["protocol_error"])
     return verdict
 
 
@@ -1256,13 +1358,13 @@ def _audit_panel_citations(verdict: dict, focus_panels: list[dict] | None) -> di
     """Keep focus provenance honest; a model cannot cite a panel it was not shown."""
     valid = {str(panel.get("id")) for panel in (focus_panels or []) if panel.get("id")}
     invalid = []
-    for meta in verdict.get("issue_evidence") or []:
+    for index, meta in enumerate(verdict.get("observations") or []):
         if not isinstance(meta, dict):
             continue
         cited = [str(panel_id) for panel_id in (meta.get("panel_ids") or [])]
         bad = [panel_id for panel_id in cited if panel_id not in valid]
         if bad:
-            invalid.append({"issue_index": meta.get("issue_index"), "panel_ids": bad})
+            invalid.append({"observation_index": index, "observation_id": meta.get("id"), "panel_ids": bad})
         meta["panel_ids"] = [panel_id for panel_id in cited if panel_id in valid]
     verdict["invalid_panel_citations"] = invalid
     return verdict
@@ -1447,18 +1549,23 @@ async def _critique(
     review_mode: str = "observer",
     focus_panels: list[dict] | None = None,
     motion_evidence: tuple[str, list[int]] | None = None,
+    allow_motion: bool | None = None,
     focus_frames: list[int] | tuple[int, ...] | set[int] | None = None,
 ) -> dict:
     motion_rel, motion_frames = motion_evidence or (None, None)
-    if motion_rel is None and shot.frontmatter.get("type") == "motion" and shot.frames > 1 and _axes_need_motion(axes):
+    wants_motion = _axes_need_motion(axes) if allow_motion is None else allow_motion
+    if motion_rel is None and shot.frontmatter.get("type") == "motion" and shot.frames > 1 and wants_motion:
         try:  # a motion strip so motion/finish axes are judged across frames, not a still
             stem = candidate_rel.split("/")[-1].split(".")[0]
             motion_rel, motion_frames = _stash_motion_strip(session, shot, m, stem)
         except Exception as e:
             log(f"motion strip skipped: {str(e)[:80]}", 1)
     focus_references = _focus_references(shot, m, focus_frames)
+    claim_manifest, claim_bindings, qualified_claims = _claim_context(
+        shot, m, enabled=scope is not None
+    )
     log(
-        f"critic[{CRITIC_MODEL}]: scoring {candidate_rel} vs {m.ref}"
+        f"critic[{critic_model()}]: scoring {candidate_rel} vs {m.ref}"
         + (f" (+motion {motion_frames})" if motion_rel else ""),
         1,
     )
@@ -1471,6 +1578,7 @@ async def _critique(
         motion_frames,
         scope,
         evidence=evidence,
+        claims=claim_manifest,
         review_mode=review_mode,
         focus_panels=focus_panels,
         focus_frames=sorted(focus_references),
@@ -1520,7 +1628,7 @@ async def _critique(
                 "text": f"CONTEXT ONLY — the best PREVIOUS attempt at this frame, "
                 f"which scored {prior_mean}. Do NOT score this image. Use it "
                 f"to say whether the candidate improved or regressed, and "
-                f"note in `issues` anything the previous attempt got right "
+                f"record as a typed observation anything the previous attempt got right "
                 f"that the candidate has lost:",
             },
             _image_block(shot.folder / prior_rel),
@@ -1534,7 +1642,12 @@ async def _critique(
         acc = {}
         try:
             critic_role = "focus_critic" if review_mode == "focus_review" else "critic"
-            with costlog.scoped(role=critic_role, phase=review_mode, frame=getattr(m, "frame", None)):
+            with costlog.scoped(
+                role=critic_role,
+                phase=review_mode,
+                frame=getattr(m, "frame", None),
+                model=critic_model(),
+            ):
                 async for message in query(
                     prompt=_one_user_message(blocks),
                     options=_critic_options(
@@ -1559,7 +1672,12 @@ async def _critique(
         raise BlenderError(f"critic returned no verdict for {m.id} after 3 attempts")
     verdict = _verdict(acc.get("structured") or _extract_json(acc["text"]))
     verdict = _audit_panel_citations(verdict, focus_panels)
-    verdict = _filter_critic_issues(verdict, evidence)
+    verdict = _filter_critic_issues(
+        verdict,
+        evidence,
+        claim_bindings=claim_bindings if scope is not None else None,
+        qualified_claims=qualified_claims,
+    )
     verdict = _apply_evidence_gate(verdict, evidence)
     verdict["evidence"] = evidence or []
     # A PASS followed by six urgent "fix" bullets is internally inconsistent and was a
@@ -1587,6 +1705,16 @@ async def _critique(
         log(f"· fix: {issue}", 2)
     for item in verdict.get("contradicted_issues", [])[:6]:
         log(f"· discarded measurable claim: {item['issue']} ({item['reason']})", 2)
+    for item in verdict.get("contract_gaps", [])[:6]:
+        observation = item.get("observation", {})
+        log(
+            f"· contract gap: {observation.get('property')}: "
+            f"{observation.get('observation')} ({item.get('reason')})",
+            2,
+        )
+    for item in verdict.get("unverified_observations", [])[:6]:
+        observation = item.get("observation", {})
+        log(f"· unverified qualitative observation: {observation.get('observation')}", 2)
     if verdict.get("judge_conflict"):
         log("⚠ critic score has no evidence-backed blocking issue — judge conflict", 1)
     # The judge's answer is what every control decision downstream hangs on, and it was
@@ -1600,7 +1728,7 @@ async def _critique(
         frame=m.frame,
         candidate=candidate_rel,
         ref=m.ref,
-        model=CRITIC_MODEL,
+        model=critic_model(),
         mean=verdict.get("mean"),
         verdict="pass" if verdict.get("pass") else "revise",
         decided_by=verdict.get("decided_by", "critic"),
@@ -1611,6 +1739,12 @@ async def _critique(
         reference_unusable=bool(verdict.get("reference_unusable")),
         issues=verdict.get("issues", []),
         contradicted_issues=verdict.get("contradicted_issues", []),
+        observations=verdict.get("observations", []),
+        observation_reconciliation=verdict.get("observation_reconciliation", []),
+        contract_gaps=verdict.get("contract_gaps", []),
+        contract_gap=bool(verdict.get("contract_gap")),
+        unverified_observations=verdict.get("unverified_observations", []),
+        protocol_errors=verdict.get("protocol_errors", []),
         invalid_panel_citations=verdict.get("invalid_panel_citations", []),
         judge_conflict=bool(verdict.get("judge_conflict")),
         evidence=evidence or [],
@@ -1675,7 +1809,14 @@ def _needs_critic_panel(verdict: dict) -> bool:
     second critic to look at the same pixels cannot turn that failed contract into a pass;
     it only duplicates cost and creates another transient-failure point.
     """
-    return not verdict.get("reference_unusable") and verdict.get("decided_by") != "checks" and _borderline(verdict)
+    return (
+        not verdict.get("reference_unusable")
+        and verdict.get("decided_by") != "checks"
+        and not verdict.get("contract_gap")
+        and not verdict.get("needs_human")
+        and not verdict.get("protocol_errors")
+        and _borderline(verdict)
+    )
 
 
 def _round_rank(verdict: dict | None) -> tuple[bool, float]:
@@ -1711,13 +1852,14 @@ async def _judge(
     critic_kw.pop("review_mode", None)
     critic_kw.pop("focus_panels", None)
     motion_evidence = critic_kw.pop("motion_evidence", None)
+    allow_motion = critic_kw.pop("allow_motion", None)
     motion_frames_override = critic_kw.pop("motion_frames_override", None)
     focus_frames_override = critic_kw.pop("focus_frames_override", None)
     if (
         motion_evidence is None
         and shot.frontmatter.get("type") == "motion"
         and shot.frames > 1
-        and _axes_need_motion(axes)
+        and (_axes_need_motion(axes) if allow_motion is None else allow_motion)
     ):
         try:
             stem = candidate_rel.split("/")[-1].split(".")[0]
@@ -1750,6 +1892,7 @@ async def _judge(
         review_mode="observer",
         focus_panels=focus_panels or None,
         motion_evidence=motion_evidence,
+        allow_motion=allow_motion,
         focus_frames=focus_frames_override,
         **critic_kw,
     )
@@ -1787,6 +1930,7 @@ async def _judge(
                 review_mode="focus_review",
                 focus_panels=focus_panels,
                 motion_evidence=motion_evidence,
+                allow_motion=allow_motion,
                 focus_frames=focus_frames_override,
                 **critic_kw,
             )
@@ -1817,6 +1961,7 @@ async def _judge(
             review_mode=mode,
             focus_panels=focus_panels or None,
             motion_evidence=motion_evidence,
+            allow_motion=allow_motion,
             focus_frames=focus_frames_override,
             **critic_kw,
         )
@@ -1839,6 +1984,10 @@ async def _judge(
         if p["pass"] == agreed:
             out["issues"], out["scores"] = p.get("issues", []), p.get("scores", {})
             out["contradicted_issues"] = p.get("contradicted_issues", [])
+            out["contract_gaps"] = p.get("contract_gaps", [])
+            out["contract_gap"] = bool(p.get("contract_gap"))
+            out["unverified_observations"] = p.get("unverified_observations", [])
+            out["protocol_errors"] = p.get("protocol_errors", [])
             break
     agreeing = [p for p in panel if p["pass"] == agreed]
     out["judge_conflict"] = bool(not agreed and agreeing and all(p.get("judge_conflict") for p in agreeing))
@@ -2193,7 +2342,8 @@ def _try_revalidate(
 
 def _retry_warm_start(previous_status: str, script_path: Path) -> bool:
     """Whether a fresh retry should replay its last artifact into the warm scene."""
-    return previous_status in {"failed", "judge_conflict", "truncated", "in_progress"} and script_path.is_file()
+    retryable = {"failed", "judge_conflict", "contract_gap", "truncated", "in_progress"}
+    return previous_status in retryable and script_path.is_file()
 
 
 async def build_unit(
@@ -2208,6 +2358,9 @@ async def build_unit(
     plan_excerpt: str = "",
     scope: str | None = None,
     layer=None,
+    active_unit=None,
+    publish_layer: bool = True,
+    report_layer=None,
     resume_ok: bool = False,
 ) -> Ledger:
     """The build+critic engine for ONE unit of work. Iteration is judged at m.frame vs
@@ -2217,6 +2370,7 @@ async def build_unit(
     previous_status = str(previous_slot.get("status") or "")
     retry_script = shot.folder / script_rel
     warm_start_candidate = _retry_warm_start(previous_status, retry_script)
+    ledger._slot(m)["script"] = script_rel
     ledger.begin(m)
     t_layer = time.monotonic()
 
@@ -2323,6 +2477,7 @@ async def build_unit(
         layer=str(getattr(layer, "id", m.id)),
         run_id=RUN_ID,
         attempt=_attempt,
+        model=builder_model(),
     )
     _tpath = transcript.bind(shot.folder, "build", label=f"layer{getattr(layer, 'id', m.id)}", run_id=RUN_ID)
     if _tpath:
@@ -2379,7 +2534,7 @@ async def build_unit(
             layer=getattr(layer, "id", m.id),
             judges=[[f, r] for f, r in (layer.judges if layer else ())],
             owns=list(getattr(layer, "owns", ())),
-            model=MODEL,
+            model=builder_model(),
             system_prompt_chars=len(opts.system_prompt or ""),
         )
         await builder.query(_kickoff)
@@ -2439,8 +2594,9 @@ async def build_unit(
                 scope,
                 prior_rel=prior,
                 prior_mean=best["mean"],
-                evidence=evidence,
-                motion_frames_override=_layer_motion_frames(layer, m, shot.frames),
+            evidence=evidence,
+            motion_frames_override=_layer_motion_frames(layer, m, shot.frames),
+            allow_motion=_layer_needs_motion(layer),
             )
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             convergence_stop = _evidence_convergence_stop(layer, verdict)
@@ -2487,7 +2643,11 @@ async def build_unit(
             if plateaued and layer is not None and not reviewed:
                 reviewed = True
                 log(f"plateau ({verdict['mean']} ≤ prev) — escalating to APPROACH REVIEW")
-                with costlog.scoped(role="approach_reviewer", phase="approach_review"):
+                with costlog.scoped(
+                    role="approach_reviewer",
+                    phase="approach_review",
+                    model=Settings.from_environment(load_dotenv_file=False).reviewer_model,
+                ):
                     out = await approach_review(
                         shot,
                         layer,
@@ -2538,7 +2698,7 @@ async def build_unit(
         except Exception as e:  # never block finalize on a nicety
             log(f"journal unavailable ({str(e)[:60]})")
         phase["mode"] = "finalize"
-        with costlog.scoped(role="finalizer", phase="finalize_script"):
+        with costlog.scoped(role="finalizer", phase="finalize_script", model=script_model()):
             fin = await _run_script_agent(
                 shot,
                 mode="finalize",
@@ -2581,8 +2741,8 @@ async def build_unit(
             ledger,
             verbose,
             live_best_mean=best["mean"],
-            live_best_render=(best.get("render") if passed else None),
-            live_best_verdict=(best.get("verdict") if passed else None),
+            live_best_render=best.get("render"),
+            live_best_verdict=best.get("verdict"),
             scope=scope,
             layer=layer,
             out_verdicts=canon_verdicts,
@@ -2621,22 +2781,58 @@ async def build_unit(
             pre_verdicts = list(canon_verdicts or [])
             pre_canonical = canonical
             phase["mode"] = "repair"
-            with costlog.scoped(role="repair", phase="repair_script", repair=attempt):
-                last_info = await _run_script_agent(
-                    shot,
-                    mode="repair",
-                    script_rel=script_rel,
-                    prompt=canonical_repair_prompt(
-                        m,
-                        failed,
-                        script_rel,
-                        holding=holding,
-                        rejected_repairs=rejected_repairs,
-                    ),
-                    verbose=verbose,
+            repair_error = None
+            try:
+                with costlog.scoped(
+                    role="repair", phase="repair_script", repair=attempt, model=script_model()
+                ):
+                    last_info = await _run_script_agent(
+                        shot,
+                        mode="repair",
+                        script_rel=script_rel,
+                        prompt=canonical_repair_prompt(
+                            m,
+                            failed,
+                            script_rel,
+                            holding=holding,
+                            rejected_repairs=rejected_repairs,
+                        ),
+                        verbose=verbose,
+                    )
+            except Exception as exc:
+                # Edit is not atomic with the SDK session: the agent can mutate the file
+                # and then lose its process before yielding a terminal ResultMessage.
+                # Restore before doing anything else so an infrastructure failure can
+                # never leak a half-finished repair into the next run.
+                repair_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+                shutil.copyfile(backup, shot.folder / script_rel)
+                rejected_repairs.append(
+                    f"repair {attempt} was interrupted before validation ({repair_error}); "
+                    "its partial file state was discarded."
                 )
+                log(
+                    f"✗ canonical repair interrupted ({repair_error}) — restored "
+                    f"{script_rel} from its pre-repair snapshot",
+                    1,
+                )
+                if attempt < MAX_CANON_REPAIRS:
+                    continue
+                break
             if last_info["subtype"] in _TRUNCATED:
-                log(f"✗ canonical repair TRUNCATED ({last_info['subtype']}) — stopping here", 1)
+                # A terminal budget/turn result is the non-exceptional form of the same
+                # interrupted transaction.  Never leave the edits in place unverified.
+                shutil.copyfile(backup, shot.folder / script_rel)
+                rejected_repairs.append(
+                    f"repair {attempt} ended at {last_info['subtype']} before canonical "
+                    "validation; its partial file state was discarded."
+                )
+                log(
+                    f"✗ canonical repair TRUNCATED ({last_info['subtype']}) — restored "
+                    f"{script_rel} from its pre-repair snapshot",
+                    1,
+                )
+                if attempt < MAX_CANON_REPAIRS:
+                    continue
                 break
             # Re-verify, then compare against EVERY frame's pre-repair score rather than
             # only the failing ones — see _repair_delta, which owns both judgements (did
@@ -2708,8 +2904,16 @@ async def build_unit(
     # finalize-from-best-snapshot the clean rebuild often outscores every live round:
     # SH G20 rounds 2.67/3.00, canonical 3.67 — previously recorded as a failure).
     ok = canonical == "passed" or (passed and canonical == "reproduced")
-    status = "passed" if ok else ("judge_conflict" if canonical == "judge_conflict" else "failed")
-    if layer is not None:
+    status = (
+        "passed"
+        if ok
+        else "contract_gap"
+        if canonical == "contract_gap"
+        else "judge_conflict"
+        if canonical == "judge_conflict"
+        else "failed"
+    )
+    if layer is not None and publish_layer:
         # The renders are final only now. A builder check authored mid-layer was proven
         # against whatever render existed then, and a later attempt replaced it — three of
         # layer 1's shipped as stale. Re-verify here, where "the render" stops moving,
@@ -2749,7 +2953,7 @@ async def build_unit(
     # Publishing the sealed outcome is part of completion. Marking the ledger first could
     # let a later layer advance with no feedback artifact if the outcome write failed.
     ledger.mark(m, status, best=best)
-    if ok and layer is not None:
+    if ok and layer is not None and publish_layer:
         abl = await _ablate(shot, layer, prior_paths, script_rel, session)
         ledger.record_ablation(m, abl)
         if abl.get("moved"):
@@ -2798,7 +3002,7 @@ async def build_unit(
         attempt_cost = costlog.attempt_totals(shot.folder, run_id=RUN_ID, attempt=int(slot.get("attempt") or 0))
         rec_path = write_run(
             shot.folder,
-            layer if layer is not None else m,
+            (report_layer or layer) if layer is not None else m,
             status=slot.get("status", "?"),
             rounds=[
                 {
@@ -2818,6 +3022,8 @@ async def build_unit(
                     "pass": v["pass"],
                     "decided_by": v.get("decided_by", "critic"),
                     "judge_conflict": bool(v.get("judge_conflict")),
+                    "contract_gap": bool(v.get("contract_gap")),
+                    "contract_gaps": v.get("contract_gaps", []),
                     "evidence": v.get("evidence", []),
                     "focus_requested": v.get("focus_requested", []),
                     "focus_panels": v.get("focus_panels", []),
@@ -2845,12 +3051,18 @@ async def build_unit(
                 "session_id": last_info.get("session_id"),
                 "cost_sessions": attempt_cost["sessions"],
                 "cost_by_role": attempt_cost["by_role"],
+                "models": {
+                    "builder": builder_model(),
+                    "script": script_model(),
+                    "critic": critic_model(),
+                    "reviewer": Settings.from_environment(load_dotenv_file=False).reviewer_model,
+                },
                 # WHICH tools the builder reached for. The four layers that passed
                 # barrel_roll called compare_frame 7-41 times; the one that failed
                 # three times called it 3-5 and measured 17-44 instead. Recovering
                 # that took grepping a console log that no longer exists.
                 "tools": tool_use_summary(
-                    motion_owned=_axes_need_motion(axes),
+                    motion_owned=_layer_needs_motion(layer),
                     automatic_scene_checks=int(snapshot_counts().get("automatic_scene_contract_probe", 0)),
                     look_feedback_applicable=axes_own_look(axes),
                 ),
@@ -2895,15 +3107,61 @@ async def build_layer(
     resume_ok: bool = False,
     force: bool = False,
 ) -> Ledger:
-    """Build one PLAN LAYER: chain lower-numbered layer scripts, implement this layer's
-    tickets (its per-layer plan is the spec), judge at its primary frame/ref."""
-    excerpt = _plan_layer_excerpt(shot, layer)
+    """Execute one layer as its declared dependency-ordered work-unit DAG.
+
+    Each unit receives only its own just-in-time plan, writes one independently replayable
+    artifact, and is judged only on its own claims/moments.  Multi-unit layers publish the
+    layer script only after every unit has sealed and the composed artifact replays cleanly.
+    """
+    from ..contracts import active_for, load_document
+    from ..layer_plans import work_unit_plan_path, write_layer_outcome
+    from ..provenance import atomic_write
+    from ..revalidation import digest
+    from ..unit_state import block_dependents, freeze_checkpoint, initialize, transition
+    from ..unit_state import load as load_unit_state
+    from ..work_units import ready_units
+
+    def artifact_for(unit) -> str:
+        spans = tuple(unit.mutates.script_spans)
+        if len(spans) != 1:
+            raise ValueError(
+                f"layer {layer.id} unit {unit.id} must own exactly one replayable script span; "
+                f"got {list(spans)}"
+            )
+        return spans[0]
+
+    artifacts = [artifact_for(unit) for unit in layer.stages]
+    if len(layer.stages) > 1:
+        if len(set(artifacts)) != len(artifacts):
+            raise ValueError(f"layer {layer.id} work units must own distinct script artifacts")
+        if layer.script in artifacts:
+            raise ValueError(
+                f"layer {layer.id} reserves {layer.script} for the composed layer artifact; "
+                "multi-unit stages must write distinct unit scripts"
+            )
+
+    layers_hash = hashlib.sha256((shot.folder / "layers.json").read_bytes()).hexdigest()
+    initialize(shot.folder, str(layer.id), layer.stages, plan_hash=layers_hash)
+    prior_layers = _prior_layer_paths(shot, layer, force=force)
+    state = load_unit_state(shot.folder, str(layer.id))
+    passed_units = {
+        uid
+        for uid, row in (state.get("units") or {}).items()
+        if row.get("status") == "passed"
+        and (
+            shot.folder / artifact_for(next(unit for unit in layer.stages if unit.id == uid))
+        ).is_file()
+    }
+    unit_artifacts = [artifact_for(unit) for unit in layer.stages if unit.id in passed_units]
+
+    # The layer-level scope remains a boundary statement; each unit adds a narrower
+    # claim/property manifest and its own plan below.
     # EVERY layer is one layer of many, so every layer gets a scope block. Judging any
     # layer on the whole rubric scores it for work later layers do (BR layer G: floor on
     # emissive_finish, which layer F delivers 4 layers later — 2.83 ceiling in two
     # independent builds) and, worse, penalises elements a layer correctly REMOVED
     # (SH G50 @ f300 scored typography_legibility=0; the type hides at f197 by design).
-    done = "\n".join(ln for ln in excerpt.splitlines() if ln.startswith(("**Scope", "**Judge artifact", "**Done")))
+    done = ""
     owned = (
         f"  THIS LAYER OWNS: {', '.join(layer.owns)}.\n"
         f"  The critic receives ONLY those axes and scores every one numerically."
@@ -2940,32 +3198,196 @@ async def build_layer(
             f"layer {layer.id} answers for {len(layer.judges)} frames: "
             + ", ".join(f"f{f} vs {r}" for f, r in layer.judges)
         )
-    try:  # compaction-proof contract, re-injected on every request
-        fps = {}
-        try:
-            from ..ledger import load_milestones
-
-            fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
-        except Exception as e:
-            log(f"! no measured fingerprints in the layer contract: {str(e)[:60]}", 1)
-        p = write_layer_context(shot, layer, load_axes(shot), fps)
-        log(f"layer context → {p.relative_to(shot.folder)} (loaded every request)", 1)
-    except Exception as e:
-        log(f"layer context skipped: {str(e)[:70]}", 1)
     strips = plan_strips(shot)
-    return await build_unit(
+    while len(passed_units) < len(layer.stages):
+        ready = ready_units(layer.stages, passed_units)
+        pending = [unit for unit in ready if unit.id not in passed_units]
+        if not pending:
+            raise RuntimeError(
+                f"layer {layer.id} has no dependency-ready work unit; inspect logs/work_units state"
+            )
+        unit = pending[0]
+        unit_plan_path = work_unit_plan_path(shot.folder, unit)
+        if not unit_plan_path.is_file():
+            from ..agents.planner import generate_layer_plan
+            from ..eval.plan_gate import report as gate_report
+            from ..eval.plan_gate import run as run_plan_gate
+
+            log(f"generating just-in-time plan for dependency-ready unit {layer.id}.{unit.id}")
+            await generate_layer_plan(
+                shot.folder,
+                str(layer.id),
+                unit_id=unit.id,
+                blender=Settings.from_environment().blender_bin,
+            )
+            gated = run_plan_gate(shot.folder)
+            if not gated.clean:
+                raise RuntimeError(
+                    f"generated unit plan {layer.id}.{unit.id} failed the deterministic gate:\n"
+                    + gate_report(gated)
+                )
+        unit_excerpt = _plan_layer_excerpt(shot, layer, unit)
+        unit_axes = tuple(dict.fromkeys(claim.axis for claim in unit.evaluation.claims))
+        unit_judges = tuple((point.frame, point.ref) for point in unit.evaluation.judges)
+        unit_layer = replace(
+            layer,
+            script=artifact_for(unit),
+            title=(layer.title if len(layer.stages) == 1 else f"{layer.title} · {unit.title}"),
+            judges=unit_judges,
+            reads=f"Work unit {unit.id}: " + " ".join(claim.proposition for claim in unit.evaluation.claims),
+            owns=unit_axes,
+            primary_judge=unit.evaluation.primary_judge,
+            stages=(unit,),
+        )
+        unit_ref = next(ref for frame, ref in unit_judges if frame == unit.evaluation.primary_judge)
+        milestone = (
+            layer.as_milestone(strips)
+            if len(layer.stages) == 1
+            else Milestone(
+                f"{layer.id}@{unit.id}",
+                unit.evaluation.primary_judge,
+                unit_ref,
+                unit_layer.reads,
+                strips.get(unit.evaluation.primary_judge, ()),
+            )
+        )
+        current = (load_unit_state(shot.folder, str(layer.id)).get("units") or {}).get(unit.id, {})
+        if current.get("status") == "blocked":
+            transition(shot.folder, str(layer.id), unit.id, "planning", reason="dependency closure is now passed")
+        elif current.get("status") == "pending":
+            transition(shot.folder, str(layer.id), unit.id, "planning", reason="unit became dependency-ready")
+        transition(shot.folder, str(layer.id), unit.id, "building", reason="builder transaction started")
+        try:
+            fps = {}
+            try:
+                from ..ledger import load_milestones
+
+                fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
+            except Exception as exc:
+                log(f"! no measured fingerprints in the unit contract: {str(exc)[:60]}", 1)
+            context_path = write_layer_context(shot, unit_layer, load_axes(shot), fps, unit=unit)
+            log(f"unit context → {context_path.relative_to(shot.folder)} (loaded every request)", 1)
+            ledger = await build_unit(
+                shot,
+                milestone,
+                artifact_for(unit),
+                prior_layers + [shot.folder / rel for rel in unit_artifacts],
+                session,
+                rounds=rounds,
+                verbose=verbose,
+                plan_excerpt=unit_excerpt,
+                scope=scope + f"\n  ACTIVE WORK UNIT: {unit.id} — {unit.title}. Only its claims may authorize repair.",
+                layer=unit_layer,
+                active_unit=unit,
+                publish_layer=len(layer.stages) == 1,
+                report_layer=(
+                    unit_layer if len(layer.stages) == 1 else replace(unit_layer, id=f"{layer.id}.{unit.id}")
+                ),
+                resume_ok=resume_ok,
+            )
+        except Exception:
+            transition(shot.folder, str(layer.id), unit.id, "failed", reason="unit build raised")
+            block_dependents(
+                shot.folder,
+                str(layer.id),
+                unit.id,
+                layer.stages,
+                reason=f"dependency {unit.id} failed",
+            )
+            raise
+        unit_status = ledger.status(milestone)
+        if unit_status != "passed":
+            terminal = "blocked" if unit_status == "contract_gap" else "failed"
+            transition(
+                shot.folder,
+                str(layer.id),
+                unit.id,
+                terminal,
+                reason=("contract gap requires transactional replanning" if terminal == "blocked" else unit_status),
+            )
+            block_dependents(
+                shot.folder,
+                str(layer.id),
+                unit.id,
+                layer.stages,
+                reason=f"dependency {unit.id} ended {unit_status}",
+            )
+            return ledger
+
+        if unit.protects.ids:
+            active_ids = {
+                str(row["id"])
+                for name, key in (("scene_checks.json", "contracts"), ("checks.json", "checks"))
+                for row in load_document(shot.folder / name, key)
+                if active_for(row, layer.id)
+            }
+        else:
+            active_ids = {
+                str(row["id"])
+                for row in load_document(shot.folder / "scene_checks.json", "contracts")
+                if active_for(row, layer.id) and int(row.get("owner_layer")) < int(layer.id)
+            }
+        artifact = shot.folder / artifact_for(unit)
+        slot = ledger._slot(milestone)
+        best_render = shot.folder / str((slot.get("best") or {}).get("render") or "")
+        freeze_checkpoint(
+            shot.folder,
+            str(layer.id),
+            unit,
+            active_contract_ids=active_ids,
+            candidate_hash=digest(best_render) or "missing",
+            settings_hash=hashlib.sha256(b"eevee:0.5").hexdigest(),
+            script_hash=digest(artifact) or "missing",
+            input_hash=layers_hash,
+        )
+        transition(shot.folder, str(layer.id), unit.id, "evaluating", reason="canonical evaluation sealed")
+        transition(shot.folder, str(layer.id), unit.id, "passed", reason="all required unit claims passed")
+        passed_units.add(unit.id)
+        unit_artifacts.append(artifact_for(unit))
+
+    if len(layer.stages) == 1 and unit_artifacts[0] == layer.script:
+        return Ledger(shot)
+
+    composed = []
+    for unit in layer.stages:
+        rel = artifact_for(unit)
+        composed.append(f"# --- work unit {unit.id}: {rel} ---\n" + (shot.folder / rel).read_text(encoding="utf-8"))
+    atomic_write(shot.folder / layer.script, "\n\n".join(composed).rstrip() + "\n")
+    log(f"published composed layer artifact → {layer.script}")
+
+    ledger = Ledger(shot)
+    milestone = layer.as_milestone(strips)
+    ledger._slot(milestone)["script"] = layer.script
+    ledger.begin(milestone)
+    axes = _owned_axes(await ensure_axes(shot, verbose), layer)
+    canonical: list = []
+    result = await _verify_script(
         shot,
-        layer.as_milestone(strips),
+        milestone,
         layer.script,
-        _prior_layer_paths(shot, layer, force=force),
+        prior_layers,
         session,
-        rounds=rounds,
-        verbose=verbose,
-        plan_excerpt=excerpt,
+        axes,
+        ledger,
+        verbose,
         scope=scope,
         layer=layer,
-        resume_ok=resume_ok,
+        out_verdicts=canonical,
     )
+    status = "passed" if result == "passed" else result
+    best = {"round": 0, "mean": min((v.get("mean", 0) for _fr, v in canonical), default=0), "render": None}
+    write_layer_outcome(
+        shot.folder,
+        layer,
+        status=status,
+        best=best,
+        canonical=canonical,
+        run_id=RUN_ID,
+        attempt=ledger._slot(milestone).get("attempt"),
+        blender_version=_blender_version(session),
+    )
+    ledger.mark(milestone, status, best=best)
+    return ledger
 
 
 def _ablation_frames(shot: Shot, layer) -> list[int]:
@@ -2975,8 +3397,8 @@ def _ablation_frames(shot: Shot, layer) -> list[int]:
     frame, because its rest frame is often intentionally identical before and after.
     """
     judges = [int(frame) for frame, _ref in layer.judges]
-    axes = _owned_axes(load_axes(shot), layer)
-    return sorted(set(judges)) if len(judges) > 1 and _axes_need_motion(axes) else judges[:1]
+    temporal = getattr(layer, "temporal_evidence", "none")
+    return sorted(set(judges)) if len(judges) > 1 and temporal in {"keyframes", "motion"} else judges[:1]
 
 
 async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str, session: BlenderSession) -> dict:
@@ -3055,6 +3477,41 @@ def _metric_report(shot: Shot, render_rel: str, ref_rel: str) -> str:
         return ""
 
 
+def _persist_contract_gaps(shot: Shot, layer, m: Milestone, render_rel: str, verdict: dict) -> None:
+    """Pin a coverage defect to the exact canonical pixels and comparison boundary."""
+    rows = list(verdict.get("observation_reconciliation") or [])
+    if not verdict.get("contract_gap") or not any(row.get("state") == "contract_gap" for row in rows):
+        return
+    candidate = shot.folder / render_rel
+    if not candidate.is_file():
+        return
+    unit_id = "acceptance"
+    if layer is not None:
+        active = [
+            unit.id
+            for unit in layer.stages
+            if any(int(m.frame) in claim.moments for claim in unit.evaluation.claims)
+        ]
+        unit_id = active[0] if len(active) == 1 else "+".join(active) or "coverage_audit"
+    settings = {
+        "mode": "eevee",
+        "scale": 0.5,
+        "frame": int(m.frame),
+        "reference": str(m.ref),
+        "reference_sha256": hashlib.sha256((shot.folder / m.ref).read_bytes()).hexdigest(),
+    }
+    append_gap_record(
+        shot.folder,
+        layer=str(getattr(layer, "id", m.id)),
+        unit=unit_id,
+        candidate_hash=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        settings_hash=hashlib.sha256(
+            json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        rows=rows,
+    )
+
+
 async def _verify_script(
     shot: Shot,
     m: Milestone,
@@ -3071,7 +3528,7 @@ async def _verify_script(
     layer=None,
     out_verdicts: list | None = None,
 ) -> str:
-    """-> passed | reproduced | judge_conflict | failed.
+    """-> passed | reproduced | contract_gap | judge_conflict | failed.
 
     Scores EVERY frame the layer answers for, not just the primary. Iteration renders one
     frame for speed; the deliverable has to hold at all of them, and a layer is only as
@@ -3099,12 +3556,26 @@ async def _verify_script(
     # the pass count on server_to_hansa (8 -> 18).
     shots_ = []
     for frame, ref in judges:
-        m_i = m if len(judges) == 1 else layer.milestone_at(frame, ref, plan_strips(shot))
+        if len(judges) == 1:
+            m_i = m
+        else:
+            unit_tag = str(m.id).split("@", 1)[1] if "@" in str(m.id) and "@f" not in str(m.id) else None
+            m_i = (
+                Milestone(
+                    f"{layer.id}@{unit_tag}",
+                    frame,
+                    ref,
+                    m.reads,
+                    plan_strips(shot).get(frame, ()),
+                )
+                if unit_tag
+                else layer.milestone_at(frame, ref, plan_strips(shot))
+            )
         render_rel = _stash_render(session, shot, m_i, f"canonical_f{frame}" if len(judges) > 1 else "canonical")
         shots_.append((frame, ref, m_i, render_rel))
 
     canonical_motion_evidence = None
-    if shot.frontmatter.get("type") == "motion" and shot.frames > 1 and _axes_need_motion(axes):
+    if shot.frontmatter.get("type") == "motion" and shot.frames > 1 and _layer_needs_motion(layer):
         try:
             canonical_motion_evidence = _stash_motion_strip(
                 session,
@@ -3132,28 +3603,37 @@ async def _verify_script(
                     f"check(s) fail — quality remains undecided",
                     1,
                 )
-            else:
+            elif live_best_verdict.get("pass") or live_best_verdict.get("contract_gap"):
+                is_gap = bool(live_best_verdict.get("contract_gap"))
                 verdict = {
                     "scores": dict(live_best_verdict.get("scores") or {}),
                     "mean": live_best_verdict.get("mean", live_best_mean or 0.0),
-                    "pass": True,
+                    "pass": not is_gap,
                     "issues": [],
                     "scored_axes": list(live_best_verdict.get("scored_axes") or []),
                     "na_axes": list(live_best_verdict.get("na_axes") or []),
                     "decided_by": "pixel_reproduction",
                     "reproduction": reproduction,
                     "evidence": evidence,
+                    "contract_gap": is_gap,
+                    "contract_gaps": list(live_best_verdict.get("contract_gaps") or []),
+                    "observation_reconciliation": list(
+                        live_best_verdict.get("observation_reconciliation") or []
+                    ),
                 }
                 ledger.record_round(m, kind="canonical", index=0, render=render_rel, verdict=verdict)
                 wrapped = [((frame, ref), verdict)]
                 if out_verdicts is not None:
                     out_verdicts.extend(wrapped)
                 log(
-                    f"canonical pixels reproduce accepted live render "
+                    f"canonical pixels reproduce {'contract-gap' if is_gap else 'accepted'} live render "
                     f"(MAE {reproduction['mae']}, p99 {reproduction['p99']}, "
                     f">4 delta {reproduction['changed_gt4']:.2%}) — no second quality vote",
                     1,
                 )
+                if is_gap:
+                    _persist_contract_gaps(shot, layer, m_i, render_rel, verdict)
+                    return "contract_gap"
                 return "reproduced"
     results: list = [None] * len(shots_)
 
@@ -3169,6 +3649,7 @@ async def _verify_script(
             scope,
             evidence=evidence,
             motion_evidence=canonical_motion_evidence,
+            allow_motion=_layer_needs_motion(layer),
             focus_frames_override=[int(m_i.frame)],
         )
 
@@ -3181,6 +3662,7 @@ async def _verify_script(
     verdicts = []
     for i, (frame, ref, _m_i, render_rel) in enumerate(shots_):
         v = results[i]
+        _persist_contract_gaps(shot, layer, _m_i, render_rel, v)
         ledger.record_round(m, kind="canonical", index=i, render=render_rel, verdict=v)
         verdicts.append(((frame, ref), v))
     if out_verdicts is not None:
@@ -3197,6 +3679,13 @@ async def _verify_script(
         log(f"canonical clears every claimed frame (worst f{worst_frame} {verdict['mean']})", 1)
         return "passed"
     failures = [v for _, v in verdicts if not v.get("pass")]
+    if failures and all(v.get("contract_gap") and not v.get("issues") for v in failures):
+        log(
+            "canonical candidate has uncovered measurable defects — recording "
+            "CONTRACT_GAP for transactional replanning",
+            1,
+        )
+        return "contract_gap"
     if failures and all(v.get("judge_conflict") for v in failures):
         log("canonical checks and critic disagree with no evidence-backed repair — recording JUDGE_CONFLICT", 1)
         return "judge_conflict"
@@ -3254,7 +3743,10 @@ async def _run(
         # the bug that let a blacked-out stretch of barrel_roll through, so a banner that
         # under-reports the judge list is the wrong thing to get wrong.
         judged = " · ".join(f"f{f} vs {r}" for f, r in g.judges) or "no judge frame"
-        log(f"build agent: shot '{shot.id}' LAYER {g.id} — {g.title} (judges: {judged}) → {g.script}, model {MODEL}")
+        log(
+            f"build agent: shot '{shot.id}' LAYER {g.id} — {g.title} "
+            f"(judges: {judged}) → {g.script}, builder {builder_model()}, critic {critic_model()}"
+        )
         ledger = await build_layer(shot, g, session, rounds=rounds, resume_ok=resume_ok, force=force)
         log(f"{g.id}: {ledger.status(g.as_milestone())}  →  {ledger.path}")
     finally:

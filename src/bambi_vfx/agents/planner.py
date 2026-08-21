@@ -2,9 +2,9 @@
 
 Standard flow is TWO-PASS, an A/B-tested division of labour:
 
-  pass 1  DRAFT   (default claude-opus-5)   — from-scratch forensics: deep scene
+  pass 1  DRAFT   (default claude-sonnet-5) — from-scratch forensics: deep scene
           read, research, spikes. Empirically the stronger cold-start discoverer.
-  pass 2  VERIFY  (default claude-opus-5)   — adversarial audit of the draft:
+  pass 2  VERIFY  (default claude-sonnet-5) — adversarial audit of the draft:
           frame claims re-derived, still↔source twins metric-matched, spike
           citations evidence-checked, gaps measured, missed prior work salvaged.
           Empirically the stronger reviewer. Writes the superseding plans/global.md.
@@ -57,12 +57,13 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 
 from .. import costlog, transcript
 from ..brief import load_shot
-from ..config import Settings
+from ..config import DEFAULT_EXECUTION_MODEL, Settings
 from ..layer_plans import (
     amendment_block,
+    contract_gaps_block,
     global_plan_path,
-    layer_plan_path,
     prior_outcomes_block,
+    work_unit_plan_path,
 )
 from ..ledger import load_layers
 from ..log import log, log_message
@@ -81,14 +82,12 @@ from ..recipes import build_recipe_tools
 from ..resilience import run_session
 from .builder import _one_user_message
 
-DRAFT_MODEL = "claude-opus-5"
-# The audit pass was fable-5 on the reasoning that reviewing is lighter work than drafting.
-# It is opus-5 now: the plan is the specification every layer is judged against, and the
-# most expensive defects found so far were PLAN defects that survived this audit — a
-# ticket instructing the builder to rebuild a facade the asset already carried, an axis
-# bundling three disciplines into one scalar, and done-checks measured off a frame band
-# when the layer owned a narrow subject.
-VERIFY_MODEL = "claude-opus-5"
+DRAFT_MODEL = DEFAULT_EXECUTION_MODEL
+# Draft and verify deliberately share the configured planner model. Their independence
+# comes from distinct sessions and an adversarial contract, not from pretending two calls
+# to one model are statistically independent. CLI flags can still create a mixed-model
+# lane when an experiment needs it.
+VERIFY_MODEL = DEFAULT_EXECUTION_MODEL
 MODEL = VERIFY_MODEL  # single-pass default
 
 
@@ -133,7 +132,7 @@ def _kickoff_blocks(text: str, shot) -> list[dict]:
 async def generate_plan(
     folder: str | Path,
     *,
-    model: str = MODEL,
+    model: str | None = None,
     blender: str = "blender",
     max_turns: int = 100,
     tag: str | None = None,
@@ -145,6 +144,7 @@ async def generate_plan(
     With `verify_draft`, the session runs in VERIFY MODE against that draft file.
     With `repair=(findings, round)`, it runs in REPAIR MODE against `verify_draft`."""
     shot = load_shot(folder)
+    model = model or Settings.from_environment(load_dotenv_file=False).planner_model
     plan_path = global_plan_path(shot.folder)
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     lab_dir = shot.folder / "logs" / (f"plan_lab_{tag}" if tag else "plan_lab")
@@ -245,14 +245,21 @@ async def generate_plan(
 
 
 async def generate_layer_plan(
-    folder: str | Path, layer_id: str, *, model: str = MODEL, blender: str = "blender", max_turns: int = 24
+    folder: str | Path,
+    layer_id: str,
+    *,
+    unit_id: str | None = None,
+    model: str | None = None,
+    blender: str = "blender",
+    max_turns: int = 24,
 ) -> Path:
-    """Generate one execution plan after prior layers have produced measured outcomes.
+    """Generate one work-unit plan after its declared dependencies have sealed outcomes.
 
     This is intentionally a separate session and output contract. It cannot mutate the
     global plan or machine contracts, and there is no monolithic-plan fallback.
     """
     shot = load_shot(folder)
+    model = model or Settings.from_environment(load_dotenv_file=False).planner_model
     global_path = global_plan_path(shot.folder)
     if not global_path.is_file():
         raise FileNotFoundError(f"{global_path} missing — generate and gate the strict global plan first")
@@ -261,7 +268,36 @@ async def generate_layer_plan(
         layer = layers[str(layer_id)]
     except KeyError as exc:
         raise KeyError(f"unknown layer {layer_id!r}; available: {', '.join(layers)}") from exc
-    target = layer_plan_path(shot.folder, layer)
+    from ..unit_state import load as load_unit_state
+    from ..unit_state import validate_current
+    from ..work_units import ready_units
+
+    state = load_unit_state(shot.folder, str(layer.id))
+    validate_current(state, str(layer.id), layer.stages)
+    passed = {
+        uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
+    }
+    ready = ready_units(layer.stages, passed)
+    if unit_id is not None:
+        selected = next((unit for unit in layer.stages if unit.id == unit_id), None)
+        if selected is None:
+            raise KeyError(
+                f"unknown unit {unit_id!r} in layer {layer.id}; available: "
+                + ", ".join(unit.id for unit in layer.stages)
+            )
+        missing = sorted(set(selected.depends_on) - passed)
+        if missing:
+            raise ValueError(
+                f"layer {layer.id} unit {selected.id} is blocked by unpassed dependencies: "
+                + ", ".join(missing)
+            )
+    else:
+        if not ready:
+            raise ValueError(
+                f"layer {layer.id} has no plannable unit; all units passed or dependencies are blocked"
+            )
+        selected = ready[0]
+    target = work_unit_plan_path(shot.folder, selected)
     target.parent.mkdir(parents=True, exist_ok=True)
     rel_target = target.relative_to(shot.folder).as_posix()
     feedback = "\n\n".join(
@@ -269,13 +305,20 @@ async def generate_layer_plan(
         for x in (
             prior_outcomes_block(shot.folder, str(layer.id)),
             amendment_block(shot.folder, str(layer.id)),
+            contract_gaps_block(shot.folder, str(layer.id), selected.id),
         )
         if x
     )
     # Do not carry the global planner's monolithic output contract into a layer session.
     # The layer doctrine is intentionally self-contained and much smaller.
-    system = LAYER_PLANNER_ADDENDUM.format(layer_id=layer.id, layer_title=layer.title, target=rel_target)
-    kickoff = layer_user_prompt(shot, layer, rel_target, feedback)
+    system = LAYER_PLANNER_ADDENDUM.format(
+        layer_id=layer.id,
+        layer_title=layer.title,
+        unit_id=selected.id,
+        unit_title=selected.title,
+        target=rel_target,
+    )
+    kickoff = layer_user_prompt(shot, layer, selected, rel_target, feedback)
     lab_dir = shot.folder / "logs" / f"plan_lab_layer_{int(layer.id):02d}"
     pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
     rserver, rnames = build_recipe_tools()
@@ -313,8 +356,8 @@ async def generate_layer_plan(
         return target.is_file() and target.stat().st_mtime_ns != before
 
     try:
-        log(f"plan agent [LAYER {layer.id}]: {layer.title} → {rel_target}")
-        await run_session(_attempt, succeeded=_wrote, label=f"plan layer {layer.id}")
+        log(f"plan agent [LAYER {layer.id} · UNIT {selected.id}]: {selected.title} → {rel_target}")
+        await run_session(_attempt, succeeded=_wrote, label=f"plan layer {layer.id} unit {selected.id}")
     finally:
         transcript.unbind()
         costlog.unbind()
@@ -326,15 +369,15 @@ async def generate_layer_plan(
             f"{target} has {text.count(chr(10)) + 1} lines; layer plans are capped at 160. "
             "Keep evidence in machine contracts/outcomes and rewrite this as an execution index"
         )
-    log(f"layer plan written: {rel_target} ({text.count(chr(10))} lines)")
+    log(f"unit plan written: {rel_target} ({text.count(chr(10))} lines)")
     return target
 
 
 async def generate_plan_two_pass(
     folder: str | Path,
     *,
-    draft_model: str = DRAFT_MODEL,
-    verify_model: str = VERIFY_MODEL,
+    draft_model: str | None = None,
+    verify_model: str | None = None,
     blender: str = "blender",
     max_turns: int = 100,
     tag: str | None = None,
@@ -343,6 +386,9 @@ async def generate_plan_two_pass(
     """The standard flow: draft from scratch, then adversarially verify.
     Keeps the draft (plan.<tag->draft.md + its lab) as the audit trail."""
     shot = load_shot(folder)
+    configured = Settings.from_environment(load_dotenv_file=False).planner_model
+    draft_model = draft_model or configured
+    verify_model = verify_model or configured
     dtag = f"{tag}-draft" if tag else "draft"
     draft_path = global_plan_path(shot.folder).with_name(f"global.{dtag}.md")
 
@@ -370,8 +416,8 @@ async def generate_plan_two_pass(
 async def generate_plan_until_clean(
     folder: str | Path,
     *,
-    draft_model: str = DRAFT_MODEL,
-    verify_model: str = VERIFY_MODEL,
+    draft_model: str | None = None,
+    verify_model: str | None = None,
     blender: str = "blender",
     max_turns: int = 100,
     tag: str | None = None,
@@ -400,6 +446,10 @@ async def generate_plan_until_clean(
     more useful than no plan — what must never happen is a dirty plan looking clean.
     """
     from ..eval import plan_gate
+
+    configured = Settings.from_environment(load_dotenv_file=False).planner_model
+    draft_model = draft_model or configured
+    verify_model = verify_model or configured
 
     shot = load_shot(folder)
     final = await generate_plan_two_pass(
@@ -468,18 +518,20 @@ async def generate_plan_until_clean(
 
 
 def main() -> None:
+    settings = Settings.from_environment()
     ap = argparse.ArgumentParser(description="Plan a shot. Default: two-pass (draft → adversarial verify).")
     ap.add_argument("folder", help="shot folder (contains brief.md, refs/)")
     ap.add_argument("--layer", help="generate only this layer's just-in-time plan")
+    ap.add_argument("--unit", help="with --layer, generate this ready work unit instead of the first ready unit")
     ap.add_argument("--single", action="store_true", help="one from-scratch pass with --model (no verify)")
     ap.add_argument(
         "--verify-only", action="store_true", help="skip drafting; audit the existing plans/global.<tag->draft.md"
     )
-    ap.add_argument("--model", default=MODEL, help="model for --single runs")
-    ap.add_argument("--draft-model", default=DRAFT_MODEL)
-    ap.add_argument("--verify-model", default=VERIFY_MODEL)
+    ap.add_argument("--model", default=settings.planner_model, help="model for --single or --layer runs")
+    ap.add_argument("--draft-model", default=settings.planner_model)
+    ap.add_argument("--verify-model", default=settings.planner_model)
     ap.add_argument(
-        "--blender", default=Settings.from_environment().blender_bin, help="blender executable for the spike lab"
+        "--blender", default=settings.blender_bin, help="blender executable for the spike lab"
     )
     ap.add_argument(
         "--max-turns", type=int, default=None, help="turn cap per pass (default: 24 for --layer, 100 globally)"
@@ -494,13 +546,20 @@ def main() -> None:
     ap.add_argument("--max-rounds", type=int, default=3, help="repair rounds for --until-clean (default 3)")
     args = ap.parse_args()
 
+    if args.unit and not args.layer:
+        ap.error("--unit requires --layer")
     if args.layer and (args.single or args.verify_only or args.until_clean or args.tag):
         ap.error("--layer is a dedicated JIT pass; do not combine it with global-pass flags")
 
     if args.layer:
         plan_path = anyio.run(
             lambda: generate_layer_plan(
-                args.folder, args.layer, model=args.model, blender=args.blender, max_turns=args.max_turns or 24
+                args.folder,
+                args.layer,
+                unit_id=args.unit,
+                model=args.model,
+                blender=args.blender,
+                max_turns=args.max_turns or 24,
             )
         )
     elif args.single:

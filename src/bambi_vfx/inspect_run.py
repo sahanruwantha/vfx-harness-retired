@@ -173,10 +173,12 @@ def collect(shot_folder: str | Path, *, history: bool = False) -> dict:
             "rounds": len(means),
             "canonical_pass": all(c.get("pass") for c in canon) if canon else None,
             "canonical_conflict": any(c.get("judge_conflict") for c in canon),
+            "canonical_contract_gap": any(c.get("contract_gap") for c in canon),
             "canonical_reproduced": any(c.get("decided_by") == "pixel_reproduction"
                                          for c in canon),
             "canonical": [{"frame": c.get("frame"), "mean": c.get("mean"),
                            "pass": c.get("pass"),
+                           "contract_gap": c.get("contract_gap", False),
                            "judge_conflict": c.get("judge_conflict", False),
                            "decided_by": c.get("decided_by", "critic")} for c in canon],
             "cost_usd": rec.get("cost_usd", 0.0), "turns": rec.get("turns", 0),
@@ -288,9 +290,10 @@ def report(d: dict) -> str:
 
     L += ["", "   layers"]
     for p in d["layers"]:
-        mark = {"passed": "✅", "failed": "✗", "judge_conflict": "⚠"}.get(
+        mark = {"passed": "✅", "failed": "✗", "judge_conflict": "⚠", "contract_gap": "◇"}.get(
             p["status"], "·")
-        can = ("JUDGE CONFLICT" if p.get("canonical_conflict") else
+        can = ("CONTRACT GAP" if p.get("canonical_contract_gap") else
+               "JUDGE CONFLICT" if p.get("canonical_conflict") else
                "pixel reproduction ok" if p.get("canonical_reproduced") else
                "replay ok" if p["canonical_pass"] else
                "REPLAY FAILED" if p["canonical_pass"] is False else "no replay")

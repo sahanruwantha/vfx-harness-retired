@@ -12,7 +12,9 @@ import json
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from .layer_plans import global_plan_path, layer_plan_path
+from .config import Settings
+from .layer_plans import global_plan_path, work_unit_plan_path
+from .work_units import read_document
 
 OUTCOME_SCHEMA = 2
 try:
@@ -30,10 +32,10 @@ def digest(path: str | Path) -> str | None:
 
 def _layers(folder: Path) -> list[dict]:
     try:
-        rows = json.loads((folder / "layers.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        rows = read_document(folder / "layers.json")
+    except (OSError, ValueError):
         return []
-    return rows if isinstance(rows, list) else []
+    return rows
 
 
 def _prior_outcome_digests(folder: Path, current: int) -> dict[str, str | None]:
@@ -94,7 +96,6 @@ def input_manifest(
     paths = [
         root / "brief.md",
         global_plan_path(root),
-        layer_plan_path(root, layer),
         root / "layers.json",
         root / "acceptance.json",
         root / "critic_axes.json",
@@ -102,6 +103,7 @@ def input_manifest(
         root / "scene_checks.json",
         root / "plan_amendments.jsonl",
     ]
+    paths.extend(work_unit_plan_path(root, unit) for unit in layer.stages)
     for row in _layers(root):
         try:
             if int(row.get("id")) <= current:
@@ -118,6 +120,7 @@ def input_manifest(
             rel = str(path)
         files[rel] = digest(path)
     package = Path(__file__).resolve().parent
+    settings = Settings.from_environment(load_dotenv_file=False)
     harness_files = {
         str(path.relative_to(package)): digest(path)
         for path in (
@@ -135,6 +138,12 @@ def input_manifest(
         "harness_files": dict(sorted(harness_files.items())),
         "blender_version": str(blender_version),
         "comparison": {"mode": comparison_mode, "scale": comparison_scale},
+        "models": {
+            "builder": settings.builder_model,
+            "script": settings.script_model,
+            "critic": settings.critic_model,
+            "reviewer": settings.reviewer_model,
+        },
         "files": dict(sorted(files.items())),
         "runtime_checks": _runtime_checks_digest(root, current),
         "prior_outcomes": _prior_outcome_digests(root, current),

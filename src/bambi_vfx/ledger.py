@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .brief import Shot
 from .runid import RUN_ID
+from .work_units import JudgePoint, WorkUnit, read_document, validate_qualification, validate_unit_dag
 
 
 @dataclass(frozen=True)
@@ -83,15 +84,29 @@ class Layer:
     # marks the rest n/a — a layout layer cannot earn the finish grade, and judging it
     # on one only produces a floor score it can never lift (BR layer G: 2.83 twice).
     owns: tuple[str, ...] = ()
+    # The primary is explicit.  Declared judge order is preserved for presentation and
+    # planning, but neither list position nor numeric frame order carries authority.
+    primary_judge: int = 0
+    stages: tuple[WorkUnit, ...] = ()
 
     @property
     def judge_frame(self) -> int:
-        """Primary judge frame (earliest) — what the iteration loop renders."""
-        return self.judges[0][0]
+        """Explicit primary judge frame — what the iteration loop renders."""
+        return self.primary_judge
 
     @property
     def judge_ref(self) -> str:
-        return self.judges[0][1]
+        return next(ref for frame, ref in self.judges if frame == self.primary_judge)
+
+    @property
+    def temporal_evidence(self) -> str:
+        """Strongest explicit evidence policy among this layer's work units."""
+        modes = {unit.evaluation.temporal_evidence for unit in self.stages}
+        if "motion" in modes:
+            return "motion"
+        if "keyframes" in modes:
+            return "keyframes"
+        return "none"
 
     def as_milestone(self, strips: dict[int, tuple[int, ...]] | None = None) -> Milestone:
         """The critic loop speaks Milestone — adapt the layer's PRIMARY judge point.
@@ -119,15 +134,90 @@ def load_layers(shot: Shot) -> dict[str, Layer]:
             f"{path} missing — run the plan agent first (its layers define the build "
             f"order; milestones.json defines the acceptance moments)")
     out: dict[str, Layer] = {}
-    for g in json.loads(path.read_text()):
-        j = g["judge"]
-        entries = [j] if isinstance(j, dict) else list(j)   # accept the old single form
-        if not entries:
-            raise ValueError(f"layer {g['id']}: empty judge list")
-        judges = tuple(sorted(((int(e["frame"]), e["ref"]) for e in entries),
-                              key=lambda fr: fr[0]))
-        out[g["id"]] = Layer(g["id"], g["script"], g.get("title", g["id"]),
-                            judges, g.get("reads", ""), tuple(g.get("owns", ())))
+    for index, g in enumerate(read_document(path)):
+        where = f"layers.json.layers[{index}]"
+        lid = str(g.get("id") or "").strip()
+        if not lid:
+            raise ValueError(f"{where}.id must be a non-empty string")
+        if lid in out:
+            raise ValueError(f"{where}.id duplicates layer {lid}")
+        raw_judges = g.get("judge")
+        if not isinstance(raw_judges, list) or not raw_judges:
+            raise ValueError(f"{where}.judge must be a non-empty list")
+        points = tuple(JudgePoint.parse(row, f"{where}.judge[{i}]") for i, row in enumerate(raw_judges))
+        frames = [point.frame for point in points]
+        if len(set(frames)) != len(frames):
+            raise ValueError(f"{where}.judge contains duplicate frames")
+        primary = g.get("primary_judge")
+        if isinstance(primary, bool) or not isinstance(primary, int) or primary not in frames:
+            raise ValueError(f"{where}.primary_judge must name exactly one declared judge frame")
+        raw_stages = g.get("stages")
+        if not isinstance(raw_stages, list) or not raw_stages:
+            raise ValueError(f"{where}.stages must be a non-empty list")
+        stages = tuple(WorkUnit.parse(row, f"{where}.stages[{i}]") for i, row in enumerate(raw_stages))
+        validate_unit_dag(stages, f"{where}.stages")
+        unit_artifacts = [span for unit in stages for span in unit.mutates.script_spans]
+        for unit in stages:
+            if len(unit.mutates.script_spans) != 1:
+                raise ValueError(
+                    f"{where}.stages.{unit.id} must own exactly one replayable script span"
+                )
+        if len(stages) > 1:
+            if len(set(unit_artifacts)) != len(unit_artifacts):
+                raise ValueError(f"{where}.stages must own distinct script spans")
+            if str(g.get("script")) in unit_artifacts:
+                raise ValueError(
+                    f"{where}.script is reserved for the composed multi-unit artifact"
+                )
+        layer_frames = set(frames)
+        unit_ids = {unit.id for unit in stages}
+        for unit in stages:
+            unit_frames = {point.frame for point in unit.evaluation.judges}
+            outside = sorted(unit_frames - layer_frames)
+            if outside:
+                raise ValueError(
+                    f"{where}.stages.{unit.id} judges frames outside the layer contract: {outside}"
+                )
+            for claim in unit.evaluation.claims:
+                validate_qualification(path.parent, claim, f"{where}.stages.{unit.id}.claims.{claim.id}")
+                if claim.axis not in set(g.get("owns") or []):
+                    raise ValueError(
+                        f"{where}.stages.{unit.id} claim {claim.id} uses axis "
+                        f"{claim.axis!r}, which the layer does not own"
+                    )
+                outside_moments = sorted(set(claim.moments) - unit_frames)
+                if outside_moments:
+                    raise ValueError(
+                        f"{where}.stages.{unit.id} claim {claim.id} has moments outside "
+                        f"its judge set: {outside_moments}"
+                    )
+                if claim.repair_owner not in unit_ids:
+                    raise ValueError(
+                        f"{where}.stages.{unit.id} claim {claim.id} has unknown repair_owner "
+                        f"{claim.repair_owner!r}"
+                    )
+                missing_participants = sorted(set(claim.participants) - unit_ids)
+                if missing_participants:
+                    raise ValueError(
+                        f"{where}.stages.{unit.id} claim {claim.id} has unknown participants: "
+                        f"{', '.join(missing_participants)}"
+                    )
+                if claim.coordination_owner and claim.coordination_owner not in unit_ids:
+                    raise ValueError(
+                        f"{where}.stages.{unit.id} claim {claim.id} has unknown "
+                        f"coordination_owner {claim.coordination_owner!r}"
+                    )
+        judges = tuple((point.frame, point.ref) for point in points)
+        out[lid] = Layer(
+            lid,
+            str(g.get("script") or ""),
+            g.get("title", lid),
+            judges,
+            g.get("reads", ""),
+            tuple(g.get("owns", ())),
+            primary,
+            stages,
+        )
     return out
 
 
@@ -266,6 +356,10 @@ class Ledger:
             "issues": verdict.get("issues", []),
             "contradicted_issues": verdict.get("contradicted_issues", []),
             "judge_conflict": bool(verdict.get("judge_conflict")),
+            "contract_gap": bool(verdict.get("contract_gap")),
+            "contract_gaps": verdict.get("contract_gaps", []),
+            "unverified_observations": verdict.get("unverified_observations", []),
+            "protocol_errors": verdict.get("protocol_errors", []),
             "evidence": verdict.get("evidence", []),
             "focus_requested": verdict.get("focus_requested", []),
             "focus_panels": verdict.get("focus_panels", []),

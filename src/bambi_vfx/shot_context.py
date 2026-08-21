@@ -20,13 +20,19 @@ from pathlib import Path
 
 from .brief import Shot
 from .escalate import answers_block, open_block
-from .layer_plans import layer_plan_path
+from .layer_plans import work_unit_plan_path
 
 _HEADER = "<!-- generated per layer run by bambi_vfx.shot_context — safe to overwrite -->"
 
 
-def write_layer_context(shot: Shot, layer, axes: list[tuple[str, str]],
-                       fingerprints: dict[int, str] | None = None) -> Path:
+def write_layer_context(
+    shot: Shot,
+    layer,
+    axes: list[tuple[str, str]],
+    fingerprints: dict[int, str] | None = None,
+    *,
+    unit=None,
+) -> Path:
     """Write shots/<id>/CLAUDE.md for this layer. Returns the path."""
     fingerprints = fingerprints or {}
     list(layer.owns) or ["(not declared — judge on the layer's scope)"]
@@ -63,8 +69,27 @@ def write_layer_context(shot: Shot, layer, axes: list[tuple[str, str]],
             supervisor = hierarchical + "\n\n" + supervisor
     except Exception as e:
         raise RuntimeError(f"hierarchical plan feedback is invalid: {e}") from e
-    plan_path = layer_plan_path(shot.folder, layer)
+    if unit is None:
+        if len(layer.stages) != 1:
+            raise ValueError(
+                f"layer {layer.id} declares {len(layer.stages)} units; context generation "
+                "requires the active unit explicitly"
+            )
+        unit = layer.stages[0]
+    plan_path = work_unit_plan_path(shot.folder, unit)
     plan_rel = plan_path.relative_to(shot.folder).as_posix()
+    dependency_rows = ", ".join(unit.depends_on) or "none"
+    mutation_rows = "\n".join(
+        (
+            f"- semantic roles: {', '.join(unit.mutates.roles) or 'none'}",
+            f"- semantic controls: {', '.join(unit.mutates.controls) or 'none'}",
+            f"- artifact spans: {', '.join(unit.mutates.script_spans) or 'none'}",
+        )
+    )
+    claim_rows = "\n".join(
+        f"- `{claim.id}` ({claim.authority}, repair `{claim.repair_owner}`): {claim.proposition}"
+        for claim in unit.evaluation.claims
+    )
     body = f"""{_HEADER}
 # Layer {layer.id} — {layer.title}
 
@@ -86,6 +111,18 @@ facts remain true and authoritative.
 
 Delta script: `{layer.script}` — reproduce only THIS layer's changes; earlier layer scripts
 run before yours and their objects already exist.
+
+## Active work unit — {unit.id}: {unit.title}
+- Dependencies: {dependency_rows}
+- Explicit primary frame: f{unit.evaluation.primary_judge}
+- Temporal evidence policy: `{unit.evaluation.temporal_evidence}`
+- Completion: `{unit.completion}`
+
+Permitted mutation surface:
+{mutation_rows}
+
+Required and advisory claims:
+{claim_rows}
 
 ## Frames you answer for
 The finished script is rendered and scored at EVERY frame below and passes only if all
@@ -115,7 +152,7 @@ these axes.
 {supervisor}## Summary instructions
 When summarising this conversation, ALWAYS preserve:
 - MODE `LIVE_BUILD`, authoritative plan `{plan_rel}`, layer id, owned axes, and every
-  judge frame listed above
+  judge frame listed above; active unit `{unit.id}` and its mutation surface
 - semantic `bvfx_role` values and material interfaces created so far
 - measured values already converged on, and values already ruled out with their measurement
 - which of the judge frames currently pass and which do not

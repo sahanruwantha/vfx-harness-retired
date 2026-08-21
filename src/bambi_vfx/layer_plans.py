@@ -1,7 +1,7 @@
 """Strict hierarchical planning artifacts.
 
-The global plan is a dependency map, not an execution prompt.  Builders consume exactly
-one ``plans/<layer>.md`` file plus machine-readable contracts and prior outcomes.  There
+The global plan is a dependency map, not an execution prompt. Builders consume exactly
+one schema-declared work-unit plan plus machine-readable contracts and prior outcomes. There
 is deliberately no fallback to ``plan.md``: silently accepting a giant legacy plan would
 keep the stale-context failure mode alive behind a compatibility branch.
 """
@@ -41,13 +41,26 @@ def layer_plan_path(folder: str | Path, layer) -> Path:
     return Path(folder) / PLAN_DIR / f"{_slug(layer.script)}.md"
 
 
-def read_layer_plan(folder: str | Path, layer) -> str:
-    """Read the only execution plan a layer is allowed to consume."""
-    path = layer_plan_path(folder, layer)
+def work_unit_plan_path(folder: str | Path, unit) -> Path:
+    """Resolve the schema-declared unit plan inside the shot root."""
+    root = Path(folder).resolve()
+    path = (root / unit.plan).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"work-unit plan escapes the shot root: {unit.plan!r}") from exc
+    if path.relative_to(root).parts[:1] != (PLAN_DIR,):
+        raise ValueError(f"work-unit plan must live under {PLAN_DIR}/: {unit.plan!r}")
+    return path
+
+
+def read_work_unit_plan(folder: str | Path, layer, unit) -> str:
+    """Read exactly the execution plan named by a schema-4 work unit."""
+    path = work_unit_plan_path(folder, unit)
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} missing — monolithic plan fallback has been removed. Generate and "
-            f"gate a just-in-time plan for layer {layer.id} before building it"
+            f"gate the just-in-time plan for layer {layer.id} unit {unit.id} before building it"
         )
     text = path.read_text(encoding="utf-8").strip()
     if len(text) < 200:
@@ -55,10 +68,20 @@ def read_layer_plan(folder: str | Path, layer) -> str:
     lines = text.count("\n") + 1
     if lines > 160:
         raise ValueError(
-            f"{path} has {lines} lines; strict layer plans are capped at 160. Machine "
+            f"{path} has {lines} lines; strict unit plans are capped at 160. Machine "
             "contracts and sealed outcomes carry evidence; the plan is only an execution index"
         )
     return text
+
+
+def read_layer_plan(folder: str | Path, layer) -> str:
+    """Single-unit vertical-slice adapter; never collapse a unit DAG implicitly."""
+    if len(layer.stages) != 1:
+        raise ValueError(
+            f"layer {layer.id} declares {len(layer.stages)} work units; layer-level plan "
+            "retrieval cannot choose or combine them. Use staged work-unit execution"
+        )
+    return read_work_unit_plan(folder, layer, layer.stages[0])
 
 
 def load_amendments(folder: str | Path) -> list[dict]:
@@ -111,6 +134,52 @@ def amendment_block(folder: str | Path, layer_id: str) -> str:
             f"- **{row['id']}**: ~~{row['original']}~~ → {row['replacement']} "
             f"(evidence: {', '.join(map(str, row['evidence']))}; impact: {row['impact']})"
         )
+    return "\n".join(lines)
+
+
+def contract_gaps_block(folder: str | Path, layer_id: str, unit_id: str | None = None) -> str:
+    """Latest hash-pinned coverage defects for transactional replanning context."""
+    path = Path(folder) / "logs" / "contract_gaps.jsonl"
+    if not path.is_file():
+        return ""
+    records = []
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"logs/contract_gaps.jsonl:{line_no}: {exc}") from exc
+        if str(row.get("layer")) != str(layer_id):
+            continue
+        if unit_id is not None and str(row.get("unit")) not in {str(unit_id), "coverage_audit"}:
+            continue
+        records.append(row)
+    if not records:
+        return ""
+    latest = records[-1]
+    lines = [
+        "## Verified contract gaps — plan defects, not builder instructions",
+        f"Candidate `{latest.get('candidate_hash')}` under settings "
+        f"`{latest.get('settings_hash')}` exposed:",
+    ]
+    seen = set()
+    for gap in latest.get("gaps") or []:
+        observation = gap.get("observation") or {}
+        key = (observation.get("axis"), observation.get("property"), observation.get("moment"))
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(
+            f"- axis `{observation.get('axis')}`, property `{observation.get('property')}`, "
+            f"f{observation.get('moment')}, roles {observation.get('roles') or []}: "
+            f"{observation.get('observation')}"
+        )
+    lines.append(
+        "Do not turn these directly into scene edits. Amend the claim/contract graph with "
+        "an independent measurement or qualified qualitative authority, validate its "
+        "adversary, then transactionally invalidate only affected downstream units."
+    )
     return "\n".join(lines)
 
 

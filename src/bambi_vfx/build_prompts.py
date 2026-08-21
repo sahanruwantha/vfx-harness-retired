@@ -696,22 +696,27 @@ You are the CRITIC in an automated 3D/VFX pipeline — an exacting VFX superviso
 a photographic eye. You compare a CANDIDATE render against a REFERENCE image and
 score how close the candidate is on fixed look axes. You are hard to please: a score
 of 5 means indistinguishable from a top-tier reference; 3 means "acceptable, reads
-right"; 0 means absent or wrong. Judge only what the images show. Be concrete — every
-deduction must come with a specific, actionable fix a Blender TD could execute.
+right"; 0 means absent or wrong. Judge only what the images show. Be concrete: each
+below-threshold observation names one bounded correction, but the harness—not you—decides
+whether its claim/evidence authority permits that correction to reach a builder.
 
 OBSERVATION BEFORE PRESCRIPTION. State only what is visibly different in the supplied
 images, then give at most one action for an axis that scores below 3. Do not invent exact
 RGB values, dimensions, emission strengths, or hidden causes that the images cannot show.
-If every scored axis is at least 3, `issues` must be empty; optional polish is not a defect.
+If every scored axis is at least 3, `observations` must be empty; optional polish is not a defect.
 
-MEASUREMENT AUTHORITY. The request may include a VERIFIED EVIDENCE card produced by
+CLAIM AND MEASUREMENT AUTHORITY. The request may include an ACTIVE CLAIM MANIFEST and a
+VERIFIED EVIDENCE card produced by
 executable checks on the exact candidate image and live Blender scene. Treat those values
 as facts. Do not
 re-estimate a listed quantity from the JPEG, contradict a passing check, or prescribe a
 numeric correction for it. An exact size/count/position claim covered by that card may be
-blocking only when you cite a FAILED evidence id. When no evidence card is supplied, avoid
-invented numbers but you may still report a qualitative visual mismatch. Qualitative read,
-silhouette, hierarchy and resemblance remain your responsibility.
+blocking only when you bind the observation to that claim and cite its FAILED evidence id.
+If a measurable visible defect has no matching claim, use claim_id=null: it is a coverage
+finding, not permission to borrow a different property's evidence. When no evidence card is
+supplied, avoid invented numbers but still type each mismatch honestly. Qualitative read,
+silhouette, hierarchy and resemblance remain your responsibility, but only a claim with
+qualified qualitative authority can autonomously block a build.
 
 EXISTENCE IS NOT LEGIBILITY. A passing scene contract proves geometry/state (for example,
 three rib objects exist and the wall is shade-smooth); it does not prove that all three ribs
@@ -732,7 +737,7 @@ copy a strip panel's x position into candidate-frame coordinates. Never use a cr
 full-frame composition/context, inspect a fact already settled by executable evidence, or
 fish for defects. When focus panels are supplied, they contain aligned candidate/reference
 views of the exact same frame and region; request no more and cite any panel supporting an
-issue in `issue_evidence.panel_ids`.
+observation in `observations[].panel_ids`.
 
 Return your judgement as a single fenced ```json block and NOTHING else after it,
 with exactly this shape:
@@ -740,9 +745,11 @@ with exactly this shape:
 ```json
 {
   "scores": { "<axis>": 0-5, ... one entry per axis given ... },
-  "issues": ["specific actionable fix", "..."],
-  "issue_evidence": [
-    {"issue_index": 0, "kind": "visual" | "measurable", "check_ids": [], "panel_ids": []}
+  "observations": [
+    {"id": "stable_id", "kind": "qualitative" | "measurable", "axis": "<axis>",
+     "property": "atomic_property", "observation": "visible evidence only",
+     "action": "one bounded correction", "moment": 40, "roles": ["semantic.role"],
+     "claim_id": "exact_claim_id" | null, "check_ids": [], "panel_ids": []}
   ],
   "focus_requests": [
     {"id": "rib_left", "axis": "<axis>", "source": "candidate_frame" | "motion_strip",
@@ -765,6 +772,7 @@ def critic_prompt(
     motion_frames: list[int] | None = None,
     scope: str | None = None,
     evidence: list[dict] | None = None,
+    claims: list[dict] | None = None,
     review_mode: str = "observer",
     focus_panels: list[dict] | None = None,
     focus_frames: list[int] | None = None,
@@ -791,7 +799,7 @@ def critic_prompt(
             f"{scope}\n"
             f"The axis list below has already been filtered to exactly what this layer "
             f"owns. Score EVERY supplied axis with a number; there is no n/a decision in "
-            f"this stage. `issues` must contain only visible defects on a supplied axis "
+            f"this stage. `observations` must contain only visible defects on a supplied axis "
             f"that scored below 3, and only fixes inside this stage's scope — never 'add "
             f"the thing a later stage adds'.\n"
         )
@@ -818,6 +826,25 @@ def critic_prompt(
             "the named state exists, not that it reads well: report any remaining visibility "
             "problem as a qualitative observation without denying the measured fact.\n"
         )
+    claims_block = ""
+    if claims:
+        rows = []
+        for claim in claims:
+            rows.append(
+                f"  - {claim.get('id')}: axis={claim.get('axis')} "
+                f"property={claim.get('property')} roles={claim.get('roles') or []} "
+                f"controls={claim.get('controls') or []} authority={claim.get('authority')} "
+                f"evidence={claim.get('evidence_ids') or []} — {claim.get('proposition')}"
+            )
+        claims_block = (
+            "\nACTIVE CLAIM MANIFEST FOR THIS EXACT MOMENT:\n"
+            + "\n".join(rows)
+            + "\nFor a planned defect, set claim_id to exactly one id above and cite only "
+            "that claim's evidence ids. If a visible property is absent from this manifest, "
+            "set claim_id to null: that is a coverage finding for the planner, not permission "
+            "for the builder to mutate the scene. Never borrow another property's passing or "
+            "failing check.\n"
+        )
     focus_block = ""
     if focus_panels:
         focus_block = (
@@ -830,7 +857,7 @@ def critic_prompt(
                 for panel in focus_panels
             )
             + "\nThese already answer the close-inspection request. Return an empty "
-            "focus_requests list and cite any panel used in issue_evidence.panel_ids.\n"
+            "focus_requests list and cite any panel used in observations[].panel_ids.\n"
         )
     review_block = ""
     if review_mode == "evidence_audit":
@@ -856,20 +883,20 @@ def critic_prompt(
             "context; the additional aligned panels only resolve small-feature legibility. "
             "Each panel contains candidate/reference detail views at the exact same crop. "
             "Do not request another crop. If a blocking visual issue relies on a focus "
-            "panel, cite its id in the same-index issue_evidence.panel_ids.\n" + panel_lines + "\n"
+            "panel, cite its id in that observation's panel_ids.\n" + panel_lines + "\n"
         )
     return (
         f"Stage {m.id} of shot '{shot.id}', frame {m.frame}.\n"
         f"TARGET STATE: {m.reads}\n\n"
         f"The FIRST image is the REFERENCE ({Path(m.ref).name}).\n"
         f"The SECOND image is the CANDIDATE render ({Path(candidate_rel).name}).{motion}"
-        f"{scope_block}{evidence_block}{focus_block}{review_block}"
+        f"{scope_block}{claims_block}{evidence_block}{focus_block}{review_block}"
         f"\nScore the candidate against the reference on these axes:\n"
         f"{axes}\n\n"
         f"Score each axis 0–5"
         f"{' (or n/a only when no layer scope is supplied)' if not scope else ''}. "
-        f"For a score below 3, put one item in `issues`: visible observation first, then "
-        f"one actionable correction, plus a same-index `issue_evidence` classification. "
+        f"For a score below 3, put one typed item in `observations`: visible evidence, "
+        f"one atomic property, one bounded correction, the exact moment and semantic roles. "
         f"Use `focus_requests` only when a feature material to an axis scoring at or below "
         f"3 is too small to resolve in the full images: at most two [x0,y0,x1,y1] regions "
         f"in normalized TOP-LEFT coordinates. Focusable source frames with matching "
@@ -878,7 +905,7 @@ def critic_prompt(
         f"region must stay inside one panel. Never request a crop for a measurable fact "
         f"already settled by evidence, and return an empty list whenever focus panels are "
         f"already supplied. "
-        f"If all scores are at least 3, return empty `issues` and `issue_evidence` lists. "
+        f"If all scores are at least 3, return an empty `observations` list. "
         f"Return the JSON scorecard."
     )
 
@@ -939,7 +966,9 @@ def canonical_repair_prompt(
     return (
         f"MODE: REPAIR_SCRIPT — edit the canonical artifact, not the warm scene.\n"
         f"Use Grep → Read the smallest span → Edit. Write must not "
-        f"replace the whole file for a local repair.\n\n"
+        f"replace the whole file for a local repair. All verdict evidence needed for "
+        f"this repair is embedded below: inspect `{script_rel}` only; do not search "
+        f"plans, checks, runtime evidence, logs, journals, or unrelated build scripts.\n\n"
         f"CANONICAL VERIFICATION FAILED for unit {m.id}.\n\n"
         f"Your script `{script_rel}` was re-run FROM AN EMPTY SCENE and the result was "
         f"scored at every frame this unit answers for. These frames did not clear:\n\n"

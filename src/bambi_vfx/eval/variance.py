@@ -267,8 +267,9 @@ def _icc_from_axes(per_axis: dict) -> dict:
 
 
 def _critic_model() -> str:
-    from ..agents.builder import CRITIC_MODEL
-    return CRITIC_MODEL
+    from ..agents.builder import critic_model
+
+    return critic_model()
 
 
 def report(rec: dict) -> str:

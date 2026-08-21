@@ -92,7 +92,7 @@ def record(m: Any) -> None:
             "at": datetime.now(UTC).isoformat(timespec="seconds"),
             "role": _ctx.get("role"),
             **{k: v for k, v in _ctx.items() if k not in ("folder", "role")},
-            "model": getattr(m, "model", None),
+            "model": getattr(m, "model", None) or _ctx.get("model"),
             "subtype": getattr(m, "subtype", None),
             "turns": getattr(m, "num_turns", None),
             "duration_ms": getattr(m, "duration_ms", None),

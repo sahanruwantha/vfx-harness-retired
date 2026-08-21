@@ -9,6 +9,12 @@ does not pass because an agent says it looks right — it passes because a criti
 frames it is responsible for, a deterministic re-run of its script reproduced those frames
 from an empty scene, and measured image metrics agree.
 
+The durable project north star—dynamic staged decomposition, widening validation, safe
+parallelism, transactional repair, and the rules that prevent shot-specific overfitting—is
+documented in [`docs/PIPELINE_END_GOAL.md`](docs/PIPELINE_END_GOAL.md). The detailed target
+architecture and its decision rationale are in
+[`docs/STAGED_PIPELINE_ARCHITECTURE.md`](docs/STAGED_PIPELINE_ARCHITECTURE.md).
+
 ## The stages
 
 ```
@@ -17,7 +23,7 @@ plan → build (×N layers) → acceptance → render
 
 | stage | command | what it does |
 |---|---|---|
-| **plan** | `bambi plan <shot>` | Reads `brief.md` + refs, emits the strict global dependency map `plans/global.md`, Layer 1's execution plan, and five machine-readable companions: `layers.json`, `acceptance.json`, `critic_axes.json`, [`checks.json`](#executable-checks--the-contract-a-layer-is-held-to), and [`scene_checks.json`](#live-scene-contracts). Before a later layer, `bambi plan <shot> --layer N` creates its just-in-time plan from sealed prior outcomes and approved amendments. There is no `plan.md` fallback. |
+| **plan** | `bambi plan <shot>` | Reads `brief.md` + refs, emits the strict global dependency map `plans/global.md`, the first ready work-unit plan, and five machine-readable companions: `layers.json`, `acceptance.json`, `critic_axes.json`, [`checks.json`](#executable-checks--the-contract-a-layer-is-held-to), and [`scene_checks.json`](#live-scene-contracts). `bambi plan <shot> --layer N [--unit ID]` creates a ready unit's just-in-time plan from sealed outcomes and approved amendments. There is no `plan.md` fallback. |
 | **build** | `bambi build <shot> --layer 1` | Builds ONE layer as an additive delta script (`build/01_layout.py` …). Iterates live in Blender, then writes a script that must rebuild it from empty. |
 | **acceptance** | `bambi accept <shot>` | Replays the whole chain from an empty scene and judges the approval moments on the full rubric. `--repair` routes a failure back to the layer that owns the failing axis. |
 | **render** | `bambi render <shot>` | Runs the accepted chain and encodes the frame range to mp4. |
@@ -25,9 +31,33 @@ plan → build (×N layers) → acceptance → render
 Supporting commands: `bambi_vfx.escalate` (answer plan questions), `bambi_vfx.agents.asset_builder`
 (image→3D asset caching), `bambi_vfx.verify_recipes` (audit the cookbook), `bambi_vfx.skills`.
 
-This is a strict migration. A shot with only `plan.md`, missing per-layer plans, an
+This is a strict migration. A shot with only `plan.md`, a legacy top-level `layers.json`
+array, missing schema-declared work-unit plans, an
 unscoped critic rubric, or name-based `scene_checks.json` selectors is rejected. The
 harness does not translate or silently fall back to the old contracts.
+
+### Model lanes
+
+Execution roles default to `claude-sonnet-5`; the authoritative visual critic defaults to
+`claude-opus-5`. This deliberately tests whether the harness can make a less expensive
+executor converge without weakening the verdict boundary. Configure the lane without code
+edits:
+
+```bash
+# Default robustness lane: Sonnet executes, Opus judges.
+BVFX_EXECUTION_MODEL=claude-sonnet-5 BVFX_CRITIC_MODEL=claude-opus-5 bambi run <shot>
+
+# Opus control lane.
+BVFX_EXECUTION_MODEL=claude-opus-5 BVFX_CRITIC_MODEL=claude-opus-5 bambi run <shot>
+```
+
+`BVFX_PLANNER_MODEL`, `BVFX_BUILDER_MODEL`, `BVFX_SCRIPT_MODEL`,
+`BVFX_REVIEWER_MODEL`, `BVFX_ASSET_MODEL`, and `BVFX_DISTILLER_MODEL` override individual
+execution roles. A different `BVFX_CRITIC_MODEL` creates a new judge configuration: run it
+in shadow/variance evaluation and qualify its exact model, prompt, and evidence shape before
+granting its qualitative verdicts autonomous blocking authority. The active build/script/
+critic/reviewer lane is stored in the revalidation manifest and run report; changing any of
+those settings invalidates the fast path instead of reusing pixels produced by another lane.
 
 ## How the flow actually runs
 
@@ -36,7 +66,7 @@ brief.md + refs/  ──►  GLOBAL PLAN ─► gate ─► repair ─┐
                         (draft → verify)   ▲         │  loop until clean,
                                            └─────────┘  stalled, or budget
 
-        prior outcomes ─► PLAN layer N ─► gate ─► BUILD layer N
+        prior outcomes ─► PLAN ready unit ─► gate ─► BUILD unit/layer boundary
                                                   ──► critic (owned axes only)
                         │                  metrics (can fail outright)
                         │                  propose_checks  ──►  runtime_checks.json
@@ -59,7 +89,7 @@ and true. `WebSearch` writes nothing, and no plan has ever carried a link.
 
 The global plan is only a dependency map. Immediately before Layer N, the planner reads
 sealed `plans/outcomes/*.json`, approved records in `plan_amendments.jsonl`, the current
-scripts, and recent run logs, then writes only `plans/<layer>.md`. A passed ledger layer
+scripts, then writes only the schema-declared plan for one dependency-ready work unit. A passed ledger layer
 without its sealed outcome is a gate failure, so downstream planning cannot lose the
 measured result. Shot-root `plan.md` has no compatibility path: if it coexists with strict
 plans, the plan gate blocks the build because broad retrieval can otherwise promote stale
@@ -67,7 +97,7 @@ whole-shot instructions back into execution authority.
 
 The Agent SDK owns automatic context compaction. The harness does not copy an entire plan
 into memory to compete with it: generated `CLAUDE.md` is a compact continuation contract
-that preserves `LIVE_BUILD`, the exact authoritative layer-plan path, owned axes, judge
+that preserves `LIVE_BUILD`, the exact authoritative unit-plan path, owned axes, judge
 frames, semantic roles, and measured state. `PreCompact` checkpoints `layer_state.json`
 and gives the summarizer a continuation capsule; the later SDK `compact_boundary` message
 is recorded separately, so logs distinguish “compaction started” from “compaction really
@@ -236,7 +266,7 @@ attempt:
 ```
 
 The legacy top-level list and legacy `layer` field are rejected; there is no compatibility
-branch. Just-in-time layer plans are capped at 160 lines and index these contracts and
+branch. Just-in-time work-unit plans are capped at 160 lines and index these contracts and
 sealed outcomes instead of copying logs. Numeric shader/compositor search uses
 `probe_control`, which sweeps semantic controls at locked render settings and always
 restores the original value before the builder commits one selected value. Controls may
@@ -528,7 +558,8 @@ failing layer rather than stacking work on it, and propagates that layer's exit 
 shots/<shot>/
   brief.md refs/            inputs: the spec and the reference board
   plans/global.md           dependency map (never an execution prompt)
-  plans/NN_<layer>.md       one just-in-time execution plan per ready layer
+  plans/NN_<layer>.md       layer charter or a one-unit migrated execution plan
+  plans/NN_<layer>/*.md     one just-in-time execution plan per ready work unit
   plans/outcomes/NN.json    sealed prior-layer evidence for downstream planning
   plan_amendments.jsonl     explicit proposed/approved/rejected plan feedback
   layers.json …             machine contracts + plan.provenance.json input hashes
@@ -545,6 +576,7 @@ shots/<shot>/
                             pre_compact and SDK compact_boundary event ← durable record
     console/<run-id>.log    the run's console narrative, exactly as it scrolled past
     layer_state.json        per-frame conclusions + latest PreCompact checkpoint
+    work_units/layer_N.json durable unit states, frozen protection closure and replans
     cost.jsonl              one row per model session with run, attempt, phase, role and
                             session id; run reports aggregate the complete attempt
     tool_failures.jsonl     every tool call that raised, with the input that raised it

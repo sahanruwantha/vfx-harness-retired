@@ -24,10 +24,15 @@ from pathlib import Path
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
 
 from . import costlog
+from .config import DEFAULT_EXECUTION_MODEL, Settings
 from .log import log, log_message
 from .recipes import recipe_index, search_recipes
 
-REVIEWER_MODEL = "claude-opus-5"
+REVIEWER_MODEL = DEFAULT_EXECUTION_MODEL
+
+
+def reviewer_model() -> str:
+    return Settings.from_environment(load_dotenv_file=False).reviewer_model
 
 REVIEWER_SYSTEM = """\
 You are a VFX supervisor doing an APPROACH REVIEW. A build has stopped improving: two
@@ -59,7 +64,7 @@ def _options(shot_folder: Path) -> ClaudeAgentOptions:
     from .recipes import RECIPES_DIR
     from .sandbox import sandbox_hooks
     return ClaudeAgentOptions(
-        model=REVIEWER_MODEL,
+        model=reviewer_model(),
         system_prompt=REVIEWER_SYSTEM + "\n\n" + recipe_index(),
         cwd=str(shot_folder),
         allowed_tools=["Read", "Glob"],

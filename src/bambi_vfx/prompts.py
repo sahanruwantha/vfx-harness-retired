@@ -223,23 +223,48 @@ WORKFLOW, in order:
         Strip frames must cover the FULL build range with no unjudged gaps.
    ## 5 · LEARNED DURING RUN — empty append-only section for build sessions.
 
-   Then ALSO Write FIVE machine-readable companions and the first layer plan. Do not
-   write execution plans for future layers: those are generated just in time after prior
-   outcomes exist. Write `plans/<layer-1-script-stem>.md` with only Layer 1's tickets,
-   owned axes, judge frames, semantic roles, executable checks, and stop conditions.
+   Then ALSO Write FIVE machine-readable companions and exactly the first dependency-ready
+   work-unit plan for Layer 1 at the path declared by that unit's `plan` field. Do not
+   write execution plans for later units or layers: those are generated just in time after
+   their dependencies seal. The unit plan contains only its bounded goal/non-scope,
+   semantic mutation surface, claims, judge evidence, executable checks, and stop conditions.
 
    (a) `layers.json` — the §3 layers the build harness executes, in BUILD order.
    IDs are "1", "2", "3" … starting at 1 with no gaps, and the script prefix matches the
    id (`build/01_layout.py` is layer 1). Do not leave numbering gaps "for insertion":
    inserting a layer means re-planning, and a sparse scheme like G10/G20 hides how many
    layers there are and where you are in them.
-     [{"id": "1", "script": "build/01_<name>.py", "title": "<title>",
-       "judge": [{"frame": <n>, "ref": "refs/<file>"}, …],  // EVERY frame it answers for
-       "owns": ["<axis key>", …],      // the (c) axes THIS layer is answerable for
-       "reads": "<what must read at the judge frame>"}, …]
-   List one `judge` entry per frame the layer's `reads` claims. The FIRST entry is the
-   primary (cheapest pair that can fail it) and is what the build loop iterates against;
-   the finished script is scored at ALL of them and passes only if every one clears.
+     {"schema": 4, "layers": [
+       {"id": "1", "script": "build/01_<name>.py", "title": "<title>",
+        "primary_judge": <frame>,
+        "judge": [{"frame": <n>, "ref": "refs/<file>"}, …],
+        "owns": ["<axis key>", …], "reads": "<layer acceptance boundary>",
+        "stages": [
+          {"id": "<bounded_unit>", "title": "<one goal>",
+           "plan": "plans/01_<name>/<NN_unit>.md", "depends_on": [],
+           "mutates": {"mode": "scoped", "roles": ["<semantic role>"],
+                       "controls": ["<semantic control>"],
+                       "script_spans": ["build/units/01_<name>/01_<bounded_unit>.py"]},
+           "protects": {"selector": "all_active_upstream_interfaces",
+                        "resolve_to_explicit_ids_at": "freeze"},
+           "evaluation": {"primary_judge": <frame>,
+                           "judge": [{"frame": <n>, "ref": "refs/<file>"}],
+                           "temporal_evidence": "none|keyframes|motion",
+                           "claims": [
+             {"id": "<claim_id>", "proposition": "<one proposition>",
+              "axis": "<owned_axis>", "property": "<one_atomic_property>",
+              "subject_roles": ["<semantic role>"],
+              "subject_controls": ["<semantic control>"],
+              "moments": [<judge frame>], "kind": "atomic", "required": true,
+              "authority": "executable_required",
+              "repair_owner": "<bounded_unit>",
+              "evidence": [{"kind": "scene_contract" | "image_contract",
+                            "id": "<exact contract id>"}]}, …]},
+           "completion": "all_required_claims_and_protected_contracts_pass"}]}, …]}
+   List one `judge` entry per frame the layer's `reads` claims and name exactly one of
+   those frames in `primary_judge` (the cheapest pair that can fail it). Declaration
+   order is presentation only and MUST NOT carry hidden authority. The finished script
+   is scored at ALL declared frames and passes only if every required claim clears.
    A frame you describe in prose but omit here is NEVER checked: server_to_hansa's G50
    said "path underfoot at f368", listed only f300, and shipped a path scoring 4 at f300
    and 2 at f368. Do not pad the list either — every entry costs a critic pass, so list
@@ -258,6 +283,27 @@ WORKFLOW, in order:
    Do NOT tag layers with milestones. Delivering an approval moment is not a layer's job:
    a moment is a whole frame produced by the CUMULATIVE chain, and attributing it to one
    additive layer makes that layer get judged on work later layers have not done yet.
+   Split a layer into the smallest useful dependency-ordered `stages`; do not use one
+   giant work unit when subject, control family, evidence mode, moment, repair owner, or
+   regression risk changes. Stage IDs, dependencies and every claim owner must resolve
+   inside the layer DAG. Evidence policy is explicit; never infer motion from an axis name.
+   Every required claim is atomic: one property, explicit semantic subjects, exact judge
+   moments, and exact evidence bindings. Collection labels such as `scene_contracts` and
+   aggregate claims such as "all contracts pass" are invalid. Every contract owned by a
+   layer must bind to at least one claim, and every declared mutation role must be covered
+   by a required claim. If a visible acceptance property has no executable evidence,
+   declare qualified qualitative or human authority explicitly; never disguise it as an
+   executable claim.
+   Each work unit owns exactly one distinct replayable script under `build/units/…`.
+   `layer.script` is reserved for the composed artifact that the harness publishes only
+   after every unit passes; no unit may write it directly in a multi-unit layer. A
+   single-unit layer may use `layer.script` directly. Mutation is sequential inside one
+   Blender scene, while independent frozen-frame critic calls may run concurrently.
+   Blocking qualitative authority requires a qualification artifact for the exact judge,
+   prompt and evidence shape. Its `qualification` object must name `suite`, `judge_model`,
+   `prompt`, `evidence_shape`, safe relative `artifact`, and the artifact's full
+   `artifact_sha256`; that schema-1 artifact must record `passed: true` and measured rates
+   within explicit budgets. Otherwise use executable evidence or `human_required`.
 
    (b) `acceptance.json` — §4 verbatim, in TIME order. Judged ONCE over the finished
    chain by the accept stage, never during the build:
@@ -580,7 +626,8 @@ def verifier_user_prompt(shot, draft_name: str) -> str:
 
 LAYER_PLANNER_ADDENDUM = """\
 
-JUST-IN-TIME LAYER MODE — plan exactly Layer {layer_id}: {layer_title}.
+JUST-IN-TIME WORK-UNIT MODE — plan exactly Layer {layer_id}: {layer_title},
+unit {unit_id}: {unit_title}.
 
 The global dependency map and machine contracts already exist. Earlier layer outcomes are
 sealed facts, and approved amendments are explicit changes to the specification. Read only
@@ -601,15 +648,21 @@ hard plan requirements. Do not ask a layer to repair controls owned by another l
 """
 
 
-def layer_user_prompt(shot, layer, target: str, feedback: str) -> str:
+def layer_user_prompt(shot, layer, unit, target: str, feedback: str) -> str:
     """Kickoff for a just-in-time plan that consumes prior measured outcomes."""
     return (
-        f"Plan only Layer {layer.id} — {layer.title} — for shot '{shot.id}'. "
+        f"Plan only Layer {layer.id} — {layer.title} — unit {unit.id}: {unit.title} "
+        f"for shot '{shot.id}'. "
         f"Write exactly `{target}`.\n\n"
         f"Read `brief.md`, `plans/global.md`, `layers.json`, `critic_axes.json`, "
         f"`checks.json`, `scene_checks.json`, `plan_amendments.jsonl`, and only the build "
         f"scripts for this layer and its declared predecessors. Do not scan logs. "
         f"{_refs_block(shot)}\n\n"
         f"Layer contract: judges={list(layer.judges)}, owns={list(layer.owns)}, "
-        f"script=`{layer.script}`.\n\n{feedback or 'No prior outcome/amendment feedback.'}"
+        f"script=`{layer.script}`. Unit dependencies={list(unit.depends_on)}, "
+        f"mutation roles={list(unit.mutates.roles)}, controls={list(unit.mutates.controls)}, "
+        f"artifact spans={list(unit.mutates.script_spans)}, "
+        f"temporal evidence={unit.evaluation.temporal_evidence}, "
+        f"claims={[claim.id for claim in unit.evaluation.claims]}.\n\n"
+        f"{feedback or 'No prior outcome/amendment feedback.'}"
     )

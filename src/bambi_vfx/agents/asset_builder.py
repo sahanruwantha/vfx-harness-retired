@@ -31,13 +31,16 @@ from claude_agent_sdk import (
 from ..assets.images import get_image_backend
 from ..assets.normalize import prepare_asset
 from ..brief import Shot, load_shot
-from ..config import load_environment
+from ..config import DEFAULT_EXECUTION_MODEL, Settings, load_environment
 from ..log import log, log_message
 
-# opus-5: the asset is frozen upstream and every layer inherits it, so a mistake here is
-# the most expensive kind — sr2_tower's baked facade went unnoticed for five layer-2
-# attempts because nobody looked closely at what the asset already had.
-MODEL = "claude-opus-5"
+# Asset output is frozen upstream and inherited by every layer, so the harness must keep
+# its preview/reference gate strong even when a cheaper execution model does the routing.
+MODEL = DEFAULT_EXECUTION_MODEL
+
+
+def asset_model() -> str:
+    return Settings.from_environment(load_dotenv_file=False).asset_model
 
 ASSET_SYSTEM = """\
 You are the ASSET agent in an automated 3D/VFX bambi_vfx. You build the bespoke,
@@ -145,8 +148,9 @@ def _asset_tool(shot: Shot):
 async def build_assets(folder: str | Path, *, verbose: bool = True) -> None:
     shot = load_shot(folder)
     server, names = _asset_tool(shot)
+    model = asset_model()
     options = ClaudeAgentOptions(
-        model=MODEL,
+        model=model,
         system_prompt=ASSET_SYSTEM,
         cwd=str(shot.folder),
         mcp_servers={"assets": server},
@@ -166,7 +170,7 @@ async def build_assets(folder: str | Path, *, verbose: bool = True) -> None:
         f"anything carried by particles/FX/procedural. Check each preview against its "
         f"reference before accepting."
     )
-    log(f"asset agent: shot '{shot.id}', model {MODEL}, effort {options.effort}")
+    log(f"asset agent: shot '{shot.id}', model {model}, effort {options.effort}")
     try:  # refresh image-backend credentials now, not 20 minutes into the run
         get_image_backend().ensure_fresh()
     except Exception as e:
