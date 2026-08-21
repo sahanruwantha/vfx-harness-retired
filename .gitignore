@@ -19,6 +19,6 @@ renders/
 # ledger write-lock sidecars and in-flight atomic writes
 *.json.lock
 *.json.tmp.*
-# eval baselines: they embed build-script bodies and judged-render hashes, i.e. shot
-# content, and shots/ is untracked for exactly that reason. Measurements are local.
-evals/
+# Generated renders, transcripts, probes, and evaluation runs are local evidence.
+# Tracked evaluation definitions and small fixtures live under evals/.
+artifacts/

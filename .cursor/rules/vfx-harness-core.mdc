@@ -1,0 +1,19 @@
+---
+description: Core VFX Harness architecture and change protocol
+alwaysApply: true
+---
+
+# VFX Harness core rules
+
+- Read `AGENTS.md` and the relevant `docs/architecture`, ADR, HIR, and tests first.
+- Follow `docs/operations/improvement-lifecycle.md` for pain points and behavior changes.
+- Follow `docs/operations/running-vfx-harness.md` to run or diagnose a shot.
+- Read run metadata in order: latest pointer → manifest → status → summary → artifact index.
+- Never write or read evidence from shot-root legacy output directories.
+- Treat model output as a proposal; authoritative contracts and replay decide acceptance.
+- Keep domain code independent of Claude SDK, Blender, network, filesystem, and eval fixtures.
+- Parallelize evidence production; serialize authoritative mutation and integration.
+- Do not add shot names, fixed shot frames, display-name selectors, or scene coordinates to core code.
+- Do not patch a single render when the failure reveals a reusable harness capability.
+- Core behavior changes require root-cause evidence, regression coverage, and an HIR update.
+- Preserve unrelated and uncommitted user work.

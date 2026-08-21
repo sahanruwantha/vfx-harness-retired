@@ -41,7 +41,7 @@ jobs:
       # The real suite. Invoked directly as well as through pytest because it is the
       # authority — pytest is the wrapper, not the source of truth.
       - name: deterministic suite
-        run: python -m tests.test_harness
+        run: python -m tests.integration.test_harness
 
       - name: pytest
         run: pytest -q
@@ -50,6 +50,6 @@ jobs:
       # crashes on --help is broken for every user before it does anything useful.
       - name: entry points respond
         run: |
-          python -m bambi_vfx.preflight
-          python -m bambi_vfx.evals --help > /dev/null
-          python -m bambi_vfx.inspect_run --help > /dev/null
+          python -m vfx_harness.application.preflight
+          python -m vfx_harness.evaluation.cli --help > /dev/null
+          python -m vfx_harness.application.inspect_run --help > /dev/null

@@ -8,7 +8,7 @@ alwaysApply: true
 Build a pipeline that can handle arbitrarily complex shots by decomposing work into the
 smallest meaningful dependency-ordered units, validating each unit, and repeatedly proving
 that previously accepted work still holds. Beacon Wake is a test fixture, never the design
-target. The canonical rationale is in `docs/PIPELINE_END_GOAL.md`.
+target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 
 ## Always
 

@@ -1,4 +1,4 @@
-# bambi-vfx
+# VFX Harness
 
 An **agent-driven Blender VFX pipeline** on the Claude Agent SDK. A shot is specified as a
 markdown brief plus a board of reference frames; agents plan it, build it in a live headless
@@ -11,9 +11,9 @@ from an empty scene, and measured image metrics agree.
 
 The durable project north star—dynamic staged decomposition, widening validation, safe
 parallelism, transactional repair, and the rules that prevent shot-specific overfitting—is
-documented in [`docs/PIPELINE_END_GOAL.md`](docs/PIPELINE_END_GOAL.md). The detailed target
+documented in [`docs/architecture/pipeline-end-goal.md`](docs/architecture/pipeline-end-goal.md). The detailed target
 architecture and its decision rationale are in
-[`docs/STAGED_PIPELINE_ARCHITECTURE.md`](docs/STAGED_PIPELINE_ARCHITECTURE.md).
+[`docs/architecture/staged-pipeline.md`](docs/architecture/staged-pipeline.md).
 
 ## The stages
 
@@ -23,13 +23,31 @@ plan → build (×N layers) → acceptance → render
 
 | stage | command | what it does |
 |---|---|---|
-| **plan** | `bambi plan <shot>` | Reads `brief.md` + refs, emits the strict global dependency map `plans/global.md`, the first ready work-unit plan, and five machine-readable companions: `layers.json`, `acceptance.json`, `critic_axes.json`, [`checks.json`](#executable-checks--the-contract-a-layer-is-held-to), and [`scene_checks.json`](#live-scene-contracts). `bambi plan <shot> --layer N [--unit ID]` creates a ready unit's just-in-time plan from sealed outcomes and approved amendments. There is no `plan.md` fallback. |
-| **build** | `bambi build <shot> --layer 1` | Builds ONE layer as an additive delta script (`build/01_layout.py` …). Iterates live in Blender, then writes a script that must rebuild it from empty. |
-| **acceptance** | `bambi accept <shot>` | Replays the whole chain from an empty scene and judges the approval moments on the full rubric. `--repair` routes a failure back to the layer that owns the failing axis. |
-| **render** | `bambi render <shot>` | Runs the accepted chain and encodes the frame range to mp4. |
+| **plan** | `vfx plan <shot>` | Reads `brief.md` + refs, emits the strict global dependency map `plans/global.md`, the first ready work-unit plan, and five machine-readable companions: `layers.json`, `acceptance.json`, `critic_axes.json`, [`checks.json`](#executable-checks--the-contract-a-layer-is-held-to), and [`scene_checks.json`](#live-scene-contracts). `vfx plan <shot> --layer N [--unit ID]` creates a ready unit's just-in-time plan from sealed outcomes and approved amendments. There is no `plan.md` fallback. |
+| **build** | `vfx build <shot> --layer 1` | Builds ONE layer as an additive delta script (`build/01_layout.py` …). Iterates live in Blender, then writes a script that must rebuild it from empty. |
+| **acceptance** | `vfx accept <shot>` | Replays the whole chain from an empty scene and judges the approval moments on the full rubric. `--repair` routes a failure back to the layer that owns the failing axis. |
+| **render** | `vfx render <shot>` | Runs the accepted chain and encodes the frame range to mp4. |
 
-Supporting commands: `bambi_vfx.escalate` (answer plan questions), `bambi_vfx.agents.asset_builder`
-(image→3D asset caching), `bambi_vfx.verify_recipes` (audit the cookbook), `bambi_vfx.skills`.
+Supporting commands: `vfx_harness.orchestration.escalate` (answer plan questions), `vfx_harness.agents.asset_builder`
+(image→3D asset caching), `vfx_harness.knowledge.verify_recipes` (audit the cookbook), `vfx_harness.knowledge.skills`.
+
+## Run outputs
+
+`vfx run` writes generated output under `shots/<shot>/runs/<run-id>/`. Start with
+`runs/latest.json`, then read the selected run's `manifest.json`, `status.json`,
+`reports/summary.json`, and `artifacts.json`. Logs, evidence, checkpoints, scratch data, and
+deliverables have separate directories and never share filenames across runs.
+
+```bash
+vfx inspect shots/<shot> --list-runs
+vfx inspect shots/<shot> --run <run-id> --json
+```
+
+Authored inputs and the accepted build remain at the shot root. Durable cross-run operational
+state belongs in `state/`. Shot-wide `logs/`, `renders/`, `.artifacts/`, `.snapshots/`, and
+`.versions/` are unsupported: the harness neither writes nor reads them. See the
+[`run artifact contract`](docs/architecture/run-artifacts.md) and the
+[`operating guide`](docs/operations/running-vfx-harness.md).
 
 This is a strict migration. A shot with only `plan.md`, a legacy top-level `layers.json`
 array, missing schema-declared work-unit plans, an
@@ -45,15 +63,15 @@ edits:
 
 ```bash
 # Default robustness lane: Sonnet executes, Opus judges.
-BVFX_EXECUTION_MODEL=claude-sonnet-5 BVFX_CRITIC_MODEL=claude-opus-5 bambi run <shot>
+VFXH_EXECUTION_MODEL=claude-sonnet-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <shot>
 
 # Opus control lane.
-BVFX_EXECUTION_MODEL=claude-opus-5 BVFX_CRITIC_MODEL=claude-opus-5 bambi run <shot>
+VFXH_EXECUTION_MODEL=claude-opus-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <shot>
 ```
 
-`BVFX_PLANNER_MODEL`, `BVFX_BUILDER_MODEL`, `BVFX_SCRIPT_MODEL`,
-`BVFX_REVIEWER_MODEL`, `BVFX_ASSET_MODEL`, and `BVFX_DISTILLER_MODEL` override individual
-execution roles. A different `BVFX_CRITIC_MODEL` creates a new judge configuration: run it
+`VFXH_PLANNER_MODEL`, `VFXH_BUILDER_MODEL`, `VFXH_SCRIPT_MODEL`,
+`VFXH_REVIEWER_MODEL`, `VFXH_ASSET_MODEL`, and `VFXH_DISTILLER_MODEL` override individual
+execution roles. A different `VFXH_CRITIC_MODEL` creates a new judge configuration: run it
 in shadow/variance evaluation and qualify its exact model, prompt, and evidence shape before
 granting its qualitative verdicts autonomous blocking authority. The active build/script/
 critic/reviewer lane is stored in the revalidation manifest and run report; changing any of
@@ -171,7 +189,7 @@ quietly grading against the brief's prose.
 Critic scores are noisy — the same render against the same reference has scored 4.0, 3.0,
 3.0 and 2.0 — so a verdict landing next to the 2/3 pass boundary goes to
 **best-of-three with a median**. A one-axis 4 or 5 is not called borderline merely because
-the layer owns one axis. Objective metrics (`bambi_vfx/metrics.py`) run alongside and can
+the layer owns one axis. Objective metrics (`vfx_harness/evidence/metrics.py`) run alongside and can
 decide a moment outright.
 
 Canonical replay does **not** ask that noisy critic whether a script reproduced an already
@@ -243,7 +261,7 @@ decision, and repeated it six hundred lines later; and a `mean >= 14` **floor** 
 defect that was a **ceiling**, which the known-bad render passes comfortably.
 
 So a check is a **record**, not a sentence, and it may not enter a plan until it has been
-RUN. `checks.json` contains immutable planner contracts, and `bambi evals plan` re-runs
+RUN. `checks.json` contains immutable planner contracts, and `vfx evals plan` re-runs
 every rule against the artifacts on disk. Builder-discovered checks are appended to the
 separate `runtime_checks.json` ledger and revalidated against the final shipped render;
 mixing origins in `checks.json` is a blocking schema error. The runtime ledger is
@@ -357,11 +375,11 @@ acceleration, jerk), is the mesh sound (non-manifold edges, loose verts, islands
 applied, does the render buffer contain NaN.
 
 Each of these is gated on a **known-bad fixture**. A check nobody has watched fail is not a
-check, so `bambi_vfx.evals checks` builds one deliberately broken scene per check and fails
+check, so `vfx_harness.evaluation.cli checks` builds one deliberately broken scene per check and fails
 if any of them stays silent:
 
 ```bash
-bambi evals checks     # free, Blender only, no model
+vfx evals checks     # free, Blender only, no model
 ```
 
 ## Checking the plan itself
@@ -389,9 +407,9 @@ model is merely *asked* to record evaporates. So every check below is a check on
 never on a claim about one:
 
 ```bash
-bambi evals plan          # free, no model, no Blender; every shot by default
-bambi evals grounding     # just the fingerprint half
-bambi evals plan --feedback   # the repair brief a loop round would receive
+vfx evals plan          # free, no model, no Blender; every shot by default
+vfx evals grounding     # just the fingerprint half
+vfx evals plan --feedback   # the repair brief a loop round would receive
 ```
 
 - **grounded** — every stated number re-derives from the plate it describes, through *the
@@ -442,7 +460,7 @@ Three changes, so the visual half of the brief is guaranteed rather than hoped f
 ### Iterating until it holds
 
 ```bash
-bambi plan shots/barrel_roll --until-clean [--max-rounds 3]
+vfx plan shots/barrel_roll --until-clean [--max-rounds 3]
 ```
 
 Draft → verify → **gate** → repair → gate → … The loop converges against the deterministic
@@ -491,8 +509,8 @@ rest pose therefore cannot make a real animation layer look like a no-op.
 Two probes keep that honest, because both caught real defects:
 
 ```bash
-.venv/bin/python docs/probes/spike_render_modes.py      # does each mode isolate what it claims?
-.venv/bin/python docs/probes/spike_render_isolation.py  # is the DEFAULT render path unchanged?
+.venv/bin/python docs/research/probes/spike_render_modes.py      # does each mode isolate what it claims?
+.venv/bin/python docs/research/probes/spike_render_isolation.py  # is the DEFAULT render path unchanged?
 ```
 
 The first caught passes that rendered bit-identical to beauty under a caption promising
@@ -508,21 +526,21 @@ Requires **Blender 5.x** on `PATH` (headless) and Python ≥ 3.11.
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 cp .env.example .env          # set ONE auth variable (below), + MESHY_API_KEY for assets
 
-.venv/bin/python -m tests.test_harness        # deterministic suite, no Blender or network
+.venv/bin/python -m tests.integration.test_harness        # deterministic suite, no Blender or network
 
-bambi preflight
-bambi plan  shots/barrel_roll
-bambi build shots/barrel_roll --layer 1
+vfx preflight
+vfx plan  shots/barrel_roll
+vfx build shots/barrel_roll --layer 1
 ```
 
 The CLI loads the repository `.env` explicitly; shell-exported variables take precedence.
-Set `BVFX_ENV_FILE=/absolute/path/to/file` to use a different dotenv file. Importing the
+Set `VFXH_ENV_FILE=/absolute/path/to/file` to use a different dotenv file. Importing the
 Python package never loads credentials or mutates the environment.
 
 **Auth — check it before you spend anything:**
 
 ```bash
-bambi preflight
+vfx preflight
 ```
 
 Two variables work and **only these two names are read**: `CLAUDE_CODE_OAUTH_TOKEN` for
@@ -546,7 +564,7 @@ is usually auth.
 Run the whole shot — every layer, acceptance, then the mp4 — under one run id:
 
 ```bash
-bambi run shots/barrel_roll            # --dry-run to preview
+vfx run shots/barrel_roll            # --dry-run to preview
 ```
 
 It skips layers already recorded as passed (so it doubles as resume), stops at the first
@@ -569,39 +587,36 @@ shots/<shot>/
   scene_checks.json         exact projected geometry/count/mesh-state contracts
   answers.md                supervisor decisions; these are LAW and outrank inference
   shot.json                 the ledger: verdicts, rounds, run/attempt ids, acceptance
-  renders/                  judged frames, motion strips, the final mp4
-  logs/
-    run_layerN.json         per-layer report: rounds, cost, tokens, cache hit, hooks, tools
-    transcript/*.jsonl      every message, critic verdict, context-usage snapshot,
-                            pre_compact and SDK compact_boundary event ← durable record
-    console/<run-id>.log    the run's console narrative, exactly as it scrolled past
-    layer_state.json        per-frame conclusions + latest PreCompact checkpoint
-    work_units/layer_N.json durable unit states, frozen protection closure and replans
-    cost.jsonl              one row per model session with run, attempt, phase, role and
-                            session id; run reports aggregate the complete attempt
-    tool_failures.jsonl     every tool call that raised, with the input that raised it
-    journals/               the run_bpy calls a layer made, for replay
-    recipe_use.jsonl        which cookbook entries were pulled
-    plan_lab/               the planner's scratch spikes and their output
-    N_prerepairM.py         the build script as it was before a canonical repair
+  state/                    durable worklists, work-unit state, and contract gaps
+  runs/latest.json          selected structured run
+  runs/<run-id>/
+    manifest.json           schema, invocation, layout, and authority
+    status.json             terminal state and exit code
+    artifacts.json          complete machine-readable file catalog
+    reports/summary.json    findings, cost, trajectory, and acceptance digest
+    reports/layers/         one aggregate report per layer
+    logs/                   console, transcripts, costs, failures, and recipe use
+    evidence/               judged renders and comparisons
+    checkpoints/            Blender state, scripts, journals, and repair backups
+    scratch/                disposable Blender renders and planner probes
+    deliverables/           final published media
 ```
 
-Three records, three jobs, and they are not substitutes for each other:
+The records have different jobs and are not substitutes for each other:
 
 | | answers | shape |
 |---|---|---|
-| `logs/run_layerN.json` | did this layer go well? | aggregates |
+| `reports/layers/layer-N.json` | did this layer go well? | aggregates |
 | `logs/cost.jsonl` | what did it cost, **by role**? | one row per model session |
-| `logs/transcript/*.jsonl` | *why* did it decide that? | one JSON line per event |
-| `logs/console/*.log` | what did it look like happening? | the narrative, in order |
+| `logs/transcripts/<stage>/*.jsonl` | *why* did it decide that? | one JSON line per event |
+| `logs/console.log` | what did it look like happening? | the narrative, in order |
 
 Read them with one command rather than six greps:
 
 ```bash
-bambi inspect shots/barrel_roll             # the digest
-bambi inspect shots/barrel_roll --layer 3   # latest-attempt action timeline
-bambi inspect shots/barrel_roll --layer 3 --history  # include earlier attempts
-bambi inspect shots/barrel_roll --tools     # tool adoption
+vfx inspect shots/barrel_roll --list-runs
+vfx inspect shots/barrel_roll --run <run-id> --json
+vfx inspect shots/barrel_roll --run <run-id> --layer 3
 ```
 
 The digest leads with **findings**, not data: a layer whose score never moved, one that
@@ -616,25 +631,37 @@ predates the telemetry is **unmeasured**, never zero.
 Transcripts strip base64 image payloads to a one-line placeholder recording size and mime
 type — a live probe put 780KB of base64 in and got an 18KB file out — while keeping
 `run_bpy` scripts **verbatim**, because the console clips them to stay readable and a
-clipped script cannot be diffed against the next attempt. Set `BVFX_NO_TRANSCRIPT=1` to
+clipped script cannot be diffed against the next attempt. Set `VFXH_NO_TRANSCRIPT=1` to
 turn recording off.
 
 ```bash
-jq -r 'select(.kind=="critic") | "\(.frame) \(.mean) \(.verdict)"' logs/transcript/*.jsonl
-jq -r 'select(.kind=="tool_use") | .tool' logs/transcript/*.jsonl | sort | uniq -c
+jq -r 'select(.kind=="critic") | "\(.frame) \(.mean) \(.verdict)"' \
+  runs/<run-id>/logs/transcripts/*/*.jsonl
+jq -r 'select(.kind=="tool_use") | .tool' \
+  runs/<run-id>/logs/transcripts/*/*.jsonl | sort | uniq -c
 ```
+
+The full operating and diagnosis procedure is
+[`docs/operations/running-vfx-harness.md`](docs/operations/running-vfx-harness.md).
 
 ## Layout
 
 ```
-src/bambi_vfx/agents/     planner, builder, acceptance, and asset orchestration
-src/bambi_vfx/assets/     asset providers and normalization
-src/bambi_vfx/blender/    headless Blender boundary, tools, and checks
-src/bambi_vfx/eval/       evaluation and reproducibility checks
-src/bambi_vfx/recipes/    verified agent cookbook
-src/bambi_vfx/config.py   typed runtime configuration and explicit dotenv loading
-src/bambi_vfx/cli.py      unified `bambi <verb>` command dispatcher
-docs/probes/              spikes against real Blender
-tests/                    deterministic suite (no Blender, model, or network)
-shots/                    local shot inputs and outputs (untracked)
+src/vfx_harness/application/     user-facing use cases
+src/vfx_harness/domain/          shot, contract, and work-unit language
+src/vfx_harness/orchestration/   state, ledger, repair, and revalidation
+src/vfx_harness/agents/          model roles, prompts, hooks, and context
+src/vfx_harness/blender/         headless Blender boundary and tools
+src/vfx_harness/evidence/        runtime measurements and claim authority
+src/vfx_harness/evaluation/      offline and qualification evaluations
+src/vfx_harness/knowledge/       verified agent cookbook and capability ledger
+src/vfx_harness/observability/   logs, transcripts, cost, and provenance
+docs/                            architecture, decisions, improvements, operations, research
+evals/                           tracked evaluation definitions and fixtures
+tests/                           unit, contract, architecture, and integration guarantees
+shots/                           local shot inputs and outputs (ignored)
+artifacts/                       generated evaluation and render evidence (ignored)
 ```
+
+See [`AGENTS.md`](AGENTS.md) for coding-agent guidance and
+[`docs/architecture/repository.md`](docs/architecture/repository.md) for package boundaries.

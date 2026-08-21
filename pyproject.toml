@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "bambi-vfx"
-version = "0.2.0"
+name = "vfx-harness"
+version = "0.3.0"
 description = "An agent-driven 3D/VFX pipeline built on the Claude Agent SDK. Input: a shot folder (brief.md + refs/). Stage 2 — the plan agent — turns the brief into a frame-numbered build plan."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,22 +27,22 @@ dev = [
 ]
 
 [project.scripts]
-# `bambi <verb>` is the canonical interface; verb-specific commands suit automation.
-bambi = "bambi_vfx.cli:main"
-bambi-plan = "bambi_vfx.agents.planner:main"
-bambi-build = "bambi_vfx.agents.builder:main"
-bambi-run = "bambi_vfx.run_shot:main"
-bambi-accept = "bambi_vfx.agents.acceptance:main"
-bambi-render = "bambi_vfx.render_shot:main"
-bambi-preflight = "bambi_vfx.preflight:main"
-bambi-inspect = "bambi_vfx.inspect_run:main"
-bambi-asset = "bambi_vfx.agents.asset_builder:main"
-bambi-prepare-asset = "bambi_vfx.assets.normalize:main"
-bambi-evals = "bambi_vfx.evals:main"
-bambi-verify-recipes = "bambi_vfx.verify_recipes:main"
+# `vfx <verb>` is the canonical interface; verb-specific commands suit automation.
+vfx = "vfx_harness.cli:main"
+vfx-plan = "vfx_harness.agents.planner:main"
+vfx-build = "vfx_harness.agents.builder:main"
+vfx-run = "vfx_harness.application.run_shot:main"
+vfx-accept = "vfx_harness.agents.acceptance:main"
+vfx-render = "vfx_harness.application.render_shot:main"
+vfx-preflight = "vfx_harness.application.preflight:main"
+vfx-inspect = "vfx_harness.application.inspect_run:main"
+vfx-asset = "vfx_harness.agents.asset_builder:main"
+vfx-prepare-asset = "vfx_harness.assets.normalize:main"
+vfx-evals = "vfx_harness.evaluation.cli:main"
+vfx-verify-recipes = "vfx_harness.knowledge.verify_recipes:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bambi_vfx"]
+packages = ["src/vfx_harness"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
@@ -53,7 +53,7 @@ testpaths = ["tests"]
 # genuine outliers without reformatting 977 lines that are fine as they are.
 line-length = 120
 target-version = "py311"
-extend-exclude = ["src/bambi_vfx/recipes/_spikes"]
+extend-exclude = ["src/vfx_harness/knowledge/recipes/_spikes"]
 
 [tool.ruff.lint]
 select = [
@@ -83,9 +83,9 @@ ignore = [
 # Recipe spikes are SNIPPETS executed inside Blender in a namespace that already holds
 # bpy, the bvfx_* helpers and SPIKE_ARGS. All 29 F821s in this repo were here, and they
 # are all false — which is exactly enough noise to make a real one invisible.
-"src/bambi_vfx/recipes/_spikes/*.py" = ["F821", "F401", "E402"]
+"src/vfx_harness/knowledge/recipes/_spikes/*.py" = ["F821", "F401", "E402"]
 # Probes bootstrap sys.path before importing the package, so import ORDER is
 # load-bearing here, not cosmetic: sorting the block moves the package import above the
 # sys.path.insert that makes it resolvable, and the probe stops running.
-"docs/probes/*.py" = ["E402", "I001"]
-"src/bambi_vfx/__init__.py" = ["E402"]
+"docs/research/probes/*.py" = ["E402", "I001"]
+"src/vfx_harness/__init__.py" = ["E402"]
