@@ -3562,6 +3562,34 @@ async def build_layer(
                         metadata={"error": str(exc)},
                     )
                     unit_status = "failed_unrecorded_plan_finding"
+            elif unit_status == "failed":
+                try:
+                    finding = _record_bound_contract_falsification(shot, layer, unit, milestone, ledger)
+                except (OSError, ValueError, KeyError) as exc:
+                    transition(
+                        shot.folder,
+                        str(layer.id),
+                        unit.id,
+                        "failed",
+                        reason="falsified bound contracts could not produce typed evidence",
+                        metadata={"error": str(exc)},
+                    )
+                    unit_status = "failed_unrecorded_plan_finding"
+                else:
+                    if finding is None:
+                        transition(
+                            shot.folder,
+                            str(layer.id),
+                            unit.id,
+                            "failed",
+                            reason=unit_status,
+                        )
+                    else:
+                        log(
+                            "plan hypothesis falsified by executable evidence → "
+                            f"{finding['record_id']} (transactional replan required)",
+                            1,
+                        )
             else:
                 transition(
                     shot.folder,
@@ -3891,6 +3919,93 @@ def _record_contract_gap_falsification(shot: Shot, layer, unit) -> dict:
             "controls": list(unit.mutates.controls),
         },
         evidence=["state/contract-gaps.jsonl"],
+    )
+
+
+def _record_bound_contract_falsification(shot: Shot, layer, unit, milestone, ledger) -> dict | None:
+    """Escalate terminal failing contracts that sit on a declared decision falsification path.
+
+    Classification is by declared authority: a decision names the exact contracts that can
+    falsify it, so a terminal miss on one of them can only pass by amending that decision.
+    A failing contract that no decision names returns None and stays an ordinary failure —
+    uncertainty does not gain plan-defect authority.
+    """
+    from vfx_harness.domain.plan_records import load_assumptions
+    from vfx_harness.domain.unit_outcomes import falsifying_decisions
+    from vfx_harness.orchestration.layer_plans import work_unit_plan_path
+    from vfx_harness.orchestration.plan_authority import resolve_current
+    from vfx_harness.orchestration.unit_state import record_hypothesis_falsification
+
+    slot = ledger._slot(milestone)
+    rounds = [row for row in slot.get("rounds") or [] if row.get("kind") == "canonical"]
+    if not rounds:
+        return None
+    final = rounds[-1]
+    failing = [
+        dict(row)
+        for row in final.get("evidence") or []
+        if isinstance(row, dict) and row.get("id") and not row.get("pass")
+    ]
+    if not failing:
+        return None
+    try:
+        bundle = resolve_current(shot.folder)
+        assumptions = load_assumptions(bundle.root)
+    except (OSError, ValueError, KeyError) as exc:
+        log(f"! falsification classification skipped (unreadable selected authority): {str(exc)[:90]}", 1)
+        return None
+    decisions = falsifying_decisions((str(row["id"]) for row in failing), assumptions)
+    if not decisions:
+        return None
+    listed = {cid for record in decisions for cid in record.falsification_contract_ids}
+    observations = [row for row in failing if str(row["id"]) in listed]
+    cited = sorted({str(row["id"]) for row in observations})
+    script_rel = slot.get("script")
+    if not script_rel:
+        raise ValueError("terminal canonical verdict has no recorded build script")
+    candidate_hash = hashlib.sha256((shot.folder / script_rel).read_bytes()).hexdigest()
+    settings = {
+        "frame": int(milestone.frame),
+        "ref": str(milestone.ref),
+        "script": str(script_rel),
+        "round": final.get("round"),
+        "attempt": slot.get("attempt"),
+        "run_id": final.get("run_id"),
+    }
+    settings_hash = hashlib.sha256(
+        json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    unit_plan = work_unit_plan_path(shot.folder, unit)
+    evidence = [f"artifact:{script_rel}#sha256={candidate_hash}"]
+    render_rel = final.get("render")
+    if render_rel and (shot.folder / str(render_rel)).is_file():
+        evidence.append(f"render:{render_rel}")
+    return record_hypothesis_falsification(
+        shot.folder,
+        str(layer.id),
+        unit,
+        layer.stages,
+        bundle_hash=bundle.content_hash,
+        unit_plan_hash=hashlib.sha256(unit_plan.read_bytes()).hexdigest(),
+        candidate_hash=candidate_hash,
+        settings_hash=settings_hash,
+        contract_ids=cited,
+        observations=observations,
+        decisions=[
+            {"id": record.id, "strength": record.decision_strength} for record in decisions
+        ],
+        conflict={
+            "kind": "decision",
+            "required_authority": (
+                "amend decision(s) "
+                + ", ".join(record.id for record in decisions)
+                + " through vfx units replan --falsification; the failing contracts are their "
+                "declared falsification path, so passing requires authority outside this unit"
+            ),
+            "roles": list(unit.mutates.roles),
+            "controls": list(unit.mutates.controls),
+        },
+        evidence=evidence,
     )
 
 

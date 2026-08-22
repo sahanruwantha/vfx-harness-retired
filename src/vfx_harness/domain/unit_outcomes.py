@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vfx_harness.domain.plan_records import DECISION_STRENGTHS
+
+if TYPE_CHECKING:
+    from vfx_harness.domain.plan_records import Assumption
 
 HYPOTHESIS_FALSIFICATION_SCHEMA = "vfx-harness.hypothesis-falsification/v1"
 AUTHORITY_CONFLICTS = {
@@ -86,6 +90,24 @@ class AuthorityConflict:
             _strings(value.get("roles", []), f"{where}.roles", allow_empty=True),
             _strings(value.get("controls", []), f"{where}.controls", allow_empty=True),
         )
+
+
+def falsifying_decisions(
+    failing_contract_ids: Iterable[str],
+    decisions: Iterable[Assumption],
+) -> tuple[Assumption, ...]:
+    """Return the decisions whose declared falsification path contains a failing contract.
+
+    Classification is by declared authority, never by diagnosing why the contract failed:
+    a terminal miss on a contract that some decision names as its falsification path can
+    only pass by amending that decision, so it is a plan finding. A failing contract that
+    no decision names stays an ordinary repair/failure outcome.
+    """
+    failing = {str(item) for item in failing_contract_ids}
+    return tuple(
+        record for record in decisions
+        if failing & set(record.falsification_contract_ids)
+    )
 
 
 @dataclass(frozen=True, slots=True)

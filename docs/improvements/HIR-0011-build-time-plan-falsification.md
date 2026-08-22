@@ -495,18 +495,22 @@ Implemented:
   unit, unit-plan, candidate, and comparison-setting identities; records observations, decisions,
   authority conflict, evidence, and affected closure; and blocks dependants in the same state
   transaction.
-- The deterministic `contract_gap` path emits this outcome. Ordinary executable failures remain
-  repair/failure outcomes; uncertainty does not gain plan-defect authority.
+- The deterministic `contract_gap` path emits this outcome. A terminal unit failure whose failing
+  bound contracts sit on a decision's declared falsification path emits it too: classification is
+  by declared authority, never by diagnosing why the contract missed. Ordinary executable failures
+  remain repair/failure outcomes; uncertainty does not gain plan-defect authority; and a recording
+  error degrades to a visible `failed_unrecorded_plan_finding` instead of a silent ordinary
+  failure.
 - `vfx units replan --falsification ...` verifies the record against the explicitly named base
   bundle and DAG. Hard constraints require `--hard-constraint-approval`. `--preview` validates and
   prints the invalidation/preservation closure without publishing state.
 - Plan-gate and run summaries expose structural validation policy and falsification outcomes.
 
-Not yet implemented in this slice: a failing bound contract named by an approved/planner start's
-falsification path still ends as an ordinary unit failure instead of emitting the typed record.
-That routing is what the camera-driven fixture requires — the current shot's f36 housing contracts
-are exactly this case — and it is the next runtime slice together with the heterogeneous fixture
-and the current-shot migration.
+Not yet implemented in this slice: the end-to-end camera-driven and heterogeneous integration
+fixtures (a real producing unit measuring the scene and returning the typed record through a full
+build), the current-shot migration, and the economic acceptance comparison. The bound-contract
+routing itself is unit-tested at the builder seam with the current shot's f36 housing contract as
+the fixture case.
 
 Verification after this slice:
 
@@ -515,7 +519,7 @@ Verification after this slice:
 All checks passed!
 
 .venv/bin/python -m pytest -q
-132 passed in 35.62s
+135 passed in 34.61s
 
 .venv/bin/python -m tests.integration.test_harness
 ALL PASS (0 failed)

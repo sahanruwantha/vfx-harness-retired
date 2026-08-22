@@ -35,6 +35,9 @@ live in the linked Harness Improvement Records.
 - Redefined plan cleanliness as structural authority, added explicit decision strengths and typed
   `hypothesis_falsified` work-unit outcomes, and bound transactional replanning to those immutable
   executable findings while preserving hard-constraint approval.
+- Routed terminal unit failures whose failing bound contracts are a decision's declared
+  falsification path into the same typed `hypothesis_falsified` outcome, so an unreachable
+  approved or planner start stops as replanning evidence instead of a generic unit failure.
 - Limited plan spikes to optional citation-integrity evidence: claimed spikes now freeze exact
   script, output, Blender identity, and contract rows, while unspiked composition work may proceed
   to its producing runtime unit.
