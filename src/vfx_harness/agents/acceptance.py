@@ -88,6 +88,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
 
     ledger = Ledger(shot)
     results: dict[str, dict] = {}
+    passed_contract_evidence: set[tuple[str, str]] = set()
     for mid, m in moments.items():
         t0 = time.monotonic()
         log(f"── {mid} @ f{m.frame} vs {m.ref} ──")
@@ -134,11 +135,36 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
                         "metric_failures": blocking,
                         "scores": verdict.get("scores", {}),
                         "issues": verdict.get("issues", [])[:4]}
+        from vfx_harness.evidence.checks import acceptance_evidence
+
+        contract_evidence = acceptance_evidence(
+            shot.folder,
+            frame=m.frame,
+            render=render_rel,
+        )
+        results[mid]["contract_evidence"] = contract_evidence
+        passed_contract_evidence.update(
+            (str(row["source"]), str(row["id"]))
+            for row in contract_evidence
+            if row.get("pass") is True and row.get("authoritative") is True
+        )
         verdict["pass"] = ok
         why = "" if not blocking else f"  (critic {verdict['mean']}, but {len(blocking)} metric(s) out of tolerance)"
         log(f"{mid}: mean {verdict['mean']} {'PASS ✅' if ok else 'FAIL ✗'}{why}")
         transcript.event("accept_moment", moment=mid, **results[mid],
                          seconds=verdict.get("round_s"))
+
+    if not only:
+        from vfx_harness.orchestration.plan_due import (
+            require_due_clear,
+            resolve_acceptance_completion,
+        )
+
+        resolve_acceptance_completion(
+            shot.folder,
+            passed_evidence=passed_contract_evidence,
+        )
+        require_due_clear(shot.folder, acceptance=True)
 
     ledger.data["acceptance"] = {
         "scripts": ran,
@@ -302,6 +328,13 @@ def apply_repair(shot: Shot, plan: list[dict], ledger: Ledger) -> list[str]:
 async def _run(folder: str, only: str | None, blender: str, force: bool = False,
                repair: bool = False) -> None:
     shot = load_shot(folder)
+    from vfx_harness.orchestration.plan_due import require_due_clear
+
+    require_due_clear(
+        shot.folder,
+        acceptance=True,
+        record_kinds=frozenset({"assumption"}),
+    )
     session = BlenderSession(blender=blender, blend_file=None,
                              assets_dir=shot.folder / "assets",
                              cwd=shot.folder).start()

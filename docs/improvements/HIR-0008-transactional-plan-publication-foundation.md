@@ -97,18 +97,18 @@ migration will update all consumers in one cut and remove the compatibility surf
 
 ## Remaining limitations
 
-- Existing build/evaluation consumers do not yet resolve `plans/current.json`.
-- Requirements, obligations, assumptions, migration sunsets, and verifier-output narrowing from
-  ADR-0004 remain future slices.
+- Pointer-less archived fixtures, JIT unit-plan publication, migration sunsets, and
+  verifier-output narrowing remain future slices. Selected global-plan consumption and typed
+  requirements/obligations/assumptions are implemented by
+  [HIR-0010](HIR-0010-executable-plan-authority-and-due-gates.md).
 - Gate warnings remain a flat list. Pattern-grouping and separation of migration chores from
   probable runtime defects remain an explicit warning-ergonomics item for the next slice.
 - Publication currently runs in the planner process after the deterministic gate, not yet from a
   fresh independent commit subprocess.
 
-The next prioritized slice is typed `requirements.json`, `obligations.json`, and
-`assumptions.json` with dependency-outcome due gates. It enables mechanical closure for deferred
-exact-return/final-lock evidence and provides the lifecycle substrate needed by migration sunsets,
-honest assumption outcomes, warning grouping, and the narrowed adversarial verifier charter.
+The next prioritized slice after HIR-0010 is publishing JIT work-unit plans as transactions keyed
+to the selected global bundle, followed by narrowed adversarial verifier output and authenticated
+resolution writers.
 
 The formerly listed shot-root authoring limitation was closed by
 [HIR-0009](HIR-0009-run-scoped-plan-authoring.md): global roles now operate in an

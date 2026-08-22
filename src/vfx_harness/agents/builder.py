@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import base64
 import difflib
+import fnmatch
 import hashlib
 import io
 import json
@@ -184,6 +185,10 @@ _TRUNCATED = {"error_max_turns", "error_max_budget_usd"}
 
 class BuildTruncated(RuntimeError):
     """The builder ran out of budget mid-build — no verdict is meaningful."""
+
+
+class BuildUnpassed(RuntimeError):
+    """A direct build completed without accepting every unit in its requested layer."""
 
 
 class UnpassedPrior(RuntimeError):
@@ -645,7 +650,9 @@ async def ensure_axes(shot: Shot, verbose: bool = True) -> list[tuple[str, str]]
     has an owning layer. Missing axes are a migration failure, not an invitation for the
     builder to invent a different rubric.
     """
-    path = shot.folder / "critic_axes.json"
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    path = selected_artifact_path(shot.folder, "critic_axes.json")
     if path.is_file():
         return load_axes(shot)
     raise FileNotFoundError(
@@ -1204,8 +1211,9 @@ def _required_focus_requests(shot: Shot, layer_id: str, frame: int, axes: list[t
     path into deterministic evidence acquisition for every shot.
     """
     from vfx_harness.domain.contracts import active_for, load_document
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
-    path = shot.folder / "checks.json"
+    path = selected_artifact_path(shot.folder, "checks.json")
     if not path.is_file():
         return []
     try:
@@ -2082,6 +2090,23 @@ def _unit_evidence_ids(unit, frame: int) -> set[str] | None:
     }
 
 
+def _unit_completion_evidence_ids(unit) -> set[str] | None:
+    """All evidence required before a bounded unit may stop mutating.
+
+    Live iteration renders the primary judge for speed, but scene contracts are cheap and can
+    probe every declared moment. Restricting the convergence guard to the primary frame lets a
+    multi-moment unit seal before its other required claims have even been evaluated.
+    """
+    if unit is None:
+        return None
+    return {
+        binding.id
+        for claim in unit.evaluation.claims
+        if claim.required
+        for binding in claim.evidence
+    }
+
+
 def _scope_unit_evidence(evidence: list[dict], unit, frame: int) -> list[dict]:
     """Keep only evidence explicitly bound by the active unit's moment."""
     ids = _unit_evidence_ids(unit, frame)
@@ -2358,6 +2383,42 @@ def _blender_version(session: BlenderSession) -> str:
         return "unknown"
 
 
+def _scene_object_manifest(session: BlenderSession) -> dict[str, str]:
+    result = session.run(
+        "RESULT = {o.name: str(o.get('bvfx_role') or '') for o in bpy.context.scene.objects}",
+        journal=False,
+    ).get("result")
+    return {str(name): str(role) for name, role in (result or {}).items()}
+
+
+def _scope_added_object_errors(
+    before: dict[str, str], after: dict[str, str], allowed_roles: tuple[str, ...]
+) -> list[str]:
+    """Reject persisted helpers and semantic roles outside a scoped unit's authority."""
+    def allowed(role: str) -> bool:
+        for pattern in allowed_roles:
+            if fnmatch.fnmatchcase(role, pattern):
+                return True
+            # Mutation manifests name semantic namespaces (``camera``), while
+            # executable contracts and objects use concrete descendants
+            # (``camera.*`` / ``camera.main``). A namespace owns only its
+            # dot-delimited descendants, never a similar sibling such as ``camera_rig``.
+            if not any(token in pattern for token in "*?[") and role.startswith(pattern + "."):
+                return True
+        return False
+
+    errors = []
+    for name in sorted(set(after) - set(before)):
+        role = after[name]
+        if not role:
+            errors.append(f"new object {name!r} has no bvfx_role")
+        elif not allowed(role):
+            errors.append(
+                f"new object {name!r} has undeclared role {role!r}; allowed {list(allowed_roles)}"
+            )
+    return errors
+
+
 def _try_revalidate(
     shot: Shot,
     m: Milestone,
@@ -2389,7 +2450,16 @@ def _try_revalidate(
         session.run(_RESET)
         session.run(_preamble(shot))
         _run_prior_paths(session, prior_paths)
+        before_objects = _scene_object_manifest(session)
         session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
+        unit = layer.stages[0] if len(layer.stages) == 1 else None
+        if unit is not None and unit.mutates.mode == "scoped":
+            scope_errors = _scope_added_object_errors(
+                before_objects, _scene_object_manifest(session), unit.mutates.roles
+            )
+            if scope_errors:
+                log(f"REVALIDATE miss: scoped artifact violation ({'; '.join(scope_errors[:3])})", 1)
+                return None
     except Exception as exc:
         log(f"REVALIDATE miss: deterministic replay failed ({str(exc)[:120]})", 1)
         return None
@@ -2529,11 +2599,11 @@ async def build_unit(
     # Shared with both the Blender tool server and the PreToolUse phase guard. The tool
     # flips scene_contracts_passed atomically; the next speculative mutation is denied.
     _look_actions = axes_own_look(axes)
-    active_evidence_ids = _unit_evidence_ids(active_unit, int(m.frame))
+    active_evidence_ids = _unit_completion_evidence_ids(active_unit)
     active_image_evidence_ids = {
         binding.id
         for claim in (active_unit.evaluation.claims if active_unit else ())
-        if claim.required and int(m.frame) in claim.moments
+        if claim.required
         for binding in claim.evidence
         if binding.kind == "image_contract"
     }
@@ -3307,7 +3377,9 @@ async def build_layer(
                 "multi-unit stages must write distinct unit scripts"
             )
 
-    layers_hash = hashlib.sha256((shot.folder / "layers.json").read_bytes()).hexdigest()
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    layers_hash = hashlib.sha256(selected_artifact_path(shot.folder, "layers.json").read_bytes()).hexdigest()
     initialize(shot.folder, str(layer.id), layer.stages, plan_hash=layers_hash)
     prior_layers = _prior_layer_paths(shot, layer, force=force)
     state = load_unit_state(shot.folder, str(layer.id))
@@ -3374,6 +3446,9 @@ async def build_layer(
                 f"layer {layer.id} has no dependency-ready work unit; inspect logs/work_units state"
             )
         unit = pending[0]
+        from vfx_harness.orchestration.plan_due import require_due_clear
+
+        require_due_clear(shot.folder, layer=str(layer.id), unit=unit.id)
         unit_plan_path = work_unit_plan_path(shot.folder, unit)
         if not unit_plan_path.is_file():
             from vfx_harness.evaluation.plan_gate import report as gate_report
@@ -3388,7 +3463,11 @@ async def build_layer(
                 unit_id=unit.id,
                 blender=Settings.from_environment().blender_bin,
             )
-            gated = run_plan_gate(shot.folder)
+            from vfx_harness.orchestration.plan_authority import prepare_consumer_view
+
+            gated = run_plan_gate(
+                prepare_consumer_view(run_artifacts.ensure(shot.folder, command="build"))
+            )
             if not gated.clean:
                 raise RuntimeError(
                     f"generated unit plan {layer.id}.{unit.id} failed the deterministic gate:\n"
@@ -3465,14 +3544,32 @@ async def build_layer(
             raise
         unit_status = ledger.status(milestone)
         if unit_status != "passed":
-            terminal = "blocked" if unit_status == "contract_gap" else "failed"
-            transition(
-                shot.folder,
-                str(layer.id),
-                unit.id,
-                terminal,
-                reason=("contract gap requires transactional replanning" if terminal == "blocked" else unit_status),
-            )
+            if unit_status == "contract_gap":
+                try:
+                    finding = _record_contract_gap_falsification(shot, layer, unit)
+                    log(
+                        "plan hypothesis falsified by executable evidence → "
+                        f"{finding['record_id']} (transactional replan required)",
+                        1,
+                    )
+                except (OSError, ValueError, KeyError) as exc:
+                    transition(
+                        shot.folder,
+                        str(layer.id),
+                        unit.id,
+                        "failed",
+                        reason="contract gap could not produce typed falsification evidence",
+                        metadata={"error": str(exc)},
+                    )
+                    unit_status = "failed_unrecorded_plan_finding"
+            else:
+                transition(
+                    shot.folder,
+                    str(layer.id),
+                    unit.id,
+                    "failed",
+                    reason=unit_status,
+                )
             block_dependents(
                 shot.folder,
                 str(layer.id),
@@ -3486,13 +3583,13 @@ async def build_layer(
             active_ids = {
                 str(row["id"])
                 for name, key in (("scene_checks.json", "contracts"), ("checks.json", "checks"))
-                for row in load_document(shot.folder / name, key)
+                for row in load_document(selected_artifact_path(shot.folder, name), key)
                 if active_for(row, layer.id)
             }
         else:
             active_ids = {
                 str(row["id"])
-                for row in load_document(shot.folder / "scene_checks.json", "contracts")
+                for row in load_document(selected_artifact_path(shot.folder, "scene_checks.json"), "contracts")
                 if active_for(row, layer.id) and int(row.get("owner_layer")) < int(layer.id)
             }
         artifact = shot.folder / artifact_for(unit)
@@ -3509,6 +3606,28 @@ async def build_layer(
             input_hash=layers_hash,
         )
         transition(shot.folder, str(layer.id), unit.id, "evaluating", reason="canonical evaluation sealed")
+        from vfx_harness.orchestration.plan_due import resolve_unit_completion
+
+        passed_evidence = {
+            (binding.kind, binding.id)
+            for claim in unit.evaluation.claims
+            if claim.required
+            for binding in claim.evidence
+            if binding.kind in {"scene_contract", "image_contract"}
+        }
+        passed_evidence.add(("replay", f"{layer.id}.{unit.id}"))
+        resolve_unit_completion(
+            shot.folder,
+            layer=str(layer.id),
+            unit=unit.id,
+            passed_evidence=passed_evidence,
+        )
+        require_due_clear(
+            shot.folder,
+            layer=str(layer.id),
+            unit=unit.id,
+            completion=True,
+        )
         transition(shot.folder, str(layer.id), unit.id, "passed", reason="all required unit claims passed")
         passed_units.add(unit.id)
         unit_artifacts.append(artifact_for(unit))
@@ -3698,6 +3817,83 @@ def _persist_contract_gaps(shot: Shot, layer, m: Milestone, render_rel: str, ver
     )
 
 
+def _record_contract_gap_falsification(shot: Shot, layer, unit) -> dict:
+    """Promote the latest verified coverage gap into typed replan authority.
+
+    ``contract_gap`` is narrower than a failed contract: it means a measurable observation
+    has no authoritative contract binding, so repairing the scene would require authority
+    the active unit does not have. Ordinary executable misses never enter this path.
+    """
+    from vfx_harness.domain.plan_records import load_assumptions
+    from vfx_harness.observability.run_artifacts import shot_state_dir
+    from vfx_harness.orchestration.layer_plans import work_unit_plan_path
+    from vfx_harness.orchestration.plan_authority import resolve_current
+    from vfx_harness.orchestration.unit_state import record_hypothesis_falsification
+
+    gaps_path = shot_state_dir(shot.folder) / "contract-gaps.jsonl"
+    records = []
+    if gaps_path.is_file():
+        for line_no, line in enumerate(gaps_path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{gaps_path}:{line_no} is invalid JSON: {exc}") from exc
+            if (
+                str(row.get("layer")) == str(layer.id)
+                and str(row.get("unit")) in {unit.id, "coverage_audit"}
+                and row.get("classification") == "plan_defect"
+            ):
+                records.append(row)
+    if not records:
+        raise ValueError(
+            f"contract gap for {layer.id}.{unit.id} has no hash-pinned gap record; "
+            "refusing to invent replanning evidence"
+        )
+    gap = records[-1]
+    observations = list(gap.get("gaps") or [])
+    if not observations:
+        raise ValueError("latest contract-gap record has no observations")
+    bundle = resolve_current(shot.folder)
+    cited_contracts = sorted({
+        str(contract_id)
+        for finding in observations
+        for contract_id in finding.get("check_ids") or []
+        if str(contract_id).strip()
+    })
+    owner = f"{layer.id}.{unit.id}"
+    decisions = [
+        {"id": assumption.id, "strength": assumption.decision_strength}
+        for assumption in load_assumptions(bundle.root)
+        if assumption.falsification_owner == owner
+        or set(assumption.falsification_contract_ids) & set(cited_contracts)
+    ]
+    unit_plan = work_unit_plan_path(shot.folder, unit)
+    return record_hypothesis_falsification(
+        shot.folder,
+        str(layer.id),
+        unit,
+        layer.stages,
+        bundle_hash=bundle.content_hash,
+        unit_plan_hash=hashlib.sha256(unit_plan.read_bytes()).hexdigest(),
+        candidate_hash=str(gap.get("candidate_hash")),
+        settings_hash=str(gap.get("settings_hash")),
+        contract_ids=cited_contracts,
+        observations=observations,
+        decisions=decisions,
+        conflict={
+            "kind": "contract",
+            "required_authority": (
+                "add an independently measurable claim/contract binding before any scene repair"
+            ),
+            "roles": list(unit.mutates.roles),
+            "controls": list(unit.mutates.controls),
+        },
+        evidence=["state/contract-gaps.jsonl"],
+    )
+
+
 async def _verify_script(
     shot: Shot,
     m: Milestone,
@@ -3730,7 +3926,24 @@ async def _verify_script(
         session.run(_RESET)
         session.run(_preamble(shot))
         _run_prior_paths(session, prior_paths)  # deltas assume priors ran first
+        before_objects = _scene_object_manifest(session)
         session.run(script_path.read_text(encoding="utf-8"))
+        if active_unit is not None and active_unit.mutates.mode == "scoped":
+            scope_errors = _scope_added_object_errors(
+                before_objects,
+                _scene_object_manifest(session),
+                active_unit.mutates.roles,
+            )
+            if scope_errors:
+                log("! scoped artifact violation: " + "; ".join(scope_errors[:6]))
+                ledger.record_round(
+                    m,
+                    kind="canonical",
+                    index=0,
+                    render="",
+                    verdict=_verdict({"scores": {}, "issues": scope_errors}),
+                )
+                return "failed"
     except BlenderError as e:
         log(f"! build script failed: {str(e)[:200]}")
         ledger.record_round(
@@ -3898,7 +4111,13 @@ async def _run(
     # nothing recording the divergence, and every layer below is then built to a spec that
     # no longer exists. An edited INPUT refuses; an edited artifact only warns, since
     # hand-tuning layers.json is a legitimate thing to do mid-build.
-    stale = provenance_check(shot.folder)
+    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
+
+    if (shot.folder / POINTER).exists():
+        resolve_current(shot.folder)
+        stale = []
+    else:
+        stale = provenance_check(shot.folder)
     for s in stale:
         log(f"! plan provenance: {s}")
     if any("CHANGED since the plan" in s for s in stale) and not force:
@@ -3913,6 +4132,9 @@ async def _run(
     g = layers.get(layer_id) or layers.get(layer_id.upper())
     if g is None:
         raise SystemExit(f"unknown layer {layer_id!r}; known: {', '.join(layers)}")
+    from vfx_harness.orchestration.plan_due import require_due_clear
+
+    require_due_clear(shot.folder, layer=str(g.id))
     unanswered = unanswered_for_layer(shot.folder, g)
     if unanswered and not force:
         log(
@@ -3940,7 +4162,20 @@ async def _run(
             f"(judges: {judged}) → {g.script}, builder {builder_model()}, critic {critic_model()}"
         )
         ledger = await build_layer(shot, g, session, rounds=rounds, resume_ok=resume_ok, force=force)
-        log(f"{g.id}: {ledger.status(g.as_milestone())}  →  {ledger.path}")
+        status = ledger.status(g.as_milestone())
+        log(f"{g.id}: {status}  →  {ledger.path}")
+        from vfx_harness.orchestration.unit_state import load as load_unit_state
+
+        unit_state = load_unit_state(shot.folder, str(g.id))
+        unpassed = [
+            f"{uid}={row.get('status')}"
+            for uid, row in (unit_state.get("units") or {}).items()
+            if row.get("status") != "passed"
+        ]
+        if unpassed:
+            raise BuildUnpassed(
+                f"layer {g.id} did not accept every work unit: {', '.join(unpassed)}"
+            )
     finally:
         session.close()
         # This was imported and never called. write_layer_context() overwrites CLAUDE.md
@@ -3985,6 +4220,9 @@ def main() -> None:
         except BuildTruncated as e:
             log(f"BUILD TRUNCATED — {e}")
             raise SystemExit(3) from None
+        except BuildUnpassed as e:
+            log(f"BUILD UNPASSED — {e}")
+            raise SystemExit(7) from None
         except ChainBroken as e:
             log(f"CHAIN BROKEN — {e}")
             raise SystemExit(4) from None

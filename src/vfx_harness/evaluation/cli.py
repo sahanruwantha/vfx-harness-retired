@@ -320,7 +320,54 @@ def _cmd_plan(argv: list[str]) -> int:
     if not folders:
         print("no shot has plans/global.md yet — nothing to gate")
         return 1
-    results = [_pg.run(f, args.plan) for f in folders]
+    evaluation_roots = []
+    authority_failures = {}
+    for folder in folders:
+        from vfx_harness.orchestration.plan_authority import (
+            POINTER,
+            PlanPublicationError,
+            prepare_consumer_view,
+            resolve_current,
+        )
+
+        if (folder / POINTER).exists():
+            try:
+                resolve_current(folder)
+                import tempfile
+
+                temporary = tempfile.TemporaryDirectory(prefix="vfx-plan-eval-")
+                scratch_root = Path(temporary.name) / "scratch"
+                scratch_root.mkdir()
+                ephemeral = run_artifacts.RunLayout(
+                    shot=folder.resolve(),
+                    run_id="ephemeral-plan-eval",
+                    root=Path(temporary.name),
+                )
+                evaluation_roots.append((prepare_consumer_view(ephemeral), temporary))
+            except PlanPublicationError as exc:
+                authority_failures[folder.resolve()] = str(exc)
+                evaluation_roots.append(None)
+        else:
+            evaluation_roots.append((folder, None))
+    results = []
+    for selected, folder in zip(evaluation_roots, folders, strict=True):
+        if selected is None:
+            results.append(_pg.GateResult(folder.name, [
+                _pg.Finding(
+                    "authority", True, "plans/current.json",
+                    authority_failures[folder.resolve()],
+                    "publish a fresh complete plan bundle; do not copy legacy files over the pointer",
+                )
+            ]))
+        else:
+            root, temporary = selected
+            try:
+                results.append(_pg.run(root, args.plan))
+            finally:
+                if temporary is not None:
+                    temporary.cleanup()
+    for result, folder in zip(results, folders, strict=True):
+        result.shot = folder.name
     if args.feedback:
         print("\n\n".join(_pg.feedback(r) or f"{r.shot}: clean" for r in results))
     else:

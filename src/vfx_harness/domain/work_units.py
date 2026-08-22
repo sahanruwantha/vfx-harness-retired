@@ -40,6 +40,7 @@ UNIT_STATES = {
     "repairing",
     "passed",
     "failed",
+    "hypothesis_falsified",
     "retryable",
     "blocked",
     "superseded",
@@ -401,11 +402,33 @@ class ProtectionSpec:
 
 
 @dataclass(frozen=True)
+class CompositionContext:
+    """Explicit visual context used to accept composition at declared moments."""
+
+    frames: tuple[int, ...]
+    source_unit: str | None
+    contract_ids: tuple[str, ...]
+
+    @classmethod
+    def parse(cls, value: Any, where: str) -> CompositionContext:
+        row = _mapping(value, where)
+        frames = _moments(row.get("frames"), f"{where}.frames")
+        source = row.get("source_unit")
+        if source is not None:
+            source = _id(source, f"{where}.source_unit")
+        contract_ids = _strings(row.get("contract_ids", []), f"{where}.contract_ids")
+        if bool(source) == bool(contract_ids):
+            raise ValueError(f"{where} must declare exactly one of source_unit or contract_ids")
+        return cls(frames, source, contract_ids)
+
+
+@dataclass(frozen=True)
 class EvaluationPolicy:
     primary_judge: int
     judges: tuple[JudgePoint, ...]
     temporal_evidence: str
     claims: tuple[Claim, ...]
+    composition_context: CompositionContext | None = None
 
     @classmethod
     def parse(cls, value: Any, where: str) -> EvaluationPolicy:
@@ -426,7 +449,19 @@ class EvaluationPolicy:
         ids = [claim.id for claim in claims]
         if len(set(ids)) != len(ids):
             raise ValueError(f"{where}.claims contains duplicate ids")
-        return cls(primary, judges, temporal, claims)
+        raw_composition = row.get("composition_context")
+        composition = (
+            CompositionContext.parse(raw_composition, f"{where}.composition_context")
+            if raw_composition is not None
+            else None
+        )
+        if composition:
+            outside = sorted(set(composition.frames) - {point.frame for point in judges})
+            if outside:
+                raise ValueError(
+                    f"{where}.composition_context frames are outside the judge set: {outside}"
+                )
+        return cls(primary, judges, temporal, claims, composition)
 
 
 @dataclass(frozen=True)
@@ -444,7 +479,7 @@ class WorkUnit:
     def parse(cls, value: Any, where: str) -> WorkUnit:
         row = _mapping(value, where)
         uid = _id(row.get("id"), f"{where}.id")
-        return cls(
+        unit = cls(
             uid,
             _text(row.get("title", uid), f"{where}.title"),
             _relative_path(row.get("plan"), f"{where}.plan"),
@@ -454,6 +489,12 @@ class WorkUnit:
             EvaluationPolicy.parse(row.get("evaluation"), f"{where}.evaluation"),
             _text(row.get("completion"), f"{where}.completion"),
         )
+        context = unit.evaluation.composition_context
+        if context and context.source_unit and context.source_unit not in unit.depends_on:
+            raise ValueError(
+                f"{where}.evaluation.composition_context source_unit must be a declared dependency"
+            )
+        return unit
 
 
 def validate_unit_dag(units: tuple[WorkUnit, ...], where: str) -> None:

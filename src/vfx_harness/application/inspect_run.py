@@ -171,6 +171,20 @@ def collect(shot_folder: str | Path, *, history: bool = False,
     recs = layers(folder, run_id=run_id)
     shot = _load_json(folder / "shot.json")
     acc = (shot.get("acceptance") or {})
+    from vfx_harness.orchestration.unit_state import load as load_unit_state
+
+    work_units = []
+    for layer_id in sorted({str(rec.get("layer")) for rec in recs if rec.get("layer") is not None}):
+        state = load_unit_state(folder, layer_id)
+        work_units.extend(
+            {
+                "layer": layer_id,
+                "unit": unit_id,
+                "status": row.get("status"),
+                "falsification_id": (row.get("falsification") or {}).get("record_id"),
+            }
+            for unit_id, row in (state.get("units") or {}).items()
+        )
     per = []
     for rec in recs:
         means = [r.get("mean") for r in rec.get("rounds", [])]
@@ -216,6 +230,10 @@ def collect(shot_folder: str | Path, *, history: bool = False,
         "cost_usd": round(sum(p["cost_usd"] for p in per), 2),
         "minutes": round(sum(p["minutes"] for p in per), 1),
         "passed": sum(1 for p in per if p["status"] == "passed"),
+        "work_units": work_units,
+        "hypotheses_falsified": sum(
+            1 for row in work_units if row["status"] == "hypothesis_falsified"
+        ),
         "adoption": adoption(recs),
         "transcripts": transcripts(
             folder, run_ids=None if history else

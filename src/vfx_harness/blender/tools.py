@@ -81,6 +81,22 @@ def _scene_completion_state(evidence: list[dict], layer_id: str) -> dict:
     }
 
 
+def _bound_static_frames(
+    rows: list[dict], active_ids: set[str] | None, fallback_frame: int
+) -> list[int]:
+    """Frames whose static contracts must be produced for the active evidence boundary."""
+    if active_ids is None:
+        return [int(fallback_frame)]
+    from vfx_harness.evidence.scene_checks import FUNCTIONAL_KINDS
+
+    frames = {
+        int(row.get("frame", fallback_frame))
+        for row in rows
+        if str(row.get("id")) in active_ids and row.get("kind") not in FUNCTIONAL_KINDS
+    }
+    return sorted(frames or {int(fallback_frame)})
+
+
 def _load(path: str) -> Image.Image:
     im = Image.open(path).convert("RGB")
     if im.width > _MAX_W:
@@ -672,16 +688,24 @@ def build_blender_tools(
         contract_note = ""
         if shot_dir and layer_id:
             try:
-                from vfx_harness.evidence.scene_checks import layer_evidence
-
-                evidence = await anyio.to_thread.run_sync(
-                    lambda: layer_evidence(
-                        shot_dir, str(layer_id), frame=int(comparison_state.get("frame", 1)), session=session
-                    )
-                )
                 active_ids = comparison_state.get("active_evidence_ids")
+                from vfx_harness.evidence.scene_checks import layer_evidence, load_rows
+
+                frames = _bound_static_frames(
+                    load_rows(shot_dir), active_ids, int(comparison_state.get("frame", 1))
+                )
+                evidence = []
+                for evidence_frame in frames:
+                    evidence.extend(
+                        await anyio.to_thread.run_sync(
+                            lambda frame=evidence_frame: layer_evidence(
+                                shot_dir, str(layer_id), frame=frame, session=session
+                            )
+                        )
+                    )
                 if active_ids is not None:
                     evidence = [row for row in evidence if str(row.get("id")) in active_ids]
+                evidence = list({str(row.get("id")): row for row in evidence}.values())
                 authoritative = [row for row in evidence if row.get("authoritative")]
                 if authoritative and all(row.get("pass") for row in authoritative):
                     from vfx_harness.evidence.scene_checks import functional_evidence
@@ -693,6 +717,7 @@ def build_blender_tools(
                     )
                     if active_ids is not None:
                         evidence = [row for row in evidence if str(row.get("id")) in active_ids]
+                    evidence = list({str(row.get("id")): row for row in evidence}.values())
                     authoritative = [row for row in evidence if row.get("authoritative")]
                 state = _scene_completion_state(evidence, str(layer_id))
                 authoritative = state["authoritative"]

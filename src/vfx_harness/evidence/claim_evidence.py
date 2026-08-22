@@ -258,8 +258,10 @@ def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> Closure
     from vfx_harness.domain.contracts import load_document
 
     root = Path(folder)
-    scene_rows = load_document(root / "scene_checks.json", "contracts")
-    image_rows = load_document(root / "checks.json", "checks")
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    scene_rows = load_document(selected_artifact_path(root, "scene_checks.json"), "contracts")
+    image_rows = load_document(selected_artifact_path(root, "checks.json"), "checks")
     catalogs = {
         "scene_contract": {str(row.get("id")): row for row in scene_rows if row.get("id")},
         "image_contract": {str(row.get("id")): row for row in image_rows if row.get("id")},

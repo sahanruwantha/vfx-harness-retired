@@ -26,6 +26,18 @@ live in the linked Harness Improvement Records.
   checkpoint, scratch, and deliverable categories.
 - Added manifest, status, summary, artifact-index, and latest-run metadata for machine readers.
 - Added explicit run selection and run listing to `vfx inspect` while retaining legacy readers.
+- Added model-free, gate-checked promotion of retained clean plan candidates into fresh
+  run-owned immutable bundles.
+- Added `vfx units replan` for fail-closed migration of durable work-unit state between an
+  explicitly named old bundle and current selected plan authority.
+- Added audited failed-unit retry transitions and made direct build runs fail when any requested
+  work unit remains unaccepted.
+- Redefined plan cleanliness as structural authority, added explicit decision strengths and typed
+  `hypothesis_falsified` work-unit outcomes, and bound transactional replanning to those immutable
+  executable findings while preserving hard-constraint approval.
+- Limited plan spikes to optional citation-integrity evidence: claimed spikes now freeze exact
+  script, output, Blender identity, and contract rows, while unspiked composition work may proceed
+  to its producing runtime unit.
 
 See [HIR-0002](docs/improvements/HIR-0002-structured-run-output.md),
 [HIR-0003](docs/improvements/HIR-0003-truthful-until-clean-planning.md),
@@ -35,6 +47,8 @@ See [HIR-0002](docs/improvements/HIR-0002-structured-run-output.md),
 [HIR-0007](docs/improvements/HIR-0007-temporal-and-ownership-evidence-coverage.md),
 [HIR-0008](docs/improvements/HIR-0008-transactional-plan-publication-foundation.md),
 [HIR-0009](docs/improvements/HIR-0009-run-scoped-plan-authoring.md),
+[HIR-0010](docs/improvements/HIR-0010-executable-plan-authority-and-due-gates.md),
+[HIR-0011](docs/improvements/HIR-0011-build-time-plan-falsification.md),
 [ADR-0002](docs/decisions/ADR-0002-run-scoped-artifact-authority.md),
 [ADR-0003](docs/decisions/ADR-0003-explicit-metric-and-temporal-evidence-identity.md),
 and [ADR-0004](docs/decisions/ADR-0004-transactional-plan-authority.md).

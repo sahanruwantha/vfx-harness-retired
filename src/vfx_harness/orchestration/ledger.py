@@ -51,7 +51,9 @@ DEFAULT_AXES: list[tuple[str, str]] = [
 def load_axes(shot: Shot) -> list[tuple[str, str]]:
     """The critic rubric for this shot: shot/critic_axes.json if present, else defaults.
     Stored as a list of {"key","desc"} objects."""
-    path = shot.folder / "critic_axes.json"
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    path = selected_artifact_path(shot.folder, "critic_axes.json")
     if path.is_file():
         try:
             data = json.loads(path.read_text())
@@ -127,9 +129,9 @@ class Layer:
                          (strips or {}).get(frame, ()))
 
 
-def load_layers(shot: Shot) -> dict[str, Layer]:
-    """Per-shot build layers from shots/<id>/layers.json (written by the PLAN stage)."""
-    path = shot.folder / "layers.json"
+def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
+    """Parse one already-authorized layers artifact without selecting authority."""
+    path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} missing — run the plan agent first (its layers define the build "
@@ -222,6 +224,13 @@ def load_layers(shot: Shot) -> dict[str, Layer]:
     return out
 
 
+def load_layers(shot: Shot) -> dict[str, Layer]:
+    """Per-shot build layers from the singular selected plan generation."""
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    return load_layers_from_path(selected_artifact_path(shot.folder, "layers.json"))
+
+
 def load_milestones(shot: Shot) -> dict[str, Milestone]:
     """The acceptance suite (plan §4), in TIME order — judged ONCE over the finished
     chain by the accept stage.
@@ -231,7 +240,9 @@ def load_milestones(shot: Shot) -> dict[str, Milestone]:
     typography (M2 @ f184) before studio light (M1 @ f72). Attributing a whole-frame
     moment to one additive layer is what made layers get judged on work they don't own.
     """
-    path = shot.folder / "acceptance.json"
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    path = selected_artifact_path(shot.folder, "acceptance.json")
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} missing — run the plan agent (it writes layers.json for the build "

@@ -580,7 +580,8 @@ def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = No
     from vfx_harness.infrastructure.sandbox import path_sandbox
     active_phase = phase or {"mode": "live"}
     return {
-        "PreToolUse": [path_sandbox(*roots, cwd=shot_folder), api_guardrails(),
+        "PreToolUse": [path_sandbox(*roots, cwd=shot_folder),
+                       selected_plan_read_guard(shot_folder), api_guardrails(),
                        script_sanity(), web_allowlist(),
                        execution_authority_guard(shot_folder, active_phase),
                        builder_phase_guard(active_phase, script_rel)],
@@ -591,3 +592,90 @@ def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = No
         "Stop": [completion_gate(shot_folder, script_rel, phase)],
         "PreCompact": [compaction_notice(shot_folder)],
     }
+
+
+def selected_plan_read_guard(shot_folder: str | Path) -> HookMatcher:
+    """Prevent build sessions from discovering authority in historical runs.
+
+    Builders receive exact selected-bundle paths in their context. Broad shot-root searches can
+    nevertheless reveal superseded plans and transcripts, inviting the model to choose among
+    generations. File reads under ``runs/`` are therefore limited to the selected immutable
+    bundle and the active run's own journals/evidence. Pathless recursive searches are refused.
+    """
+    root = Path(shot_folder).resolve()
+    legacy_plan_artifacts = {
+        root / name
+        for name in (
+            "layers.json",
+            "acceptance.json",
+            "critic_axes.json",
+            "checks.json",
+            "scene_checks.json",
+            "requirements.json",
+            "obligations.json",
+            "assumptions.json",
+            "plan.provenance.json",
+        )
+    }
+
+    def _deny(tool: str, target: str) -> dict:
+        log(f"! selected-plan read denied: {tool} on {target}", 1)
+        bump("historical_plan_read_blocked")
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "Historical run discovery is not execution authority. Read only the exact "
+                "selected immutable bundle paths already supplied in this unit context; do not "
+                "scan runs/ or search the whole shot for alternative plans."
+            ),
+        }}
+
+    async def _check(inp: Any, tool_use_id: str | None, ctx: Any) -> dict:
+        tool = inp.get("tool_name") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        if tool not in {"Read", "Glob", "Grep", "LSP"}:
+            return {}
+        args = (inp.get("tool_input") if isinstance(inp, dict)
+                else getattr(inp, "tool_input", {})) or {}
+        from vfx_harness.orchestration.plan_authority import resolve_current
+
+        bundle = resolve_current(root)
+        active = run_artifacts.active(root)
+        active_root = active.root if active is not None else None
+        raw = args.get({"Read": "file_path", "Glob": "path", "Grep": "path", "LSP": "path"}[tool])
+        if raw:
+            candidate = Path(str(raw)).expanduser()
+            candidate = (candidate if candidate.is_absolute() else root / candidate).resolve()
+            if candidate in legacy_plan_artifacts:
+                return _deny(tool, str(candidate))
+            if candidate == root / "runs" or root / "runs" in candidate.parents:
+                selected_member = candidate == bundle.root or bundle.root in candidate.parents
+                current_run_member = active_root is not None and (
+                    candidate == active_root or active_root in candidate.parents
+                )
+                if not selected_member and not current_run_member:
+                    return _deny(tool, str(candidate))
+            if candidate == root / "plans" or root / "plans" in candidate.parents:
+                return _deny(tool, str(candidate))
+            return {}
+        if tool == "Grep":
+            return _deny(tool, "<shot-root search>")
+        if tool == "Glob":
+            pattern = str(args.get("pattern") or "")
+            pattern_path = Path(pattern)
+            current_run_pattern = bool(
+                active_root is not None
+                and len(pattern_path.parts) >= 2
+                and pattern_path.parts[:2] == active_root.relative_to(root).parts
+            )
+            if (
+                pattern_path.is_absolute()
+                or ".." in pattern_path.parts
+                or not pattern_path.parts
+                or pattern_path.parts[0] in {"**", "plans"}
+                or (pattern_path.parts[0] == "runs" and not current_run_pattern)
+            ):
+                return _deny(tool, pattern or "<shot-root search>")
+        return {}
+
+    return HookMatcher(matcher=None, hooks=[_check])

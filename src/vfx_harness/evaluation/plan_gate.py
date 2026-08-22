@@ -52,6 +52,8 @@ Exit codes: 0 clean · 3 at least one blocking finding
 
 from __future__ import annotations
 
+import fnmatch
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -167,6 +169,17 @@ class GateResult:
     def clean(self) -> bool:
         return not self.blocking
 
+    @property
+    def publishable_outcome(self) -> str:
+        """Typed terminal state for a gate-clean candidate."""
+        if not self.clean:
+            return "dirty"
+        if self.stats.get("open_assumptions", 0):
+            return "clean_with_assumptions"
+        if self.stats.get("open_obligations", 0):
+            return "clean_with_deferred"
+        return "clean"
+
     def signature(self) -> str:
         """Stable identity of WHAT is wrong, for detecting a loop that stopped converging.
         Two rounds with the same signature means the repair pass changed nothing that
@@ -177,6 +190,9 @@ class GateResult:
         """The reusable authority record; terminal readers need not rerun the gate."""
         return {
             "schema": "vfx-harness.plan-gate/v1",
+            "policy": "structural-authority/runtime-falsification-v1",
+            "validation_scope": "structural_authority",
+            "runtime_contracts_confirmed": False,
             "shot": self.shot,
             "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "clean": self.clean,
@@ -274,6 +290,41 @@ def _check_done(folder: Path) -> tuple[list[Finding], dict]:
             raw_checks = load_document(spec, "checks")
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             return [Finding("done-checks", True, "checks.json", f"unreadable: {str(exc)[:120]}")], {}
+        for row in raw_checks:
+            if not isinstance(row, dict):
+                continue
+            for reject in row.get("rejects") or []:
+                candidate = Path(str(reject))
+                if candidate.is_absolute():
+                    out.append(Finding(
+                        "done-checks",
+                        True,
+                        str(row.get("id") or "?"),
+                        f"names absolute adversary path {reject!r}",
+                        "use a candidate-relative authored ref or a persisted plans/evidence "
+                        "artifact; process-local /tmp evidence cannot survive publication",
+                    ))
+                    continue
+                resolved = (folder / candidate).resolve()
+                try:
+                    resolved.relative_to(folder.resolve())
+                except ValueError:
+                    out.append(Finding(
+                        "done-checks",
+                        True,
+                        str(row.get("id") or "?"),
+                        f"adversary path escapes candidate authority: {reject!r}",
+                        "persist the adversary inside authored refs or plans/evidence",
+                    ))
+                    continue
+                if not resolved.is_file():
+                    out.append(Finding(
+                        "done-checks",
+                        True,
+                        str(row.get("id") or "?"),
+                        f"adversary is not a persisted candidate artifact: {reject!r}",
+                        "persist the exact measured adversary before binding it to a check",
+                    ))
         mixed = [str(row.get("id", "?")) for row in raw_checks if (row.get("origin") or "planner") != "planner"]
         if mixed:
             return [
@@ -503,6 +554,114 @@ def _check_evidence(folder: Path, plan: str) -> tuple[list[Finding], dict]:
     bounds = [m.start() for m in _TICKET.finditer(plan)] + [len(plan)]
     bodies = [plan[bounds[i] : bounds[i + 1]] for i in range(len(bounds) - 1)]
 
+    try:
+        scene_doc = json.loads((folder / "scene_checks.json").read_text(encoding="utf-8"))
+        scene_by_id = {
+            str(row.get("id")): row
+            for row in scene_doc.get("contracts", [])
+            if isinstance(row, dict) and row.get("id")
+        }
+    except (OSError, ValueError, TypeError):
+        scene_by_id = {}
+    def read_contract_spike(rel: str, subject: str) -> dict | None:
+        if not rel.endswith(".json"):
+            return None
+        target = _resolve(folder, rel)
+        if target is None:
+            return None
+        try:
+            relative = target.resolve().relative_to(folder.resolve()).as_posix()
+        except ValueError:
+            relative = ""
+        if not relative.startswith("plans/evidence/spikes/"):
+            out.append(Finding(
+                "evidence",
+                True,
+                subject,
+                f"contract-bound spike record is outside plans/evidence/spikes ({rel})",
+                "publish spike authority inside the immutable candidate bundle",
+            ))
+            return None
+        try:
+            record = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            out.append(Finding(
+                "evidence", True, subject, f"spike record is unreadable ({rel}: {exc})",
+                "re-run the spike and cite its generated typed JSON record",
+            ))
+            return None
+        if record.get("schema") != "vfx-harness.plan-spike/v1":
+            out.append(Finding(
+                "evidence", True, subject, f"spike record has an unsupported schema ({rel})",
+                "re-run it with the contract-bound spike tool",
+            ))
+            return None
+        for key in ("script", "output"):
+            member = record.get(key)
+            member_path = member.get("path") if isinstance(member, dict) else None
+            member_hash = member.get("sha256") if isinstance(member, dict) else None
+            evidence_member = target.parent / str(member_path or "")
+            if (
+                not member_path
+                or Path(str(member_path)).name != str(member_path)
+                or not evidence_member.is_file()
+                or hashlib.sha256(evidence_member.read_bytes()).hexdigest() != member_hash
+            ):
+                out.append(Finding(
+                    "evidence", True, subject,
+                    f"spike record has missing or stale {key} bytes ({rel})",
+                    "re-run the spike so its exact script and full output are frozen with the record",
+                ))
+                return None
+        blender = record.get("blender")
+        if not isinstance(blender, dict) or not all(
+            isinstance(blender.get(key), str) and blender.get(key).strip()
+            for key in ("executable", "version")
+        ) or str(blender.get("version")).strip().lower() == "unknown":
+            out.append(Finding(
+                "evidence", True, subject,
+                f"spike record omits Blender executable/version identity ({rel})",
+                "re-run the spike in the supported runtime; mechanism evidence is version-bound",
+            ))
+            return None
+        rows = record.get("contracts") or []
+        results = {
+            str(item.get("id")): item
+            for item in record.get("results") or []
+            if isinstance(item, dict)
+        }
+        stale = []
+        failed = []
+        covered = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                stale.append("<invalid-row>")
+                continue
+            contract_id = str(row.get("id") or "<missing>")
+            if scene_by_id.get(contract_id) != row:
+                stale.append(contract_id)
+                continue
+            result = results.get(contract_id, {})
+            if result.get("pass") is not True:
+                failed.append(contract_id)
+                continue
+            covered[contract_id] = row
+        if stale:
+            out.append(Finding(
+                "evidence", True, subject,
+                f"spike record is stale or narrower than current scene contracts ({', '.join(stale)})",
+                "re-run the exact current contract rows; a prior threshold, frame, selector, or "
+                "decision state cannot prove the published contract",
+            ))
+        if failed or record.get("passed") is not True:
+            out.append(Finding(
+                "evidence", True, subject,
+                f"spike record contains failing or missing contract results ({', '.join(failed) or rel})",
+                "fix the mechanism or decision state and re-run the contract-bound spike; "
+                "do not relax the target to preserve a confidence tag",
+            ))
+        return {"record": record, "covered": covered, "path": relative}
+
     n_spiked = n_research = 0
     for (tid, _title, tag), body in zip(tagged, bodies, strict=False):
         low = tag.lower()
@@ -533,6 +692,21 @@ def _check_evidence(folder: Path, plan: str) -> tuple[list[Finding], dict]:
                         "re-run the spike",
                     )
                 )
+            typed = [
+                record
+                for rel in cited
+                if (record := read_contract_spike(rel, tid)) is not None
+            ]
+            if not typed:
+                out.append(Finding(
+                    "evidence",
+                    True,
+                    tid,
+                    "claims ✓spiked but cites no contract-bound spike JSON record",
+                    "call spike with the exact scene-contract rows and cite the generated "
+                    "plans/evidence/spikes/*.json record; a script, render, or stdout file "
+                    "does not prove it ran the published frame/selectors/thresholds",
+                ))
         if "unknown" in low or "researched" in low:
             n_research += 1
             if not _URL.search(body) and not _RECIPE.search(body):
@@ -547,6 +721,7 @@ def _check_evidence(folder: Path, plan: str) -> tuple[list[Finding], dict]:
                         "cannot be repeated by anyone",
                     )
                 )
+
     return out, {"tickets": len(tickets), "spiked": n_spiked, "researched": n_research}
 
 
@@ -857,8 +1032,24 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         "bbox_bottom_y",
     }
     composition_tokens = ("camera", "composition", "framing", "staging")
+    scene_by_id = {
+        str(row.get("id")): row for row in scene_rows if isinstance(row, dict) and row.get("id")
+    }
+    image_by_id = {
+        str(row.get("id")): row for row in image_rows if isinstance(row, dict) and row.get("id")
+    }
+
+    def _selector_declared(selector: str, declarations: set[str]) -> bool:
+        return any(
+            selector == declared
+            or selector.startswith(f"{declared}.")
+            or fnmatch.fnmatchcase(selector, declared)
+            or fnmatch.fnmatchcase(declared, selector)
+            for declared in declarations
+        )
 
     motion_units = 0
+    earlier_camera_available = False
     for layer in layers:
         if not isinstance(layer, dict):
             continue
@@ -869,30 +1060,207 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             for row in layer.get("judge") or []
             if isinstance(row, dict) and isinstance(row.get("frame"), int)
         ]
-        if any(token in axis for axis in owns for token in composition_tokens):
-            for frame in judges:
-                covered = any(
-                    isinstance(row, dict)
-                    and row.get("kind") in bbox_kinds
-                    and str(row.get("activates_at") or "") == lid
-                    and row.get("frame") == frame
-                    for row in scene_rows
+        domains = layer.get("evidence_domains")
+        owns_composition = (
+            "projected_composition" in domains
+            if isinstance(domains, list)
+            else any(token in axis for axis in owns for token in composition_tokens)
+        )
+        stages = {
+            str(unit.get("id")): unit
+            for unit in layer.get("stages") or []
+            if isinstance(unit, dict) and unit.get("id")
+        }
+        camera_units = {
+            uid
+            for uid, unit in stages.items()
+            if any("camera" in str(role).lower() for role in (unit.get("mutates") or {}).get("roles") or [])
+        }
+
+        def _camera_available_to(
+            uid: str,
+            earlier: bool = earlier_camera_available,
+            available: frozenset[str] = frozenset(camera_units),
+            layer_stages: dict[str, dict] = stages,
+        ) -> bool:
+            if earlier:
+                return True
+            seen: set[str] = set()
+            frontier = [uid]
+            while frontier:
+                current = frontier.pop()
+                if current in seen:
+                    continue
+                seen.add(current)
+                if current in available:
+                    return True
+                frontier.extend(
+                    str(dep) for dep in layer_stages.get(current, {}).get("depends_on") or []
                 )
+            return False
+
+        if owns_composition:
+            for frame in judges:
+                covered = False
+                for unit in stages.values():
+                    evaluation = unit.get("evaluation") or {}
+                    context = evaluation.get("composition_context") or {}
+                    if frame not in (context.get("frames") or []):
+                        continue
+                    contract_ids = {str(value) for value in context.get("contract_ids") or []}
+                    if (
+                        contract_ids
+                        and all(
+                            cid in scene_by_id and scene_by_id[cid].get("kind") in bbox_kinds
+                            for cid in contract_ids
+                        )
+                        and any(scene_by_id[cid].get("frame") == frame for cid in contract_ids)
+                    ):
+                        covered = True
+                        break
+                    source_id = str(context.get("source_unit") or "")
+                    source = stages.get(source_id)
+                    if source and source_id in {str(value) for value in unit.get("depends_on") or []}:
+                        source_contracts = {
+                            str(binding.get("id"))
+                            for claim in (source.get("evaluation") or {}).get("claims") or []
+                            if isinstance(claim, dict)
+                            for binding in claim.get("evidence") or []
+                            if isinstance(binding, dict) and binding.get("kind") == "scene_contract"
+                        }
+                        source_frames = {
+                            row.get("frame")
+                            for row in (source.get("evaluation") or {}).get("judge") or []
+                            if isinstance(row, dict)
+                        }
+                        if frame in source_frames and any(
+                            str(row.get("id")) in source_contracts
+                            and
+                            row.get("kind") in bbox_kinds
+                            and row.get("frame") == frame
+                            and str(row.get("activates_at") or "") == lid
+                            for row in scene_rows
+                        ):
+                            covered = True
+                            break
                 if not covered:
                     out.append(
                         Finding(
                             "composition-coverage",
-                            False,
+                            True,
                             f"layer {lid} judge f{frame}",
-                            "camera/composition owner has no projected bounding-box contract",
-                            "bind bbox width and/or centre to a semantic proxy role at this judge frame",
+                            "camera/composition owner has no executable projected context",
+                            "bind a bbox contract directly or depend on a blockout unit that "
+                            "is bbox-checked at this judge frame before sealing the camera",
                         )
                     )
+        for uid, unit in stages.items():
+            evaluation = unit.get("evaluation") or {}
+            bound_ids = {
+                str(binding.get("id"))
+                for claim in evaluation.get("claims") or []
+                if isinstance(claim, dict)
+                for binding in claim.get("evidence") or []
+                if isinstance(binding, dict) and binding.get("kind") == "scene_contract"
+            }
+            context = evaluation.get("composition_context") or {}
+            bound_ids.update(str(value) for value in context.get("contract_ids") or [])
+            bbox_ids = sorted(
+                cid
+                for cid in bound_ids
+                if cid in scene_by_id and scene_by_id[cid].get("kind") in bbox_kinds
+            )
+            if bbox_ids and not _camera_available_to(uid):
+                out.append(
+                    Finding(
+                        "composition-bootstrap",
+                        True,
+                        f"layer {lid} unit {uid}",
+                        "bbox evidence is due before any declared camera is available",
+                        "make the first camera and its measurable blockout one atomic scoped unit, "
+                        "or depend on an already accepted camera-owning unit; a blockout cannot be "
+                        "projected through a camera owned only by its dependent",
+                    )
+                )
         for unit in layer.get("stages") or []:
             if not isinstance(unit, dict):
                 continue
             uid = str(unit.get("id") or "<missing>")
             evaluation = unit.get("evaluation") or {}
+            mutates = unit.get("mutates") or {}
+            mutable_roles = {str(value) for value in mutates.get("roles") or []}
+            mutable_controls = {str(value) for value in mutates.get("controls") or []}
+            for claim in evaluation.get("claims") or []:
+                if not isinstance(claim, dict) or not claim.get("required"):
+                    continue
+                for binding in claim.get("evidence") or []:
+                    if not isinstance(binding, dict) or not binding.get("id"):
+                        continue
+                    evidence_id = str(binding["id"])
+                    if binding.get("kind") == "image_contract":
+                        check = image_by_id.get(evidence_id)
+                        if check and check.get("stage") == "post_grade" and lid != str(layers[-1].get("id")):
+                            out.append(
+                                Finding(
+                                    "unit-evidence-due",
+                                    True,
+                                    f"layer {lid} unit {uid} claim {claim.get('id', '?')}",
+                                    f"required image contract {evidence_id} is post_grade and "
+                                    "cannot execute at this unit boundary",
+                                    "either author and prove an any/pre_grade contract for this "
+                                    "unit, or make the final-plate requirement a typed obligation "
+                                    "due after the grade-owning dependency; required unit evidence "
+                                    "may not be deferred implicitly",
+                                )
+                            )
+                    if binding.get("kind") != "scene_contract":
+                        continue
+                    contract = scene_by_id.get(evidence_id) or {}
+                    selected_roles = {
+                        str(value)
+                        for key in ("roles", "compare_roles")
+                        for value in contract.get(key) or []
+                    }
+                    undeclared_roles = sorted(
+                        selector
+                        for selector in selected_roles
+                        if not _selector_declared(selector, mutable_roles)
+                    )
+                    if undeclared_roles:
+                        out.append(
+                            Finding(
+                                "role-selector-closure",
+                                True,
+                                f"layer {lid} unit {uid} contract {evidence_id}",
+                                "selects roles outside mutation authority: "
+                                + ", ".join(undeclared_roles),
+                                "use role selectors inside mutates.roles, or use typed "
+                                "control_roles/compare_control_roles for bvfx_control ids; "
+                                "required evidence and repair authority must close together",
+                            )
+                        )
+                    selected_controls = {
+                        str(value)
+                        for key in ("control_roles", "compare_control_roles")
+                        for value in contract.get(key) or []
+                    }
+                    undeclared = sorted(
+                        selector
+                        for selector in selected_controls
+                        if not _selector_declared(selector, mutable_controls)
+                    )
+                    if undeclared:
+                        out.append(
+                            Finding(
+                                "control-selector-closure",
+                                True,
+                                f"layer {lid} unit {uid} contract {evidence_id}",
+                                "selects undeclared semantic controls: " + ", ".join(undeclared),
+                                "declare each selected control in mutates.controls and map it "
+                                "through control_roles; contract selectors and mutation authority "
+                                "must share the same typed ids",
+                            )
+                        )
             if evaluation.get("temporal_evidence") == "motion":
                 motion_units += 1
                 bound = {
@@ -912,7 +1280,6 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                             "bind onset_order, radial_distance_trend, transform_return_delta, or frame_delta evidence",
                         )
                     )
-            mutates = unit.get("mutates") or {}
             controls = {str(value) for value in mutates.get("controls") or []}
             mapping = mutates.get("control_roles")
             if controls and not mapping:
@@ -925,6 +1292,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         "map each control to the semantic roles it governs so scope coherence is checkable",
                     )
                 )
+        earlier_camera_available = earlier_camera_available or bool(camera_units)
 
     fault_owners = [
         str(row.get("fault_owner") or "") for row in image_rows if isinstance(row, dict)
@@ -953,11 +1321,522 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     return out, {"motion_units": motion_units, "temporal_contracts": len(temporal_ids)}
 
 
+def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
+    """Close every registered brief requirement through typed authority."""
+    from vfx_harness.domain.contracts import load_document
+    from vfx_harness.domain.plan_records import (
+        brief_clause_spans,
+        load_assumptions,
+        load_obligations,
+        load_requirements,
+    )
+    from vfx_harness.evidence.scene_checks import TEMPORAL_KINDS
+
+    names = ("requirements.json", "obligations.json", "assumptions.json")
+    missing = [name for name in names if not (folder / name).is_file()]
+    if missing:
+        return [Finding(
+            "requirement-closure",
+            True,
+            ", ".join(missing),
+            "typed planning meta-records are missing",
+            "extract normative brief requirements and resolve each to exact contracts, "
+            "deferred obligations, or an explicit decision",
+        )], {}
+    try:
+        requirements = load_requirements(folder)
+        obligations = load_obligations(folder)
+        assumptions = load_assumptions(folder)
+        scene_rows = load_document(folder / "scene_checks.json", "contracts")
+        image_rows = load_document(folder / "checks.json", "checks")
+        scene_ids = {str(row.get("id")) for row in scene_rows}
+        image_ids = {str(row.get("id")) for row in image_rows}
+        layers = read_document(folder / "layers.json")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return [Finding("requirement-closure", True, "typed meta-records", str(exc))], {}
+
+    findings: list[Finding] = []
+    cited_lines = {
+        line
+        for requirement in requirements
+        for line in range(requirement.line_start, requirement.line_end + 1)
+    }
+    uncovered_clauses = [
+        (start, end, text)
+        for start, end, text in brief_clause_spans(folder / "brief.md")
+        if not any(line in cited_lines for line in range(start, end + 1))
+    ]
+    if uncovered_clauses:
+        spans = ", ".join(
+            str(start) if start == end else f"{start}-{end}"
+            for start, end, _text in uncovered_clauses
+        )
+        findings.append(Finding(
+            "requirement-completeness",
+            True,
+            "requirements.json",
+            f"substantive brief clauses have no register citation: lines {spans}",
+            "add one or more typed requirement entries whose citations cover every listed "
+            "brief clause, then resolve each through a contract, obligation, or decision",
+        ))
+    requirement_ids = {row.id for row in requirements}
+    obligation_ids = {row.id for row in obligations}
+    contract_ids = scene_ids | image_ids
+    contract_owner_layers = {
+        str(row.get("id")): str(row.get("owner_layer"))
+        for row in (*scene_rows, *image_rows)
+        if row.get("id") is not None and row.get("owner_layer") is not None
+    }
+    layer_units = {
+        str(layer.get("id")): {
+            str(unit.get("id"))
+            for unit in layer.get("stages") or []
+            if isinstance(unit, dict)
+        }
+        for layer in layers
+        if isinstance(layer, dict)
+    }
+    unit_dependencies = {
+        (str(layer.get("id")), str(unit.get("id"))): set(map(str, unit.get("depends_on") or []))
+        for layer in layers
+        if isinstance(layer, dict)
+        for unit in layer.get("stages") or []
+        if isinstance(unit, dict)
+    }
+    contract_producers = {
+        str(binding.get("id")): (str(layer.get("id")), str(unit.get("id")))
+        for layer in layers
+        if isinstance(layer, dict)
+        for unit in layer.get("stages") or []
+        if isinstance(unit, dict)
+        for claim in (unit.get("evaluation") or {}).get("claims") or []
+        if isinstance(claim, dict)
+        for binding in claim.get("evidence") or []
+        if isinstance(binding, dict) and binding.get("id") is not None
+    }
+    required_contract_producers = {
+        str(binding.get("id")): (str(layer.get("id")), str(unit.get("id")))
+        for layer in layers
+        if isinstance(layer, dict)
+        for unit in layer.get("stages") or []
+        if isinstance(unit, dict)
+        for claim in (unit.get("evaluation") or {}).get("claims") or []
+        if isinstance(claim, dict) and claim.get("required") is True
+        for binding in claim.get("evidence") or []
+        if isinstance(binding, dict) and binding.get("id") is not None
+    }
+
+    for assumption in assumptions:
+        if assumption.decision_strength not in {"approved_start", "planner_start"}:
+            continue
+        owner = str(assumption.falsification_owner or "")
+        if "." not in owner:
+            findings.append(Finding(
+                "decision-strength", True, assumption.id,
+                f"falsification owner {owner!r} is not a layer.unit owner",
+                "name the earliest producing work unit that evaluates the runtime contracts",
+            ))
+            continue
+        owner_layer, owner_unit = owner.split(".", 1)
+        if owner_unit not in layer_units.get(owner_layer, set()):
+            findings.append(Finding(
+                "decision-strength", True, assumption.id,
+                f"falsification owner {owner!r} does not exist in the work-unit DAG",
+                "bind the provisional start to a real producing unit",
+            ))
+        unknown = sorted(set(assumption.falsification_contract_ids) - contract_ids)
+        if unknown:
+            findings.append(Finding(
+                "decision-strength", True, assumption.id,
+                "falsification path names unknown contracts: " + ", ".join(unknown),
+                "declare the exact runtime contracts and bind them to required unit claims",
+            ))
+        wrong_owner = sorted(
+            contract_id
+            for contract_id in assumption.falsification_contract_ids
+            if contract_id in contract_producers and contract_producers[contract_id] != (owner_layer, owner_unit)
+        )
+        if wrong_owner:
+            findings.append(Finding(
+                "decision-strength", True, assumption.id,
+                "falsification contracts are produced by another unit: " + ", ".join(wrong_owner),
+                "move the falsification owner or contract bindings so one unit owns first contact",
+            ))
+
+    # A human-approved calibration is durable authority only when its operative values
+    # are self-contained.  Structured values in the append-only resolution ledger must
+    # be copied exactly into one required executable contract; a prose paraphrase or a
+    # pointer to an unavailable prior plan is not an adoption mechanism.
+    decision_path = folder / "state" / "plan-resolutions.jsonl"
+    structured_decisions: dict[str, tuple[int, dict]] = {}
+    if decision_path.is_file():
+        from vfx_harness.domain.plan_records import resolution_decision_strength
+
+        for line_no, line in enumerate(
+            decision_path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                findings.append(Finding(
+                    "decision-adoption", True, f"state/plan-resolutions.jsonl:{line_no}",
+                    f"invalid JSON: {exc}",
+                ))
+                continue
+            try:
+                resolution_decision_strength(
+                    row, f"state/plan-resolutions.jsonl:{line_no}"
+                )
+            except ValueError as exc:
+                findings.append(Finding(
+                    "decision-strength", True,
+                    f"state/plan-resolutions.jsonl:{line_no}", str(exc),
+                ))
+                continue
+            if row.get("status") != "satisfied" or not isinstance(row.get("values"), dict):
+                continue
+            decision_id = str(row.get("id") or "").strip()
+            contract = row["values"].get("contract")
+            if not decision_id or not isinstance(contract, dict) or not contract:
+                findings.append(Finding(
+                    "decision-adoption", True, f"state/plan-resolutions.jsonl:{line_no}",
+                    "structured resolution must provide values.contract",
+                    "embed the complete executable contract fields in the approved resolution",
+                ))
+                continue
+            structured_decisions[decision_id] = (line_no, contract)
+
+    for decision_id, (line_no, expected) in structured_decisions.items():
+        candidates = [
+            row for row in scene_rows
+            if isinstance(row, dict) and str(row.get("decision_id") or "") == decision_id
+        ]
+        exact = [
+            row for row in candidates
+            if all(row.get(key) == value for key, value in expected.items())
+        ]
+        if not exact:
+            detail = (
+                "has no scene contract carrying decision_id and the exact approved values"
+                if not candidates
+                else "was altered while being copied into its scene contract"
+            )
+            findings.append(Finding(
+                "decision-adoption",
+                True,
+                f"state/plan-resolutions.jsonl:{line_no} ({decision_id})",
+                detail,
+                "copy values.contract exactly into a scene contract, preserve decision_id, "
+                "and bind that contract to a required claim in its owning unit",
+            ))
+            continue
+        unbound = sorted(
+            str(row.get("id") or "<missing>")
+            for row in exact
+            if str(row.get("id") or "") not in required_contract_producers
+        )
+        if unbound:
+            findings.append(Finding(
+                "decision-adoption",
+                True,
+                f"structured decision {decision_id}",
+                "approved values are not required unit evidence: " + ", ".join(unbound),
+                "bind the adopted contract to a required executable claim in its producing unit",
+            ))
+
+    obligation_by_id = {record.id: record for record in obligations}
+    brief_lines = (folder / "brief.md").read_text(encoding="utf-8").splitlines()
+    try:
+        from vfx_harness.domain.brief import load_shot
+
+        terminal_frame = int(load_shot(folder).frames)
+    except (OSError, ValueError, TypeError):
+        terminal_frame = 0
+
+    def terminal_hold_window(text: str) -> tuple[int, int] | None:
+        normalized = " ".join(text.lower().split())
+        explicit = re.search(
+            r"unchanged\s+from\s+frame\s+(\d+)\s+(?:to|through|[-–—])\s*(?:frame\s+)?(\d+)",
+            normalized,
+        )
+        if explicit:
+            return int(explicit.group(1)), int(explicit.group(2))
+        count_match = re.search(
+            r"\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)[ -]frame\b"
+            r".{0,80}\b(?:visual\s+)?(?:lock|hold)\b",
+            normalized,
+        )
+        if not count_match or not re.search(r"\b(?:end|ends|ending|final)\b", normalized):
+            return None
+        words = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        }
+        count_text = count_match.group(1)
+        count = words.get(count_text, int(count_text) if count_text.isdigit() else 0)
+        if count < 2 or terminal_frame < count:
+            return None
+        return terminal_frame - count + 1, terminal_frame
+
+    clauses = brief_clause_spans(folder / "brief.md")
+
+    def resolved_scene_ids(start: int, end: int) -> set[str]:
+        resolved: set[str] = set()
+        for requirement in requirements:
+            if requirement.line_end < start or requirement.line_start > end:
+                continue
+            if requirement.resolution_kind == "contract":
+                resolved.update(requirement.resolution_ids)
+            elif requirement.resolution_kind == "obligation":
+                for obligation_id in requirement.resolution_ids:
+                    obligation = obligation_by_id.get(obligation_id)
+                    if obligation is not None:
+                        resolved.update(
+                            evidence_id
+                            for kind, evidence_id in obligation.evidence
+                            if kind == "scene_contract"
+                        )
+        return resolved
+
+    for start, end, clause in clauses:
+        window = terminal_hold_window(clause)
+        if window is None:
+            continue
+        resolved_ids = resolved_scene_ids(start, end)
+        matching = {
+            contract_id
+            for contract_id in resolved_ids
+            if contract_id in scene_ids
+            and next(
+                (
+                    row.get("kind") == "frame_delta"
+                    and tuple(row.get("frames") or ()) == window
+                    for row in scene_rows
+                    if str(row.get("id")) == contract_id
+                ),
+                False,
+            )
+            and contract_id in required_contract_producers
+        }
+        if not matching:
+            source = " ".join(brief_lines[start - 1:end]).strip()
+            findings.append(Finding(
+                "temporal-requirement",
+                True,
+                f"brief.md lines {start}-{end}",
+                f"terminal hold {window[0]}→{window[1]} is not resolved by a required "
+                f"frame_delta contract ({source[:120]})",
+                "bind the cited requirement directly, or through an obligation, to a "
+                "frame_delta contract over the derived terminal window and make that "
+                "contract required evidence in its producing unit",
+            ))
+
+    motion_language = re.compile(
+        r"(?:\bchase\b|\bstaggered\s+sequence\b|\bcontinuous\s+(?:camera\s+)?(?:move|path)\b|"
+        r"\bdependency\s+order\b|\btravels?\s+through\b|\bmoving\s+front\b|"
+        r"\brather\s+than\s+all\s+at\s+once\b|\bmove\w*\s+outward\s+first\b|"
+        r"\breverse\w*\s+(?:the\s+)?(?:debris\s+)?trajector\w*\b|"
+        r"\binherit\w*\s+the\s+direction\s+and\s+timing\b)",
+        re.IGNORECASE,
+    )
+    executable_temporal_ids = {
+        str(row.get("id"))
+        for row in scene_rows
+        if isinstance(row, dict)
+        and row.get("kind") in TEMPORAL_KINDS | {"frame_delta"}
+        and str(row.get("id") or "") in required_contract_producers
+    }
+    for start, end, clause in clauses:
+        if not motion_language.search(" ".join(clause.split())):
+            continue
+        resolved_ids = resolved_scene_ids(start, end)
+        if resolved_ids & executable_temporal_ids:
+            continue
+        source = " ".join(brief_lines[start - 1:end]).strip()
+        findings.append(Finding(
+            "temporal-requirement",
+            True,
+            f"brief.md lines {start}-{end}",
+            f"explicit motion law has no required temporal contract ({source[:120]})",
+            "bind the cited requirement directly, or through an obligation, to required "
+            "onset_order, radial_distance_trend, transform_return_delta, keyframe_schedule, "
+            "or frame_delta evidence; a unit evidence label or single-frame proxy cannot "
+            "prove motion",
+        ))
+
+    fracture_start = 0
+    for _start, _end, clause in clauses:
+        normalized = " ".join(clause.lower().split())
+        frame_range = re.search(r"\b(\d+)\s*[–—-]\s*(\d+)\b", normalized)
+        if frame_range and re.search(r"\bfractur(?:e|es|ed|ing)\b", normalized):
+            fracture_start = int(frame_range.group(1))
+            break
+    if fracture_start > 1 and terminal_frame >= fracture_start:
+        return_window = (fracture_start - 1, terminal_frame)
+        exact_return = re.compile(
+            r"(?:return\w*\s+to\s+(?:their\s+)?exact\s+structural\s+positions|"
+            r"return\w*\s+to\s+unrelated\s+locations|reassembl\w*\s+into\s+the\s+same\s+architecture)",
+            re.IGNORECASE,
+        )
+        for start, end, clause in clauses:
+            if not exact_return.search(" ".join(clause.split())):
+                continue
+            resolved_ids = resolved_scene_ids(start, end)
+            matching = {
+                contract_id
+                for contract_id in resolved_ids
+                if contract_id in scene_ids
+                and next(
+                    (
+                        row.get("kind") == "transform_return_delta"
+                        and tuple(row.get("frames") or ()) == return_window
+                        for row in scene_rows
+                        if str(row.get("id")) == contract_id
+                    ),
+                    False,
+                )
+                and contract_id in required_contract_producers
+            }
+            if not matching:
+                source = " ".join(brief_lines[start - 1:end]).strip()
+                findings.append(Finding(
+                    "temporal-requirement",
+                    True,
+                    f"brief.md lines {start}-{end}",
+                    f"exact reassembly is not resolved by a required transform_return_delta "
+                    f"from the pre-fracture baseline {return_window[0]} to final frame "
+                    f"{return_window[1]} ({source[:120]})",
+                    "bind the cited requirement directly, or through an obligation, to a "
+                    "transform_return_delta contract over the derived pre-fracture-to-final "
+                    "window; a partial-reassembly frame cannot establish exact return",
+                ))
+
+    def upstream_units(layer_id: str, unit_id: str) -> set[str]:
+        out: set[str] = set()
+        pending = list(unit_dependencies.get((layer_id, unit_id), set()))
+        while pending:
+            candidate = pending.pop()
+            if candidate in out:
+                continue
+            out.add(candidate)
+            pending.extend(unit_dependencies.get((layer_id, candidate), set()))
+        return out
+    allowed_domains = {"scene", "image", "temporal", "projected_composition", "human"}
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        domains = layer.get("evidence_domains")
+        if not isinstance(domains, list) or not domains:
+            findings.append(Finding(
+                "requirement-closure", True, f"layer {layer.get('id', '?')}",
+                "evidence_domains is missing",
+                "declare the typed evidence domains this layer requires; composition "
+                "coverage must not be inferred from axis-name keywords",
+            ))
+        elif unknown_domains := sorted(set(map(str, domains)) - allowed_domains):
+            findings.append(Finding(
+                "requirement-closure", True, f"layer {layer.get('id', '?')}",
+                "unknown evidence domains: " + ", ".join(unknown_domains),
+            ))
+    for requirement in requirements:
+        known = obligation_ids if requirement.resolution_kind == "obligation" else contract_ids
+        if requirement.resolution_kind in {"contract", "obligation"}:
+            unknown = sorted(set(requirement.resolution_ids) - known)
+            if unknown:
+                findings.append(Finding(
+                    "requirement-closure",
+                    True,
+                    requirement.id,
+                    f"resolution names unknown {requirement.resolution_kind} ids: {', '.join(unknown)}",
+                    "bind the requirement to exact records present in this candidate bundle",
+                ))
+    for records in (obligations, assumptions):
+        for record in records:
+            unknown_requirements = sorted(set(record.requirement_ids) - requirement_ids)
+            if unknown_requirements:
+                findings.append(Finding(
+                    "requirement-closure", True, record.id,
+                    "references unknown requirements: " + ", ".join(unknown_requirements),
+                ))
+            due = record.due
+            if due.kind != "before_acceptance" and due.layer not in layer_units:
+                findings.append(Finding(
+                    "requirement-closure", True, record.id,
+                    f"due gate names unknown layer {due.layer!r}",
+                ))
+            elif (
+                due.kind in {"before_unit", "unit_completion"}
+                and due.unit not in layer_units.get(str(due.layer), set())
+            ):
+                findings.append(Finding(
+                    "requirement-closure", True, record.id,
+                    f"due gate names unknown unit {due.layer}.{due.unit}",
+                ))
+    for record in assumptions:
+        if record.due.kind == "unit_completion":
+            findings.append(Finding(
+                "requirement-closure", True, record.id,
+                "assumptions cannot be machine-resolved at unit completion",
+                "use an obligation with executable evidence, or keep a human-decision assumption due before execution",
+            ))
+    for record in obligations:
+        due = record.due
+        if due.kind == "unit_completion":
+            expected_owner = (str(due.layer), str(due.unit))
+            unavailable = sorted(
+                evidence_id
+                for kind, evidence_id in record.evidence
+                if kind != "replay" and required_contract_producers.get(evidence_id) != expected_owner
+            )
+            if unavailable:
+                findings.append(Finding(
+                    "requirement-closure", True, record.id,
+                    "unit-completion evidence is not bound to required claims in "
+                    f"{due.layer}.{due.unit}: " + ", ".join(unavailable),
+                    "bind every completion evidence id to a required claim in the exact "
+                    "owning unit; advisory or foreign evidence cannot discharge the gate",
+                ))
+        if due.kind not in {"before_layer", "before_unit"}:
+            continue
+        if due.kind == "before_layer":
+            circular = sorted(
+                evidence_id
+                for _kind, evidence_id in record.evidence
+                if contract_owner_layers.get(evidence_id) == str(due.layer)
+            )
+        else:
+            upstream = upstream_units(str(due.layer), str(due.unit))
+            circular = sorted(
+                evidence_id
+                for _kind, evidence_id in record.evidence
+                if contract_owner_layers.get(evidence_id) == str(due.layer)
+                and contract_producers.get(evidence_id, (None, None))[1] not in upstream
+            )
+        if circular:
+            findings.append(Finding(
+                "requirement-closure", True, record.id,
+                "entry gate depends on evidence produced by the gated layer: " + ", ".join(circular),
+                "move machine-verifiable evidence to a unit_completion obligation; "
+                "entry gates may depend only on already-produced upstream evidence",
+            ))
+    return findings, {
+        "requirements": len(requirements),
+        "open_obligations": len(obligations),
+        "open_assumptions": len(assumptions),
+    }
+
+
 def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
     """Require plans for dependency-ready units and validate the feedback ledger."""
     from vfx_harness.domain.brief import load_shot
     from vfx_harness.domain.work_units import ready_units
-    from vfx_harness.orchestration.layer_plans import load_amendments, work_unit_plan_path
+    from vfx_harness.orchestration.layer_plans import (
+        load_amendments,
+        validate_work_unit_plan_authority,
+        work_unit_plan_path,
+    )
     from vfx_harness.orchestration.ledger import load_layers
     from vfx_harness.orchestration.unit_state import load as load_unit_state
     from vfx_harness.orchestration.unit_state import validate_current
@@ -1091,6 +1970,14 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
                     )
                 )
             else:
+                try:
+                    validate_work_unit_plan_authority(folder, path)
+                except ValueError as exc:
+                    out.append(Finding(
+                        "hierarchy", True, str(path.relative_to(folder)), str(exc),
+                        "regenerate the JIT unit plan from the selected global bundle",
+                    ))
+                    continue
                 plan_text = path.read_text(encoding="utf-8", errors="replace").strip()
                 if len(plan_text) < 200:
                     out.append(
@@ -1138,6 +2025,7 @@ def run(folder: Path, plan_name: str = "plans/global.md", *, require_scene_check
         _check_evidence(folder, plan),
         _check_contracts(folder, require_scene_checks=require_scene_checks),
         _check_evidence_coherence(folder),
+        _check_meta_records(folder),
     ):
         res.findings += finds
         res.stats.update(stats)

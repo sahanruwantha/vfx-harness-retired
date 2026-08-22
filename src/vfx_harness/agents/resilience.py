@@ -49,7 +49,9 @@ _TRANSIENT = re.compile(
 _TERMINAL = re.compile(
     r"\b(401|403)\b|invalid[ _-]?(x-)?api[ _-]?key|authentication|unauthorized|"
     r"credit balance|insufficient (credit|funds|quota)|spend limit|billing|"
-    r"permission denied|not authorized", re.IGNORECASE)
+    r"usage limits?|specified api usage|regain access|permission denied|not authorized",
+    re.IGNORECASE,
+)
 
 _BASE_DELAY = 20.0      # 529s clear in tens of seconds, not milliseconds
 _MAX_DELAY = 240.0

@@ -39,16 +39,77 @@ deterministic gate operate there; only `brief.md` and `refs/` are staged automat
 plans, contracts, questions, builds, and run output are not implicit planning input. Planner
 writes outside this workspace are denied.
 
-A clean untagged `--until-clean` run freezes `plans/global.md` and its five machine contracts
-from that workspace into `runs/<run-id>/checkpoints/plans/bundles/<hash>/`, then atomically
+A gate-clean untagged `--until-clean` run freezes `plans/global.md`, its five execution
+contracts, typed requirements/obligations/assumptions, every nested Markdown unit/evidence plan,
+and authored-input provenance from that workspace into
+`runs/<run-id>/checkpoints/plans/bundles/<hash>/`, then atomically
 selects the complete generation through `plans/current.json`. A failed or interrupted run leaves
 the previous pointer unchanged and retains its own candidate as diagnostic run evidence.
 `--until-clean` exits 3 and records the run as failed if the gate stalls or exhausts its repair
 budget with blocking findings. Planning status and summary records carry `outcome`,
 `blocking_count`, and `plan_gate_report`; read `reports/plan_gate.json` for the reusable finding
-set without rerunning the gate. Existing build consumers have not yet completed the ADR-0004
-pointer migration, so do not build from a newly published bundle until that compatibility slice
-is complete. Never copy a bundle back onto the shot-root compatibility files by hand.
+set without rerunning the gate. Build and evaluation consumers resolve this pointer and fail
+closed on incomplete or stale selected authority. Never copy a bundle back onto the shot-root
+compatibility files by hand. An unresolved typed obligation or assumption blocks the dependency
+boundary declared in its due gate.
+
+`clean` means the plan is structurally executable: its requirements, DAG, owners, scopes,
+contracts, decision strengths, and due boundaries close. It does not mean future scene-dependent
+targets have already passed. The earliest producing unit evaluates those targets in the real
+cumulative scene. A local miss stays inside bounded repair; a miss requiring new authority records
+`hypothesis_falsified` and stops for transactional replanning.
+
+When a newly published plan changes a layer DAG that already has durable work-unit state,
+move that state through the explicit replan transaction before execution. Name the exact
+immutable bundle that produced the old state; the command verifies its manifest and layers
+hash against durable state, compares it with current selected authority, preserves only
+unchanged/unaffected checkpoints, and atomically records the full supersession closure:
+
+```bash
+.venv/bin/vfx units replan shots/<shot-id> --layer <layer-id> \
+  --base-run <old-plan-run-id> --base-bundle <old-plan-content-hash> \
+  --owner <authority> --trigger "<why the DAG changed>" \
+  --evidence <locator> [--evidence <locator> ...]
+```
+
+When execution emitted a typed plan finding, consume it directly so the transaction verifies its
+bundle, DAG, unit, and dependency identities. A finding involving a hard constraint additionally
+requires an explicit human approval locator:
+
+```bash
+.venv/bin/vfx units replan shots/<shot-id> --layer <layer-id> \
+  --base-run <old-plan-run-id> --base-bundle <old-plan-content-hash> \
+  --owner <authority> --trigger "executable hypothesis falsified" \
+  --falsification state/work-units/hypothesis-falsifications/<record-id>.json \
+  [--hard-constraint-approval <human-decision-evidence>]
+```
+
+Add `--preview` to validate the same authority and print the added, removed, changed, invalidated,
+and preserved unit sets without publishing the state transaction.
+
+Do not reinitialize, hand-edit, or delete stale work-unit state to make a new DAG fit.
+
+When a deterministic failure has been fixed, or an in-flight planning/build/repair session was
+interrupted, reopen the same unit through the audited retry transition. This preserves the prior
+outcome and keeps dependants blocked until the retried unit passes:
+
+```bash
+.venv/bin/vfx units retry shots/<shot-id> --layer <layer-id> --unit <unit-id> \
+  --reason "<why retry is now valid>" --evidence <locator> [--evidence <locator> ...]
+```
+
+If a retained gate-clean candidate predates a publication fix, promote it through a new,
+model-free run instead of editing its immutable bundle or paying to author the same plan again:
+
+```bash
+.venv/bin/vfx plan shots/<shot-id> --promote-run <source-run-id>
+.venv/bin/vfx evals plan shots/<shot-id>
+```
+
+Promotion accepts only a terminal clean planning run whose isolated workspace still matches the
+current authored `brief.md` and `refs/`. It copies the complete authority surface into a fresh
+run-owned workspace, applies the current deterministic gate, freezes a new bundle, and only then
+atomically selects it. A rejected promotion leaves the existing pointer unchanged.
 
 New acceptance fingerprints are typed `{metric_set, values}` records using
 `vfx-harness.look-vector/v1`. Legacy prose remains readable, but a new plan must copy canonical
@@ -129,6 +190,7 @@ Use the status and summary before deciding what to change:
 preflight/config failure  -> correct environment; do not edit VFX logic
 plan gate failure         -> repair plan/contracts; rerun the gate
 builder evidence failure  -> inspect the owning layer report and cited evidence
+hypothesis_falsified       -> publish amended authority; consume the typed finding with units replan
 canonical replay failure  -> repair deterministic script/checkpoint mechanism
 acceptance failure        -> route to the declared fault-owning layer
 process interruption      -> inspect the last checkpoint, journal, and final transcript events

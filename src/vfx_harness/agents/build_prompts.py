@@ -561,10 +561,14 @@ def builder_kickoff(
         else ""
     )
     contract_block = ""
-    if (shot.folder / "scene_checks.json").is_file():
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    scene_contract = selected_artifact_path(shot.folder, "scene_checks.json")
+    if scene_contract.is_file():
         contract_block = (
             "EXECUTABLE SCENE CONTRACT — read `scene_checks.json` BEFORE creating or "
-            "renaming geometry. Apply the rows for this layer. Contracts select semantic "
+            f"renaming geometry (selected authority: `{scene_contract}`). Apply the rows "
+            "for this layer. Contracts select semantic "
             "`roles` only; name-based selectors are invalid. Tag every owned object with "
             "`bvfx_role(...)`. A visually correct but untagged object produces `None` and "
             "fails closed. Validate these contracts "

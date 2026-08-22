@@ -23,6 +23,9 @@ _MACHINE_ARTIFACTS = {
     "critic_axes.json",
     "checks.json",
     "scene_checks.json",
+    "requirements.json",
+    "obligations.json",
+    "assumptions.json",
 }
 
 
@@ -135,6 +138,21 @@ def validate_planner_artifact(folder: str | Path, name: str) -> list[str]:
                     errors.append(f"critic_axes.json[{index}] duplicates key {row['key']!r}")
                 seen.add(row["key"])
             return errors
+        if name == "requirements.json":
+            from vfx_harness.domain.plan_records import load_requirements
+
+            load_requirements(root)
+            return []
+        if name == "obligations.json":
+            from vfx_harness.domain.plan_records import load_obligations
+
+            load_obligations(root)
+            return []
+        if name == "assumptions.json":
+            from vfx_harness.domain.plan_records import load_assumptions
+
+            load_assumptions(root)
+            return []
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         return [f"{name}: {exc}"]
     return []
@@ -177,7 +195,12 @@ def planner_artifact_feedback(shot_folder: str | Path) -> HookMatcher:
 
 
 def planner_path_scope(
-    shot_folder: str | Path, *, readable_files: tuple[str | Path, ...] = ()
+    shot_folder: str | Path,
+    *,
+    readable_files: tuple[str | Path, ...] = (),
+    readable_roots: tuple[str | Path, ...] = (),
+    writable_files: tuple[str | Path, ...] | None = None,
+    strict_reads: bool = False,
 ) -> HookMatcher:
     """Confine discovery to staging, with exact read-only evidence exceptions.
 
@@ -187,6 +210,12 @@ def planner_path_scope(
     """
     root = Path(shot_folder).resolve()
     read_exceptions = {Path(path).expanduser().resolve() for path in readable_files}
+    read_root_exceptions = {Path(path).expanduser().resolve() for path in readable_roots}
+    write_exceptions = (
+        None
+        if writable_files is None
+        else {Path(path).expanduser().resolve() for path in writable_files}
+    )
 
     async def _check(inp, tool_use_id, ctx):
         tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
@@ -219,8 +248,39 @@ def planner_path_scope(
                 return _path_denial(tool, pattern, root)
 
         inside = target == root or root in target.parents
-        read_only = tool in {"Read", "Grep", "LSP"}
-        if inside or (read_only and target in read_exceptions):
+        read_only = tool in {"Read", "Grep", "LSP", "Glob"}
+        authored = (
+            target
+            in {
+                root / "brief.md",
+                root / ".plan-workspace.json",
+                root / "plan_amendments.jsonl",
+                root / "state/plan-resolutions.jsonl",
+            }
+            or target == root / "refs"
+            or root / "refs" in target.parents
+        )
+        write_tool = tool in {"Write", "Edit", "NotebookEdit"}
+        bundle_member = write_tool and any(
+            target.is_relative_to(parent)
+            for parent in root.glob("runs/*/checkpoints/plans/bundles/*")
+        )
+        exact_write_denied = (
+            write_tool and write_exceptions is not None and target not in write_exceptions
+        )
+        if strict_reads and read_only:
+            declared_read = (
+                authored
+                or target in read_exceptions
+                or (write_exceptions is not None and target in write_exceptions)
+                or any(target == parent or parent in target.parents for parent in read_root_exceptions)
+            )
+            if declared_read:
+                return {}
+            return _path_denial(tool, str(target), root)
+        if inside and not (write_tool and (authored or bundle_member or exact_write_denied)):
+            return {}
+        if read_only and target in read_exceptions:
             return {}
         return _path_denial(tool, str(target), root)
 
@@ -269,10 +329,24 @@ def planner_completion_gate(shot_folder: str | Path) -> HookMatcher:
 
 
 def planner_hooks(
-    shot_folder: str | Path, *, readable_files: tuple[str | Path, ...] = ()
+    shot_folder: str | Path,
+    *,
+    readable_files: tuple[str | Path, ...] = (),
+    readable_roots: tuple[str | Path, ...] = (),
+    writable_files: tuple[str | Path, ...] | None = None,
+    strict_reads: bool = False,
+    completion_gate: bool = True,
 ) -> dict:
-    return {
-        "PreToolUse": [planner_path_scope(shot_folder, readable_files=readable_files)],
+    hooks = {
+        "PreToolUse": [planner_path_scope(
+            shot_folder,
+            readable_files=readable_files,
+            readable_roots=readable_roots,
+            writable_files=writable_files,
+            strict_reads=strict_reads,
+        )],
         "PostToolUse": [planner_artifact_feedback(shot_folder)],
-        "Stop": [planner_completion_gate(shot_folder)],
     }
+    if completion_gate:
+        hooks["Stop"] = [planner_completion_gate(shot_folder)]
+    return hooks

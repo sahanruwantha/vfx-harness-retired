@@ -8,7 +8,9 @@ keep the stale-context failure mode alive behind a compatibility branch.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +21,7 @@ from vfx_harness.observability.provenance import atomic_write
 PLAN_DIR = "plans"
 GLOBAL_PLAN = "global.md"
 AMENDMENTS = "plan_amendments.jsonl"
+UNIT_PLAN_AUTHORITY_SCHEMA = "vfx-harness.unit-plan-authority/v1"
 _AMENDMENT_STATUSES = {"proposed", "approved", "rejected", "superseded"}
 _AMENDMENT_CLASSES = {
     "build_defect",
@@ -35,7 +38,9 @@ def _slug(script: str) -> str:
 
 
 def global_plan_path(folder: str | Path) -> Path:
-    return Path(folder) / PLAN_DIR / GLOBAL_PLAN
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    return selected_artifact_path(folder, "global.md")
 
 
 def layer_plan_path(folder: str | Path, layer) -> Path:
@@ -45,14 +50,150 @@ def layer_plan_path(folder: str | Path, layer) -> Path:
 def work_unit_plan_path(folder: str | Path, unit) -> Path:
     """Resolve the schema-declared unit plan inside the shot root."""
     root = Path(folder).resolve()
-    path = (root / unit.plan).resolve()
+    path = Path(os.path.abspath(root / unit.plan))
     try:
         path.relative_to(root)
     except ValueError as exc:
         raise ValueError(f"work-unit plan escapes the shot root: {unit.plan!r}") from exc
     if path.relative_to(root).parts[:1] != (PLAN_DIR,):
         raise ValueError(f"work-unit plan must live under {PLAN_DIR}/: {unit.plan!r}")
+    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
+
+    if (root / POINTER).exists():
+        bundle = resolve_current(root)
+        name = path.relative_to(root).as_posix()
+        if name in bundle.artifacts:
+            return bundle.root / name
     return path
+
+
+def is_selected_bundle_member(folder: str | Path, path: str | Path) -> bool:
+    """Return whether a plan path is frozen in the currently selected bundle.
+
+    Resolving current authority verifies every member hash, so this predicate also refuses a
+    bundle that has been modified after publication.
+    """
+    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
+
+    root = Path(folder).resolve()
+    if not (root / POINTER).exists():
+        return False
+    bundle = resolve_current(root)
+    candidate = Path(path).resolve()
+    try:
+        name = candidate.relative_to(bundle.root).as_posix()
+    except ValueError:
+        return False
+    return name in bundle.artifacts
+
+
+def _unit_authority_path(path: Path) -> Path:
+    return path.with_name(path.name + ".authority.json")
+
+
+def work_unit_plan_authority_path(path: str | Path) -> Path:
+    """Return the sidecar path that binds a JIT plan to selected global authority."""
+    return _unit_authority_path(Path(path))
+
+
+def stamp_work_unit_plan(folder: str | Path, path: str | Path) -> Path | None:
+    """Pin one JIT plan to the selected global bundle and its exact bytes."""
+    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
+
+    root = Path(folder).resolve()
+    plan = Path(path).resolve()
+    if not (root / POINTER).exists():
+        return None
+    bundle = resolve_current(root)
+    record = {
+        "schema": UNIT_PLAN_AUTHORITY_SCHEMA,
+        "bundle_hash": bundle.content_hash,
+        "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "path": plan.relative_to(root).as_posix(),
+    }
+    authority = _unit_authority_path(plan)
+    atomic_write(authority, json.dumps(record, indent=2, sort_keys=True) + "\n")
+    return authority
+
+
+def validate_work_unit_plan_authority(folder: str | Path, path: str | Path) -> None:
+    """Fail closed when a JIT plan belongs to another global generation."""
+    from vfx_harness.orchestration.plan_authority import (
+        BUNDLE_SCHEMA,
+        CONSUMER_VIEW_SCHEMA,
+        POINTER,
+        resolve_current,
+    )
+
+    root = Path(folder).resolve()
+    lexical_plan = Path(os.path.abspath(path))
+    plan = lexical_plan.resolve()
+    marker = root / ".plan-consumer-view.json"
+    if marker.is_file():
+        try:
+            view = json.loads(marker.read_text(encoding="utf-8"))
+            if view.get("schema") != CONSUMER_VIEW_SCHEMA:
+                raise ValueError("unsupported plan consumer view")
+            bundle = resolve_current(view["shot"])
+            if bundle.root != Path(view["bundle"]).resolve():
+                raise ValueError("plan consumer view points at a non-selected bundle")
+            if bundle.content_hash != view.get("content_hash"):
+                raise ValueError("plan consumer view bundle hash is stale")
+            name = lexical_plan.relative_to(root).as_posix()
+            manifest = json.loads((bundle.root / "bundle.json").read_text(encoding="utf-8"))
+            if manifest.get("schema") != BUNDLE_SCHEMA:
+                raise ValueError("selected plan bundle manifest is unsupported")
+            try:
+                target_name = plan.relative_to(bundle.root).as_posix()
+            except ValueError:
+                target_name = ""
+            expected = (manifest.get("artifacts") or {}).get(name)
+            if target_name == name and expected:
+                if hashlib.sha256(plan.read_bytes()).hexdigest() != expected:
+                    raise ValueError("work-unit plan bundle member hash does not match authority")
+            else:
+                shot = Path(str(view["shot"])).resolve()
+                source = (shot / name).resolve()
+                if plan != source:
+                    raise ValueError("JIT unit plan view points outside its shot-root authority")
+                lexical_authority = _unit_authority_path(lexical_plan)
+                source_authority = _unit_authority_path(source)
+                if lexical_authority.resolve() != source_authority.resolve():
+                    raise ValueError("JIT unit plan authority sidecar is absent or redirected")
+                record = json.loads(source_authority.read_text(encoding="utf-8"))
+                expected_record = {
+                    "schema": UNIT_PLAN_AUTHORITY_SCHEMA,
+                    "bundle_hash": bundle.content_hash,
+                    "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
+                    "path": name,
+                }
+                if record != expected_record:
+                    raise ValueError("JIT unit plan is stale or edited in the consumer view")
+        except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{lexical_plan} has invalid selected-bundle authority") from exc
+        return
+    if not (root / POINTER).exists():
+        return
+    bundle = resolve_current(root)
+    try:
+        bundled_name = plan.relative_to(bundle.root).as_posix()
+    except ValueError:
+        bundled_name = ""
+    if bundled_name in bundle.artifacts:
+        return
+    authority = _unit_authority_path(plan)
+    try:
+        record = json.loads(authority.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{plan} has no readable selected-bundle authority record") from exc
+    expected = {
+        "schema": UNIT_PLAN_AUTHORITY_SCHEMA,
+        "bundle_hash": bundle.content_hash,
+        "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "path": plan.relative_to(root).as_posix(),
+    }
+    if record != expected:
+        raise ValueError(f"{plan} is stale or edited relative to the selected global plan")
 
 
 def read_work_unit_plan(folder: str | Path, layer, unit) -> str:
@@ -63,6 +204,7 @@ def read_work_unit_plan(folder: str | Path, layer, unit) -> str:
             f"{path} missing — monolithic plan fallback has been removed. Generate and "
             f"gate the just-in-time plan for layer {layer.id} unit {unit.id} before building it"
         )
+    validate_work_unit_plan_authority(folder, path)
     text = path.read_text(encoding="utf-8").strip()
     if len(text) < 200:
         raise ValueError(f"{path} is too small to be an executable layer plan")

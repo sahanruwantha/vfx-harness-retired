@@ -31,8 +31,10 @@ def digest(path: str | Path) -> str | None:
 
 
 def _layers(folder: Path) -> list[dict]:
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
     try:
-        rows = read_document(folder / "layers.json")
+        rows = read_document(selected_artifact_path(folder, "layers.json"))
     except (OSError, ValueError):
         return []
     return rows
@@ -96,13 +98,24 @@ def input_manifest(
     paths = [
         root / "brief.md",
         global_plan_path(root),
-        root / "layers.json",
-        root / "acceptance.json",
-        root / "critic_axes.json",
-        root / "checks.json",
-        root / "scene_checks.json",
         root / "plan_amendments.jsonl",
     ]
+    from vfx_harness.orchestration.plan_authority import POINTER, selected_artifact_path
+
+    paths.extend(
+        selected_artifact_path(root, name)
+        for name in ("layers.json", "acceptance.json", "critic_axes.json", "checks.json", "scene_checks.json")
+    )
+    if (root / POINTER).exists():
+        paths.extend(
+            selected_artifact_path(root, name)
+            for name in (
+                "requirements.json",
+                "obligations.json",
+                "assumptions.json",
+                "plan.provenance.json",
+            )
+        )
     paths.extend(work_unit_plan_path(root, unit) for unit in layer.stages)
     for row in _layers(root):
         try:

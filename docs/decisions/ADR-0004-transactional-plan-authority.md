@@ -84,6 +84,33 @@ accepted first implementation slice and its deliberately incomplete acceptance c
   expiry condition; after expiry, legacy forms are rejected. Prose fingerprints and
   unmapped `control_roles` are the first two sunsets.
 
+### Amendment: structural cleanliness and executable falsification
+
+Plan commit validation certifies **structurally executable authority**, not the truth or
+reachability of scene state that does not exist yet. A `clean` plan proves bundle identity,
+requirement closure, ownership, dependency order, mutation scope, evidence bindings, due gates,
+and decision authority. It does not claim that a future projected bbox, transform, timing,
+lighting response, or interaction already passes.
+
+Scene-dependent values carry an explicit strength: `hard_constraint`, `approved_start`,
+`planner_start`, or `confirmed_outcome`. Legacy decisions with no strength are read as hard
+constraints so migration cannot silently grant automation more authority. Approved/planner
+starts name the producing unit and exact runtime contracts that can falsify them. Only accepted
+executable evidence pinned to a checkpoint may create a confirmed outcome.
+
+When passing requires a decision, dependency, ownership, mutation-scope, contract, or sealed-
+outcome change outside the active unit, the unit records `hypothesis_falsified` with immutable
+bundle/unit/candidate identities and stops. Transactional replanning consumes that record,
+preserves unaffected checkpoints, and invalidates the dependency closure. Ordinary misses that
+remain repairable inside declared authority do not become plan findings.
+
+Plan spikes are optional mechanism evidence. A ticket claiming `spiked` must cite immutable exact
+script/output/runtime bytes and any contract rows it claims to have executed. Composition ownership
+alone never makes a spike mandatory, and a passing spike cannot confirm a future cumulative scene.
+
+[HIR-0011](../improvements/HIR-0011-build-time-plan-falsification.md) records the implementation,
+migration, and economic acceptance evidence for this amendment.
+
 ## Consequences
 
 - Authoring converges in-session against live validation; the outer gate is normally clean

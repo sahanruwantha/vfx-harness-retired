@@ -8,6 +8,8 @@ strict per-layer execution plans. Shot-specific knowledge belongs in the shot fo
 
 from __future__ import annotations
 
+import hashlib
+
 PLANNER_SYSTEM = """\
 You are the PLAN agent — the senior VFX supervisor of an automated 3D/VFX vfx_harness.
 You produce the global BREAKDOWN (`plans/global.md`) and the machine contracts from which
@@ -22,8 +24,9 @@ INPUTS, in the shot folder (your working directory):
     you. You never override the brief silently.
   - refs/    — approval stills and, when present, the SOURCE VIDEO (the motion and
     structure authority).
-  - Prior work may exist (build/*.py, shot.json, plans/, plan_amendments.jsonl): converged values
-    in it outrank guesses. Read before you invent.
+  - Explicit cross-run decisions may exist in `plan_amendments.jsonl` and
+    `state/plan-resolutions.jsonl`. They are hash-pinned inputs, not prior-plan leakage; read
+    them before inventing a replacement. Prior plans, builds, and run reports are absent.
 
 YOUR TOOLS and what each is FOR:
   - measure_ref — MEASURED look fingerprints (exposure, band structure σ, halation)
@@ -41,6 +44,11 @@ YOUR TOOLS and what each is FOR:
   - measure_check — the single-check form. Use it while EXPLORING one region or threshold,
     not for verifying a set you have already drafted. A numeric done-check may not enter a
     ticket until one of these returns OK.
+    Every `rejects` path committed to `checks.json` must be candidate-relative and already
+    persisted under `refs/` or `plans/evidence/`. Never bind `/tmp`, an absolute path, or
+    a file outside the isolated workspace: evidence that disappears after publication is
+    not an adversary. When a spike render is the adversary, request its persisted render
+    output and cite that candidate-local artifact.
   - spike — a one-shot headless Blender lab. Any technique that came from research
     must be PROVEN here (mechanism-level, seconds) before it enters a ticket.
   - Read / Glob / Grep — the shot folder and prior work. Write — plans/global.md and its
@@ -224,9 +232,10 @@ WORKFLOW, in order:
         Strip frames must cover the FULL build range with no unjudged gaps.
    ## 5 · LEARNED DURING RUN — empty append-only section for build sessions.
 
-   Then ALSO Write FIVE machine-readable companions at the SHOT ROOT — exactly
+   Then ALSO Write EIGHT machine-readable companions at the SHOT ROOT — exactly
    `layers.json`, `acceptance.json`, `checks.json`, `scene_checks.json`, and
-   `critic_axes.json`. These files do NOT live under `plans/`; `plans/` is reserved for
+   `critic_axes.json`, plus `requirements.json`, `obligations.json`, and
+   `assumptions.json`. These files do NOT live under `plans/`; `plans/` is reserved for
    `global.md`, work-unit execution plans, and sealed outcomes. A companion written as
    `plans/layers.json` (or any equivalent nested path) is missing, not an alternative.
    Also write exactly the first dependency-ready work-unit plan for Layer 1 at the path
@@ -244,7 +253,9 @@ WORKFLOW, in order:
        {"id": "1", "script": "build/01_<name>.py", "title": "<title>",
         "primary_judge": <frame>,
         "judge": [{"frame": <n>, "ref": "refs/<file>"}, …],
-        "owns": ["<axis key>", …], "reads": "<layer acceptance boundary>",
+        "owns": ["<axis key>", …],
+        "evidence_domains": ["scene", "image", "temporal", "projected_composition"],
+        "reads": "<layer acceptance boundary>",
         "stages": [
           {"id": "<bounded_unit>", "title": "<one goal>",
            "plan": "plans/01_<name>/<NN_unit>.md", "depends_on": [],
@@ -287,6 +298,10 @@ WORKFLOW, in order:
        builds but cannot see where it is judged is unfixable-in-place: either add the
        frame to `judge`, or move the axis to a layer that is judged where it shows.
      - do not park most axes on the final layer; that just moves the problem.
+   `evidence_domains` is also a contract. Use only the domains this layer genuinely
+   requires: `scene`, `image`, `temporal`, `projected_composition`, and `human`.
+   `projected_composition` activates the executable context rule above; never rely on a
+   camera/framing word embedded in an axis name to activate a machine gate.
    Do NOT tag layers with milestones. Delivering an approval moment is not a layer's job:
    a moment is a whole frame produced by the CUMULATIVE chain, and attributing it to one
    additive layer makes that layer get judged on work later layers have not done yet.
@@ -398,12 +413,29 @@ WORKFLOW, in order:
    `material_user_count`, `material_assignment_fraction`, `node_count`,
    `node_socket_value`, `node_link_count`, `animation_count`, `compositor_enabled`, and
    `control_render_response`; temporal kinds are `onset_order`,
-   `radial_distance_trend`, `transform_return_delta`, and rendered `frame_delta`.
-   Temporal kinds declare `frames: [start, end]`. `onset_order` also declares
-   `compare_roles`; `transform_return_delta` declares `component` as location, rotation,
+   `radial_distance_trend`, `transform_return_delta`, exact `keyframe_schedule`, and
+   rendered `frame_delta`. Windowed temporal kinds declare `frames: [start, end]`.
+   `keyframe_schedule` instead declares exact `samples`. Object selection uses `roles` for
+   `bvfx_role` and `control_roles` for `bvfx_control`; do not put a control id in a role
+   selector. `onset_order` also declares `compare_roles` and/or
+   `compare_control_roles`; `transform_return_delta` declares `component` as location, rotation,
    or scale. A unit declaring `temporal_evidence: "motion"` must bind at least one of
-   these exact contract ids. A camera/composition/framing owner should bind a bbox contract
-   at every judge frame against semantic proxy roles.
+   these exact contract ids. A camera/composition/framing owner MUST have executable
+   projected context at every judge frame before its camera work can seal. Bind a bbox
+   contract directly, or add an earlier blockout work unit and declare on the camera unit:
+     "composition_context": {"frames": [<frame>, ...],
+                              "source_unit": "<dependency unit id>"}
+   The source unit must be in `depends_on`, must judge those same frames, and must carry
+   bbox contracts there. For direct bindings use `contract_ids` instead of `source_unit`.
+   On an empty scene, the first camera and the geometry used to prove its framing MAY be one
+   atomic scoped unit: declare both mutation roles and bind the bbox contracts directly. Never
+   invent a blockout-only predecessor whose bbox is due before the camera owned by its dependent;
+   projected evidence cannot exist before its declared camera exists.
+   A required unit claim may bind only evidence runnable when that unit completes. In
+   particular, a pre-grade unit may not require a `post_grade` image contract. Author and
+   prove an `any`/`pre_grade` check for the unit, or carry the final-plate requirement as a
+   typed obligation due after the grade-owning dependency. Never use a required claim as
+   an implicit deferral mechanism.
    Node kinds (`node_count`, `node_socket_value`, `node_link_count`) additionally require
    `graph`: `material`, `compositor`, or `world`. A material graph requires semantic
    `material_roles`; node selection uses semantic `node_roles` (not object `roles`).
@@ -426,6 +458,79 @@ WORKFLOW, in order:
    Specific to this shot's content and style, not generic. YOU write these: you have the
    deepest scene read and you are the only stage that also knows the layer breakdown, so
    you are the only one who can guarantee each axis has an owner in (a).
+
+   (f) `requirements.json` is the normative brief register. Compute the full lowercase
+   SHA-256 of the staged `brief.md`; every entry cites that hash and an exact inclusive
+   line span, then resolves to exact contract ids, obligation ids, or an explicit typed
+   decision. The deterministic gate treats every substantive body paragraph, list item,
+   and table data row as a source clause: every one must overlap at least one register
+   citation. Headings and table headers are structural; YAML front matter is owned by the
+   shot schema. Do not sample a few beat rows or acceptance bullets. No normative
+   instruction may survive only in `global.md` prose:
+     {"schema":"vfx-harness.requirements/v1","requirements":[
+      {"id":"R1","statement":"<normative requirement>",
+       "citation":{"source":"brief.md","sha256":"<64 hex>",
+                   "line_start":1,"line_end":2},
+       "resolution":{"kind":"contract","ids":["<exact check id>"]}}]}
+   A decision resolution uses `{"kind":"decision","ids":[],"decision":"<rationale>"}`.
+   An explicit terminal N-frame lock/hold is mechanically measurable, never a prose
+   decision or a single-frame look proxy. Bind its requirement (directly or through an
+   obligation) to a REQUIRED rendered `frame_delta` scene contract over the final N
+   delivery frames. The gate derives that window from the brief and shot frame count.
+   Likewise, an exact reassembly/return requirement is measured from the last
+   pre-fracture frame to the final delivery frame. Bind it to a REQUIRED
+   `transform_return_delta` over that derived window; a frame already inside the
+   reassembly beat is not a valid baseline for proving exact return.
+   Explicit motion laws in the brief remain temporal regardless of a unit's chosen
+   `temporal_evidence` label. Chase/stagger, continuous camera movement, dependency order,
+   traveling fronts, outward-first fracture, and reversed trajectories must each resolve
+   through a REQUIRED temporal scene contract. Removing or weakening the unit label does
+   not turn a motion requirement into a single-frame claim.
+
+   A satisfied entry in `state/plan-resolutions.jsonl` may carry a self-contained
+   `values.contract` object. That is approved executable authority, not advisory prose.
+   Copy every field in `values.contract` exactly into one scene contract, preserve the
+   resolution id as `decision_id`, and bind that contract to a REQUIRED claim in its
+   owning unit. `keyframe_schedule` contracts use semantic `roles`/`control_roles` and
+   `samples: [{"frame": <int>, "values": {"location": [x,y,z], ...}}, ...]`; they fail
+   on a missing or extra keyed frame as well as on property error. Never reconstruct a
+   structured decision from a prior plan or delegate its animation to a unit that does
+   not own the selected role/control.
+
+   (g) `obligations.json` contains requirements whose evidence becomes measurable only at
+   a later dependency boundary. Every obligation names its owner, requirement ids, exact
+   expected evidence, and due gate: `before_unit` with layer+unit, `unit_completion`
+   with layer+unit, `before_layer` with layer, or `before_acceptance` with neither. Use
+   `unit_completion` when that unit itself produces the evidence. Entry gates may name
+   only already-produced upstream evidence; making a unit depend on its own future
+   contract is a circular deadlock. Exact-return and final-lock promises are obligations
+   unless already bound to executable contracts:
+     {"schema":"vfx-harness.obligations/v1","obligations":[
+      {"id":"O1","statement":"<deferred proof>","requirement_ids":["R1"],
+       "owner":"<layer.unit>","due":{"kind":"before_acceptance"},
+       "evidence":[{"kind":"scene_contract","id":"<future contract id>"}]}]}
+
+   (h) `assumptions.json` contains unresolved choices and explicitly provisional starting
+   values, never hidden defaults. Each record states `decision_strength`: `hard_constraint`
+   for brief/user law, `approved_start` for a user-approved initial value, or
+   `planner_start` for a tunable planner choice. Approved/planner starts MUST name the
+   producing owner and exact runtime contracts that can falsify them. Planning validates
+   those bindings; only the producing unit can confirm scene truth. `confirmed_outcome`
+   is invalid here because only an accepted checkpoint can create one. Each assumption
+   also names a due gate and explicit impact set. Emit an empty list when there are none:
+     {"schema":"vfx-harness.assumptions/v1","assumptions":[
+      {"id":"A1","statement":"<assumption>","requirement_ids":[],"owner":"PLAN",
+       "decision_strength":"approved_start",
+       "falsification":{"owner":"1.proxy","contract_ids":["bbox-at-f36"]},
+       "due":{"kind":"before_layer","layer":"1"},
+       "impact":{"layers":["1"],"axes":[],"global_decision":false}}]}
+
+   A clean plan means structurally executable authority: complete ownership, scope,
+   dependency, evidence, and due bindings. It does NOT mean a future bbox, visibility,
+   transform, lighting, or timing target has already passed. Do not demand a proxy spike
+   merely to prove reachability. If a ticket claims `spiked`, cite the typed immutable
+   contract-bound spike record; otherwise leave the claim untagged and let its producing
+   unit evaluate the declared runtime contracts in the real cumulative scene.
 
 DEPARTMENTS — the layer breakdown mirrors how a real VFX shot is built:
 
@@ -579,17 +684,17 @@ def _refs_block(shot) -> str:
 
 def planner_user_prompt(shot) -> str:
     """Kickoff for a from-scratch (draft or single) planning pass."""
+    brief_hash = hashlib.sha256((shot.folder / "brief.md").read_bytes()).hexdigest()
     return (
         f"Plan shot '{shot.id}'. Build target: {shot.frames} frames @ {shot.fps}fps "
         f"on {shot.engine}.\n\n"
         f"Read `brief.md` first. {_refs_block(shot)}\n\n"
-        f"Also check prior work (`plans/`, `plan_amendments.jsonl`, `build/*.py`, "
-        f"`shot.json`, `assets/`) — "
-        f"converged values there outrank guesses, and committed assets constrain the "
-        f"asset tickets.\n\n"
+        f"This authored-input-only transaction contains no implicit prior plan or build. "
+        f"The exact staged brief SHA-256 for requirements citations is `{brief_hash}`.\n\n"
         f"Do the full scene read, resolve conflicts, break the build into layers and "
         f"tickets with confidence tags, research and spike the [unknown]s, and write "
-        f"`plans/global.md`, the five machine contracts, and only Layer 1's execution plan."
+        f"`plans/global.md`, the eight machine contracts, and only Layer 1's first "
+        f"dependency-ready execution plan."
     )
 
 
@@ -684,12 +789,18 @@ hard plan requirements. Do not ask a layer to repair controls owned by another l
 
 def layer_user_prompt(shot, layer, unit, target: str, feedback: str) -> str:
     """Kickoff for a just-in-time plan that consumes prior measured outcomes."""
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    authority = [
+        selected_artifact_path(shot.folder, name)
+        for name in ("global.md", "layers.json", "critic_axes.json", "checks.json", "scene_checks.json")
+    ]
     return (
         f"Plan only Layer {layer.id} — {layer.title} — unit {unit.id}: {unit.title} "
         f"for shot '{shot.id}'. "
         f"Write exactly `{target}`.\n\n"
-        f"Read `brief.md`, `plans/global.md`, `layers.json`, `critic_axes.json`, "
-        f"`checks.json`, `scene_checks.json`, `plan_amendments.jsonl`, and only the build "
+        f"Read `brief.md`, these exact verified authority files "
+        f"{[str(path) for path in authority]}, `plan_amendments.jsonl`, and only the build "
         f"scripts for this layer and its declared predecessors. Do not scan logs. "
         f"{_refs_block(shot)}\n\n"
         f"Layer contract: judges={list(layer.judges)}, owns={list(layer.owns)}, "

@@ -61,12 +61,16 @@ For planning runs, `reports/plan_gate.json` is the terminal deterministic author
 blocking count, and report path are repeated in `status.json` and the summary so readers can decide
 whether to open the full finding set without rerunning the gate.
 
-A clean untagged planning run also stores a content-addressed plan bundle under its
+A gate-clean untagged planning run also stores a content-addressed plan bundle under its
 `checkpoints/plans/bundles/` directory and atomically updates `plans/current.json`. The pointer
 names the producing run, bundle path, aggregate hash, and gate outcome. Bundle-aware readers verify
-every member hash and fail closed on a malformed pointer. During the ADR-0004 migration, existing
-build consumers still read the shot-root compatibility files; the pointer is the durable
-publication record but does not yet make those legacy reads transactional.
+every member hash and fail closed on a malformed pointer. Bundles include typed requirements,
+obligations, assumptions, harness-authored input provenance, and every nested Markdown unit or
+evidence plan present at publication. A ready-unit plan authored during global planning executes
+directly from that immutable bundle; a later JIT plan remains shot-root state and must carry a
+sidecar pin to the same selected bundle hash. Current build and evaluation readers select global
+plan artifacts through the pointer and never fall back from malformed selected authority.
+Pointer-less archived fixtures retain a bounded compatibility read until republished.
 
 The planner's current working directory is
 `runs/<run-id>/scratch/plan-workspace/`. Staging copies `brief.md` and materializes `refs/`, but

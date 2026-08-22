@@ -14,7 +14,7 @@ import importlib.util
 import os
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_GEOM_PATH = os.path.join(os.path.dirname(_HERE), "geom.py")
+_GEOM_PATH = os.path.join(_HERE, "geom.py")
 
 # Loaded BY PATH, not as `vfx_harness.blender.geom`. Blender ships its own Python without the repo's
 # dependencies, so importing the package runs `vfx_harness/__init__.py` and dies on

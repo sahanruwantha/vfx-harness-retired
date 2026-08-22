@@ -168,7 +168,9 @@ def check_fingerprint(text: str, truth: dict) -> tuple[list[dict], list[str]]:
 
 
 def audit(folder: Path) -> dict:
-    acc = folder / "acceptance.json"
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    acc = selected_artifact_path(folder, "acceptance.json")
     if not acc.is_file():
         return {"shot": folder.name, "error": f"no acceptance.json in {folder}"}
     moments = []

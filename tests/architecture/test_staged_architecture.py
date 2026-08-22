@@ -21,6 +21,7 @@ from vfx_harness.orchestration.unit_state import (
     block_dependents,
     freeze_checkpoint,
     initialize,
+    invalidate_checkpoint,
     load,
     transition,
 )
@@ -458,6 +459,42 @@ def test_failed_dependency_blocks_transitive_units_without_failing_them(tmp_path
     assert state["units"]["a"]["status"] == "pending"
     assert state["units"]["b"]["status"] == "blocked"
     assert state["units"]["c"]["status"] == "blocked"
+
+
+def test_checkpoint_invalidation_revokes_authority_and_blocks_consumers_atomically(tmp_path):
+    units = (_unit("a"), _unit("b", depends_on=["a"]), _unit("c", depends_on=["b"]))
+    initialize(tmp_path, "1", units, plan_hash="plan")
+    _pass_unit(tmp_path, "1", units[0])
+    transition(tmp_path, "1", "b", "planning", reason="test")
+    transition(tmp_path, "1", "b", "building", reason="test")
+
+    record = invalidate_checkpoint(
+        tmp_path,
+        "1",
+        "a",
+        units,
+        reason="post-acceptance scope audit failed",
+        evidence=["run:test", "violation:undeclared-role"],
+    )
+
+    state = load(tmp_path, "1")
+    assert record["affected"] == ["a", "b", "c"]
+    assert record["archived_checkpoints"]["a"]["candidate_hash"] == "candidate-a"
+    assert state["units"]["a"]["status"] == "retryable"
+    assert "checkpoint" not in state["units"]["a"]
+    assert state["units"]["a"]["invalidated_checkpoints"][-1]["checkpoint"] == record[
+        "archived_checkpoints"
+    ]["a"]
+    assert state["units"]["b"]["status"] == "blocked"
+    assert state["units"]["c"]["status"] == "blocked"
+    assert state["invalidations"][-1] == record
+
+
+def test_checkpoint_invalidation_requires_auditable_evidence(tmp_path):
+    units = (_unit("a"),)
+    initialize(tmp_path, "1", units, plan_hash="plan")
+    with pytest.raises(ValueError, match="reason and non-empty evidence"):
+        invalidate_checkpoint(tmp_path, "1", "a", units, reason="", evidence=[])
 
 
 def test_work_unit_state_is_isolated_per_layer(tmp_path):

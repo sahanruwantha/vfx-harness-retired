@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from PIL import Image
 
+from vfx_harness.agents import plan_tools
 from vfx_harness.agents.plan_guardrails import validate_planner_artifact
 from vfx_harness.evaluation.grounding import audit
 from vfx_harness.evaluation.plan_gate import (
     Finding,
     GateResult,
+    _check_done,
+    _check_evidence,
     _check_evidence_coherence,
     _planned_outputs,
     write_report,
@@ -93,6 +97,41 @@ def test_gate_result_serializes_reusable_authority() -> None:
     assert record["outcome"] == "budget"
     assert record["blocking_count"] == 1
     assert record["findings"][0]["severity"] == "blocking"
+
+
+def test_plan_check_cannot_bind_process_local_adversary(tmp_path: Path) -> None:
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    Image.new("RGB", (16, 16), (20, 20, 20)).save(refs / "good.png")
+    outside = tmp_path.parent / "process-local-adversary.png"
+    Image.new("RGB", (16, 16), (240, 240, 240)).save(outside)
+    _write(tmp_path / "checks.json", {
+        "schema": 2,
+        "checks": [{
+            "id": "exposure",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "1",
+            "lifecycle": "layer",
+            "axis": "look",
+            "frame": 1,
+            "ref": "refs/good.png",
+            "metric": "frame_mean",
+            "op": "band",
+            "lo": 0,
+            "hi": 255,
+            "stage": "pre_grade",
+            "rejects": [str(outside)],
+            "proof": {"ref": 20, "adversary": [240]},
+        }],
+    })
+
+    findings, _ = _check_done(tmp_path)
+
+    assert any(
+        finding.blocking and "absolute adversary path" in finding.what
+        for finding in findings
+    )
 
 
 def test_gate_report_and_terminal_metadata_are_published(tmp_path: Path, monkeypatch) -> None:
@@ -218,9 +257,49 @@ def test_temporal_contract_kinds_are_typed() -> None:
     assert validate_row({**base, "kind": "radial_distance_trend"}) is None
     assert validate_row({**base, "kind": "transform_return_delta", "component": "rotation"}) is None
     assert validate_row({**base, "kind": "onset_order", "compare_roles": ["fragments.*"]}) is None
+    control_bound = {
+        **base,
+        "kind": "onset_order",
+        "roles": ["iris_blade.*"],
+        "compare_control_roles": ["unlock_group_4"],
+    }
+    assert validate_row(control_bound) is None
+    probe = _blender_probe([control_bound], 10)
+    assert "bvfx_control" in probe
+    assert "compare_control_roles" in probe
     assert validate_row({**base, "kind": "frame_delta"}) is None
     assert "increasing" in validate_row({**base, "kind": "frame_delta", "frames": [20, 10]})
     compile(_blender_probe([{**base, "kind": "radial_distance_trend"}], 10), "<probe>", "exec")
+
+
+def test_exact_keyframe_schedule_is_typed_and_executable() -> None:
+    row = {
+        "id": "camera-spine",
+        "owner_layer": "1",
+        "fault_owner": "1",
+        "activates_at": "1",
+        "lifecycle": "persistent",
+        "axis": "camera_framing",
+        "kind": "keyframe_schedule",
+        "roles": ["cam_rig"],
+        "samples": [
+            {"frame": 1, "values": {"location": [0, -6, 0]}},
+            {"frame": 240, "values": {"location": [0, 225, 0]}},
+        ],
+        "op": "max",
+        "hi": 0.001,
+    }
+
+    assert validate_row(row) is None
+    assert "actual_frames!=expected_frames" in _blender_probe([row], 1)
+    assert "action_slot" in _blender_probe([row], 1)
+    control_bound = {**row, "roles": [], "control_roles": ["camera_spine"]}
+    assert validate_row(control_bound) is None
+    assert "row.get('control_roles')" in _blender_probe([control_bound], 1)
+    assert "sample frames must be unique" in validate_row({
+        **row,
+        "samples": [row["samples"][0], row["samples"][0]],
+    })
 
 
 def test_frame_delta_compares_two_rendered_frames(tmp_path: Path) -> None:
@@ -253,7 +332,136 @@ def test_frame_delta_compares_two_rendered_frames(tmp_path: Path) -> None:
     assert evidence[0]["pass"] is True
 
 
-def test_gate_requires_temporal_evidence_and_warns_on_coverage(tmp_path: Path) -> None:
+def test_plan_spike_uses_the_smoke_tested_blender_binary(tmp_path: Path, monkeypatch) -> None:
+    invoked = {}
+    monkeypatch.setattr(plan_tools, "resolve_blender", lambda requested: "/resolved/blender")
+
+    def fake_sh(args, *, timeout):
+        invoked.update(args=args, timeout=timeout)
+        return 0, "spike ok", ""
+
+    monkeypatch.setattr(plan_tools, "_sh", fake_sh)
+    result = plan_tools._spike(
+        "blender",
+        "print('ok')",
+        None,
+        60,
+        tmp_path / "spike.py",
+        tmp_path / "spike.png",
+    )
+
+    assert invoked["args"][0] == "/resolved/blender"
+    assert invoked["timeout"] == 60
+    assert result["rc"] == 0
+
+
+def test_plan_spike_deposits_citable_evidence_in_global_workspace(tmp_path: Path) -> None:
+    (tmp_path / ".plan-workspace.json").write_text("{}\n", encoding="utf-8")
+    lab = tmp_path / "outside-lab" / "draft"
+    lab.mkdir(parents=True)
+    script = lab / "spike_01.py"
+    script.write_text("print('measured=0.5625')\n", encoding="utf-8")
+    script.with_suffix(".out").write_text("measured=0.5625\n", encoding="utf-8")
+    render = lab / "spike_01.png"
+    Image.new("RGB", (8, 8), "red").save(render)
+
+    relative = plan_tools._persist_spike_evidence(
+        tmp_path,
+        phase="draft",
+        number=1,
+        script_path=script,
+        render_path=render,
+        result={"rc": 0, "wall": 1.25},
+    )
+
+    assert relative == Path("plans/evidence/spikes/draft-spike-01.md")
+    evidence = (tmp_path / relative).read_text(encoding="utf-8")
+    assert "measured=0.5625" in evidence
+    assert "script_sha256" in evidence
+    assert (tmp_path / "plans/evidence/spikes/draft-spike-01.png").is_file()
+
+
+def test_jit_spike_does_not_write_global_plan_evidence_without_workspace_marker(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "spike.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    script.with_suffix(".out").write_text("ok\n", encoding="utf-8")
+
+    assert plan_tools._persist_spike_evidence(
+        tmp_path,
+        phase="layer-01",
+        number=1,
+        script_path=script,
+        render_path=tmp_path / "missing.png",
+        result={"rc": 0, "wall": 0.1},
+    ) is None
+    assert not (tmp_path / "plans/evidence").exists()
+
+
+def _typed_spike_fixture(root: Path) -> tuple[str, dict]:
+    evidence = root / "plans/evidence/spikes"
+    evidence.mkdir(parents=True)
+    script = b"print('probe')\n"
+    output = b"Blender 5.0.0\nprobe\n"
+    (evidence / "probe.py").write_bytes(script)
+    (evidence / "probe.out").write_bytes(output)
+    contract = {"id": "bbox-f36", "kind": "bbox_width", "frame": 36, "op": "band", "lo": 0.9, "hi": 1.3}
+    _write(root / "scene_checks.json", {"schema": 2, "contracts": [contract]})
+    record = {
+        "schema": "vfx-harness.plan-spike/v1",
+        "script": {"path": "probe.py", "sha256": hashlib.sha256(script).hexdigest()},
+        "output": {"path": "probe.out", "sha256": hashlib.sha256(output).hexdigest()},
+        "blender": {"executable": "/snap/bin/blender", "version": "Blender 5.0.0"},
+        "contracts": [contract],
+        "results": [{"id": "bbox-f36", "value": 1.0, "pass": True, "error": ""}],
+        "passed": True,
+    }
+    _write(evidence / "probe.json", record)
+    plan = (
+        "**G10·T1 · Camera**  [known ✓spiked]\n"
+        "- mechanism proof: `plans/evidence/spikes/probe.json`\n"
+    )
+    return plan, record
+
+
+def test_unspiked_composition_ticket_is_not_a_plan_publication_blocker(tmp_path: Path) -> None:
+    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
+
+    findings, stats = _check_evidence(
+        tmp_path,
+        "**G10·T1 · Camera**  [known]\n- bbox is evaluated by the producing unit\n",
+    )
+
+    assert findings == []
+    assert stats["spiked"] == 0
+
+
+def test_spiked_claim_requires_exact_immutable_runtime_bytes(tmp_path: Path) -> None:
+    plan, _record = _typed_spike_fixture(tmp_path)
+
+    findings, stats = _check_evidence(tmp_path, plan)
+
+    assert findings == []
+    assert stats["spiked"] == 1
+
+    (tmp_path / "plans/evidence/spikes/probe.out").write_text("changed\n", encoding="utf-8")
+    findings, _ = _check_evidence(tmp_path, plan)
+    assert any(finding.blocking and "stale output bytes" in finding.what for finding in findings)
+
+
+def test_spiked_claim_cannot_cite_a_stale_contract_threshold(tmp_path: Path) -> None:
+    plan, _record = _typed_spike_fixture(tmp_path)
+    scene = json.loads((tmp_path / "scene_checks.json").read_text(encoding="utf-8"))
+    scene["contracts"][0]["hi"] = 1.2
+    _write(tmp_path / "scene_checks.json", scene)
+
+    findings, _ = _check_evidence(tmp_path, plan)
+
+    assert any(finding.blocking and "stale or narrower" in finding.what for finding in findings)
+
+
+def test_gate_requires_temporal_and_composition_evidence(tmp_path: Path) -> None:
     _write(tmp_path / "layers.json", _layer_doc())
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     _write(
@@ -271,7 +479,7 @@ def test_gate_requires_temporal_evidence_and_warns_on_coverage(tmp_path: Path) -
 
     assert stats["motion_units"] == 1
     assert any(f.check == "temporal-coverage" and f.blocking for f in findings)
-    assert any(f.check == "composition-coverage" and not f.blocking for f in findings)
+    assert any(f.check == "composition-coverage" and f.blocking for f in findings)
     assert sum(f.check == "ownership" for f in findings) == 2
 
 
@@ -303,3 +511,190 @@ def test_temporal_binding_closes_motion_coverage(tmp_path: Path) -> None:
     findings, _ = _check_evidence_coherence(tmp_path)
 
     assert not any(f.check == "temporal-coverage" for f in findings)
+
+
+def test_required_unit_image_evidence_must_be_runnable_when_unit_completes(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="trend")
+    claim = doc["layers"][0]["stages"][0]["evaluation"]["claims"][0]
+    claim["evidence"].append({"kind": "image_contract", "id": "final-look"})
+    final = json.loads(json.dumps(doc["layers"][0]))
+    final["id"] = "2"
+    final["title"] = "Grade"
+    final["script"] = "build/02_grade.py"
+    final["stages"][0]["id"] = "grade"
+    final["stages"][0]["plan"] = "plans/02_grade/01_grade.md"
+    final["stages"][0]["evaluation"]["claims"] = []
+    final["stages"][0]["evaluation"]["temporal_evidence"] = "none"
+    doc["layers"].append(final)
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "trend",
+                    "kind": "radial_distance_trend",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "lifecycle": "layer",
+                    "axis": "camera_framing",
+                    "roles": ["hero"],
+                    "frames": [1, 2],
+                    "op": "max",
+                    "hi": 0,
+                }
+            ],
+        },
+    )
+    _write(
+        tmp_path / "checks.json",
+        {
+            "schema": 2,
+            "checks": [
+                {
+                    "id": "final-look",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "stage": "post_grade",
+                }
+            ],
+        },
+    )
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    assert any(f.check == "unit-evidence-due" and f.blocking for f in findings)
+
+
+def test_control_selector_must_close_through_unit_mutation_authority(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="order")
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "order",
+                    "kind": "onset_order",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "lifecycle": "layer",
+                    "axis": "camera_framing",
+                    "roles": ["hero"],
+                    "compare_control_roles": ["late_group"],
+                    "frames": [1, 2],
+                    "op": "eq",
+                    "value": 1,
+                }
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    assert any(f.check == "control-selector-closure" and f.blocking for f in findings)
+
+
+def test_control_ids_in_compare_roles_fail_role_selector_closure(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="order")
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "order",
+                    "kind": "onset_order",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "lifecycle": "layer",
+                    "axis": "camera_framing",
+                    "roles": ["hero.*"],
+                    "compare_roles": ["unlock_group_4"],
+                    "frames": [1, 2],
+                    "op": "eq",
+                    "value": 1,
+                }
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    assert any(f.check == "role-selector-closure" and f.blocking for f in findings)
+
+
+def test_composition_blockout_cannot_be_measured_before_its_dependent_camera(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="trend")
+    move = doc["layers"][0]["stages"][0]
+    proxy = json.loads(json.dumps(move))
+    proxy["id"] = "blockout"
+    proxy["title"] = "Composition blockout"
+    proxy["plan"] = "plans/01_camera/00_blockout.md"
+    proxy["depends_on"] = []
+    proxy["evaluation"]["temporal_evidence"] = "none"
+    proxy["evaluation"]["claims"][0]["id"] = "blockout-claim"
+    proxy["evaluation"]["claims"][0]["repair_owner"] = "blockout"
+    proxy["evaluation"]["claims"][0]["evidence"] = [
+        {"kind": "scene_contract", "id": "bbox-1"},
+        {"kind": "scene_contract", "id": "bbox-2"},
+    ]
+    move["depends_on"] = ["blockout"]
+    move["evaluation"]["composition_context"] = {
+        "frames": [1, 2], "source_unit": "blockout",
+    }
+    doc["layers"][0]["stages"] = [proxy, move]
+    _write(tmp_path / "layers.json", doc)
+    _write(tmp_path / "scene_checks.json", {
+        "schema": 2,
+        "contracts": [
+            {"id": "trend", "kind": "radial_distance_trend"},
+            {"id": "bbox-1", "kind": "bbox_width", "frame": 1, "activates_at": "1"},
+            {"id": "bbox-2", "kind": "bbox_width", "frame": 2, "activates_at": "1"},
+        ],
+    })
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    assert not any(f.check == "composition-coverage" for f in findings)
+    assert any(f.check == "composition-bootstrap" for f in findings)
+
+
+def test_atomic_camera_and_blockout_closes_empty_scene_composition_bootstrap(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="trend")
+    move = doc["layers"][0]["stages"][0]
+    move["mutates"]["roles"] = ["camera", "hero"]
+    move["evaluation"]["composition_context"] = {
+        "frames": [1, 2],
+        "contract_ids": ["bbox-1", "bbox-2"],
+    }
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {"id": "trend", "kind": "radial_distance_trend"},
+                {"id": "bbox-1", "kind": "bbox_width", "frame": 1, "activates_at": "1"},
+                {"id": "bbox-2", "kind": "bbox_width", "frame": 2, "activates_at": "1"},
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    assert not any(
+        finding.check in {"composition-coverage", "composition-bootstrap"}
+        for finding in findings
+    )

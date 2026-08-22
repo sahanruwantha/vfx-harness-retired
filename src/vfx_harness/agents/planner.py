@@ -51,6 +51,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,7 +80,10 @@ from vfx_harness.orchestration.layer_plans import (
     amendment_block,
     contract_gaps_block,
     global_plan_path,
+    is_selected_bundle_member,
     prior_outcomes_block,
+    stamp_work_unit_plan,
+    validate_work_unit_plan_authority,
     work_unit_plan_path,
 )
 from vfx_harness.orchestration.ledger import load_layers
@@ -102,10 +106,15 @@ class PlanLoopResult:
     path: Path
     outcome: str
     blocking_count: int
+    plan_pointer: str | None = None
+    plan_bundle: str | None = None
+    plan_content_hash: str | None = None
 
     @property
     def clean(self) -> bool:
-        return self.outcome == "clean" and self.blocking_count == 0
+        return self.outcome in {
+            "clean", "clean_with_assumptions", "clean_with_deferred"
+        } and self.blocking_count == 0
 
 
 class PlanGateFailure(SystemExit):
@@ -120,6 +129,9 @@ class PlanGateFailure(SystemExit):
             "outcome": result.outcome,
             "blocking_count": result.blocking_count,
             "plan_gate_report": "reports/plan_gate.json",
+            **({"plan_pointer": result.plan_pointer} if result.plan_pointer else {}),
+            **({"plan_bundle": result.plan_bundle} if result.plan_bundle else {}),
+            **({"plan_content_hash": result.plan_content_hash} if result.plan_content_hash else {}),
         }
         super().__init__(3)
 
@@ -384,6 +396,13 @@ async def generate_layer_plan(
             )
         selected = ready[0]
     target = work_unit_plan_path(shot.folder, selected)
+    if is_selected_bundle_member(shot.folder, target):
+        validate_work_unit_plan_authority(shot.folder, target)
+        log(
+            f"unit plan already frozen in selected bundle; model-free reuse: "
+            f"{target.relative_to(shot.folder)}"
+        )
+        return target
     target.parent.mkdir(parents=True, exist_ok=True)
     rel_target = target.relative_to(shot.folder).as_posix()
     feedback = "\n\n".join(
@@ -409,6 +428,19 @@ async def generate_layer_plan(
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}"
     pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
     rserver, rnames = build_recipe_tools()
+    from vfx_harness.orchestration.plan_authority import resolve_current
+
+    bundle = resolve_current(shot.folder)
+    declared_reads = tuple(
+        path
+        for path in (
+            shot.folder / "brief.md",
+            shot.folder / "plan_amendments.jsonl",
+            shot.folder / "state" / "plan-resolutions.jsonl",
+            target,
+        )
+        if path.is_file() or path == target
+    )
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
@@ -421,6 +453,14 @@ async def generate_layer_plan(
         setting_sources=[],
         max_turns=max_turns,
         effort="high",
+        hooks=planner_hooks(
+            shot.folder,
+            readable_files=declared_reads,
+            readable_roots=(bundle.root,),
+            writable_files=(target,),
+            strict_reads=True,
+            completion_gate=False,
+        ),
     )
     before = target.stat().st_mtime_ns if target.is_file() else -1
     blocks = _kickoff_blocks(kickoff, shot)
@@ -456,6 +496,7 @@ async def generate_layer_plan(
             f"{target} has {text.count(chr(10)) + 1} lines; layer plans are capped at 160. "
             "Keep evidence in machine contracts/outcomes and rewrite this as an execution index"
         )
+    stamp_work_unit_plan(shot.folder, target)
     log(f"unit plan written: {rel_target} ({text.count(chr(10))} lines)")
     return target
 
@@ -501,6 +542,13 @@ async def generate_plan_two_pass(
             workspace=workspace,
         )
 
+    # VERIFY audits the immutable draft path, while its write contract and run_gate tool
+    # operate on plans/global.md. Seed that canonical candidate with the exact draft bytes
+    # so the verifier's first gate measures the artifact it was assigned instead of
+    # reporting a synthetic "global.md missing" blocker.
+    verify_candidate = global_plan_path(workspace)
+    verify_candidate.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(draft_path, verify_candidate)
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
     final = await generate_plan(
         folder,
@@ -579,7 +627,7 @@ async def generate_plan_until_clean(
         log(f"══ gate {rnd}/{max_rounds} ══")
         log(plan_gate.report(res), 1)
         if res.clean:
-            outcome = "clean"
+            outcome = res.publishable_outcome
             break
         sig = res.signature()
         if sig == prev_sig:
@@ -614,12 +662,13 @@ async def generate_plan_until_clean(
         res.shot = shot.id
         log("══ gate (final) ══")
         log(plan_gate.report(res), 1)
-        outcome = "clean" if res.clean else "budget"
+        outcome = res.publishable_outcome if res.clean else "budget"
 
     n = len(res.blocking)
     report_path = layout.write_report("plan_gate", res.to_dict(outcome=outcome))
     log(f"gate authority → {report_path.relative_to(shot.folder)}", 1)
-    if outcome == "clean" and tag is None:
+    published_pointer = published_bundle = published_hash = None
+    if outcome in {"clean", "clean_with_assumptions", "clean_with_deferred"} and tag is None:
         bundle = plan_authority.publish_current(
             shot.folder,
             layout,
@@ -628,6 +677,9 @@ async def generate_plan_until_clean(
             source_root=workspace,
         )
         pointer_rel = plan_authority.POINTER.as_posix()
+        published_pointer = pointer_rel
+        published_bundle = bundle.root.relative_to(shot.folder).as_posix()
+        published_hash = bundle.content_hash
         layout.terminal_metadata.update(
             {
                 "plan_pointer": pointer_rel,
@@ -636,18 +688,25 @@ async def generate_plan_until_clean(
             }
         )
         log(f"plan authority → {pointer_rel} ({bundle.content_hash[:16]})", 1)
-    elif outcome == "clean" and tag is not None:
+    elif outcome in {"clean", "clean_with_assumptions", "clean_with_deferred"} and tag is not None:
         log("tagged plan is gated evidence only; it does not replace plans/current.json", 1)
     log(
         f"plan loop {outcome.upper()}: {final.name}"
         + (
             ""
-            if outcome == "clean"
+            if outcome in {"clean", "clean_with_assumptions", "clean_with_deferred"}
             else f" — {n} blocking finding(s) REMAIN. `vfx evals plan {shot.folder}` lists "
             f"them; building on this plan means building toward them."
         )
     )
-    return PlanLoopResult(final, outcome, n)
+    return PlanLoopResult(
+        final,
+        outcome,
+        n,
+        plan_pointer=published_pointer,
+        plan_bundle=published_bundle,
+        plan_content_hash=published_hash,
+    )
 
 
 def main() -> None:
@@ -678,18 +737,44 @@ def main() -> None:
         "repair until it clears, stalls, or hits --max-rounds",
     )
     ap.add_argument("--max-rounds", type=int, default=3, help="repair rounds for --until-clean (default 3)")
+    ap.add_argument(
+        "--promote-run",
+        metavar="RUN_ID",
+        help="model-free: revalidate and publish a retained gate-clean planning candidate",
+    )
     args = ap.parse_args()
 
     if args.unit and not args.layer:
         ap.error("--unit requires --layer")
     if args.layer and (args.single or args.verify_only or args.until_clean or args.tag):
         ap.error("--layer is a dedicated JIT pass; do not combine it with global-pass flags")
+    if args.promote_run and (
+        args.layer or args.single or args.verify_only or args.until_clean or args.tag
+    ):
+        ap.error("--promote-run is a dedicated model-free transaction")
 
     shot = load_shot(args.folder)
-    command = "plan-layer" if args.layer else "plan"
+    command = "plan-layer" if args.layer else ("plan-promote" if args.promote_run else "plan")
     loop_result: PlanLoopResult | None = None
     with run_artifacts.invocation(shot.folder, command, shot_id=shot.id) as layout:
-        if args.layer:
+        if args.promote_run:
+            from vfx_harness.orchestration.plan_authority import promote_candidate
+
+            bundle, gate_result, workspace = promote_candidate(
+                shot.folder, args.promote_run, layout
+            )
+            plan_path = workspace / "plans" / "global.md"
+            loop_result = PlanLoopResult(
+                plan_path,
+                gate_result.publishable_outcome,
+                0,
+                plan_pointer="plans/current.json",
+                plan_bundle=bundle.root.relative_to(shot.folder).as_posix(),
+                plan_content_hash=bundle.content_hash,
+            )
+            log(f"promoted candidate from run {args.promote_run}")
+            log(f"plan authority → plans/current.json ({bundle.content_hash[:16]})", 1)
+        elif args.layer:
             plan_path = anyio.run(
                 lambda: generate_layer_plan(
                     args.folder,
@@ -733,17 +818,19 @@ def main() -> None:
                     verify_only=args.verify_only,
                 )
             )
-        log(f"wrote {plan_path}")
-        # Record what this plan was derived from, so a later brief edit is detectable
-        # instead of silently leaving every layer built to a spec that no longer exists.
-        from vfx_harness.observability.provenance import stamp
-
-        used = args.model if (args.single or args.layer) else f"{args.draft_model}→{args.verify_model}"
-        provenance_root = shot.folder if args.layer else plan_path.parent.parent
-        log(
-            f"provenance → "
-            f"{stamp(provenance_root, model=used, note='tag=' + str(args.tag))}"
-        )
+        if args.layer:
+            log(f"unit plan ready: {plan_path}")
+            validate_work_unit_plan_authority(shot.folder, plan_path)
+            if is_selected_bundle_member(shot.folder, plan_path):
+                log("provenance → verified member of the selected immutable bundle")
+            else:
+                log(f"provenance → {plan_path.with_name(plan_path.name + '.authority.json')}")
+        else:
+            log(f"wrote {plan_path}")
+            if loop_result is not None and loop_result.clean:
+                log("provenance → content-addressed member of the published plan bundle")
+            else:
+                log("provenance → not published for this unaccepted candidate")
         if loop_result is not None and not loop_result.clean:
             raise PlanGateFailure(loop_result)
         if loop_result is not None:
@@ -752,6 +839,13 @@ def main() -> None:
                     "outcome": loop_result.outcome,
                     "blocking_count": loop_result.blocking_count,
                     "plan_gate_report": "reports/plan_gate.json",
+                    **({"plan_pointer": loop_result.plan_pointer} if loop_result.plan_pointer else {}),
+                    **({"plan_bundle": loop_result.plan_bundle} if loop_result.plan_bundle else {}),
+                    **(
+                        {"plan_content_hash": loop_result.plan_content_hash}
+                        if loop_result.plan_content_hash
+                        else {}
+                    ),
                 }
             )
 

@@ -22,13 +22,14 @@ STATE_DIR = "state/work-units"
 _TRANSITIONS = {
     "pending": {"planning", "blocked", "superseded"},
     "planning": {"building", "blocked", "failed", "retryable", "superseded"},
-    "building": {"frozen", "blocked", "failed", "retryable", "superseded"},
+    "building": {"frozen", "blocked", "failed", "hypothesis_falsified", "retryable", "superseded"},
     "frozen": {"evaluating", "building", "blocked", "failed", "retryable", "superseded"},
-    "evaluating": {"passed", "repairing", "blocked", "failed", "retryable", "superseded"},
-    "repairing": {"building", "frozen", "blocked", "failed", "retryable", "superseded"},
+    "evaluating": {"passed", "repairing", "blocked", "failed", "hypothesis_falsified", "retryable", "superseded"},
+    "repairing": {"building", "frozen", "blocked", "failed", "hypothesis_falsified", "retryable", "superseded"},
     "retryable": {"planning", "building", "blocked", "failed", "superseded"},
     "blocked": {"pending", "planning", "superseded"},
     "failed": {"retryable", "superseded"},
+    "hypothesis_falsified": {"superseded"},
     "passed": {"superseded"},
     "superseded": set(),
 }
@@ -228,6 +229,192 @@ def block_dependents(
     return value
 
 
+def invalidate_checkpoint(
+    folder: str | Path,
+    layer_id: str,
+    unit_id: str,
+    units: tuple[WorkUnit, ...],
+    *,
+    reason: str,
+    evidence: list[str],
+) -> dict:
+    """Revoke accepted authority and block every consumer in one audit transaction.
+
+    This is deliberately separate from the ordinary state machine: discovering that an
+    accepted checkpoint violated an authoritative invariant is not a retry transition.
+    The old checkpoint remains in the audit record, but it no longer grants build authority.
+    """
+    if not reason.strip() or not evidence:
+        raise ValueError("checkpoint invalidation requires a reason and non-empty evidence")
+    validate_unit_dag(units, f"layer {layer_id} work units")
+    value = load(folder, layer_id)
+    if not value:
+        raise ValueError("work-unit state is not initialized")
+    validate_current(value, layer_id, units)
+    if unit_id not in value["units"]:
+        raise KeyError(f"unknown work unit {unit_id!r}")
+
+    affected = _downstream({unit_id}, units)
+    now = _now()
+    archived: dict[str, dict] = {}
+    for uid in sorted(affected):
+        slot = value["units"][uid]
+        before = slot.get("status")
+        if before == "superseded":
+            raise ValueError(f"cannot invalidate superseded work unit {uid}")
+        checkpoint = slot.pop("checkpoint", None)
+        if checkpoint:
+            archived[uid] = checkpoint
+            slot.setdefault("invalidated_checkpoints", []).append(
+                {
+                    "at": now,
+                    "reason": reason,
+                    "evidence": list(evidence),
+                    "checkpoint": checkpoint,
+                }
+            )
+        after = "retryable" if uid == unit_id else "blocked"
+        slot.setdefault("history", []).append(
+            {
+                "at": now,
+                "from": before,
+                "to": after,
+                "reason": reason if uid == unit_id else f"upstream checkpoint {unit_id} invalidated",
+                "metadata": {"evidence": list(evidence), "invalidated_unit": unit_id},
+            }
+        )
+        slot["status"] = after
+        slot["updated"] = now
+
+    record = {
+        "schema": 1,
+        "at": now,
+        "layer": str(layer_id),
+        "unit": unit_id,
+        "reason": reason,
+        "evidence": list(evidence),
+        "affected": sorted(affected),
+        "archived_checkpoints": archived,
+    }
+    value.setdefault("invalidations", []).append(record)
+    value["updated"] = now
+    _write(_path(folder, layer_id), value)
+    return record
+
+
+def record_hypothesis_falsification(
+    folder: str | Path,
+    layer_id: str,
+    unit: WorkUnit,
+    units: tuple[WorkUnit, ...],
+    *,
+    bundle_hash: str,
+    unit_plan_hash: str,
+    candidate_hash: str,
+    settings_hash: str,
+    contract_ids: list[str],
+    observations: list[dict],
+    decisions: list[dict],
+    conflict: dict,
+    evidence: list[str],
+) -> dict:
+    """Seal a plan finding and stop the unit without granting it mutation authority.
+
+    The authoritative copy lives in the work-unit state transaction.  A content-identical
+    JSON artifact is also written for the public replan command and external review.
+    """
+    from vfx_harness.domain.unit_outcomes import (
+        HYPOTHESIS_FALSIFICATION_SCHEMA,
+        HypothesisFalsification,
+    )
+
+    validate_unit_dag(units, f"layer {layer_id} work units")
+    value = load(folder, layer_id)
+    if not value:
+        raise ValueError("work-unit state is not initialized")
+    validate_current(value, layer_id, units)
+    slot = value["units"].get(unit.id)
+    if slot is None:
+        raise KeyError(f"unknown work unit {unit.id!r}")
+    before = slot.get("status")
+    if "hypothesis_falsified" not in _TRANSITIONS.get(before, set()):
+        raise ValueError(f"cannot falsify plan hypothesis for {unit.id} from state {before}")
+    affected = sorted(_downstream({unit.id}, units))
+    now = _now()
+    payload = {
+        "schema": HYPOTHESIS_FALSIFICATION_SCHEMA,
+        "record_id": "pending",
+        "recorded_at": now,
+        "layer": str(layer_id),
+        "unit": unit.id,
+        "identities": {
+            "bundle_hash": str(bundle_hash),
+            "plan_hash": str(value.get("plan_hash")),
+            "unit_hash": unit_digest(unit),
+            "unit_plan_hash": str(unit_plan_hash),
+            "candidate_hash": str(candidate_hash),
+            "settings_hash": str(settings_hash),
+        },
+        "contract_ids": list(contract_ids),
+        "observations": list(observations),
+        "decisions": list(decisions),
+        "conflict": dict(conflict),
+        "evidence": list(evidence),
+        "affected": affected,
+    }
+    identity_payload = dict(payload)
+    identity_payload.pop("record_id")
+    digest = hashlib.sha256(
+        json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    payload["record_id"] = f"hf-{digest[:20]}"
+    HypothesisFalsification.parse(payload)
+
+    artifact = Path(folder) / STATE_DIR / "hypothesis-falsifications" / f"{payload['record_id']}.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(artifact, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+    event = {
+        "at": now,
+        "from": before,
+        "to": "hypothesis_falsified",
+        "reason": "executable evidence requires authority outside the active unit plan",
+        "metadata": {"record_id": payload["record_id"], "affected": affected},
+    }
+    slot.setdefault("history", []).append(event)
+    slot["status"] = "hypothesis_falsified"
+    slot["falsification"] = payload
+    slot["updated"] = now
+    for affected_unit in affected:
+        if affected_unit == unit.id:
+            continue
+        dependent = value["units"][affected_unit]
+        dependent_before = dependent.get("status")
+        if dependent_before in {"passed", "superseded"}:
+            raise ValueError(
+                f"cannot record falsification while downstream unit {affected_unit} is "
+                f"{dependent_before}; invalidate its accepted checkpoint first"
+            )
+        if dependent_before != "blocked":
+            if "blocked" not in _TRANSITIONS.get(dependent_before, set()):
+                raise ValueError(
+                    f"cannot block downstream unit {affected_unit} from {dependent_before}"
+                )
+            dependent.setdefault("history", []).append({
+                "at": now,
+                "from": dependent_before,
+                "to": "blocked",
+                "reason": f"upstream hypothesis {unit.id} was falsified",
+                "metadata": {"record_id": payload["record_id"]},
+            })
+            dependent["status"] = "blocked"
+            dependent["updated"] = now
+    value.setdefault("falsifications", []).append(payload)
+    value["updated"] = now
+    _write(_path(folder, layer_id), value)
+    return payload
+
+
 def _downstream(seeds: set[str], units: tuple[WorkUnit, ...]) -> set[str]:
     reverse: dict[str, set[str]] = {unit.id: set() for unit in units}
     for unit in units:
@@ -244,6 +431,28 @@ def _downstream(seeds: set[str], units: tuple[WorkUnit, ...]) -> set[str]:
     return out
 
 
+def replan_effects(
+    old_units: tuple[WorkUnit, ...], new_units: tuple[WorkUnit, ...]
+) -> dict[str, list[str]]:
+    """Return the deterministic supersession closure without mutating durable state."""
+    validate_unit_dag(old_units, "old work-unit DAG")
+    validate_unit_dag(new_units, "new work-unit DAG")
+    old = {unit.id: unit for unit in old_units}
+    new = {unit.id: unit for unit in new_units}
+    added = set(new) - set(old)
+    removed = set(old) - set(new)
+    changed = {uid for uid in set(old) & set(new) if unit_digest(old[uid]) != unit_digest(new[uid])}
+    invalidated = _downstream(added | changed, new_units)
+    preserved = set(old) & set(new) - invalidated
+    return {
+        "added": sorted(added),
+        "removed": sorted(removed),
+        "changed": sorted(changed),
+        "invalidated": sorted(invalidated),
+        "preserved": sorted(preserved),
+    }
+
+
 def apply_replan(
     folder: str | Path,
     layer_id: str,
@@ -255,6 +464,8 @@ def apply_replan(
     owner: str,
     trigger: str,
     evidence: list[str],
+    falsification_id: str | None = None,
+    hard_constraint_approval: str | None = None,
 ) -> dict:
     """Atomically publish state effects and an audit record for a validated DAG amendment."""
     if not owner.strip() or not trigger.strip() or not evidence:
@@ -269,12 +480,12 @@ def apply_replan(
         raise ValueError("replan base layer/plan hash does not match active state")
 
     old = {unit.id: unit for unit in old_units}
-    new = {unit.id: unit for unit in new_units}
-    added = set(new) - set(old)
-    removed = set(old) - set(new)
-    changed = {uid for uid in set(old) & set(new) if unit_digest(old[uid]) != unit_digest(new[uid])}
-    invalidated = _downstream(added | changed, new_units)
-    preserved = set(old) & set(new) - invalidated
+    effects = replan_effects(old_units, new_units)
+    added = set(effects["added"])
+    removed = set(effects["removed"])
+    changed = set(effects["changed"])
+    invalidated = set(effects["invalidated"])
+    preserved = set(effects["preserved"])
     now = _now()
 
     next_slots: dict[str, dict] = {}
@@ -324,6 +535,10 @@ def apply_replan(
         "invalidated": sorted(invalidated),
         "preserved": sorted(preserved),
     }
+    if falsification_id is not None:
+        record["falsification_id"] = str(falsification_id)
+    if hard_constraint_approval is not None:
+        record["hard_constraint_approval"] = str(hard_constraint_approval)
     value.update(
         plan_hash=new_plan_hash,
         revision=int(value.get("revision") or 1) + 1,

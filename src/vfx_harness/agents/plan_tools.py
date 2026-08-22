@@ -26,8 +26,11 @@ is PERSISTED under the active run's scratch/plan-lab/ for post-mortem forensics:
 
 from __future__ import annotations
 
+import hashlib
+import html
 import itertools
 import json
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -37,15 +40,18 @@ from pathlib import Path
 import anyio
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from vfx_harness.blender.session import resolve_blender
 from vfx_harness.blender.tools import _b64, _load, _metrics_line, _stats
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
+from vfx_harness.observability.provenance import atomic_write
 
 SERVER_NAME = "plan"
 _MAX_TILES = 25  # 5 columns × up to 5 rows per contact sheet
 _MAX_FRAMES = 4  # full-detail frames per extract_frames call
 _SPIKE_TIMEOUT = 180  # s, hard cap for one headless blender run
 _JPEG_Q = 85
+_SPIKE_CONTRACT_MARKER = "@@VFX_PLAN_CONTRACT@@"
 
 
 class _CheckBatchBudget:
@@ -179,29 +185,184 @@ print("SPIKE_RENDER_OK", sc.render.filepath)
 """
 
 
-def _spike(blender: str, script: str, render_frame: int | None, timeout: int, py: Path, render_out: Path) -> dict:
+def _contract_probe(contracts: list[dict]) -> str:
+    """Append authoritative scene-contract readings to an exploratory Blender spike."""
+    from vfx_harness.evidence.scene_checks import _blender_probe
+
+    snippets = []
+    for row in contracts:
+        samples = row.get("samples") or []
+        frames = row.get("frames") or []
+        frame = row.get("frame")
+        if frame is None and samples:
+            frame = samples[0].get("frame")
+        if frame is None and frames:
+            frame = frames[0]
+        snippets.append(_blender_probe([row], int(frame or 1)))
+        snippets.append(
+            f"\nprint({_SPIKE_CONTRACT_MARKER!r} + json.dumps(RESULT[0], sort_keys=True))\n"
+        )
+    return "\n".join(snippets)
+
+
+def _spike(
+    blender: str,
+    script: str,
+    render_frame: int | None,
+    timeout: int,
+    py: Path,
+    render_out: Path,
+    contracts: list[dict] | None = None,
+) -> dict:
     body = textwrap.dedent(script)
+    contract_rows = list(contracts or [])
     src = (
         _SPIKE_HEADER
         + body
+        + _contract_probe(contract_rows)
         + (_SPIKE_RENDER.format(frame=render_frame, out=str(render_out)) if render_frame is not None else "")
     )
     py.write_text(src, encoding="utf-8")
     t0 = time.monotonic()
+    executable = resolve_blender(blender)
     rc, out, err = _sh(
-        [blender, "--background", "--factory-startup", "--python", str(py)], timeout=min(timeout, _SPIKE_TIMEOUT)
+        [executable, "--background", "--factory-startup", "--python", str(py)],
+        timeout=min(timeout, _SPIKE_TIMEOUT),
     )
     wall = time.monotonic() - t0
     full = (out + "\n--- stderr ---\n" + err).strip()
     py.with_suffix(".out").write_text(full, encoding="utf-8")
     errors = [l for l in full.splitlines() if any(k in l for k in ("Error", "Traceback", "error:", "Exception"))][:10]
+    readings = []
+    for line in out.splitlines():
+        if not line.startswith(_SPIKE_CONTRACT_MARKER):
+            continue
+        try:
+            readings.append(json.loads(line[len(_SPIKE_CONTRACT_MARKER):]))
+        except json.JSONDecodeError:
+            readings.append({"error": "contract result marker contained invalid JSON"})
+    from vfx_harness.evidence.scene_checks import _holds, validate_row
+
+    contract_results = []
+    for index, row in enumerate(contract_rows):
+        reading = readings[index] if index < len(readings) else {
+            "error": "contract result missing from Blender output"
+        }
+        validation_error = validate_row(row)
+        error = validation_error or str(reading.get("error") or "")
+        contract_results.append({
+            "id": str(row.get("id") or "<missing>"),
+            "value": reading.get("value"),
+            "error": error,
+            "pass": not error and _holds(row, reading.get("value")),
+        })
     return {
         "rc": rc,
         "wall": wall,
         "tail": full[-2500:],
         "errors": errors,
         "render": render_out if render_out.is_file() else None,
+        "contracts": contract_rows,
+        "contract_results": contract_results,
+        "blender_executable": str(Path(executable).resolve()),
+        "blender_version": next(
+            (line.strip() for line in full.splitlines() if line.strip().startswith("Blender ")),
+            "unknown",
+        ),
     }
+
+
+def _persist_spike_evidence(
+    workspace: Path,
+    *,
+    phase: str,
+    number: int,
+    script_path: Path,
+    render_path: Path,
+    result: dict,
+    render_frame: int | None = None,
+) -> Path | None:
+    """Deposit a citable spike record inside a global plan transaction.
+
+    Raw lab files remain run scratch for forensics. This record is the immutable evidence
+    surface: publication freezes it with the plan, so a verifier and later consumer can
+    reproduce the exact script/output without reading historical run directories.
+    """
+    if not (workspace / ".plan-workspace.json").is_file():
+        return None
+    safe_phase = "".join(char if char.isalnum() or char in "-_" else "-" for char in phase).strip("-")
+    safe_phase = safe_phase or "global"
+    evidence_dir = workspace / "plans" / "evidence" / "spikes"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{safe_phase}-spike-{number:02d}"
+    script = script_path.read_text(encoding="utf-8")
+    output_path = script_path.with_suffix(".out")
+    output = output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
+    render_name = None
+    if render_path.is_file():
+        render_name = f"{stem}.png"
+        shutil.copy2(render_path, evidence_dir / render_name)
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    script_sha256 = digest(script)
+    output_sha256 = digest(output)
+    script_name = f"{stem}.py"
+    output_name = f"{stem}.out"
+    atomic_write(evidence_dir / script_name, script)
+    atomic_write(evidence_dir / output_name, output)
+    lines = [
+        f"# Blender plan spike evidence — {stem}",
+        "",
+        f"- exit_code: `{int(result['rc'])}`",
+        f"- wall_seconds: `{float(result['wall']):.3f}`",
+        f"- script_sha256: `{script_sha256}`",
+        f"- output_sha256: `{output_sha256}`",
+    ]
+    if render_name:
+        lines.append(f"- render: [{render_name}]({render_name})")
+    lines.extend([
+        "",
+        "## Script",
+        "",
+        f"<pre>{html.escape(script)}</pre>",
+        "",
+        "## Full Blender output",
+        "",
+        f"<pre>{html.escape(output)}</pre>",
+        "",
+    ])
+    target = evidence_dir / f"{stem}.md"
+    atomic_write(target, "\n".join(lines))
+    contracts = list(result.get("contracts") or [])
+    if not contracts:
+        return target.relative_to(workspace)
+    record = {
+        "schema": "vfx-harness.plan-spike/v1",
+        "script_sha256": script_sha256,
+        "output_sha256": output_sha256,
+        "script": {"path": script_name, "sha256": script_sha256},
+        "output": {"path": output_name, "sha256": output_sha256},
+        "blender": {
+            "executable": str(result.get("blender_executable") or ""),
+            "version": str(result.get("blender_version") or ""),
+        },
+        "render_frame": render_frame,
+        "markdown": target.relative_to(workspace).as_posix(),
+        "contracts": contracts,
+        "results": list(result.get("contract_results") or []),
+        "passed": bool(result.get("contract_results")) and all(
+            item.get("pass") is True for item in result.get("contract_results", [])
+        ),
+    }
+    if render_name:
+        record["render"] = {
+            "path": render_name,
+            "sha256": hashlib.sha256((evidence_dir / render_name).read_bytes()).hexdigest(),
+            "frame": render_frame,
+        }
+    record_path = evidence_dir / f"{stem}.json"
+    atomic_write(record_path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+    return record_path.relative_to(workspace)
 
 
 # --------------------------------------------------------------------------- #
@@ -230,8 +391,16 @@ def build_plan_tools(
     spikes = itertools.count(1)
 
     def _resolve(p: str) -> Path:
-        path = Path(p)
-        return path if path.is_absolute() else (shot_folder / path)
+        path = Path(p).expanduser()
+        resolved = (path if path.is_absolute() else shot_folder / path).resolve()
+        root = shot_folder.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"plan tool path escapes the active planning workspace: {p!r}"
+            ) from exc
+        return resolved
 
     def _keep(im, stem: str) -> Path:
         """Persist exactly what the agent saw (downscaled JPEG) for post-mortem."""
@@ -541,14 +710,26 @@ def build_plan_tools(
         "a ticket. Your script runs from an EMPTY scene (engine preset to EEVEE); build "
         "the minimal rig that proves the mechanism (seconds, not a look test). Pass "
         "render_frame to get a 960×540 render back; always print() the values you need "
-        "to check. No bvfx helpers here — raw bpy, exactly like the internet snippet "
-        "you are testing.",
+        "to check. When the spike is evidence for a ticket, pass the exact final "
+        "scene-contract rows in contracts and tag the spike objects with their semantic "
+        "bvfx_role/bvfx_control values. The tool runs those contracts inside the same "
+        "scene and emits a typed citable record; an exploratory spike without contracts "
+        "cannot justify a ✓spiked ticket. No bvfx helpers here — raw bpy, exactly like "
+        "the internet snippet you are testing.",
         {
             "type": "object",
             "properties": {
                 "script": {"type": "string"},
                 "render_frame": {"type": "integer"},
                 "timeout": {"type": "integer"},
+                "contracts": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": (
+                        "Exact scene_checks.json rows this spike claims to prove. Each row "
+                        "is evaluated in the spike scene at its declared frame."
+                    ),
+                },
             },
             "required": ["script"],
         },
@@ -557,9 +738,31 @@ def build_plan_tools(
         n = next(spikes)
         py = lab / f"spike_{n:02d}.py"
         render_out = lab / f"spike_{n:02d}.png"
+        contracts = list(args.get("contracts") or [])
+        if contracts:
+            from vfx_harness.evidence.scene_checks import validate_row
+
+            invalid = [
+                f"{row.get('id', '<missing>')}: {error}"
+                for row in contracts
+                if (error := validate_row(row))
+            ]
+            if invalid:
+                return _text(
+                    "spike contracts are invalid — fix the exact rows before running Blender:\n"
+                    + "\n".join(f"- {item}" for item in invalid),
+                    is_error=True,
+                )
         try:
             res = await anyio.to_thread.run_sync(
-                _spike, blender, args["script"], args.get("render_frame"), int(args.get("timeout", 120)), py, render_out
+                _spike,
+                blender,
+                args["script"],
+                args.get("render_frame"),
+                int(args.get("timeout", 120)),
+                py,
+                render_out,
+                contracts,
             )
         except subprocess.TimeoutExpired:
             log(f"plan-lab ✗ spike #{n} TIMEOUT → {py.name}", 1)
@@ -571,7 +774,23 @@ def build_plan_tools(
         except Exception as e:
             log(f"plan-lab ✗ spike #{n} launch failed: {str(e)[:120]}", 1)
             return _text(f"spike failed to launch: {e}", is_error=True)
-        status = "ok" if res["rc"] == 0 and not res["errors"] else "ERRORS"
+        contract_failures = [
+            item for item in res.get("contract_results", []) if item.get("pass") is not True
+        ]
+        status = (
+            "ok" if res["rc"] == 0 and not res["errors"] and not contract_failures
+            else "CONTRACT FAIL" if contract_failures and res["rc"] == 0 and not res["errors"]
+            else "ERRORS"
+        )
+        evidence_rel = _persist_spike_evidence(
+            shot_folder,
+            phase=lab.name,
+            number=n,
+            script_path=py,
+            render_path=render_out,
+            result=res,
+            render_frame=args.get("render_frame"),
+        )
         log(
             f"plan-lab spike #{n} rc={res['rc']} {res['wall']:.1f}s [{status}] "
             f"→ {py.name}" + (f" + {render_out.name}" if res["render"] else ""),
@@ -582,12 +801,22 @@ def build_plan_tools(
         head = f"spike #{n} · exit {res['rc']} in {res['wall']:.1f}s · kept: {lab_rel}/{py.name}" + (
             f" · ERRORS: {' | '.join(res['errors'])}" if res["errors"] else ""
         )
+        if evidence_rel is not None:
+            head += f" · citable evidence: {evidence_rel.as_posix()}"
+        if contract_failures:
+            head += " · CONTRACT FAILURES: " + " | ".join(
+                f"{item.get('id')}: {item.get('error') or item.get('value')}"
+                for item in contract_failures
+            )
         blocks = [{"type": "text", "text": f"{head}\n--- output tail ---\n{res['tail']}"}]
         if res["render"] is not None:
             im = _load(str(res["render"]))
             blocks.append({"type": "text", "text": _stats(im)})
             blocks.append({"type": "image", "data": _b64(im), "mimeType": "image/jpeg"})
-        return {"content": blocks, **({"is_error": True} if res["rc"] != 0 else {})}
+        return {
+            "content": blocks,
+            **({"is_error": True} if res["rc"] != 0 or contract_failures else {}),
+        }
 
     # probe_video / contact_sheet / extract_frames are NOT registered: a real brief
     # arrives as reference images plus prose, never the finished shot. They were dead

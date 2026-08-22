@@ -191,7 +191,10 @@ def create(shot_folder: str | Path, run_id: str, *, shot_id: str | None = None,
             "authored_inputs": "../../brief.md and ../../refs/",
             "published_plan": "../../plans/current.json when present",
             "plan_authoring_workspace": "scratch/plan-workspace/ for global plan invocations",
-            "legacy_plan_consumers": "../../plans/ and ../../*.json contracts pending pointer migration",
+            "selected_plan_consumers": (
+                "../../plans/current.json; pointer-less archived fixtures only use "
+                "compatibility reads"
+            ),
             "accepted_build": "../../build/ and ../../shot.json",
             "generated_output": "this directory",
         },

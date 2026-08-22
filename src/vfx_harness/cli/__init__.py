@@ -16,6 +16,7 @@ _COMMANDS = {
     "preflight": "vfx_harness.application.preflight:main",
     "render": "vfx_harness.application.render_shot:main",
     "run": "vfx_harness.application.run_shot:main",
+    "units": "vfx_harness.application.unit_admin:main",
 }
 
 

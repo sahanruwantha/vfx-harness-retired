@@ -513,11 +513,13 @@ def layer_evidence(
     planner_rows, runtime_rows = [], []
     try:
         from vfx_harness.domain.contracts import active_for, load_document
+        from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
-        load(root / "checks.json")  # validates lifecycle and required focus metadata
+        planner_spec = selected_artifact_path(root, "checks.json")
+        load(planner_spec)  # validates lifecycle and required focus metadata
         planner_rows = [
             row
-            for row in load_document(root / "checks.json", "checks")
+            for row in load_document(planner_spec, "checks")
             if isinstance(row, dict) and active_for(row, layer_id, frame)
         ]
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -592,6 +594,56 @@ def layer_evidence(
                 **({"error": error} if error else {}),
             }
         )
+    return out
+
+
+def acceptance_evidence(
+    shot_folder: str | Path, *, frame: int, render: str | Path
+) -> list[dict]:
+    """Evaluate finished-chain image contracts regardless of their build lifecycle.
+
+    Layer lifecycle controls when a builder may use a check. Acceptance is a distinct
+    finished-chain boundary, so every post-grade/any contract for the rendered frame is
+    eligible and retains the same planner-authored authority rules.
+    """
+    root = Path(shot_folder)
+    image = Path(render)
+    if not image.is_absolute():
+        image = root / image
+    if not image.is_file():
+        return []
+    from vfx_harness.domain.contracts import load_document
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    rows = load_document(selected_artifact_path(root, "checks.json"), "checks")
+    out = []
+    for row in rows:
+        if row.get("frame") is not None and int(row["frame"]) != int(frame):
+            continue
+        check = Check.from_dict(row)
+        if check.stage not in {"post_grade", "any"}:
+            continue
+        try:
+            value = evaluate(check, image)
+            passed = check.holds(value)
+            error = ""
+        except Exception as exc:
+            value, passed = None, False
+            error = str(exc)[:160]
+        proof = row.get("proof") or {}
+        out.append({
+            "id": check.id,
+            "axis": check.axis,
+            "metric": check.metric,
+            "value": round(value, 4) if isinstance(value, (int, float)) else None,
+            "target": check.target(),
+            "pass": passed,
+            "origin": "planner",
+            "source": "image_contract",
+            "authoritative": bool(check.rejects and proof.get("adversary")),
+            "owner_layer": check.owner_layer,
+            "error": error,
+        })
     return out
 
 

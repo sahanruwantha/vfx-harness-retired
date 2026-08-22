@@ -10,6 +10,7 @@ I had watched happen.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -1149,26 +1150,50 @@ def main():
     check("a dead path is reported once, not once per mention", len(_f) == 1, f"{_f}")
 
     _f, _ = _pg._check_evidence(_lab, "**G10·T1 · Rig**  [known ✓spiked — verified]\n- no cite\n")
-    check("a ✓spiked ticket with no lab file is blocking", len(_f) == 1 and _f[0].blocking, f"{_f}")
+    check("a ✓spiked ticket with no lab file is blocking", any(f.blocking for f in _f), f"{_f}")
     # The word "spike_04" is not evidence; the file it names is. Substring-matching the tag
     # would have passed every barrel_roll ticket, whose lab was archived and whose spike
     # references resolve to nothing today.
     _cite = "**G10·T1 · Rig**  [known ✓spiked]\n- proof in `logs/plan_lab/spike_01.out`\n"
     _f, _ = _pg._check_evidence(_lab, _cite)
     check(
-        "a ✓spiked ticket naming a file that does not exist is still blocking", len(_f) == 1 and _f[0].blocking, f"{_f}"
+        "a ✓spiked ticket naming a file that does not exist is still blocking", any(f.blocking for f in _f), f"{_f}"
     )
     (_lab / "logs" / "plan_lab").mkdir(parents=True)
     (_lab / "logs" / "plan_lab" / "spike_01.out").write_text("max|vert| 0.0 -> 45.0\n")
     _f, _ = _pg._check_evidence(_lab, _cite)
-    check("...and is satisfied once that artifact exists", not _f, f"{_f}")
-    # The shorthand plans actually use — a bare tag carrying no path at all.
+    check("a legacy stdout artifact cannot self-certify a spiked claim", any(f.blocking for f in _f), f"{_f}")
+    evidence_dir = _lab / "plans" / "evidence" / "spikes"
+    evidence_dir.mkdir(parents=True)
+    script_bytes = b"print('mechanism')\n"
+    output_bytes = b"Blender 5.0.0\nmechanism\n"
+    (evidence_dir / "spike.py").write_bytes(script_bytes)
+    (evidence_dir / "spike.out").write_bytes(output_bytes)
+    contract = {"id": "mechanism", "kind": "bbox_width", "frame": 1, "op": "band", "lo": 0.1, "hi": 0.9}
+    (_lab / "scene_checks.json").write_text(json.dumps({"schema": 2, "contracts": [contract]}))
+    (evidence_dir / "spike.json").write_text(json.dumps({
+        "schema": "vfx-harness.plan-spike/v1",
+        "script": {"path": "spike.py", "sha256": hashlib.sha256(script_bytes).hexdigest()},
+        "output": {"path": "spike.out", "sha256": hashlib.sha256(output_bytes).hexdigest()},
+        "blender": {"executable": "/snap/bin/blender", "version": "Blender 5.0.0"},
+        "contracts": [contract],
+        "results": [{"id": "mechanism", "value": 0.5, "pass": True}],
+        "passed": True,
+    }))
+    typed_cite = (
+        "**G10·T1 · Rig**  [known ✓spiked]\n"
+        "- proof in `plans/evidence/spikes/spike.json`\n"
+    )
+    _f, _ = _pg._check_evidence(_lab, typed_cite)
+    check("a typed hash-pinned spike record satisfies the citation claim", not _f, f"{_f}")
+    # A bare tag remains non-authoritative even when old scratch output happens to exist.
     _f, _ = _pg._check_evidence(_lab, "**G20·T1 · Roll**  [known ✓spiked — spike_01]\n- x\n")
-    check("a bare `spike_NN` tag resolves by search", not _f, f"{_f}")
+    check("a bare `spike_NN` tag cannot replace typed authority", any(f.blocking for f in _f), f"{_f}")
     _f, _ = _pg._check_evidence(_lab, "**G30·T1 · Gone**  [known ✓spiked — spike_99]\n- x\n")
-    check("...and a bare tag naming a missing spike is blocking", len(_f) == 1 and _f[0].blocking, f"{_f}")
+    check("...and a bare tag naming a missing spike is blocking", any(f.blocking for f in _f), f"{_f}")
     _f, _ = _pg._check_evidence(_lab, "**G20·T1 · Novel**  [researched]\n- trust me\n")
     check("a researched ticket with no source link is flagged (warn)", len(_f) == 1 and not _f[0].blocking, f"{_f}")
+    (_lab / "scene_checks.json").unlink()
 
     (_lab / "critic_axes.json").write_text('[{"key": "lighting", "desc": "d"}]')
     (_lab / "acceptance.json").write_text("[]")
@@ -1930,6 +1955,7 @@ def main():
         ("rate limit exceeded", "transient"),
         ("invalid x-api-key", "terminal"),
         ("Your credit balance is too low", "terminal"),
+        ("You have reached your specified API usage limits", "terminal"),
         ("401 Unauthorized", "terminal"),
         ("TypeError: NoneType is not subscriptable", "unknown"),
     ):

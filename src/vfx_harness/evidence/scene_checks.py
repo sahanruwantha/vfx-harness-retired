@@ -2,8 +2,10 @@
 
 ``scene_checks.json`` is a strict schema-2 document. Contracts address objects,
 materials, shader controls and compositor nodes by semantic custom properties, never by
-datablock names. Their lifecycle decides which prior-layer guarantees remain active for
-the layer currently being built.
+datablock names. Object selectors distinguish ``bvfx_role`` from ``bvfx_control`` so a
+planner cannot put control ids in a role field and publish an unresolvable contract. Their
+lifecycle decides which prior-layer guarantees remain active for the layer currently being
+built.
 """
 
 from __future__ import annotations
@@ -31,7 +33,13 @@ OBJECT_KINDS = {
 MATERIAL_KINDS = {"material_count", "material_user_count", "material_assignment_fraction"}
 NODE_KINDS = {"node_count", "node_socket_value", "node_link_count"}
 STATE_KINDS = {"animation_count", "compositor_enabled"}
-TEMPORAL_KINDS = {"onset_order", "radial_distance_trend", "transform_return_delta"}
+TEMPORAL_KINDS = {
+    "keyframe_schedule",
+    "onset_order",
+    "radial_distance_trend",
+    "transform_return_delta",
+}
+WINDOW_KINDS = TEMPORAL_KINDS - {"keyframe_schedule"}
 FUNCTIONAL_KINDS = {"control_render_response", "frame_delta"}
 SUPPORTED_KINDS = (
     OBJECT_KINDS | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS | TEMPORAL_KINDS | FUNCTIONAL_KINDS
@@ -64,6 +72,10 @@ KIND_DEFINITIONS = {
     ),
     "radial_distance_trend": "least-squares slope of mean XY distance from origin across a frame window",
     "transform_return_delta": "selected transform-component delta between two declared frames",
+    "keyframe_schedule": (
+        "maximum property error against an exact semantic keyframe schedule; any missing or "
+        "extra keyed frame fails the contract"
+    ),
     "frame_delta": "mean absolute rendered-pixel delta between two declared frames",
 }
 
@@ -120,8 +132,10 @@ def validate_row(row: dict) -> str | None:
     kind = str(row.get("kind", ""))
     if kind not in SUPPORTED_KINDS:
         return f"unsupported kind {kind!r}"
-    if kind in OBJECT_KINDS and not _selectors(row, "roles"):
-        return "object contract requires non-empty roles"
+    if kind in OBJECT_KINDS and not (
+        _selectors(row, "roles") or _selectors(row, "control_roles")
+    ):
+        return "object contract requires non-empty roles or control_roles"
     if kind in MATERIAL_KINDS - {"material_assignment_fraction"} and not _selectors(row, "material_roles"):
         return "material contract requires non-empty material_roles"
     if kind == "material_assignment_fraction" and (
@@ -158,7 +172,7 @@ def validate_row(row: dict) -> str | None:
             return "control_render_response metric must be mean_delta or mae"
         if row.get("socket_direction", "auto") not in {"auto", "input", "output"}:
             return "control_render_response socket_direction must be auto, input, or output"
-    if kind in TEMPORAL_KINDS | {"frame_delta"}:
+    if kind in WINDOW_KINDS | {"frame_delta"}:
         frames = row.get("frames")
         if (
             not isinstance(frames, list)
@@ -167,10 +181,46 @@ def validate_row(row: dict) -> str | None:
             or frames[0] >= frames[1]
         ):
             return f"{kind} requires two increasing positive integer frames"
-    if kind in TEMPORAL_KINDS and not _selectors(row, "roles"):
-        return f"{kind} requires non-empty roles"
-    if kind == "onset_order" and not _selectors(row, "compare_roles"):
-        return "onset_order requires compare_roles"
+    if kind in TEMPORAL_KINDS and not (
+        _selectors(row, "roles") or _selectors(row, "control_roles")
+    ):
+        return f"{kind} requires non-empty roles or control_roles"
+    if kind == "keyframe_schedule":
+        samples = row.get("samples")
+        if not isinstance(samples, list) or len(samples) < 2:
+            return "keyframe_schedule requires at least two samples"
+        seen_frames: set[int] = set()
+        paths: set[str] | None = None
+        for index, sample in enumerate(samples):
+            if not isinstance(sample, dict):
+                return f"keyframe_schedule samples[{index}] must be an object"
+            frame = sample.get("frame")
+            if isinstance(frame, bool) or not isinstance(frame, int) or frame < 1:
+                return f"keyframe_schedule samples[{index}].frame must be a positive integer"
+            if frame in seen_frames:
+                return "keyframe_schedule sample frames must be unique"
+            seen_frames.add(frame)
+            values = sample.get("values")
+            if not isinstance(values, dict) or not values:
+                return f"keyframe_schedule samples[{index}].values must be a non-empty object"
+            sample_paths = set(values)
+            if paths is None:
+                paths = sample_paths
+            elif sample_paths != paths:
+                return "keyframe_schedule samples must declare the same property paths"
+            for path, expected in values.items():
+                if not isinstance(path, str) or not path.strip():
+                    return "keyframe_schedule property paths must be non-empty strings"
+                numeric = expected if isinstance(expected, list) else [expected]
+                if not numeric or any(
+                    isinstance(value, bool) or not isinstance(value, (int, float))
+                    for value in numeric
+                ):
+                    return "keyframe_schedule values must be numeric scalars or vectors"
+    if kind == "onset_order" and not (
+        _selectors(row, "compare_roles") or _selectors(row, "compare_control_roles")
+    ):
+        return "onset_order requires compare_roles or compare_control_roles"
     if kind == "transform_return_delta" and row.get("component", "location") not in {
         "location",
         "rotation",
@@ -244,7 +294,9 @@ def _p(row,key):
 def _m(v,pats): return any(fnmatch.fnmatchcase(str(v or ''),p) for p in pats)
 def _objects(row):
     return sorted([o for o in _scene.objects
-                   if _m(o.get('bvfx_role'),_p(row,'roles'))],key=lambda o:o.name)
+                   if (not _p(row,'roles') or _m(o.get('bvfx_role'),_p(row,'roles')))
+                   and (not _p(row,'control_roles') or
+                        _m(o.get('bvfx_control'),_p(row,'control_roles')))],key=lambda o:o.name)
 def _materials(row):
     return sorted([m for m in bpy.data.materials
                    if _m(m.get('bvfx_role'),_p(row,'material_roles'))],key=lambda m:m.name)
@@ -273,7 +325,36 @@ def _property(target,path):
     for token in str(path).split('.'):
         value=value[int(token)] if token.isdigit() else getattr(value,token)
     return float(value)
+def _raw_property(target,path):
+    value=target
+    for token in str(path).split('.'):
+        value=value[int(token)] if token.isdigit() else getattr(value,token)
+    try: return tuple(float(v) for v in value)
+    except TypeError: return float(value)
+def _delta(actual,expected):
+    if isinstance(expected,list):
+        actual=tuple(actual)
+        if len(actual)!=len(expected): raise ValueError('scheduled vector length differs')
+        return max(abs(float(a)-float(b)) for a,b in zip(actual,expected))
+    return abs(float(actual)-float(expected))
 def _animated(v): return int(bool(getattr(v,'animation_data',None)))
+def _fcurves(target):
+    ad=getattr(target,'animation_data',None)
+    if not ad or not ad.action: return []
+    legacy=getattr(ad.action,'fcurves',None)
+    if legacy and len(legacy): return list(legacy)
+    out=[]; slot=getattr(ad,'action_slot',None)
+    for layer in getattr(ad.action,'layers',[]):
+        for strip in getattr(layer,'strips',[]):
+            bags=[]
+            if slot is not None and hasattr(strip,'channelbag'):
+                try:
+                    cb=strip.channelbag(slot)
+                    if cb is not None: bags=[cb]
+                except Exception: bags=[]
+            if not bags: bags=list(getattr(strip,'channelbags',[]))
+            for cb in bags: out.extend(cb.fcurves)
+    return out
 def _state(items,frame):
     _scene.frame_set(int(frame)); dg=bpy.context.evaluated_depsgraph_get(); out=[]
     for item in items:
@@ -296,7 +377,8 @@ def _transforms(items,frame):
         out[item.name]=(loc.copy(),rot.copy(),scale.copy())
     return out
 for row in _rows:
-    kind=row['kind']; value=None; error=''; objects=_objects(row) if row.get('roles') else []
+    kind=row['kind']; value=None; error=''; objects=(
+        _objects(row) if row.get('roles') or row.get('control_roles') else [])
     materials=_materials(row) if row.get('material_roles') else []; matched=[]
     try:
         if kind=='object_count': value=len(objects)
@@ -372,8 +454,28 @@ for row in _rows:
             if domain in ('all','world') and _scene.world: values += [_scene.world,_scene.world.node_tree]
             if domain in ('all','scene'): values += [_scene]
             value=sum(_animated(v) for v in values if v is not None)
+        elif kind=='keyframe_schedule':
+            if not objects: raise ValueError('selector matched no objects')
+            samples=row['samples']; expected_frames={{int(s['frame']) for s in samples}}
+            paths=set(samples[0]['values']); deltas=[]
+            for o in objects:
+                action=getattr(getattr(o,'animation_data',None),'action',None)
+                if action is None: raise ValueError('scheduled object has no action')
+                for path in paths:
+                    actual_frames={{int(round(k.co.x)) for fc in _fcurves(o)
+                                   if fc.data_path==path for k in fc.keyframe_points}}
+                    if actual_frames!=expected_frames:
+                        raise ValueError(f'{{path}} keyframes {{sorted(actual_frames)}} != {{sorted(expected_frames)}}')
+                for sample in samples:
+                    _scene.frame_set(int(sample['frame'])); dg=bpy.context.evaluated_depsgraph_get()
+                    ev=o.evaluated_get(dg)
+                    for path,expected in sample['values'].items():
+                        deltas.append(_delta(_raw_property(ev,path),expected))
+            value=max(deltas) if deltas else 0.0
         elif kind=='onset_order':
-            other=_objects({{**row,'roles':_p(row,'compare_roles')}})
+            other=_objects({{**row,
+                'roles':_p(row,'compare_roles'),
+                'control_roles':_p(row,'compare_control_roles')}})
             if not objects or not other: raise ValueError('onset selector matched no objects')
             a,b=row['frames']; epsilon=float(row.get('motion_epsilon',1e-5))
             value=_onset(other,a,b,epsilon)-_onset(objects,a,b,epsilon)
@@ -399,6 +501,7 @@ for row in _rows:
     except Exception as exc: value=None; error=str(exc)[:160]
     _out.append({{'id':row['id'],'value':value,'objects':[o.name for o in objects],
       'roles':[str(o.get('bvfx_role','')) for o in objects],'materials':[m.name for m in materials],
+      'controls':[str(o.get('bvfx_control','')) for o in objects],
       'material_roles':[str(m.get('bvfx_role','')) for m in materials],
       'nodes':[n.name for g,n in matched],'error':error}})
 RESULT=_out
@@ -432,6 +535,7 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
                 "lifecycle": str(row.get("lifecycle") or ""),
                 "objects": list(reading.get("objects") or []),
                 "roles": list(reading.get("roles") or []),
+                "controls": list(reading.get("controls") or []),
                 "materials": list(reading.get("materials") or []),
                 "material_roles": list(reading.get("material_roles") or []),
                 "nodes": list(reading.get("nodes") or []),
@@ -442,12 +546,16 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
 
 
 def load_rows(shot_folder: str | Path) -> list[dict]:
-    return load_document(Path(shot_folder) / "scene_checks.json", "contracts")
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    return load_document(selected_artifact_path(shot_folder, "scene_checks.json"), "contracts")
 
 
 def layer_evidence(shot_folder: str | Path, layer_id: str, *, frame: int, session) -> list[dict]:
     """Evaluate every lifecycle-active contract, including persistent prior interfaces."""
-    path = Path(shot_folder) / "scene_checks.json"
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    path = selected_artifact_path(shot_folder, "scene_checks.json")
     if not path.is_file():
         return []
     try:
@@ -636,7 +744,9 @@ def prior_interface_evidence(shot_folder: str | Path, layer_id: str, *, session)
     attributed to ``fault_owner`` and stops before a downstream builder is asked to work
     around corrupt input.
     """
-    path = Path(shot_folder) / "scene_checks.json"
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    path = selected_artifact_path(shot_folder, "scene_checks.json")
     if not path.is_file():
         return []
     rows = load_rows(shot_folder)
