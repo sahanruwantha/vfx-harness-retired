@@ -3350,6 +3350,11 @@ async def build_layer(
     artifact, and is judged only on its own claims/moments.  Multi-unit layers publish the
     layer script only after every unit has sealed and the composed artifact replays cleanly.
     """
+    if layer.execution == "jit_deferred":
+        raise ValueError(
+            f"layer {layer.id} is jit_deferred and has no executable unit DAG; "
+            f"run `vfx plan {shot.folder} --layer {layer.id}` to materialize and gate it first"
+        )
     from vfx_harness.domain.contracts import active_for, load_document
     from vfx_harness.domain.work_units import ready_units
     from vfx_harness.observability.provenance import atomic_write
@@ -3623,7 +3628,7 @@ async def build_layer(
         artifact = shot.folder / artifact_for(unit)
         slot = ledger._slot(milestone)
         best_render = shot.folder / str((slot.get("best") or {}).get("render") or "")
-        freeze_checkpoint(
+        frozen_state = freeze_checkpoint(
             shot.folder,
             str(layer.id),
             unit,
@@ -3649,6 +3654,9 @@ async def build_layer(
             layer=str(layer.id),
             unit=unit.id,
             passed_evidence=passed_evidence,
+            checkpoint_hash=str(
+                frozen_state["units"][unit.id]["checkpoint"]["candidate_hash"]
+            ),
         )
         require_due_clear(
             shot.folder,

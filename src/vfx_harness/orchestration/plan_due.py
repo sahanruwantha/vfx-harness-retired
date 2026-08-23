@@ -60,7 +60,17 @@ def unresolved_due(
         for record in records:
             evidence = resolved.get((kind, record.id))
             if evidence is not None and (
-                (kind == "assumption" and any(item[0] == "human_decision" for item in evidence))
+                (
+                    kind == "assumption"
+                    and (
+                        any(item[0] == "human_decision" for item in evidence)
+                        or {
+                            ("scene_contract", contract_id)
+                            for contract_id in record.falsification_contract_ids
+                        }
+                        <= set(evidence)
+                    )
+                )
                 or (kind == "obligation" and set(record.evidence) <= set(evidence))
             ):
                 continue
@@ -105,12 +115,13 @@ def resolve_unit_completion(
     layer: str,
     unit: str,
     passed_evidence: Iterable[tuple[str, str]],
+    checkpoint_hash: str | None = None,
 ) -> tuple[str, ...]:
     """Discharge machine-verifiable obligations at an accepted unit boundary.
 
-    Assumptions are deliberately excluded: only a hash-pinned human decision may resolve
-    one. An obligation is appended only when all evidence it declared is present in the
-    canonical evidence set supplied by the completed unit.
+    Obligations resolve from their declared evidence. An approved/planner start due at
+    this unit may advance to ``confirmed_outcome`` only when every declared falsification
+    contract passed and the frozen candidate checkpoint is hash-pinned.
     """
     bundle = resolve_current(shot_folder)
     evidence = frozenset((str(kind), str(identifier)) for kind, identifier in passed_evidence)
@@ -133,6 +144,44 @@ def resolve_unit_completion(
             "evidence": [
                 {"kind": kind, "id": identifier}
                 for kind, identifier in record.evidence
+            ],
+            "resolved_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "resolved_by": f"unit_completion:{layer}.{unit}",
+        })
+    for record in load_assumptions(bundle.root):
+        if record.decision_strength not in {"approved_start", "planner_start"}:
+            continue
+        if record.due.kind != "unit_completion" or not record.due.due_for(
+            layer=layer, unit=unit, completion=True
+        ):
+            continue
+        if record.falsification_owner != f"{layer}.{unit}":
+            continue
+        expected = {
+            ("scene_contract", contract_id)
+            for contract_id in record.falsification_contract_ids
+        }
+        if ("assumption", record.id) in resolved or not expected <= evidence:
+            continue
+        if (
+            not isinstance(checkpoint_hash, str)
+            or len(checkpoint_hash) != 64
+            or any(char not in "0123456789abcdef" for char in checkpoint_hash)
+        ):
+            raise ValueError(
+                f"assumption {record.id} confirmation requires a lowercase SHA-256 checkpoint hash"
+            )
+        rows.append({
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": bundle.content_hash,
+            "kind": "assumption",
+            "id": record.id,
+            "status": "satisfied",
+            "decision_strength": "confirmed_outcome",
+            "checkpoint_hash": checkpoint_hash,
+            "evidence": [
+                {"kind": kind, "id": identifier}
+                for kind, identifier in sorted(expected)
             ],
             "resolved_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "resolved_by": f"unit_completion:{layer}.{unit}",

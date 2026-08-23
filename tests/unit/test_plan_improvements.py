@@ -8,6 +8,7 @@ from PIL import Image
 
 from vfx_harness.agents import plan_tools
 from vfx_harness.agents.plan_guardrails import validate_planner_artifact
+from vfx_harness.agents.prompts import PLANNER_SYSTEM
 from vfx_harness.evaluation.grounding import audit
 from vfx_harness.evaluation.plan_gate import (
     Finding,
@@ -21,6 +22,14 @@ from vfx_harness.evaluation.plan_gate import (
 from vfx_harness.evidence.metrics import METRIC_SET, canonical_fingerprint, look_vector
 from vfx_harness.evidence.scene_checks import _blender_probe, functional_evidence, validate_row
 from vfx_harness.observability import run_artifacts
+
+
+def test_global_plan_defers_later_layer_world_model_work_to_jit() -> None:
+    assert "write full executable tickets only for Layer 1" in PLANNER_SYSTEM
+    assert "this manifest contains Layer 1 checks only" in PLANNER_SYSTEM
+    assert "calibration stops after that one retry" in PLANNER_SYSTEM
+    assert "Do not select recipes" in PLANNER_SYSTEM
+    assert "Do not build\n    proxy scenes to prove composition" in PLANNER_SYSTEM
 
 
 def _write(path: Path, value: object) -> None:

@@ -21,7 +21,13 @@ RESOLUTIONS_SCHEMA = "vfx-harness.plan-resolutions/v1"
 
 RESOLUTION_KINDS = {"contract", "obligation", "decision"}
 DUE_KINDS = {"before_unit", "unit_completion", "before_layer", "before_acceptance"}
-EVIDENCE_KINDS = {"scene_contract", "image_contract", "human_decision", "replay"}
+EVIDENCE_KINDS = {
+    "scene_contract",
+    "image_contract",
+    "human_decision",
+    "replay",
+    "jit_contract",
+}
 DECISION_STRENGTHS = {
     "hard_constraint",
     "approved_start",

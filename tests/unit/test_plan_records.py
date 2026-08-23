@@ -10,6 +10,11 @@ from PIL import Image
 from vfx_harness.evaluation.plan_gate import _check_meta_records
 from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.jit_materialization import (
+    publish_materialization,
+    validate_materialization,
+)
+from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_authority import publish_current
 from vfx_harness.orchestration.plan_due import (
     PlanDueError,
@@ -90,6 +95,131 @@ def _candidate(root: Path) -> None:
     _write(root / "assumptions.json", {
         "schema": "vfx-harness.assumptions/v1", "assumptions": [],
     })
+
+
+def _add_deferred_layer(root: Path) -> None:
+    data = json.loads((root / "layers.json").read_text(encoding="utf-8"))
+    data["layers"][0]["execution"] = "ready"
+    data["layers"].append({
+        "id": "2", "script": "build/02_polish.py", "title": "Polish",
+        "primary_judge": 240,
+        "judge": [{"frame": 239, "ref": "refs/a.png"}, {"frame": 240, "ref": "refs/a.png"}],
+        "owns": ["final_lock"], "reads": "polished ending",
+        "evidence_domains": ["scene", "temporal"],
+        "execution": "jit_deferred", "stages": [],
+        "jit": {
+            "depends_on_layers": ["1"],
+            "required_outcomes": [{"kind": "scene_contract", "id": "final-lock"}],
+            "reserved_roles": ["polish.*"],
+            "promises": [{
+                "id": "JIT-polish-lock", "contract_kind": "frame_delta",
+                "moments": [239, 240], "requirement_ids": ["R-final-lock"],
+            }],
+        },
+    })
+    _write(root / "layers.json", data)
+
+
+def _jit_payload(root: Path, bundle_hash: str) -> Path:
+    layers = json.loads((root / "layers.json").read_text(encoding="utf-8"))["layers"]
+    layer = dict(layers[1])
+    layer["execution"] = "ready"
+    layer.pop("jit")
+    layer["stages"] = [{
+        "id": "polish", "title": "Polish lock", "plan": "plans/02_polish/polish.md",
+        "depends_on": [],
+        "mutates": {"mode": "scoped", "roles": ["polish.comp"], "controls": ["hold"],
+                    "control_roles": {"hold": ["polish.comp"]},
+                    "script_spans": ["build/units/02_polish/polish.py"]},
+        "protects": {"selector": "all_active_upstream_interfaces",
+                     "resolve_to_explicit_ids_at": "freeze"},
+        "evaluation": {"primary_judge": 240, "judge": layer["judge"],
+                       "temporal_evidence": "keyframes", "claims": [{
+                           "id": "polish-lock", "proposition": "polish preserves the lock",
+                           "axis": "final_lock", "property": "frame_delta",
+                           "subject_roles": ["polish.comp"], "subject_controls": ["hold"],
+                           "moments": [239, 240], "kind": "atomic", "required": True,
+                           "authority": "executable_required", "repair_owner": "polish",
+                           "evidence": [{"kind": "scene_contract", "id": "polish-lock"}],
+                       }]},
+        "completion": "all_required_claims_and_protected_contracts_pass",
+    }]
+    path = root / "jit.json"
+    _write(path, {
+        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "bundle_hash": bundle_hash,
+        "layer": layer,
+        "scene_contracts": [{
+            "id": "polish-lock", "kind": "frame_delta", "owner_layer": "2",
+            "fault_owner": "2", "activates_at": "2", "lifecycle": "layer",
+            "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
+        }],
+        "image_contracts": [],
+        "promise_bindings": [{
+            "promise_id": "JIT-polish-lock", "kind": "scene_contract",
+            "contract_id": "polish-lock",
+        }],
+    })
+    return path
+
+
+def _passed_layer_one_outcome(root: Path) -> None:
+    _write(root / "plans" / "outcomes" / "01.json", {
+        "schema": 2, "layer": "1", "status": "passed",
+        "interfaces": [{"id": "final-lock", "pass": True}],
+    })
+
+
+def test_deferred_layer_has_no_fake_units_and_materializes_through_bound_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    parsed = load_layers_from_path(tmp_path / "layers.json")
+    assert parsed["2"].execution == "jit_deferred"
+    assert parsed["2"].stages == ()
+    assert not (tmp_path / "state" / "units" / "2.json").exists()
+
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    _passed_layer_one_outcome(tmp_path)
+    publish_materialization(tmp_path, payload)
+
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    materialized = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))
+    assert materialized["2"].execution == "ready"
+    assert [unit.id for unit in materialized["2"].stages] == ["polish"]
+    assert not (tmp_path / "state" / "units" / "2.json").exists()
+
+
+def test_jit_materialization_fails_closed_on_unbound_promise(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["promise_bindings"] = []
+    _write(payload, data)
+
+    with pytest.raises(ValueError, match="missing JIT-polish-lock"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+def test_jit_materialization_waits_for_declared_upstream_outcome(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+
+    with pytest.raises(ValueError, match="dependency 1 has a sealed outcome"):
+        publish_materialization(tmp_path, payload)
 
 
 def test_final_lock_is_typed_and_blocks_acceptance_until_matching_evidence(

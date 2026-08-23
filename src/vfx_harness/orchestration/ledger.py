@@ -9,6 +9,7 @@ resumed sessions read the ledger to know what's done.
 from __future__ import annotations
 
 import fcntl
+import fnmatch
 import hashlib
 import json
 import os
@@ -18,7 +19,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from vfx_harness.domain.brief import Shot
-from vfx_harness.domain.work_units import JudgePoint, WorkUnit, read_document, validate_qualification, validate_unit_dag
+from vfx_harness.domain.work_units import (
+    JudgePoint,
+    WorkUnit,
+    read_document,
+    validate_qualification,
+    validate_unit_dag,
+)
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.runid import RUN_ID
 
@@ -68,6 +75,22 @@ def load_axes(shot: Shot) -> list[tuple[str, str]]:
     return DEFAULT_AXES
 
 @dataclass(frozen=True)
+class JitPromise:
+    id: str
+    contract_kind: str
+    moments: tuple[int, ...]
+    requirement_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class JitLayerSpec:
+    depends_on_layers: tuple[str, ...]
+    required_outcomes: tuple[tuple[str, str], ...]
+    reserved_roles: tuple[str, ...]
+    promises: tuple[JitPromise, ...]
+
+
+@dataclass(frozen=True)
 class Layer:
     """One build layer from the plan (build ORDER), judged at a primary frame/ref on the
     axes it OWNS. Acceptance moments are a separate, time-ordered list (acceptance.json)
@@ -91,6 +114,8 @@ class Layer:
     # planning, but neither list position nor numeric frame order carries authority.
     primary_judge: int = 0
     stages: tuple[WorkUnit, ...] = ()
+    execution: str = "ready"
+    jit: JitLayerSpec | None = None
 
     @property
     def judge_frame(self) -> int:
@@ -154,11 +179,88 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
         primary = g.get("primary_judge")
         if isinstance(primary, bool) or not isinstance(primary, int) or primary not in frames:
             raise ValueError(f"{where}.primary_judge must name exactly one declared judge frame")
+        execution = str(g.get("execution") or "ready")
+        if execution not in {"ready", "jit_deferred"}:
+            raise ValueError(f"{where}.execution must be 'ready' or 'jit_deferred'")
         raw_stages = g.get("stages")
-        if not isinstance(raw_stages, list) or not raw_stages:
-            raise ValueError(f"{where}.stages must be a non-empty list")
+        if not isinstance(raw_stages, list):
+            raise ValueError(f"{where}.stages must be a list")
+        if execution == "ready" and not raw_stages:
+            raise ValueError(f"{where}.stages must be non-empty for ready execution")
+        if execution == "jit_deferred" and raw_stages:
+            raise ValueError(
+                f"{where}.stages must be empty for jit_deferred execution; "
+                "claims and units materialize at the JIT gate"
+            )
         stages = tuple(WorkUnit.parse(row, f"{where}.stages[{i}]") for i, row in enumerate(raw_stages))
         validate_unit_dag(stages, f"{where}.stages")
+        jit = None
+        raw_jit = g.get("jit")
+        if execution == "ready" and raw_jit is not None:
+            raise ValueError(f"{where}.jit is only valid for jit_deferred execution")
+        if execution == "jit_deferred":
+            if not isinstance(raw_jit, dict):
+                raise ValueError(f"{where}.jit must be an object for jit_deferred execution")
+            dependencies = tuple(str(item).strip() for item in raw_jit.get("depends_on_layers", []))
+            if not dependencies or any(not item for item in dependencies):
+                raise ValueError(f"{where}.jit.depends_on_layers must be a non-empty list")
+            unknown_dependencies = sorted(set(dependencies) - set(out))
+            if unknown_dependencies:
+                raise ValueError(
+                    f"{where}.jit.depends_on_layers must name earlier layers: "
+                    + ", ".join(unknown_dependencies)
+                )
+            reserved_roles = tuple(str(item).strip() for item in raw_jit.get("reserved_roles", []))
+            if not reserved_roles or any(not item for item in reserved_roles):
+                raise ValueError(f"{where}.jit.reserved_roles must be a non-empty list")
+            raw_outcomes = raw_jit.get("required_outcomes", [])
+            if not isinstance(raw_outcomes, list) or not raw_outcomes:
+                raise ValueError(f"{where}.jit.required_outcomes must be a non-empty list")
+            outcomes: list[tuple[str, str]] = []
+            for outcome_index, outcome in enumerate(raw_outcomes):
+                at = f"{where}.jit.required_outcomes[{outcome_index}]"
+                if not isinstance(outcome, dict) or outcome.get("kind") not in {
+                    "scene_contract",
+                    "image_contract",
+                    "semantic_diff",
+                }:
+                    raise ValueError(f"{at}.kind must be an executable evidence kind")
+                oid = str(outcome.get("id") or "").strip()
+                if not oid:
+                    raise ValueError(f"{at}.id must be non-empty")
+                outcomes.append((str(outcome["kind"]), oid))
+            raw_promises = raw_jit.get("promises", [])
+            if not isinstance(raw_promises, list) or not raw_promises:
+                raise ValueError(f"{where}.jit.promises must be a non-empty list")
+            promises: list[JitPromise] = []
+            promise_ids: set[str] = set()
+            for promise_index, promise in enumerate(raw_promises):
+                at = f"{where}.jit.promises[{promise_index}]"
+                if not isinstance(promise, dict):
+                    raise ValueError(f"{at} must be an object")
+                promise_id = str(promise.get("id") or "").strip()
+                contract_kind = str(promise.get("contract_kind") or "").strip()
+                moments = tuple(promise.get("moments") or ())
+                requirement_ids = tuple(str(item) for item in promise.get("requirement_ids") or ())
+                if not promise_id or promise_id in promise_ids:
+                    raise ValueError(f"{at}.id must be non-empty and unique")
+                if not contract_kind:
+                    raise ValueError(f"{at}.contract_kind must be non-empty")
+                if not moments or any(
+                    isinstance(frame, bool) or not isinstance(frame, int) or frame < 1
+                    for frame in moments
+                ):
+                    raise ValueError(f"{at}.moments must be positive frame integers")
+                if not requirement_ids or any(not item for item in requirement_ids):
+                    raise ValueError(f"{at}.requirement_ids must be non-empty")
+                promise_ids.add(promise_id)
+                promises.append(JitPromise(promise_id, contract_kind, moments, requirement_ids))
+            jit = JitLayerSpec(
+                dependencies,
+                tuple(outcomes),
+                reserved_roles,
+                tuple(promises),
+            )
         unit_artifacts = [span for unit in stages for span in unit.mutates.script_spans]
         for unit in stages:
             if len(unit.mutates.script_spans) != 1:
@@ -220,7 +322,44 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
             tuple(g.get("owns", ())),
             primary,
             stages,
+            execution,
+            jit,
         )
+    evidence_owners = {
+        (binding.kind, binding.id): layer.id
+        for layer in out.values()
+        for unit in layer.stages
+        for claim in unit.evaluation.claims
+        for binding in claim.evidence
+        if claim.required
+    }
+    deferred_role_owners: list[tuple[str, str]] = []
+    for layer in out.values():
+        if layer.execution == "jit_deferred" and layer.jit is not None:
+            for role in layer.jit.reserved_roles:
+                for prior_role, prior_layer in deferred_role_owners:
+                    if (
+                    fnmatch.fnmatchcase(role, prior_role)
+                    or fnmatch.fnmatchcase(prior_role, role)
+                    ):
+                        raise ValueError(
+                            f"deferred layers {prior_layer} and {layer.id} reserve overlapping "
+                            f"role namespaces {prior_role!r} and {role!r}"
+                        )
+                deferred_role_owners.append((role, layer.id))
+        if layer.execution != "jit_deferred" or layer.jit is None:
+            continue
+        for outcome in layer.jit.required_outcomes:
+            owner = evidence_owners.get(outcome)
+            if owner is None:
+                raise ValueError(
+                    f"layer {layer.id} JIT requires unknown upstream evidence {outcome[0]}:{outcome[1]}"
+                )
+            if owner not in set(layer.jit.depends_on_layers):
+                raise ValueError(
+                    f"layer {layer.id} JIT evidence {outcome[1]} is owned by layer {owner}, "
+                    "which is not a declared JIT dependency"
+                )
     return out
 
 

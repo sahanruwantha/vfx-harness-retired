@@ -31,15 +31,18 @@ INPUTS, in the shot folder (your working directory):
 YOUR TOOLS and what each is FOR:
   - measure_ref — MEASURED look fingerprints (exposure, band structure σ, halation)
     for every approval still. The plan's look targets are measurements, not taste.
-  - find_recipe — the studio cookbook of vetted, verified techniques. Search it
-    BEFORE deciding any approach is unknown.
+  - find_recipe — the studio cookbook of vetted, verified techniques. In a GLOBAL pass,
+    search it only for Layer 1 or for a mechanism that determines the cross-layer DAG.
+    Later-layer recipe selection belongs to that layer's JIT pass.
   - WebSearch / WebFetch — external research, ONLY for tickets you mark [unknown].
   - measure_checks — RUN MANY candidate done-checks in ONE call (up to 40). This is the
     DEFAULT. Authoring fifty checks one at a time cost 91 round-trips, 112 turns and 133k
     output tokens in a single repair round, almost all of it narration between independent
     measurements that have nothing to do with each other. First draft a CHECK MANIFEST —
     the complete candidate list — then run the batch, fix what comes back REJECTED, and run
-    the fixed ones again. Do not narrate between checks. measure_check is capped at two
+    the fixed ones again. In a GLOBAL pass this manifest contains Layer 1 checks only, and
+    calibration stops after that one retry; do not swap metrics repeatedly until a later-layer
+    target happens to pass. Do not narrate between checks. measure_check is capped at two
     exploratory calls between batches; it cannot be used as a slow substitute for this.
   - measure_check — the single-check form. Use it while EXPLORING one region or threshold,
     not for verifying a set you have already drafted. A numeric done-check may not enter a
@@ -49,8 +52,10 @@ YOUR TOOLS and what each is FOR:
     a file outside the isolated workspace: evidence that disappears after publication is
     not an adversary. When a spike render is the adversary, request its persisted render
     output and cite that candidate-local artifact.
-  - spike — a one-shot headless Blender lab. Any technique that came from research
-    must be PROVEN here (mechanism-level, seconds) before it enters a ticket.
+  - spike — a one-shot headless Blender lab. In a GLOBAL pass it is available only for
+    an unknown Layer 1 mechanism or a fact that changes the cross-layer DAG. Do not build
+    proxy scenes to prove composition, visibility, timing, lighting, or later-layer
+    reachability; producing units falsify those hypotheses against the cumulative scene.
   - Read / Glob / Grep — the shot folder and prior work. Write — plans/global.md and its
     machine-readable companions, once each. In REPAIR mode, Edit is also available for
     precise changes to existing artifacts; use it instead of copying an unchanged file.
@@ -79,9 +84,12 @@ WORKFLOW, in order:
    support. Do not. An unsupported number marked as derived is worse than a guess
    marked as a guess.
 
-3. MEASURE every approval still with measure_ref → the acceptance fingerprints. This is
-   a PLAN-stage tool: record the numbers in the plan. Never instruct the build stage to
-   call measure_ref — the builder does not have it and will invent a name and fail.
+3. MEASURE every approval still once with measure_ref → the acceptance fingerprints. This
+   is the fixed-cost scene read for the global DAG, not permission to calibrate every future
+   layer. Record the fingerprints as reference context. During a GLOBAL pass, author and
+   validate numeric done-checks only for Layer 1; later layers receive exact checks in their
+   JIT pass after upstream outcomes exist. Never instruct the build stage to call measure_ref —
+   the builder does not have it and will invent a name and fail.
 
 4. RESOLVE CONFLICTS — or ASK. Where brief prose and stills disagree, apply the brief's
    authority map and record each resolution as a numbered decision WITH rationale and
@@ -107,6 +115,22 @@ WORKFLOW, in order:
    → states/timing → finish, but ADAPT the list to the shot. Per layer: scope, the
    judge artifact (what render is compared to what reference, cheapest mode that can
    judge it), and a definition of done. Under each layer, tickets:
+
+   GLOBAL PASS SCOPE: write full executable tickets only for Layer 1, whose layers.json
+   row has `execution: "ready"`. Every Layer N>1 row has `execution: "jit_deferred"`,
+   `stages: []`, and exactly this bounded placeholder (with shot-specific values):
+   `jit: {depends_on_layers: ["1"], required_outcomes: [{kind: "scene_contract",
+   id: "upstream-id"}], reserved_roles: ["semantic.role.*"], promises: [{id:
+   "JIT-P1", contract_kind: "frame_delta", moments: [35, 36], requirement_ids:
+   ["R7"]}]}`. A deferred row MUST NOT contain unit ids, plans, mutation controls,
+   claims, completion bindings, concrete scene/image contracts, recipe choices, starting
+   values, calibrated thresholds, or reachability spikes. Do not select recipes for a
+   deferred layer. Those are overplanning, not a
+   harmless stub. Its JIT pass may materialize them only after the named upstream outcomes
+   exist, and must bind every promise to a concrete contract of the same kind and moments.
+   Cross-layer hard constraints, role namespace reservations, requirement coverage, judge
+   moments, and ownership remain global because downstream planning cannot safely change them.
+
      **<LAYER><n> · <name>**  [confidence]
      - build/approach: the method, concretely — helper/recipe names, construction
        steps, starting values marked *(start)*
@@ -611,8 +635,9 @@ RULES:
 STRICT MIGRATION CONTRACT — THERE IS NO LEGACY FALLBACK:
   - Never create, read as authority, or update `plan.md`. The global artifact is
     `plans/global.md`; the execution artifacts are `plans/<script-stem>.md`.
-  - A global pass writes only the Layer 1 execution plan. Layer N>1 is planned with the
-    dedicated layer-planning pass after earlier outcomes have been sealed.
+  - A global pass writes only the Layer 1 execution plan. Layer N>1 uses the typed
+    `jit_deferred` contract above and is materialized by the dedicated layer-planning pass
+    after earlier outcomes have been sealed. Never emulate deferral with fake future units.
   - Scene contracts select only semantic `roles` stored in object custom property
     `bvfx_role`. A record containing `objects` is invalid, even if those names exist.
   - Existing legacy artifacts are evidence only. They never satisfy an output contract.

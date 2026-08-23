@@ -14,6 +14,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ENV_FILE_VARIABLE = "VFXH_ENV_FILE"
+CREDENTIAL_VARIABLE = "VFXH_CREDENTIAL"
+API_KEY_VARIABLE = "ANTHROPIC_API_KEY"
+OAUTH_TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN"
+_CREDENTIAL_PREFERENCES = ("oauth", "api_key")
 PACKAGE_ROOT = Path(__file__).resolve().parent
 # ``PACKAGE_ROOT`` is ``<checkout>/src/vfx_harness/infrastructure`` in a source
 # checkout.  ``parents[1]`` is therefore the ``src`` directory, not the checkout.
@@ -44,11 +48,41 @@ def environment_file(path: str | Path | None = None) -> Path | None:
     return candidate if checkout and candidate.is_file() else None
 
 
+def credential_preference() -> str:
+    """Which Claude credential the harness should hand the Agent SDK."""
+    value = os.environ.get(CREDENTIAL_VARIABLE)
+    if value is None:
+        return "oauth"
+    normalized = value.strip().lower()
+    if normalized not in _CREDENTIAL_PREFERENCES:
+        raise ValueError(
+            f"{CREDENTIAL_VARIABLE} must be one of: {', '.join(_CREDENTIAL_PREFERENCES)}"
+        )
+    return normalized
+
+
+def _apply_credential_preference() -> None:
+    """Select the credential the Agent SDK will see when both are configured.
+
+    The SDK itself prefers ``ANTHROPIC_API_KEY`` over ``CLAUDE_CODE_OAUTH_TOKEN`` (measured
+    in application/preflight.py).  The harness default is the subscription token, so when
+    both are present the API key is withheld from the process environment unless
+    ``VFXH_CREDENTIAL=api_key`` explicitly selects it.  This is cross-variable selection
+    policy, not value precedence: a real-environment API key is also withheld when the
+    preference says oauth.  With only one credential configured, nothing is removed.
+    """
+    if credential_preference() != "oauth":
+        return
+    if os.environ.get(OAUTH_TOKEN_VARIABLE) and os.environ.get(API_KEY_VARIABLE):
+        del os.environ[API_KEY_VARIABLE]
+
+
 def load_environment(path: str | Path | None = None) -> Path | None:
     """Load project configuration once, preserving real environment variables."""
     candidate = environment_file(path)
     if candidate is not None:
         load_dotenv(candidate, override=False)
+    _apply_credential_preference()
     return candidate
 
 

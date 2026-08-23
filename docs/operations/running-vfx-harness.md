@@ -15,7 +15,10 @@ refs/                    authored visual references
 ```
 
 Set credentials and model/runtime configuration in the repository `.env` or real environment.
-Confirm Python dependencies and Blender before spending model budget:
+When both Claude credentials are configured, the harness selects the subscription token
+(`CLAUDE_CODE_OAUTH_TOKEN`) by default and withholds `ANTHROPIC_API_KEY` from the SDK; set
+`VFXH_CREDENTIAL=api_key` to bill API credits instead. Confirm Python dependencies and Blender
+before spending model budget:
 
 ```bash
 .venv/bin/vfx preflight --strict
@@ -134,6 +137,14 @@ The normal operation is the whole driver:
 It performs just-in-time layer planning, the deterministic plan gate, bounded layer building,
 cumulative acceptance, final rendering, and queued distillation under one run ID. It stops on the
 first unaccepted boundary; do not force downstream work past it.
+
+Published global plans contain executable units only for Layer 1. A later layer is selected as a
+typed `jit_deferred` boundary with upstream outcome dependencies, reserved semantic roles, and
+contract promises. On `vfx plan <shot> --layer <id>`, the planner first materializes and validates
+that boundary into a bundle-pinned, content-addressed consumer view; only then does it create or
+plan the first ready unit. If promise binding, moments, role scope, or global structure disagree,
+planning fails closed and no durable unit state is created. Do not hand-author placeholder units or
+edit `state/jit-layers/current.json`.
 
 Useful bounded operations:
 

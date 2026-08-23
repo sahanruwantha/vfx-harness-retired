@@ -505,12 +505,28 @@ Implemented:
   bundle and DAG. Hard constraints require `--hard-constraint-approval`. `--preview` validates and
   prints the invalidation/preservation closure without publishing state.
 - Plan-gate and run summaries expose structural validation policy and falsification outcomes.
+- Global planning now scopes recipes, spikes, and numeric check calibration to Layer 1 plus facts
+  that determine the cross-layer DAG. Later layers retain typed `jit_deferred` contracts: no units,
+  claims, completion bindings, or executable checks; only upstream dependencies/outcomes, role
+  namespace reservations, and requirement-linked contract promises. The global gate validates this
+  sparse shape symmetrically instead of applying ready-unit rules to placeholders. This closes the
+  residual overplanning path observed in failed
+  run `20260823T005740Z-079242`: despite making no Blender spike, its draft calibrated later-layer
+  image metrics through five shrinking batches before writing any candidate. The run was stopped
+  before publication; no selected authority changed.
+- `vfx plan <shot> --layer N` now routes a deferred layer through a separate materialization gate.
+  Every promise must bind to a concrete required claim/contract with the same kind and moments,
+  global structural fields cannot drift, and mutations cannot escape reserved role namespaces.
+  The accepted cumulative view is content-addressed and pinned to the immutable global bundle.
+  Unit state is not created until this gate has produced a ready DAG.
+- Approved/planner starts due at unit completion advance to `confirmed_outcome` only after all
+  declared falsification contracts pass against a frozen candidate checkpoint hash.
 
-Not yet implemented in this slice: the end-to-end camera-driven and heterogeneous integration
+Not yet implemented in this slice: the end-to-end camera-driven and heterogeneous Blender
 fixtures (a real producing unit measuring the scene and returning the typed record through a full
 build), the current-shot migration, and the economic acceptance comparison. The bound-contract
-routing itself is unit-tested at the builder seam with the current shot's f36 housing contract as
-the fixture case.
+routing, deferred materialization, fail-closed promise binding, and absence of premature unit state
+are covered by deterministic fixtures.
 
 Verification after this slice:
 
@@ -519,7 +535,7 @@ Verification after this slice:
 All checks passed!
 
 .venv/bin/python -m pytest -q
-135 passed in 34.61s
+143 passed
 
 .venv/bin/python -m tests.integration.test_harness
 ALL PASS (0 failed)

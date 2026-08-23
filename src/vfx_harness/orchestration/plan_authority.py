@@ -586,6 +586,13 @@ def selected_artifact_path(shot_folder: str | Path, name: str) -> Path:
     """
     shot = Path(shot_folder).expanduser().resolve()
     if (shot / POINTER).exists():
+        if name in {"layers.json", "scene_checks.json", "checks.json"}:
+            from vfx_harness.orchestration.jit_materialization import selected_view_artifact
+
+            bundle = resolve_current(shot)
+            overlay = selected_view_artifact(shot, name, bundle.content_hash)
+            if overlay is not None:
+                return overlay
         return artifact_path(shot, name)
     if name not in _SOURCES:
         raise PlanPublicationError(f"unsupported legacy plan artifact: {name}")
@@ -605,7 +612,11 @@ def prepare_consumer_view(layout: RunLayout) -> Path:
     try:
         (temp / "plans").mkdir()
         for name in bundle.artifacts:
-            source = bundle.root / name
+            source = (
+                selected_artifact_path(layout.shot, name)
+                if name in {"layers.json", "scene_checks.json", "checks.json"}
+                else bundle.root / name
+            )
             target = temp / "plans" / "global.md" if name == "global.md" else temp / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.symlink_to(source)
@@ -636,7 +647,9 @@ def prepare_consumer_view(layout: RunLayout) -> Path:
         if outcomes.is_dir():
             (temp / "plans" / "outcomes").symlink_to(outcomes, target_is_directory=True)
         try:
-            layers = json.loads((bundle.root / "layers.json").read_text(encoding="utf-8"))["layers"]
+            layers = json.loads(
+                selected_artifact_path(layout.shot, "layers.json").read_text(encoding="utf-8")
+            )["layers"]
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise PlanPublicationError("published layers.json is unreadable") from exc
         for layer in layers:

@@ -20,6 +20,11 @@ MEASURED, not assumed (one live call each, both credentials present in the envir
     (model claude-opus-5[1m], cost $0.1461, 3 turns, tools called normally)
   CLAUDE_CODE_OAUTH_TOKEN alone, over its spend limit → model claude-sonnet-5,
     cost $0.0000, 1 turn, text "You've hit your monthly spend limit", subtype success
+
+Because the raw SDK precedence prefers the API key, the harness applies its own selection
+in load_environment(): the subscription token is the default, and ANTHROPIC_API_KEY is
+withheld from the process environment when both are configured. VFXH_CREDENTIAL=api_key
+restores the API key explicitly.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from __future__ import annotations
 import os
 import shutil
 
-from vfx_harness.infrastructure.config import load_environment
+from vfx_harness.infrastructure.config import credential_preference, load_environment
 
 # What the Agent SDK / Claude Code CLI actually reads, in the precedence measured above.
 _READ = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -84,13 +89,22 @@ def auth() -> dict:
     if "ANTHROPIC_API_KEY" in present:
         using = "ANTHROPIC_API_KEY"
         if "CLAUDE_CODE_OAUTH_TOKEN" in present:
-            notes.append("both credentials are set; the API key takes precedence "
-                         "(measured), so billing goes to API credits, not the "
-                         "subscription.")
+            if credential_preference() == "api_key":
+                notes.append("both credentials are set; VFXH_CREDENTIAL=api_key selects "
+                             "the API key, so billing goes to API credits, not the "
+                             "subscription.")
+            else:
+                problems.append(
+                    "both credentials are visible although the preference is oauth — "
+                    "load_environment() has not applied credential selection on this "
+                    "path, so the SDK would use the API key. Call load_environment() "
+                    "before spending.")
     elif "CLAUDE_CODE_OAUTH_TOKEN" in present:
         using = "CLAUDE_CODE_OAUTH_TOKEN"
-        notes.append("using the subscription token. A subscription that hits its monthly "
-                     "spend limit fails as a ZERO-COST 'success' — see empty_success().")
+        notes.append("using the subscription token (harness default; set "
+                     "VFXH_CREDENTIAL=api_key to bill API credits instead). A "
+                     "subscription that hits its monthly spend limit fails as a "
+                     "ZERO-COST 'success' — see empty_success().")
     else:
         logged_in = bool(shutil.which("claude"))
         problems.append(

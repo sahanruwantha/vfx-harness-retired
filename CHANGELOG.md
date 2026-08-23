@@ -38,6 +38,12 @@ live in the linked Harness Improvement Records.
 - Routed terminal unit failures whose failing bound contracts are a decision's declared
   falsification path into the same typed `hypothesis_falsified` outcome, so an unreachable
   approved or planner start stops as replanning evidence instead of a generic unit failure.
+- Scoped global-plan recipe selection, spikes, and numeric check calibration to Layer 1 and
+  cross-layer DAG facts; later-layer execution detail now waits for its JIT pass and upstream
+  checkpoints instead of being simulated before the first build.
+- Made the subscription token (`CLAUDE_CODE_OAUTH_TOKEN`) the default Claude credential when
+  both are configured, withholding `ANTHROPIC_API_KEY` from the SDK unless
+  `VFXH_CREDENTIAL=api_key` selects it; preflight reports the applied selection.
 - Limited plan spikes to optional citation-integrity evidence: claimed spikes now freeze exact
   script, output, Blender identity, and contract rows, while unspiked composition work may proceed
   to its producing runtime unit.

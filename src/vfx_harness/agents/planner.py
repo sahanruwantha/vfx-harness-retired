@@ -90,6 +90,78 @@ from vfx_harness.orchestration.ledger import load_layers
 
 from .builder import _one_user_message
 
+
+async def _materialize_deferred_layer(
+    shot, layer, *, model: str, blender: str, max_turns: int
+) -> None:
+    """Turn one bounded JIT promise into concrete units/contracts, then select its view."""
+    from vfx_harness.orchestration.jit_materialization import (
+        MATERIALIZATION_SCHEMA,
+        publish_materialization,
+    )
+    from vfx_harness.orchestration.plan_authority import resolve_current
+
+    bundle = resolve_current(shot.folder)
+    layout = run_artifacts.ensure(shot.folder, command="plan-layer")
+    target = layout.scratch / f"jit-layer-{layer.id}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    before = target.stat().st_mtime_ns if target.is_file() else -1
+    rel_target = target.relative_to(shot.folder).as_posix()
+    system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
+Write exactly `{rel_target}` as JSON with schema `{MATERIALIZATION_SCHEMA}`. It must contain
+`bundle_hash`, the complete replacement `layer` with execution `ready`, non-empty bounded stages,
+`scene_contracts`, `image_contracts`, and `promise_bindings` mapping every global JIT promise to
+one concrete contract. Preserve global layer structure exactly. Mutated roles must stay inside
+reserved namespaces. Every contract must be required evidence of a materialized claim. Promise
+kind and moments must match exactly. Use upstream outcomes as measurements, not permission to
+enlarge scope. Do not edit global authority, create unit state, write prose, or write another file."""
+    kickoff = (
+        f"Materialize deferred layer {layer.id} ({layer.title}).\n"
+        f"Selected bundle hash: {bundle.content_hash}\n"
+        f"Deferred contract:\n{layer.jit!r}\nOutput: {rel_target}"
+    )
+    lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}-materialize"
+    pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
+    rserver, rnames = build_recipe_tools()
+    options = ClaudeAgentOptions(
+        model=model,
+        system_prompt=system,
+        cwd=str(shot.folder),
+        mcp_servers={"plan": pserver, "recipes": rserver},
+        allowed_tools=["Read", "Write", *pnames, *rnames],
+        disallowed_tools=["Bash", "Edit"],
+        permission_mode="bypassPermissions",
+        max_buffer_size=32 * 1024 * 1024,
+        setting_sources=[],
+        max_turns=max_turns,
+        effort="high",
+        hooks=planner_hooks(
+            shot.folder,
+            readable_files=(shot.folder / "brief.md",),
+            readable_roots=(bundle.root, shot.folder / "plans" / "outcomes"),
+            writable_files=(target,),
+            strict_reads=True,
+            completion_gate=False,
+        ),
+    )
+
+    async def _attempt() -> str:
+        said: list[str] = []
+        async for message in query(prompt=kickoff, options=options):
+            log_message(message)
+            for block in getattr(message, "content", None) or []:
+                if value := getattr(block, "text", None):
+                    said.append(value)
+        return "\n".join(said)[-4000:]
+
+    await run_session(
+        _attempt,
+        succeeded=lambda: target.is_file() and target.stat().st_mtime_ns != before,
+        label=f"materialize layer {layer.id}",
+    )
+    publish_materialization(shot.folder, target)
+    log(f"deferred layer {layer.id} materialized against bundle {bundle.content_hash[:12]}")
+
 DRAFT_MODEL = DEFAULT_EXECUTION_MODEL
 # Draft and verify deliberately share the configured planner model. Their independence
 # comes from distinct sessions and an adversarial contract, not from pretending two calls
@@ -366,6 +438,16 @@ async def generate_layer_plan(
         layer = layers[str(layer_id)]
     except KeyError as exc:
         raise KeyError(f"unknown layer {layer_id!r}; available: {', '.join(layers)}") from exc
+    if layer.execution == "jit_deferred":
+        await _materialize_deferred_layer(
+            shot,
+            layer,
+            model=model,
+            blender=blender,
+            max_turns=max_turns,
+        )
+        layers = load_layers(shot)
+        layer = layers[str(layer_id)]
     from vfx_harness.domain.work_units import ready_units
     from vfx_harness.orchestration.unit_state import load as load_unit_state
     from vfx_harness.orchestration.unit_state import validate_current
