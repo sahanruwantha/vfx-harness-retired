@@ -3488,46 +3488,38 @@ def main():
         else:
             _scene_contract.write_text(_scene_contract_before, encoding="utf-8")
 
-    print("\n[the plan agent knows the departments]")
-    # Everything learned on barrel_roll lived only as hand-edits to that shot's plan, so a
-    # new brief would have been planned by an agent that had never heard any of it — no
-    # lighting stage, no lookdev, and the same $78 of geometry added over geometry.
+    print("\n[the global plan stays ownership-only]")
+    # Department craft belongs to JIT recipes and producing units. Keeping it in the global
+    # prompt made every shot pay for a full preproduction pass before any scene evidence.
     from vfx_harness.agents.prompts import PLANNER_SYSTEM as _PS
 
     check(
-        "names the department order incl. LIGHTING",
-        "LIGHTING → FX" in _PS and "layout → set dressing → environment" in _PS,
+        "every global layer is deferred",
+        '`execution: "jit_deferred"`' in _PS and '`stages: []`' in _PS,
     )
     check(
-        "requires lookdev before shot work for a hero asset", "LOOKDEV BEFORE SHOT WORK" in _PS and "turntable" in _PS
-    )
-    check("warns that an imported asset may already carry its look", "ALREADY CARRY" in _PS and "baked maps" in _PS)
-    check("gives the lighting axis its anti-gaming clause", "legible only because its windows glow" in _PS)
-    check(
-        "one axis, one subject, one owner", "ONE AXIS, ONE SUBJECT, ONE OWNER" in _PS and "owned by TWO layers" in _PS
+        "a root needs no fictional predecessor",
+        "empty `depends_on_layers` and `required_outcomes`" in _PS,
     )
     check(
-        "carries the sun/volume physics into PLAN decisions",
-        "infinitely distant" in _PS and "BOUNDED volume domain" in _PS,
-    )
-    check("says an emission shader cannot be lit", "EMISSION shader cannot be lit" in _PS)
-    # Ticket granularity — the same bundling defect as axes, one level down.
-    check("one ticket, one control", "ONE TICKET, ONE CONTROL" in _PS and "set INDEPENDENTLY" in _PS)
-    check(
-        "every control the approach can vary gets a target",
-        "NAME EVERY CONTROL" in _PS and "any value, not scored" in _PS,
+        "the whole brief keeps an owner",
+        "Register every substantive brief clause once" in _PS and "deferred_owner" in _PS,
     )
     check(
-        "an assumption that drives the approach must be checked first",
-        "MARK THE PREMISE" in _PS and "Unchecked assumptions" in _PS,
+        "global acceptance carries no premature fingerprints",
+        "Keep `acceptance.json` empty" in _PS,
     )
-    # Lighting is where the bundling rule is easiest to break — I broke it myself, in the
-    # same session I added the rule, by writing an axis covering both hero form AND
-    # set-wide exposure hierarchy. Four attempts failed between a ticket that forbade
-    # extra lights and an axis that required them.
     check(
-        "lighting axes split form from exposure hierarchy",
-        "LIGHTING IS THE EASIEST ONE TO GET WRONG" in _PS and "DIFFERENT SUBJECTS" in _PS,
+        "global authority contains no tickets or techniques",
+        "no tickets" in _PS and "recipes" in _PS and "techniques" in _PS,
+    )
+    check(
+        "image checks wait for a real candidate",
+        "Candidate-sensitive evidence is authored after" in _PS,
+    )
+    check(
+        "preproduction tools are absent globally",
+        "no reference measurement" in _PS and "recipe search" in _PS and "Blender spike" in _PS,
     )
 
     print("\n[sun-in-volume trap]")

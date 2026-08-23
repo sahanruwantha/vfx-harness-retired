@@ -145,8 +145,8 @@ class Settings:
     # Hard ceiling for one global plan session (draft, verify, or repair). A runaway
     # pass ends at this boundary instead of grinding against unresolvable findings;
     # `vfx plan --max-turns` still overrides per invocation.
-    plan_max_turns: int = 24
-    plan_verify_max_turns: int = 12
+    plan_max_turns: int = 12
+    plan_verify_max_turns: int = 6
 
     @classmethod
     def from_environment(cls, *, load_dotenv_file: bool = True) -> Settings:
@@ -167,6 +167,6 @@ class Settings:
             asset_model=_text("VFXH_ASSET_MODEL", execution_model),
             distiller_model=_text("VFXH_DISTILLER_MODEL", execution_model),
             critic_model=_text("VFXH_CRITIC_MODEL", DEFAULT_CRITIC_MODEL),
-            plan_max_turns=_int("VFXH_PLAN_MAX_TURNS", 24),
-            plan_verify_max_turns=_int("VFXH_PLAN_VERIFY_MAX_TURNS", 12),
+            plan_max_turns=_int("VFXH_PLAN_MAX_TURNS", 12),
+            plan_verify_max_turns=_int("VFXH_PLAN_VERIFY_MAX_TURNS", 6),
         )

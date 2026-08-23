@@ -603,6 +603,7 @@ def build_plan_tools(
     include_gate: bool = False,
     run_layout: run_artifacts.RunLayout | None = None,
     measure_ref_paths: tuple[str, ...] | None = None,
+    enabled_tools: frozenset[str] | None = None,
 ):
     shot_folder = Path(shot_folder)
     work = Path(tempfile.mkdtemp(prefix="planlab-"))  # raw ffmpeg output
@@ -1234,6 +1235,8 @@ def build_plan_tools(
         tools.append(run_gate)
     if video:
         tools = [probe_video, contact_sheet, extract_frames, *tools]
+    if enabled_tools is not None:
+        tools = [candidate for candidate in tools if candidate.name in enabled_tools]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)
     names = [f"mcp__{SERVER_NAME}__{t.name}" for t in tools]
     log(

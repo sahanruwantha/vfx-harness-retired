@@ -6,8 +6,8 @@ from vfx_harness.observability import run_artifacts, transcript
 
 
 def test_planner_prompt_makes_machine_contract_location_unambiguous() -> None:
-    assert "SHOT ROOT" in PLANNER_SYSTEM
-    assert "These files do NOT live under `plans/`" in PLANNER_SYSTEM
+    assert "shot root" in PLANNER_SYSTEM.lower()
+    assert "`plans/global.md`" in PLANNER_SYSTEM
     for name in (
         "layers.json",
         "acceptance.json",
@@ -15,7 +15,7 @@ def test_planner_prompt_makes_machine_contract_location_unambiguous() -> None:
         "scene_checks.json",
         "critic_axes.json",
     ):
-        assert f"SHOT-ROOT `{name}`" in PLANNER_SYSTEM
+        assert f"`{name}`" in PLANNER_SYSTEM
 
 
 def test_transcript_label_cannot_create_nested_paths(tmp_path, monkeypatch) -> None:

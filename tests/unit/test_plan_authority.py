@@ -10,7 +10,7 @@ import pytest
 
 from vfx_harness.agents.guardrails import selected_plan_read_guard
 from vfx_harness.agents.plan_guardrails import planner_hooks, planner_path_scope
-from vfx_harness.agents.planner import plan_role_capabilities
+from vfx_harness.agents.planner import _phase_tools, plan_role_capabilities
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.layer_plans import (
     is_selected_bundle_member,
@@ -568,7 +568,8 @@ def test_repair_snapshots_are_isolated_by_run(
 def test_global_plan_roles_have_declared_patch_and_gate_capabilities() -> None:
     for role in ("draft", "verify", "repair"):
         capabilities = plan_role_capabilities(role)
-        assert {"author", "patch", "measure", "gate", "escalate"} <= capabilities.verbs
+        assert {"author", "patch", "gate", "escalate"} <= capabilities.verbs
+        assert "measure" not in capabilities.verbs
         assert capabilities.include_gate is True
         assert "Edit" in capabilities.allowed_tools
         assert "Edit" not in capabilities.denied_tools
@@ -580,3 +581,18 @@ def test_global_plan_roles_have_declared_patch_and_gate_capabilities() -> None:
 def test_unknown_plan_role_fails_closed() -> None:
     with pytest.raises(ValueError, match="unknown global plan role"):
         plan_role_capabilities("invented")
+
+
+def test_global_tool_routing_excludes_preproduction_capabilities() -> None:
+    names = [
+        "mcp__plan__measure_ref",
+        "mcp__plan__measure_checks",
+        "mcp__plan__spike",
+        "mcp__plan__ask_supervisor",
+        "mcp__plan__run_gate",
+    ]
+
+    assert _phase_tools(names, "ask_supervisor", "run_gate") == [
+        "mcp__plan__ask_supervisor",
+        "mcp__plan__run_gate",
+    ]

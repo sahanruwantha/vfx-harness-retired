@@ -539,9 +539,10 @@ def read_document(path: str | Path) -> list[dict]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"{path.name} is invalid JSON: {exc}") from exc
-    if not isinstance(raw, dict) or raw.get("schema") != SCHEMA:
+    if not isinstance(raw, dict) or raw.get("schema") not in {SCHEMA, 5}:
         raise ValueError(
-            f"{path.name} must be an object with schema={SCHEMA}; schema 3 and legacy layer arrays are not supported"
+            f"{path.name} must be an object with schema={SCHEMA} or schema=5; "
+            "schema 3 and legacy layer arrays are not supported"
         )
     rows = raw.get("layers")
     if not isinstance(rows, list) or not rows:

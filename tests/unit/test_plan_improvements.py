@@ -24,12 +24,12 @@ from vfx_harness.evidence.scene_checks import _blender_probe, functional_evidenc
 from vfx_harness.observability import run_artifacts
 
 
-def test_global_plan_defers_later_layer_world_model_work_to_jit() -> None:
-    assert "write full executable tickets only for Layer 1" in PLANNER_SYSTEM
-    assert "this manifest contains Layer 1 checks only" in PLANNER_SYSTEM
-    assert "calibration stops after that one retry" in PLANNER_SYSTEM
-    assert "Do not select recipes" in PLANNER_SYSTEM
-    assert "Do not build\n    proxy scenes to prove composition" in PLANNER_SYSTEM
+def test_global_plan_defers_all_world_model_work_to_jit() -> None:
+    assert 'Every\n   `layers.json` row uses `execution: "jit_deferred"`' in PLANNER_SYSTEM
+    assert "A root layer has\n   empty `depends_on_layers`" in PLANNER_SYSTEM
+    assert "Keep `acceptance.json` empty" in PLANNER_SYSTEM
+    assert "candidate-sensitive evidence is authored after" in PLANNER_SYSTEM.lower()
+    assert "no reference measurement, image-check\ncalibration, recipe search" in PLANNER_SYSTEM
 
 
 def _write(path: Path, value: object) -> None:

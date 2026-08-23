@@ -224,6 +224,32 @@ def ensure(shot_folder: str | Path, run_id: str | None = None, *,
     )
 
 
+def _terminal_record(exc: BaseException) -> tuple[str, int, str, str]:
+    """Classify a failed invocation without reducing distinct stops to exit code 1."""
+    if isinstance(exc, KeyboardInterrupt):
+        return "interrupted", 130, "interrupted", "interrupted by operator"
+
+    code = exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) else 1
+    cause = str(getattr(exc, "terminal_cause", "") or "")
+    metadata = getattr(exc, "run_metadata", {})
+    outcome = str(metadata.get("outcome") or "") if isinstance(metadata, dict) else ""
+    if not cause and outcome:
+        cause = {
+            "stalled": "gate_stalled",
+            "budget": "plan_budget_exhausted",
+        }.get(outcome, "gate_rejected")
+    if not cause:
+        cause = "requested_exit" if isinstance(exc, SystemExit) else "process_error"
+    detail = str(exc).strip() or {
+        "max_turns_exhausted": "model turn budget exhausted",
+        "usage_limit": "model usage limit reached",
+        "session_stalled": "model session produced no publishable artifact",
+        "gate_stalled": "plan gate stopped improving",
+        "plan_budget_exhausted": "plan repair budget exhausted",
+    }.get(cause, exc.__class__.__name__)
+    return "failed", int(code), cause, detail
+
+
 @contextmanager
 def invocation(shot_folder: str | Path, command: str, *,
                shot_id: str | None = None, parameters: dict[str, Any] | None = None):
@@ -239,20 +265,24 @@ def invocation(shot_folder: str | Path, command: str, *,
         yield layout
     except BaseException as exc:
         if inherited is None:
-            code = exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) else 1
+            state, code, terminal_cause, detail = _terminal_record(exc)
             metadata = {
                 key: value
-                for key, value in {**layout.terminal_metadata, **getattr(exc, "run_metadata", {})}.items()
+                for key, value in {
+                    **layout.terminal_metadata,
+                    **getattr(exc, "run_metadata", {}),
+                    "terminal_cause": terminal_cause,
+                }.items()
                 if key not in _RESERVED_STATUS_FIELDS
             }
-            layout.set_status("failed", exit_code=code, detail=str(exc), metadata=metadata)
+            layout.set_status(state, exit_code=code, detail=detail, metadata=metadata)
             layout.write_summary({
                 "schema": "vfx-harness.run-summary/v1",
                 "run_id": layout.run_id,
                 "command": command,
-                "state": "failed",
+                "state": state,
                 "exit_code": code,
-                "detail": str(exc)[:1000],
+                "detail": detail[:1000],
                 **metadata,
             })
             layout.write_inventory()

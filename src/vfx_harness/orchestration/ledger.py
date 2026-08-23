@@ -194,8 +194,10 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
             if not isinstance(raw_jit, dict):
                 raise ValueError(f"{where}.jit must be an object for jit_deferred execution")
             dependencies = tuple(str(item).strip() for item in raw_jit.get("depends_on_layers", []))
-            if not dependencies or any(not item for item in dependencies):
-                raise ValueError(f"{where}.jit.depends_on_layers must be a non-empty list")
+            if any(not item for item in dependencies) or len(set(dependencies)) != len(dependencies):
+                raise ValueError(
+                    f"{where}.jit.depends_on_layers must contain unique non-empty ids"
+                )
             unknown_dependencies = sorted(set(dependencies) - set(out))
             if unknown_dependencies:
                 raise ValueError(
@@ -206,8 +208,12 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
             if not reserved_roles or any(not item for item in reserved_roles):
                 raise ValueError(f"{where}.jit.reserved_roles must be a non-empty list")
             raw_outcomes = raw_jit.get("required_outcomes", [])
-            if not isinstance(raw_outcomes, list) or not raw_outcomes:
-                raise ValueError(f"{where}.jit.required_outcomes must be a non-empty list")
+            if not isinstance(raw_outcomes, list):
+                raise ValueError(f"{where}.jit.required_outcomes must be a list")
+            if dependencies and not raw_outcomes:
+                raise ValueError(
+                    f"{where}.jit.required_outcomes must be non-empty when dependencies exist"
+                )
             outcomes: list[tuple[str, str]] = []
             for outcome_index, outcome in enumerate(raw_outcomes):
                 at = f"{where}.jit.required_outcomes[{outcome_index}]"

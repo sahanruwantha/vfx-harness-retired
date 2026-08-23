@@ -35,8 +35,8 @@ def _acceptance_errors(folder: Path) -> list[str]:
         rows = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return [f"acceptance.json is unreadable: {exc}"]
-    if not isinstance(rows, list) or not rows:
-        return ["acceptance.json must be a non-empty list"]
+    if not isinstance(rows, list):
+        return ["acceptance.json must be a list"]
     errors: list[str] = []
     seen: set[str] = set()
     for index, row in enumerate(rows):

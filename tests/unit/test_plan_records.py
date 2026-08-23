@@ -176,6 +176,184 @@ def _passed_layer_one_outcome(root: Path) -> None:
     })
 
 
+def test_deferred_root_needs_no_fictional_upstream_outcome(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    document["schema"] = 5
+    layer = document["layers"][0]
+    layer["execution"] = "jit_deferred"
+    layer["stages"] = []
+    layer["jit"] = {
+        "depends_on_layers": [],
+        "required_outcomes": [],
+        "reserved_roles": ["product.*"],
+        "owned_requirements": ["R-final-lock"],
+    }
+    _write(tmp_path / "layers.json", document)
+
+    parsed = load_layers_from_path(tmp_path / "layers.json")
+
+    assert parsed["1"].execution == "jit_deferred"
+    assert parsed["1"].jit.depends_on_layers == ()
+    assert parsed["1"].jit.required_outcomes == ()
+
+
+def test_deferred_root_materializes_without_fabricated_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    ready_layer = document["layers"][0]
+    deferred_layer = {**ready_layer, "execution": "jit_deferred", "stages": []}
+    deferred_layer["jit"] = {
+        "depends_on_layers": [],
+        "required_outcomes": [],
+        "reserved_roles": ["comp"],
+        "owned_requirements": ["R-final-lock"],
+    }
+    document["schema"] = 5
+    document["layers"] = [deferred_layer]
+    _write(tmp_path / "layers.json", document)
+    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
+        "due": {"kind": "before_layer", "layer": "1"},
+    }
+    _write(tmp_path / "requirements.json", requirements)
+    _write(tmp_path / "obligations.json", {
+        "schema": "vfx-harness.obligations/v1", "obligations": [],
+    })
+    layout = run_artifacts.create(tmp_path, "root-materialization")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = tmp_path / "root-jit.json"
+    _write(payload, {
+        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "bundle_hash": bundle.content_hash,
+        "layer": {**ready_layer, "execution": "ready"},
+        "scene_contracts": [{
+            "id": "final-lock", "kind": "frame_delta", "owner_layer": "1",
+            "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
+            "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
+        }],
+        "image_contracts": [],
+        "requirement_bindings": [{
+            "requirement_id": "R-final-lock", "contract_ids": ["final-lock"],
+        }],
+        "acceptance": [],
+    })
+
+    pointer = publish_materialization(tmp_path, payload)
+
+    assert pointer.is_file()
+    selected = json.loads(pointer.read_text(encoding="utf-8"))
+    assert selected["materialized_layers"] == ["1"]
+
+
+def test_schema_five_global_publication_rejects_ready_preproduction(tmp_path: Path) -> None:
+    from vfx_harness.evaluation.plan_gate import _check_contracts
+
+    _candidate(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    document["schema"] = 5
+    _write(tmp_path / "layers.json", document)
+
+    findings, _ = _check_contracts(tmp_path)
+
+    assert any(
+        finding.check == "global-preproduction" and "ready layers: 1" in finding.what
+        for finding in findings
+    )
+
+
+@pytest.mark.parametrize(
+    ("title", "reserved_role", "axis"),
+    [
+        ("Product foundation", "product.*", "product_shape"),
+        ("Camera foundation", "camera.*", "camera_framing"),
+    ],
+)
+def test_unit_first_global_bundle_is_clean_for_heterogeneous_roots(
+    tmp_path: Path, title: str, reserved_role: str, axis: str
+) -> None:
+    from vfx_harness.evaluation.plan_gate import run
+
+    brief = (
+        "---\n"
+        "id: heterogeneous-root\n"
+        "frames: 1\n"
+        "fps: 24\n"
+        "---\n"
+        "The delivered image must preserve the approved visual target.\n"
+    )
+    (tmp_path / "brief.md").write_text(brief, encoding="utf-8")
+    (tmp_path / "refs").mkdir()
+    (tmp_path / "refs" / "target.png").write_bytes(b"fixture")
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "plans" / "global.md").write_text(
+        f"# Unit-first publication\n\n1. {title}: owns `{axis}`.\n", encoding="utf-8"
+    )
+    _write(tmp_path / "layers.json", {
+        "schema": 5,
+        "layers": [{
+            "id": "1", "script": "build/01_foundation.py", "title": title,
+            "primary_judge": 1,
+            "judge": [{"frame": 1, "ref": "refs/target.png"}],
+            "owns": [axis], "reads": "approved target", "evidence_domains": ["image"],
+            "execution": "jit_deferred", "stages": [],
+            "jit": {
+                "depends_on_layers": [], "required_outcomes": [],
+                "reserved_roles": [reserved_role], "owned_requirements": ["R1"],
+            },
+        }],
+    })
+    _write(tmp_path / "acceptance.json", [])
+    _write(tmp_path / "critic_axes.json", [{"key": axis, "desc": "approved visual target"}])
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
+    digest = hashlib.sha256((tmp_path / "brief.md").read_bytes()).hexdigest()
+    _write(tmp_path / "requirements.json", {
+        "schema": "vfx-harness.requirements/v1",
+        "requirements": [{
+            "id": "R1", "statement": "The delivered image must preserve the approved visual target.",
+            "citation": {
+                "source": "brief.md", "sha256": digest, "line_start": 6, "line_end": 6,
+            },
+            "resolution": {
+                "kind": "deferred_owner", "ids": [], "owner_layer": "1",
+                "due": {"kind": "before_layer", "layer": "1"},
+            },
+        }],
+    })
+    _write(tmp_path / "obligations.json", {
+        "schema": "vfx-harness.obligations/v1", "obligations": [],
+    })
+    _write(tmp_path / "assumptions.json", {
+        "schema": "vfx-harness.assumptions/v1", "assumptions": [],
+    })
+
+    result = run(tmp_path)
+
+    assert result.blocking == []
+
+
+def test_jit_materialization_rejects_candidate_sensitive_image_contracts(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["image_contracts"] = [{"id": "premature-image-check", "owner_layer": "2"}]
+    _write(payload, document)
+
+    with pytest.raises(ValueError, match="candidate-sensitive image checks"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
 def test_deferred_layer_has_no_fake_units_and_materializes_through_bound_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

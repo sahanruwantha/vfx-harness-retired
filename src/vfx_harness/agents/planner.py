@@ -110,13 +110,15 @@ async def _materialize_deferred_layer(
     system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
 Write exactly `{rel_target}` as JSON with schema `{MATERIALIZATION_SCHEMA}`. It must contain
 `bundle_hash`, the complete replacement `layer` with execution `ready`, non-empty bounded stages,
-`scene_contracts`, `image_contracts`, `acceptance`, and `requirement_bindings`. Close every
+`scene_contracts`, empty `image_contracts`, `acceptance`, and `requirement_bindings`. Close every
 globally owned requirement exactly once, either with one or more concrete contract ids or an
 explicit decision carrying `statement` and `decision_strength`. Preserve global layer structure
-exactly. Mutated roles must stay inside reserved namespaces. Every contract must be required
-evidence of a materialized producing claim. Choose kinds, moments, thresholds, fingerprints, and
-techniques now from authored references plus sealed upstream outcomes. Do not edit global
-authority, create unit state, write prose, or write another file."""
+exactly. Mutated roles must stay inside reserved namespaces. Every scene contract must be
+required evidence of a materialized producing claim. Choose unit structure, scene-truth
+contracts, reference fingerprints, and techniques now from authored references plus sealed
+upstream outcomes. Image checks are candidate-sensitive: the builder proposes them only after
+this unit mutates the cumulative scene, so `image_contracts` must remain empty here. Do not edit
+global authority, create unit state, write prose, or write another file."""
     kickoff = (
         f"Materialize deferred layer {layer.id} ({layer.title}).\n"
         f"Selected bundle hash: {bundle.content_hash}\n"
@@ -128,14 +130,18 @@ authority, create unit state, write prose, or write another file."""
         blender=blender,
         lab_dir=lab_dir,
         measure_ref_paths=tuple(ref for _frame, ref in layer.judges),
+        enabled_tools=frozenset({"measure_ref", "spike", "ask_supervisor"}),
     )
     rserver, rnames = build_recipe_tools()
+    materialization_tools = _phase_tools(
+        pnames, "measure_ref", "spike", "ask_supervisor"
+    )
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Read", "Write", *pnames, *rnames],
+        allowed_tools=["Read", "Write", *materialization_tools, *rnames],
         disallowed_tools=["Bash", "Edit"],
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,
@@ -238,11 +244,17 @@ def plan_role_capabilities(role: str) -> PlanRoleCapabilities:
         denied.update({"Task", "Agent"})
     return PlanRoleCapabilities(
         role=role,
-        verbs=frozenset({"author", "patch", "measure", "gate", "escalate"}),
+        verbs=frozenset({"author", "patch", "gate", "escalate"}),
         allowed_tools=frozenset({"Edit"}),
         denied_tools=frozenset(denied),
         include_gate=True,
     )
+
+
+def _phase_tools(names: list[str], *short_names: str) -> list[str]:
+    """Expose only tools that belong to the current authority boundary."""
+    suffixes = tuple(f"__{name}" for name in short_names)
+    return [name for name in names if name.endswith(suffixes)]
 
 
 def _planner_tool_policy(repair: bool) -> tuple[list[str], list[str]]:
@@ -334,9 +346,8 @@ async def generate_plan(
         lab_dir=lab_dir,
         include_gate=capabilities.include_gate,
         run_layout=layout,
+        enabled_tools=frozenset({"ask_supervisor", "run_gate"}),
     )
-    rserver, rnames = build_recipe_tools()
-
     # Every global role authors the same transaction and therefore needs the same patch and
     # validation verbs. Repair additionally loses delegation so a bounded mechanical patch
     # cannot escape into an agent that lacks its exact context or tools.
@@ -344,10 +355,10 @@ async def generate_plan(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),
-        mcp_servers={"plan": pserver, "recipes": rserver},
+        mcp_servers={"plan": pserver},
         allowed_tools=[
             "Read", "Glob", "Grep", "Write", *sorted(capabilities.allowed_tools),
-            "WebSearch", "WebFetch", *pnames, *rnames,
+            *_phase_tools(pnames, "ask_supervisor", "run_gate"),
         ],
         disallowed_tools=sorted(capabilities.denied_tools),
         permission_mode="bypassPermissions",
@@ -371,7 +382,7 @@ async def generate_plan(
     log(
         f"workspace: {workspace.relative_to(source_shot.folder)}/ · "
         f"lab: {lab_dir.relative_to(source_shot.folder)}/ · "
-        f"web research ENABLED · max_turns {max_turns}",
+        f"global tools: ownership, escalation, and deterministic gate only · max_turns {max_turns}",
         1,
     )
 
@@ -517,8 +528,14 @@ async def generate_layer_plan(
     kickoff = layer_user_prompt(shot, layer, selected, rel_target, feedback)
     layout = run_artifacts.ensure(shot.folder, command="plan-layer")
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}"
-    pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
+    pserver, pnames = build_plan_tools(
+        shot.folder,
+        blender=blender,
+        lab_dir=lab_dir,
+        enabled_tools=frozenset({"measure_ref", "spike", "ask_supervisor"}),
+    )
     rserver, rnames = build_recipe_tools()
+    unit_plan_tools = _phase_tools(pnames, "measure_ref", "spike", "ask_supervisor")
     from vfx_harness.orchestration.plan_authority import resolve_current
 
     bundle = resolve_current(shot.folder)
@@ -537,7 +554,7 @@ async def generate_layer_plan(
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Read", "Write", *pnames, *rnames],
+        allowed_tools=["Read", "Write", *unit_plan_tools, *rnames],
         disallowed_tools=["Bash", "Edit"],
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,
@@ -647,7 +664,7 @@ async def generate_plan_two_pass(
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
     verify_turns = min(
         max_turns,
-        getattr(configured_settings, "plan_verify_max_turns", 12),
+        getattr(configured_settings, "plan_verify_max_turns", 6),
     )
     final = await generate_plan(
         folder,

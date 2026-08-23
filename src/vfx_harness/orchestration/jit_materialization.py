@@ -177,6 +177,11 @@ def validate_materialization(
 
     scene_rows = _rows(payload, "scene_contracts", "materialization")
     image_rows = _rows(payload, "image_contracts", "materialization")
+    if image_rows:
+        raise ValueError(
+            "materialization.image_contracts must be empty; candidate-sensitive image "
+            "checks are proposed after the producing unit mutates the cumulative scene"
+        )
     all_contracts = {
         str(row.get("id")): ("scene_contract", row) for row in scene_rows if row.get("id")
     }

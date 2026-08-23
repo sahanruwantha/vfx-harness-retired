@@ -52,9 +52,23 @@ _TERMINAL = re.compile(
     r"usage limits?|specified api usage|regain access|permission denied|not authorized",
     re.IGNORECASE,
 )
+_MAX_TURNS = re.compile(r"error_max_turns|max(?:imum)?[ _-]?turns", re.IGNORECASE)
+_USAGE_LIMIT = re.compile(
+    r"credit balance|insufficient (?:credit|funds|quota)|spend limit|billing|"
+    r"usage limits?|specified api usage|regain access",
+    re.IGNORECASE,
+)
 
 _BASE_DELAY = 20.0      # 529s clear in tens of seconds, not milliseconds
 _MAX_DELAY = 240.0
+
+
+class AgentSessionFailure(RuntimeError):
+    """Terminal model-session failure with a stable machine-readable cause."""
+
+    def __init__(self, message: str, terminal_cause: str):
+        self.terminal_cause = terminal_cause
+        super().__init__(message)
 
 
 def classify(text: str) -> str:
@@ -97,9 +111,15 @@ async def run_session(
         blob = f"{err}\n{said}"
         kind = classify(blob)
         last = (err or said or "produced no output and raised nothing").strip()[:300]
+        if _MAX_TURNS.search(blob):
+            raise AgentSessionFailure(
+                f"{label} exhausted its model turn budget: {last}",
+                "max_turns_exhausted",
+            )
         if kind == "terminal":
             log(f"! {label}: TERMINAL failure, not retrying — {last}")
-            raise RuntimeError(f"{label} failed terminally: {last}")
+            cause = "usage_limit" if _USAGE_LIMIT.search(blob) else "terminal_service_error"
+            raise AgentSessionFailure(f"{label} failed terminally: {last}", cause)
         if n == attempts or (kind == "unknown" and n >= 2):
             break
         delay = min(base_delay * (2 ** (n - 1)), _MAX_DELAY)
@@ -107,8 +127,10 @@ async def run_session(
             f"{delay:.0f}s — {last[:160]}")
         await anyio.sleep(delay)
 
-    raise RuntimeError(
+    raise AgentSessionFailure(
         f"{label} failed after {attempts} attempt(s) and produced nothing. Last signal: "
         f"{last}" + ("\n(unrecognised error — retried once only, on the reasoning that an "
                      "unknown failure is more likely a bug than a blip)"
-                     if classify(last) == "unknown" else ""))
+                     if classify(last) == "unknown" else ""),
+        "session_stalled" if classify(last) == "unknown" else "service_unavailable",
+    )

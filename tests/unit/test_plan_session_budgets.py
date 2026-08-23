@@ -67,8 +67,8 @@ def test_plan_max_turns_setting_parses_and_rejects_nonsense(
     monkeypatch.delenv("VFXH_PLAN_MAX_TURNS", raising=False)
     monkeypatch.delenv("VFXH_PLAN_VERIFY_MAX_TURNS", raising=False)
     settings = Settings.from_environment(load_dotenv_file=False)
-    assert settings.plan_max_turns == 24
-    assert settings.plan_verify_max_turns == 12
+    assert settings.plan_max_turns == 12
+    assert settings.plan_verify_max_turns == 6
 
     monkeypatch.setenv("VFXH_PLAN_MAX_TURNS", "60")
     assert Settings.from_environment(load_dotenv_file=False).plan_max_turns == 60
@@ -90,6 +90,18 @@ def test_reference_measurement_scope_follows_ready_units(tmp_path) -> None:
     }), encoding="utf-8")
 
     assert _ready_measure_refs(tmp_path) == {"refs/a.png"}
+
+
+def test_global_phase_registers_only_escalation_and_gate_tools(tmp_path) -> None:
+    from vfx_harness.agents.plan_tools import build_plan_tools
+
+    _server, names = build_plan_tools(
+        tmp_path,
+        include_gate=True,
+        enabled_tools=frozenset({"ask_supervisor", "run_gate"}),
+    )
+
+    assert {name.split("__")[-1] for name in names} == {"ask_supervisor", "run_gate"}
 
 
 def test_spike_refuses_adopted_decision_and_falsification_hypotheses(tmp_path) -> None:

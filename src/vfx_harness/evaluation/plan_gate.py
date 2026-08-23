@@ -463,6 +463,12 @@ def _check_coverage(folder: Path) -> tuple[list[Finding], dict]:
 
 
 def _check_grounded(folder: Path) -> tuple[list[Finding], dict]:
+    try:
+        acceptance = json.loads((folder / "acceptance.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        acceptance = None
+    if acceptance == []:
+        return [], {"fingerprint_claims": 0, "grounded": 0}
     rec = _grounding.audit(folder)
     if "error" in rec:
         return [Finding("grounded", True, "acceptance.json", rec["error"])], {}
@@ -767,11 +773,34 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
             )
         ], {}
     try:
+        layers_document = json.loads((folder / "layers.json").read_text())
         layers = read_document(folder / "layers.json")
         axes = json.loads((folder / "critic_axes.json").read_text())
         accept = json.loads((folder / "acceptance.json").read_text())
     except (OSError, json.JSONDecodeError, ValueError) as e:
         return [Finding("contracts", True, "plan artifacts", f"unreadable: {e}")], {}
+
+    unit_first = isinstance(layers_document, dict) and layers_document.get("schema") == 5
+    if unit_first:
+        ready = [str(layer.get("id") or "?") for layer in layers if layer.get("execution") != "jit_deferred"]
+        if ready:
+            out.append(Finding(
+                "global-preproduction",
+                True,
+                "layers.json",
+                "schema-5 global authority contains ready layers: " + ", ".join(ready),
+                "publish every layer as ownership-only jit_deferred authority; materialize "
+                "the dependency-ready root after publication",
+            ))
+        if accept:
+            out.append(Finding(
+                "global-preproduction",
+                True,
+                "acceptance.json",
+                "schema-5 global authority contains acceptance fingerprints",
+                "leave global acceptance empty and measure a reference only when its owning "
+                "layer materializes",
+            ))
 
     axis_keys = {a["key"] for a in axes}
     layer_ids = {str(lay.get("id")) for lay in layers}
@@ -942,6 +971,28 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                             "every temporal endpoint is a real judge frame; add it to the layer and unit judge lists",
                         )
                     )
+    if unit_first and scene_rows:
+        out.append(Finding(
+            "global-preproduction",
+            True,
+            "scene_checks.json",
+            "schema-5 global authority contains concrete scene contracts",
+            "materialize scene contracts at the owning layer boundary",
+        ))
+
+    if unit_first:
+        try:
+            image_rows = read_document(folder / "checks.json")
+        except (OSError, json.JSONDecodeError, ValueError):
+            image_rows = []
+        if image_rows:
+            out.append(Finding(
+                "global-preproduction",
+                True,
+                "checks.json",
+                "schema-5 global authority contains candidate-sensitive image checks",
+                "propose image checks only after a producing unit has created a real candidate",
+            ))
     closure_claims = 0
     dependency_findings = _check_unit_dependencies(folder)
     if dependency_findings:

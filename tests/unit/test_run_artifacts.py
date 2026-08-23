@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from vfx_harness.agents.planner import PlanGateFailure, PlanLoopResult
+from vfx_harness.agents.resilience import AgentSessionFailure
 from vfx_harness.observability import run_artifacts, transcript
 
 
@@ -131,6 +132,41 @@ def test_dirty_plan_exit_publishes_failed_status_and_summary(
     assert "2 blocking" in status["detail"]
     assert summary["state"] == "failed"
     assert summary["exit_code"] == 3
+    assert status["terminal_cause"] == "plan_budget_exhausted"
+
+
+def test_operator_interrupt_has_explicit_terminal_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot = tmp_path / "interrupted"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "direct-interrupted")
+
+    with pytest.raises(KeyboardInterrupt), run_artifacts.invocation(shot, "plan") as layout:
+        raise KeyboardInterrupt
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["state"] == "interrupted"
+    assert status["exit_code"] == 130
+    assert status["terminal_cause"] == "interrupted"
+    assert status["detail"] == "interrupted by operator"
+
+
+def test_model_turn_exhaustion_is_not_reported_as_generic_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot = tmp_path / "turns"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "direct-turns")
+
+    with pytest.raises(AgentSessionFailure), run_artifacts.invocation(shot, "plan") as layout:
+        raise AgentSessionFailure("draft exhausted its model turn budget", "max_turns_exhausted")
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["terminal_cause"] == "max_turns_exhausted"
+    assert "turn budget" in status["detail"]
 
 
 def test_reader_refuses_shot_root_legacy_output(

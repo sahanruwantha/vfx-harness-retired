@@ -66,6 +66,11 @@ live in the linked Harness Improvement Records.
 - Limited plan spikes to optional citation-integrity evidence: claimed spikes now freeze exact
   script, output, Blender identity, and contract rows, while unspiked composition work may proceed
   to its producing runtime unit.
+- Moved the first layer across the JIT boundary: schema-5 global plans publish only the layer DAG,
+  ownership, durable constraints, and blockers; dependency roots materialize without fictional
+  upstream outcomes, and image-check calibration is unavailable until a real candidate exists.
+- Added typed terminal causes for operator interruption, model-turn exhaustion, plan-gate stalls,
+  plan-budget exhaustion, usage limits, and process errors in run status and summaries.
 
 See [HIR-0002](docs/improvements/HIR-0002-structured-run-output.md),
 [HIR-0003](docs/improvements/HIR-0003-truthful-until-clean-planning.md),
@@ -78,10 +83,12 @@ See [HIR-0002](docs/improvements/HIR-0002-structured-run-output.md),
 [HIR-0010](docs/improvements/HIR-0010-executable-plan-authority-and-due-gates.md),
 [HIR-0011](docs/improvements/HIR-0011-build-time-plan-falsification.md),
 [HIR-0012](docs/improvements/HIR-0012-sparse-global-publication-contract.md),
+[HIR-0013](docs/improvements/HIR-0013-unit-first-evidence-materialization.md),
 [ADR-0002](docs/decisions/ADR-0002-run-scoped-artifact-authority.md),
 [ADR-0003](docs/decisions/ADR-0003-explicit-metric-and-temporal-evidence-identity.md),
 [ADR-0004](docs/decisions/ADR-0004-transactional-plan-authority.md),
-and [ADR-0005](docs/decisions/ADR-0005-sparse-global-publication-contract.md).
+[ADR-0005](docs/decisions/ADR-0005-sparse-global-publication-contract.md),
+and [ADR-0006](docs/decisions/ADR-0006-unit-first-evidence-materialization.md).
 
 ## 0.3.0 — 2026-08-21
 
