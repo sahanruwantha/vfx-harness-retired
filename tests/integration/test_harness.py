@@ -1311,7 +1311,7 @@ def main():
     from vfx_harness.agents import planner as _pl
     from vfx_harness.agents.prompts import planner_user_prompt as _pup
 
-    _blocks = _pl._kickoff_blocks(_pup(shot), shot, refs=())
+    _blocks = _pl._kickoff_blocks(_pup(shot, "R1 [lines 1-1]: clause"), shot, refs=())
     _imgs = [b for b in _blocks if b["type"] == "image"]
     check(
         "global kickoff defers reference payloads until a ready unit needs them",
@@ -1359,7 +1359,7 @@ def main():
     from vfx_harness.agents import planner as _pl
     from vfx_harness.agents.prompts import planner_user_prompt as _pup
 
-    _blocks = _pl._kickoff_blocks(_pup(shot), shot, refs=())
+    _blocks = _pl._kickoff_blocks(_pup(shot, "R1 [lines 1-1]: clause"), shot, refs=())
     _imgs = [b for b in _blocks if b["type"] == "image"]
     check(
         "global kickoff defers reference payloads until a ready unit needs them",
@@ -3494,29 +3494,27 @@ def main():
     from vfx_harness.agents.prompts import PLANNER_SYSTEM as _PS
 
     check(
-        "every global layer is deferred",
-        '`execution: "jit_deferred"`' in _PS and '`stages: []`' in _PS,
+        "the model authors one compact mapping only",
+        "exactly ONE file: `ownership_mapping.json`" in _PS
+        and "writes outside the mapping are denied" in _PS.replace("\n", " "),
     )
     check(
-        "a root needs no fictional predecessor",
-        "empty `depends_on_layers`" in _PS
-        and "`required_outcomes` empty everywhere" in _PS,
+        "everything derivable is machine-generated",
+        "mechanically generates" in _PS and "derived `owned_requirements`" in _PS,
+    )
+    check(
+        "every global layer is deferred by construction",
+        "every layer `jit_deferred`" in _PS.replace("\n", " "),
     )
     check(
         "the whole brief keeps an owner",
-        "Register every substantive brief clause once" in _PS and "deferred_owner" in _PS,
+        "resolves EVERY clause id exactly once" in _PS.replace("\n", " ")
+        and "deferred_owner" in _PS,
     )
     check(
-        "global acceptance carries no premature fingerprints",
-        "Keep `acceptance.json` empty" in _PS,
-    )
-    check(
-        "global authority contains no tickets or techniques",
-        "no tickets" in _PS and "recipes" in _PS and "techniques" in _PS,
-    )
-    check(
-        "image checks wait for a real candidate",
-        "Candidate-sensitive evidence is authored after" in _PS,
+        "ownership is coverage, not design",
+        "kinds, moments, thresholds, and techniques are chosen at the owning layer's"
+        in _PS.replace("\n  ", " "),
     )
     check(
         "preproduction tools are absent globally",

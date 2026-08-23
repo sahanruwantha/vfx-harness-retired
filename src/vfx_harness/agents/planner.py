@@ -92,6 +92,34 @@ from vfx_harness.orchestration.ledger import load_layers
 from .builder import _one_user_message
 
 
+def mapping_expander(workspace: Path, registry, mapping_path: Path):
+    """The warm authoring loop: each mapping write is validated with enumerated errors
+    and, when valid, expanded into the full authority surface immediately — so the
+    session's `run_gate` always measures fresh artifacts and `plans/global.md` exists
+    exactly when the mapping is publishable."""
+
+    def _expand_or_errors() -> list[str]:
+        from vfx_harness.orchestration.plan_authoring import (
+            expand_mapping,
+            validate_mapping,
+        )
+
+        try:
+            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return [f"ownership_mapping.json is not readable JSON: {exc}"]
+        errors = validate_mapping(mapping, registry, workspace / "refs")
+        if errors:
+            return errors
+        try:
+            expand_mapping(workspace, mapping)
+        except (ValueError, OSError) as exc:
+            return [str(exc)]
+        return []
+
+    return _expand_or_errors
+
+
 def _with_target_feedback(hooks: dict, target: Path, validate) -> dict:
     """Append warm write-time validation of one target file to a planner hook set."""
     from vfx_harness.agents.plan_guardrails import target_validation_feedback
@@ -431,6 +459,14 @@ async def generate_plan(
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     lab_dir = layout.scratch / "plan-lab" / (tag or "global")
 
+    from vfx_harness.orchestration.plan_authoring import (
+        clause_registry,
+        registry_prompt_block,
+    )
+
+    registry = clause_registry(workspace / "brief.md")
+    mapping_path = workspace / "ownership_mapping.json"
+
     if repair:
         findings, rnd = repair
         system = PLANNER_SYSTEM + REPAIR_ADDENDUM.format(draft=verify_draft, findings=findings)
@@ -444,9 +480,11 @@ async def generate_plan(
         role = "verify"
     else:
         system = PLANNER_SYSTEM
-        kickoff = planner_user_prompt(shot)
+        kickoff = planner_user_prompt(shot, registry_prompt_block(registry))
         mode = "PLAN (from scratch)"
         role = "draft"
+
+    _expand_mapping_or_errors = mapping_expander(workspace, registry, mapping_path)
 
     capabilities = plan_role_capabilities(role)
     pserver, pnames = build_plan_tools(
@@ -475,9 +513,17 @@ async def generate_plan(
         setting_sources=[],  # isolate from user/project settings
         max_turns=max_turns,
         effort="high",
-        hooks=planner_hooks(
-            workspace,
-            readable_files=(verify_draft,) if repair and verify_draft else (),
+        hooks=_with_target_feedback(
+            planner_hooks(
+                workspace,
+                readable_files=(verify_draft,) if repair and verify_draft else (),
+                # The mapping is the ONLY model-authored surface; every published
+                # artifact is machine-expanded from it, so other writes are denied
+                # rather than merely discouraged.
+                writable_files=(mapping_path,),
+            ),
+            mapping_path,
+            _expand_mapping_or_errors,
         ),
     )
 

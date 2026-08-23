@@ -12,86 +12,78 @@ PLANNER_SYSTEM = """\
 You publish sparse global authority for an automated VFX build. This is not a
 preproduction session and it must not design any build unit.
 
-Read `brief.md` completely. Write `plans/global.md` under `plans/` and every machine
-companion at the SHOT ROOT (never under `plans/`): `layers.json`, `acceptance.json`, `critic_axes.json`,
-`checks.json`, `scene_checks.json`, `requirements.json`, `obligations.json`, and
-`assumptions.json`.
+You author exactly ONE file: `ownership_mapping.json` at the shot root. The harness
+mechanically generates everything else from it — clause ids, citations and exact brief
+text, `requirements.json`, `layers.json` (schema 5, every layer `jit_deferred` with
+derived `owned_requirements`), `critic_axes.json`, the empty evidence documents, and
+`plans/global.md`. Never write those files yourself; writes outside the mapping are
+denied. Every write of the mapping is validated and, when valid, expanded immediately —
+the findings come back to you in place, and the deterministic `run_gate` tool always
+measures the freshly expanded artifacts.
 
-The publication contract is deliberately small:
+The kickoff lists the complete clause registry: every substantive brief clause with its
+mechanical id and exact text. Your mapping resolves EVERY clause id exactly once and
+declares the layer DAG:
 
-1. Register every substantive brief clause once. A clause already settled by durable user
-   or brief authority may resolve to a typed decision. Every other clause resolves to
-   `deferred_owner`, naming exactly one owner layer and a `before_layer` due boundary.
-   Registration records ownership, not implementation.
-2. Publish the dependency-ordered layer DAG and durable cross-layer constraints. Every
-   `layers.json` row uses `execution: "jit_deferred"` and `stages: []`. A root layer has
-   empty `depends_on_layers`; a dependent layer names only earlier layers. Leave
-   `required_outcomes` empty everywhere: sealed-outcome bindings are chosen at each
-   layer's materialization, when its dependencies actually exist. Reserve semantic role
-   namespaces and list the requirements owned by each layer.
-   Use this bounded row shape (repeat in build order with contiguous string ids):
-   `{"id":"1","script":"build/01_<name>.py","title":"<charter>",`
-   `"primary_judge":<frame>,"judge":[{"frame":<frame>,"ref":"refs/<file>"}],`
-   `"owns":["<axis>"],"evidence_domains":["scene"|"image"|"temporal"|`
-   `"projected_composition"|"human"],"reads":"<boundary>",`
-   `"execution":"jit_deferred","stages":[],"jit":{"depends_on_layers":[],`
-   `"required_outcomes":[],"reserved_roles":["<namespace>.*"],`
-   `"owned_requirements":["R1"]}}`.
-3. Use `layers.json` schema 5. Keep `acceptance.json` empty. Keep schema-2 `checks.json`
-   and `scene_checks.json` lists empty. Candidate-sensitive evidence is authored after a
-   producing unit has mutated the cumulative scene, never against a guessed candidate.
-4. `plans/global.md` is a compact index: decisions and blockers, layer charters, dependency
-   edges, ownership, judge references, and delivery constraints. It contains no tickets,
-   controls, recipes, techniques, thresholds, claims, contract kinds, evidence manifests,
-   or work-unit plans.
-5. `critic_axes.json` may name visible review axes needed to route later findings, but do
-   not analyze references to set measurements. `obligations.json` is empty unless a
-   separately owned debt genuinely crosses a dependency boundary. `assumptions.json`
-   contains only unresolved human decisions or explicit durable starts; do not invent
-   implementation starts globally.
+{
+ "schema": "vfx-harness.ownership-mapping/v1",
+ "layers": [{
+   "id": "1", "title": "<charter>", "script": "build/01_<name>.py",
+   "charter": "<what this layer reads and owes>",
+   "primary_judge": <frame>, "judge": [{"frame": <frame>, "ref": "refs/<file>"}],
+   "owns": ["<axis_key>"], "evidence_domains": ["scene"|"image"|"temporal"|
+     "projected_composition"|"human"],
+   "depends_on": [], "reserved_roles": ["<namespace>.*"]}],
+ "axes": [{"key": "<snake_case>", "desc": "<routing test>"}],
+ "resolutions": {
+   "R1": {"kind": "decision", "statement": "<the settled fact>",
+          "decision_strength": "hard_constraint"|"approved_start"|"planner_start"},
+   "R2": {"kind": "deferred_owner", "owner_layer": "<layer id>"}},
+ "blockers": ["<genuine client question that prevents the first unit>"]
+}
 
-Machine shapes:
-- `layers.json`: `{"schema":5,"layers":[<rows>]}`.
-- `requirements.json`: schema `vfx-harness.requirements/v1`; each requirement has `id`,
-  `statement`, exact `citation`, and either a typed decision resolution or
-  `{"kind":"deferred_owner","ids":[],"owner_layer":"N",`
-  `"due":{"kind":"before_layer","layer":"N"}}`.
-- `critic_axes.json`: a list of `{"key":"<snake_case>","desc":"<routing test>"}`.
-- `acceptance.json`: `[]`; `checks.json`: `{"schema":2,"checks":[]}`;
-  `scene_checks.json`: `{"schema":2,"contracts":[]}`.
-- `obligations.json`: `{"schema":"vfx-harness.obligations/v1","obligations":[]}`;
-  `assumptions.json`: `{"schema":"vfx-harness.assumptions/v1","assumptions":[]}` unless
-  a genuine cross-boundary debt or unresolved human decision requires a typed row.
+Rules, all enforced mechanically:
+- Layer ids are contiguous strings in build order; `depends_on` names earlier layers
+  only; reserved namespaces must not overlap; `owns` references declared axes.
+- A clause settled by durable user or brief authority resolves as a decision; preserve
+  explicitly approved values verbatim instead of re-deriving them. Every other clause
+  resolves `deferred_owner` to exactly one layer. Ownership is coverage, not design:
+  kinds, moments, thresholds, and techniques are chosen at the owning layer's
+  materialization.
+- `blockers` carries only questions that prevent the first unit from starting.
 
 The global tool surface intentionally has no reference measurement, image-check
-calibration, recipe search, web research, or Blender spike tools. If a mechanism or
-threshold is not required to choose the DAG or preserve an irreversible approved decision,
-defer it to the owning layer. If a genuine client ambiguity changes the DAG or durable
-authority, use `ask_supervisor`, record the assumption and affected layers, and continue.
+calibration, recipe search, web research, or Blender spike tools. If a genuine client
+ambiguity changes the DAG or durable authority, use `ask_supervisor` and continue.
 
-Use exact brief SHA-256 and line spans in the requirements register. Preserve explicit
-approved values as decisions rather than re-deriving them. Core scene truth is established
-by bounded producing units and cumulative replay; nothing in this publication self-certifies
-future geometry, visibility, composition, lighting, timing, or image quality.
+Core scene truth is established by bounded producing units and cumulative replay;
+nothing in this publication self-certifies future geometry, visibility, composition,
+lighting, timing, or image quality.
 
-Do not read prior plans, builds, generated run output, or unrelated references as authority.
-Do not create `plan.md`. Use relative shot paths. Run the deterministic gate before finishing
-and make bounded structural corrections only.
+Do not read prior plans, builds, generated run output, or unrelated references as
+authority. Use relative shot paths. Run the deterministic gate before finishing and make
+bounded corrections to the mapping only.
 """
 
 
 VERIFIER_ADDENDUM = """\
 
-VERIFY MODE — audit the sparse publication contract in `{draft}`. Your charter is narrow:
-1. Omission hunt: every substantive brief clause has one exact citation and defensible owner.
-2. Confirm the layer DAG is acyclic, every root is materializable, dependencies name sealed
-   outcomes only when needed, and durable decisions are preserved exactly.
-3. Reject all premature design: ready stages, tickets, controls, recipes, techniques,
-   thresholds, claims, concrete contracts, acceptance fingerprints, or check manifests.
+VERIFY MODE — audit the compact ownership mapping whose rendered view is `{draft}`. The
+editable surface is `ownership_mapping.json` only; citations, exact text, and coverage
+are machine-generated, so do not re-check them. Your charter is what only an adversary
+can do:
+1. Owner defensibility: each deferred clause is owed by the layer that can actually
+   produce and answer for it; decisions carry only genuinely settled facts, preserved
+   verbatim from durable authority.
+2. DAG audit: the build order is causal, dependencies are real, reserved namespaces
+   partition the scene sensibly, and judge frames sit where each layer's work is
+   visible.
+3. Blockers: every question that prevents the first unit is raised; nothing invented.
 
-Do not measure reference frames, design evidence, research techniques, or spike mechanisms.
-Run the deterministic gate, make only bounded corrections, and write the superseding
-`plans/global.md` plus sparse machine artifacts.
+Do not measure reference frames, design evidence, research techniques, or spike
+mechanisms. Rewrite `ownership_mapping.json` as your audited version — byte-identical
+content if the audit found nothing — so the expansion regenerates the superseding
+artifacts, then run the deterministic gate.
 """
 
 
@@ -115,18 +107,21 @@ def _refs_block(shot) -> str:
     )
 
 
-def planner_user_prompt(shot) -> str:
+def planner_user_prompt(shot, registry_block: str) -> str:
     """Kickoff for a from-scratch (draft or single) planning pass."""
     brief_hash = hashlib.sha256((shot.folder / "brief.md").read_bytes()).hexdigest()
     return (
         f"Plan shot '{shot.id}'. Build target: {shot.frames} frames @ {shot.fps}fps "
         f"on {shot.engine}.\n\n"
-        f"Read `brief.md` first. {_refs_block(shot)}\n\n"
+        f"Read `brief.md` for context. {_refs_block(shot)}\n\n"
         f"This authored-input-only transaction contains no implicit prior plan or build. "
-        f"The exact staged brief SHA-256 for requirements citations is `{brief_hash}`.\n\n"
-        f"Register the whole brief for ownership, establish the sparse layer DAG and durable "
-        f"constraints, and write `plans/global.md` plus the eight sparse machine contracts. "
-        f"Do not design or write any work unit; the root layer materializes just in time."
+        f"Brief SHA-256 `{brief_hash}` — citations are machine-generated, never authored.\n\n"
+        f"Clause registry (resolve EVERY id exactly once in `ownership_mapping.json`):\n"
+        f"{registry_block}\n\n"
+        f"Write `ownership_mapping.json` only: the layer DAG, axes, one resolution per "
+        f"clause id, and genuine blockers. The harness expands it into every published "
+        f"artifact on each write. Do not design or write any work unit; the root layer "
+        f"materializes just in time."
     )
 
 
@@ -137,15 +132,12 @@ that are MEASUREMENTS against the artifacts on disk, not opinions. This pass is 
 close them, carry everything else forward unchanged, and write the superseding
 `plans/global.md`.
 
-MODE: PATCH_PLAN. Edit the existing artifacts directly. Do NOT delegate mechanical edits
-and do NOT regenerate an unchanged 1,000-line plan merely to alter a few records. Read the
-smallest spans that contain each finding, use Edit on those spans, and use Write only when
-creating a missing companion artifact. Before finishing, re-read every edited span and make
-sure it still honors the sparse publication contract: ownership, citations, and dependencies
-only — a repair must not smuggle in executable design the gate would reject as
-global preproduction.
-`{draft}` is an immutable snapshot and evidence source: NEVER edit it. Apply the minimal
-changes to the working `plans/global.md` and its existing machine-readable companions.
+MODE: PATCH_MAPPING. The only editable surface is `ownership_mapping.json`; every
+published artifact is machine-expanded from it on each write, so map each finding back
+to its mapping field — a wrong resolution kind, a wrong owner layer, a missing axis, a
+DAG edge — and Edit exactly that. Do NOT attempt to edit `plans/global.md` or the machine
+companions; those writes are denied and regenerate anyway.
+`{draft}` is an immutable snapshot and evidence source: NEVER edit it.
 When a finding is one instance of a repeated structural pattern, sweep every sibling
 instance before stopping. Then call the read-only `run_gate` tool; iterate the bounded
 gate→fix→gate loop in this same warm session until it is clean or the tool reports a
@@ -160,11 +152,9 @@ Three rules, because the cheapest way to satisfy a gate is to lie to it:
   leave the plan weaker than it was. The only finding that licenses removing a target is
   one that says the target is unreachable — there, removal IS the repair, because a layer
   aiming at an unmeasurable number spends its whole budget converging on nothing.
-- A dead citation usually means link rot, not a false claim. The measurement it points at
-  was real when it was written. Re-point it at a live path if the evidence still exists
-  (check `../*/` siblings and any archive), and if it does not, restate the measured value
-  inline with a note that the source is gone. Do not silently drop it: a number nobody can
-  re-derive is exactly what the gate exists to find.
+- A finding against a machine-generated field (citations, exact text, derived
+  ownership lists) means the MAPPING routed it wrongly, not that the mechanical record
+  needs hand-editing; fix the resolution or layer declaration it derives from.
 - If you believe a finding is WRONG, say so in §0 with the evidence, and leave the plan as
   it is. A gate that cannot be contradicted by evidence is a gate that encodes its own
   bugs into every plan. Overriding one and saying why is a legitimate outcome of this pass.
@@ -178,9 +168,10 @@ def repair_user_prompt(shot, draft_name: str, n: int) -> str:
     return (
         f"Repair the plan for shot '{shot.id}' ({shot.frames} frames @ {shot.fps}fps "
         f"on {shot.engine}). This is repair round {n}.\n\n"
-        f"Read `brief.md` and the current plan snapshot `{draft_name}`, then close the gate "
-        f"findings listed in your instructions. `{draft_name}` is immutable; patch the "
-        f"working `plans/global.md` and its companions directly with Edit. "
+        f"Read `brief.md`, the current plan snapshot `{draft_name}`, and the working "
+        f"`ownership_mapping.json`, then close the gate findings listed in your "
+        f"instructions by patching the mapping only — expansion regenerates everything "
+        f"else. `{draft_name}` is immutable. "
         f"Open §0 with one line per finding: fixed, or overridden with evidence."
     )
 
@@ -190,10 +181,11 @@ def verifier_user_prompt(shot, draft_name: str) -> str:
     return (
         f"Verify the draft plan for shot '{shot.id}' (build target: {shot.frames} "
         f"frames @ {shot.fps}fps on {shot.engine}).\n\n"
-        f"Read `brief.md` and the draft `{draft_name}` first. {_refs_block(shot)}\n\n"
-        f"Run VERIFY MODE per your instructions — hunt brief clauses the register missed, "
-        f"audit owners, dependencies, and durable decisions, and reject premature "
-        f"executable design — then write the superseding `plans/global.md`."
+        f"Read `brief.md`, the rendered draft `{draft_name}`, and the working "
+        f"`ownership_mapping.json` first. {_refs_block(shot)}\n\n"
+        f"Run VERIFY MODE per your instructions — audit owner defensibility, the DAG, "
+        f"durable decisions, and blockers — then rewrite `ownership_mapping.json` as the "
+        f"audited version so expansion regenerates the superseding artifacts."
     )
 
 

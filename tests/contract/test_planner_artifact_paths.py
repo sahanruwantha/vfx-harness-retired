@@ -5,17 +5,15 @@ from vfx_harness.evaluation.plan_gate import _check_coverage, _check_hierarchica
 from vfx_harness.observability import run_artifacts, transcript
 
 
-def test_planner_prompt_makes_machine_contract_location_unambiguous() -> None:
-    assert "shot root" in PLANNER_SYSTEM.lower()
-    assert "`plans/global.md`" in PLANNER_SYSTEM
-    for name in (
-        "layers.json",
-        "acceptance.json",
-        "checks.json",
-        "scene_checks.json",
-        "critic_axes.json",
-    ):
-        assert f"`{name}`" in PLANNER_SYSTEM
+def test_planner_prompt_makes_the_authoring_surface_unambiguous() -> None:
+    """The location ambiguity this contract guarded (nine hand-written artifacts
+    scattered between plans/ and the shot root) is structurally gone: the model authors
+    exactly one file and every published artifact is machine-expanded from it."""
+    assert "exactly ONE file: `ownership_mapping.json` at the shot root" in PLANNER_SYSTEM
+    assert "mechanically generates" in PLANNER_SYSTEM
+    assert "`plans/global.md`" in PLANNER_SYSTEM  # named as generated, not authored
+    assert "Never write those files yourself" in PLANNER_SYSTEM
+    assert "writes outside the mapping are denied" in PLANNER_SYSTEM.replace("\n", " ")
 
 
 def test_transcript_label_cannot_create_nested_paths(tmp_path, monkeypatch) -> None:

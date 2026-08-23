@@ -25,10 +25,16 @@ from vfx_harness.observability import run_artifacts
 
 
 def test_global_plan_defers_all_world_model_work_to_jit() -> None:
-    assert 'Every\n   `layers.json` row uses `execution: "jit_deferred"`' in PLANNER_SYSTEM
-    assert "A root layer has\n   empty `depends_on_layers`" in PLANNER_SYSTEM
-    assert "Keep `acceptance.json` empty" in PLANNER_SYSTEM
-    assert "candidate-sensitive evidence is authored after" in PLANNER_SYSTEM.lower()
+    """All-deferred publication, empty evidence documents, and derived ownership are now
+    properties of the mechanical expansion (proved gate-clean by construction in
+    test_plan_authoring); the prompt's remaining job is the judgment contract."""
+    flat = PLANNER_SYSTEM.replace("\n", " ")
+    assert "every layer `jit_deferred` with derived `owned_requirements`" in flat
+    assert (
+        "kinds, moments, thresholds, and techniques are chosen at the owning layer's"
+        in flat
+    )
+    assert "Ownership is coverage, not design" in flat
     assert "no reference measurement, image-check\ncalibration, recipe search" in PLANNER_SYSTEM
 
 

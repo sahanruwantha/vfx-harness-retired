@@ -71,6 +71,14 @@ live in the linked Harness Improvement Records.
   upstream outcomes, and image-check calibration is unavailable until a real candidate exists.
 - Added typed terminal causes for operator interruption, model-turn exhaustion, plan-gate stalls,
   plan-budget exhaustion, usage limits, and process errors in run status and summaries.
+- Put global planning on an authoring diet: the model writes one compact ownership/DAG
+  mapping and the harness mechanically generates clause ids, exact citations, the
+  requirements register, all-deferred schema-5 layers with derived `owned_requirements`,
+  routing axes, empty evidence documents, and a rendered `plans/global.md` on every
+  mapping write, with enumerated validation errors fed back warm; writes outside the
+  mapping are denied, the verifier audits the mapping inside the default 6-turn ceiling,
+  and expansion from a valid mapping passes the deterministic gate by construction on
+  heterogeneous fixture families.
 - Folded the SDK session-result subtype into the collected failure signal and widened the
   classifier to the SDK's raised "maximum number of turns" phrasing, so a real max-turns
   termination is labeled `max_turns_exhausted` immediately instead of burning retry sessions
