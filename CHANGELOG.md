@@ -41,6 +41,15 @@ live in the linked Harness Improvement Records.
 - Scoped global-plan recipe selection, spikes, and numeric check calibration to Layer 1 and
   cross-layer DAG facts; later-layer execution detail now waits for its JIT pass and upstream
   checkpoints instead of being simulated before the first build.
+- Completed the deferred-layer gate contract: ready-layer coverage rules skip `jit_deferred`
+  layers, promise ids carry a mandatory owning-layer prefix enforced by the loader, a promise
+  bound with the wrong obligation evidence kind gets one precise finding instead of a cascade,
+  and a required claim bound directly to bbox contracts at its judge frames satisfies
+  projected-composition context exactly as the remediation text always promised.
+- Bounded global-plan session economics: spikes now carry a session ceiling and one failed
+  retry per hypothesis (with a contract-kind reference on invalid rows), reference
+  fingerprints are computed once per run and reused across draft and verify, and
+  `VFXH_PLAN_MAX_TURNS` sets the hard per-session turn budget.
 - Made the subscription token (`CLAUDE_CODE_OAUTH_TOKEN`) the default Claude credential when
   both are configured, withholding `ANTHROPIC_API_KEY` from the SDK unless
   `VFXH_CREDENTIAL=api_key` selects it; preflight reports the applied selection.

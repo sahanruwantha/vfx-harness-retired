@@ -112,7 +112,7 @@ def _add_deferred_layer(root: Path) -> None:
             "required_outcomes": [{"kind": "scene_contract", "id": "final-lock"}],
             "reserved_roles": ["polish.*"],
             "promises": [{
-                "id": "JIT-polish-lock", "contract_kind": "frame_delta",
+                "id": "L2.JIT-polish-lock", "contract_kind": "frame_delta",
                 "moments": [239, 240], "requirement_ids": ["R-final-lock"],
             }],
         },
@@ -156,7 +156,7 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
         }],
         "image_contracts": [],
         "promise_bindings": [{
-            "promise_id": "JIT-polish-lock", "kind": "scene_contract",
+            "promise_id": "L2.JIT-polish-lock", "kind": "scene_contract",
             "contract_id": "polish-lock",
         }],
     })
@@ -205,7 +205,7 @@ def test_jit_materialization_fails_closed_on_unbound_promise(tmp_path: Path) -> 
     data["promise_bindings"] = []
     _write(payload, data)
 
-    with pytest.raises(ValueError, match="missing JIT-polish-lock"):
+    with pytest.raises(ValueError, match=r"missing L2\.JIT-polish-lock"):
         validate_materialization(
             bundle.root, payload, expected_bundle_hash=bundle.content_hash
         )
@@ -728,3 +728,100 @@ def test_acceptance_evidence_evaluates_post_grade_contracts(
     assert rows[0]["pass"] is True
     assert rows[0]["authoritative"] is True
     assert rows[0]["source"] == "image_contract"
+
+
+def test_bare_promise_ids_are_rejected_by_the_loader(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["layers"][1]["jit"]["promises"][0]["id"] = "JIT-P1"
+    _write(tmp_path / "layers.json", data)
+
+    with pytest.raises(ValueError, match="owning-layer prefix"):
+        load_layers_from_path(tmp_path / "layers.json")
+
+
+def test_deferred_layer_is_exempt_from_ready_coverage_rules(tmp_path: Path) -> None:
+    from vfx_harness.evaluation.plan_gate import _check_coverage
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+
+    findings, _ = _check_coverage(tmp_path)
+
+    assert not [f for f in findings if f.where == "layer 2"], (
+        "a jit_deferred layer deliberately has no executable checks before materialization"
+    )
+
+
+def test_promise_referenced_with_wrong_evidence_kind_is_one_precise_finding(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    obligations = json.loads((tmp_path / "obligations.json").read_text(encoding="utf-8"))
+    obligations["obligations"].append({
+        "id": "O-polish", "statement": "polish keeps the lock",
+        "requirement_ids": ["R-final-lock"], "owner": "2",
+        "due": {"kind": "before_layer", "layer": "2"},
+        "evidence": [{"kind": "scene_contract", "id": "L2.JIT-polish-lock"}],
+    })
+    _write(tmp_path / "obligations.json", obligations)
+
+    findings, _ = _check_meta_records(tmp_path)
+
+    wrong = [f for f in findings if "referenced with evidence kind" in f.what]
+    assert len(wrong) == 1 and wrong[0].blocking and wrong[0].where == "O-polish"
+    assert not [f for f in findings if "not consumed" in f.what], (
+        "the wrong-kind reference is the consumer; a second cascading finding hides the fix"
+    )
+
+
+def test_direct_required_bbox_claims_are_projected_composition_context(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.evaluation.plan_gate import _check_evidence_coherence
+
+    _candidate(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layer = data["layers"][0]
+    layer["evidence_domains"] = ["scene", "temporal", "projected_composition"]
+    unit = layer["stages"][0]
+    unit["mutates"]["roles"] = ["comp", "camera"]
+    unit["evaluation"]["claims"].append({
+        "id": "framing-claim", "proposition": "subject stays framed",
+        "axis": "final_lock", "property": "bbox_height",
+        "subject_roles": ["camera"], "subject_controls": ["hold"],
+        "moments": [239, 240], "kind": "atomic", "required": True,
+        "authority": "executable_required", "repair_owner": "lock",
+        "evidence": [
+            {"kind": "scene_contract", "id": "subject-bbox-f239"},
+            {"kind": "scene_contract", "id": "subject-bbox-f240"},
+        ],
+    })
+    _write(tmp_path / "layers.json", data)
+    checks = json.loads((tmp_path / "scene_checks.json").read_text(encoding="utf-8"))
+    for frame in (239, 240):
+        checks["contracts"].append({
+            "id": f"subject-bbox-f{frame}", "kind": "bbox_height", "owner_layer": "1",
+            "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
+            "axis": "final_lock", "roles": ["comp"], "frame": frame,
+            "op": "band", "lo": 0.4, "hi": 0.9,
+        })
+    _write(tmp_path / "scene_checks.json", checks)
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert not [f for f in findings if f.check == "composition-coverage"], (
+        "a required claim bound straight to bbox contracts at the judge frames is "
+        "executable projected context; composition_context is one valid spelling, not the only one"
+    )
+
+    stripped = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    stripped["layers"][0]["stages"][0]["evaluation"]["claims"] = [
+        claim
+        for claim in stripped["layers"][0]["stages"][0]["evaluation"]["claims"]
+        if claim["id"] != "framing-claim"
+    ]
+    _write(tmp_path / "layers.json", stripped)
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert [f for f in findings if f.check == "composition-coverage"]

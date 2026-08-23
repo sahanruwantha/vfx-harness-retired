@@ -554,6 +554,30 @@ No paid plan or Blender build was run for this code-only verification. Therefore
 not establish the cost/latency improvement or accept HIR-0011; the next evidence boundary is the
 current shot's first real Layer 1 producing unit and checkpoint.
 
+### Deferred-contract correction slice — 2026-08-23
+
+Fresh draft run `20260823T021919Z-8122f6` ($12.13, 133 turns, stopped before another verify
+model pass) authored the deferred representation correctly but hit 23 write-time blockers:
+5 false ready-layer coverage demands on `jit_deferred` layers, 16 cascading promise/obligation
+schema failures (bare promise ids collide in the gate's one flat map; the prompt example showed
+bare ids; obligations referenced promises with evidence kind `scene_contract`), and 2
+composition findings whose remediation text promised a direct bbox binding the code did not
+recognize. Ten of twelve draft spikes were blind `onset_order` schema discovery, and
+verification remeasured all ten references.
+
+Corrections in this slice: coverage exempts deferred layers; promise ids require their
+owning-layer prefix at the loader; a promise referenced with the wrong evidence kind is one
+precise finding that also counts as the consumer; a required claim bound straight to bbox
+contracts at its judge frames satisfies projected composition; the prompt carries a complete
+`jit_contract` obligation example; spikes have a session ceiling and one failed retry per
+hypothesis with a contract-kind reference on invalid rows; reference fingerprints are cached
+per run across draft/verify; and `VFXH_PLAN_MAX_TURNS` makes the session turn ceiling
+configuration rather than prose. Re-gating the retained 8122f6 workspace with only the two
+mechanical candidate patches a compliant planner now authors (prefixed ids, `jit_contract`
+kinds) reduces 23 blockers to 16 genuine draft defects in its own obligations — every false
+category is gone. Verification: `.venv/bin/ruff check src tests` clean;
+`.venv/bin/python -m pytest -q` 153 passed; `git diff --check` clean.
+
 ## Remaining limitations
 
 - The user-supplied $219.71/19-run baseline still needs canonical reproduction and an immutable

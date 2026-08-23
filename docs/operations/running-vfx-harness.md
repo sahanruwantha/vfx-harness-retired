@@ -17,8 +17,9 @@ refs/                    authored visual references
 Set credentials and model/runtime configuration in the repository `.env` or real environment.
 When both Claude credentials are configured, the harness selects the subscription token
 (`CLAUDE_CODE_OAUTH_TOKEN`) by default and withholds `ANTHROPIC_API_KEY` from the SDK; set
-`VFXH_CREDENTIAL=api_key` to bill API credits instead. Confirm Python dependencies and Blender
-before spending model budget:
+`VFXH_CREDENTIAL=api_key` to bill API credits instead. `VFXH_PLAN_MAX_TURNS` (default 100)
+is the hard turn ceiling for one global plan session; `vfx plan --max-turns` overrides it per
+invocation. Confirm Python dependencies and Blender before spending model budget:
 
 ```bash
 .venv/bin/vfx preflight --strict

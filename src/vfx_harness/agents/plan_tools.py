@@ -71,6 +71,52 @@ class _CheckBatchBudget:
         self.singles = 0
 
 
+class _SpikeBudget:
+    """A session spike ceiling plus one retry per failed hypothesis.
+
+    One draft spent ten of its twelve spikes discovering the onset_order row schema by
+    trial and error — malformed shapes, syntax errors, zero-valued probes — because
+    nothing bounded repeated attempts at the same idea. A hypothesis is the exact
+    contract rows a spike names (or "exploratory" without any); after the initial
+    attempt and one failed retry, further spikes for it are refused so the planner
+    records a planner_start with a runtime falsification path instead of paying Blender
+    to guess.
+    """
+
+    def __init__(self, session_cap: int = 8, attempts_per_hypothesis: int = 2):
+        self.session_cap = session_cap
+        self.attempts_per_hypothesis = attempts_per_hypothesis
+        self.total = 0
+        self.failures: dict[str, int] = {}
+
+    @staticmethod
+    def key(contracts: list[dict]) -> str:
+        ids = sorted(str(row.get("id") or row.get("kind") or "?") for row in contracts)
+        return ",".join(ids) or "exploratory"
+
+    def refusal(self, key: str) -> str | None:
+        if self.total >= self.session_cap:
+            return (
+                f"spike budget exhausted ({self.session_cap} Blender runs this session). "
+                "Stop probing: record the mechanism as a planner_start with a runtime "
+                "falsification contract and let the producing unit prove it in the real scene."
+            )
+        if self.failures.get(key, 0) >= self.attempts_per_hypothesis:
+            return (
+                f"this hypothesis already failed {self.attempts_per_hypothesis} spike "
+                "attempts. A third blind probe is not evidence — change the approach "
+                "(find_recipe, or a different contract kind), or record a planner_start "
+                "with a runtime falsification path and move on."
+            )
+        return None
+
+    def record(self, key: str, *, ran_blender: bool, failed: bool) -> None:
+        if ran_blender:
+            self.total += 1
+        if failed:
+            self.failures[key] = self.failures.get(key, 0) + 1
+
+
 def _metric_list() -> str:
     """The metric vocabulary, GENERATED from the registry.
 
@@ -413,6 +459,12 @@ def build_plan_tools(
     # the planner learn a metric/region; after that the batch tool is the only path until a
     # batch has run, at which point two more targeted follow-ups are available.
     check_budget = _CheckBatchBudget()
+    spike_budget = _SpikeBudget()
+    # Draft and verify share one run, so deterministic reference fingerprints are
+    # computed once per image content and reused across both sessions.
+    measure_cache_path = (
+        lab.parent if lab.parent.name == "plan-lab" else lab
+    ) / "measure_ref_cache.json"
     gate_calls = 0
 
     @tool(
@@ -526,13 +578,38 @@ def build_plan_tools(
     )
     async def measure_ref(args):
         try:
-            im = _load(str(_resolve(args["path"])))
+            source = _resolve(args["path"])
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        except Exception as e:
+            log(f"plan-lab ✗ measure {args['path']}: {str(e)[:120]}", 1)
+            return _text(f"measure failed: {e}", is_error=True)
+        try:
+            cache = json.loads(measure_cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+        if (hit := cache.get(digest)) is not None:
+            # Draft already measured this exact image; re-tokenizing the picture for a
+            # verify pass buys nothing deterministic. The numbers are the same numbers.
+            log(f"plan-lab measure {args['path']}: cached fingerprint reused", 1)
+            return _text(
+                f"{args['path']}\ncanonical fingerprint: "
+                f"{json.dumps(hit['fingerprint'], sort_keys=True)}\n"
+                "(reused from this run's earlier measurement — the image was already "
+                "shown then; Read the file only if you need to view it again)"
+            )
+        try:
+            im = _load(str(source))
         except Exception as e:
             log(f"plan-lab ✗ measure {args['path']}: {str(e)[:120]}", 1)
             return _text(f"measure failed: {e}", is_error=True)
         from vfx_harness.evidence.metrics import canonical_fingerprint
 
         fingerprint = canonical_fingerprint(im)
+        cache[digest] = {"path": str(args["path"]), "fingerprint": fingerprint}
+        measure_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        measure_cache_path.write_text(
+            json.dumps(cache, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+        )
         line = f"{args['path']}\ncanonical fingerprint: {json.dumps(fingerprint, sort_keys=True)}"
         log(f"plan-lab measure {args['path']}: {_stats(im).removeprefix('exposure: ')}", 1)
         # The image travels WITH its numbers. This tool used to return text only, so
@@ -735,12 +812,16 @@ def build_plan_tools(
         },
     )
     async def spike(args):
+        contracts = list(args.get("contracts") or [])
+        hypothesis = _SpikeBudget.key(contracts)
+        if (refusal := spike_budget.refusal(hypothesis)) is not None:
+            log(f"plan-lab ✗ spike refused ({hypothesis[:60]}): budget", 1)
+            return _text(refusal, is_error=True)
         n = next(spikes)
         py = lab / f"spike_{n:02d}.py"
         render_out = lab / f"spike_{n:02d}.png"
-        contracts = list(args.get("contracts") or [])
         if contracts:
-            from vfx_harness.evidence.scene_checks import validate_row
+            from vfx_harness.evidence.scene_checks import KIND_DEFINITIONS, validate_row
 
             invalid = [
                 f"{row.get('id', '<missing>')}: {error}"
@@ -748,9 +829,21 @@ def build_plan_tools(
                 if (error := validate_row(row))
             ]
             if invalid:
+                # A malformed row costs a failed attempt: blind schema discovery through
+                # repeated probes is exactly what the per-hypothesis budget bounds.
+                spike_budget.record(hypothesis, ran_blender=False, failed=True)
+                kinds = sorted({
+                    str(row.get("kind"))
+                    for row in contracts
+                    if row.get("kind") in KIND_DEFINITIONS
+                })
+                hint = "\n".join(
+                    f"  {kind}: {KIND_DEFINITIONS[kind]}" for kind in kinds
+                )
                 return _text(
                     "spike contracts are invalid — fix the exact rows before running Blender:\n"
-                    + "\n".join(f"- {item}" for item in invalid),
+                    + "\n".join(f"- {item}" for item in invalid)
+                    + (f"\nkind reference:\n{hint}" if hint else ""),
                     is_error=True,
                 )
         try:
@@ -765,6 +858,7 @@ def build_plan_tools(
                 contracts,
             )
         except subprocess.TimeoutExpired:
+            spike_budget.record(hypothesis, ran_blender=True, failed=True)
             log(f"plan-lab ✗ spike #{n} TIMEOUT → {py.name}", 1)
             return _text(
                 f"spike timed out — simplify the rig or raise timeout "
@@ -772,11 +866,17 @@ def build_plan_tools(
                 is_error=True,
             )
         except Exception as e:
+            spike_budget.record(hypothesis, ran_blender=True, failed=True)
             log(f"plan-lab ✗ spike #{n} launch failed: {str(e)[:120]}", 1)
             return _text(f"spike failed to launch: {e}", is_error=True)
         contract_failures = [
             item for item in res.get("contract_results", []) if item.get("pass") is not True
         ]
+        spike_budget.record(
+            hypothesis,
+            ran_blender=True,
+            failed=bool(res["rc"] != 0 or res["errors"] or contract_failures),
+        )
         status = (
             "ok" if res["rc"] == 0 and not res["errors"] and not contract_failures
             else "CONTRACT FAIL" if contract_failures and res["rc"] == 0 and not res["errors"]

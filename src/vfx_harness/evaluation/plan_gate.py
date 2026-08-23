@@ -423,6 +423,12 @@ def _check_coverage(folder: Path) -> tuple[list[Finding], dict]:
     out = []
     for lay in layers:
         lid = str(lay.get("id"))
+        if lay.get("execution") == "jit_deferred":
+            # A deferred layer deliberately has no executable checks yet; its contracts
+            # arrive through the JIT materialization gate, which requires every one of
+            # them to carry a producing claim. Demanding coverage here re-creates the
+            # pre-build overplanning this rule exists to prevent.
+            continue
         if runnable.get(lid, 0) == 0 and scene_runnable.get(lid, 0) == 0:
             n = sum(1 for c in specs if str(c.get("activates_at") or "") == lid)
             out.append(
@@ -1109,6 +1115,25 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                 covered = False
                 for unit in stages.values():
                     evaluation = unit.get("evaluation") or {}
+                    # A required claim bound straight to a bbox contract at this judge
+                    # frame IS executable projected context — the remediation text has
+                    # always said a direct binding is valid, so honor it rather than
+                    # demanding the composition_context restatement of the same fact.
+                    if any(
+                        isinstance(claim, dict)
+                        and claim.get("required")
+                        and frame in (claim.get("moments") or [])
+                        and any(
+                            isinstance(binding, dict)
+                            and binding.get("kind") == "scene_contract"
+                            and scene_by_id.get(str(binding.get("id")), {}).get("kind") in bbox_kinds
+                            and scene_by_id.get(str(binding.get("id")), {}).get("frame") == frame
+                            for binding in claim.get("evidence") or []
+                        )
+                        for claim in evaluation.get("claims") or []
+                    ):
+                        covered = True
+                        break
                     context = evaluation.get("composition_context") or {}
                     if frame not in (context.get("frames") or []):
                         continue
@@ -1844,6 +1869,19 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
     promise_consumers: dict[str, list[str]] = {}
     for record in obligations:
         for kind, evidence_id in record.evidence:
+            if kind in {"scene_contract", "image_contract"} and evidence_id in jit_promises:
+                # The reference is right, only the kind is wrong; count it as the consumer
+                # so the one precise finding fires instead of a cascade of two.
+                promise_consumers.setdefault(evidence_id, []).append(record.id)
+                findings.append(Finding(
+                    "requirement-closure",
+                    True,
+                    record.id,
+                    f"JIT promise {evidence_id} is referenced with evidence kind {kind!r}",
+                    'a deferred-layer debt binds through {"kind": "jit_contract", "id": "<promise-id>"}; '
+                    "scene/image contract kinds are reserved for materialized executable contracts",
+                ))
+                continue
             if kind != "jit_contract":
                 continue
             promise_consumers.setdefault(evidence_id, []).append(record.id)

@@ -121,8 +121,20 @@ WORKFLOW, in order:
    `stages: []`, and exactly this bounded placeholder (with shot-specific values):
    `jit: {depends_on_layers: ["1"], required_outcomes: [{kind: "scene_contract",
    id: "upstream-id"}], reserved_roles: ["semantic.role.*"], promises: [{id:
-   "JIT-P1", contract_kind: "frame_delta", moments: [35, 36], requirement_ids:
-   ["R7"]}]}`. A deferred row MUST NOT contain unit ids, plans, mutation controls,
+   "L2.JIT-P1", contract_kind: "frame_delta", moments: [35, 36], requirement_ids:
+   ["R7"]}]}`. Promise ids MUST carry their owning-layer prefix (`L<n>.`) — bare ids
+   like "JIT-P1" collide across layers and are rejected by the loader.
+   EVERY promise must then be consumed by exactly one typed obligation in
+   obligations.json, due before its layer, whose evidence kind is `jit_contract` — the
+   complete shape, verbatim apart from your values:
+   `{id: "O7", statement: "<the deferred brief promise>", requirement_ids: ["R7"],
+   owner: "2", due: {kind: "before_layer", layer: "2"},
+   evidence: [{"kind": "jit_contract", "id": "L2.JIT-P1"}]}`.
+   Do NOT write that evidence as kind `scene_contract` or `image_contract` — those kinds
+   name materialized executable contracts and will not resolve a promise. The
+   obligation's requirement_ids must be a subset of the promise's requirement_ids; the
+   brief clauses those requirements cite are then resolved by that obligation.
+   A deferred row MUST NOT contain unit ids, plans, mutation controls,
    claims, completion bindings, concrete scene/image contracts, recipe choices, starting
    values, calibrated thresholds, or reachability spikes. Do not select recipes for a
    deferred layer. Those are overplanning, not a

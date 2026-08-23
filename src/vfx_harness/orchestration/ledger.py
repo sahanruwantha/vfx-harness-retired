@@ -244,6 +244,13 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                 requirement_ids = tuple(str(item) for item in promise.get("requirement_ids") or ())
                 if not promise_id or promise_id in promise_ids:
                     raise ValueError(f"{at}.id must be non-empty and unique")
+                expected_prefix = f"L{str(g.get('id') or '').strip()}."
+                if not promise_id.startswith(expected_prefix):
+                    raise ValueError(
+                        f"{at}.id must carry its owning-layer prefix {expected_prefix!r} "
+                        f"(for example {expected_prefix}JIT-P1); bare promise ids collide "
+                        "across layers and cannot be referenced unambiguously"
+                    )
                 if not contract_kind:
                     raise ValueError(f"{at}.contract_kind must be non-empty")
                 if not moments or any(

@@ -108,6 +108,19 @@ def _text(name: str, default: str) -> str:
     return value
 
 
+def _int(name: str, default: int, *, minimum: int = 1) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if parsed < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    return parsed
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Typed, non-secret runtime settings.
@@ -129,6 +142,10 @@ class Settings:
     asset_model: str = DEFAULT_EXECUTION_MODEL
     distiller_model: str = DEFAULT_EXECUTION_MODEL
     critic_model: str = DEFAULT_CRITIC_MODEL
+    # Hard ceiling for one global plan session (draft, verify, or repair). A runaway
+    # pass ends at this boundary instead of grinding against unresolvable findings;
+    # `vfx plan --max-turns` still overrides per invocation.
+    plan_max_turns: int = 100
 
     @classmethod
     def from_environment(cls, *, load_dotenv_file: bool = True) -> Settings:
@@ -149,4 +166,5 @@ class Settings:
             asset_model=_text("VFXH_ASSET_MODEL", execution_model),
             distiller_model=_text("VFXH_DISTILLER_MODEL", execution_model),
             critic_model=_text("VFXH_CRITIC_MODEL", DEFAULT_CRITIC_MODEL),
+            plan_max_turns=_int("VFXH_PLAN_MAX_TURNS", 100),
         )

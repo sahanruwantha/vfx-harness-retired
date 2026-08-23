@@ -864,14 +864,14 @@ def main() -> None:
                     unit_id=args.unit,
                     model=args.model,
                     blender=args.blender,
-                    max_turns=args.max_turns or 24,
+                    max_turns=args.max_turns or max(24, settings.plan_max_turns // 4),
                 )
             )
         elif args.single:
             plan_path = anyio.run(
                 lambda: generate_plan(
                     args.folder, model=args.model, blender=args.blender,
-                    max_turns=args.max_turns or 100, tag=args.tag
+                    max_turns=args.max_turns or settings.plan_max_turns, tag=args.tag
                 )
             )
         elif args.until_clean:
@@ -881,7 +881,7 @@ def main() -> None:
                     draft_model=args.draft_model,
                     verify_model=args.verify_model,
                     blender=args.blender,
-                    max_turns=args.max_turns or 100,
+                    max_turns=args.max_turns or settings.plan_max_turns,
                     tag=args.tag,
                     verify_only=args.verify_only,
                     max_rounds=args.max_rounds,
@@ -895,7 +895,7 @@ def main() -> None:
                     draft_model=args.draft_model,
                     verify_model=args.verify_model,
                     blender=args.blender,
-                    max_turns=args.max_turns or 100,
+                    max_turns=args.max_turns or settings.plan_max_turns,
                     tag=args.tag,
                     verify_only=args.verify_only,
                 )
