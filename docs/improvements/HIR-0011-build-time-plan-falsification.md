@@ -565,18 +565,59 @@ composition findings whose remediation text promised a direct bbox binding the c
 recognize. Ten of twelve draft spikes were blind `onset_order` schema discovery, and
 verification remeasured all ten references.
 
-Corrections in this slice: coverage exempts deferred layers; promise ids require their
-owning-layer prefix at the loader; a promise referenced with the wrong evidence kind is one
-precise finding that also counts as the consumer; a required claim bound straight to bbox
-contracts at its judge frames satisfies projected composition; the prompt carries a complete
-`jit_contract` obligation example; spikes have a session ceiling and one failed retry per
-hypothesis with a contract-kind reference on invalid rows; reference fingerprints are cached
-per run across draft/verify; and `VFXH_PLAN_MAX_TURNS` makes the session turn ceiling
-configuration rather than prose. Re-gating the retained 8122f6 workspace with only the two
-mechanical candidate patches a compliant planner now authors (prefixed ids, `jit_contract`
-kinds) reduces 23 blockers to 16 genuine draft defects in its own obligations — every false
-category is gone. Verification: `.venv/bin/ruff check src tests` clean;
-`.venv/bin/python -m pytest -q` 153 passed; `git diff --check` clean.
+Corrections in this slice: global executable checks use one ready-layer applicability policy;
+promise ids require their owning-layer prefix; each deferred requirement resolves directly and
+symmetrically to exactly one promise through `resolution.kind: jit_promise`; and obligations can no
+longer provide a second JIT encoding. Materialization atomically changes those requirement records
+to concrete contract resolutions in the selected overlay. A required claim bound straight to bbox
+contracts at its judge frames satisfies projected composition.
+
+Economic boundaries are executable too: spike identity ignores planner-controlled contract ids,
+the session allows four Blender spikes and one failed retry per semantic hypothesis, repeated gate
+signatures terminate the in-session edit loop, deterministic fingerprints are cached across
+draft/verify, and the default global session ceiling is 48 turns.
+
+The retained 8122f6 workspace was migrated mechanically—prefixing ids, folding its legacy
+obligation requirement sets into their promises, choosing one atomic promise owner per requirement,
+and removing the duplicate obligation hop. The complete current gate reports `CLEAN` with all
+128 fingerprints and both citations reproducing. No model or Blender process was invoked for that
+replay.
+
+Verification after this correction: `.venv/bin/ruff check src tests` clean;
+`.venv/bin/python -m pytest -q` 160 passed; the standalone deterministic integration harness
+reported `ALL PASS (0 failed)`; `.venv/bin/vfx --help` and `git diff --check` passed.
+
+### Monitored fresh-run follow-up — 2026-08-23
+
+Fresh run `20260823T041822Z-8173dc` confirmed the 48-turn ceiling and bounded image-check
+calibration, but was stopped after 20 minutes before its first gate. The planner changed concrete
+promise kinds (`frame_delta`, `radial_distance_trend`, `transform_return_delta`) into generic
+evidence categories (`scene_contract`, `image_contract`) to satisfy a loader that required only a
+non-empty string. Such promises can never materialize because scene rows carry concrete `kind`
+values and image rows carry concrete `metric` values. The loader now accepts only registered scene
+kinds or image metrics, materialization compares the appropriate concrete field, and the prompt
+states the distinction from `required_outcomes.kind`. The stopped run made no Blender spike and
+produced no selected authority; interruption left only failed run-owned scratch evidence.
+
+### Spike eligibility boundary — 2026-08-23
+
+Fresh run `20260823T050739Z-7781dd` measured references correctly, then built a proxy Blender
+iris scene to "prove" the approved 24-light count and an unlit lighting adversary — evidence the
+producing unit owns against the cumulative scene. The restriction existed only in prompt prose,
+so the tool accepted the request; the run was stopped with no plan published and no gate run.
+
+Eligibility is now enforced at the spike tool boundary, deterministically and before any budget
+is spent: contracts carrying a `decision_id` (adopted approved values), contracts named in any
+recorded decision's falsification path (workspace assumptions plus staged durable resolutions),
+self-fulfilling construction facts (existence/count/assignment kinds and rendered-response
+kinds, which a proxy scene makes true by building them), and contracts re-measuring a
+resolution's adopted `values.contract` shape are refused with the producing-unit alternative
+stated. A script that creates lights and requests a render is refused as a proxy
+lighting/visibility read. Spike budget identity already keys the semantic hypothesis rather
+than the row id, so renaming cannot buy another attempt. Mechanism-behavior calibration
+(geometry, radial clearance, temporal ordering) remains eligible. Verification:
+`.venv/bin/ruff check src tests` clean; `.venv/bin/python -m pytest -q` 163 passed;
+`git diff --check` clean.
 
 ## Remaining limitations
 

@@ -586,7 +586,7 @@ def selected_artifact_path(shot_folder: str | Path, name: str) -> Path:
     """
     shot = Path(shot_folder).expanduser().resolve()
     if (shot / POINTER).exists():
-        if name in {"layers.json", "scene_checks.json", "checks.json"}:
+        if name in {"layers.json", "scene_checks.json", "checks.json", "requirements.json"}:
             from vfx_harness.orchestration.jit_materialization import selected_view_artifact
 
             bundle = resolve_current(shot)
@@ -614,7 +614,7 @@ def prepare_consumer_view(layout: RunLayout) -> Path:
         for name in bundle.artifacts:
             source = (
                 selected_artifact_path(layout.shot, name)
-                if name in {"layers.json", "scene_checks.json", "checks.json"}
+                if name in {"layers.json", "scene_checks.json", "checks.json", "requirements.json"}
                 else bundle.root / name
             )
             target = temp / "plans" / "global.md" if name == "global.md" else temp / name

@@ -25,7 +25,13 @@ MATERIALIZATION_SCHEMA = "vfx-harness.jit-layer-materialization/v1"
 VIEW_SCHEMA = "vfx-harness.jit-layer-view/v1"
 STATE_DIR = Path("state/jit-layers")
 CURRENT = STATE_DIR / "current.json"
-OVERLAY_ARTIFACTS = ("layers.json", "scene_checks.json", "checks.json")
+OVERLAY_ARTIFACTS = (
+    "layers.json",
+    "scene_checks.json",
+    "checks.json",
+    "requirements.json",
+    "acceptance.json",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -97,7 +103,9 @@ class MaterializedLayer:
     layer_row: dict[str, Any]
     scene_contracts: tuple[dict[str, Any], ...]
     image_contracts: tuple[dict[str, Any], ...]
-    promise_bindings: dict[str, tuple[str, str]]
+    requirement_bindings: dict[str, tuple[str, ...]]
+    requirement_decisions: dict[str, dict[str, str]]
+    acceptance: tuple[dict[str, Any], ...]
 
 
 def validate_materialization(
@@ -204,46 +212,82 @@ def validate_materialization(
             "materialized contracts lack required producing claims: " + ", ".join(missing_claims)
         )
 
-    raw_bindings = payload.get("promise_bindings")
+    raw_bindings = payload.get("requirement_bindings")
     if not isinstance(raw_bindings, list):
-        raise ValueError("materialization.promise_bindings must be a list")
-    promise_bindings: dict[str, tuple[str, str]] = {}
+        raise ValueError("materialization.requirement_bindings must be a list")
+    requirement_bindings: dict[str, tuple[str, ...]] = {}
+    requirement_decisions: dict[str, dict[str, str]] = {}
     for index, binding in enumerate(raw_bindings):
         if not isinstance(binding, dict):
-            raise ValueError(f"promise_bindings[{index}] must be an object")
-        promise_id = str(binding.get("promise_id") or "")
-        contract_id = str(binding.get("contract_id") or "")
-        kind = str(binding.get("kind") or "")
-        if not promise_id or promise_id in promise_bindings:
-            raise ValueError(f"promise_bindings[{index}].promise_id must be unique")
-        if all_contracts.get(contract_id, (None,))[0] != kind:
-            raise ValueError(f"promise {promise_id} names an absent or wrong-kind contract")
-        promise_bindings[promise_id] = (kind, contract_id)
+            raise ValueError(f"requirement_bindings[{index}] must be an object")
+        requirement_id = str(binding.get("requirement_id") or "")
+        if not requirement_id or requirement_id in requirement_bindings or requirement_id in requirement_decisions:
+            raise ValueError(f"requirement_bindings[{index}].requirement_id must be unique")
+        contract_ids = tuple(map(str, binding.get("contract_ids") or []))
+        decision = binding.get("decision")
+        if contract_ids and decision is not None:
+            raise ValueError(f"requirement {requirement_id} cannot bind contracts and a decision")
+        if contract_ids:
+            if len(set(contract_ids)) != len(contract_ids):
+                raise ValueError(f"requirement {requirement_id} contains duplicate contract ids")
+            missing = sorted(set(contract_ids) - set(all_contracts))
+            if missing:
+                raise ValueError(
+                    f"requirement {requirement_id} names absent contracts: {', '.join(missing)}"
+                )
+            requirement_bindings[requirement_id] = contract_ids
+        elif isinstance(decision, dict):
+            statement = str(decision.get("statement") or "").strip()
+            strength = str(decision.get("decision_strength") or "").strip()
+            if not statement or strength not in {
+                "hard_constraint", "approved_start", "planner_start", "confirmed_outcome"
+            }:
+                raise ValueError(
+                    f"requirement {requirement_id} decision must have statement and decision_strength"
+                )
+            requirement_decisions[requirement_id] = {
+                "statement": statement,
+                "decision_strength": strength,
+            }
+        else:
+            raise ValueError(
+                f"requirement {requirement_id} must bind contracts or an explicit typed decision"
+            )
 
-    promises = {str(row.get("id")): row for row in jit.get("promises") or []}
-    missing_promises = sorted(set(promises) - set(promise_bindings))
-    extra_promises = sorted(set(promise_bindings) - set(promises))
-    if missing_promises or extra_promises:
+    owned = set(map(str, jit.get("owned_requirements") or []))
+    bound = set(requirement_bindings) | set(requirement_decisions)
+    missing_requirements = sorted(owned - bound)
+    extra_requirements = sorted(bound - owned)
+    if missing_requirements or extra_requirements:
         raise ValueError(
-            "JIT promise bindings are incomplete"
-            + (f"; missing {', '.join(missing_promises)}" if missing_promises else "")
-            + (f"; unknown {', '.join(extra_promises)}" if extra_promises else "")
+            "JIT owned-requirement closure is incomplete"
+            + (f"; missing {', '.join(missing_requirements)}" if missing_requirements else "")
+            + (f"; unknown {', '.join(extra_requirements)}" if extra_requirements else "")
         )
-    for promise_id, promise in promises.items():
-        _kind, contract_id = promise_bindings[promise_id]
-        _contract_kind, row = all_contracts[contract_id]
-        if row.get("kind") != promise.get("contract_kind"):
-            raise ValueError(f"promise {promise_id} materialized with wrong contract kind")
-        row_moments = tuple(row.get("frames") or ([row.get("frame")] if row.get("frame") else []))
-        if row_moments != tuple(promise.get("moments") or []):
-            raise ValueError(f"promise {promise_id} materialized at wrong moments")
+
+    acceptance = payload.get("acceptance", [])
+    if not isinstance(acceptance, list) or any(not isinstance(row, dict) for row in acceptance):
+        raise ValueError("materialization.acceptance must be a list of objects")
+    judge_frames = {frame for frame, _ref in layer.judges}
+    bad_acceptance = sorted(
+        str(row.get("id") or "<missing>")
+        for row in acceptance
+        if row.get("frame") not in judge_frames
+    )
+    if bad_acceptance:
+        raise ValueError(
+            "materialized acceptance rows must use this layer's judge frames: "
+            + ", ".join(bad_acceptance)
+        )
 
     return MaterializedLayer(
         layer,
         layer_row,
         tuple(scene_rows),
         tuple(image_rows),
-        promise_bindings,
+        requirement_bindings,
+        requirement_decisions,
+        tuple(acceptance),
     )
 
 
@@ -292,6 +336,12 @@ def publish_materialization(
     base_checks = selected_view_artifact(shot, "checks.json", bundle.content_hash) or artifact_path(
         shot, "checks.json"
     )
+    base_requirements = selected_view_artifact(
+        shot, "requirements.json", bundle.content_hash
+    ) or artifact_path(shot, "requirements.json")
+    base_acceptance = selected_view_artifact(
+        shot, "acceptance.json", bundle.content_hash
+    ) or artifact_path(shot, "acceptance.json")
     materialized = validate_materialization(
         bundle.root,
         materialization_path,
@@ -314,12 +364,55 @@ def publish_materialization(
         *_rows(checks_doc, "checks", "checks.json"),
         *materialized.image_contracts,
     ]
+    requirements_doc = _document(base_requirements)
+    requirement_rows = _rows(requirements_doc, "requirements", "requirements.json")
+    for row in requirement_rows:
+        requirement_id = str(row.get("id") or "")
+        contract_ids = materialized.requirement_bindings.get(requirement_id)
+        decision = materialized.requirement_decisions.get(requirement_id)
+        if not contract_ids and not decision:
+            continue
+        resolution = row.get("resolution") or {}
+        if (
+            resolution.get("kind") != "deferred_owner"
+            or str(resolution.get("owner_layer") or "") != layer_id
+        ):
+            raise ValueError(
+                f"requirement {requirement_id} is not owned by materialized layer {layer_id}"
+            )
+        if contract_ids:
+            row["resolution"] = {"kind": "contract", "ids": sorted(set(contract_ids))}
+        else:
+            row["resolution"] = {
+                "kind": "decision",
+                "ids": [],
+                "decision": decision["statement"],
+                "decision_strength": decision["decision_strength"],
+            }
+    acceptance_doc = json.loads(base_acceptance.read_text(encoding="utf-8"))
+    if not isinstance(acceptance_doc, list):
+        raise ValueError("acceptance.json must contain a list")
+    acceptance_ids = {str(row.get("id")) for row in acceptance_doc if isinstance(row, dict)}
+    duplicate_acceptance = sorted(
+        str(row.get("id")) for row in materialized.acceptance if str(row.get("id")) in acceptance_ids
+    )
+    if duplicate_acceptance:
+        raise ValueError("materialized acceptance ids already exist: " + ", ".join(duplicate_acceptance))
+    acceptance_doc.extend(materialized.acceptance)
     digest_payload = json.dumps(
         {
             "bundle": bundle.content_hash,
+            "base_artifacts": {
+                "layers.json": _sha256(base_layers),
+                "scene_checks.json": _sha256(base_scene),
+                "checks.json": _sha256(base_checks),
+                "requirements.json": _sha256(base_requirements),
+                "acceptance.json": _sha256(base_acceptance),
+            },
             "layer": materialized.layer_row,
             "scene": materialized.scene_contracts,
             "image": materialized.image_contracts,
+            "acceptance": materialized.acceptance,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -331,6 +424,8 @@ def publish_materialization(
         ("layers.json", layers_doc),
         ("scene_checks.json", scene_doc),
         ("checks.json", checks_doc),
+        ("requirements.json", requirements_doc),
+        ("acceptance.json", acceptance_doc),
     ):
         atomic_write(view / name, json.dumps(document, indent=2, sort_keys=True) + "\n")
     pointer = {

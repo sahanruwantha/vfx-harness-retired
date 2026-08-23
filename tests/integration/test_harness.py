@@ -1311,11 +1311,11 @@ def main():
     from vfx_harness.agents import planner as _pl
     from vfx_harness.agents.prompts import planner_user_prompt as _pup
 
-    _blocks = _pl._kickoff_blocks(_pup(shot), shot)
+    _blocks = _pl._kickoff_blocks(_pup(shot), shot, refs=())
     _imgs = [b for b in _blocks if b["type"] == "image"]
     check(
-        "every reference still is attached to the kickoff",
-        len(_imgs) == len(shot.refs),
+        "global kickoff defers reference payloads until a ready unit needs them",
+        len(_imgs) == 0,
         f"{len(_imgs)} images for {len(shot.refs)} refs",
     )
     check(
@@ -1359,11 +1359,11 @@ def main():
     from vfx_harness.agents import planner as _pl
     from vfx_harness.agents.prompts import planner_user_prompt as _pup
 
-    _blocks = _pl._kickoff_blocks(_pup(shot), shot)
+    _blocks = _pl._kickoff_blocks(_pup(shot), shot, refs=())
     _imgs = [b for b in _blocks if b["type"] == "image"]
     check(
-        "every reference still is attached to the kickoff",
-        len(_imgs) == len(shot.refs),
+        "global kickoff defers reference payloads until a ready unit needs them",
+        len(_imgs) == 0,
         f"{len(_imgs)} images for {len(shot.refs)} refs",
     )
     check(

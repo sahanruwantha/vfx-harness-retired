@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from vfx_harness.agents.plan_tools import _SpikeBudget
@@ -51,11 +53,22 @@ def test_spike_budget_session_cap_refuses_every_hypothesis() -> None:
     assert refusal is not None and "budget exhausted" in refusal
 
 
+def test_spike_budget_identity_cannot_be_evaded_by_renaming_contracts() -> None:
+    first = {"id": "probe-one", "kind": "onset_order", "frames": [1, 36],
+             "roles": ["iris_blade"]}
+    renamed = {**first, "id": "probe-two"}
+
+    assert _SpikeBudget.key([first]) == _SpikeBudget.key([renamed])
+
+
 def test_plan_max_turns_setting_parses_and_rejects_nonsense(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("VFXH_PLAN_MAX_TURNS", raising=False)
-    assert Settings.from_environment(load_dotenv_file=False).plan_max_turns == 100
+    monkeypatch.delenv("VFXH_PLAN_VERIFY_MAX_TURNS", raising=False)
+    settings = Settings.from_environment(load_dotenv_file=False)
+    assert settings.plan_max_turns == 24
+    assert settings.plan_verify_max_turns == 12
 
     monkeypatch.setenv("VFXH_PLAN_MAX_TURNS", "60")
     assert Settings.from_environment(load_dotenv_file=False).plan_max_turns == 60
@@ -63,3 +76,81 @@ def test_plan_max_turns_setting_parses_and_rejects_nonsense(
     monkeypatch.setenv("VFXH_PLAN_MAX_TURNS", "0")
     with pytest.raises(ValueError, match="VFXH_PLAN_MAX_TURNS"):
         Settings.from_environment(load_dotenv_file=False)
+
+
+def test_reference_measurement_scope_follows_ready_units(tmp_path) -> None:
+    from vfx_harness.agents.plan_tools import _ready_measure_refs
+
+    assert _ready_measure_refs(tmp_path) is None
+    (tmp_path / "layers.json").write_text(json.dumps({
+        "layers": [
+            {"id": "1", "execution": "ready", "judge": [{"frame": 1, "ref": "refs/a.png"}]},
+            {"id": "2", "execution": "jit_deferred", "judge": [{"frame": 9, "ref": "refs/z.png"}]},
+        ]
+    }), encoding="utf-8")
+
+    assert _ready_measure_refs(tmp_path) == {"refs/a.png"}
+
+
+def test_spike_refuses_adopted_decision_and_falsification_hypotheses(tmp_path) -> None:
+    from vfx_harness.agents.plan_tools import _spike_ineligibility
+
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "plan-resolutions.jsonl").write_text(
+        '{"id": "A2", "values": {"contract": {"kind": "keyframe_schedule", '
+        '"roles": ["cam_rig"], "samples": []}}, '
+        '"falsification": {"contract_ids": ["SC-L1-16-housing-bbox-height-f36"]}}\n',
+        encoding="utf-8",
+    )
+
+    adopted = _spike_ineligibility(
+        "", None, [{"id": "x", "kind": "object_property", "decision_id": "A5"}], tmp_path
+    )
+    assert adopted is not None and "adopts decision" in adopted
+
+    falsification = _spike_ineligibility(
+        "", None,
+        [{"id": "SC-L1-16-housing-bbox-height-f36", "kind": "bbox_height", "frame": 36}],
+        tmp_path,
+    )
+    assert falsification is not None and "falsification path" in falsification
+
+    revalue = _spike_ineligibility(
+        "", None,
+        [{"id": "probe", "kind": "keyframe_schedule", "roles": ["cam_rig"], "samples": []}],
+        tmp_path,
+    )
+    assert revalue is not None and "re-measures decision A2" in revalue
+
+
+def test_spike_refuses_self_fulfilling_and_lighting_hypotheses(tmp_path) -> None:
+    from vfx_harness.agents.plan_tools import _spike_ineligibility
+
+    count = _spike_ineligibility(
+        "", None, [{"id": "rim-count", "kind": "object_count", "roles": ["rim.*"]}], tmp_path
+    )
+    assert count is not None and "self-fulfilling" in count
+
+    lit = _spike_ineligibility(
+        "import bpy\nbpy.ops.object.light_add(type='AREA')\n", 36, [], tmp_path
+    )
+    assert lit is not None and "lighting/visibility" in lit
+
+    # A light-free mechanism probe with a render stays eligible, as does a light-touching
+    # script that never asks for a render (geometry printout only).
+    assert _spike_ineligibility("import bpy\nprint('geom')\n", 36, [], tmp_path) is None
+    assert _spike_ineligibility(
+        "import bpy\nbpy.ops.object.light_add(type='AREA')\nprint('x')\n", None, [], tmp_path
+    ) is None
+
+
+def test_spike_mechanism_calibration_stays_eligible(tmp_path) -> None:
+    from vfx_harness.agents.plan_tools import _spike_ineligibility
+
+    assert _spike_ineligibility(
+        "import bpy\n", None,
+        [{"id": "blade-arc", "kind": "radial_inward_fraction", "frame": 36,
+          "roles": ["iris_blade"], "op": "max", "hi": 0.3}],
+        tmp_path,
+    ) is None

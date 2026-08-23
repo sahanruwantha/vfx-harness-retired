@@ -19,14 +19,13 @@ OBLIGATIONS_SCHEMA = "vfx-harness.obligations/v1"
 ASSUMPTIONS_SCHEMA = "vfx-harness.assumptions/v1"
 RESOLUTIONS_SCHEMA = "vfx-harness.plan-resolutions/v1"
 
-RESOLUTION_KINDS = {"contract", "obligation", "decision"}
+RESOLUTION_KINDS = {"contract", "obligation", "deferred_owner", "decision"}
 DUE_KINDS = {"before_unit", "unit_completion", "before_layer", "before_acceptance"}
 EVIDENCE_KINDS = {
     "scene_contract",
     "image_contract",
     "human_decision",
     "replay",
-    "jit_contract",
 }
 DECISION_STRENGTHS = {
     "hard_constraint",
@@ -172,6 +171,8 @@ class Requirement:
     resolution_kind: str
     resolution_ids: tuple[str, ...]
     decision: str | None = None
+    owner_layer: str | None = None
+    due: DueGate | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,16 +266,33 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
         if not isinstance(resolution, dict) or resolution.get("kind") not in RESOLUTION_KINDS:
             raise ValueError(f"{where}.resolution.kind must be one of {sorted(RESOLUTION_KINDS)}")
         kind = str(resolution["kind"])
-        ids = _ids(resolution.get("ids", []), f"{where}.resolution.ids", allow_empty=kind == "decision")
+        ids = _ids(
+            resolution.get("ids", []),
+            f"{where}.resolution.ids",
+            allow_empty=kind in {"decision", "deferred_owner"},
+        )
         decision = resolution.get("decision")
+        owner_layer = None
+        due = None
         if kind == "decision":
             decision = _text(decision, f"{where}.resolution.decision")
             if ids:
                 raise ValueError(f"{where}.resolution decision must not carry ids")
+        elif kind == "deferred_owner":
+            if ids:
+                raise ValueError(f"{where}.resolution deferred_owner must not carry ids")
+            if decision is not None:
+                raise ValueError(f"{where}.resolution.deferred_owner must omit decision")
+            owner_layer = _text(resolution.get("owner_layer"), f"{where}.resolution.owner_layer")
+            due = DueGate.parse(resolution.get("due"), f"{where}.resolution.due")
+            if due.kind != "before_layer" or due.layer != owner_layer:
+                raise ValueError(
+                    f"{where}.resolution.due must be before_layer for owner_layer {owner_layer}"
+                )
         elif decision is not None:
             raise ValueError(f"{where}.resolution.{kind} must omit decision")
         out.append(Requirement(rid, _text(row.get("statement"), f"{where}.statement"), cited_hash,
-                               start, end, kind, ids, decision))
+                               start, end, kind, ids, decision, owner_layer, due))
     if not out:
         raise ValueError("requirements.json.requirements must not be empty")
     return tuple(out)

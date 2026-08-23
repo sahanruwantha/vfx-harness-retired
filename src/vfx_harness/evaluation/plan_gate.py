@@ -90,6 +90,22 @@ _SPIKE = re.compile(r"\bspike[ _#]{0,2}(\d+)\b", re.IGNORECASE)
 _SPIKE_EXT = ("out", "py", "png")
 
 
+def _global_executable_checks_apply(layer: object) -> bool:
+    """Whether global authority contains executable detail for this layer.
+
+    This is the single phase boundary for gate sections that inspect units, claims,
+    composition contexts, or concrete contracts. Structural checks still inspect every
+    layer; executable checks inspect only ``ready`` rows and the later JIT gate validates
+    the materialized replacement.
+    """
+    execution = (
+        layer.get("execution", "ready")
+        if isinstance(layer, dict)
+        else getattr(layer, "execution", "ready")
+    )
+    return execution == "ready"
+
+
 # `[known ✓spiked — spike_04/spike_05, verified]` and friends.
 _TICKET = re.compile(r"^\*\*(G\d+\S*·\S*|[A-Z]\d+\S*)\s*·\s*(.+?)\*\*\s*(\[[^\]]*\])?", re.M)
 _URL = re.compile(r"https?://[^\s)`\]]+")
@@ -423,7 +439,7 @@ def _check_coverage(folder: Path) -> tuple[list[Finding], dict]:
     out = []
     for lay in layers:
         lid = str(lay.get("id"))
-        if lay.get("execution") == "jit_deferred":
+        if not _global_executable_checks_apply(lay):
             # A deferred layer deliberately has no executable checks yet; its contracts
             # arrive through the JIT materialization gate, which requires every one of
             # them to carry a producing claim. Demanding coverage here re-creates the
@@ -768,6 +784,12 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
         }
         for lay in layers
     }
+    published_frames = {
+        frame
+        for lay in layers
+        if _global_executable_checks_apply(lay)
+        for frame in layer_frames.get(str(lay.get("id")), set())
+    }
     owned: set[str] = set()
     for lay in layers:
         lid = lay.get("id", "?")
@@ -819,6 +841,15 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
             )
         )
     for m in accept:
+        if m.get("frame") not in published_frames:
+            out.append(Finding(
+                "deferred-overplanning",
+                True,
+                f"acceptance {m.get('id')}",
+                f"fingerprints frame {m.get('frame')} before its producing layer materializes",
+                "global acceptance.json may contain only judge frames of ready published units; "
+                "add later moments through the materialized acceptance overlay",
+            ))
         ref = m.get("ref")
         if ref and not (folder / ref).is_file():
             out.append(
@@ -1067,7 +1098,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             if isinstance(row, dict) and isinstance(row.get("frame"), int)
         ]
         domains = layer.get("evidence_domains")
-        if layer.get("execution") == "jit_deferred":
+        if not _global_executable_checks_apply(layer):
             # Deferred layers reserve authority but deliberately have no executable units,
             # claims, composition contexts, or controls until their JIT materialization gate.
             # Their structural shape is validated by the typed layer loader and meta gate.
@@ -1431,12 +1462,12 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
         for layer in layers
         if isinstance(layer, dict) and layer.get("execution") == "jit_deferred"
     }
-    jit_promises = {
-        str(promise.get("id")): (layer_id, promise)
-        for layer_id, layer in deferred_layers.items()
-        for promise in (layer.get("jit") or {}).get("promises") or []
-        if isinstance(promise, dict) and promise.get("id")
-    }
+    requirement_owners: dict[str, list[str]] = {}
+    for layer_id, layer in deferred_layers.items():
+        for requirement_id in map(
+            str, (layer.get("jit") or {}).get("owned_requirements") or []
+        ):
+            requirement_owners.setdefault(requirement_id, []).append(layer_id)
     unit_dependencies = {
         (str(layer.get("id")), str(unit.get("id"))): set(map(str, unit.get("depends_on") or []))
         for layer in layers
@@ -1641,21 +1672,12 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                         )
         return resolved
 
-    def resolved_jit_promises(start: int, end: int) -> list[dict]:
-        resolved: list[dict] = []
-        for requirement in requirements:
-            if requirement.line_end < start or requirement.line_start > end:
-                continue
-            if requirement.resolution_kind != "obligation":
-                continue
-            for obligation_id in requirement.resolution_ids:
-                obligation = obligation_by_id.get(obligation_id)
-                if obligation is None:
-                    continue
-                for kind, evidence_id in obligation.evidence:
-                    if kind == "jit_contract" and evidence_id in jit_promises:
-                        resolved.append(jit_promises[evidence_id][1])
-        return resolved
+    def has_deferred_owner(start: int, end: int) -> bool:
+        return any(
+            requirement.resolution_kind == "deferred_owner"
+            for requirement in requirements
+            if requirement.line_end >= start and requirement.line_start <= end
+        )
 
     for start, end, clause in clauses:
         window = terminal_hold_window(clause)
@@ -1677,12 +1699,7 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
             )
             and contract_id in required_contract_producers
         }
-        promised = any(
-            promise.get("contract_kind") == "frame_delta"
-            and tuple(promise.get("moments") or ()) == window
-            for promise in resolved_jit_promises(start, end)
-        )
-        if not matching and not promised:
+        if not matching and not has_deferred_owner(start, end):
             source = " ".join(brief_lines[start - 1:end]).strip()
             findings.append(Finding(
                 "temporal-requirement",
@@ -1716,11 +1733,7 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
         resolved_ids = resolved_scene_ids(start, end)
         if resolved_ids & executable_temporal_ids:
             continue
-        if any(
-            promise.get("contract_kind")
-            in TEMPORAL_KINDS | {"frame_delta"}
-            for promise in resolved_jit_promises(start, end)
-        ):
+        if has_deferred_owner(start, end):
             continue
         source = " ".join(brief_lines[start - 1:end]).strip()
         findings.append(Finding(
@@ -1767,12 +1780,7 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                 )
                 and contract_id in required_contract_producers
             }
-            promised = any(
-                promise.get("contract_kind") == "transform_return_delta"
-                and tuple(promise.get("moments") or ()) == return_window
-                for promise in resolved_jit_promises(start, end)
-            )
-            if not matching and not promised:
+            if not matching and not has_deferred_owner(start, end):
                 source = " ".join(brief_lines[start - 1:end]).strip()
                 findings.append(Finding(
                     "temporal-requirement",
@@ -1853,8 +1861,8 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                     True,
                     record.id,
                     "deferred-layer debt must be due at the layer boundary, not a future unit",
-                    "use before_layer and bind the debt to a typed jit_contract promise; "
-                    "unit ids become authoritative only when the JIT layer materializes",
+                    "use before_layer for independently owned upstream debt; JIT promise "
+                    "requirements link directly and do not use obligations",
                 ))
     for record in assumptions:
         if record.due.kind == "unit_completion" and record.decision_strength not in {
@@ -1866,66 +1874,30 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                 "assumptions cannot be machine-resolved at unit completion",
                 "use an obligation with executable evidence, or keep a human-decision assumption due before execution",
             ))
-    promise_consumers: dict[str, list[str]] = {}
-    for record in obligations:
-        for kind, evidence_id in record.evidence:
-            if kind in {"scene_contract", "image_contract"} and evidence_id in jit_promises:
-                # The reference is right, only the kind is wrong; count it as the consumer
-                # so the one precise finding fires instead of a cascade of two.
-                promise_consumers.setdefault(evidence_id, []).append(record.id)
-                findings.append(Finding(
-                    "requirement-closure",
-                    True,
-                    record.id,
-                    f"JIT promise {evidence_id} is referenced with evidence kind {kind!r}",
-                    'a deferred-layer debt binds through {"kind": "jit_contract", "id": "<promise-id>"}; '
-                    "scene/image contract kinds are reserved for materialized executable contracts",
-                ))
-                continue
-            if kind != "jit_contract":
-                continue
-            promise_consumers.setdefault(evidence_id, []).append(record.id)
-            promised = jit_promises.get(evidence_id)
-            if promised is None:
-                findings.append(Finding(
-                    "requirement-closure",
-                    True,
-                    record.id,
-                    f"names unknown JIT contract promise {evidence_id!r}",
-                ))
-                continue
-            promised_layer, promise = promised
-            if record.due.kind != "before_layer" or str(record.due.layer) != promised_layer:
-                findings.append(Finding(
-                    "requirement-closure",
-                    True,
-                    record.id,
-                    f"JIT promise {evidence_id} must be due before its layer {promised_layer}",
-                ))
-            if not set(record.requirement_ids) <= set(promise.get("requirement_ids") or []):
-                findings.append(Finding(
-                    "requirement-closure",
-                    True,
-                    record.id,
-                    f"JIT promise {evidence_id} does not carry all obligation requirements",
-                ))
-    for promise_id, (layer_id, promise) in jit_promises.items():
-        if promise_id not in promise_consumers:
+    for requirement_id, owner_layers in requirement_owners.items():
+        if requirement_id not in requirement_ids:
             findings.append(Finding(
                 "requirement-closure",
                 True,
-                f"layer {layer_id} JIT promise {promise_id}",
-                "promise is not consumed by any typed obligation",
+                requirement_id,
+                "deferred layer owns an unknown requirement",
             ))
-        unknown_requirements = sorted(
-            set(map(str, promise.get("requirement_ids") or [])) - requirement_ids
-        )
-        if unknown_requirements:
+        if len(owner_layers) > 1:
             findings.append(Finding(
-                "requirement-closure",
-                True,
-                f"layer {layer_id} JIT promise {promise_id}",
-                "references unknown requirements: " + ", ".join(unknown_requirements),
+                "requirement-closure", True, requirement_id,
+                "deferred requirement has multiple owner layers: " + ", ".join(sorted(owner_layers)),
+                "assign exactly one owner and due boundary",
+            ))
+    for requirement in requirements:
+        if requirement.resolution_kind != "deferred_owner":
+            continue
+        owners = requirement_owners.get(requirement.id, [])
+        if owners != [str(requirement.owner_layer)]:
+            findings.append(Finding(
+                "requirement-closure", True, requirement.id,
+                f"ownership register names layer {requirement.owner_layer}, but JIT ownership is "
+                + (", ".join(owners) if owners else "missing"),
+                "list the requirement exactly once in that deferred layer's owned_requirements",
             ))
     for row in (*scene_rows, *image_rows):
         owner = str(row.get("owner_layer") or row.get("activates_at") or "")
@@ -1935,7 +1907,8 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                 True,
                 str(row.get("id") or owner),
                 f"deferred layer {owner} carries an executable contract before JIT materialization",
-                "replace it with a typed jit_contract promise and materialize the exact contract "
+                "replace it with a typed JIT promise linked directly to requirements and "
+                "materialize the exact contract "
                 "only after upstream checkpoints exist",
             ))
     for record in obligations:
@@ -2084,7 +2057,7 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
         )
     next_layer = next((layer for lid, layer in layers.items() if lid not in passed), None)
     required = 0
-    if next_layer is not None and next_layer.execution == "jit_deferred":
+    if next_layer is not None and not _global_executable_checks_apply(next_layer):
         # Deferred authority has no durable unit state until a pinned JIT overlay
         # materializes its full unit DAG. Requiring state here would invent a fake unit.
         return out, {"unit_plans_required": 0, "layers_passed": len(passed)}

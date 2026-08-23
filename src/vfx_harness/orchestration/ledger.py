@@ -75,19 +75,11 @@ def load_axes(shot: Shot) -> list[tuple[str, str]]:
     return DEFAULT_AXES
 
 @dataclass(frozen=True)
-class JitPromise:
-    id: str
-    contract_kind: str
-    moments: tuple[int, ...]
-    requirement_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class JitLayerSpec:
     depends_on_layers: tuple[str, ...]
     required_outcomes: tuple[tuple[str, str], ...]
     reserved_roles: tuple[str, ...]
-    promises: tuple[JitPromise, ...]
+    owned_requirements: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -229,44 +221,25 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                 if not oid:
                     raise ValueError(f"{at}.id must be non-empty")
                 outcomes.append((str(outcome["kind"]), oid))
-            raw_promises = raw_jit.get("promises", [])
-            if not isinstance(raw_promises, list) or not raw_promises:
-                raise ValueError(f"{where}.jit.promises must be a non-empty list")
-            promises: list[JitPromise] = []
-            promise_ids: set[str] = set()
-            for promise_index, promise in enumerate(raw_promises):
-                at = f"{where}.jit.promises[{promise_index}]"
-                if not isinstance(promise, dict):
-                    raise ValueError(f"{at} must be an object")
-                promise_id = str(promise.get("id") or "").strip()
-                contract_kind = str(promise.get("contract_kind") or "").strip()
-                moments = tuple(promise.get("moments") or ())
-                requirement_ids = tuple(str(item) for item in promise.get("requirement_ids") or ())
-                if not promise_id or promise_id in promise_ids:
-                    raise ValueError(f"{at}.id must be non-empty and unique")
-                expected_prefix = f"L{str(g.get('id') or '').strip()}."
-                if not promise_id.startswith(expected_prefix):
-                    raise ValueError(
-                        f"{at}.id must carry its owning-layer prefix {expected_prefix!r} "
-                        f"(for example {expected_prefix}JIT-P1); bare promise ids collide "
-                        "across layers and cannot be referenced unambiguously"
-                    )
-                if not contract_kind:
-                    raise ValueError(f"{at}.contract_kind must be non-empty")
-                if not moments or any(
-                    isinstance(frame, bool) or not isinstance(frame, int) or frame < 1
-                    for frame in moments
-                ):
-                    raise ValueError(f"{at}.moments must be positive frame integers")
-                if not requirement_ids or any(not item for item in requirement_ids):
-                    raise ValueError(f"{at}.requirement_ids must be non-empty")
-                promise_ids.add(promise_id)
-                promises.append(JitPromise(promise_id, contract_kind, moments, requirement_ids))
+            if "promises" in raw_jit:
+                raise ValueError(
+                    f"{where}.jit.promises is superseded; use ownership-only owned_requirements"
+                )
+            raw_owned = raw_jit.get("owned_requirements")
+            if not isinstance(raw_owned, list) or not raw_owned:
+                raise ValueError(f"{where}.jit.owned_requirements must be a non-empty list")
+            owned_requirements = tuple(str(item).strip() for item in raw_owned)
+            if any(not item for item in owned_requirements) or len(set(owned_requirements)) != len(
+                owned_requirements
+            ):
+                raise ValueError(
+                    f"{where}.jit.owned_requirements must contain unique non-empty ids"
+                )
             jit = JitLayerSpec(
                 dependencies,
                 tuple(outcomes),
                 reserved_roles,
-                tuple(promises),
+                owned_requirements,
             )
         unit_artifacts = [span for unit in stages for span in unit.mutates.script_spans]
         for unit in stages:

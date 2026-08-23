@@ -30,6 +30,7 @@ import hashlib
 import html
 import itertools
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -71,6 +72,118 @@ class _CheckBatchBudget:
         self.singles = 0
 
 
+# Facts a proxy scene makes true by constructing them: counting the 24 modules you just
+# placed, or rendering the response of a rig you just lit, proves the SPIKE exists — not
+# that the producing unit's cumulative scene will satisfy the same row. Existence,
+# lighting, visibility, and rendered-response evidence belongs to the unit that owns it.
+_SPIKE_SELF_FULFILLING_KINDS = {
+    "object_count",
+    "material_count",
+    "material_user_count",
+    "material_assignment_fraction",
+    "node_count",
+    "node_link_count",
+    "animation_count",
+    "compositor_enabled",
+    "control_render_response",
+    "frame_delta",
+}
+_LIGHT_APIS = re.compile(r"light_add|bpy\.data\.lights|lights\.new|type\s*=\s*['\"]LIGHT['\"]")
+
+
+def _decision_value_signals(shot_folder: Path) -> tuple[set[str], list[tuple[str, str, set[str]]]]:
+    """Falsification contract ids and adopted value shapes from recorded decisions."""
+    falsification_ids: set[str] = set()
+    adopted: list[tuple[str, str, set[str]]] = []
+    try:
+        from vfx_harness.domain.plan_records import load_assumptions
+
+        for record in load_assumptions(shot_folder):
+            falsification_ids.update(record.falsification_contract_ids)
+    except (OSError, ValueError):
+        pass
+    resolutions = Path(shot_folder) / "state" / "plan-resolutions.jsonl"
+    if resolutions.is_file():
+        for line in resolutions.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            falsification = row.get("falsification") or {}
+            falsification_ids.update(map(str, falsification.get("contract_ids") or []))
+            contract = (row.get("values") or {}).get("contract") or {}
+            if contract.get("kind"):
+                adopted.append((
+                    str(row.get("id") or "?"),
+                    str(contract["kind"]),
+                    {str(role) for role in contract.get("roles") or []},
+                ))
+    return falsification_ids, adopted
+
+
+def _spike_ineligibility(
+    script: str,
+    render_frame: object,
+    contracts: list[dict],
+    shot_folder: Path,
+) -> str | None:
+    """Refuse hypotheses that only the producing unit can prove.
+
+    Run 20260823T050739Z-7781dd built a proxy iris scene to "prove" the approved
+    24-light count and an unlit lighting adversary. The rule forbidding that lived only
+    in prompt prose, so the tool accepted the request. Eligibility is now a boundary:
+    adopted decision values, decision falsification paths, self-fulfilling construction
+    facts, and proxy lighting/visibility reads are refused deterministically.
+    """
+    falsification_ids, adopted = _decision_value_signals(Path(shot_folder))
+    for row in contracts:
+        if not isinstance(row, dict):
+            continue
+        row_id = str(row.get("id") or "<missing>")
+        if row.get("decision_id"):
+            return (
+                f"spike refused: contract {row_id} adopts decision "
+                f"{row.get('decision_id')!r}. An approved value is not a spike hypothesis — "
+                "its producing unit proves the adopted contract against the real scene, and "
+                "failure routes through the decision's falsification path."
+            )
+        if row_id in falsification_ids:
+            return (
+                f"spike refused: contract {row_id} is a recorded decision's runtime "
+                "falsification path. Only its producing unit may generate that evidence, in "
+                "the cumulative scene; a proxy result would recreate the false-evidence "
+                "failure this harness exists to prevent."
+            )
+        kind = str(row.get("kind") or "")
+        if kind in _SPIKE_SELF_FULFILLING_KINDS:
+            return (
+                f"spike refused: contract {row_id} ({kind}) is self-fulfilling in a proxy "
+                "scene — the spike constructs the very fact it counts or renders. Existence, "
+                "count, lighting, and rendered-response evidence belongs to the producing "
+                "unit at build time; record the value as a start with a runtime "
+                "falsification contract instead."
+            )
+        roles = {str(role) for role in row.get("roles") or []}
+        for decision_id, adopted_kind, adopted_roles in adopted:
+            if kind == adopted_kind and (not adopted_roles or roles & adopted_roles):
+                return (
+                    f"spike refused: contract {row_id} re-measures decision {decision_id}'s "
+                    f"adopted {adopted_kind} values. Approved values are consumed verbatim, "
+                    "proven by their producing unit, and revised only through transactional "
+                    "replanning — never re-derived in a proxy scene."
+                )
+    if render_frame is not None and _LIGHT_APIS.search(script or ""):
+        return (
+            "spike refused: the script creates lights and requests a render — a proxy "
+            "lighting/visibility read. Whether something reads lit, unlit, or visible is "
+            "cumulative-scene evidence owned by the producing unit; Layer 1 proves it "
+            "against the real build. Mechanism spikes stay light-free."
+        )
+    return None
+
+
 class _SpikeBudget:
     """A session spike ceiling plus one retry per failed hypothesis.
 
@@ -83,7 +196,7 @@ class _SpikeBudget:
     to guess.
     """
 
-    def __init__(self, session_cap: int = 8, attempts_per_hypothesis: int = 2):
+    def __init__(self, session_cap: int = 4, attempts_per_hypothesis: int = 2):
         self.session_cap = session_cap
         self.attempts_per_hypothesis = attempts_per_hypothesis
         self.total = 0
@@ -91,8 +204,21 @@ class _SpikeBudget:
 
     @staticmethod
     def key(contracts: list[dict]) -> str:
-        ids = sorted(str(row.get("id") or row.get("kind") or "?") for row in contracts)
-        return ",".join(ids) or "exploratory"
+        if not contracts:
+            return "exploratory"
+        # IDs are labels the planner controls and therefore cannot define budget identity:
+        # the stopped run renamed the same onset-order probe repeatedly. Key the semantic
+        # hypothesis instead so cosmetic renaming cannot buy another Blender attempt.
+        semantic_fields = (
+            "kind", "frame", "frames", "samples", "roles", "control_roles",
+            "compare_roles", "compare_control_roles", "component", "property",
+        )
+        identities = [
+            {field: row[field] for field in semantic_fields if field in row}
+            for row in contracts
+        ]
+        payload = json.dumps(identities, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     def refusal(self, key: str) -> str | None:
         if self.total >= self.session_cap:
@@ -414,6 +540,32 @@ def _persist_spike_evidence(
 # --------------------------------------------------------------------------- #
 # the MCP server                                                               #
 # --------------------------------------------------------------------------- #
+def _ready_measure_refs(shot_folder: Path) -> set[str] | None:
+    """Return reference paths currently due for executable global authority.
+
+    ``None`` means no sparse DAG exists yet; an empty set is a valid DAG with no due refs.
+    """
+    layers_path = shot_folder / "layers.json"
+    if not layers_path.is_file():
+        try:
+            from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+            layers_path = selected_artifact_path(shot_folder, "layers.json")
+        except (FileNotFoundError, ValueError):
+            return None
+    try:
+        layer_rows = json.loads(layers_path.read_text(encoding="utf-8")).get("layers", [])
+    except (OSError, ValueError, AttributeError):
+        return None
+    return {
+        str(judge.get("ref") or "").removeprefix("./")
+        for layer in layer_rows
+        if isinstance(layer, dict) and layer.get("execution", "ready") == "ready"
+        for judge in layer.get("judge") or []
+        if isinstance(judge, dict)
+    }
+
+
 def build_plan_tools(
     shot_folder: Path,
     *,
@@ -421,6 +573,7 @@ def build_plan_tools(
     lab_dir: Path | None = None,
     include_gate: bool = False,
     run_layout: run_artifacts.RunLayout | None = None,
+    measure_ref_paths: tuple[str, ...] | None = None,
 ):
     shot_folder = Path(shot_folder)
     work = Path(tempfile.mkdtemp(prefix="planlab-"))  # raw ffmpeg output
@@ -466,6 +619,7 @@ def build_plan_tools(
         lab.parent if lab.parent.name == "plan-lab" else lab
     ) / "measure_ref_cache.json"
     gate_calls = 0
+    prior_gate_signature: str | None = None
 
     @tool(
         "probe_video",
@@ -577,6 +731,27 @@ def build_plan_tools(
         {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
     )
     async def measure_ref(args):
+        # Measurement scope follows published execution scope. Requiring the sparse DAG
+        # first prevents a cold global session from measuring the whole shot before it has
+        # decided what is actually due; later JIT sessions resolve their materialized view.
+        due_refs = (
+            {path.removeprefix("./") for path in measure_ref_paths}
+            if measure_ref_paths is not None
+            else _ready_measure_refs(shot_folder)
+        )
+        if due_refs is None:
+            return _text(
+                "measure_ref is unavailable until layers.json declares the sparse DAG; "
+                "write ownership and the first ready unit before measuring its references",
+                is_error=True,
+            )
+        requested = str(args["path"]).removeprefix("./")
+        if requested not in due_refs:
+            return _text(
+                f"measure_ref refused {requested}: it is not judged by a ready global unit; "
+                "measure it when its owner layer materializes",
+                is_error=True,
+            )
         try:
             source = _resolve(args["path"])
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -791,8 +966,11 @@ def build_plan_tools(
         "scene-contract rows in contracts and tag the spike objects with their semantic "
         "bvfx_role/bvfx_control values. The tool runs those contracts inside the same "
         "scene and emits a typed citable record; an exploratory spike without contracts "
-        "cannot justify a ✓spiked ticket. No bvfx helpers here — raw bpy, exactly like "
-        "the internet snippet you are testing.",
+        "cannot justify a ✓spiked ticket. ELIGIBILITY is enforced: approved/adopted "
+        "decision values, decision falsification paths, existence/count/rendered-response "
+        "facts, and lighting/visibility reads are refused — those are the producing "
+        "unit's evidence against the cumulative scene, not a proxy hypothesis. No bvfx "
+        "helpers here — raw bpy, exactly like the internet snippet you are testing.",
         {
             "type": "object",
             "properties": {
@@ -813,6 +991,12 @@ def build_plan_tools(
     )
     async def spike(args):
         contracts = list(args.get("contracts") or [])
+        veto = _spike_ineligibility(
+            str(args.get("script") or ""), args.get("render_frame"), contracts, shot_folder
+        )
+        if veto is not None:
+            log("plan-lab ✗ spike refused: ineligible hypothesis", 1)
+            return _text(veto, is_error=True)
         hypothesis = _SpikeBudget.key(contracts)
         if (refusal := spike_budget.refusal(hypothesis)) is not None:
             log(f"plan-lab ✗ spike refused ({hypothesis[:60]}): budget", 1)
@@ -968,7 +1152,7 @@ def build_plan_tools(
         {"type": "object", "properties": {}},
     )
     async def run_gate(args):
-        nonlocal gate_calls
+        nonlocal gate_calls, prior_gate_signature
         gate_calls += 1
         if gate_calls > 4:
             return _text(
@@ -983,6 +1167,16 @@ def build_plan_tools(
         # feedback must retain the authored shot identity from brief.md instead.
         result.shot = load_shot(shot_folder).id
         body = plan_gate.report(result)
+        signature = result.signature()
+        if not result.clean and signature == prior_gate_signature:
+            return _text(
+                body
+                + "\n\nGATE PLATEAU: findings are unchanged from the previous call. "
+                "Stop editing and end this session; the outer deterministic loop owns "
+                "any further repair.",
+                is_error=True,
+            )
+        prior_gate_signature = signature
         repair = plan_gate.feedback(result)
         return _text(body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""))
 

@@ -111,13 +111,19 @@ def _add_deferred_layer(root: Path) -> None:
             "depends_on_layers": ["1"],
             "required_outcomes": [{"kind": "scene_contract", "id": "final-lock"}],
             "reserved_roles": ["polish.*"],
-            "promises": [{
-                "id": "L2.JIT-polish-lock", "contract_kind": "frame_delta",
-                "moments": [239, 240], "requirement_ids": ["R-final-lock"],
-            }],
+            "owned_requirements": ["R-final-lock"],
         },
     })
     _write(root / "layers.json", data)
+    requirements = json.loads((root / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "deferred_owner", "ids": [], "owner_layer": "2",
+        "due": {"kind": "before_layer", "layer": "2"},
+    }
+    _write(root / "requirements.json", requirements)
+    _write(root / "obligations.json", {
+        "schema": "vfx-harness.obligations/v1", "obligations": [],
+    })
 
 
 def _jit_payload(root: Path, bundle_hash: str) -> Path:
@@ -155,10 +161,10 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
             "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
         }],
         "image_contracts": [],
-        "promise_bindings": [{
-            "promise_id": "L2.JIT-polish-lock", "kind": "scene_contract",
-            "contract_id": "polish-lock",
+        "requirement_bindings": [{
+            "requirement_id": "R-final-lock", "contract_ids": ["polish-lock"],
         }],
+        "acceptance": [],
     })
     return path
 
@@ -192,20 +198,26 @@ def test_deferred_layer_has_no_fake_units_and_materializes_through_bound_contrac
     materialized = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))
     assert materialized["2"].execution == "ready"
     assert [unit.id for unit in materialized["2"].stages] == ["polish"]
+    requirements = json.loads(
+        selected_artifact_path(tmp_path, "requirements.json").read_text(encoding="utf-8")
+    )
+    assert requirements["requirements"][0]["resolution"] == {
+        "kind": "contract", "ids": ["polish-lock"],
+    }
     assert not (tmp_path / "state" / "units" / "2.json").exists()
 
 
-def test_jit_materialization_fails_closed_on_unbound_promise(tmp_path: Path) -> None:
+def test_jit_materialization_fails_closed_on_unbound_requirement(tmp_path: Path) -> None:
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
     layout = run_artifacts.create(tmp_path, "plan-run")
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = _jit_payload(tmp_path, bundle.content_hash)
     data = json.loads(payload.read_text(encoding="utf-8"))
-    data["promise_bindings"] = []
+    data["requirement_bindings"] = []
     _write(payload, data)
 
-    with pytest.raises(ValueError, match=r"missing L2\.JIT-polish-lock"):
+    with pytest.raises(ValueError, match=r"missing R-final-lock"):
         validate_materialization(
             bundle.root, payload, expected_bundle_hash=bundle.content_hash
         )
@@ -730,14 +742,39 @@ def test_acceptance_evidence_evaluates_post_grade_contracts(
     assert rows[0]["source"] == "image_contract"
 
 
-def test_bare_promise_ids_are_rejected_by_the_loader(tmp_path: Path) -> None:
+def test_typed_promises_are_rejected_by_the_loader(tmp_path: Path) -> None:
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
     data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
-    data["layers"][1]["jit"]["promises"][0]["id"] = "JIT-P1"
+    data["layers"][1]["jit"]["promises"] = [{
+        "id": "L2.JIT-P1", "contract_kind": "frame_delta", "moments": [239, 240],
+        "requirement_ids": ["R-final-lock"],
+    }]
     _write(tmp_path / "layers.json", data)
 
-    with pytest.raises(ValueError, match="owning-layer prefix"):
+    with pytest.raises(ValueError, match="superseded"):
+        load_layers_from_path(tmp_path / "layers.json")
+
+
+def test_owned_requirements_must_be_unique(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["layers"][1]["jit"]["owned_requirements"] = ["R-final-lock", "R-final-lock"]
+    _write(tmp_path / "layers.json", data)
+
+    with pytest.raises(ValueError, match="unique non-empty"):
+        load_layers_from_path(tmp_path / "layers.json")
+
+
+def test_deferred_layer_cannot_hide_future_units_in_its_stub(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["layers"][1]["stages"] = [data["layers"][0]["stages"][0]]
+    _write(tmp_path / "layers.json", data)
+
+    with pytest.raises(ValueError, match="must be empty for jit_deferred"):
         load_layers_from_path(tmp_path / "layers.json")
 
 
@@ -754,27 +791,122 @@ def test_deferred_layer_is_exempt_from_ready_coverage_rules(tmp_path: Path) -> N
     )
 
 
-def test_promise_referenced_with_wrong_evidence_kind_is_one_precise_finding(
+def test_full_global_gate_emits_no_executable_findings_for_sparse_deferred_layer(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.evaluation.plan_gate import run
+
+    _candidate(tmp_path)
+    Image.new("RGB", (32, 32), "black").save(tmp_path / "refs" / "a.png")
+    _add_deferred_layer(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "deferred_owner", "ids": [], "owner_layer": "2",
+        "due": {"kind": "before_layer", "layer": "2"},
+    }
+    _write(tmp_path / "requirements.json", requirements)
+    _write(tmp_path / "obligations.json", {
+        "schema": "vfx-harness.obligations/v1", "obligations": [],
+    })
+
+    result = run(tmp_path)
+
+    deferred_findings = [
+        finding for finding in result.findings
+        if "layer 2" in finding.where.lower()
+        or "L2.JIT" in finding.where
+        or "L2.JIT" in finding.what
+    ]
+    assert deferred_findings == []
+
+
+def test_deferred_owner_and_requirement_link_directly_without_obligation(
     tmp_path: Path,
 ) -> None:
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
-    obligations = json.loads((tmp_path / "obligations.json").read_text(encoding="utf-8"))
-    obligations["obligations"].append({
-        "id": "O-polish", "statement": "polish keeps the lock",
-        "requirement_ids": ["R-final-lock"], "owner": "2",
-        "due": {"kind": "before_layer", "layer": "2"},
-        "evidence": [{"kind": "scene_contract", "id": "L2.JIT-polish-lock"}],
-    })
-    _write(tmp_path / "obligations.json", obligations)
+    findings, _ = _check_meta_records(tmp_path)
+
+    assert not [
+        finding for finding in findings
+        if finding.check in {"requirement-closure", "temporal-requirement"}
+    ]
+
+
+def test_deferred_owner_link_must_be_symmetric(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["owned_requirements"] = ["R-other"]
+    _write(tmp_path / "layers.json", layers)
 
     findings, _ = _check_meta_records(tmp_path)
 
-    wrong = [f for f in findings if "referenced with evidence kind" in f.what]
-    assert len(wrong) == 1 and wrong[0].blocking and wrong[0].where == "O-polish"
-    assert not [f for f in findings if "not consumed" in f.what], (
-        "the wrong-kind reference is the consumer; a second cascading finding hides the fix"
+    assert any("ownership register names layer 2" in finding.what for finding in findings)
+
+
+def test_deferred_layer_cannot_publish_concrete_contract_before_materialization(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    checks = json.loads((tmp_path / "scene_checks.json").read_text(encoding="utf-8"))
+    checks["contracts"].append({
+        "id": "early-polish-lock", "kind": "frame_delta", "owner_layer": "2",
+        "fault_owner": "2", "activates_at": "2", "lifecycle": "layer",
+        "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
+    })
+    _write(tmp_path / "scene_checks.json", checks)
+
+    findings, _ = _check_meta_records(tmp_path)
+
+    assert any(finding.check == "deferred-overplanning" for finding in findings)
+
+
+def test_global_acceptance_rejects_unmaterialized_layer_fingerprint(tmp_path: Path) -> None:
+    from vfx_harness.evaluation.plan_gate import _check_contracts
+
+    _candidate(tmp_path)
+    Image.new("RGB", (32, 32), "black").save(tmp_path / "refs" / "a.png")
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["judge"] = [{"frame": 300, "ref": "refs/a.png"}]
+    layers["layers"][1]["primary_judge"] = 300
+    _write(tmp_path / "layers.json", layers)
+    _write(tmp_path / "acceptance.json", [{
+        "id": "M-later", "frame": 300, "ref": "refs/a.png", "reads": "later finish",
+        "fingerprint": "exposure_mean=0",
+    }])
+
+    findings, _ = _check_contracts(tmp_path)
+
+    assert any(
+        finding.check == "deferred-overplanning" and "fingerprints frame 300" in finding.what
+        for finding in findings
     )
+
+
+def test_materialization_can_close_owned_requirement_with_typed_decision(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["requirement_bindings"] = [{
+        "requirement_id": "R-final-lock",
+        "decision": {
+            "statement": "The authored lock is retained as an approved constraint.",
+            "decision_strength": "approved_start",
+        },
+    }]
+    _write(payload, data)
+
+    materialized = validate_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized.requirement_decisions["R-final-lock"]["decision_strength"] == "approved_start"
 
 
 def test_direct_required_bbox_claims_are_projected_composition_context(

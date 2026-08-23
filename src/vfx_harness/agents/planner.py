@@ -94,7 +94,7 @@ from .builder import _one_user_message
 async def _materialize_deferred_layer(
     shot, layer, *, model: str, blender: str, max_turns: int
 ) -> None:
-    """Turn one bounded JIT promise into concrete units/contracts, then select its view."""
+    """Close one layer's owned requirements with concrete authority, then select its view."""
     from vfx_harness.orchestration.jit_materialization import (
         MATERIALIZATION_SCHEMA,
         publish_materialization,
@@ -110,18 +110,25 @@ async def _materialize_deferred_layer(
     system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
 Write exactly `{rel_target}` as JSON with schema `{MATERIALIZATION_SCHEMA}`. It must contain
 `bundle_hash`, the complete replacement `layer` with execution `ready`, non-empty bounded stages,
-`scene_contracts`, `image_contracts`, and `promise_bindings` mapping every global JIT promise to
-one concrete contract. Preserve global layer structure exactly. Mutated roles must stay inside
-reserved namespaces. Every contract must be required evidence of a materialized claim. Promise
-kind and moments must match exactly. Use upstream outcomes as measurements, not permission to
-enlarge scope. Do not edit global authority, create unit state, write prose, or write another file."""
+`scene_contracts`, `image_contracts`, `acceptance`, and `requirement_bindings`. Close every
+globally owned requirement exactly once, either with one or more concrete contract ids or an
+explicit decision carrying `statement` and `decision_strength`. Preserve global layer structure
+exactly. Mutated roles must stay inside reserved namespaces. Every contract must be required
+evidence of a materialized producing claim. Choose kinds, moments, thresholds, fingerprints, and
+techniques now from authored references plus sealed upstream outcomes. Do not edit global
+authority, create unit state, write prose, or write another file."""
     kickoff = (
         f"Materialize deferred layer {layer.id} ({layer.title}).\n"
         f"Selected bundle hash: {bundle.content_hash}\n"
         f"Deferred contract:\n{layer.jit!r}\nOutput: {rel_target}"
     )
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}-materialize"
-    pserver, pnames = build_plan_tools(shot.folder, blender=blender, lab_dir=lab_dir)
+    pserver, pnames = build_plan_tools(
+        shot.folder,
+        blender=blender,
+        lab_dir=lab_dir,
+        measure_ref_paths=tuple(ref for _frame, ref in layer.judges),
+    )
     rserver, rnames = build_recipe_tools()
     options = ClaudeAgentOptions(
         model=model,
@@ -262,12 +269,12 @@ def _planner_tool_policy(repair: bool) -> tuple[list[str], list[str]]:
 _KICKOFF_MAX_PX = 1568  # same budget the critic uses; ~1600 tokens per still
 
 
-def _kickoff_blocks(text: str, shot) -> list[dict]:
-    """The kickoff prose followed by every reference still, in shot order."""
+def _kickoff_blocks(text: str, shot, *, refs=None) -> list[dict]:
+    """Kickoff prose plus the explicitly due reference stills, in shot order."""
     from .builder import _image_block
 
     blocks: list[dict] = [{"type": "text", "text": text}]
-    for p in shot.refs:
+    for p in shot.refs if refs is None else refs:
         try:
             blocks.append(_image_block(p, _KICKOFF_MAX_PX))
         except Exception as e:  # a corrupt plate must not cost the whole pass
@@ -375,8 +382,10 @@ async def generate_plan(
     transcript.prompt(
         kickoff, role="kickoff", mode=mode, model=model, tag=tag, refs=stills, videos=videos, max_turns=max_turns
     )
-    blocks = _kickoff_blocks(kickoff, shot)
-    log(f"kickoff: {len(blocks) - 1} reference still(s) ATTACHED as images", 1)
+    # Attaching every future approval frame recreated whole-shot visual preproduction.
+    # Ready-unit references are requested explicitly after the sparse DAG exists.
+    blocks = _kickoff_blocks(kickoff, shot, refs=())
+    log("kickoff: reference stills available on demand; none attached globally", 1)
     # The post-condition, not the absence of an exception. Two repair rounds were lost to a
     # session that raised "error result: success" at $0.0007 having written nothing, and the
     # real cause ("Repeated 529 Overloaded errors") was only in its assistant text — which is
@@ -545,7 +554,10 @@ async def generate_layer_plan(
         ),
     )
     before = target.stat().st_mtime_ns if target.is_file() else -1
-    blocks = _kickoff_blocks(kickoff, shot)
+    judge_names = {Path(ref).name for _frame, ref in layer.judges}
+    blocks = _kickoff_blocks(
+        kickoff, shot, refs=tuple(ref for ref in shot.refs if ref.name in judge_names)
+    )
     costlog.bind(shot.folder, role="plan:layer", model=model, tag=str(layer.id))
     transcript.bind(shot.folder, "plan", label=f"layer-{layer.id}")
     transcript.prompt(
@@ -603,7 +615,8 @@ async def generate_plan_two_pass(
 
         workspace = prepare_staging(layout)
     workspace = Path(workspace).resolve()
-    configured = Settings.from_environment(load_dotenv_file=False).planner_model
+    configured_settings = Settings.from_environment(load_dotenv_file=False)
+    configured = configured_settings.planner_model
     draft_model = draft_model or configured
     verify_model = verify_model or configured
     dtag = f"{tag}-draft" if tag else "draft"
@@ -632,11 +645,15 @@ async def generate_plan_two_pass(
     verify_candidate.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(draft_path, verify_candidate)
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
+    verify_turns = min(
+        max_turns,
+        getattr(configured_settings, "plan_verify_max_turns", 12),
+    )
     final = await generate_plan(
         folder,
         model=verify_model,
         blender=blender,
-        max_turns=max_turns,
+        max_turns=verify_turns,
         tag=tag,
         verify_draft=draft_path.relative_to(workspace).as_posix(),
         workspace=workspace,

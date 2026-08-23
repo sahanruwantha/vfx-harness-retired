@@ -29,8 +29,8 @@ INPUTS, in the shot folder (your working directory):
     them before inventing a replacement. Prior plans, builds, and run reports are absent.
 
 YOUR TOOLS and what each is FOR:
-  - measure_ref — MEASURED look fingerprints (exposure, band structure σ, halation)
-    for every approval still. The plan's look targets are measurements, not taste.
+  - measure_ref — MEASURED look fingerprints for reference frames judged by a READY
+    global work unit only. Later frames are measured by their layer's JIT pass.
   - find_recipe — the studio cookbook of vetted, verified techniques. In a GLOBAL pass,
     search it only for Layer 1 or for a mechanism that determines the cross-layer DAG.
     Later-layer recipe selection belongs to that layer's JIT pass.
@@ -69,27 +69,15 @@ WORKFLOW, in order:
    non-negotiables (they are acceptance law), the authority map, the acceptance
    moments, the anti-goals.
 
-2. SCENE READ — from the STILLS and the BRIEF only. There is no source video and
-   there never will be; a real brief arrives as reference images plus prose. Read every
-   still in refs/ and derive:
-     - the STATE at each still (what exists, what is lit, where the camera is);
-     - the DELTA between consecutive stills (what appeared, vanished, moved, changed
-       colour) — the stills are keyframes and the shot is the interpolation between them;
-     - the MOTION, which no still can show you. Take it from the brief's prose and from
-       what the deltas imply. Where the brief states timing, that timing is LAW. Where it
-       does not, choose a value, mark it *(start)*, and say what would falsify it.
-   Motion direction is specified VISUALLY (what sweeps which way in frame), never by an
-   euler sign convention. Cite stills as [refs/<file>]; there are no [v:f] cites.
-   You will be tempted to state motion facts with more confidence than a still can
-   support. Do not. An unsupported number marked as derived is worse than a guess
-   marked as a guess.
+2. REGISTER THE WHOLE BRIEF, BUT DESIGN ONLY WHAT IS DUE. Read every substantive brief
+   clause once and assign it to exactly one owner layer and due boundary. Inspect only the
+   reference stills needed to choose the global DAG, durable constraints, and the first READY
+   unit. Do not analyze later-layer state deltas, techniques, thresholds, or evidence kinds.
+   Those decisions belong to JIT materialization after dependencies exist.
 
-3. MEASURE every approval still once with measure_ref → the acceptance fingerprints. This
-   is the fixed-cost scene read for the global DAG, not permission to calibrate every future
-   layer. Record the fingerprints as reference context. During a GLOBAL pass, author and
-   validate numeric done-checks only for Layer 1; later layers receive exact checks in their
-   JIT pass after upstream outcomes exist. Never instruct the build stage to call measure_ref —
-   the builder does not have it and will invent a name and fail.
+3. MEASURE only approval stills judged by a READY global work unit. Put only those rows in
+   acceptance.json. Later fingerprints arrive through the materialized acceptance overlay.
+   Whole-shot measurement during global planning is a blocking publication-contract defect.
 
 4. RESOLVE CONFLICTS — or ASK. Where brief prose and stills disagree, apply the brief's
    authority map and record each resolution as a numbered decision WITH rationale and
@@ -120,26 +108,19 @@ WORKFLOW, in order:
    row has `execution: "ready"`. Every Layer N>1 row has `execution: "jit_deferred"`,
    `stages: []`, and exactly this bounded placeholder (with shot-specific values):
    `jit: {depends_on_layers: ["1"], required_outcomes: [{kind: "scene_contract",
-   id: "upstream-id"}], reserved_roles: ["semantic.role.*"], promises: [{id:
-   "L2.JIT-P1", contract_kind: "frame_delta", moments: [35, 36], requirement_ids:
-   ["R7"]}]}`. Promise ids MUST carry their owning-layer prefix (`L<n>.`) — bare ids
-   like "JIT-P1" collide across layers and are rejected by the loader.
-   EVERY promise must then be consumed by exactly one typed obligation in
-   obligations.json, due before its layer, whose evidence kind is `jit_contract` — the
-   complete shape, verbatim apart from your values:
-   `{id: "O7", statement: "<the deferred brief promise>", requirement_ids: ["R7"],
-   owner: "2", due: {kind: "before_layer", layer: "2"},
-   evidence: [{"kind": "jit_contract", "id": "L2.JIT-P1"}]}`.
-   Do NOT write that evidence as kind `scene_contract` or `image_contract` — those kinds
-   name materialized executable contracts and will not resolve a promise. The
-   obligation's requirement_ids must be a subset of the promise's requirement_ids; the
-   brief clauses those requirements cite are then resolved by that obligation.
+   id: "upstream-id"}], reserved_roles: ["semantic.role.*"],
+   owned_requirements: ["R7", "R8"]}`. Each owned requirement resolves in
+   requirements.json as `{kind:"deferred_owner", ids:[], owner_layer:"2",
+   due:{kind:"before_layer", layer:"2"}}`. This records coverage and ownership only.
+   A deferred `jit` block containing promises, contract kinds, moments, thresholds,
+   techniques, or evidence bindings is rejected as whole-shot preproduction.
    A deferred row MUST NOT contain unit ids, plans, mutation controls,
    claims, completion bindings, concrete scene/image contracts, recipe choices, starting
    values, calibrated thresholds, or reachability spikes. Do not select recipes for a
    deferred layer. Those are overplanning, not a
    harmless stub. Its JIT pass may materialize them only after the named upstream outcomes
-   exist, and must bind every promise to a concrete contract of the same kind and moments.
+   exist, and must close every owned requirement with required producing evidence or a typed
+   decision.
    Cross-layer hard constraints, role namespace reservations, requirement coverage, judge
    moments, and ownership remain global because downstream planning cannot safely change them.
 
@@ -366,16 +347,15 @@ WORKFLOW, in order:
    `artifact_sha256`; that schema-1 artifact must record `passed: true` and measured rates
    within explicit budgets. Otherwise use executable evidence or `human_required`.
 
-   (b) SHOT-ROOT `acceptance.json` — §4 verbatim, in TIME order. Judged ONCE over the finished
-   chain by the accept stage, never during the build:
+   (b) SHOT-ROOT `acceptance.json` — only approval moments judged by READY global units,
+   in time order. Later moments are added by their materialized layer:
      [{"id": "M1", "frame": <n>, "ref": "refs/<file>", "reads": "<what must read>",
        "strip": [<frames>], "fingerprint": {"metric_set": "vfx-harness.look-vector/v1",
        "values": {"exposure_mean": 42.1, "structure_top": 18.3,
        "halation": 12.7}}}, …]
    Copy metric ids and values exactly from measure_ref's canonical fingerprint. Never
    rename a metric in prose or attach a value to a different metric implementation.
-   Every §4 moment appears exactly once. Strip frames must cover the FULL build range
-   with no unjudged gap >24 frames.
+   Copy no fingerprint for an unmaterialized layer.
 
    (d) SHOT-ROOT `checks.json` — EVERY numeric done-check in this plan, as records rather than
    prose, each one already RUN through `measure_check`:
@@ -457,12 +437,17 @@ WORKFLOW, in order:
    `compare_control_roles`; `transform_return_delta` declares `component` as location, rotation,
    or scale. A unit declaring `temporal_evidence: "motion"` must bind at least one of
    these exact contract ids. A camera/composition/framing owner MUST have executable
-   projected context at every judge frame before its camera work can seal. Bind a bbox
-   contract directly, or add an earlier blockout work unit and declare on the camera unit:
+   projected context at every judge frame before its camera work can seal. The preferred
+   direct spelling is a REQUIRED claim whose `moments` contains the judge frame and whose
+   evidence contains `{"kind":"scene_contract","id":"<bbox-contract-at-that-frame>"}`.
+   Repeat for every judge frame; the bbox contract's `frame` must equal that moment. No
+   `composition_context` restatement is needed for this same-unit direct binding.
+   For inherited evidence from an earlier blockout work unit, declare on the camera unit:
      "composition_context": {"frames": [<frame>, ...],
                               "source_unit": "<dependency unit id>"}
    The source unit must be in `depends_on`, must judge those same frames, and must carry
-   bbox contracts there. For direct bindings use `contract_ids` instead of `source_unit`.
+   bbox contracts there. `composition_context.contract_ids` remains valid when an explicit
+   context index is useful, but it is not required in addition to direct required claims.
    On an empty scene, the first camera and the geometry used to prove its framing MAY be one
    atomic scoped unit: declare both mutation roles and bind the bbox contracts directly. Never
    invent a blockout-only predecessor whose bbox is due before the camera owned by its dependent;
@@ -497,8 +482,8 @@ WORKFLOW, in order:
 
    (f) `requirements.json` is the normative brief register. Compute the full lowercase
    SHA-256 of the staged `brief.md`; every entry cites that hash and an exact inclusive
-   line span, then resolves to exact contract ids, obligation ids, or an explicit typed
-   decision. The deterministic gate treats every substantive body paragraph, list item,
+   line span, then resolves to exact contract ids, obligation ids, deferred ownership, or an
+   explicit typed decision. The deterministic gate treats every substantive body paragraph, list item,
    and table data row as a source clause: every one must overlap at least one register
    citation. Headings and table headers are structural; YAML front matter is owned by the
    shot schema. Do not sample a few beat rows or acceptance bullets. No normative
@@ -509,6 +494,9 @@ WORKFLOW, in order:
                    "line_start":1,"line_end":2},
        "resolution":{"kind":"contract","ids":["<exact check id>"]}}]}
    A decision resolution uses `{"kind":"decision","ids":[],"decision":"<rationale>"}`.
+   A deferred requirement uses `{"kind":"deferred_owner","ids":[],
+   "owner_layer":"<n>","due":{"kind":"before_layer","layer":"<n>"}}` and must appear
+   exactly once in that layer's `jit.owned_requirements`.
    An explicit terminal N-frame lock/hold is mechanically measurable, never a prose
    decision or a single-frame look proxy. Bind its requirement (directly or through an
    obligation) to a REQUIRED rendered `frame_delta` scene contract over the final N
@@ -539,8 +527,9 @@ WORKFLOW, in order:
    with layer+unit, `before_layer` with layer, or `before_acceptance` with neither. Use
    `unit_completion` when that unit itself produces the evidence. Entry gates may name
    only already-produced upstream evidence; making a unit depend on its own future
-   contract is a circular deadlock. Exact-return and final-lock promises are obligations
-   unless already bound to executable contracts:
+   contract is a circular deadlock. Deferred ownership is not an obligation: its materialization
+   boundary is already declared in the requirement resolution. Use obligations only for
+   separately owned debt with independently produced executable evidence:
      {"schema":"vfx-harness.obligations/v1","obligations":[
       {"id":"O1","statement":"<deferred proof>","requirement_ids":["R1"],
        "owner":"<layer.unit>","due":{"kind":"before_acceptance"},
@@ -665,53 +654,32 @@ STRICT MIGRATION CONTRACT — THERE IS NO LEGACY FALLBACK:
 
 VERIFIER_ADDENDUM = """\
 
-VERIFY MODE — this session is the SECOND pass of a two-pass plan. A draft plan
-written by a different session exists at `{draft}` (its lab evidence lives under
-`logs/`). You are the adversarial verifier, with the same tools and the same
-format contract. The draft's discoveries are hypotheses until you re-establish
-them; your value concentrates exactly where the draft did not look.
+VERIFY MODE — audit the sparse publication contract in `{draft}`. Your charter is narrow:
+1. Omission hunt: every substantive brief clause has one exact citation and defensible owner.
+2. Confirm Layer 1 is executable: its DAG, scopes, claims, contracts, dependencies, and due
+   decisions close.
+3. Exception audit: any concrete design beyond Layer 1 must name which global-exception rule
+   admits it (needed by unit 1, alters DAG, irreversible, or expensive to be wrong later).
 
-1. AUDIT every frame claim: transition edges, state-change on/off ranges, direction
-   claims, and moment→frame mappings. There is no video to re-derive them from, so
-   audit them for SUPPORT instead: each number must trace to a still, to the brief, or
-   be marked *(start)*. A number presented as derived that no still can support is a
-   defect — overturn it and say so.
-2. MEASURE-CHECK every approval still with measure_ref and confirm the plan's
-   fingerprints match. A fingerprint quoted in the plan that does not reproduce is a
-   defect. NEVER accept a look target reached by exposure reasoning alone — measure.
-3. EVIDENCE-CHECK every [researched ✓spiked] tag: the cited lab file must exist —
-   Read it and confirm it proves what the ticket actually claims. Carry verified
-   evidence forward WITH its citation. Re-spike only what is uncited,
-   contradicted, or proven by a spike narrower than the ticket's claim.
-4. GAP-HUNT: the stills are keyframes and the failures live BETWEEN them. Check the
-   draft's §2b transitions: does every beat boundary state what must hold THROUGHOUT
-   the window, as a checkable number? An unspecified transition is where a shot breaks
-   (a blackout that arrives three frames after the motion it was meant to hide reads as
-   a visible cut, and nothing in a moment-only plan catches it). Search prior work the draft may have missed —
-   sibling shots (`../*/plans/global.md`, `../*/build/*.py`, `../*/refs/*`, committed
-   assets) — and add salvage pointers or evaluated-and-rejected notes.
-5. Write the superseding `plans/global.md` on the full format contract: carry what
-   survived, overturn what failed (numbered resolved decisions WITH evidence),
-   add what was missed. Open §0 with one line each: verified / overturned / added.
-
-Do not rubber-stamp, and do not rewrite for taste: every change must trace to a
-measurement, a file, or a contract violation.
+Do not measure later reference frames, design later evidence, research later techniques, or
+spike future mechanisms. Run the deterministic gate, make only bounded corrections, and write
+the superseding `plans/global.md` plus sparse machine artifacts.
 """
 
 
 def _refs_block(shot) -> str:
     """Stills are the ONLY visual input. A real brief arrives as images plus prose.
 
-    They are ATTACHED to this message as images, in the order listed — see
-    planner._kickoff_blocks. This function used to emit the list alone, which made the
-    docstring above a statement of intent rather than of fact.
+    Global planning receives paths, not every image payload. It opens or measures only
+    references due for the ready unit; JIT sessions receive their own judge references.
     """
     lines = [f"  - refs/{p.name}" for p in shot.refs] or ["  (none)"]
     return (
         "Reference stills (the complete visual target — there is no source video). "
-        "Every one is ATTACHED to this message as an image, in this order:\n"
+        "They are available at these paths; inspect only those due for global decisions "
+        "or the first ready unit:\n"
         + "\n".join(lines)
-        + "\n\nLook at them before you plan. The fingerprints carry exposure and "
+        + "\n\nWhen a still is due, inspect it before designing that unit. Fingerprints carry exposure and "
         "density; the pictures carry everything else — camera height and angle, "
         "which faces take light and which fall into shadow, what the silhouette "
         "does against the sky, how light behaves in the air. A target you can only "
@@ -728,8 +696,8 @@ def planner_user_prompt(shot) -> str:
         f"Read `brief.md` first. {_refs_block(shot)}\n\n"
         f"This authored-input-only transaction contains no implicit prior plan or build. "
         f"The exact staged brief SHA-256 for requirements citations is `{brief_hash}`.\n\n"
-        f"Do the full scene read, resolve conflicts, break the build into layers and "
-        f"tickets with confidence tags, research and spike the [unknown]s, and write "
+        f"Register the whole brief for ownership, establish the sparse layer DAG and durable "
+        f"constraints, design only the first ready unit, and write "
         f"`plans/global.md`, the eight machine contracts, and only Layer 1's first "
         f"dependency-ready execution plan."
     )
