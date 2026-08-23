@@ -154,3 +154,32 @@ def test_spike_mechanism_calibration_stays_eligible(tmp_path) -> None:
           "roles": ["iris_blade"], "op": "max", "hi": 0.3}],
         tmp_path,
     ) is None
+
+
+def test_calibration_closes_after_initial_batch_plus_one_repair() -> None:
+    from vfx_harness.agents.plan_tools import _CheckBatchBudget
+
+    budget = _CheckBatchBudget()
+
+    assert budget.take_batch()          # initial manifest
+    budget.reset_after_batch()
+    assert budget.take_single()         # probe a reject precisely
+    assert budget.take_batch()          # the one repair batch
+    budget.reset_after_batch()
+
+    assert budget.closed
+    assert not budget.take_batch()      # a third batch is refused
+    assert not budget.take_single()     # and singles close with it
+
+
+def test_calibration_singles_stay_bounded_before_any_batch() -> None:
+    from vfx_harness.agents.plan_tools import _CheckBatchBudget
+
+    budget = _CheckBatchBudget()
+
+    assert budget.take_single()
+    assert budget.take_single()
+    assert not budget.take_single()     # two exploratory singles, then batch required
+    assert budget.take_batch()
+    budget.reset_after_batch()
+    assert budget.take_single()         # reset restores precise follow-up probes

@@ -55,17 +55,46 @@ _JPEG_Q = 85
 _SPIKE_CONTRACT_MARKER = "@@VFX_PLAN_CONTRACT@@"
 
 
-class _CheckBatchBudget:
-    """Two exploratory single checks, then a mandatory batch; scoped per plan session."""
+_CALIBRATION_CLOSED = (
+    "CALIBRATION CLOSED: this session already spent its initial batch and one repair "
+    "batch. Do not keep tuning image checks — they are optional evidence. Keep the "
+    "candidates that passed, DROP the unresolved ones, and write the DAG, ownership "
+    "register, and Layer 1 unit now. Anything an image check could not calibrate belongs "
+    "to an executable scene contract or the producing unit's build-time falsification."
+)
 
-    def __init__(self, limit: int = 2):
+
+class _CheckBatchBudget:
+    """Two exploratory singles, then at most an initial batch plus one repair batch.
+
+    Run 20260823T065933Z-844d62 spent eleven minutes of a 24-turn draft on Layer-1
+    calibration — three batches, three more singles, eighteen rejected candidates —
+    without writing a DAG, register, or candidate plan. The prompt said calibration
+    stops after one retry; only the tool can mean it. When the second batch completes,
+    calibration closes for the session and unresolved image checks are dropped in favor
+    of executable scene contracts and build-time falsification.
+    """
+
+    def __init__(self, limit: int = 2, batch_limit: int = 2):
         self.limit = limit
+        self.batch_limit = batch_limit
         self.singles = 0
+        self.batches = 0
+
+    @property
+    def closed(self) -> bool:
+        return self.batches >= self.batch_limit
 
     def take_single(self) -> bool:
-        if self.singles >= self.limit:
+        if self.closed or self.singles >= self.limit:
             return False
         self.singles += 1
+        return True
+
+    def take_batch(self) -> bool:
+        if self.closed:
+            return False
+        self.batches += 1
         return True
 
     def reset_after_batch(self) -> None:
@@ -831,6 +860,9 @@ def build_plan_tools(
         },
     )
     async def measure_check(args):
+        if check_budget.closed:
+            log("plan-lab x measure_check: calibration closed", 1)
+            return _text(_CALIBRATION_CLOSED, is_error=True)
         if not check_budget.take_single():
             log("plan-lab x measure_check: single-call exploration cap reached", 1)
             return _text(
@@ -893,7 +925,10 @@ def build_plan_tools(
         "between independent measurements that have no bearing on each other. Batch them.\n"
         "Pass `checks`: a list of the same objects measure_check takes (metric, op, lo/hi, "
         "ref, regions, rejects). Returns one compact line per check plus a paste-ready "
-        "`proof` block for the ones that pass. Up to 40 per call.",
+        "`proof` block for the ones that pass. Up to 40 per call. AT MOST TWO batches per "
+        "session — the initial manifest and ONE repair of its rejects. After that "
+        "calibration closes: drop unresolved candidates (image checks are optional) and "
+        "proceed on executable scene contracts and build-time falsification.",
         {
             "type": "object",
             "properties": {"checks": {"type": "array", "items": {"type": "object"}}},
@@ -906,6 +941,9 @@ def build_plan_tools(
         specs = list(args.get("checks") or [])[:40]
         if not specs:
             return _text("no checks supplied", is_error=True)
+        if not check_budget.take_batch():
+            log("plan-lab x measure_checks: calibration closed", 1)
+            return _text(_CALIBRATION_CLOSED, is_error=True)
         corpus = sorted(
             q
             for sib in shot_folder.parent.glob("*/renders")

@@ -296,6 +296,22 @@ Slices 2–5 are implemented pending the runtime acceptance above:
 Repository verification passed with 165 tests before the required live sparse-plan acceptance;
 the live economics and first authoritative scene evidence remain the acceptance boundary.
 
+### Calibration ceiling — 2026-08-23
+
+Monitored run `20260823T065933Z-844d62` confirmed the sparse boundary end to end: a 24-turn
+draft, no global reference embedding, only Layer 1's two judge frames inspected, premature
+`measure_ref` refused mechanically, no spikes, and no later-layer analysis of any kind. It was
+stopped after eleven minutes for the remaining unbounded surface: Layer-1 image-check
+calibration ran three `measure_checks` batches, three exploratory singles, nine recipe
+searches, and eighteen rejected candidates without writing a DAG, register, or candidate plan
+— the prompt said one retry, but `_CheckBatchBudget` enforced no batch ceiling.
+
+The budget now closes calibration after an initial batch plus one repair batch. Once closed,
+both `measure_check` and `measure_checks` refuse with the forcing instruction: keep the
+candidates that passed, drop the unresolved ones (image checks are optional evidence), and
+write the DAG, register, and Layer 1 unit; whatever calibration could not settle belongs to an
+executable scene contract or the producing unit's build-time falsification.
+
 ## Release and rollback
 
 Implement behind the plan/build policy version, as with HIR-0011: existing immutable bundles

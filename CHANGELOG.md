@@ -50,6 +50,9 @@ live in the linked Harness Improvement Records.
   fingerprints are computed once per run and reused across draft and verify, and
   repeated gate signatures stop the in-session edit loop, `VFXH_PLAN_MAX_TURNS` defaults to 24,
   and verification is separately bounded to 12 turns.
+- Capped image-check calibration at an initial batch plus one repair batch per plan session;
+  when the ceiling closes, both calibration tools refuse with instructions to drop unresolved
+  optional image checks and proceed on executable scene contracts and build-time falsification.
 - Made reference ingestion follow execution scope: global kickoff no longer embeds every future
   approval image, `measure_ref` refuses references outside ready units, and JIT materialization
   receives only its layer's judge references.
