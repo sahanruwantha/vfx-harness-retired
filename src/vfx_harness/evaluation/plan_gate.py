@@ -1631,7 +1631,49 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                 continue
             structured_decisions[decision_id] = (line_no, contract)
 
+    try:
+        unit_first_layers = json.loads((folder / "layers.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        unit_first_layers = None
+    unit_first = isinstance(unit_first_layers, dict) and unit_first_layers.get("schema") == 5
+
     for decision_id, (line_no, expected) in structured_decisions.items():
+        if unit_first:
+            # A schema-5 bundle publishes no contracts, so exact adoption cannot happen
+            # here — validate_materialization enforces the verbatim copy when the owning
+            # layer materializes. The global obligation is ownership: some deferred
+            # layer's reserved namespaces must cover every role the decision mutates,
+            # or the approved values have nowhere to land and would silently vanish.
+            roles = [str(role) for role in (expected.get("roles") or [])]
+            deferred_reserved = {
+                str(row.get("id")): [
+                    str(pattern)
+                    for pattern in ((row.get("jit") or {}).get("reserved_roles") or [])
+                ]
+                for row in layers
+                if isinstance(row, dict) and row.get("execution") == "jit_deferred"
+            }
+            owners = sorted(
+                layer_id
+                for layer_id, patterns in deferred_reserved.items()
+                if roles
+                and all(
+                    any(fnmatch.fnmatchcase(role, pattern) for pattern in patterns)
+                    for role in roles
+                )
+            )
+            if not owners:
+                findings.append(Finding(
+                    "decision-adoption",
+                    True,
+                    f"state/plan-resolutions.jsonl:{line_no} ({decision_id})",
+                    "no deferred layer reserves this decision's roles: "
+                    + (", ".join(roles) or "(none declared)"),
+                    "reserve the decision's roles in the owning deferred layer; its "
+                    "materialization must copy values.contract into scene_contracts "
+                    "with decision_id",
+                ))
+            continue
         candidates = [
             row for row in scene_rows
             if isinstance(row, dict) and str(row.get("decision_id") or "") == decision_id
@@ -1760,7 +1802,9 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                 f"frame_delta contract ({source[:120]})",
                 "bind the cited requirement directly, or through an obligation, to a "
                 "frame_delta contract over the derived terminal window and make that "
-                "contract required evidence in its producing unit",
+                "contract required evidence in its producing unit. In a sparse bundle that "
+                "publishes no contracts, resolve the clause as a deferred_owner requirement "
+                "naming the owning layer",
             ))
 
     motion_language = re.compile(
@@ -1795,7 +1839,9 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
             "bind the cited requirement directly, or through an obligation, to required "
             "onset_order, radial_distance_trend, transform_return_delta, keyframe_schedule, "
             "or frame_delta evidence; a unit evidence label or single-frame proxy cannot "
-            "prove motion",
+            "prove motion. In a sparse bundle that publishes no contracts, resolve the "
+            "clause as a deferred_owner requirement naming the layer that will bind this "
+            "evidence at its materialization",
         ))
 
     fracture_start = 0
@@ -1842,7 +1888,9 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                     f"{return_window[1]} ({source[:120]})",
                     "bind the cited requirement directly, or through an obligation, to a "
                     "transform_return_delta contract over the derived pre-fracture-to-final "
-                    "window; a partial-reassembly frame cannot establish exact return",
+                    "window; a partial-reassembly frame cannot establish exact return. In a "
+                    "sparse bundle that publishes no contracts, resolve the clause as a "
+                    "deferred_owner requirement naming the owning layer",
                 ))
 
     def upstream_units(layer_id: str, unit_id: str) -> set[str]:
@@ -1950,6 +1998,22 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                 + (", ".join(owners) if owners else "missing"),
                 "list the requirement exactly once in that deferred layer's owned_requirements",
             ))
+    # The inverse direction: owned means owed. A concretely-resolved row in a layer's
+    # owned_requirements carries no debt, and downstream closure would demand a binding
+    # the publish check forbids — bundle a5692e9f shipped this deadlock because only the
+    # deferred_owner direction was verified at publication.
+    requirements_by_id = {requirement.id: requirement for requirement in requirements}
+    for requirement_id in requirement_owners:
+        requirement = requirements_by_id.get(requirement_id)
+        if requirement is None or requirement.resolution_kind == "deferred_owner":
+            continue
+        findings.append(Finding(
+            "requirement-closure", True, requirement_id,
+            "owned_requirements lists a requirement the register already resolves as "
+            f"'{requirement.resolution_kind}'; owned means owed and this row carries no debt",
+            "remove it from the layer's owned_requirements, or resolve the clause as "
+            "deferred_owner naming that layer",
+        ))
     for row in (*scene_rows, *image_rows):
         owner = str(row.get("owner_layer") or row.get("activates_at") or "")
         if owner in deferred_layers:

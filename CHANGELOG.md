@@ -71,6 +71,12 @@ live in the linked Harness Improvement Records.
   upstream outcomes, and image-check calibration is unavailable until a real candidate exists.
 - Added typed terminal causes for operator interruption, model-turn exhaustion, plan-gate stalls,
   plan-budget exhaustion, usage limits, and process errors in run status and summaries.
+- Folded the SDK session-result subtype into the collected failure signal and widened the
+  classifier to the SDK's raised "maximum number of turns" phrasing, so a real max-turns
+  termination is labeled `max_turns_exhausted` immediately instead of burning retry sessions
+  and reporting `session_stalled`; aligned global repair/verify kickoffs with the sparse
+  contract by removing instructions to re-prove calibration and spike evidence those roles can
+  no longer produce.
 
 See [HIR-0002](docs/improvements/HIR-0002-structured-run-output.md),
 [HIR-0003](docs/improvements/HIR-0003-truthful-until-clean-planning.md),

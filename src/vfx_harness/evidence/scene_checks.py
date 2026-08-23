@@ -131,7 +131,12 @@ def validate_row(row: dict) -> str | None:
         return life
     kind = str(row.get("kind", ""))
     if kind not in SUPPORTED_KINDS:
-        return f"unsupported kind {kind!r}"
+        # Sessions authoring contracts are workspace-confined: this message is their
+        # only route to the registry, and an unnamed enum invites invented kinds.
+        return (
+            f"unsupported kind {kind!r}; supported kinds: "
+            + ", ".join(sorted(SUPPORTED_KINDS))
+        )
     if kind in OBJECT_KINDS and not (
         _selectors(row, "roles") or _selectors(row, "control_roles")
     ):

@@ -934,6 +934,375 @@ def test_typed_promises_are_rejected_by_the_loader(tmp_path: Path) -> None:
         load_layers_from_path(tmp_path / "layers.json")
 
 
+def _structured_camera_decision(root: Path) -> dict:
+    state = root / "state"
+    state.mkdir(exist_ok=True)
+    expected = {
+        "kind": "keyframe_schedule",
+        "roles": ["cam_rig"],
+        "samples": [
+            {"frame": 1, "values": {"location": [0, -6, 0]}},
+            {"frame": 240, "values": {"location": [0, 225, 0]}},
+        ],
+        "op": "max",
+        "hi": 0.001,
+    }
+    (state / "plan-resolutions.jsonl").write_text(json.dumps({
+        "schema": "vfx-harness.plan-resolutions/v1",
+        "bundle_hash": "prior-bundle",
+        "kind": "assumption",
+        "id": "A-camera",
+        "status": "satisfied",
+        "evidence": [{"kind": "human_decision", "id": "user-approved-camera"}],
+        "decision": "approved exact camera spine",
+        "values": {"contract": expected},
+    }) + "\n", encoding="utf-8")
+    return expected
+
+
+def _all_deferred_schema5(root: Path, reserved: list[str]) -> None:
+    data = json.loads((root / "layers.json").read_text(encoding="utf-8"))
+    data["schema"] = 5
+    for row in data["layers"]:
+        row["execution"] = "jit_deferred"
+        row["stages"] = []
+        row.setdefault("jit", {
+            "depends_on_layers": [], "required_outcomes": [],
+            "reserved_roles": ["placeholder.*"], "owned_requirements": ["R-final-lock"],
+        })
+    data["layers"][0]["jit"]["reserved_roles"] = reserved
+    _write(root / "layers.json", data)
+
+
+def test_unit_first_decision_adoption_defers_to_owning_layer(tmp_path: Path) -> None:
+    """A schema-5 bundle publishes no contracts, so demanding the exact adopted copy at
+    global time deadlocks against the global-preproduction rule (run
+    20260823T095834Z-7040c2). The global obligation narrows to ownership; the verbatim
+    copy is enforced by validate_materialization at the owning layer."""
+    _candidate(tmp_path)
+    _structured_camera_decision(tmp_path)
+    _all_deferred_schema5(tmp_path, reserved=["cam_rig", "camera.*"])
+
+    findings, _ = _check_meta_records(tmp_path)
+    assert not any(finding.check == "decision-adoption" for finding in findings)
+
+
+def test_unit_first_unowned_decision_roles_still_block(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _structured_camera_decision(tmp_path)
+    _all_deferred_schema5(tmp_path, reserved=["iris.*"])
+
+    findings, _ = _check_meta_records(tmp_path)
+    assert any(
+        finding.blocking
+        and finding.check == "decision-adoption"
+        and "A-camera" in finding.where
+        and "no deferred layer reserves" in finding.what
+        for finding in findings
+    )
+
+
+def test_materialization_must_adopt_owned_structured_decision(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    expected = {
+        "kind": "keyframe_schedule",
+        "roles": ["polish.comp"],
+        "samples": [
+            {"frame": 239, "values": {"location": [0, 0, 0]}},
+            {"frame": 240, "values": {"location": [0, 0, 0]}},
+        ],
+        "op": "max",
+        "hi": 0.001,
+    }
+    state = tmp_path / "state"
+    state.mkdir(exist_ok=True)
+    (state / "plan-resolutions.jsonl").write_text(json.dumps({
+        "schema": "vfx-harness.plan-resolutions/v1",
+        "bundle_hash": bundle.content_hash,
+        "kind": "assumption",
+        "id": "A-polish",
+        "status": "satisfied",
+        "evidence": [{"kind": "human_decision", "id": "user-approved-polish"}],
+        "decision": "approved polish hold",
+        "values": {"contract": expected},
+    }) + "\n", encoding="utf-8")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+
+    with pytest.raises(ValueError, match="must adopt structured decision A-polish"):
+        validate_materialization(
+            bundle.root, payload,
+            expected_bundle_hash=bundle.content_hash,
+            resolutions_path=state / "plan-resolutions.jsonl",
+        )
+
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["scene_contracts"].append({
+        "id": "polish-spine", "decision_id": "A-polish", "owner_layer": "2",
+        "fault_owner": "2", "activates_at": "2", "lifecycle": "persistent",
+        "axis": "final_lock", **expected,
+    })
+    data["layer"]["stages"][0]["evaluation"]["claims"].append({
+        "id": "polish-spine-claim",
+        "proposition": "polish keys the approved hold exactly",
+        "axis": "final_lock", "property": "keyframe_schedule",
+        "subject_roles": ["polish.comp"], "subject_controls": [],
+        "moments": [240], "kind": "atomic", "required": True,
+        "authority": "executable_required", "repair_owner": "polish",
+        "evidence": [{"kind": "scene_contract", "id": "polish-spine"}],
+    })
+    _write(payload, data)
+
+    materialized = validate_materialization(
+        bundle.root, payload,
+        expected_bundle_hash=bundle.content_hash,
+        resolutions_path=state / "plan-resolutions.jsonl",
+    )
+    assert any(
+        row.get("decision_id") == "A-polish" for row in materialized.scene_contracts
+    )
+
+
+def test_deferred_dependent_may_leave_required_outcomes_empty(tmp_path: Path) -> None:
+    """All-deferred global documents have no sealed evidence to name: evidence_owners is
+    empty because nothing has stages, so demanding non-empty required_outcomes forced
+    fabricated ids (run 20260823T093656Z-35a68c). The edge is global; the binding waits
+    for materialization."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["schema"] = 5
+    data["layers"][0]["execution"] = "jit_deferred"
+    data["layers"][0]["stages"] = []
+    data["layers"][0]["jit"] = {
+        "depends_on_layers": [], "required_outcomes": [],
+        "reserved_roles": ["product.*"], "owned_requirements": ["R-root"],
+    }
+    data["layers"][1]["jit"]["required_outcomes"] = []
+    _write(tmp_path / "layers.json", data)
+
+    parsed = load_layers_from_path(tmp_path / "layers.json")
+
+    assert parsed["2"].jit.required_outcomes == ()
+
+
+def test_outcome_against_deferred_dependency_says_leave_empty(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["schema"] = 5
+    data["layers"][0]["execution"] = "jit_deferred"
+    data["layers"][0]["stages"] = []
+    data["layers"][0]["jit"] = {
+        "depends_on_layers": [], "required_outcomes": [],
+        "reserved_roles": ["product.*"], "owned_requirements": ["R-root"],
+    }
+    # layer 2 keeps its scene_contract:final-lock reference, but layer 1 is now deferred
+    # and owns no sealed evidence — the error must teach the legal shape.
+    _write(tmp_path / "layers.json", data)
+
+    with pytest.raises(ValueError, match="leave required_outcomes empty"):
+        load_layers_from_path(tmp_path / "layers.json")
+
+
+def test_ready_dependency_still_requires_named_outcomes(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["layers"][1]["jit"]["required_outcomes"] = []
+    _write(tmp_path / "layers.json", data)
+
+    with pytest.raises(ValueError, match="must name the sealed evidence"):
+        load_layers_from_path(tmp_path / "layers.json")
+
+
+def test_unit_first_ready_dependency_leaves_deferred_consumer_unbound(tmp_path: Path) -> None:
+    """A dependency turning ready is the normal state after every upstream
+    materialization in a unit-first document; the still-deferred consumer's row is
+    immutable global authority with deliberately empty outcomes. Run 20260823T133128Z
+    burned a full session against the legacy rule firing during the ROOT layer's
+    overlay validation — an error with no legal fix."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["schema"] = 5
+    data["layers"][1]["jit"]["required_outcomes"] = []
+    _write(tmp_path / "layers.json", data)
+
+    parsed = load_layers_from_path(tmp_path / "layers.json")
+
+    assert parsed["1"].execution == "ready"
+    assert parsed["2"].jit.required_outcomes == ()
+
+
+def test_root_materialization_validates_with_deferred_dependents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The combined validation view must keep the base document's schema so unit-first
+    loader semantics apply — the exact shape of materializing layer 1 while layer 2
+    stays deferred with empty outcomes."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    ready_layer = document["layers"][0]
+    root = {**ready_layer, "execution": "jit_deferred", "stages": []}
+    root["jit"] = {
+        "depends_on_layers": [], "required_outcomes": [],
+        "reserved_roles": ["comp"], "owned_requirements": ["R-final-lock"],
+    }
+    dependent = {
+        **ready_layer, "id": "2", "script": "build/02_later.py", "title": "Later",
+        "execution": "jit_deferred", "stages": [],
+        "jit": {
+            "depends_on_layers": ["1"], "required_outcomes": [],
+            "reserved_roles": ["later.*"], "owned_requirements": ["R-later"],
+        },
+    }
+    document["schema"] = 5
+    document["layers"] = [root, dependent]
+    _write(tmp_path / "layers.json", document)
+    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
+        "due": {"kind": "before_layer", "layer": "1"},
+    }
+    _write(tmp_path / "requirements.json", requirements)
+    _write(tmp_path / "obligations.json", {
+        "schema": "vfx-harness.obligations/v1", "obligations": [],
+    })
+    layout = run_artifacts.create(tmp_path, "root-with-dependents")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = tmp_path / "root-jit.json"
+    _write(payload, {
+        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "bundle_hash": bundle.content_hash,
+        "layer": {**ready_layer, "execution": "ready"},
+        "scene_contracts": [{
+            "id": "final-lock", "kind": "frame_delta", "owner_layer": "1",
+            "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
+            "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
+        }],
+        "image_contracts": [],
+        "requirement_bindings": [{
+            "requirement_id": "R-final-lock", "contract_ids": ["final-lock"],
+        }],
+        "acceptance": [],
+    })
+
+    materialized = validate_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized.layer.id == "1"
+
+
+def test_concretely_resolved_owned_requirement_fails_closed_at_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run 20260823T135432Z deadlocked on a bundle whose owned_requirements carried
+    decision-resolved rows: closure demanded a binding the publish check forbade. Owned
+    means owed — such a bundle is inconsistent authority and the remedy is
+    republication, never a consumption-side accommodation that would generalize one
+    shot's accident into the contract."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"].append({
+        "id": "R-format",
+        "statement": "Build target: 240 frames at 24fps.",
+        "citation": requirements["requirements"][0]["citation"],
+        "resolution": {"kind": "decision", "ids": [],
+                       "decision": "authored front matter",
+                       "decision_strength": "hard_constraint"},
+    })
+    _write(tmp_path / "requirements.json", requirements)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["owned_requirements"] = ["R-final-lock", "R-format"]
+    _write(tmp_path / "layers.json", layers)
+    layout = run_artifacts.create(tmp_path, "closed-rows")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+
+    with pytest.raises(ValueError, match="inconsistent authority; republish"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+def test_gate_rejects_owned_requirements_that_carry_no_debt(tmp_path: Path) -> None:
+    """The publication gate owns this consistency: bundle a5692e9f shipped the deadlock
+    because only the deferred_owner→owned direction was verified."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"].append({
+        "id": "R-format",
+        "statement": "Build target: 240 frames at 24fps.",
+        "citation": requirements["requirements"][0]["citation"],
+        "resolution": {"kind": "decision", "ids": [],
+                       "decision": "authored front matter",
+                       "decision_strength": "hard_constraint"},
+    })
+    _write(tmp_path / "requirements.json", requirements)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["owned_requirements"] = ["R-final-lock", "R-format"]
+    _write(tmp_path / "layers.json", layers)
+
+    findings, _ = _check_meta_records(tmp_path)
+
+    assert any(
+        finding.blocking
+        and finding.check == "requirement-closure"
+        and "carries no debt" in finding.what
+        and finding.where == "R-format"
+        for finding in findings
+    )
+
+
+def test_owned_requirement_deferred_to_another_layer_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
+        "due": {"kind": "before_layer", "layer": "1"},
+    }
+    _write(tmp_path / "requirements.json", requirements)
+    layout = run_artifacts.create(tmp_path, "foreign-owner")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+
+    with pytest.raises(ValueError, match="deferred to another layer"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+def test_required_outcome_kind_error_enumerates_valid_kinds(tmp_path: Path) -> None:
+    """The planner is workspace-confined, so the validation message is its only route to
+    the enum. Run 20260823T085630Z-1c18c2 spent draft turns guessing spellings for a
+    constraint whose accepted values it had no way to look up."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["layers"][1]["jit"]["required_outcomes"] = [
+        {"kind": "property", "id": "camera_spine_locked"}
+    ]
+    _write(tmp_path / "layers.json", data)
+
+    with pytest.raises(
+        ValueError, match="'scene_contract', 'image_contract', or 'semantic_diff'"
+    ):
+        load_layers_from_path(tmp_path / "layers.json")
+
+
 def test_owned_requirements_must_be_unique(tmp_path: Path) -> None:
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)

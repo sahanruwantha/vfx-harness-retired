@@ -153,6 +153,10 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
         raise FileNotFoundError(
             f"{path} missing — run the plan agent first (its layers define the build "
             f"order; milestones.json defines the acceptance moments)")
+    try:
+        unit_first = json.loads(path.read_text(encoding="utf-8")).get("schema") == 5
+    except (OSError, json.JSONDecodeError):
+        unit_first = False
     out: dict[str, Layer] = {}
     for index, g in enumerate(read_document(path)):
         where = f"layers.json.layers[{index}]"
@@ -210,10 +214,9 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
             raw_outcomes = raw_jit.get("required_outcomes", [])
             if not isinstance(raw_outcomes, list):
                 raise ValueError(f"{where}.jit.required_outcomes must be a list")
-            if dependencies and not raw_outcomes:
-                raise ValueError(
-                    f"{where}.jit.required_outcomes must be non-empty when dependencies exist"
-                )
+            # Whether outcomes may be empty depends on the dependencies' execution state,
+            # which is only known once every layer is parsed; enforced below with
+            # evidence_owners.
             outcomes: list[tuple[str, str]] = []
             for outcome_index, outcome in enumerate(raw_outcomes):
                 at = f"{where}.jit.required_outcomes[{outcome_index}]"
@@ -222,7 +225,12 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                     "image_contract",
                     "semantic_diff",
                 }:
-                    raise ValueError(f"{at}.kind must be an executable evidence kind")
+                    # The planner is workspace-confined: this message is its only route to
+                    # the enum. Run 1c18c2 burned a draft's turn budget guessing spellings.
+                    raise ValueError(
+                        f"{at}.kind must be an executable evidence kind: "
+                        f"'scene_contract', 'image_contract', or 'semantic_diff'"
+                    )
                 oid = str(outcome.get("id") or "").strip()
                 if not oid:
                     raise ValueError(f"{at}.id must be non-empty")
@@ -335,11 +343,34 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                 deferred_role_owners.append((role, layer.id))
         if layer.execution != "jit_deferred" or layer.jit is None:
             continue
+        # Sealed evidence is only nameable once a dependency is ready. In an all-deferred
+        # global document nothing has stages yet, so the binding is chosen at the
+        # dependent layer's materialization; demanding it earlier forces fabricated ids
+        # (run 35a68c guessed requirement ids until its turn budget died).
+        ready_deps = sorted(
+            dep
+            for dep in layer.jit.depends_on_layers
+            if dep in out and out[dep].execution == "ready"
+        )
+        # Only legacy schema-4 documents may demand this at load: in a unit-first
+        # document a dependency turning ready is the normal state after every upstream
+        # materialization, the still-deferred consumer's row is immutable global
+        # authority with deliberately empty outcomes, and its binding is chosen at its
+        # OWN materialization. Run 20260823T133128Z burned a session against this rule
+        # firing during layer 1's overlay validation with no legal way to satisfy it.
+        if not unit_first and ready_deps and not layer.jit.required_outcomes:
+            raise ValueError(
+                f"layer {layer.id} JIT must name the sealed evidence it consumes from its "
+                f"ready dependencies ({', '.join(ready_deps)}) in required_outcomes"
+            )
         for outcome in layer.jit.required_outcomes:
             owner = evidence_owners.get(outcome)
             if owner is None:
                 raise ValueError(
-                    f"layer {layer.id} JIT requires unknown upstream evidence {outcome[0]}:{outcome[1]}"
+                    f"layer {layer.id} JIT requires unknown upstream evidence "
+                    f"{outcome[0]}:{outcome[1]}; while every dependency is still "
+                    "jit_deferred, leave required_outcomes empty — the binding is chosen "
+                    "at this layer's materialization against sealed upstream outcomes"
                 )
             if owner not in set(layer.jit.depends_on_layers):
                 raise ValueError(

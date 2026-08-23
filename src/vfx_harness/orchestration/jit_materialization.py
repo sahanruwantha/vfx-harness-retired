@@ -114,8 +114,16 @@ def validate_materialization(
     *,
     expected_bundle_hash: str,
     base_layers_path: str | Path | None = None,
+    resolutions_path: str | Path | None = None,
+    base_requirements_path: str | Path | None = None,
 ) -> MaterializedLayer:
-    """Validate one overlay without publishing or creating durable unit state."""
+    """Validate one overlay without publishing or creating durable unit state.
+
+    `resolutions_path` names the durable decision ledger; bundles do not freeze it, so
+    production callers must pass the shot's `state/plan-resolutions.jsonl` explicitly or
+    decision adoption cannot be enforced. `base_requirements_path` names the register the
+    closure is judged against (the evolving selected view during production; the bundle's
+    own register by default)."""
     root = Path(global_root)
     source = Path(materialization_path)
     payload = _document(source)
@@ -145,17 +153,23 @@ def validate_materialization(
             "JIT materialization changes global structural authority: " + ", ".join(changed)
         )
 
+    base_document = (
+        _document(Path(base_layers_path)) if base_layers_path else _document(root / "layers.json")
+    )
     base_layers = (
-        _rows(_document(Path(base_layers_path)), "layers", "layers.json")
-        if base_layers_path
-        else global_layers
+        _rows(base_document, "layers", "layers.json") if base_layers_path else global_layers
     )
     combined_layers = [layer_row if str(row.get("id")) == layer_id else row for row in base_layers]
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".layers.json", prefix=".jit-validate-", dir=root, delete=False
     ) as handle:
         temp_path = Path(handle.name)
-        json.dump({"schema": 4, "layers": combined_layers}, handle)
+        # The combined view keeps the base document's schema: unit-first loader rules
+        # (deferred consumers of a freshly-ready dependency keep empty outcomes) must
+        # see schema 5, not a forced legacy 4.
+        json.dump(
+            {"schema": base_document.get("schema", 4), "layers": combined_layers}, handle
+        )
     try:
         parsed = load_layers_from_path(temp_path)
     finally:
@@ -217,6 +231,47 @@ def validate_materialization(
             "materialized contracts lack required producing claims: " + ", ".join(missing_claims)
         )
 
+    # A structured human decision whose roles live in this layer's reserved namespaces is
+    # adopted HERE: a schema-5 global bundle publishes no contracts, so the global gate
+    # only proves an owner exists. The exact executable copy — and its binding to a
+    # required producing claim, enforced just above for every contract — lands at the
+    # owner's materialization.
+    ledger_path = (
+        Path(resolutions_path)
+        if resolutions_path is not None
+        else root / "state" / "plan-resolutions.jsonl"
+    )
+    if ledger_path.is_file():
+        for line in ledger_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                resolution = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # ledger integrity is the plan gate's finding, not this one
+            if resolution.get("status") != "satisfied" or not isinstance(
+                resolution.get("values"), dict
+            ):
+                continue
+            decision_id = str(resolution.get("id") or "").strip()
+            contract = resolution["values"].get("contract")
+            if not decision_id or not isinstance(contract, dict) or not contract:
+                continue
+            roles = [str(role) for role in (contract.get("roles") or [])]
+            if not roles or not all(_matches_reserved(role, reserved) for role in roles):
+                continue
+            adopted = [
+                row for row in scene_rows
+                if str(row.get("decision_id") or "") == decision_id
+                and all(row.get(key) == value for key, value in contract.items())
+            ]
+            if not adopted:
+                raise ValueError(
+                    f"materialization must adopt structured decision {decision_id}: copy "
+                    "values.contract exactly into scene_contracts, keep decision_id, and "
+                    "bind it to a required claim"
+                )
+
     raw_bindings = payload.get("requirement_bindings")
     if not isinstance(raw_bindings, list):
         raise ValueError("materialization.requirement_bindings must be a list")
@@ -261,6 +316,44 @@ def validate_materialization(
 
     owned = set(map(str, jit.get("owned_requirements") or []))
     bound = set(requirement_bindings) | set(requirement_decisions)
+    # `owned_requirements` means debt: rows the register defers to exactly this layer.
+    # A bundle whose owned list carries concretely-resolved or foreign rows is
+    # inconsistent authority — fail closed and route to republication. Bending the
+    # closure here to tolerate one published bundle's shape would generalize that
+    # shot's accident into the contract.
+    register_path = (
+        Path(base_requirements_path)
+        if base_requirements_path is not None
+        else root / "requirements.json"
+    )
+    register = {
+        str(row.get("id")): (row.get("resolution") or {})
+        for row in _rows(_document(register_path), "requirements", "requirements.json")
+    }
+    unknown_owned = sorted(rid for rid in owned if rid not in register)
+    if unknown_owned:
+        raise ValueError(
+            "owned requirements missing from the register: " + ", ".join(unknown_owned)
+        )
+    concrete_owned = sorted(
+        rid for rid in owned if register[rid].get("kind") != "deferred_owner"
+    )
+    if concrete_owned:
+        raise ValueError(
+            "owned requirements are already resolved concretely in the register: "
+            + ", ".join(concrete_owned)
+            + " — the bundle's ownership is inconsistent authority; republish the "
+            "global plan instead of materializing around it"
+        )
+    foreign = sorted(
+        rid for rid in owned
+        if str(register[rid].get("owner_layer") or "") != layer_id
+    )
+    if foreign:
+        raise ValueError(
+            "owned requirements are deferred to another layer in the register: "
+            + ", ".join(foreign)
+        )
     missing_requirements = sorted(owned - bound)
     extra_requirements = sorted(bound - owned)
     if missing_requirements or extra_requirements:
@@ -352,6 +445,8 @@ def publish_materialization(
         materialization_path,
         expected_bundle_hash=bundle.content_hash,
         base_layers_path=base_layers,
+        resolutions_path=shot / "state" / "plan-resolutions.jsonl",
+        base_requirements_path=base_requirements,
     )
 
     layers_doc = _document(base_layers)

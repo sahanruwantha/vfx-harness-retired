@@ -51,6 +51,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,7 +71,7 @@ from vfx_harness.agents.prompts import (
     repair_user_prompt,
     verifier_user_prompt,
 )
-from vfx_harness.agents.resilience import run_session
+from vfx_harness.agents.resilience import AgentSessionFailure, result_signal, run_session
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.infrastructure.config import DEFAULT_EXECUTION_MODEL, Settings
 from vfx_harness.knowledge.recipes import build_recipe_tools
@@ -91,6 +92,86 @@ from vfx_harness.orchestration.ledger import load_layers
 from .builder import _one_user_message
 
 
+def _with_target_feedback(hooks: dict, target: Path, validate) -> dict:
+    """Append warm write-time validation of one target file to a planner hook set."""
+    from vfx_harness.agents.plan_guardrails import target_validation_feedback
+
+    hooks = dict(hooks)
+    hooks["PostToolUse"] = [
+        *hooks.get("PostToolUse", []),
+        target_validation_feedback(target, validate),
+    ]
+    return hooks
+
+
+# The materialization document's unit/stage/claim schema exists only in validators the
+# session cannot read. Attempt 3 (run 48a0f1) walked it one field-precise error per write
+# and exhausted 24 turns thirteen writes deep. This generic minimal-valid shape turns the
+# walk into a diff; every value is a placeholder to replace, no shot vocabulary.
+_MATERIALIZATION_EXAMPLE = """{
+ "schema": "<materialization schema id from your instructions>",
+ "bundle_hash": "<selected bundle hash>",
+ "layer": {
+  "<structural fields copied verbatim from your global row>": "...",
+  "execution": "ready",
+  "stages": [{
+   "id": "example_unit", "title": "Example unit", "plan": "plans/units/example_unit.md",
+   "depends_on": [],
+   "mutates": {"mode": "scoped", "roles": ["example_role.part"], "controls": ["example_control"],
+               "control_roles": {"example_control": ["example_role.part"]},
+               "script_spans": ["build/units/01/example_unit.py"]},
+   "protects": {"selector": "all_active_upstream_interfaces",
+                "resolve_to_explicit_ids_at": "freeze"},
+   "evaluation": {"primary_judge": 1, "judge": [{"frame": 1, "ref": "refs/<a judge ref>.png"}],
+                  "temporal_evidence": "static",
+                  "claims": [{
+                   "id": "example-claim", "proposition": "one testable sentence",
+                   "axis": "<an axis this layer owns>", "property": "<contract kind>",
+                   "subject_roles": ["example_role.part"], "subject_controls": [],
+                   "moments": [1], "kind": "atomic", "required": true,
+                   "authority": "executable_required", "repair_owner": "example_unit",
+                   "evidence": [{"kind": "scene_contract", "id": "example-contract"}]}]},
+   "completion": "all_required_claims_and_protected_contracts_pass"}]
+ },
+ "scene_contracts": [{
+  "id": "example-contract", "kind": "<contract kind>", "owner_layer": "<this layer id>",
+  "fault_owner": "<this layer id>", "activates_at": "<this layer id>", "lifecycle": "layer",
+  "axis": "<an owned axis>", "op": "max", "hi": 0.01}],
+ "image_contracts": [],
+ "requirement_bindings": [
+  {"requirement_id": "<owned id>", "contract_ids": ["example-contract"]},
+  {"requirement_id": "<owned id>", "decision": {"statement": "one-sentence closure",
+    "decision_strength": "approved_start"}}],
+ "acceptance": []
+}"""
+
+
+def _materialization_kickoff(shot_folder: Path, layer, bundle, rel_target: str) -> str:
+    """The session must copy its global layer row exactly and close owned requirements,
+    so the kickoff carries the row verbatim and the READABLE paths that hold the rest.
+    Run 20260823T125746Z-9cd0b8 got only the bundle hash: it probed six plausible bundle
+    locations, was denied by the path scope, reconstructed the row from prose, and
+    failed structural validation on every field."""
+    bundle_rel = bundle.root.relative_to(shot_folder).as_posix()
+    rows = json.loads((bundle.root / "layers.json").read_text(encoding="utf-8"))
+    global_row = next(
+        row for row in rows.get("layers", []) if str(row.get("id")) == str(layer.id)
+    )
+    return (
+        f"Materialize deferred layer {layer.id} ({layer.title}).\n"
+        f"Selected bundle hash: {bundle.content_hash}\n"
+        f"Selected bundle root (readable): {bundle_rel}/ — its `layers.json`, "
+        f"`requirements.json`, and `global.md` are the authority you must satisfy.\n"
+        f"Your exact global layer row — copy the structural fields verbatim into the "
+        f"replacement layer:\n{json.dumps(global_row, indent=1)}\n"
+        f"Durable decision ledger (readable): state/plan-resolutions.jsonl\n"
+        f"Sealed upstream outcomes (readable): plans/outcomes/\n"
+        f"Document shape (generic minimal-valid example — replace every placeholder, "
+        f"add stages/contracts/claims as the layer needs):\n{_MATERIALIZATION_EXAMPLE}\n"
+        f"Output: {rel_target}"
+    )
+
+
 async def _materialize_deferred_layer(
     shot, layer, *, model: str, blender: str, max_turns: int
 ) -> None:
@@ -107,6 +188,20 @@ async def _materialize_deferred_layer(
     target.parent.mkdir(parents=True, exist_ok=True)
     before = target.stat().st_mtime_ns if target.is_file() else -1
     rel_target = target.relative_to(shot.folder).as_posix()
+
+    def _validate_target() -> list[str]:
+        from vfx_harness.orchestration.jit_materialization import validate_materialization
+
+        try:
+            validate_materialization(
+                bundle.root,
+                target,
+                expected_bundle_hash=bundle.content_hash,
+                resolutions_path=shot.folder / "state" / "plan-resolutions.jsonl",
+            )
+        except (ValueError, OSError) as exc:
+            return [str(exc)]
+        return []
     system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
 Write exactly `{rel_target}` as JSON with schema `{MATERIALIZATION_SCHEMA}`. It must contain
 `bundle_hash`, the complete replacement `layer` with execution `ready`, non-empty bounded stages,
@@ -116,14 +211,16 @@ explicit decision carrying `statement` and `decision_strength`. Preserve global 
 exactly. Mutated roles must stay inside reserved namespaces. Every scene contract must be
 required evidence of a materialized producing claim. Choose unit structure, scene-truth
 contracts, reference fingerprints, and techniques now from authored references plus sealed
-upstream outcomes. Image checks are candidate-sensitive: the builder proposes them only after
-this unit mutates the cumulative scene, so `image_contracts` must remain empty here. Do not edit
+upstream outcomes. Copy every structured decision in `state/plan-resolutions.jsonl` whose
+`values.contract` roles fall inside this layer's reserved namespaces verbatim into
+`scene_contracts` — exact contract fields plus `decision_id` — bound to a required claim.
+Image checks are candidate-sensitive: the builder proposes them only after
+this unit mutates the cumulative scene, so `image_contracts` must remain empty here. Every write
+of the output file runs the full materialization validator and returns its findings to you;
+repair and rewrite until it reports VALIDATION PASSED — the terminal gate applies the same
+validator. Do not edit
 global authority, create unit state, write prose, or write another file."""
-    kickoff = (
-        f"Materialize deferred layer {layer.id} ({layer.title}).\n"
-        f"Selected bundle hash: {bundle.content_hash}\n"
-        f"Deferred contract:\n{layer.jit!r}\nOutput: {rel_target}"
-    )
+    kickoff = _materialization_kickoff(shot.folder, layer, bundle, rel_target)
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}-materialize"
     pserver, pnames = build_plan_tools(
         shot.folder,
@@ -148,13 +245,23 @@ global authority, create unit state, write prose, or write another file."""
         setting_sources=[],
         max_turns=max_turns,
         effort="high",
-        hooks=planner_hooks(
-            shot.folder,
-            readable_files=(shot.folder / "brief.md",),
-            readable_roots=(bundle.root, shot.folder / "plans" / "outcomes"),
-            writable_files=(target,),
-            strict_reads=True,
-            completion_gate=False,
+        hooks=_with_target_feedback(
+            planner_hooks(
+                shot.folder,
+                readable_files=(
+                    shot.folder / "brief.md",
+                    # The adoption contract the validator enforces reads this exact
+                    # ledger; the session must be able to read the same file it must
+                    # copy from.
+                    shot.folder / "state" / "plan-resolutions.jsonl",
+                ),
+                readable_roots=(bundle.root, shot.folder / "plans" / "outcomes"),
+                writable_files=(target,),
+                strict_reads=True,
+                completion_gate=False,
+            ),
+            target,
+            _validate_target,
         ),
     )
 
@@ -165,6 +272,8 @@ global authority, create unit state, write prose, or write another file."""
             for block in getattr(message, "content", None) or []:
                 if value := getattr(block, "text", None):
                     said.append(value)
+            if signal := result_signal(message):
+                said.append(signal)
         return "\n".join(said)[-4000:]
 
     await run_session(
@@ -411,6 +520,8 @@ async def generate_plan(
                 text = getattr(blk, "text", None)
                 if text:
                     said.append(text)
+            if signal := result_signal(message):
+                said.append(signal)
         return "\n".join(said)[-4000:]
 
     def _wrote() -> bool:
@@ -588,6 +699,8 @@ async def generate_layer_plan(
             for blk in getattr(message, "content", None) or []:
                 if text := getattr(blk, "text", None):
                     said.append(text)
+            if signal := result_signal(message):
+                said.append(signal)
         return "\n".join(said)[-4000:]
 
     def _wrote() -> bool:
@@ -666,15 +779,30 @@ async def generate_plan_two_pass(
         max_turns,
         getattr(configured_settings, "plan_verify_max_turns", 6),
     )
-    final = await generate_plan(
-        folder,
-        model=verify_model,
-        blender=blender,
-        max_turns=verify_turns,
-        tag=tag,
-        verify_draft=draft_path.relative_to(workspace).as_posix(),
-        workspace=workspace,
-    )
+    try:
+        final = await generate_plan(
+            folder,
+            model=verify_model,
+            blender=blender,
+            max_turns=verify_turns,
+            tag=tag,
+            verify_draft=draft_path.relative_to(workspace).as_posix(),
+            workspace=workspace,
+        )
+    except AgentSessionFailure as failure:
+        if failure.terminal_cause != "max_turns_exhausted":
+            raise
+        # The until-clean loop converges against the DETERMINISTIC gate, not the verify
+        # critique. An audit that exhausts its budget must not discard a viable draft:
+        # the canonical candidate was seeded from the exact draft bytes above, any
+        # artifact repairs the dying verifier landed are on disk, and the gate re-measures
+        # all of it from scratch. Runs 1c18c2, 7040c2, and 270652 each aborted here with a
+        # converging candidate (27→7 findings in 270652) the repair rounds never saw.
+        log(
+            f"! verify exhausted its {verify_turns}-turn budget — handing the on-disk "
+            f"candidate to the deterministic gate and repair rounds instead of discarding it"
+        )
+        final = verify_candidate
     log(f"two-pass complete → {final.name} (draft kept: {draft_path.name})")
     return final
 

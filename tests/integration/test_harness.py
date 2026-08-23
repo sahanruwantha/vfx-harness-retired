@@ -3499,7 +3499,8 @@ def main():
     )
     check(
         "a root needs no fictional predecessor",
-        "empty `depends_on_layers` and `required_outcomes`" in _PS,
+        "empty `depends_on_layers`" in _PS
+        and "`required_outcomes` empty everywhere" in _PS,
     )
     check(
         "the whole brief keeps an owner",

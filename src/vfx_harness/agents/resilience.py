@@ -52,7 +52,13 @@ _TERMINAL = re.compile(
     r"usage limits?|specified api usage|regain access|permission denied|not authorized",
     re.IGNORECASE,
 )
-_MAX_TURNS = re.compile(r"error_max_turns|max(?:imum)?[ _-]?turns", re.IGNORECASE)
+# Both shapes the SDK produces: the ResultMessage subtype (`error_max_turns`) and the
+# ProcessError prose ("Reached maximum number of turns (12)"), which run 22d8ab proved
+# arrives as a raised exception whose text is all the classifier gets — the collected
+# session signal is discarded on the exception path.
+_MAX_TURNS = re.compile(
+    r"error_max_turns|max(?:imum)?(?:[ _-]| number of )?turns", re.IGNORECASE
+)
 _USAGE_LIMIT = re.compile(
     r"credit balance|insufficient (?:credit|funds|quota)|spend limit|billing|"
     r"usage limits?|specified api usage|regain access",
@@ -69,6 +75,18 @@ class AgentSessionFailure(RuntimeError):
     def __init__(self, message: str, terminal_cause: str):
         self.terminal_cause = terminal_cause
         super().__init__(message)
+
+
+def result_signal(message: object) -> str | None:
+    """The SDK reports max-turn and error terminations only as `ResultMessage.subtype`,
+    which text-block collection misses — the transcript records it, but `classify` never
+    saw it, so a real exhaustion read as an unknown empty failure, burned one retry
+    session, and was mislabeled `session_stalled`. Session collectors append this to the
+    signal they hand `run_session`."""
+    if type(message).__name__ != "ResultMessage":
+        return None
+    subtype = getattr(message, "subtype", None)
+    return f"[session result: subtype={subtype}]" if subtype else None
 
 
 def classify(text: str) -> str:

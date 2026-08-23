@@ -9,6 +9,7 @@ still alive instead of becoming a paid cold repair round later.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from claude_agent_sdk import HookMatcher
@@ -156,6 +157,55 @@ def validate_planner_artifact(folder: str | Path, name: str) -> list[str]:
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         return [f"{name}: {exc}"]
     return []
+
+
+def target_validation_feedback(
+    target: str | Path, validate: Callable[[], list[str]]
+) -> HookMatcher:
+    """Run the authoritative validator on every write of one target file and hand the
+    errors back while the session is warm.
+
+    The materialized-layer document is validated by `validate_materialization` only after
+    the session ends, and its unit/stage/claim schema exists nowhere the workspace-
+    confined session can read — run 20260823T130354Z (attempt 2) wrote once, blind, and
+    died at the wrapper on `stages[0].plan must be a non-empty string`. The validator's
+    field-precise errors ARE the schema documentation; this loop delivers them the same
+    way the global machine artifacts already get write-time feedback."""
+    expected = Path(target).resolve()
+
+    async def _after(inp, tool_use_id, ctx):
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        if tool not in {"Write", "Edit"}:
+            return {}
+        args = (inp.get("tool_input") if isinstance(inp, dict) else getattr(inp, "tool_input", {})) or {}
+        raw = str(args.get("file_path") or "")
+        if not raw:
+            return {}
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = expected.parent / candidate
+        try:
+            if candidate.resolve() != expected:
+                return {}
+        except OSError:
+            return {}
+        errors = validate()
+        if not errors:
+            return {"hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": f"VALIDATION PASSED for {expected.name}.",
+            }}
+        detail = "\n".join(f"- {item}" for item in errors[:20])
+        log(f"! write-time validation: {expected.name} has {len(errors)} error(s)", 1)
+        return {"hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": (
+                f"VALIDATION FAILED for {expected.name}. Fix it now while this context "
+                f"is warm; do not wait for the terminal gate.\n{detail}"
+            ),
+        }}
+
+    return HookMatcher(matcher=None, hooks=[_after])
 
 
 def planner_artifact_feedback(shot_folder: str | Path) -> HookMatcher:

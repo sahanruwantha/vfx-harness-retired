@@ -25,9 +25,10 @@ The publication contract is deliberately small:
    Registration records ownership, not implementation.
 2. Publish the dependency-ordered layer DAG and durable cross-layer constraints. Every
    `layers.json` row uses `execution: "jit_deferred"` and `stages: []`. A root layer has
-   empty `depends_on_layers` and `required_outcomes`; a dependent layer names only earlier
-   layers and the sealed outcomes it genuinely consumes. Reserve semantic role namespaces
-   and list the requirements owned by each layer.
+   empty `depends_on_layers`; a dependent layer names only earlier layers. Leave
+   `required_outcomes` empty everywhere: sealed-outcome bindings are chosen at each
+   layer's materialization, when its dependencies actually exist. Reserve semantic role
+   namespaces and list the requirements owned by each layer.
    Use this bounded row shape (repeat in build order with contiguous string ids):
    `{"id":"1","script":"build/01_<name>.py","title":"<charter>",`
    `"primary_judge":<frame>,"judge":[{"frame":<frame>,"ref":"refs/<file>"}],`
@@ -140,7 +141,9 @@ MODE: PATCH_PLAN. Edit the existing artifacts directly. Do NOT delegate mechanic
 and do NOT regenerate an unchanged 1,000-line plan merely to alter a few records. Read the
 smallest spans that contain each finding, use Edit on those spans, and use Write only when
 creating a missing companion artifact. Before finishing, re-read every edited span and make
-sure each changed check still carries the exact proof returned by measure_checks.
+sure it still honors the sparse publication contract: ownership, citations, and dependencies
+only — a repair must not smuggle in executable design the gate would reject as
+global preproduction.
 `{draft}` is an immutable snapshot and evidence source: NEVER edit it. Apply the minimal
 changes to the working `plans/global.md` and its existing machine-readable companions.
 When a finding is one instance of a repeated structural pattern, sweep every sibling
@@ -188,9 +191,9 @@ def verifier_user_prompt(shot, draft_name: str) -> str:
         f"Verify the draft plan for shot '{shot.id}' (build target: {shot.frames} "
         f"frames @ {shot.fps}fps on {shot.engine}).\n\n"
         f"Read `brief.md` and the draft `{draft_name}` first. {_refs_block(shot)}\n\n"
-        f"Run VERIFY MODE per your instructions — audit the draft's frame claims, "
-        f"twin-check the stills, evidence-check its spikes, hunt the gaps it did not "
-        f"measure — then write the superseding `plans/global.md`."
+        f"Run VERIFY MODE per your instructions — hunt brief clauses the register missed, "
+        f"audit owners, dependencies, and durable decisions, and reject premature "
+        f"executable design — then write the superseding `plans/global.md`."
     )
 
 
