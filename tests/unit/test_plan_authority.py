@@ -103,6 +103,24 @@ def test_clean_plan_publishes_one_immutable_bundle_behind_atomic_pointer(
     assert resolve_current(tmp_path) == published
 
 
+def test_publication_preserves_the_compact_mapping_for_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run 886632 published the first diet bundle without its source mapping because the
+    supplemental filter globbed *.md only."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    (tmp_path / "plans" / "ownership_mapping.json").write_text(
+        '{"schema": "vfx-harness.ownership-mapping/v1"}', encoding="utf-8"
+    )
+    layout = run_artifacts.create(tmp_path, "plan-run-mapping")
+
+    published = publish_current(tmp_path, layout, outcome="clean")
+
+    assert "plans/ownership_mapping.json" in published.artifacts
+    assert (published.root / "plans" / "ownership_mapping.json").is_file()
+
+
 def test_explicit_published_bundle_resolution_requires_exact_run_and_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

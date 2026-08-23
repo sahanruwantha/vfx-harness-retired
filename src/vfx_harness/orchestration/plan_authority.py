@@ -60,6 +60,13 @@ def _supplemental_plan_artifacts(source_root: Path) -> dict[str, Path]:
         for path in sorted(plans.rglob("*.md"))
         if path.is_file() and path != plans / "global.md"
     }
+    # The compact mapping is the source document the whole surface was expanded from;
+    # bundles carry it for provenance (the *.md glob predates it).
+    mapping = plans / "ownership_mapping.json"
+    if mapping.is_file():
+        artifacts[mapping.relative_to(source_root).as_posix()] = mapping.relative_to(
+            source_root
+        )
     evidence = plans / "evidence"
     if evidence.is_dir():
         artifacts.update({
