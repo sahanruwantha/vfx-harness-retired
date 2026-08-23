@@ -18,14 +18,18 @@ Input is a plain-dict ownership record:
          "verify_at": {"kind": "layer", "layer": "1"}    # or {"kind": "acceptance"}
                                                           # or {"kind": "harness"},
          "repair_routes": ["1"],
-         "moments": [36],                # optional registration metadata
-         "implicated_roles": ["camera.*"]},              # optional
+         "moments": [36],                # REQUIRED; [] means explicitly none
+         "implicated_roles": ["camera.*"]},              # REQUIRED; [] means none
       ],
       "interfaces": [
         {"id": "surface.mutable", "producer": "2", "consumers": ["6", "7"],
          "mode": "ordered_mutation_handoff"},
       ],
-    }
+      "acceptance_moments": [36, 96],    # declared measurement schedule for
+    }                                    # acceptance/harness verification
+
+Omitting a required key is a `record-contract` finding — silence is not evidence; use
+the `ownership_adapter` to derive every key mechanically from expanded artifacts.
 
 `check(record)` returns `(findings, obligations)`. A finding blocks publication; an
 obligation is registration the build phase must later discharge (for example identity
@@ -34,11 +38,12 @@ survival across a mutation handoff).
 
 from __future__ import annotations
 
-import fnmatch
 from dataclasses import dataclass
+from functools import cache, lru_cache
 
 VERIFY_KINDS = {"layer", "acceptance", "harness"}
 INTERFACE_MODES = {"ordered_mutation_handoff"}
+REQUIRED_REQUIREMENT_KEYS = ("moments", "implicated_roles")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +60,36 @@ class Obligation:
     detail: str
 
 
-def _patterns_overlap(a: str, b: str) -> bool:
-    return fnmatch.fnmatchcase(a, b) or fnmatch.fnmatchcase(b, a)
+@lru_cache(maxsize=4096)
+def globs_intersect(a: str, b: str) -> bool:
+    """True when some concrete string matches BOTH glob patterns.
+
+    fnmatch symmetry is not an intersection test: `character.*.rig` and
+    `character.hero.*` share `character.hero.rig` yet neither matches the other as a
+    literal. Supported syntax is literals, `?` (exactly one character), and `*` (any
+    run); a `[` character class is treated as intersecting — the conservative
+    direction, since this checker's findings fail closed."""
+    if "[" in a or "[" in b:
+        return True
+
+    @cache
+    def suffixes(i: int, j: int) -> bool:
+        if i == len(a) and j == len(b):
+            return True
+        if i == len(a):
+            return all(ch == "*" for ch in b[j:])
+        if j == len(b):
+            return all(ch == "*" for ch in a[i:])
+        ca, cb = a[i], b[j]
+        if ca == "*":
+            return suffixes(i + 1, j) or suffixes(i, j + 1)
+        if cb == "*":
+            return suffixes(i, j + 1) or suffixes(i + 1, j)
+        if ca == "?" or cb == "?" or ca == cb:
+            return suffixes(i + 1, j + 1)
+        return False
+
+    return suffixes(0, 0)
 
 
 def _transitive_deps(layers: dict[str, dict]) -> dict[str, set[str]]:
@@ -96,7 +129,7 @@ def check(record: dict) -> tuple[list[Finding], list[Obligation]]:
     for layer_id, patterns in reserved.items():
         for pattern in patterns:
             for prior_pattern, prior_layer in seen:
-                if prior_layer != layer_id and _patterns_overlap(pattern, prior_pattern):
+                if prior_layer != layer_id and globs_intersect(pattern, prior_pattern):
                     findings.append(Finding(
                         "reservation-overlap",
                         f"layers {prior_layer}/{layer_id}",
@@ -152,8 +185,26 @@ def check(record: dict) -> tuple[list[Finding], list[Obligation]]:
                 return True
         return False
 
+    acceptance_schedule = record.get("acceptance_moments")
+    schedule_declared = isinstance(acceptance_schedule, list)
+    schedule = {int(m) for m in acceptance_schedule} if schedule_declared else set()
+
     for row in record.get("requirements") or []:
         rid = str(row.get("id") or "<requirement>")
+
+        # 0. Record contract: silence is not evidence. A record that OMITS moments or
+        #    implicated_roles bypasses observability, repair, and handoff checks —
+        #    metadata must be mechanically derived (see the adapter) or explicitly
+        #    declared empty, never simply absent.
+        omitted = [key for key in REQUIRED_REQUIREMENT_KEYS if key not in row]
+        if omitted:
+            findings.append(Finding(
+                "record-contract", rid,
+                "required keys omitted: " + ", ".join(omitted)
+                + " — derive them mechanically or declare them as explicit empty lists",
+            ))
+            continue
+
         producer = str(row.get("producer") or "")
         if producer and producer not in layers:
             findings.append(Finding(
@@ -161,7 +212,9 @@ def check(record: dict) -> tuple[list[Finding], list[Obligation]]:
                 f"producer {producer!r} is not a declared layer"))
             continue
 
-        # 1. The assigned verification boundary must observe every declared moment.
+        # 1. The assigned verification boundary must observe every declared moment
+        #    against a DECLARED measurement schedule — acceptance and harness replay
+        #    measure the registered approval moments, not everything by assumption.
         verify_at = row.get("verify_at") or {}
         kind = str(verify_at.get("kind") or "")
         moments = [int(m) for m in (row.get("moments") or [])]
@@ -186,30 +239,48 @@ def check(record: dict) -> tuple[list[Finding], list[Obligation]]:
                         f"{verifier} (judged: {sorted(judged)}); verify cumulatively or "
                         "route to a boundary that observes them",
                     ))
-        # acceptance evaluates the cumulative scene at every registered moment, and
-        # harness verification replays deterministically: both observe any moment.
+        elif moments and not schedule_declared:
+            findings.append(Finding(
+                "moment-observability", rid,
+                f"verify_at {kind!r} needs the record's acceptance_moments measurement "
+                "schedule; without one this boundary becomes an unobservable dumping "
+                "ground",
+            ))
+        elif moments:
+            unscheduled = sorted(set(moments) - schedule)
+            if unscheduled:
+                findings.append(Finding(
+                    "moment-observability", rid,
+                    f"declared moments {unscheduled} are outside the acceptance "
+                    f"measurement schedule {sorted(schedule)}",
+                ))
 
-        # 2. At least one repair route must be able to mutate the implicated roles.
+        # 2. EVERY implicated role needs at least one repair route that can mutate it —
+        #    a requirement implicating camera and geometry is not repairable because
+        #    only one of them is.
         implicated = [str(role) for role in (row.get("implicated_roles") or [])]
         routes = [str(route) for route in (row.get("repair_routes") or [])]
         if implicated:
-            unknown_routes = [route for route in routes if route not in layers]
-            for route in unknown_routes:
-                findings.append(Finding(
-                    "repair-reachability", rid,
-                    f"repair route {route!r} is not a declared layer"))
-            reachable = any(
-                _patterns_overlap(role, pattern)
-                for route in routes
-                if route in layers
-                for pattern in reserved.get(route, [])
+            for route in routes:
+                if route not in layers:
+                    findings.append(Finding(
+                        "repair-reachability", rid,
+                        f"repair route {route!r} is not a declared layer"))
+            unreachable = sorted(
+                role
                 for role in implicated
+                if not any(
+                    globs_intersect(role, pattern)
+                    for route in routes
+                    if route in layers
+                    for pattern in reserved.get(route, [])
+                )
             )
-            if not reachable:
+            if unreachable:
                 findings.append(Finding(
                     "repair-reachability", rid,
-                    f"no repair route in {routes or '[]'} reserves any implicated role "
-                    f"{implicated}; a failure here would have no owner able to change "
+                    f"no repair route in {routes or '[]'} reserves implicated role(s) "
+                    f"{unreachable}; a failure there would have no owner able to change "
                     "the responsible control",
                 ))
 
@@ -219,7 +290,7 @@ def check(record: dict) -> tuple[list[Finding], list[Obligation]]:
                 for owner_layer, patterns in reserved.items():
                     if owner_layer == producer:
                         continue
-                    if not any(_patterns_overlap(role, pattern) for pattern in patterns):
+                    if not any(globs_intersect(role, pattern) for pattern in patterns):
                         continue
                     if not interface_covers(owner_layer, producer):
                         findings.append(Finding(

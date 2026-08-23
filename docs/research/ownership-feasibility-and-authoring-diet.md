@@ -5,6 +5,34 @@
 `tests/unit/test_ownership_feasibility.py`. It is NOT wired into `plan_gate`, publication,
 or any schema. Promotion to an ADR requires the generality evidence below.
 
+**Promotion-blocker ledger (review of 2026-08-23, all but one addressed same day):**
+
+1. *Optional metadata bypassed checks* — closed. `moments` and `implicated_roles` are
+   required keys (`record-contract` finding on omission; explicit `[]` means declared
+   none), and `evaluation/ownership_adapter.py` derives every key mechanically from
+   expanded artifacts: moments from clause text ("frame(s) N[, M]" word lists only —
+   beat ranges are window metadata, not measurement moments), the acceptance schedule
+   as the union of declared judge frames, implicated roles as the owner's reserved
+   namespaces. End-to-end tests expand a real mapping, derive the record with zero hand
+   metadata, and catch a misassignment the publication gate passes clean.
+2. *Acceptance/harness assumed omniscient* — closed. Those boundaries verify against
+   the record's declared `acceptance_moments` schedule; moments outside it, or a
+   missing schedule, are findings. The remaining design question (a measurement owner
+   per acceptance-verified requirement) stays open for the ADR.
+3. *`any()` repair reachability* — closed. Every implicated role needs at least one
+   reachable route; findings name the specific unreachable roles.
+4. *`_patterns_overlap` was not glob intersection* — closed. `globs_intersect` is a
+   real intersection decision procedure (literals/`?`/`*`; character classes treated
+   as intersecting, the fail-closed direction), with the review's counterexample
+   (`character.*.rig` ∩ `character.hero.*`) as a pinned test.
+5. *Source scan is a tripwire, not generality evidence* — acknowledged and kept as a
+   tripwire only. Generality evidence remains the heterogeneous complete-record tests
+   plus the pending cross-family fixtures below.
+
+The adapter's documented limit: cross-layer implication (`implicated_roles` beyond the
+owner's namespaces) is representable only through declared interfaces, which is the
+ADR's schema question — the mapping does not carry interfaces yet, deliberately.
+
 ## Why
 
 The first published sparse bundle (`a5692e9f…`, run `20260823T110844Z-6281c8`) passed the

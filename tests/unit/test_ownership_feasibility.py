@@ -43,11 +43,12 @@ def _published_bundle_shape() -> dict:
             # layer, which judges only f240.
             {"id": "silhouette-multiframe", "producer": "8",
              "verify_at": {"kind": "layer", "layer": "8"},
-             "repair_routes": ["8"], "moments": [132, 150, 204, 240]},
+             "repair_routes": ["8"], "moments": [132, 150, 204, 240],
+             "implicated_roles": []},
             # Fracture-shaped: a late layer must mutate architecture reserved upstream.
             {"id": "architecture-mutation", "producer": "6",
              "verify_at": {"kind": "layer", "layer": "6"},
-             "repair_routes": ["6"],
+             "repair_routes": ["6"], "moments": [],
              "implicated_roles": ["foundry_shell.*"]},
         ],
         "interfaces": [],
@@ -66,6 +67,7 @@ def test_published_bundle_defects_are_both_rejected() -> None:
 def test_published_bundle_shape_passes_once_ownership_is_executable() -> None:
     record = _published_bundle_shape()
     record["requirements"][0]["verify_at"] = {"kind": "acceptance"}
+    record["acceptance_moments"] = [132, 150, 204, 240]  # the declared schedule
     record["requirements"][0]["repair_routes"] = ["4", "5"]
     record["requirements"][1]["repair_routes"] = ["2", "6"]
     record["interfaces"] = [{
@@ -86,7 +88,8 @@ def test_architecture_created_early_animated_later_needs_declared_handoff() -> N
         "requirements": [{
             "id": "animate-structure", "producer": "3",
             "verify_at": {"kind": "layer", "layer": "3"},
-            "repair_routes": ["3"], "implicated_roles": ["structure.towers.*"],
+            "repair_routes": ["3"], "moments": [],
+            "implicated_roles": ["structure.towers.*"],
         }],
         "interfaces": [],
     }
@@ -107,7 +110,8 @@ def test_character_prop_handoff_between_units() -> None:
         "requirements": [{
             "id": "pose-the-hero", "producer": "2",
             "verify_at": {"kind": "layer", "layer": "2"},
-            "repair_routes": ["1", "2"], "implicated_roles": ["character.hero.rig"],
+            "repair_routes": ["1", "2"], "moments": [],
+            "implicated_roles": ["character.hero.rig"],
         }],
         "interfaces": [{
             "id": "hero.mutable", "producer": "1", "consumers": ["2"],
@@ -142,6 +146,7 @@ def test_multiframe_acceptance_rule_cannot_be_parked_on_one_layer() -> None:
             "id": "arc-holds-throughout", "producer": "4",
             "verify_at": {"kind": "layer", "layer": "4"},
             "repair_routes": ["4"], "moments": [10, 20, 30, 40],
+            "implicated_roles": [],
         }],
         "interfaces": [],
     }
@@ -150,7 +155,21 @@ def test_multiframe_acceptance_rule_cannot_be_parked_on_one_layer() -> None:
 
     record["requirements"][0]["verify_at"] = {"kind": "acceptance"}
     findings, _ = check(record)
+    assert any(
+        f.check == "moment-observability" and "acceptance_moments" in f.detail
+        for f in findings
+    )  # acceptance is not omniscient: it needs the declared schedule
+
+    record["acceptance_moments"] = [10, 20, 30, 40]
+    findings, _ = check(record)
     assert findings == []
+
+    record["acceptance_moments"] = [10, 20]
+    findings, _ = check(record)
+    assert any(
+        f.check == "moment-observability" and "outside the acceptance" in f.detail
+        for f in findings
+    )
 
 
 def test_singleframe_local_requirement_stays_layer_owned() -> None:
@@ -171,6 +190,67 @@ def test_singleframe_local_requirement_stays_layer_owned() -> None:
 # --- relationship rules -------------------------------------------------------------
 
 
+def test_globs_intersect_is_a_real_intersection_test() -> None:
+    """fnmatch symmetry misses patterns that share concrete strings without either
+    matching the other — the review's exact counterexample."""
+    from vfx_harness.evaluation.ownership_feasibility import globs_intersect
+
+    assert globs_intersect("character.*.rig", "character.hero.*")
+    assert globs_intersect("a.*", "a.b.c")
+    assert globs_intersect("*", "anything.at.all")
+    assert globs_intersect("a.?", "a.b")
+    assert not globs_intersect("character.*.rig", "vehicle.*")
+    assert not globs_intersect("a.b", "a.c")
+    assert not globs_intersect("prefix.*", "other.thing")
+
+
+def test_omitted_record_keys_fail_closed() -> None:
+    """Silence is not evidence: a record missing moments or implicated_roles must be
+    rejected, not silently pass the checks those keys feed."""
+    record = {
+        "layers": _chain(1),
+        "requirements": [{
+            "id": "underspecified", "producer": "1",
+            "verify_at": {"kind": "layer", "layer": "1"},
+            "repair_routes": ["1"],
+        }],
+        "interfaces": [],
+    }
+    findings, _ = check(record)
+    assert any(
+        f.check == "record-contract" and "moments" in f.detail
+        and "implicated_roles" in f.detail
+        for f in findings
+    )
+
+
+def test_every_implicated_role_needs_a_reachable_route() -> None:
+    """A requirement implicating camera and geometry is not repairable because only
+    one of them is."""
+    record = {
+        "layers": _chain(2, {"1": ["camera.*"], "2": ["geometry.*"]}),
+        "requirements": [{
+            "id": "clearance", "producer": "2",
+            "verify_at": {"kind": "layer", "layer": "2"},
+            "repair_routes": ["1"],  # reaches camera.* only
+            "moments": [],
+            "implicated_roles": ["camera.rig", "geometry.walls"],
+        }],
+        "interfaces": [{
+            "id": "camera.mutable", "producer": "1", "consumers": ["2"],
+            "mode": "ordered_mutation_handoff",
+        }],
+    }
+    findings, _ = check(record)
+    reachability = [f for f in findings if f.check == "repair-reachability"]
+    assert reachability and "geometry.walls" in reachability[0].detail
+    assert "camera.rig" not in reachability[0].detail
+
+    record["requirements"][0]["repair_routes"] = ["1", "2"]
+    findings, _ = check(record)
+    assert not any(f.check == "repair-reachability" for f in findings)
+
+
 def test_repair_route_must_reach_the_implicated_role() -> None:
     record = {
         "layers": _chain(2),
@@ -178,7 +258,7 @@ def test_repair_route_must_reach_the_implicated_role() -> None:
             "id": "unreachable-repair", "producer": "2",
             "verify_at": {"kind": "layer", "layer": "2"},
             "repair_routes": ["1"],  # layer 1 reserves system_1.*, not system_2.*
-            "implicated_roles": ["system_2.dial"],
+            "moments": [], "implicated_roles": ["system_2.dial"],
         }],
         "interfaces": [],
     }
