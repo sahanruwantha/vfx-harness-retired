@@ -93,6 +93,35 @@ def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) ->
 def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *, plan_hash: str) -> dict:
     validate_unit_dag(units, f"layer {layer_id} work units")
     current = load(folder, layer_id)
+    if current and not current["units"]:
+        # A replan transaction legally empties a layer's unit set, and under unit-first
+        # authority that is the NORMAL pre-materialization condition: the global DAG
+        # carries no units, so they exist only once the layer materializes. Seeding
+        # pending units into empty state destroys nothing and preserves the full
+        # supersession history — the forbidden act is reinitializing OVER existing
+        # units, which still fails closed below.
+        if str(current.get("layer")) != str(layer_id):
+            raise ValueError(
+                f"work-unit state belongs to layer {current.get('layer')}, not {layer_id}"
+            )
+        now = _now()
+        value = {
+            **current,
+            "plan_hash": plan_hash,
+            "revision": int(current.get("revision", 0)) + 1,
+            "units": {
+                unit.id: {
+                    "status": "pending",
+                    "unit_hash": unit_digest(unit),
+                    "updated": now,
+                    "history": [],
+                }
+                for unit in units
+            },
+            "updated": now,
+        }
+        _write(_path(folder, layer_id), value)
+        return value
     if current:
         validate_current(current, layer_id, units)
         if current.get("plan_hash") == plan_hash:

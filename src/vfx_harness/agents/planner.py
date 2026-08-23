@@ -51,6 +51,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -626,11 +627,19 @@ async def generate_layer_plan(
         layers = load_layers(shot)
         layer = layers[str(layer_id)]
     from vfx_harness.domain.work_units import ready_units
-    from vfx_harness.orchestration.unit_state import load as load_unit_state
-    from vfx_harness.orchestration.unit_state import validate_current
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+    from vfx_harness.orchestration.unit_state import initialize as initialize_unit_state
 
-    state = load_unit_state(shot.folder, str(layer.id))
-    validate_current(state, str(layer.id), layer.stages)
+    # Same semantics as the build path: create fresh state, seed a legally-emptied set
+    # after first materialization, return current when nothing changed, and fail closed
+    # on any real DAG divergence. Run 20260823T152609Z materialized layer 1 successfully
+    # and then died here on bare validate_current against post-replan empty state.
+    layers_hash = hashlib.sha256(
+        selected_artifact_path(shot.folder, "layers.json").read_bytes()
+    ).hexdigest()
+    state = initialize_unit_state(
+        shot.folder, str(layer.id), layer.stages, plan_hash=layers_hash
+    )
     passed = {
         uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
     }

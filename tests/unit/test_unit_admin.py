@@ -15,6 +15,47 @@ from vfx_harness.orchestration.unit_state import (
 )
 
 
+def test_emptied_state_seeds_pending_units_and_preserves_history(tmp_path) -> None:
+    """A replan legally empties a layer's unit set, and under unit-first authority that
+    is the NORMAL pre-materialization condition — units exist only once the layer
+    materializes. Run 20260823T152609Z materialized layer 1 and then failed closed on
+    exactly this shape. Seeding destroys nothing: history and supersessions survive."""
+    import json as _json
+    from pathlib import Path
+
+    state_path = Path(tmp_path) / "state" / "work-units" / "layer_1.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(_json.dumps({
+        "schema": 1,
+        "layer": "1",
+        "plan_hash": "pre-materialization-bundle-hash",
+        "revision": 4,
+        "units": {},
+        "superseded": [{"unit": "old_bootstrap", "reason": "unit-first republication"}],
+        "replans": [{"base_bundle": "a" * 64}],
+        "updated": "2026-08-23T00:00:00+00:00",
+    }), encoding="utf-8")
+    units = (_unit("blockout"), _unit("camera", depends_on=["blockout"]))
+
+    value = initialize(tmp_path, "1", units, plan_hash="materialized-view-hash")
+
+    assert set(value["units"]) == {"blockout", "camera"}
+    assert all(row["status"] == "pending" for row in value["units"].values())
+    assert value["revision"] == 5
+    assert value["plan_hash"] == "materialized-view-hash"
+    assert value["superseded"][0]["unit"] == "old_bootstrap"
+    assert value["replans"][0]["base_bundle"] == "a" * 64
+    reloaded = load(tmp_path, "1")
+    assert set(reloaded["units"]) == {"blockout", "camera"}
+
+
+def test_populated_state_still_fails_closed_without_a_replan(tmp_path) -> None:
+    initialize(tmp_path, "1", (_unit("blockout"),), plan_hash="one")
+
+    with pytest.raises(ValueError, match="apply a transactional replan"):
+        initialize(tmp_path, "1", (_unit("different_unit"),), plan_hash="two")
+
+
 def test_public_replan_moves_state_between_explicit_and_current_bundles(
     tmp_path, monkeypatch, capsys
 ) -> None:
