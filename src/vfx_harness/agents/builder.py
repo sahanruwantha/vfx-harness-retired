@@ -419,6 +419,10 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
             for prior in probe_ctx["prior_paths"]:
                 verify.run(Path(prior).read_text(encoding="utf-8"), journal=False)
             verify.run((shot.folder / script_rel).read_text(encoding="utf-8"), journal=False)
+            try:
+                rig_contract = verify.check(kind="rig_contract")
+            except Exception as exc:
+                rig_contract = {"ok": None, "issues": [f"check failed: {str(exc)[:120]}"]}
             role_patterns = list(probe_ctx.get("roles") or [])
             frames_out = []
             for frame, ref in probe_ctx["judges"]:
@@ -467,7 +471,7 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                         for row in rows
                     ],
                 })
-            return {"script": script_rel, "frames": frames_out}
+            return {"script": script_rel, "rig_contract": rig_contract, "frames": frames_out}
         finally:
             verify.close()
 
@@ -507,6 +511,14 @@ def _script_options(
     if probe_ctx is not None:
         server, probe_tools = _build_probe_candidate_server(shot, script_rel, probe_ctx)
         mcp_servers["candidate"] = server
+    if not finalize:
+        # repairs design mechanisms; the cookbook's harness lessons (rig aim ownership,
+        # slotted actions, …) are exactly the knowledge blind repairs lacked
+        from vfx_harness.knowledge.recipes import build_recipe_tools
+
+        recipe_server, recipe_names = build_recipe_tools()
+        mcp_servers["recipes"] = recipe_server
+        probe_tools = [*probe_tools, *recipe_names]
     return ClaudeAgentOptions(
         model=script_model(),
         system_prompt=_SCRIPT_SYSTEM,

@@ -355,6 +355,61 @@ def check_passes(frame: int, scale: float = 0.25) -> dict:
             setattr(vl, attr, val)
 
 
+def _object_fcurves(obj) -> list:
+    """Every fcurve on an object across legacy and 5.x slotted actions."""
+    ad = getattr(obj, "animation_data", None)
+    if not ad or not ad.action:
+        return []
+    legacy = getattr(ad.action, "fcurves", None)
+    if legacy and len(legacy):
+        return list(legacy)
+    out: list = []
+    for layer in getattr(ad.action, "layers", []) or []:
+        for strip in getattr(layer, "strips", []) or []:
+            for bag in getattr(strip, "channelbags", []) or []:
+                out.extend(bag.fcurves)
+    return out
+
+
+def check_rig_contract() -> dict:
+    """A rig-parented camera owes the rig its aim: child keys roll only, no trackers.
+
+    HIR-0015 (run 20260824T103842Z-afec73): a canonical repair baked a world-space
+    look-at onto the camera CHILD's local rotation under a rig whose spine already keys
+    +90° pitch — the pitches composed to ~180° and the published camera faced away from
+    the set at every frame while its rig-level keyframe contracts still passed."""
+    import bpy
+
+    violations = []
+    checked = 0
+    for obj in bpy.data.objects:
+        if obj.type != "CAMERA" or obj.parent is None:
+            continue
+        if not str(obj.parent.get("bvfx_role") or ""):
+            continue
+        checked += 1
+        for fc in _object_fcurves(obj):
+            if (
+                fc.data_path == "rotation_euler"
+                and fc.array_index in (0, 1)
+                and len(fc.keyframe_points)
+            ):
+                violations.append(
+                    f"{obj.name}: rotation_euler[{fc.array_index}] carries "
+                    f"{len(fc.keyframe_points)} key(s) — under rig {obj.parent.name} the RIG "
+                    "owns location+pitch and the camera child owns roll (index 2) only; a "
+                    "world-space look-at keyed here double-applies the rig's pitch"
+                )
+        for con in obj.constraints:
+            if con.type in {"TRACK_TO", "DAMPED_TRACK", "LOCKED_TRACK"}:
+                violations.append(
+                    f"{obj.name}: {con.type} on the rig-parented camera recomputes full "
+                    "orientation each frame and fights the rig; aim by keying the rig's "
+                    "pitch numerically (recipe harness-lesson-rig-aim-ownership)"
+                )
+    return {"ok": not violations, "checked_cameras": checked, "issues": violations}
+
+
 def subject_bbox(name: str, frame: int) -> dict:
     """Oracle crop box in public normalized coordinates (origin top-left)."""
     rec = check_framing(name, [int(frame)])
@@ -391,6 +446,8 @@ def dispatch(kind: str, args: dict) -> dict:
         return check_passes(int(args["frame"]), float(args.get("scale", 0.25)))
     if k in ("bbox", "subject_bbox"):
         return subject_bbox(args["object"], int(args["frame"]))
+    if k == "rig_contract":
+        return check_rig_contract()
     raise ValueError(f"unknown check {kind!r}")
 
 
@@ -477,6 +534,19 @@ def self_test() -> dict:
         "max_accel": r.get("max_accel"),
         "issues": r.get("issues"),
     }
+
+    # --- rig contract: a rig-parented camera with a pitch key on the CHILD must fire ---
+    rig = bpy.data.objects.new("BadRig", None)
+    rig["bvfx_role"] = "cam_rig"
+    sc.collection.objects.link(rig)
+    bad_cam_data = bpy.data.cameras.new("BadRigCam")
+    bad_cam = bpy.data.objects.new("BadRigCam", bad_cam_data)
+    sc.collection.objects.link(bad_cam)
+    bad_cam.parent = rig
+    bad_cam.rotation_euler = (1.5, 0.0, 0.0)
+    bad_cam.keyframe_insert("rotation_euler", index=0, frame=1)
+    r = check_rig_contract()
+    results["rig_contract"] = {"fired": bool(r["issues"]), "issues": r["issues"]}
 
     # --- passes: a render that completes; NaN fixture is engine-dependent so we
     # only require the check to return a structured result, and a synthetic
