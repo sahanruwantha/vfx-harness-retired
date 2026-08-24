@@ -3528,29 +3528,31 @@ async def build_layer(
 
         require_due_clear(shot.folder, layer=str(layer.id), unit=unit.id)
         unit_plan_path = work_unit_plan_path(shot.folder, unit)
-        if not unit_plan_path.is_file():
-            from vfx_harness.evaluation.plan_gate import report as gate_report
-            from vfx_harness.evaluation.plan_gate import run as run_plan_gate
+        # A plan file's EXISTENCE is not authority: run 20260824T103842Z-afec73 failed
+        # its gate and left the generated plan behind, and the next build built a unit
+        # on it. Consumption requires a clean-gate attestation; anything less is treated
+        # as absent and regenerated through the transactional gate-then-publish path.
+        needs_plan = not unit_plan_path.is_file()
+        if not needs_plan:
+            from vfx_harness.orchestration.layer_plans import validate_work_unit_plan_authority
 
+            try:
+                validate_work_unit_plan_authority(shot.folder, unit_plan_path)
+            except ValueError as exc:
+                log(f"existing unit plan is not gated authority ({str(exc)[:160]}) — regenerating")
+                needs_plan = True
+        if needs_plan:
             from .planner import generate_layer_plan
 
             log(f"generating just-in-time plan for dependency-ready unit {layer.id}.{unit.id}")
+            # generation is transactional: it publishes to the shot only through a clean
+            # deterministic gate and retracts its artifacts otherwise
             await generate_layer_plan(
                 shot.folder,
                 str(layer.id),
                 unit_id=unit.id,
                 blender=Settings.from_environment().blender_bin,
             )
-            from vfx_harness.orchestration.plan_authority import prepare_consumer_view
-
-            gated = run_plan_gate(
-                prepare_consumer_view(run_artifacts.ensure(shot.folder, command="build"))
-            )
-            if not gated.clean:
-                raise RuntimeError(
-                    f"generated unit plan {layer.id}.{unit.id} failed the deterministic gate:\n"
-                    + gate_report(gated)
-                )
         unit_excerpt = _plan_layer_excerpt(shot, layer, unit)
         unit_axes = tuple(dict.fromkeys(claim.axis for claim in unit.evaluation.claims))
         unit_judges = tuple((point.frame, point.ref) for point in unit.evaluation.judges)

@@ -86,6 +86,7 @@ from vfx_harness.orchestration.layer_plans import (
     prior_outcomes_block,
     stamp_work_unit_plan,
     validate_work_unit_plan_authority,
+    work_unit_plan_authority_path,
     work_unit_plan_path,
 )
 from vfx_harness.orchestration.ledger import load_layers, load_layers_from_path
@@ -893,22 +894,59 @@ async def generate_layer_plan(
     def _wrote() -> bool:
         return target.is_file() and target.stat().st_mtime_ns != before
 
+    # Materialization is a transaction: the shot may keep this plan ONLY if the
+    # deterministic gate accepts the resulting consumer view. Run 20260824T103842Z-afec73
+    # wrote its generated plan, failed the gate in the caller, and left the file behind —
+    # the next build trusted its existence and built a unit on gate-failed authority.
+    from vfx_harness.observability.provenance import atomic_write
+
+    authority_path = work_unit_plan_authority_path(target)
+    prior_plan = target.read_text(encoding="utf-8") if target.is_file() else None
+    prior_authority = authority_path.read_text(encoding="utf-8") if authority_path.is_file() else None
+
+    def _rollback() -> None:
+        for path, prior in ((target, prior_plan), (authority_path, prior_authority)):
+            if prior is None:
+                path.unlink(missing_ok=True)
+            else:
+                atomic_write(path, prior)
+
     try:
         log(f"plan agent [LAYER {layer.id} · UNIT {selected.id}]: {selected.title} → {rel_target}")
         await run_session(_attempt, succeeded=_wrote, label=f"plan layer {layer.id} unit {selected.id}")
     finally:
         transcript.unbind()
         costlog.unbind()
-    text = target.read_text(encoding="utf-8")
-    if len(text.strip()) < 200:
-        raise ValueError(f"{target} is too small to be an executable layer plan")
-    if text.count("\n") + 1 > 160:
-        raise ValueError(
-            f"{target} has {text.count(chr(10)) + 1} lines; layer plans are capped at 160. "
-            "Keep evidence in machine contracts/outcomes and rewrite this as an execution index"
+    try:
+        text = target.read_text(encoding="utf-8")
+        if len(text.strip()) < 200:
+            raise ValueError(f"{target} is too small to be an executable layer plan")
+        if text.count("\n") + 1 > 160:
+            raise ValueError(
+                f"{target} has {text.count(chr(10)) + 1} lines; layer plans are capped at 160. "
+                "Keep evidence in machine contracts/outcomes and rewrite this as an execution index"
+            )
+        # integrity stamp first — the gate validates it, then a clean result earns the
+        # gate attestation consumers require
+        stamp_work_unit_plan(shot.folder, target)
+        from vfx_harness.evaluation.plan_gate import report as gate_report
+        from vfx_harness.evaluation.plan_gate import run as run_plan_gate
+        from vfx_harness.orchestration.plan_authority import prepare_consumer_view
+
+        gated = run_plan_gate(prepare_consumer_view(layout))
+        if not gated.clean:
+            raise RuntimeError(
+                f"generated unit plan {layer.id}.{selected.id} failed the deterministic gate:\n"
+                + gate_report(gated)
+            )
+        stamp_work_unit_plan(
+            shot.folder, target, gate={"clean": True, "blocking": 0, "run_id": layout.run_id}
         )
-    stamp_work_unit_plan(shot.folder, target)
-    log(f"unit plan written: {rel_target} ({text.count(chr(10))} lines)")
+    except BaseException:
+        _rollback()
+        log(f"unit plan retracted: {rel_target} did not pass the deterministic gate")
+        raise
+    log(f"unit plan published through a clean gate: {rel_target} ({text.count(chr(10))} lines)")
     return target
 
 

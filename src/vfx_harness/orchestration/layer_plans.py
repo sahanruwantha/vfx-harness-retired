@@ -21,7 +21,11 @@ from vfx_harness.observability.provenance import atomic_write
 PLAN_DIR = "plans"
 GLOBAL_PLAN = "global.md"
 AMENDMENTS = "plan_amendments.jsonl"
-UNIT_PLAN_AUTHORITY_SCHEMA = "vfx-harness.unit-plan-authority/v1"
+# v2 adds gate attestation: a shot-root unit plan is authority only when a clean
+# deterministic gate published it. Run 20260824T103842Z-afec73 wrote its generated plan
+# to the shot, failed the gate, and the next build trusted the file's existence — v1
+# sidecars could not distinguish "published" from "left behind by a failed transaction".
+UNIT_PLAN_AUTHORITY_SCHEMA = "vfx-harness.unit-plan-authority/v2"
 _AMENDMENT_STATUSES = {"proposed", "approved", "rejected", "superseded"}
 _AMENDMENT_CLASSES = {
     "build_defect",
@@ -96,8 +100,14 @@ def work_unit_plan_authority_path(path: str | Path) -> Path:
     return _unit_authority_path(Path(path))
 
 
-def stamp_work_unit_plan(folder: str | Path, path: str | Path) -> Path | None:
-    """Pin one JIT plan to the selected global bundle and its exact bytes."""
+def stamp_work_unit_plan(folder: str | Path, path: str | Path, *, gate: dict | None = None) -> Path | None:
+    """Pin one JIT plan to the selected global bundle and its exact bytes.
+
+    Without `gate`, the stamp asserts integrity only — enough for the deterministic gate
+    to admit the plan into a consumer view, never enough to build on. Publication is the
+    two-phase form: the materialization transaction re-stamps with
+    ``gate={"clean": True, "blocking": 0, "run_id": …}`` after (and only after) the gate
+    passes, and consumers refuse anything less (see validate_work_unit_plan_authority)."""
     from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
 
     root = Path(folder).resolve()
@@ -111,13 +121,46 @@ def stamp_work_unit_plan(folder: str | Path, path: str | Path) -> Path | None:
         "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
         "path": plan.relative_to(root).as_posix(),
     }
+    if gate is not None:
+        if gate.get("clean") is not True or int(gate.get("blocking", 1)) != 0:
+            raise ValueError("gate attestation may only be stamped for a clean gate result")
+        record["gate_clean"] = True
+        record["gate_blocking"] = 0
+        record["gate_run_id"] = str(gate.get("run_id") or "")
+        if not record["gate_run_id"]:
+            raise ValueError("gate attestation requires the gating run id")
     authority = _unit_authority_path(plan)
     atomic_write(authority, json.dumps(record, indent=2, sort_keys=True) + "\n")
     return authority
 
 
-def validate_work_unit_plan_authority(folder: str | Path, path: str | Path) -> None:
-    """Fail closed when a JIT plan belongs to another global generation."""
+def _require_gate_attestation(record: dict, plan: Path) -> None:
+    if (
+        record.get("gate_clean") is True
+        and record.get("gate_blocking") == 0
+        and str(record.get("gate_run_id") or "")
+    ):
+        return
+    raise ValueError(
+        f"{plan} has no clean-gate attestation — it was never published through a "
+        "passing deterministic gate (a failed materialization may have left it behind). "
+        "Regenerate the JIT unit plan; generation republishes only through a clean gate"
+    )
+
+
+def _base_record(record: dict) -> dict:
+    return {key: record.get(key) for key in ("schema", "bundle_hash", "plan_sha256", "path")}
+
+
+def validate_work_unit_plan_authority(
+    folder: str | Path, path: str | Path, *, require_gate: bool = True
+) -> None:
+    """Fail closed when a JIT plan belongs to another global generation or was never
+    published through a clean deterministic gate.
+
+    ``require_gate=False`` is for the gate pipeline itself (view staging and the gate's
+    own hierarchy check): those run BEFORE attestation exists and check integrity only.
+    Every build-time consumer takes the default and refuses unattested plans."""
     from vfx_harness.orchestration.plan_authority import (
         BUNDLE_SCHEMA,
         CONSUMER_VIEW_SCHEMA,
@@ -167,8 +210,10 @@ def validate_work_unit_plan_authority(folder: str | Path, path: str | Path) -> N
                     "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
                     "path": name,
                 }
-                if record != expected_record:
+                if _base_record(record) != expected_record:
                     raise ValueError("JIT unit plan is stale or edited in the consumer view")
+                if require_gate:
+                    _require_gate_attestation(record, plan)
         except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError(f"{lexical_plan} has invalid selected-bundle authority") from exc
         return
@@ -192,8 +237,10 @@ def validate_work_unit_plan_authority(folder: str | Path, path: str | Path) -> N
         "plan_sha256": hashlib.sha256(plan.read_bytes()).hexdigest(),
         "path": plan.relative_to(root).as_posix(),
     }
-    if record != expected:
+    if _base_record(record) != expected:
         raise ValueError(f"{plan} is stale or edited relative to the selected global plan")
+    if require_gate:
+        _require_gate_attestation(record, plan)
 
 
 def read_work_unit_plan(folder: str | Path, layer, unit) -> str:

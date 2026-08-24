@@ -7,6 +7,10 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Made JIT unit-plan publication a two-phase transaction: the deterministic gate runs inside
+  generation, a clean result earns a gate attestation in the authority sidecar (schema v2), a
+  dirty result rolls the shot back, and every build-time consumer refuses unattested plans
+  ([HIR-0016](docs/improvements/HIR-0016-gate-attested-unit-plan-publication.md)).
 - Made every scene-contract probe row measure its declared frame with its own depsgraph, and
   replaced raw vertex projection with one frustum-clipped, fail-closed implementation shared by
   authoritative `bbox_*` evidence and the advisory framing checks

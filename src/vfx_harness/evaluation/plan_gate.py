@@ -2230,7 +2230,9 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
                 )
             else:
                 try:
-                    validate_work_unit_plan_authority(folder, path)
+                    # integrity only: the gate is the authority that PRODUCES the gate
+                    # attestation, so it cannot require one to exist yet
+                    validate_work_unit_plan_authority(folder, path, require_gate=False)
                 except ValueError as exc:
                     out.append(Finding(
                         "hierarchy", True, str(path.relative_to(folder)), str(exc),

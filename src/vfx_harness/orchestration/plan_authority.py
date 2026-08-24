@@ -670,7 +670,8 @@ def prepare_consumer_view(layout: RunLayout) -> Path:
                     )
 
                     try:
-                        validate_work_unit_plan_authority(layout.shot, source)
+                        # staging feeds the gate, which runs before attestation exists
+                        validate_work_unit_plan_authority(layout.shot, source, require_gate=False)
                     except ValueError:
                         continue
                     target = temp / rel

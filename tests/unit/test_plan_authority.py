@@ -324,13 +324,72 @@ def test_jit_unit_plan_is_pinned_to_selected_bundle_and_exact_bytes(
     plan.parent.mkdir()
     plan.write_text("# unit\n" + "bounded execution\n" * 20, encoding="utf-8")
 
-    authority = stamp_work_unit_plan(tmp_path, plan)
+    authority = stamp_work_unit_plan(
+        tmp_path, plan, gate={"clean": True, "blocking": 0, "run_id": "plan-run"}
+    )
 
     assert authority is not None and authority.is_file()
     validate_work_unit_plan_authority(tmp_path, plan)
     plan.write_text(plan.read_text(encoding="utf-8") + "edited\n", encoding="utf-8")
     with pytest.raises(ValueError, match="stale or edited"):
         validate_work_unit_plan_authority(tmp_path, plan)
+
+
+def test_unit_plan_without_clean_gate_attestation_is_not_build_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run 20260824T103842Z-afec73 failed its gate and left the generated plan on the
+    shot; the next build trusted the file's existence and built a unit on gate-failed
+    authority. An integrity-only stamp must satisfy the gate pipeline and refuse every
+    build-time consumer."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    publish_current(tmp_path, layout, outcome="clean")
+    plan = tmp_path / "plans" / "01_camera" / "unit.md"
+    plan.parent.mkdir()
+    plan.write_text("# unit\n" + "bounded execution\n" * 20, encoding="utf-8")
+
+    stamp_work_unit_plan(tmp_path, plan)  # integrity only — publication never finished
+
+    validate_work_unit_plan_authority(tmp_path, plan, require_gate=False)  # gate pipeline
+    with pytest.raises(ValueError, match="no clean-gate attestation"):
+        validate_work_unit_plan_authority(tmp_path, plan)  # build-time consumer
+
+    # a hand-edited attestation cannot claim cleanliness the gate never granted
+    authority = plan.with_name(plan.name + ".authority.json")
+    record = json.loads(authority.read_text(encoding="utf-8"))
+    record["gate_clean"] = False
+    record["gate_blocking"] = 3
+    record["gate_run_id"] = "forged"
+    authority.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no clean-gate attestation"):
+        validate_work_unit_plan_authority(tmp_path, plan)
+
+    with pytest.raises(ValueError, match="only be stamped for a clean gate result"):
+        stamp_work_unit_plan(tmp_path, plan, gate={"clean": False, "blocking": 3, "run_id": "x"})
+
+
+def test_v1_authority_sidecars_predate_gate_attestation_and_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    publish_current(tmp_path, layout, outcome="clean")
+    plan = tmp_path / "plans" / "01_camera" / "unit.md"
+    plan.parent.mkdir()
+    plan.write_text("# unit\n" + "bounded execution\n" * 20, encoding="utf-8")
+    stamp_work_unit_plan(tmp_path, plan, gate={"clean": True, "blocking": 0, "run_id": "r"})
+    authority = plan.with_name(plan.name + ".authority.json")
+    record = json.loads(authority.read_text(encoding="utf-8"))
+    record["schema"] = "vfx-harness.unit-plan-authority/v1"
+    for key in ("gate_clean", "gate_blocking", "gate_run_id"):
+        record.pop(key)
+    authority.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="stale or edited"):
+        validate_work_unit_plan_authority(tmp_path, plan, require_gate=False)
 
 
 def test_consumer_view_preserves_jit_plan_and_authority_sidecar_as_one_pair(
@@ -349,7 +408,9 @@ def test_consumer_view_preserves_jit_plan_and_authority_sidecar_as_one_pair(
     plan = tmp_path / rel
     plan.parent.mkdir(parents=True)
     plan.write_text("# unit\n" + "bounded execution\n" * 20, encoding="utf-8")
-    authority = stamp_work_unit_plan(tmp_path, plan)
+    authority = stamp_work_unit_plan(
+        tmp_path, plan, gate={"clean": True, "blocking": 0, "run_id": "plan-run"}
+    )
     assert authority is not None
 
     view = prepare_consumer_view(layout)
