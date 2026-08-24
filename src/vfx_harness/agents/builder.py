@@ -2197,11 +2197,16 @@ def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evid
     def _issue(row: dict) -> str:
         head = f"[check:{row['id']}]"
         if row.get("value") is None:
+            # The evidence row already carries WHY it could not be measured; withholding
+            # it left a probe of the live scene as the only way to learn that 50 objects
+            # were in frame and the projection still returned nothing.
+            why = str(row.get("error") or "").strip()
             return (
                 f"{head} contract is INAPPLICABLE to its subject: {row.get('metric')} "
-                f"could not be measured on these roles (target {row.get('target')}). "
-                "This is a binding defect, not a build defect — the metric cannot apply "
-                "to what the claim names; it needs re-materialization, not a repair."
+                f"could not be measured on these roles (target {row.get('target')})"
+                + (f" — {why}" if why else "")
+                + ". This is a binding defect, not a build defect — the metric cannot "
+                "apply to what the claim names; it needs re-materialization, not a repair."
             )
         return (
             f"{head} executable contract fails: {row.get('metric')} reads "

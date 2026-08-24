@@ -389,18 +389,24 @@ def _graphs(row):
     nt=_scene.world.node_tree if _scene.world and _scene.world.use_nodes else None
     return [('world',nt)] if nt else []
 def _projected(objects):
-    coords=[]
+    # `points` used to leak across iterations: an object whose to_mesh() failed reused
+    # the PREVIOUS object's vertices, projecting geometry that was never selected, and
+    # a failure on the first object raised NameError that surfaced only as value=None.
+    coords=[]; empty=0
     for obj in objects:
-        ev=obj.evaluated_get(_dg); mesh=None
+        ev=obj.evaluated_get(_dg); mesh=None; points=[]
         if ev.type=='MESH':
             try: mesh=ev.to_mesh(); points=[ev.matrix_world@v.co for v in mesh.vertices]
+            except Exception: points=[ev.matrix_world@__import__('mathutils').Vector(c)
+                                      for c in ev.bound_box]
             finally:
                 if mesh is not None: ev.to_mesh_clear()
         else: points=[ev.matrix_world@__import__('mathutils').Vector(c) for c in ev.bound_box]
+        if not points: empty+=1
         for point in points:
             ndc=world_to_camera_view(_scene,_camera,point)
             if ndc.z>0: coords.append((float(ndc.x),float(1-ndc.y)))
-    return coords
+    return coords,empty
 def _property(target,path):
     value=target
     for token in str(path).split('.'):
@@ -464,8 +470,13 @@ for row in _rows:
     try:
         if kind=='object_count': value=len(objects)
         elif kind.startswith('bbox_'):
-            pts=_projected(objects)
-            if not pts: raise ValueError('no selected geometry is in front of the camera')
+            pts,empty=_projected(objects)
+            if not pts:
+                if not objects: raise ValueError('selector matched no objects')
+                if not _camera: raise ValueError('scene has no active camera to project through')
+                raise ValueError(
+                    f'none of {{len(objects)}} selected object(s) is in front of the '
+                    f'camera at this frame ({{empty}} contributed no points)')
             xs=[p[0] for p in pts]; ys=[p[1] for p in pts]; x0,x1,y0,y1=min(xs),max(xs),min(ys),max(ys)
             value={{'bbox_width':x1-x0,'bbox_height':y1-y0,'bbox_center_x':(x0+x1)/2,'bbox_center_y':(y0+y1)/2,'bbox_top_y':y0,'bbox_bottom_y':y1}}[kind]
         elif kind=='mesh_vertex_count':

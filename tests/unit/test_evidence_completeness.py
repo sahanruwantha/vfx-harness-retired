@@ -78,3 +78,24 @@ def test_unmeasurable_metric_reads_as_inapplicable_not_failed() -> None:
     assert "INAPPLICABLE to its subject" in source
     assert "binding defect, not a build defect" in source
     assert "re-materialization, not a repair" in source
+
+
+def test_projection_failure_names_its_reason() -> None:
+    """`bbox_height` read None at f1 with 50 housing objects demonstrably in frame, and
+    the report said only "could not be measured" — a live-scene probe was the only way
+    to learn more. The evidence row's own error must reach the builder, and the
+    projection must distinguish no-objects from none-in-front."""
+    import inspect
+
+    from vfx_harness.agents import builder
+    from vfx_harness.evidence import scene_checks
+
+    assert 'why = str(row.get("error") or "").strip()' in inspect.getsource(builder)
+
+    probe = inspect.getsource(scene_checks._blender_probe)
+    assert "selector matched no objects" in probe
+    assert "no active camera to project through" in probe
+    assert "is in front of the" in probe
+    # points must not leak across objects: a failed to_mesh reused the previous
+    # object's vertices and projected geometry that was never selected.
+    assert "mesh=None; points=[]" in probe
