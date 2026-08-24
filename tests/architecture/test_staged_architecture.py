@@ -40,6 +40,7 @@ def _claim(uid: str, *, cid: str | None = None, frame: int = 40) -> dict:
         "required": True,
         "authority": "executable_required",
         "repair_owner": uid,
+        "asserts": "scene",
         "evidence": [{"kind": "scene_contract", "id": f"contract.{uid}"}],
     }
 

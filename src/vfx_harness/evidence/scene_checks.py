@@ -73,6 +73,24 @@ FUNCTIONAL_KINDS = {"control_render_response", "frame_delta"}
 SUPPORTED_KINDS = (
     OBJECT_KINDS | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS | TEMPORAL_KINDS | FUNCTIONAL_KINDS
 )
+# What each metric can honestly certify. Counting the rim modules proves they EXIST; it
+# cannot prove they chase, because a count has no time in it. Run 20260823T154920Z
+# certified a chase claim with `object_count` and a "reads as layered machined metal"
+# claim with radial closure — both metrics measured correctly, and neither could support
+# the claim it was bound to.
+_PROJECTED_KINDS = {
+    "bbox_width", "bbox_height", "bbox_center_x",
+    "bbox_center_y", "bbox_top_y", "bbox_bottom_y",
+}
+KIND_DOMAINS: dict[str, str] = {
+    **dict.fromkeys(TEMPORAL_KINDS, "temporal"),
+    **dict.fromkeys(_PROJECTED_KINDS, "projected_composition"),
+    **dict.fromkeys(FUNCTIONAL_KINDS, "image"),
+    **dict.fromkeys(
+        (OBJECT_KINDS - _PROJECTED_KINDS) | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS,
+        "scene",
+    ),
+}
 SUPPORTED_OPS = {"band", "eq", "min", "max"}
 
 KIND_DEFINITIONS = {

@@ -60,6 +60,7 @@ def _candidate(root: Path) -> None:
                                    "subject_roles": ["comp"], "subject_controls": ["hold"],
                                    "moments": [239, 240], "kind": "atomic", "required": True,
                                    "authority": "executable_required", "repair_owner": "lock",
+                                   "asserts": "image",
                                    "evidence": [{"kind": "scene_contract", "id": "final-lock"}],
                                }]},
                 "completion": "all_required_claims_and_protected_contracts_pass",
@@ -156,6 +157,7 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
                            "subject_roles": ["polish.comp"], "subject_controls": ["hold"],
                            "moments": [239, 240], "kind": "atomic", "required": True,
                            "authority": "executable_required", "repair_owner": "polish",
+                           "asserts": "image",
                            "evidence": [{"kind": "scene_contract", "id": "polish-lock"}],
                        }]},
         "completion": "all_required_claims_and_protected_contracts_pass",
@@ -1062,6 +1064,7 @@ def test_materialization_must_adopt_owned_structured_decision(tmp_path: Path) ->
         "subject_roles": ["polish.comp"], "subject_controls": [],
         "moments": [240], "kind": "atomic", "required": True,
         "authority": "executable_required", "repair_owner": "polish",
+        "asserts": "temporal",
         "evidence": [{"kind": "scene_contract", "id": "polish-spine"}],
     })
     _write(payload, data)

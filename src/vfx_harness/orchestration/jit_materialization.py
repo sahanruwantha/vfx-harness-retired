@@ -250,6 +250,40 @@ def validate_materialization(
             "materialized contracts lack required producing claims: " + ", ".join(missing_claims)
         )
 
+    # A metric may only close a claim it can actually support. Counting rim modules
+    # proves they exist, not that they chase; radial closure proves an aperture is shut,
+    # not that it reads as machined metal. Run 20260823T154920Z shipped both.
+    from vfx_harness.domain.work_units import STRUCTURAL_CLAIM_DOMAINS
+    from vfx_harness.evidence.scene_checks import KIND_DOMAINS
+
+    for unit in layer.stages:
+        for claim in unit.evaluation.claims:
+            if not claim.required:
+                continue
+            if claim.asserts is None:
+                raise ValueError(
+                    f"required claim {claim.id} must declare `asserts` — the evidence "
+                    "domain its proposition lives in — so its metrics can be checked "
+                    "against what they can certify"
+                )
+            if claim.asserts not in STRUCTURAL_CLAIM_DOMAINS:
+                continue  # image/human evidence is candidate-bound, proved at build time
+
+            def _domain_of(binding_id: str) -> str:
+                entry = all_contracts.get(binding_id)
+                if entry is None:
+                    return "unknown"
+                return KIND_DOMAINS.get(str(entry[1].get("kind")), "unknown")
+
+            bound = {binding.id: _domain_of(binding.id) for binding in claim.evidence}
+            if claim.asserts not in set(bound.values()):
+                summary = ", ".join(f"{cid}={domain}" for cid, domain in bound.items())
+                raise ValueError(
+                    f"claim {claim.id} asserts {claim.asserts!r} but none of its bound "
+                    f"evidence can certify that domain ({summary or 'no bindings'}); "
+                    f"bind a {claim.asserts} metric"
+                )
+
     # A structured human decision whose roles live in this layer's reserved namespaces is
     # adopted HERE: a schema-5 global bundle publishes no contracts, so the global gate
     # only proves an owner exists. The exact executable copy — and its binding to a

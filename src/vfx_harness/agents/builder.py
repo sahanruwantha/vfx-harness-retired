@@ -2092,6 +2092,15 @@ def _unit_evidence_ids(unit, frame: int) -> set[str] | None:
     }
 
 
+def image_evidence_required_for(image_bindings, capabilities) -> bool:
+    """Whether a unit must produce candidate-bound image evidence before sealing.
+
+    Declared look ownership counts as much as an explicit image binding: geometry
+    cannot certify how something reads, so run 20260823T154920Z closed a "reads as
+    layered machined metal" claim with radial closure and sealed on scene contracts."""
+    return bool(image_bindings) or bool(capabilities)
+
+
 def _unit_completion_evidence_ids(unit) -> set[str] | None:
     """All evidence required before a bounded unit may stop mutating.
 
@@ -2633,7 +2642,9 @@ async def build_unit(
         for binding in claim.evidence
         if binding.kind == "image_contract"
     }
-    image_evidence_required = bool(active_image_evidence_ids)
+    image_evidence_required = image_evidence_required_for(
+        active_image_evidence_ids, _declared_capabilities
+    )
     phase = {
         "mode": "live",
         "round": 1,

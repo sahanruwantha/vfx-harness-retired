@@ -160,6 +160,7 @@ _MATERIALIZATION_EXAMPLE = """{
                    "subject_roles": ["example_role.part"], "subject_controls": [],
                    "moments": [1], "kind": "atomic", "required": true,
                    "authority": "executable_required", "repair_owner": "example_unit",
+                   "asserts": "<scene|temporal|projected_composition|image|human>",
                    "evidence": [{"kind": "scene_contract", "id": "example-contract"}]}]},
    "completion": "all_required_claims_and_protected_contracts_pass"}]
  },
@@ -244,6 +245,11 @@ contracts, reference fingerprints, and techniques now from authored references p
 upstream outcomes. Copy every structured decision in `state/plan-resolutions.jsonl` whose
 `values.contract` roles fall inside this layer's reserved namespaces verbatim into
 `scene_contracts` — exact contract fields plus `decision_id` — bound to a required claim.
+Every required claim declares `asserts`: the evidence domain its proposition lives in.
+A metric may only close a claim it can support — a count proves existence, not sequence;
+geometry proves position, not appearance. Bind a temporal metric for behaviour over
+time, a projected_composition metric for framing, a scene metric for structure. Claims
+that assert `image` or `human` are proved after a candidate exists, at build time.
 Each stage declares `look_capabilities`: the appearance families that unit is answerable
 for, a subset of detail, material, color, exposure, lighting, emission, atmosphere,
 motion, grade. Declare exactly what the unit's own judged frames require — this decides

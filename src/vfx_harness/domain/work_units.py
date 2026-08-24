@@ -24,6 +24,11 @@ CLAIM_AUTHORITIES = {
     "advisory",
 }
 CLAIM_KINDS = {"atomic", "interaction"}
+# The evidence domain a claim's proposition lives in. `image` and `human` are decided
+# after a candidate exists, so they are build-time debts rather than materialization
+# bindings; the rest must be covered by a bound metric of the same domain.
+CLAIM_DOMAINS = {"scene", "image", "temporal", "projected_composition", "human"}
+STRUCTURAL_CLAIM_DOMAINS = {"scene", "temporal", "projected_composition"}
 EVIDENCE_KINDS = {
     "scene_contract",
     "image_contract",
@@ -174,6 +179,10 @@ class Claim:
     coordination_owner: str | None = None
     participants: tuple[str, ...] = ()
     controls: tuple[str, ...] = ()
+    # The evidence domain this claim's proposition actually lives in. Declared, never
+    # inferred from prose — and checked against the domains its bound metrics can
+    # certify, so a temporal assertion cannot be closed by a static count.
+    asserts: str | None = None
 
     @classmethod
     def parse(cls, value: Any, where: str) -> Claim:
@@ -246,6 +255,13 @@ class Claim:
         elif coordination_owner is not None or participants or controls:
             raise ValueError(f"{where} atomic claims cannot declare interaction coordination fields")
 
+        asserts = row.get("asserts")
+        if asserts is not None and asserts not in CLAIM_DOMAINS:
+            raise ValueError(
+                f"{where}.asserts must be one of {sorted(CLAIM_DOMAINS)} — the evidence "
+                "domain this claim's proposition lives in"
+            )
+
         return cls(
             cid,
             proposition,
@@ -263,6 +279,7 @@ class Claim:
             coordination_owner,
             participants,
             controls,
+            asserts,
         )
 
     @property
