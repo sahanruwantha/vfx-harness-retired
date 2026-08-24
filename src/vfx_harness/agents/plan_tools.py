@@ -1219,6 +1219,120 @@ def build_plan_tools(
         repair = plan_gate.feedback(result)
         return _text(body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""))
 
+    @tool(
+        "evidence_vocabulary",
+        "The complete registry of scene-contract evidence kinds: definition, evidence "
+        "domain, and the structural fields each kind requires. Call this BEFORE "
+        "authoring contracts, and whenever a validator error mentions a kind, a "
+        "property, or a vacuous target — run 20260824T153427Z-91b7c1 burned 8 write "
+        "rounds guessing at a vocabulary this call returns in one turn. If no kind can "
+        "express a claim, say so via ask_supervisor instead of padding with a "
+        "trivially-satisfiable contract; padding shapes are rejected at validation.",
+        {"type": "object", "properties": {}},
+    )
+    async def evidence_vocabulary(args):
+        from vfx_harness.evidence.scene_checks import (
+            FRAME_SCOPED_KINDS,
+            KIND_DEFINITIONS,
+            KIND_DOMAINS,
+            SUPPORTED_KINDS,
+            WINDOW_KINDS,
+        )
+
+        extra_fields = {
+            "keyframe_schedule": [
+                "samples: [{frame, values:{property: scalar|vector}}, …] (≥2, unique frames)"
+            ],
+            "object_property": [
+                "frame",
+                "property (Blender-evaluated path only — custom properties are "
+                "self-certification and rejected)",
+            ],
+            "path_clearance_min": [
+                "frames [a,b]",
+                "compare_roles (obstacle roles, disjoint from roles)",
+                "frame_step (optional)",
+            ],
+            "parallax_displacement_profile": [
+                "frames [a,b]",
+                "compare_roles (far group, disjoint from roles)",
+            ],
+            "curve_derivative_max": ["frames [a,b]", "property (location|rotation_euler|scale)"],
+            "onset_order": ["frames [a,b]", "compare_roles/compare_control_roles (disjoint)"],
+            "transform_return_delta": ["frames [a,b]", "component (location|rotation|scale)"],
+            "control_render_response": ["graph", "node_roles", "probe_values [lo,hi]", "region [x0,y0,x1,y1]"],
+            "frame_delta": ["frames [a,b]", "region (optional)"],
+        }
+        entries = {}
+        for kind in sorted(SUPPORTED_KINDS):
+            fields = []
+            if kind in WINDOW_KINDS and kind not in extra_fields:
+                fields.append("frames [a,b]")
+            if kind in FRAME_SCOPED_KINDS and kind != "object_property":
+                fields.append("frame")
+            fields.extend(extra_fields.get(kind, []))
+            entries[kind] = {
+                "definition": KIND_DEFINITIONS.get(kind, ""),
+                "domain": KIND_DOMAINS.get(kind, "scene"),
+                "fields": fields,
+            }
+        note = (
+            "Projected (bbox_*) targets must lie inside the normalized frame; "
+            "path_clearance_min with lifecycle 'persistent' re-evaluates as obstacle "
+            "geometry arrives (empty obstacle selection reads vacuously clear)."
+        )
+        return _text(json.dumps({"kinds": entries, "note": note}, indent=1))
+
+    gate_preview_calls = 0
+    prior_preview_signature: str | None = None
+
+    @tool(
+        "gate_preview",
+        "Run the deterministic plan gate against the CURRENT consumer view (selected "
+        "bundle + materialized layers + staged unit plans) — the exact evaluation "
+        "terminal publication will apply. Use it before finishing so findings become "
+        "fixes in this session instead of a retracted artifact. Read-only; capped at "
+        "three calls per session.",
+        {"type": "object", "properties": {}},
+    )
+    async def gate_preview(args):
+        nonlocal gate_preview_calls, prior_preview_signature
+        gate_preview_calls += 1
+        if gate_preview_calls > 3:
+            return _text(
+                "gate_preview call cap reached (3); finish the artifact and let the "
+                "terminal gate decide",
+                is_error=True,
+            )
+        from vfx_harness.domain.brief import load_shot
+        from vfx_harness.evaluation import plan_gate
+        from vfx_harness.orchestration.plan_authority import prepare_consumer_view
+
+        try:
+            view = await anyio.to_thread.run_sync(prepare_consumer_view, layout)
+            result = await anyio.to_thread.run_sync(
+                lambda: plan_gate.run(view, require_scene_checks=False)
+            )
+        except Exception as exc:
+            log(f"plan-lab ✗ gate_preview: {str(exc)[:120]}", 1)
+            return _text(f"gate preview failed: {exc}", is_error=True)
+        result.shot = load_shot(shot_folder).id
+        body = plan_gate.report(result)
+        log(f"plan-lab gate_preview → {'CLEAN' if result.clean else f'{len(result.blocking)} blocking'}", 1)
+        signature = result.signature()
+        if not result.clean and signature == prior_preview_signature:
+            return _text(
+                body
+                + "\n\nGATE PLATEAU: findings are unchanged from the previous preview. "
+                "Anything you cannot fix from inside this session (missing unit plan, "
+                "another layer's authority) belongs to the outer flow — finish your "
+                "artifact and report the residue.",
+                is_error=True,
+            )
+        prior_preview_signature = signature
+        repair = plan_gate.feedback(result)
+        return _text(body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""))
+
     # probe_video / contact_sheet / extract_frames were DEFINED and never registered, so
     # they were unreachable on every shot — not just stills-only ones. contact_sheet's own
     # description reads "This is how you do the scene read", and it has never once been
@@ -1230,7 +1344,8 @@ def build_plan_tools(
     # silently lose its scene read. The exclusion is now a decision with a reason instead
     # of an omission.
     video = sorted((shot_folder / "refs").glob("*.mp4")) if (shot_folder / "refs").is_dir() else []
-    tools = [measure_ref, measure_check, measure_checks, spike, ask_supervisor]
+    tools = [measure_ref, measure_check, measure_checks, spike, ask_supervisor,
+             evidence_vocabulary, gate_preview]
     if include_gate:
         tools.append(run_gate)
     if video:

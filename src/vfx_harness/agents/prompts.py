@@ -210,6 +210,12 @@ comparison settings locked for the round; the relevant failed approach in at mos
 lines; and an automatic stop clause once authoritative checks pass and no evidence-backed
 owned-axis defect remains. Runtime checks are evaluation-only and may never be promoted to
 hard plan requirements. Do not ask a layer to repair controls owned by another layer.
+
+After writing `{target}`, call `gate_preview` once: it applies the exact terminal
+deterministic gate to the staged consumer view. A finding fixed here costs one edit; the
+same finding after this session ends costs a retracted plan and a fresh generation. A
+finding you cannot fix from this plan (another layer's authority, a missing
+materialization) is not yours — finish and report it.
 """
 
 
