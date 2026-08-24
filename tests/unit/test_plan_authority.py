@@ -313,6 +313,49 @@ def test_selected_bundle_fails_when_an_authored_reference_changes(
         resolve_current(tmp_path)
 
 
+def test_published_ownership_mapping_round_trips_through_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The publisher seals plans/ownership_mapping.json (the compact source document the
+    plan surface expands from); run 20260824T150358Z-3bc39c published the first
+    mapping-carrying bundle and every consumer failed closed on it because the resolver
+    never learned the member. Publication and resolution must agree on membership."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    (tmp_path / "plans" / "ownership_mapping.json").write_text(
+        json.dumps({"schema": 1, "layers": [], "axes": [], "resolutions": {}, "blockers": []}) + "\n",
+        encoding="utf-8",
+    )
+    layout = run_artifacts.create(tmp_path, "plan-run")
+
+    published = publish_current(tmp_path, layout, outcome="clean")
+
+    assert "plans/ownership_mapping.json" in published.artifacts
+    resolved = resolve_current(tmp_path)
+    assert resolved.content_hash == published.content_hash
+
+
+def test_publication_refuses_members_resolution_cannot_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    rogue = tmp_path / "plans" / "01_camera" / "notes.json"
+    rogue.parent.mkdir(parents=True)
+    rogue.write_text("{}\n", encoding="utf-8")
+    layout = run_artifacts.create(tmp_path, "plan-run")
+
+    import vfx_harness.orchestration.plan_authority as plan_authority
+
+    monkeypatch.setattr(
+        plan_authority,
+        "_supplemental_plan_artifacts",
+        lambda source_root: {"plans/01_camera/notes.json": Path("plans/01_camera/notes.json")},
+    )
+    with pytest.raises(PlanPublicationError, match="resolution does not support"):
+        publish_current(tmp_path, layout, outcome="clean")
+
+
 def test_jit_unit_plan_is_pinned_to_selected_bundle_and_exact_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

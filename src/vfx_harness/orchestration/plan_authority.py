@@ -80,6 +80,12 @@ def _supplemental_plan_artifacts(source_root: Path) -> dict[str, Path]:
 def _is_supported_artifact(name: str) -> bool:
     if name in _SOURCES or name in _GENERATED_ARTIFACTS:
         return True
+    # the compact ownership mapping is the source document the plan surface is expanded
+    # from; the publisher seals it for provenance, so the resolver must read it back
+    # (run 20260824T150358Z-3bc39c published the first mapping-carrying bundle and every
+    # consumer failed closed on "unsupported plans/ownership_mapping.json")
+    if name == "plans/ownership_mapping.json":
+        return True
     path = Path(name)
     nested_markdown = (
         not path.is_absolute()
@@ -250,6 +256,15 @@ def _payloads(source_root: Path, plan_path: Path | None) -> dict[str, bytes]:
     if missing:
         raise PlanPublicationError(
             "cannot publish incomplete plan authority; missing " + ", ".join(sorted(missing))
+        )
+    # Publication and resolution must agree on membership: sealing an artifact the
+    # resolver refuses publishes authority no consumer can read (writer/reader
+    # asymmetry, the HIR-0016 class). Fail at the transaction boundary instead.
+    unsupported = sorted(name for name in sources if not _is_supported_artifact(name))
+    if unsupported:
+        raise PlanPublicationError(
+            "cannot publish artifacts current authority resolution does not support: "
+            + ", ".join(unsupported)
         )
     payloads = {name: (source_root / rel).read_bytes() for name, rel in sources.items()}
     marker = source_root / ".plan-workspace.json"

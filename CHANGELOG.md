@@ -7,6 +7,11 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Taught bundle resolution the `plans/ownership_mapping.json` member the publisher already seals,
+  and made publication refuse any member resolution cannot read — the first mapping-carrying
+  bundle published as clean and then failed closed for every consumer (the
+  [HIR-0016](docs/improvements/HIR-0016-gate-attested-unit-plan-publication.md) writer/reader
+  class at the bundle boundary).
 - Made JIT unit-plan publication a two-phase transaction: the deterministic gate runs inside
   generation, a clean result earns a gate attestation in the authority sidecar (schema v2), a
   dirty result rolls the shot back, and every build-time consumer refuses unattested plans
