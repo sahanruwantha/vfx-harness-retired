@@ -71,6 +71,16 @@ live in the linked Harness Improvement Records.
   upstream outcomes, and image-check calibration is unavailable until a real candidate exists.
 - Added typed terminal causes for operator interruption, model-turn exhaustion, plan-gate stalls,
   plan-budget exhaustion, usage limits, and process errors in run status and summaries.
+- Made build-time readings unable to overstate themselves: contract rows reject keys the
+  harness ignores and must declare the frame they read; `onset_order` rejects selectors
+  that compare a set against itself; every metric declares the evidence domain it can
+  certify and every required claim declares the domain it asserts, so a count cannot
+  close a timing claim; units declare look capabilities instead of having them guessed
+  from axis names, and declared appearance ownership requires candidate-bound image
+  evidence; required evidence that was never produced blocks sealing instead of passing
+  by absence; finalization is bounded to the selected checkpoint's journal prefix; and
+  mutation scope is checked against the active unit on every path, reported live on the
+  call that violates it.
 - Put global planning on an authoring diet: the model writes one compact ownership/DAG
   mapping and the harness mechanically generates clause ids, exact citations, the
   requirements register, all-deferred schema-5 layers with derived `owned_requirements`,
@@ -98,6 +108,7 @@ See [HIR-0002](docs/improvements/HIR-0002-structured-run-output.md),
 [HIR-0011](docs/improvements/HIR-0011-build-time-plan-falsification.md),
 [HIR-0012](docs/improvements/HIR-0012-sparse-global-publication-contract.md),
 [HIR-0013](docs/improvements/HIR-0013-unit-first-evidence-materialization.md),
+[HIR-0014](docs/improvements/HIR-0014-instruments-that-cannot-lie.md),
 [ADR-0002](docs/decisions/ADR-0002-run-scoped-artifact-authority.md),
 [ADR-0003](docs/decisions/ADR-0003-explicit-metric-and-temporal-evidence-identity.md),
 [ADR-0004](docs/decisions/ADR-0004-transactional-plan-authority.md),
