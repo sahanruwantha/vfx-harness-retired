@@ -525,6 +525,18 @@ def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0)
               the look, and bezier drags the peak rate off the frames you keyed it on.
 
     Pitch is `radians(90 + p)`: a camera looks down its own -Z, so LEVEL is 90, not 0."""
+    # Both objects persist, so both need a semantic role or a scoped unit inherits a
+    # canonical-replay rejection it cannot repair (the helper recreates them on every
+    # call). The role is REQUIRED and never derived from `name`: a display name is a
+    # label, not authority — defaulting to it tagged run 20260824T052204Z's objects
+    # `CAM_spine`/`CAM_spine.camera` while its declared scope was `cam_rig`. Checked
+    # before anything is created, so a refused call leaves the scene untouched.
+    if not role:
+        raise ValueError(
+            "bvfx_camera_rig(role=...) is required: both objects it creates persist in "
+            "the scene and must carry a semantic role inside your unit's declared "
+            "mutation scope. Pass the role your unit owns, not the display name."
+        )
     import math  # not a module-level import in this worker
     sc = bpy.context.scene
     for n in (name, "camera"):
@@ -539,13 +551,8 @@ def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0)
     camd.clip_start, camd.clip_end = clip
     cam = bpy.data.objects.new("camera", camd)
     sc.collection.objects.link(cam)
-    # Both objects persist in the scene, so both need a semantic role or a scoped unit
-    # inherits an untagged object and a guaranteed canonical-replay rejection it cannot
-    # repair — the helper recreates the object on every call. Run 20260824T045543Z lost
-    # two builds to this. `role` defaults to the rig name so existing callers that
-    # already name their rig semantically stay legal.
-    _bvfx_role(rig, role or name, owner_layer)
-    _bvfx_role(cam, f"{role or name}.camera", owner_layer)
+    _bvfx_role(rig, role, owner_layer)
+    _bvfx_role(cam, f"{role}.camera", owner_layer)
     cam.parent = rig
     cam.matrix_parent_inverse.identity()   # BEFORE location, or offsets are silently wrong
     cam.location = (0.0, 0.0, 0.0)

@@ -100,7 +100,17 @@ def test_camera_rig_helper_tags_both_objects(worker) -> None:
     source = inspect.getsource(worker._bvfx_camera_rig)
 
     assert "role=None" in source and "owner_layer=None" in source
-    assert "_bvfx_role(rig, role or name, owner_layer)" in source
-    assert '_bvfx_role(cam, f"{role or name}.camera", owner_layer)' in source
+    assert "_bvfx_role(rig, role, owner_layer)" in source
+    assert '_bvfx_role(cam, f"{role}.camera", owner_layer)' in source
     # Tagging must happen before parenting/keying so an early return cannot skip it.
     assert source.index("_bvfx_role(rig") < source.index("cam.parent = rig")
+    # The role must never be derived from the display name: a label is not authority.
+    assert "role or name" not in source
+    assert "is required" in source
+
+
+def test_camera_rig_helper_refuses_an_untagged_call(worker) -> None:
+    """Run 20260824T052204Z defaulted the role to the rig's display name and tagged its
+    objects `CAM_spine`/`CAM_spine.camera` while the unit's scope was `cam_rig`."""
+    with pytest.raises(ValueError, match="is required: both objects"):
+        worker._bvfx_camera_rig(name="CAM_spine")
