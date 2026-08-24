@@ -82,10 +82,6 @@ _PROJECTED_KINDS = {
     "bbox_width", "bbox_height", "bbox_center_x",
     "bbox_center_y", "bbox_top_y", "bbox_bottom_y",
 }
-# Metrics that read polygons. Binding one to a claim whose subjects are empties, lights
-# or cameras yields None — not a miss, an impossibility — and run 20260824T060927Z spent
-# two repair rounds trying to "fix" smooth_fraction on a camera rig.
-MESH_KINDS = frozenset({"smooth_fraction", "mesh_vertex_count", "radial_inward_fraction"})
 KIND_DOMAINS: dict[str, str] = {
     **dict.fromkeys(TEMPORAL_KINDS, "temporal"),
     **dict.fromkeys(_PROJECTED_KINDS, "projected_composition"),
