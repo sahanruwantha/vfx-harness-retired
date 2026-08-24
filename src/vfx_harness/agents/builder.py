@@ -2923,12 +2923,23 @@ async def build_unit(
             journal = layout.checkpoints / "journals" / f"layer-{m.id}.py"
             journal.parent.mkdir(parents=True, exist_ok=True)
             jrel = journal.relative_to(shot.folder).as_posix()
-            info = session.journal(path=str(journal))
+            # The finalizer must see the SELECTED checkpoint's prefix, not every call
+            # ever accepted: the scene was just restored to the best round, so later
+            # rounds' calls describe a world that no longer exists.
+            info = session.journal(
+                path=str(journal), limit=(best.get("snap") or {}).get("journal_index")
+            )
             if info.get("calls"):
                 journal_rel = jrel
                 _JOURNAL_INFO.clear()
                 _JOURNAL_INFO.update(info)
                 log(f"journal: {info['calls']} accepted run_bpy calls ({info['chars'] // 1024}KB) → {jrel}")
+                if info.get("dropped"):
+                    log(
+                        f"truncated to selected round r{best['round']}: "
+                        f"{info['dropped']} call(s) from discarded rounds excluded",
+                        1,
+                    )
         except Exception as e:  # never block finalize on a nicety
             log(f"journal unavailable ({str(e)[:60]})")
         phase["mode"] = "finalize"

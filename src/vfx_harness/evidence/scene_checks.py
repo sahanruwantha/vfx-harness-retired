@@ -40,6 +40,35 @@ TEMPORAL_KINDS = {
     "transform_return_delta",
 }
 WINDOW_KINDS = TEMPORAL_KINDS - {"keyframe_schedule"}
+# Every key the evaluator, gate, and orchestration actually read off a contract row.
+# A row carrying anything else is not "extra metadata" — it is a claim the harness
+# silently ignores. Run 20260823T154920Z shipped `at_frame: 36`, nothing read it,
+# `row.get("frame", 1)` defaulted to 1, and a sealed frame-1 reading was reported as a
+# frame-36 retraction failure for a whole build. Unknown keys now fail closed.
+KNOWN_ROW_KEYS = frozenset({
+    "id", "kind", "axis", "op", "lo", "hi", "value", "unit",
+    "owner_layer", "fault_owner", "activates_at", "lifecycle", "expires_at",
+    "decision_id", "frame", "frames", "region", "component", "samples",
+    "motion_epsilon", "property", "tol", "uniform_tol", "direction", "domain",
+    "graph", "socket", "socket_index", "socket_direction", "from_socket", "to_socket",
+    "probe_mode", "probe_scale", "probe_values", "response_metric",
+    "roles", "control_roles", "material_roles", "compare_roles",
+    "compare_control_roles", "node_roles", "node_group_roles",
+    "from_node_roles", "to_node_roles",
+})
+# Scene state these kinds read changes with the frame, so a row that does not say
+# WHICH frame it reads silently measures frame 1 via the historical default.
+FRAME_SCOPED_KINDS = {
+    "bbox_width",
+    "bbox_height",
+    "bbox_center_x",
+    "bbox_center_y",
+    "bbox_top_y",
+    "bbox_bottom_y",
+    "mesh_vertex_count",
+    "radial_inward_fraction",
+    "object_property",
+}
 FUNCTIONAL_KINDS = {"control_render_response", "frame_delta"}
 SUPPORTED_KINDS = (
     OBJECT_KINDS | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS | TEMPORAL_KINDS | FUNCTIONAL_KINDS
@@ -222,10 +251,39 @@ def validate_row(row: dict) -> str | None:
                     for value in numeric
                 ):
                     return "keyframe_schedule values must be numeric scalars or vectors"
-    if kind == "onset_order" and not (
-        _selectors(row, "compare_roles") or _selectors(row, "compare_control_roles")
-    ):
-        return "onset_order requires compare_roles or compare_control_roles"
+    unknown = sorted(set(row) - KNOWN_ROW_KEYS)
+    if unknown:
+        return (
+            "unknown contract key(s) " + ", ".join(unknown)
+            + " — the harness would ignore them silently; accepted keys are "
+            + ", ".join(sorted(KNOWN_ROW_KEYS))
+        )
+    if kind in FRAME_SCOPED_KINDS:
+        frame = row.get("frame")
+        if isinstance(frame, bool) or not isinstance(frame, int) or frame < 1:
+            return (
+                f"{kind} must declare `frame` as a positive integer: this reading "
+                "changes with the frame, and an undeclared frame silently measures "
+                "frame 1"
+            )
+    if kind == "onset_order":
+        primary = set(_selectors(row, "roles")) | set(_selectors(row, "control_roles"))
+        compare = set(_selectors(row, "compare_roles")) | set(
+            _selectors(row, "compare_control_roles")
+        )
+        if not compare:
+            return "onset_order requires compare_roles or compare_control_roles"
+        # The metric is onset(compare) - onset(roles). Overlapping selectors compare a
+        # set against itself, which is 0 by construction — a contract that can never
+        # pass and never fails honestly. Run 20260823T154920Z burned a build on one.
+        shared = sorted(primary & compare)
+        if shared:
+            return (
+                "onset_order selectors must be disjoint; "
+                + ", ".join(shared)
+                + " appears on both sides, which forces the difference to 0 regardless "
+                "of the scene"
+            )
     if kind == "transform_return_delta" and row.get("component", "location") not in {
         "location",
         "rotation",
@@ -402,11 +460,13 @@ for row in _rows:
             tested=[]
             for o in objects:
                 if o.type!='MESH': continue
-                for p in o.data.polygons:
-                    c=o.matrix_world@p.center
-                    n=(o.matrix_world.to_3x3()@p.normal).normalized()
+                ev=o.evaluated_get(_dg); mw=ev.matrix_world
+                for p in ev.data.polygons:
+                    c=mw@p.center
+                    n=(mw.to_3x3()@p.normal).normalized()
                     r=(c.x*c.x+c.y*c.y)**.5
                     if r>=1e-9 and abs(n.z)<=.9: tested.append((n.x*c.x+n.y*c.y)/r<=0)
+            if not tested: raise ValueError('no radial faces to test on the selection')
             value=sum(tested)/len(tested)
         elif kind=='object_property':
             vs=[_property(o,row['property']) for o in objects]

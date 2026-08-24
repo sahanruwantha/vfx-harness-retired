@@ -704,14 +704,23 @@ def h_journal(a: dict) -> dict:
     if a.get("clear"):
         _JOURNAL.clear()
         return {"cleared": True}
-    body = "\n\n# ---- next accepted run_bpy call ----\n".join(_JOURNAL)
+    # `limit` is a snapshot's write-ahead `journal_index`: the calls accepted up to that
+    # checkpoint. Dumping the FULL journal after restoring an earlier checkpoint writes
+    # calls the scene no longer contains — run 20260823T154920Z restored round 1 and
+    # published round 2's rejected key light and tunnel taper into the unit script.
+    limit = a.get("limit")
+    entries = _JOURNAL if limit is None else _JOURNAL[: int(limit)]
+    dropped = len(_JOURNAL) - len(entries)
+    body = "\n\n# ---- next accepted run_bpy call ----\n".join(entries)
     path = a.get("path")
     if path:
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(f"# JOURNAL — {len(_JOURNAL)} accepted run_bpy calls, in order.\n"
-                     f"# Superseded tweaks and probes included: PRUNE, do not paste.\n\n"
+            fh.write(f"# JOURNAL — {len(entries)} accepted run_bpy calls, in order.\n"
+                     + (f"# Truncated to the selected checkpoint: {dropped} later call(s) "
+                        f"from discarded rounds excluded.\n" if dropped else "")
+                     + "# Superseded tweaks and probes included: PRUNE, do not paste.\n\n"
                      + body + "\n")
-    return {"calls": len(_JOURNAL), "chars": len(body), "path": path}
+    return {"calls": len(entries), "chars": len(body), "path": path, "dropped": dropped}
 
 
 def h_run(a: dict) -> dict:
