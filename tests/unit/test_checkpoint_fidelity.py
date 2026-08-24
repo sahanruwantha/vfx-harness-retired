@@ -89,3 +89,18 @@ def test_session_passes_the_selected_index_through(monkeypatch) -> None:
     assert captured["op"] == "journal"
     assert captured["limit"] == 7
     assert result["dropped"] == 3
+
+
+def test_camera_rig_helper_tags_both_objects(worker) -> None:
+    """The helper persisted an untagged rig and camera, so any scoped unit using it
+    inherited a canonical-replay rejection it could not repair — re-invoking the helper
+    recreated the untagged object. Runs 045543/050954 lost two builds to this."""
+    import inspect
+
+    source = inspect.getsource(worker._bvfx_camera_rig)
+
+    assert "role=None" in source and "owner_layer=None" in source
+    assert "_bvfx_role(rig, role or name, owner_layer)" in source
+    assert '_bvfx_role(cam, f"{role or name}.camera", owner_layer)' in source
+    # Tagging must happen before parenting/keying so an early return cannot skip it.
+    assert source.index("_bvfx_role(rig") < source.index("cam.parent = rig")

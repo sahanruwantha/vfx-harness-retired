@@ -260,8 +260,10 @@ LIGHTING IN A SCENE THAT HAS A WORLD VOLUME — read this before adding a key li
   - bvfx_aim(obj, target, up='Y') — point a camera/object at a target (accepts tuples or
     Vectors — avoids the `unary -: tuple` mistake of hand-rolled aim math).
   - bvfx_camera_rig(name, lens, spine=[(frame, dist, alt, pitch_up)], ladder=[(frame,
-    roll_deg)]) — the two-object camera: an EMPTY owns location+pitch, the camera child
-    owns ROLL on its own local Z. Returns (rig, cam). NEVER roll a bare camera: its
+    roll_deg)], role=None, owner_layer=None) — the two-object camera: an EMPTY owns
+    location+pitch, the camera child owns ROLL on its own local Z. Both objects are
+    tagged `role` (default: `name`) and `<role>.camera`, so pass a role inside your
+    declared mutation scope. Returns (rig, cam). NEVER roll a bare camera: its
     `rotation_euler[2]` is world YAW, and measured across 0-180° it moved the subject's
     frame radius by 59,534,535 (off frame entirely) where the rig moved it by 0.0.
     spine is keyed BEZIER (one smooth travel), ladder LINEAR (segment rates ARE the look).

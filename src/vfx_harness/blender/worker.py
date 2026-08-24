@@ -513,7 +513,7 @@ def _bvfx_interp(target, mode="LINEAR", const=("hide_render", "hide_viewport")):
 
 
 def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0),
-                     spine=(), ladder=(), display=4.0):
+                     spine=(), ladder=(), display=4.0, role=None, owner_layer=None):
     """The two-object camera: an EMPTY owns location+pitch, the camera child owns ROLL on
     its own local Z. On a bare camera `rotation_euler[2]` is world YAW and swings the
     subject out of frame; under the rig the view axis IS local Z, so the frame rotates
@@ -539,6 +539,13 @@ def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0)
     camd.clip_start, camd.clip_end = clip
     cam = bpy.data.objects.new("camera", camd)
     sc.collection.objects.link(cam)
+    # Both objects persist in the scene, so both need a semantic role or a scoped unit
+    # inherits an untagged object and a guaranteed canonical-replay rejection it cannot
+    # repair — the helper recreates the object on every call. Run 20260824T045543Z lost
+    # two builds to this. `role` defaults to the rig name so existing callers that
+    # already name their rig semantically stay legal.
+    _bvfx_role(rig, role or name, owner_layer)
+    _bvfx_role(cam, f"{role or name}.camera", owner_layer)
     cam.parent = rig
     cam.matrix_parent_inverse.identity()   # BEFORE location, or offsets are silently wrong
     cam.location = (0.0, 0.0, 0.0)
