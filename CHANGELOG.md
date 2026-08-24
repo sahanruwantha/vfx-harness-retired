@@ -7,6 +7,13 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Taught the plan gate the verified materialization lifecycle, added three evidence kinds
+  (motion smoothness, persistent path clearance, parallax profile) with fail-closed vacuity
+  linting, and gave planning/repair sessions decision-grade instruments — `evidence_vocabulary`,
+  `gate_preview`, `probe_candidate` (with the `rig_contract` check), typed vocabulary-gap
+  escalation, reproduction-carrying failures, and repair-session recipes. One hermetic fixture
+  now drives a full authority generation end-to-end in the suite
+  ([HIR-0017](docs/improvements/HIR-0017-lifecycle-aware-authority-and-agent-instruments.md)).
 - Made `vfx units replan` able to express generation supersession under unit-first authority:
   when both bundles carry empty layer DAGs, the old identity is durable state's own recorded
   plan hash, state units absent from the new generation are superseded with audit ("orphaned"
