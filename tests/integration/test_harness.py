@@ -2753,7 +2753,7 @@ def main():
     # in Blender by `python -m vfx_harness.evaluation.cli checks`, because a check nobody has
     # watched fail is not a check.
     print("\n[geometry · motion]")
-    from vfx_harness.blender.geom import framing_from_ndc, mesh_issues, motion_from_positions, scale_issues
+    from vfx_harness.blender.geom import frustum_union_ndc, mesh_issues, motion_from_positions, scale_issues
 
     # A→B→A in three frames: the classic "it moved and came back" that reads as motion
     # in a still and as a broken move in the curve.
@@ -2799,20 +2799,35 @@ def main():
         check("non-increasing frames are refused", True)
 
     print("\n[geometry · framing]")
-    # world_to_camera_view: x,y in 0..1 on screen, z>0 in front of the camera.
-    on = framing_from_ndc([(0.4, 0.4, 5.0), (0.6, 0.7, 5.0)])
+    # Homogeneous clip space: visible iff -w <= x,y,z <= w. Screen mapping is top-left.
+    on = frustum_union_ndc([(-0.2, 0.4, 0.0, 1.0), (0.2, -0.2, 0.0, 1.0)])
     check(
         "an on-screen bbox reports width, height and centre",
-        on["on_screen"] == 1.0
-        and on["width"] == 0.2
+        on is not None
+        and on["points_inside"] == 2
+        and abs(on["width"] - 0.2) < 1e-9
         and on["bbox"] == [0.4, 0.3, 0.6, 0.6]
         and on["centre"] == [0.5, 0.45],
         str(on),
     )
-    off = framing_from_ndc([(1.8, 0.4, 5.0), (2.0, 0.7, 5.0)])
-    check("an off-screen bbox reports 0% on screen", off["on_screen"] == 0.0)
-    behind = framing_from_ndc([(0.5, 0.5, -3.0)])
-    check("geometry BEHIND the camera is not counted as framed", behind["on_screen"] == 0.0, str(behind))
+    off = frustum_union_ndc([(2.6, 0.4, 0.0, 1.0), (3.0, 0.7, 0.0, 1.0)], [(0, 1)])
+    check("fully off-screen geometry yields NO reading, not an off-frame box", off is None, str(off))
+    behind = frustum_union_ndc([(0.0, 0.0, -3.0, -1.0)])
+    check("geometry BEHIND the camera is not counted as framed", behind is None, str(behind))
+    # The run-20260824T103842Z-afec73 class: a segment grazing the lens plane used to
+    # project to a "normalized" height of 1132; clipped, it contributes at most the frame.
+    grazing = frustum_union_ndc([(0.0, 0.0, 0.0, 1.0), (0.0, 900.0, 0.0005, 0.0005)], [(0, 1)])
+    check(
+        "a segment grazing the lens plane is clipped to the frame, never a 1000x bbox",
+        grazing is not None and grazing["height"] <= 1.0 and grazing["bbox"][1] >= 0.0,
+        str(grazing),
+    )
+    partial = frustum_union_ndc([(0.0, 0.0, 0.0, 1.0), (5.0, 0.0, 0.0, 1.0)], [(0, 1)])
+    check(
+        "a segment leaving the frame contributes exactly its visible portion",
+        partial is not None and partial["bbox"] == [0.5, 0.5, 1.0, 0.5],
+        str(partial),
+    )
 
     print("\n[geometry · mesh + scale]")
     check("non-manifold geometry is reported", any("non-manifold" in i for i in mesh_issues({"nonmanifold_edges": 6})))

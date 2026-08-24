@@ -106,41 +106,96 @@ def motion_from_positions(frames: Sequence[int], positions: Sequence[Sequence[fl
     }
 
 
-def framing_from_ndc(corners: Iterable[Sequence[float]]) -> dict:
-    """Frame bbox from Blender camera-space corners, returned in TOP-LEFT coordinates.
+# Blender's Object.bound_box corner order; pairs are the 12 box edges. Shared by every
+# caller that projects a bounding box, so a box crossing the near plane is clipped as
+# geometry (edges), not sampled as 8 loose corners.
+BOX_EDGES: tuple[tuple[int, int], ...] = (
+    (0, 1), (1, 2), (2, 3), (3, 0),
+    (4, 5), (5, 6), (6, 7), (7, 4),
+    (0, 4), (1, 5), (2, 6), (3, 7),
+)
 
-    Input is Blender's world_to_camera_view convention (bottom-left). Public vfx_harness
-    rectangles are always [x0,y0,x1,y1] with origin top-left, x right and y down.
+# GL-convention clip-space half-space tests, each linear in (x, y, z, w): a point is
+# visible iff all six are >= 0 (which also implies w > 0 away from the apex).
+_CLIP_PLANES: tuple[tuple[float, float, float, float], ...] = (
+    (1.0, 0.0, 0.0, 1.0),   # x >= -w
+    (-1.0, 0.0, 0.0, 1.0),  # x <= +w
+    (0.0, 1.0, 0.0, 1.0),   # y >= -w
+    (0.0, -1.0, 0.0, 1.0),  # y <= +w
+    (0.0, 0.0, 1.0, 1.0),   # z >= -w (near)
+    (0.0, 0.0, -1.0, 1.0),  # z <= +w (far)
+)
+
+
+def _plane_eval(plane: Sequence[float], p: Sequence[float]) -> float:
+    return plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3] * p[3]
+
+
+def _screen_xy(p: Sequence[float]) -> tuple[float, float]:
+    # clip -> NDC -> [0,1] with origin TOP-LEFT (public vfx_harness convention).
+    x = (p[0] / p[3] + 1.0) / 2.0
+    y = 1.0 - (p[1] / p[3] + 1.0) / 2.0
+    return x, y
+
+
+def frustum_union_ndc(
+    clip_points: Sequence[Sequence[float]],
+    edges: Iterable[Sequence[int]] = (),
+) -> dict | None:
+    """Union bbox of the VISIBLE portion of geometry, in top-left normalized coordinates.
+
+    `clip_points` are homogeneous clip-space 4-vectors (projection @ view @ world point);
+    `edges` are index pairs into them. Segments are clipped against the frustum before the
+    perspective divide, so a wall grazing the lens contributes exactly its visible sliver
+    and every returned coordinate is inside [0, 1] by construction. The previous
+    implementation projected raw vertices and could report a "normalized" height of 1132
+    for a camera facing away from its subject (run 20260824T103842Z-afec73).
+
+    Returns None when nothing intersects the frustum — absence of a reading, never a
+    zero-sized box, so callers must fail closed rather than compare it to a target.
     """
-    pts = [tuple(c) for c in corners]
-    if not pts:
-        return {
-            "ok": False,
-            "reason": "no corners",
-            "on_screen": 0.0,
-            "width": 0.0,
-            "height": 0.0,
-            "centre": None,
-            "bbox": None,
-        }
-
-    in_front = [p for p in pts if p[2] > 0]
-    on = [p for p in in_front if 0.0 <= p[0] <= 1.0 and 0.0 <= p[1] <= 1.0]
-    use = in_front or pts
-    xs, ys = [p[0] for p in use], [p[1] for p in use]
-    x0, x1 = min(xs), max(xs)
-    bottom_y0, bottom_y1 = min(ys), max(ys)
-    y0, y1 = 1.0 - bottom_y1, 1.0 - bottom_y0
-    width, height = x1 - x0, y1 - y0
+    pts = [tuple(float(c) for c in p) for p in clip_points]
+    xs: list[float] = []
+    ys: list[float] = []
+    inside = 0
+    for p in pts:
+        if all(_plane_eval(plane, p) >= 0.0 for plane in _CLIP_PLANES) and p[3] > 1e-9:
+            inside += 1
+            x, y = _screen_xy(p)
+            xs.append(x)
+            ys.append(y)
+    for a, b in edges:
+        p, q = pts[a], pts[b]
+        t0, t1 = 0.0, 1.0
+        for plane in _CLIP_PLANES:
+            fp, fq = _plane_eval(plane, p), _plane_eval(plane, q)
+            if fp < 0.0 and fq < 0.0:
+                t0, t1 = 1.0, 0.0
+                break
+            if fp < 0.0:
+                t0 = max(t0, fp / (fp - fq))
+            elif fq < 0.0:
+                t1 = min(t1, fp / (fp - fq))
+        if t0 > t1:
+            continue
+        for t in (t0, t1):
+            c = tuple(p[i] + (q[i] - p[i]) * t for i in range(4))
+            if c[3] > 1e-9:
+                x, y = _screen_xy(c)
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return None
+    # numerical guard only — clipped coordinates are already inside the frame
+    x0, x1 = min(1.0, max(0.0, min(xs))), min(1.0, max(0.0, max(xs)))
+    y0, y1 = min(1.0, max(0.0, min(ys))), min(1.0, max(0.0, max(ys)))
     return {
-        "ok": True,
         "bbox": [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)],
-        "width": round(width, 4),
-        "height": round(height, 4),
+        "width": round(x1 - x0, 4),
+        "height": round(y1 - y0, 4),
         "centre": [round((x0 + x1) / 2, 4), round((y0 + y1) / 2, 4)],
-        "on_screen": round(len(on) / len(pts), 3),
-        "n_corners": len(pts),
-        "n_in_front": len(in_front),
+        "points_inside": inside,
+        "points_total": len(pts),
     }
 
 

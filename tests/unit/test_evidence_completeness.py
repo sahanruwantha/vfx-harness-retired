@@ -94,8 +94,7 @@ def test_projection_failure_names_its_reason() -> None:
 
     probe = inspect.getsource(scene_checks._blender_probe)
     assert "selector matched no objects" in probe
-    assert "no active camera to project through" in probe
-    assert "is in front of the" in probe
+    assert "intersects the camera frustum" in probe
     # points must not leak across objects: a failed to_mesh reused the previous
     # object's vertices and projected geometry that was never selected.
     assert "mesh=None; points=[]" in probe

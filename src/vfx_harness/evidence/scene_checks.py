@@ -366,9 +366,9 @@ def _blender_probe(rows: list[dict], frame: int) -> str:
     payload = json.dumps(rows)
     return f"""\
 import bpy, fnmatch, json, math
-from bpy_extras.object_utils import world_to_camera_view
-_rows=json.loads({json.dumps(payload)}); _scene=bpy.context.scene; _scene.frame_set({int(frame)})
-_dg=bpy.context.evaluated_depsgraph_get(); _camera=_scene.camera; _out=[]
+import checks as _checks  # worker sibling — the ONE projection implementation (ADR-0003)
+_rows=json.loads({json.dumps(payload)}); _scene=bpy.context.scene; _FRAME={int(frame)}
+_scene.frame_set(_FRAME); _camera=_scene.camera; _out=[]
 def _p(row,key):
     v=row.get(key) or []
     return [v] if isinstance(v,str) else v
@@ -388,25 +388,35 @@ def _graphs(row):
         ng=getattr(_scene,'compositing_node_group',None); return [('compositor',ng)] if ng else []
     nt=_scene.world.node_tree if _scene.world and _scene.world.use_nodes else None
     return [('world',nt)] if nt else []
-def _projected(objects):
-    # `points` used to leak across iterations: an object whose to_mesh() failed reused
-    # the PREVIOUS object's vertices, projecting geometry that was never selected, and
-    # a failure on the first object raised NameError that surfaced only as value=None.
-    coords=[]; empty=0
+def _projected(objects,dg):
+    # Evaluated meshes are clipped against the camera frustum as EDGES before the
+    # perspective divide (checks.frustum_union_ndc), so the union is the visible
+    # portion and every coordinate is inside [0,1] by construction. The previous
+    # vertex-projection accepted off-frustum blowup: a camera facing away from its
+    # subject read bbox_height 1132.53608 "normalized" and PASSED >= 0.25
+    # (run 20260824T103842Z-afec73). `points` also used to leak across iterations:
+    # an object whose to_mesh() failed reused the PREVIOUS object's vertices.
+    _V=__import__('mathutils').Vector
+    _mvp=_checks.camera_clip_matrix(_scene,dg)
+    clip=[]; edges=[]; base=0; empty=0
     for obj in objects:
-        ev=obj.evaluated_get(_dg); mesh=None; points=[]
+        ev=obj.evaluated_get(dg); mesh=None; points=[]; pairs=[]
         if ev.type=='MESH':
-            try: mesh=ev.to_mesh(); points=[ev.matrix_world@v.co for v in mesh.vertices]
-            except Exception: points=[ev.matrix_world@__import__('mathutils').Vector(c)
-                                      for c in ev.bound_box]
+            try:
+                mesh=ev.to_mesh()
+                points=[ev.matrix_world@v.co for v in mesh.vertices]
+                pairs=[(e.vertices[0],e.vertices[1]) for e in mesh.edges]
+            except Exception:
+                points=[ev.matrix_world@_V(c) for c in ev.bound_box]; pairs=list(_checks.BOX_EDGES)
             finally:
                 if mesh is not None: ev.to_mesh_clear()
-        else: points=[ev.matrix_world@__import__('mathutils').Vector(c) for c in ev.bound_box]
+        else:
+            points=[ev.matrix_world@_V(c) for c in ev.bound_box]; pairs=list(_checks.BOX_EDGES)
         if not points: empty+=1
-        for point in points:
-            ndc=world_to_camera_view(_scene,_camera,point)
-            if ndc.z>0: coords.append((float(ndc.x),float(1-ndc.y)))
-    return coords,empty
+        clip.extend(tuple(_mvp@p.to_4d()) for p in points)
+        edges.extend((base+a,base+b) for a,b in pairs)
+        base+=len(points)
+    return _checks.frustum_union_ndc(clip,edges),empty
 def _property(target,path):
     value=target
     for token in str(path).split('.'):
@@ -464,23 +474,30 @@ def _transforms(items,frame):
         out[item.name]=(loc.copy(),rot.copy(),scale.copy())
     return out
 for row in _rows:
-    kind=row['kind']; value=None; error=''; objects=(
+    kind=row['kind']; value=None; error=''
+    # Every row measures its DECLARED frame with its own depsgraph. Temporal kinds
+    # (keyframe_schedule, onset_order, …) excurse to other frames and never restored
+    # the batch frame, so every later row silently measured whatever frame the previous
+    # row parked the scene at — run 20260824T103842Z-afec73 sealed frame-240 readings
+    # as f1 and f36 evidence. Ambient shared state is not an instrument.
+    _scene.frame_set(_FRAME)
+    _row_dg=bpy.context.evaluated_depsgraph_get()
+    objects=(
         _objects(row) if row.get('roles') or row.get('control_roles') else [])
     materials=_materials(row) if row.get('material_roles') else []; matched=[]
     try:
         if kind=='object_count': value=len(objects)
         elif kind.startswith('bbox_'):
-            pts,empty=_projected(objects)
-            if not pts:
-                if not objects: raise ValueError('selector matched no objects')
-                if not _camera: raise ValueError('scene has no active camera to project through')
+            if not objects: raise ValueError('selector matched no objects')
+            rec,empty=_projected(objects,_row_dg)
+            if rec is None:
                 raise ValueError(
-                    f'none of {{len(objects)}} selected object(s) is in front of the '
-                    f'camera at this frame ({{empty}} contributed no points)')
-            xs=[p[0] for p in pts]; ys=[p[1] for p in pts]; x0,x1,y0,y1=min(xs),max(xs),min(ys),max(ys)
+                    f'none of {{len(objects)}} selected object(s) intersects the camera frustum '
+                    f'at frame {{_FRAME}} ({{empty}} contributed no points)')
+            x0,y0,x1,y1=rec['bbox']
             value={{'bbox_width':x1-x0,'bbox_height':y1-y0,'bbox_center_x':(x0+x1)/2,'bbox_center_y':(y0+y1)/2,'bbox_top_y':y0,'bbox_bottom_y':y1}}[kind]
         elif kind=='mesh_vertex_count':
-            value=sum(len(o.evaluated_get(_dg).data.vertices)
+            value=sum(len(o.evaluated_get(_row_dg).data.vertices)
                       for o in objects if o.type=='MESH')
         elif kind=='smooth_fraction':
             ps=[p for o in objects if o.type=='MESH' for p in o.data.polygons]
@@ -489,7 +506,7 @@ for row in _rows:
             tested=[]
             for o in objects:
                 if o.type!='MESH': continue
-                ev=o.evaluated_get(_dg); mw=ev.matrix_world
+                ev=o.evaluated_get(_row_dg); mw=ev.matrix_world
                 for p in ev.data.polygons:
                     c=mw@p.center
                     n=(mw.to_3x3()@p.normal).normalized()

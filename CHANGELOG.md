@@ -7,6 +7,10 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Made every scene-contract probe row measure its declared frame with its own depsgraph, and
+  replaced raw vertex projection with one frustum-clipped, fail-closed implementation shared by
+  authoritative `bbox_*` evidence and the advisory framing checks
+  ([HIR-0015](docs/improvements/HIR-0015-declared-frame-and-frustum-truth.md)).
 - Made repository-root `.env` loading resolve the checkout root instead of `src/`.
 - Made `vfx plan --until-clean` exit 3 and publish a failed run when blocking findings remain.
 - Made the plan gate report every unknown work-unit dependency in one repair brief instead of

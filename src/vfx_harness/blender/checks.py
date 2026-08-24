@@ -24,10 +24,47 @@ _spec = importlib.util.spec_from_file_location("bvfx_geom", _GEOM_PATH)
 _geom = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_geom)
 
-framing_from_ndc = _geom.framing_from_ndc
+frustum_union_ndc = _geom.frustum_union_ndc
+BOX_EDGES = _geom.BOX_EDGES
 mesh_issues = _geom.mesh_issues
 motion_from_positions = _geom.motion_from_positions
 scale_issues = _geom.scale_issues
+
+
+def camera_clip_matrix(scene, depsgraph):
+    """projection @ view for the scene camera, matching the render's resolution, sensor
+    fit, pixel aspect and shift — the same matrix for every projected metric, per
+    ADR-0003. Built from Camera.view_frame(scene=...) because Blender 5.x removed
+    calc_matrix_camera; view_frame already folds every render-shape input in."""
+    from mathutils import Matrix
+
+    cam = scene.camera
+    if cam is None:
+        raise ValueError("scene has no active camera to project through")
+    ev = cam.evaluated_get(depsgraph)
+    corners = ev.data.view_frame(scene=scene)
+    xs = [c.x for c in corners]
+    ys = [c.y for c in corners]
+    left, right, bottom, top = min(xs), max(xs), min(ys), max(ys)
+    near, far = float(ev.data.clip_start), float(ev.data.clip_end)
+    if ev.data.type == "ORTHO":
+        proj = Matrix((
+            (2.0 / (right - left), 0.0, 0.0, -(right + left) / (right - left)),
+            (0.0, 2.0 / (top - bottom), 0.0, -(top + bottom) / (top - bottom)),
+            (0.0, 0.0, -2.0 / (far - near), -(far + near) / (far - near)),
+            (0.0, 0.0, 0.0, 1.0),
+        ))
+    else:
+        depth = -corners[0].z  # frame extents normalized to unit depth
+        l1, r1 = left / depth, right / depth
+        b1, t1 = bottom / depth, top / depth
+        proj = Matrix((
+            (2.0 / (r1 - l1), 0.0, (r1 + l1) / (r1 - l1), 0.0),
+            (0.0, 2.0 / (t1 - b1), (t1 + b1) / (t1 - b1), 0.0),
+            (0.0, 0.0, -(far + near) / (far - near), -2.0 * far * near / (far - near)),
+            (0.0, 0.0, -1.0, 0.0),
+        ))
+    return proj @ ev.matrix_world.inverted()
 
 
 def _obj(name: str):
@@ -114,27 +151,37 @@ def check_visibility(name: str, frame: int, samples: int = 27) -> dict:
 
 
 def check_framing(name: str, frames: list[int]) -> dict:
-    """world_to_camera_view → public bbox, width, centre. Origin top-left."""
+    """Frustum-clipped bound-box → public bbox, width, centre. Origin top-left.
+
+    The box is clipped as 12 edges against the camera frustum, so the record describes
+    the VISIBLE portion and its coordinates are inside [0,1] by construction. An object
+    with no frustum intersection reports bbox None — never an off-frame rectangle."""
     import bpy
-    from bpy_extras.object_utils import world_to_camera_view
     from mathutils import Vector
 
     sc = bpy.context.scene
-    cam = _camera()
+    _camera()
     obj = _obj(name)
     per = []
     issues = []
     for f in frames:
         sc.frame_set(int(f))
-        bpy.context.view_layer.update()
-        corners = [world_to_camera_view(sc, cam, obj.matrix_world @ Vector(c)) for c in obj.bound_box]
-        rec = framing_from_ndc([(p.x, p.y, p.z) for p in corners])
+        dg = bpy.context.evaluated_depsgraph_get()
+        mvp = camera_clip_matrix(sc, dg)
+        ev = obj.evaluated_get(dg)
+        clip = [tuple(mvp @ (ev.matrix_world @ Vector(c)).to_4d()) for c in ev.bound_box]
+        rec = frustum_union_ndc(clip, BOX_EDGES)
+        if rec is None:
+            rec = {"bbox": None, "width": 0.0, "height": 0.0, "centre": None, "on_screen": 0.0}
+            issues.append(f"f{f}: {name} does not intersect the camera frustum")
+        else:
+            rec["on_screen"] = round(rec.pop("points_inside") / max(rec.pop("points_total"), 1), 3)
+            if rec["on_screen"] < 0.5:
+                issues.append(f"f{f}: only {rec['on_screen']:.0%} of {name} bbox corners on screen")
+            if rec["width"] < 0.02:
+                issues.append(f"f{f}: {name} spans {rec['width']:.3f} of frame width — below a critic patch")
         rec["frame"] = int(f)
         per.append(rec)
-        if rec.get("on_screen", 0) < 0.5:
-            issues.append(f"f{f}: only {rec.get('on_screen', 0):.0%} of {name} bbox corners on screen")
-        if rec.get("width", 0) < 0.02 and rec.get("on_screen", 0) > 0:
-            issues.append(f"f{f}: {name} spans {rec['width']:.3f} of frame width — below a critic patch")
     return {"ok": not issues, "object": name, "frames": per, "issues": issues}
 
 
