@@ -464,6 +464,35 @@ class EvaluationPolicy:
         return cls(primary, judges, temporal, claims, composition)
 
 
+# Which image-feedback families a unit is answerable for. Declared by the unit that
+# owns the work, never inferred: run 20260823T154920Z scanned axis IDENTIFIERS for look
+# words, so `iris_seal_readability` — whose description demanded layered machined metal,
+# seams and fasteners — was classified as owning no appearance, and the builder was told
+# surface quality was out of scope while its unit plan said the opposite.
+LOOK_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "detail": ("detail",),
+    "material": ("detail", "color"),
+    "color": ("color",),
+    "exposure": ("exposure", "detail"),
+    "lighting": ("exposure", "detail", "emitters", "color"),
+    "emission": ("exposure", "emitters"),
+    "atmosphere": ("exposure", "detail", "emitters"),
+    "motion": ("motion",),
+    "grade": ("exposure", "detail", "emitters", "halation", "color", "motion"),
+}
+
+
+def parse_look_capabilities(value: Any, where: str) -> tuple[str, ...]:
+    names = _strings(value, where) if value else ()
+    unknown = sorted(set(names) - set(LOOK_CAPABILITIES))
+    if unknown:
+        raise ValueError(
+            f"{where} has unknown capability {', '.join(unknown)}; declare a subset of "
+            + ", ".join(sorted(LOOK_CAPABILITIES))
+        )
+    return tuple(dict.fromkeys(names))
+
+
 @dataclass(frozen=True)
 class WorkUnit:
     id: str
@@ -474,6 +503,7 @@ class WorkUnit:
     protects: ProtectionSpec
     evaluation: EvaluationPolicy
     completion: str
+    look_capabilities: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, value: Any, where: str) -> WorkUnit:
@@ -488,6 +518,9 @@ class WorkUnit:
             ProtectionSpec.parse(row.get("protects"), f"{where}.protects"),
             EvaluationPolicy.parse(row.get("evaluation"), f"{where}.evaluation"),
             _text(row.get("completion"), f"{where}.completion"),
+            parse_look_capabilities(
+                row.get("look_capabilities", []), f"{where}.look_capabilities"
+            ),
         )
         context = unit.evaluation.composition_context
         if context and context.source_unit and context.source_unit not in unit.depends_on:

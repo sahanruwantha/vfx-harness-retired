@@ -624,14 +624,28 @@ def build_blender_tools(
     shot_dir: str | Path | None = None,
     layer_id: str | None = None,
     comparison_state: dict | None = None,
+    feedback_groups: list[str] | None = None,
 ):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
-    `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…)."""
+    `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…).
+
+    `feedback_groups` carries the active unit's DECLARED look capability resolved to
+    metric families. When present it IS the policy; the layer-axis derivation is the
+    legacy path for schema-4 layers with no declaring work unit."""
     assets_dir = Path(assets_dir) if assets_dir else None
     shot_dir = Path(shot_dir) if shot_dir else None
     comparison_state = comparison_state if comparison_state is not None else {"round": 1}
     comparison_locks: dict = {}
-    feedback_policy = _layer_feedback_policy(shot_dir, layer_id)
+    feedback_policy = (
+        {
+            "axes": [],
+            "groups": sorted(feedback_groups),
+            "look_actions": bool(feedback_groups),
+            "source": "declared_unit_capabilities",
+        }
+        if feedback_groups is not None
+        else _layer_feedback_policy(shot_dir, layer_id)
+    )
 
     async def _call(cmd, **args):
         return await anyio.to_thread.run_sync(lambda: session.call(cmd, **args))

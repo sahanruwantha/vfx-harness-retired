@@ -44,9 +44,11 @@ from vfx_harness.agents.approach import revision_from_review
 from vfx_harness.agents.build_prompts import (
     CRITIC_SYSTEM,
     axes_own_look,
+    axis_feedback_groups,
     builder_kickoff,
     builder_system,
     canonical_repair_prompt,
+    capability_feedback_groups,
     critic_prompt,
     finalize_prompt,
     recurring_complaints,
@@ -2598,7 +2600,17 @@ async def build_unit(
     axes = _owned_axes(all_axes, layer)
     # Shared with both the Blender tool server and the PreToolUse phase guard. The tool
     # flips scene_contracts_passed atomically; the next speculative mutation is denied.
-    _look_actions = axes_own_look(axes)
+    #
+    # Typed unit authority decides look scope. Only a unit that declares no capabilities
+    # at all (legacy schema-4 layers) falls back to scanning axis identifiers, which
+    # silently denied an appearance-owning unit its own feedback in run 20260823T154920Z.
+    _declared_capabilities = tuple(getattr(active_unit, "look_capabilities", ()) or ())
+    _feedback_groups = (
+        capability_feedback_groups(_declared_capabilities)
+        if _declared_capabilities
+        else axis_feedback_groups(axes)
+    )
+    _look_actions = bool(_feedback_groups)
     active_evidence_ids = _unit_completion_evidence_ids(active_unit)
     active_image_evidence_ids = {
         binding.id
@@ -2624,6 +2636,7 @@ async def build_unit(
         shot_dir=shot.folder,
         layer_id=getattr(layer, "id", m.id),
         comparison_state=comparison_state,
+        feedback_groups=sorted(_feedback_groups) if _declared_capabilities else None,
     )
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names))

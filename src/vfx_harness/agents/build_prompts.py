@@ -33,8 +33,28 @@ LOOK_AXIS_WORDS = (
 METRIC_GROUPS = frozenset({"exposure", "detail", "emitters", "halation", "color", "motion"})
 
 
+def capability_feedback_groups(capabilities) -> frozenset[str]:
+    """Typed authority: the image-feedback families a unit DECLARED it answers for.
+
+    This supersedes identifier scanning wherever a declaring unit exists. Nothing is
+    inferred from axis names, so an appearance-owning unit cannot be classified as
+    look-free while its own plan demands machined surface quality.
+    """
+    from vfx_harness.domain.work_units import LOOK_CAPABILITIES
+
+    groups: set[str] = set()
+    for name in capabilities or ():
+        groups.update(LOOK_CAPABILITIES.get(str(name), ()))
+    return frozenset(groups)
+
+
 def axis_feedback_groups(axes: list[tuple[str, str]]) -> frozenset[str]:
-    """Return only the image-feedback families owned by these axis identifiers.
+    """LEGACY identifier scan, for schema-4 layers with no declaring work unit.
+
+    Superseded by `capability_feedback_groups`: identifiers are names, not authority.
+    Run 20260823T154920Z proved the failure mode — `iris_seal_readability` contains no
+    look word, so a unit whose plan demanded layered metal, seams and fasteners was
+    told appearance was out of scope.
 
     This is intentionally a positive capability map.  A layout layer therefore cannot
     receive a bloom prescription merely because the finished reference contains bloom,

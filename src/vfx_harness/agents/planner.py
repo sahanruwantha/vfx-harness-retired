@@ -151,6 +151,7 @@ _MATERIALIZATION_EXAMPLE = """{
                "script_spans": ["build/units/01/example_unit.py"]},
    "protects": {"selector": "all_active_upstream_interfaces",
                 "resolve_to_explicit_ids_at": "freeze"},
+   "look_capabilities": ["<the appearance families THIS unit answers for>"],
    "evaluation": {"primary_judge": 1, "judge": [{"frame": 1, "ref": "refs/<a judge ref>.png"}],
                   "temporal_evidence": "static",
                   "claims": [{
@@ -243,6 +244,12 @@ contracts, reference fingerprints, and techniques now from authored references p
 upstream outcomes. Copy every structured decision in `state/plan-resolutions.jsonl` whose
 `values.contract` roles fall inside this layer's reserved namespaces verbatim into
 `scene_contracts` — exact contract fields plus `decision_id` — bound to a required claim.
+Each stage declares `look_capabilities`: the appearance families that unit is answerable
+for, a subset of detail, material, color, exposure, lighting, emission, atmosphere,
+motion, grade. Declare exactly what the unit's own judged frames require — this decides
+the image feedback its builder receives, and an appearance-owning unit that declares
+none will be told surface quality is out of scope. A unit that genuinely changes no
+appearance declares an empty list.
 Image checks are candidate-sensitive: the builder proposes them only after
 this unit mutates the cumulative scene, so `image_contracts` must remain empty here. Every write
 of the output file runs the full materialization validator and returns its findings to you;
