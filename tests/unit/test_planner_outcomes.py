@@ -227,12 +227,18 @@ def test_rematerialize_refuses_to_discard_accepted_work(tmp_path, monkeypatch) -
 
     async def invoke():
         return await _planner._rematerialize_layer(
-            shot, layer, ("owner", "trigger", ["run:x"]),
+            shot, layer, ("owner", "trigger", ["run:x"], False),
             model="m", blender="blender", max_turns=4,
         )
 
     with pytest.raises(ValueError, match="accepted unit\\(s\\) done"):
         _anyio.run(invoke)
+    # Discarding proven work must be expressible, but never implicit: the refusal names
+    # the override rather than leaving the operator to hand-edit state.
+    import inspect
+    source = inspect.getsource(_planner._rematerialize_layer)
+    assert "--discard-accepted" in source
+    assert "if accepted and not discard_accepted:" in source
 
 
 def test_rematerialization_kickoff_carries_the_replacement_reason(tmp_path: Path) -> None:

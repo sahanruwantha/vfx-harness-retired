@@ -170,6 +170,7 @@ def supersede_layer_units(
     trigger: str,
     evidence: list[str],
     plan_hash: str,
+    allow_accepted: bool = False,
 ) -> dict:
     """Retire every unit of a layer whose authority was replaced, under an audited
     transaction. Refuses when any unit has been accepted.
@@ -188,7 +189,7 @@ def supersede_layer_units(
     accepted = sorted(
         uid for uid, row in value["units"].items() if row.get("status") == "passed"
     )
-    if accepted:
+    if accepted and not allow_accepted:
         raise ValueError(
             f"layer {layer_id} has accepted unit(s) {', '.join(accepted)}; "
             "move that state with a replan transaction instead"

@@ -639,7 +639,7 @@ async def _rematerialize_layer(
     from vfx_harness.orchestration.unit_state import apply_replan, supersede_layer_units
     from vfx_harness.orchestration.unit_state import load as load_unit_state
 
-    owner, trigger, evidence = authority
+    owner, trigger, evidence, discard_accepted = authority
     layer_id = str(layer.id)
     state = load_unit_state(shot.folder, layer_id)
     accepted = sorted(
@@ -647,12 +647,14 @@ async def _rematerialize_layer(
         for uid, row in (state.get("units") or {}).items()
         if row.get("status") == "passed"
     )
-    if accepted:
+    if accepted and not discard_accepted:
         raise ValueError(
             f"layer {layer_id} has accepted unit(s) {', '.join(accepted)}; "
             "re-materialization would discard proven work — move that state with "
-            "`vfx units replan` instead"
+            "`vfx units replan`, or pass --discard-accepted to retire it deliberately"
         )
+    if accepted:
+        log(f"discarding accepted unit(s) {', '.join(accepted)} by explicit request", 1)
 
     def _plan_hash() -> str:
         return hashlib.sha256(
@@ -703,6 +705,7 @@ async def _rematerialize_layer(
                 trigger=trigger,
                 evidence=evidence,
                 plan_hash=_plan_hash(),
+                allow_accepted=discard_accepted,
             )
         log(
             f"work-unit state superseded → {', '.join(u.id for u in refreshed.stages)}",
@@ -1144,6 +1147,12 @@ def main() -> None:
         help="with --layer, discard the layer's materialized view and design it again "
         "from global authority; refuses when any unit has been accepted",
     )
+    ap.add_argument(
+        "--discard-accepted",
+        action="store_true",
+        help="with --rematerialize, retire accepted units too; discarding proven work "
+        "is a deliberate decision and is recorded with the transaction",
+    )
     ap.add_argument("--owner", help="authority applying a --rematerialize transaction")
     ap.add_argument("--trigger", help="why the materialized view is being replaced")
     ap.add_argument(
@@ -1226,7 +1235,7 @@ def main() -> None:
                     blender=args.blender,
                     max_turns=args.max_turns or max(24, settings.plan_max_turns // 4),
                     rematerialize=(
-                        (args.owner, args.trigger, list(args.evidence))
+                        (args.owner, args.trigger, list(args.evidence), args.discard_accepted)
                         if args.rematerialize
                         else None
                     ),
