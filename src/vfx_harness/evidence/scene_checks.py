@@ -11,6 +11,7 @@ built.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageStat
@@ -38,6 +39,9 @@ TEMPORAL_KINDS = {
     "onset_order",
     "radial_distance_trend",
     "transform_return_delta",
+    "curve_derivative_max",
+    "path_clearance_min",
+    "parallax_displacement_profile",
 }
 WINDOW_KINDS = TEMPORAL_KINDS - {"keyframe_schedule"}
 # Every key the evaluator, gate, and orchestration actually read off a contract row.
@@ -48,7 +52,7 @@ WINDOW_KINDS = TEMPORAL_KINDS - {"keyframe_schedule"}
 KNOWN_ROW_KEYS = frozenset({
     "id", "kind", "axis", "op", "lo", "hi", "value", "unit",
     "owner_layer", "fault_owner", "activates_at", "lifecycle", "expires_at",
-    "decision_id", "frame", "frames", "region", "component", "samples",
+    "decision_id", "frame", "frames", "frame_step", "region", "component", "samples",
     "motion_epsilon", "property", "tol", "uniform_tol", "direction", "domain",
     "graph", "socket", "socket_index", "socket_direction", "from_socket", "to_socket",
     "probe_mode", "probe_scale", "probe_values", "response_metric",
@@ -90,8 +94,19 @@ KIND_DOMAINS: dict[str, str] = {
         (OBJECT_KINDS - _PROJECTED_KINDS) | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS,
         "scene",
     ),
+    # screen-space displacement is a projected claim even though it samples two frames
+    "parallax_displacement_profile": "projected_composition",
 }
 SUPPORTED_OPS = {"band", "eq", "min", "max"}
+
+# object_property may only certify properties Blender itself evaluates. A custom
+# property is written by the builder that the contract judges — self-certification
+# (run 20260824T153427Z-91b7c1 bound R29 to an invented `clearance_min_distance`).
+_MEASURED_PROPERTY = re.compile(
+    r"^(?:(?:delta_)?location|(?:delta_)?rotation_euler|scale|dimensions)(?:\.\d+)?$"
+    r"|^data\.(?:lens|angle|clip_start|clip_end|energy|size|sensor_width|sensor_height|ortho_scale)$"
+    r"|^(?:hide_render|hide_viewport)$"
+)
 
 KIND_DEFINITIONS = {
     "bbox_width": "projected union width in normalized camera coordinates",
@@ -124,6 +139,21 @@ KIND_DEFINITIONS = {
         "extra keyed frame fails the contract"
     ),
     "frame_delta": "mean absolute rendered-pixel delta between two declared frames",
+    "curve_derivative_max": (
+        "maximum per-frame evaluated change of one transform property across the whole "
+        "frame window; bounds smoothness where endpoint deltas cannot"
+    ),
+    "path_clearance_min": (
+        "minimum distance from the selected objects' evaluated origins to compare_roles "
+        "mesh surfaces across the frame window; an empty obstacle selection reads 1e9 — "
+        "vacuously clear until the obstacle geometry exists (pair with lifecycle: "
+        "persistent so it re-evaluates as geometry arrives)"
+    ),
+    "parallax_displacement_profile": (
+        "screen-space displacement of the selected group's centroid divided by the "
+        "compare_roles group's, between the two declared frames; >1 means the selected "
+        "group visibly moves more (near-ground parallax)"
+    ),
 }
 
 
@@ -284,6 +314,30 @@ def validate_row(row: dict) -> str | None:
                 "changes with the frame, and an undeclared frame silently measures "
                 "frame 1"
             )
+    if kind in _PROJECTED_KINDS:
+        # the metric is intrinsically inside [0,1]; a bound outside the frame is
+        # trivially satisfiable or unsatisfiable — a target, not a measurement
+        # (run 20260824T153427Z-91b7c1 bound R4 to bbox_center_x with lo=-1.0)
+        for bound_key in ("lo", "hi"):
+            bound = row.get(bound_key)
+            numeric = not isinstance(bound, bool) and isinstance(bound, (int, float))
+            if numeric and not -0.25 <= float(bound) <= 1.25:
+                return (
+                    f"{kind} {bound_key}={bound} lies outside the normalized frame — "
+                    "the metric can only read [0,1], so this target is vacuous. "
+                    "Use a bound inside the frame, another kind, or record a "
+                    "vocabulary-gap escalation"
+                )
+    if kind == "object_property":
+        prop = str(row.get("property") or "")
+        if not _MEASURED_PROPERTY.match(prop):
+            return (
+                f"object_property cannot certify {prop!r}: only Blender-evaluated "
+                "properties are measurements. A custom property is written by the same "
+                "builder the contract judges — self-certification. Use a measured kind "
+                "(curve_derivative_max, path_clearance_min, keyframe_schedule, bbox_*) "
+                "or record a vocabulary-gap escalation"
+            )
     if kind == "onset_order":
         primary = set(_selectors(row, "roles")) | set(_selectors(row, "control_roles"))
         compare = set(_selectors(row, "compare_roles")) | set(
@@ -308,6 +362,28 @@ def validate_row(row: dict) -> str | None:
         "scale",
     }:
         return "transform_return_delta component must be location, rotation, or scale"
+    if kind == "curve_derivative_max" and row.get("property", "location") not in {
+        "location",
+        "rotation_euler",
+        "scale",
+    }:
+        return "curve_derivative_max property must be location, rotation_euler, or scale"
+    if kind in {"path_clearance_min", "parallax_displacement_profile"}:
+        compare = set(_selectors(row, "compare_roles"))
+        if not compare:
+            return f"{kind} requires compare_roles naming the other side"
+        primary = set(_selectors(row, "roles")) | set(_selectors(row, "control_roles"))
+        shared = sorted(primary & compare)
+        if shared:
+            return (
+                f"{kind} selectors must be disjoint; "
+                + ", ".join(shared)
+                + " appears on both sides, which measures the subject against itself"
+            )
+    if kind == "path_clearance_min":
+        step = row.get("frame_step", 1)
+        if isinstance(step, bool) or not isinstance(step, int) or step < 1:
+            return "path_clearance_min frame_step must be a positive integer"
     if kind == "frame_delta":
         region = row.get("region")
         if region is not None and (
@@ -609,6 +685,62 @@ for row in _rows:
                 elif component=='scale': deltas.append((second[name][2]-first[name][2]).length)
                 else: deltas.append(first[name][1].rotation_difference(second[name][1]).angle)
             value=max(deltas)
+        elif kind=='curve_derivative_max':
+            if not objects: raise ValueError('selector matched no objects')
+            a,b=row['frames']; path=row.get('property') or 'location'
+            deltas=[]; prev=None
+            for f in range(int(a),int(b)+1):
+                _scene.frame_set(int(f)); dg=bpy.context.evaluated_depsgraph_get()
+                cur=[_raw_property(o.evaluated_get(dg),path) for o in objects]
+                if prev is not None:
+                    for before,after in zip(prev,cur):
+                        bv=before if isinstance(before,tuple) else (before,)
+                        av=after if isinstance(after,tuple) else (after,)
+                        deltas.append(max(abs(x-y) for x,y in zip(av,bv)))
+                prev=cur
+            if not deltas: raise ValueError('frame window has no adjacent frame pair')
+            value=max(deltas)
+        elif kind=='path_clearance_min':
+            if not objects: raise ValueError('selector matched no objects')
+            a,b=row['frames']; step=int(row.get('frame_step') or 1)
+            obstacle_sel=_p(row,'compare_roles'); best=None
+            for f in range(int(a),int(b)+1,step):
+                _scene.frame_set(int(f)); dg=bpy.context.evaluated_depsgraph_get()
+                obstacles=[o for o in _scene.objects
+                           if o.type=='MESH' and _m(o.get('bvfx_role'),obstacle_sel)]
+                points=[o.evaluated_get(dg).matrix_world.translation.copy() for o in objects]
+                for obstacle in obstacles:
+                    ev=obstacle.evaluated_get(dg)
+                    try: inverse=ev.matrix_world.inverted()
+                    except Exception: continue
+                    for point in points:
+                        try: hit,local,_normal,_index=ev.closest_point_on_mesh(inverse@point)
+                        except Exception: continue
+                        if hit:
+                            distance=((ev.matrix_world@local)-point).length
+                            best=distance if best is None or distance<best else best
+            # empty obstacle selection: vacuously clear until the geometry exists
+            value=1e9 if best is None else best
+        elif kind=='parallax_displacement_profile':
+            far_group=_objects({{**row,'roles':_p(row,'compare_roles'),'control_roles':[]}})
+            if not objects or not far_group:
+                raise ValueError('parallax selector matched no objects on one side')
+            a,b=row['frames']
+            def _centroid(items,f):
+                _scene.frame_set(int(f)); dg=bpy.context.evaluated_depsgraph_get()
+                mvp=_checks.camera_clip_matrix(_scene,dg); xs=[]; ys=[]
+                for o in items:
+                    v=mvp@o.evaluated_get(dg).matrix_world.translation.to_4d()
+                    if v.w>1e-9: xs.append(v.x/v.w); ys.append(v.y/v.w)
+                if not xs: raise ValueError('a parallax group has no object in front of the camera')
+                return sum(xs)/len(xs), sum(ys)/len(ys)
+            n1=_centroid(objects,a); n2=_centroid(objects,b)
+            f1=_centroid(far_group,a); f2=_centroid(far_group,b)
+            near_move=((n2[0]-n1[0])**2+(n2[1]-n1[1])**2)**.5
+            far_move=((f2[0]-f1[0])**2+(f2[1]-f1[1])**2)**.5
+            if near_move<1e-6 and far_move<1e-6:
+                raise ValueError('neither group displaces on screen between the frames')
+            value=1e9 if far_move<1e-6 else near_move/far_move
     except Exception as exc: value=None; error=str(exc)[:160]
     _out.append({{'id':row['id'],'value':value,'objects':[o.name for o in objects],
       'roles':[str(o.get('bvfx_role','')) for o in objects],'materials':[m.name for m in materials],
