@@ -106,6 +106,46 @@ def _global_executable_checks_apply(layer: object) -> bool:
     return execution == "ready"
 
 
+def _materialized_view(folder: Path) -> tuple[set[str], set[str]]:
+    """(layer ids materialized by the verified JIT view, overlay files pinned to it).
+
+    A hash-pinned materialization view is the DESIGNED post-materialization shape of a
+    consumer view: its ready layers and their concrete contracts are materialized
+    authority, not global-preproduction violations. Run 20260824T153427Z-91b7c1
+    materialized layer 1 legitimately and the pre-materialization rules then blocked
+    every unit plan the generation produced — the materialize→gate→publish path had
+    never passed. Exemption is integrity-gated: a pointer that is absent, malformed,
+    for another bundle, or whose pinned hash does not match the staged bytes grants
+    NOTHING, so the strict pre-materialization reading always remains the fallback.
+    """
+    pointer_path = folder / "state" / "jit-layers" / "current.json"
+    if not pointer_path.is_file():
+        return set(), set()
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        if pointer.get("schema") != "vfx-harness.jit-layer-view/v1":
+            return set(), set()
+        marker_path = folder / ".plan-consumer-view.json"
+        if marker_path.is_file():
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            if pointer.get("bundle_hash") != marker.get("content_hash"):
+                return set(), set()
+        pinned = set()
+        for name, expected in (pointer.get("hashes") or {}).items():
+            staged = folder / name
+            if (
+                isinstance(expected, str)
+                and staged.is_file()
+                and hashlib.sha256(staged.read_bytes()).hexdigest() == expected
+            ):
+                pinned.add(str(name))
+        if "layers.json" not in pinned:
+            return set(), set()
+        return {str(layer_id) for layer_id in pointer.get("materialized_layers") or []}, pinned
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set(), set()
+
+
 # `[known ✓spiked — spike_04/spike_05, verified]` and friends.
 _TICKET = re.compile(r"^\*\*(G\d+\S*·\S*|[A-Z]\d+\S*)\s*·\s*(.+?)\*\*\s*(\[[^\]]*\])?", re.M)
 _URL = re.compile(r"https?://[^\s)`\]]+")
@@ -781,8 +821,14 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
         return [Finding("contracts", True, "plan artifacts", f"unreadable: {e}")], {}
 
     unit_first = isinstance(layers_document, dict) and layers_document.get("schema") == 5
+    materialized_ids, pinned_overlays = _materialized_view(folder) if unit_first else (set(), set())
     if unit_first:
-        ready = [str(layer.get("id") or "?") for layer in layers if layer.get("execution") != "jit_deferred"]
+        ready = [
+            str(layer.get("id") or "?")
+            for layer in layers
+            if layer.get("execution") != "jit_deferred"
+            and str(layer.get("id") or "?") not in materialized_ids
+        ]
         if ready:
             out.append(Finding(
                 "global-preproduction",
@@ -972,13 +1018,24 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                         )
                     )
     if unit_first and scene_rows:
-        out.append(Finding(
-            "global-preproduction",
-            True,
-            "scene_checks.json",
-            "schema-5 global authority contains concrete scene contracts",
-            "materialize scene contracts at the owning layer boundary",
-        ))
+        # contracts owned by a verifiably materialized layer ARE the layer boundary
+        # materialization the remedy asks for; only the rest violate preproduction
+        unmaterialized_contracts = [
+            row
+            for row in scene_rows
+            if not (
+                "scene_checks.json" in pinned_overlays
+                and str(row.get("owner_layer") or "") in materialized_ids
+            )
+        ]
+        if unmaterialized_contracts:
+            out.append(Finding(
+                "global-preproduction",
+                True,
+                "scene_checks.json",
+                "schema-5 global authority contains concrete scene contracts",
+                "materialize scene contracts at the owning layer boundary",
+            ))
 
     if unit_first:
         try:
@@ -1647,6 +1704,7 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
         unit_first_layers = None
     unit_first = isinstance(unit_first_layers, dict) and unit_first_layers.get("schema") == 5
 
+    materialized_ids, pinned_overlays = _materialized_view(folder) if unit_first else (set(), set())
     for decision_id, (line_no, expected) in structured_decisions.items():
         if unit_first:
             # A schema-5 bundle publishes no contracts, so exact adoption cannot happen
@@ -1654,6 +1712,9 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
             # layer materializes. The global obligation is ownership: some deferred
             # layer's reserved namespaces must cover every role the decision mutates,
             # or the approved values have nowhere to land and would silently vanish.
+            # Once the reserving layer HAS materialized it is no longer deferred, and
+            # the obligation transfers to the adoption itself: a pinned materialized
+            # contract carrying this decision_id with the exact approved values.
             roles = [str(role) for role in (expected.get("roles") or [])]
             deferred_reserved = {
                 str(row.get("id")): [
@@ -1672,13 +1733,20 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                     for role in roles
                 )
             )
-            if not owners:
+            adopted = "scene_checks.json" in pinned_overlays and any(
+                isinstance(row, dict)
+                and str(row.get("decision_id") or "") == decision_id
+                and str(row.get("owner_layer") or "") in materialized_ids
+                and all(row.get(key) == value for key, value in expected.items())
+                for row in scene_rows
+            )
+            if not owners and not adopted:
                 findings.append(Finding(
                     "decision-adoption",
                     True,
                     f"state/plan-resolutions.jsonl:{line_no} ({decision_id})",
-                    "no deferred layer reserves this decision's roles: "
-                    + (", ".join(roles) or "(none declared)"),
+                    "no deferred layer reserves this decision's roles and no materialized "
+                    "layer adopts it verbatim: " + (", ".join(roles) or "(none declared)"),
                     "reserve the decision's roles in the owning deferred layer; its "
                     "materialization must copy values.contract into scene_contracts "
                     "with decision_id",

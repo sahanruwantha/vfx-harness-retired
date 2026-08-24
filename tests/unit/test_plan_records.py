@@ -280,6 +280,95 @@ def test_schema_five_global_publication_rejects_ready_preproduction(tmp_path: Pa
     )
 
 
+def _pin_materialized_view(root: Path, layer_ids: list[str]) -> None:
+    """Fabricate the verified JIT view pointer declaring `layer_ids` materialized,
+    pinning the CURRENT bytes of the staged overlay files (as publish_materialization
+    would have)."""
+    import hashlib as _hashlib
+
+    pointer_dir = root / "state" / "jit-layers"
+    pointer_dir.mkdir(parents=True, exist_ok=True)
+    hashes = {}
+    for name in ("layers.json", "scene_checks.json", "checks.json", "requirements.json", "acceptance.json"):
+        path = root / name
+        if path.is_file():
+            hashes[name] = _hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(pointer_dir / "current.json", {
+        "schema": "vfx-harness.jit-layer-view/v1",
+        "bundle_hash": "view-bundle",
+        "view_hash": "fixture",
+        "materialized_layers": [str(layer_id) for layer_id in layer_ids],
+        "artifacts": {},
+        "hashes": hashes,
+    })
+
+
+def test_materialized_ready_layer_is_not_preproduction_debt(tmp_path: Path) -> None:
+    """Run 20260824T153427Z-91b7c1: layer 1 materialized legitimately and the
+    pre-materialization rule then blocked every unit plan of the generation — a ready
+    layer declared by the hash-pinned view IS the designed post-materialization shape.
+    Any integrity break falls back to the strict reading."""
+    from vfx_harness.evaluation.plan_gate import _check_contracts
+
+    _candidate(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    document["schema"] = 5
+    _write(tmp_path / "layers.json", document)
+    _pin_materialized_view(tmp_path, ["1"])
+
+    findings, _ = _check_contracts(tmp_path)
+    assert not any(
+        finding.check == "global-preproduction" and "ready layers" in finding.what
+        for finding in findings
+    )
+
+    # staged bytes no longer match the pinned view → no exemption
+    document["tampered"] = True
+    _write(tmp_path / "layers.json", document)
+    findings, _ = _check_contracts(tmp_path)
+    assert any(
+        finding.check == "global-preproduction" and "ready layers: 1" in finding.what
+        for finding in findings
+    )
+
+
+def test_materialized_decision_adoption_satisfies_reservation(tmp_path: Path) -> None:
+    """After the reserving layer materializes it is no longer deferred; the obligation
+    transfers to the adoption itself — a pinned materialized contract carrying the
+    decision_id with the exact approved values."""
+    _candidate(tmp_path)
+    expected = _structured_camera_decision(tmp_path)
+    _all_deferred_schema5(tmp_path, reserved=["iris.*"])  # nobody reserves cam_rig
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][0]["execution"] = "ready"
+    _write(tmp_path / "layers.json", layers)
+    _write(tmp_path / "scene_checks.json", {
+        "schema": 2,
+        "contracts": [{
+            **expected,
+            "id": "cam-a2-adopted",
+            "decision_id": "A-camera",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "1",
+            "lifecycle": "layer",
+            "axis": "camera_framing",
+        }],
+    })
+    _pin_materialized_view(tmp_path, ["1"])
+
+    findings, _ = _check_meta_records(tmp_path)
+    assert not any(finding.check == "decision-adoption" for finding in findings)
+
+    # altered adoption values are still a violation
+    contracts = json.loads((tmp_path / "scene_checks.json").read_text(encoding="utf-8"))
+    contracts["contracts"][0]["hi"] = 999
+    _write(tmp_path / "scene_checks.json", contracts)
+    _pin_materialized_view(tmp_path, ["1"])
+    findings, _ = _check_meta_records(tmp_path)
+    assert any(finding.blocking and finding.check == "decision-adoption" for finding in findings)
+
+
 @pytest.mark.parametrize(
     ("title", "reserved_role", "axis"),
     [
