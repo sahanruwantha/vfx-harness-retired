@@ -233,3 +233,32 @@ def test_rematerialize_refuses_to_discard_accepted_work(tmp_path, monkeypatch) -
 
     with pytest.raises(ValueError, match="accepted unit\\(s\\) done"):
         _anyio.run(invoke)
+
+
+def test_rematerialization_kickoff_carries_the_replacement_reason(tmp_path: Path) -> None:
+    """A replacement designed in ignorance of why its predecessor was discarded repeats
+    the predecessor's mistakes: the first re-materialization of layer 1 put the camera
+    last and left the faceted housing unowned — both defects being replaced."""
+    bundle_root = tmp_path / "b"
+    bundle_root.mkdir()
+    row = {
+        "id": "1", "script": "build/01.py", "title": "T", "primary_judge": 1,
+        "judge": [{"frame": 1, "ref": "refs/a.png"}], "owns": ["axis"],
+        "evidence_domains": ["scene"], "reads": "brief",
+        "execution": "jit_deferred", "stages": [],
+    }
+    (bundle_root / "layers.json").write_text(
+        json.dumps({"schema": 5, "layers": [row]}), encoding="utf-8"
+    )
+    bundle = SimpleNamespace(root=bundle_root, content_hash="h")
+    layer = SimpleNamespace(id="1", title="T", jit=SimpleNamespace())
+
+    plain = planner._materialization_kickoff(tmp_path, layer, bundle, "out.json")
+    assert "REPLACING A DISCARDED MATERIALIZATION" not in plain
+
+    replacing = planner._materialization_kickoff(
+        tmp_path, layer, bundle, "out.json", "camera must be the dependency root"
+    )
+    assert replacing.startswith("REPLACING A DISCARDED MATERIALIZATION")
+    assert "camera must be the dependency root" in replacing
+    assert "do not reproduce the structure being replaced" in replacing

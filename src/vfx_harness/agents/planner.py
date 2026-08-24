@@ -177,7 +177,9 @@ _MATERIALIZATION_EXAMPLE = """{
 }"""
 
 
-def _materialization_kickoff(shot_folder: Path, layer, bundle, rel_target: str) -> str:
+def _materialization_kickoff(
+    shot_folder: Path, layer, bundle, rel_target: str, replacing: str | None = None
+) -> str:
     """The session must copy its global layer row exactly and close owned requirements,
     so the kickoff carries the row verbatim and the READABLE paths that hold the rest.
     Run 20260823T125746Z-9cd0b8 got only the bundle hash: it probed six plausible bundle
@@ -188,7 +190,19 @@ def _materialization_kickoff(shot_folder: Path, layer, bundle, rel_target: str) 
     global_row = next(
         row for row in rows.get("layers", []) if str(row.get("id")) == str(layer.id)
     )
+    # A replacement designed in ignorance of why its predecessor was discarded repeats
+    # the predecessor's mistakes: the first re-materialization of layer 1 put the camera
+    # last and left the faceted housing unowned, both defects the operator was replacing.
+    replacement = (
+        f"REPLACING A DISCARDED MATERIALIZATION. The previous design of this layer was "
+        f"rejected. Reason and requirements from the operator:\n{replacing}\n"
+        f"Your design must satisfy those requirements explicitly; do not reproduce the "
+        f"structure being replaced.\n\n"
+        if replacing
+        else ""
+    )
     return (
+        f"{replacement}"
         f"Materialize deferred layer {layer.id} ({layer.title}).\n"
         f"Selected bundle hash: {bundle.content_hash}\n"
         f"Selected bundle root (readable): {bundle_rel}/ — its `layers.json`, "
@@ -204,7 +218,7 @@ def _materialization_kickoff(shot_folder: Path, layer, bundle, rel_target: str) 
 
 
 async def _materialize_deferred_layer(
-    shot, layer, *, model: str, blender: str, max_turns: int
+    shot, layer, *, model: str, blender: str, max_turns: int, replacing: str | None = None
 ) -> None:
     """Close one layer's owned requirements with concrete authority, then select its view."""
     from vfx_harness.orchestration.jit_materialization import (
@@ -262,7 +276,7 @@ of the output file runs the full materialization validator and returns its findi
 repair and rewrite until it reports VALIDATION PASSED — the terminal gate applies the same
 validator. Do not edit
 global authority, create unit state, write prose, or write another file."""
-    kickoff = _materialization_kickoff(shot.folder, layer, bundle, rel_target)
+    kickoff = _materialization_kickoff(shot.folder, layer, bundle, rel_target, replacing)
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}-materialize"
     pserver, pnames = build_plan_tools(
         shot.folder,
@@ -652,7 +666,7 @@ async def _rematerialize_layer(
         f"({', '.join(u.id for u in old_units) or 'none'}) — {trigger}"
     )
     await _materialize_deferred_layer(
-        shot, deferred, model=model, blender=blender, max_turns=max_turns
+        shot, deferred, model=model, blender=blender, max_turns=max_turns, replacing=trigger
     )
     refreshed = load_layers(shot)[layer_id]
     if state:
