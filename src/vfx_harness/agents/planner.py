@@ -152,6 +152,7 @@ _MATERIALIZATION_EXAMPLE = """{
    "protects": {"selector": "all_active_upstream_interfaces",
                 "resolve_to_explicit_ids_at": "freeze"},
    "look_capabilities": ["<the appearance families THIS unit answers for>"],
+   "provides": ["<scene capabilities dependents may rely on, e.g. camera>"],
    "evaluation": {"primary_judge": 1, "judge": [{"frame": 1, "ref": "refs/<a judge ref>.png"}],
                   "temporal_evidence": "static",
                   "claims": [{

@@ -1164,7 +1164,17 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             for unit in layer.get("stages") or []
             if isinstance(unit, dict) and unit.get("id")
         }
-        camera_units = {
+        # Typed authority first: a unit DECLARES what it provides to dependents. The
+        # substring scan below is the legacy path for units that declare nothing, and it
+        # is why `cam_rig` — the harness's own default camera-rig role, and the role the
+        # approved camera decision keys against — was invisible to this rule while the
+        # unit owning it had already passed.
+        declared = {
+            uid
+            for uid, unit in stages.items()
+            if "camera" in (unit.get("provides") or [])
+        }
+        camera_units = declared or {
             uid
             for uid, unit in stages.items()
             if any("camera" in str(role).lower() for role in (unit.get("mutates") or {}).get("roles") or [])
@@ -1290,8 +1300,8 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         f"layer {lid} unit {uid}",
                         "bbox evidence is due before any declared camera is available",
                         "make the first camera and its measurable blockout one atomic scoped unit, "
-                        "or depend on an already accepted camera-owning unit; a blockout cannot be "
-                        "projected through a camera owned only by its dependent",
+                        "or depend on a unit that declares `provides: [\"camera\"]`; a blockout "
+                        "cannot be projected through a camera owned only by its dependent",
                     )
                 )
         for unit in layer.get("stages") or []:

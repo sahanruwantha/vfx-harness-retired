@@ -156,3 +156,18 @@ def test_live_scope_reports_the_real_untagged_object() -> None:
 
     fixed = _scope_offenders({"CAM": "cam_rig", "CAM_spine": "cam_rig.spine"}, allowed)
     assert fixed == []
+
+
+def test_camera_ownership_is_declared_not_spelled() -> None:
+    """The bootstrap rule substring-matched "camera" in mutated role names, so
+    `cam_rig` — the harness's own default camera-rig role, and the role the approved
+    camera decision keys against — was invisible while its unit had already passed."""
+    from vfx_harness.domain.work_units import UNIT_PROVIDES, parse_provides
+
+    assert parse_provides(["camera"], "u.provides") == ("camera",)
+    with pytest.raises(ValueError, match="unknown capability"):
+        parse_provides(["cam_rig"], "u.provides")
+    assert "camera" in UNIT_PROVIDES
+
+    # The legacy spelling heuristic must never have decided this unit.
+    assert not any("camera" in r.lower() for r in ("cam_rig",))

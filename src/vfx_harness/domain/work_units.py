@@ -481,6 +481,25 @@ class EvaluationPolicy:
         return cls(primary, judges, temporal, claims, composition)
 
 
+# Scene capabilities a unit makes available to its dependents. Declared, never spelled:
+# the composition-bootstrap rule detected camera ownership by substring-matching
+# "camera" in mutated role names, so `cam_rig` — the harness's own default camera-rig
+# role, and the role the approved camera decision keys against — was invisible, and a
+# dependent could not be projected through a camera that demonstrably existed.
+UNIT_PROVIDES = {"camera"}
+
+
+def parse_provides(value: Any, where: str) -> tuple[str, ...]:
+    names = _strings(value, where) if value else ()
+    unknown = sorted(set(names) - UNIT_PROVIDES)
+    if unknown:
+        raise ValueError(
+            f"{where} has unknown capability {', '.join(unknown)}; declare a subset of "
+            + ", ".join(sorted(UNIT_PROVIDES))
+        )
+    return tuple(dict.fromkeys(names))
+
+
 # Which image-feedback families a unit is answerable for. Declared by the unit that
 # owns the work, never inferred: run 20260823T154920Z scanned axis IDENTIFIERS for look
 # words, so `iris_seal_readability` — whose description demanded layered machined metal,
@@ -521,6 +540,7 @@ class WorkUnit:
     evaluation: EvaluationPolicy
     completion: str
     look_capabilities: tuple[str, ...] = ()
+    provides: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, value: Any, where: str) -> WorkUnit:
@@ -538,6 +558,7 @@ class WorkUnit:
             parse_look_capabilities(
                 row.get("look_capabilities", []), f"{where}.look_capabilities"
             ),
+            parse_provides(row.get("provides", []), f"{where}.provides"),
         )
         context = unit.evaluation.composition_context
         if context and context.source_unit and context.source_unit not in unit.depends_on:
