@@ -482,8 +482,15 @@ def selected_view_artifact(shot_folder: str | Path, name: str, bundle_hash: str)
     if not pointer.is_file():
         return None
     value = _document(pointer)
-    if value.get("schema") != VIEW_SCHEMA or value.get("bundle_hash") != bundle_hash:
-        raise ValueError("selected JIT layer view is stale or malformed")
+    if value.get("schema") != VIEW_SCHEMA:
+        raise ValueError("selected JIT layer view is malformed")
+    if value.get("bundle_hash") != bundle_hash:
+        # A view pinned to another generation is superseded state, not authority for the
+        # currently selected bundle — serve the bundle's own deferred artifact and let
+        # the next materialization write this generation's view. Republication (run
+        # 20260824T150358Z-3bc39c) used to leave every consumer — including the replan
+        # transaction meant to reconcile the change — failing on the prior view.
+        return None
     relative = (value.get("artifacts") or {}).get(name)
     expected = (value.get("hashes") or {}).get(name)
     if not isinstance(relative, str) or not isinstance(expected, str):

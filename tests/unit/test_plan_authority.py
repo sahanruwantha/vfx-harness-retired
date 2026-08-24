@@ -335,6 +335,41 @@ def test_published_ownership_mapping_round_trips_through_resolution(
     assert resolved.content_hash == published.content_hash
 
 
+def test_superseded_jit_view_is_inert_after_republication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Republication used to leave every consumer — including the replan transaction
+    meant to reconcile the change — raising on the PRIOR generation's materialized view.
+    A view pinned to another bundle is superseded state: consumers get the new bundle's
+    own deferred artifact. A malformed view still fails closed."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    published = publish_current(tmp_path, layout, outcome="clean")
+
+    view_pointer = tmp_path / "state" / "jit-layers" / "current.json"
+    view_pointer.parent.mkdir(parents=True)
+    view_pointer.write_text(
+        json.dumps(
+            {
+                "schema": "vfx-harness.jit-layer-view/v1",
+                "bundle_hash": "0" * 64,  # a superseded generation, not the selection
+                "artifacts": {"layers.json": "state/jit-layers/old/layers.json"},
+                "hashes": {"layers.json": "0" * 64},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    served = selected_artifact_path(tmp_path, "layers.json")
+    assert served == published.root / "layers.json"
+
+    view_pointer.write_text(json.dumps({"schema": "wrong"}) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed"):
+        selected_artifact_path(tmp_path, "layers.json")
+
+
 def test_publication_refuses_members_resolution_cannot_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
