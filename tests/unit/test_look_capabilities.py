@@ -136,3 +136,23 @@ def test_live_scope_rule_matches_the_canonical_replay_rule() -> None:
         assert _role_in_scope(role, allowed) is expected, role
         errors = _scope_added_object_errors({}, {"obj": role}, allowed)
         assert bool(errors) is (not expected), role
+
+
+def test_live_scope_reports_the_real_untagged_object() -> None:
+    """cam_rig_spine (run 20260824T045543Z-e0e47b) created CAM_spine with no bvfx_role.
+    Canonical replay rejected it at the end; the live check said nothing. The offender
+    must be named, and must keep being named until it is fixed rather than suppressed
+    after first sight — builders create first and tag second."""
+    from vfx_harness.blender.tools import _scope_offenders
+
+    allowed = ("cam_rig",)
+    manifest = {"CAM": "cam_rig", "CAM_spine": ""}
+
+    first = _scope_offenders(manifest, allowed)
+    second = _scope_offenders(manifest, allowed)
+
+    assert first == ["'CAM_spine' role=<none>"]
+    assert second == first, "a violation must persist until fixed, not vanish"
+
+    fixed = _scope_offenders({"CAM": "cam_rig", "CAM_spine": "cam_rig.spine"}, allowed)
+    assert fixed == []

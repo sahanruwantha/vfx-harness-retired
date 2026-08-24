@@ -24,6 +24,7 @@ from PIL import Image
 from vfx_harness.evidence.checks import METRICS
 from vfx_harness.evidence.compare_panels import crop_pixels, save_context_sheet, save_focus_sheet, validate_crop
 from vfx_harness.observability import run_artifacts
+from vfx_harness.observability.log import log
 from vfx_harness.orchestration.escalate import ask as _ask
 from vfx_harness.orchestration.script_map import find_lines as _find_lines
 from vfx_harness.orchestration.script_map import outline as _outline
@@ -404,6 +405,20 @@ _ROLE_MANIFEST = (
 )
 
 
+def _scope_offenders(manifest: dict, allowed: tuple[str, ...]) -> list[str]:
+    """Objects whose semantic role falls outside the unit's declared authority.
+
+    Reported on every call until fixed, never once-and-forgotten: builders create first
+    and tag second, so suppressing a name after first sight hides an untagged object for
+    the rest of the build — which is how an untagged curve reached canonical replay.
+    """
+    return [
+        f"{name!r} role={str(role) or '<none>'}"
+        for name, role in sorted(manifest.items())
+        if not _role_in_scope(str(role), allowed)
+    ]
+
+
 def _role_in_scope(role: str, allowed: tuple[str, ...]) -> bool:
     """A namespace owns its dot-delimited descendants, never a similar sibling.
 
@@ -732,22 +747,20 @@ def build_blender_tools(
         # whole budget: run 20260823T154920Z created camera, housing, tunnel and light
         # objects outside its declared roles and learned nothing until the end. Surface
         # the violation on the call that caused it, while the fix is one edit away.
-        if mutation_roles and isinstance(oa, int) and oa > 0:
+        # Checked on EVERY successful call, not only when objects_added > 0: helpers
+        # create objects through paths whose reported delta cannot be trusted, and the
+        # cam_rig_spine build proved the point — two calls reported +2 objects, the live
+        # check never spoke, and canonical replay found an untagged curve at the end.
+        # Objects are re-examined until they are in scope, because a builder may create
+        # first and tag second.
+        if mutation_roles:
             try:
                 manifest = (await _call("run", code=_ROLE_MANIFEST, journal=False)).get(
                     "result"
                 ) or {}
-                known = comparison_state.setdefault("_scope_seen", set())
-                offenders = []
-                for name, role in sorted(manifest.items()):
-                    if name in known:
-                        continue
-                    known.add(name)
-                    if not _role_in_scope(str(role), mutation_roles):
-                        offenders.append(
-                            f"{name!r} role={str(role) or '<none>'}"
-                        )
+                offenders = _scope_offenders(manifest, mutation_roles)
                 if offenders:
+                    log(f"scope: {len(offenders)} object(s) outside declared roles", 1)
                     warn += (
                         "\n⚠ SCOPE VIOLATION — this unit may only create objects in "
                         + ", ".join(mutation_roles)
@@ -755,8 +768,9 @@ def build_blender_tools(
                         + "\nCanonical replay rejects these deterministically. Delete "
                         "them or tag them with a role inside your declared scope."
                     )
-            except BlenderError:
-                pass  # never fail a build call on the scope probe
+            except BlenderError as exc:
+                # A silent probe failure is the same lie as a silent violation.
+                log(f"scope probe unavailable ({str(exc)[:70]})", 1)
         # Scene contracts are the live execution authority. Evaluate them immediately
         # after every mutation so convergence is a state transition, not a suggestion the
         # model may overlook for another 80 turns. Pixel checks still happen after the
