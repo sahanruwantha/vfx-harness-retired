@@ -39,7 +39,8 @@ def _deferred_root(root: Path) -> None:
     """Rewrite the fixture candidate as a schema-5 all-deferred single root layer."""
     (root / "brief.md").write_text(
         "---\nid: lifecycle-fixture\nframes: 240\nfps: 24\n---\n"
-        "Final image must hold unchanged from frame 239 to 240.\n",
+        "Final image must hold unchanged from frame 239 to 240.\n"
+        "The closing set must be dressed before the hold.\n",
         encoding="utf-8",
     )
     (root / "refs" / "a.png").write_bytes(b"fixture-reference")
@@ -53,20 +54,47 @@ def _deferred_root(root: Path) -> None:
         "reserved_roles": ["comp"],
         "owned_requirements": ["R-final-lock"],
     }
+    # a later deferred layer reserves `set.*` — the namespace the root's persistent
+    # clearance contract observes, exactly the shape a real multi-layer plan has
+    document["layers"].append({
+        "id": "2", "script": "build/02_set.py", "title": "Set dressing",
+        "primary_judge": 240,
+        "judge": [{"frame": 239, "ref": "refs/a.png"}, {"frame": 240, "ref": "refs/a.png"}],
+        "owns": ["set_dressing"], "reads": "dressed ending",
+        "evidence_domains": ["scene"],
+        "execution": "jit_deferred", "stages": [],
+        "jit": {
+            "depends_on_layers": ["1"],
+            "required_outcomes": [],
+            "reserved_roles": ["set.*"],
+            "owned_requirements": ["R-set-dressed"],
+        },
+    })
     document["schema"] = 5
     _write(root / "layers.json", document)
+    _write(root / "critic_axes.json", [
+        {"key": "final_lock", "desc": "ending is still"},
+        {"key": "set_dressing", "desc": "set is dressed"},
+    ])
     _write(root / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((root / "requirements.json").read_text(encoding="utf-8"))
     requirements["requirements"][0]["resolution"] = {
         "kind": "deferred_owner", "ids": [], "owner_layer": "1",
         "due": {"kind": "before_layer", "layer": "1"},
     }
+    digest = hashlib.sha256((root / "brief.md").read_bytes()).hexdigest()
     requirements["requirements"][0]["citation"] = {
-        "source": "brief.md",
-        "sha256": hashlib.sha256((root / "brief.md").read_bytes()).hexdigest(),
-        "line_start": 6,
-        "line_end": 6,
+        "source": "brief.md", "sha256": digest, "line_start": 6, "line_end": 6,
     }
+    requirements["requirements"].append({
+        "id": "R-set-dressed",
+        "statement": "the closing set is dressed before the hold",
+        "citation": {"source": "brief.md", "sha256": digest, "line_start": 7, "line_end": 7},
+        "resolution": {
+            "kind": "deferred_owner", "ids": [], "owner_layer": "2",
+            "due": {"kind": "before_layer", "layer": "2"},
+        },
+    })
     _write(root / "requirements.json", requirements)
     _write(root / "obligations.json", {"schema": "vfx-harness.obligations/v1", "obligations": []})
     (root / "plans" / "ownership_mapping.json").write_text(
@@ -175,7 +203,7 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
                 # contract was blocked for selecting the namespaces it must observe)
                 "id": "comp-clearance", "kind": "path_clearance_min", "owner_layer": "1",
                 "fault_owner": "1", "activates_at": "1", "lifecycle": "persistent",
-                "axis": "final_lock", "roles": ["comp"], "compare_roles": ["future.*"],
+                "axis": "final_lock", "roles": ["comp"], "compare_roles": ["set.*"],
                 "frames": [239, 240], "op": "min", "lo": 0.5,
             },
         ],

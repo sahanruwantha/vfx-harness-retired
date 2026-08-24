@@ -1183,6 +1183,19 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     image_by_id = {
         str(row.get("id")): row for row in image_rows if isinstance(row, dict) and row.get("id")
     }
+    # every role namespace the PLAN declares anywhere: unit mutation authority plus
+    # deferred reservations — the universe a two-sided contract's measurement side may
+    # observe (its own repair authority still closes on the primary selectors)
+    plan_declared_roles: set[str] = set()
+    for layer_row in layers:
+        if not isinstance(layer_row, dict):
+            continue
+        for pattern in (layer_row.get("jit") or {}).get("reserved_roles") or []:
+            plan_declared_roles.add(str(pattern))
+        for stage_row in layer_row.get("stages") or []:
+            if isinstance(stage_row, dict):
+                for pattern in (stage_row.get("mutates") or {}).get("roles") or []:
+                    plan_declared_roles.add(str(pattern))
 
     def _selector_declared(selector: str, declarations: set[str]) -> bool:
         return any(
@@ -1400,16 +1413,17 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     # layers' roles (a persistent clearance contract exists precisely to
                     # measure against geometry its owner will never mutate). The primary
                     # selectors remain strictly inside mutation authority — repair
-                    # authority closes there; the compare side is a measurement subject.
+                    # authority closes there; the compare side is a measurement subject
+                    # that must still name a role namespace the PLAN declares somewhere,
+                    # so a control id smuggled into compare_roles stays a violation.
                     two_sided = str(contract.get("kind") or "") in {
                         "path_clearance_min",
                         "parallax_displacement_profile",
                         "onset_order",
                     }
-                    selector_keys = ("roles",) if two_sided else ("roles", "compare_roles")
                     selected_roles = {
                         str(value)
-                        for key in selector_keys
+                        for key in (("roles",) if two_sided else ("roles", "compare_roles"))
                         for value in contract.get(key) or []
                     }
                     undeclared_roles = sorted(
@@ -1417,6 +1431,14 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         for selector in selected_roles
                         if not _selector_declared(selector, mutable_roles)
                     )
+                    if two_sided:
+                        undeclared_roles.extend(sorted(
+                            selector
+                            for selector in {
+                                str(value) for value in contract.get("compare_roles") or []
+                            }
+                            if not _selector_declared(selector, plan_declared_roles)
+                        ))
                     if undeclared_roles:
                         out.append(
                             Finding(
