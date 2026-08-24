@@ -88,7 +88,7 @@ from vfx_harness.orchestration.layer_plans import (
     validate_work_unit_plan_authority,
     work_unit_plan_path,
 )
-from vfx_harness.orchestration.ledger import load_layers
+from vfx_harness.orchestration.ledger import load_layers, load_layers_from_path
 
 from .builder import _one_user_message
 
@@ -605,6 +605,75 @@ async def generate_plan(
     return plan_path
 
 
+async def _rematerialize_layer(
+    shot, layer, authority: tuple[str, str, list[str]], *, model, blender, max_turns
+):
+    """Discard a materialized layer view and design it again from global authority.
+
+    Materialization is a decision, and a decision proven wrong must be replaceable —
+    layer 1 of run 20260823T154920Z shipped defective contracts, proxied claims, and a
+    unit whose script escaped its own scope. This does NOT add a supersession authority:
+    the view is republished through `publish_materialization` and durable unit state
+    moves through the existing `apply_replan` transaction. It fails closed on accepted
+    work, because discarding a proven checkpoint is a different, heavier decision.
+    """
+    from vfx_harness.orchestration.plan_authority import (
+        resolve_current,
+        selected_artifact_path,
+    )
+    from vfx_harness.orchestration.unit_state import apply_replan
+    from vfx_harness.orchestration.unit_state import load as load_unit_state
+
+    owner, trigger, evidence = authority
+    layer_id = str(layer.id)
+    state = load_unit_state(shot.folder, layer_id)
+    accepted = sorted(
+        uid
+        for uid, row in (state.get("units") or {}).items()
+        if row.get("status") == "passed"
+    )
+    if accepted:
+        raise ValueError(
+            f"layer {layer_id} has accepted unit(s) {', '.join(accepted)}; "
+            "re-materialization would discard proven work — move that state with "
+            "`vfx units replan` instead"
+        )
+
+    def _plan_hash() -> str:
+        return hashlib.sha256(
+            selected_artifact_path(shot.folder, "layers.json").read_bytes()
+        ).hexdigest()
+
+    old_units, old_plan_hash = layer.stages, _plan_hash()
+    bundle = resolve_current(shot.folder)
+    deferred = load_layers_from_path(bundle.root / "layers.json")[layer_id]
+    log(
+        f"re-materializing layer {layer_id}: discarding {len(old_units)} unit(s) "
+        f"({', '.join(u.id for u in old_units) or 'none'}) — {trigger}"
+    )
+    await _materialize_deferred_layer(
+        shot, deferred, model=model, blender=blender, max_turns=max_turns
+    )
+    refreshed = load_layers(shot)[layer_id]
+    if state:
+        apply_replan(
+            shot.folder,
+            layer_id,
+            old_units,
+            refreshed.stages,
+            old_plan_hash=old_plan_hash,
+            new_plan_hash=_plan_hash(),
+            owner=owner,
+            trigger=trigger,
+            evidence=evidence,
+        )
+        log(
+            f"work-unit state superseded → {', '.join(u.id for u in refreshed.stages)}",
+            1,
+        )
+    return refreshed
+
+
 async def generate_layer_plan(
     folder: str | Path,
     layer_id: str,
@@ -613,6 +682,7 @@ async def generate_layer_plan(
     model: str | None = None,
     blender: str = "blender",
     max_turns: int = 24,
+    rematerialize: tuple[str, str, list[str]] | None = None,
 ) -> Path:
     """Generate one work-unit plan after its declared dependencies have sealed outcomes.
 
@@ -629,7 +699,11 @@ async def generate_layer_plan(
         layer = layers[str(layer_id)]
     except KeyError as exc:
         raise KeyError(f"unknown layer {layer_id!r}; available: {', '.join(layers)}") from exc
-    if layer.execution == "jit_deferred":
+    if rematerialize is not None and layer.execution == "ready":
+        layer = await _rematerialize_layer(
+            shot, layer, rematerialize, model=model, blender=blender, max_turns=max_turns
+        )
+    elif layer.execution == "jit_deferred":
         await _materialize_deferred_layer(
             shot,
             layer,
@@ -1027,6 +1101,20 @@ def main() -> None:
     ap.add_argument("folder", help="shot folder (contains brief.md, refs/)")
     ap.add_argument("--layer", help="generate only this layer's just-in-time plan")
     ap.add_argument("--unit", help="with --layer, generate this ready work unit instead of the first ready unit")
+    ap.add_argument(
+        "--rematerialize",
+        action="store_true",
+        help="with --layer, discard the layer's materialized view and design it again "
+        "from global authority; refuses when any unit has been accepted",
+    )
+    ap.add_argument("--owner", help="authority applying a --rematerialize transaction")
+    ap.add_argument("--trigger", help="why the materialized view is being replaced")
+    ap.add_argument(
+        "--evidence",
+        action="append",
+        default=[],
+        help="evidence locator for --rematerialize; repeat for each item",
+    )
     ap.add_argument("--single", action="store_true", help="one from-scratch pass with --model (no verify)")
     ap.add_argument(
         "--verify-only", action="store_true", help="skip drafting; audit the existing plans/global.<tag->draft.md"
@@ -1060,6 +1148,11 @@ def main() -> None:
         ap.error("--unit requires --layer")
     if args.layer and (args.single or args.verify_only or args.until_clean or args.tag):
         ap.error("--layer is a dedicated JIT pass; do not combine it with global-pass flags")
+    if args.rematerialize and not (args.layer and args.owner and args.trigger and args.evidence):
+        ap.error(
+            "--rematerialize replaces published authority: it needs --layer, --owner, "
+            "--trigger, and at least one --evidence"
+        )
     if args.promote_run and (
         args.layer or args.single or args.verify_only or args.until_clean or args.tag
     ):
@@ -1095,6 +1188,11 @@ def main() -> None:
                     model=args.model,
                     blender=args.blender,
                     max_turns=args.max_turns or max(24, settings.plan_max_turns // 4),
+                    rematerialize=(
+                        (args.owner, args.trigger, list(args.evidence))
+                        if args.rematerialize
+                        else None
+                    ),
                 )
             )
         elif args.single:

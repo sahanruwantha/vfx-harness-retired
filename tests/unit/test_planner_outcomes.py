@@ -203,3 +203,33 @@ def test_until_clean_main_exits_three_and_preserves_dirty_plan(tmp_path, monkeyp
     assert status["state"] == "failed"
     assert status["exit_code"] == 3
     assert not (tmp_path / "plan.provenance.json").exists()
+
+
+def test_rematerialize_refuses_to_discard_accepted_work(tmp_path, monkeypatch) -> None:
+    """Re-materialization replaces a design decision, not proven work. A layer with an
+    accepted unit must go through the heavier replan transaction instead."""
+    import anyio as _anyio
+
+    from vfx_harness.agents import planner as _planner
+
+    shot = SimpleNamespace(folder=tmp_path, id="shot")
+    layer = SimpleNamespace(id="1", execution="ready", stages=())
+    monkeypatch.setattr(
+        _planner, "load_unit_state_for_test", lambda *a, **k: None, raising=False
+    )
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.unit_state.load",
+        lambda folder, layer_id: {
+            "layer": "1",
+            "units": {"done": {"status": "passed"}, "next": {"status": "pending"}},
+        },
+    )
+
+    async def invoke():
+        return await _planner._rematerialize_layer(
+            shot, layer, ("owner", "trigger", ["run:x"]),
+            model="m", blender="blender", max_turns=4,
+        )
+
+    with pytest.raises(ValueError, match="accepted unit\\(s\\) done"):
+        _anyio.run(invoke)
