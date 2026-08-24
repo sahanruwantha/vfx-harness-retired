@@ -665,6 +665,12 @@ async def _rematerialize_layer(
         f"re-materializing layer {layer_id}: discarding {len(old_units)} unit(s) "
         f"({', '.join(u.id for u in old_units) or 'none'}) — {trigger}"
     )
+    # Design against global authority, not against the view being replaced: otherwise
+    # the discarded register (where this layer's owned requirements were already
+    # resolved) is the base, and the replacement trips owned-means-owed.
+    from vfx_harness.orchestration.jit_materialization import revert_materialization
+
+    revert_materialization(shot.folder, layer_id)
     await _materialize_deferred_layer(
         shot, deferred, model=model, blender=blender, max_turns=max_turns, replacing=trigger
     )

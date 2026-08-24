@@ -463,6 +463,106 @@ def selected_view_artifact(shot_folder: str | Path, name: str, bundle_hash: str)
     return path
 
 
+def revert_materialization(shot_folder: str | Path, layer_id: str) -> Path | None:
+    """Remove one layer's materialized contribution from the selected view.
+
+    Re-materialization must design against GLOBAL authority, not against the view it is
+    replacing. Without this, the discarded view's register — where this layer's owned
+    requirements were already resolved concretely — is the base, and the replacement
+    trips the owned-means-owed rule for requirements its predecessor closed. The layer's
+    rows revert to the bundle's deferred authority; every other layer's materialization
+    is preserved untouched.
+    """
+    from vfx_harness.orchestration.plan_authority import resolve_current
+
+    shot = Path(shot_folder).resolve()
+    pointer_path = shot / CURRENT
+    if not pointer_path.is_file():
+        return None
+    bundle = resolve_current(shot)
+    layer_id = str(layer_id)
+
+    def _bundle_doc(name: str) -> dict:
+        return _document(bundle.root / name)
+
+    view_docs = {
+        name: json.loads(
+            Path(selected_view_artifact(shot, name, bundle.content_hash)).read_text(
+                encoding="utf-8"
+            )
+        )
+        for name in OVERLAY_ARTIFACTS
+    }
+    # acceptance.json is a bare list; only materialization adds rows to it, so this
+    # layer's fingerprints leave with its view.
+    view_docs["acceptance.json"] = [
+        row
+        for row in view_docs["acceptance.json"]
+        if not isinstance(row, dict) or str(row.get("layer") or "") != layer_id
+    ]
+    bundle_layers = {str(r.get("id")): r for r in _bundle_doc("layers.json")["layers"]}
+    view_docs["layers.json"]["layers"] = [
+        bundle_layers.get(layer_id, row) if str(row.get("id")) == layer_id else row
+        for row in view_docs["layers.json"]["layers"]
+    ]
+    bundle_requirements = {
+        str(r.get("id")): r for r in _bundle_doc("requirements.json")["requirements"]
+    }
+    view_docs["requirements.json"]["requirements"] = [
+        bundle_requirements.get(str(row.get("id")), row)
+        if str((row.get("resolution") or {}).get("owner_layer") or "") == layer_id
+        or str(row.get("id")) in _owned_by(bundle_layers.get(layer_id))
+        else row
+        for row in view_docs["requirements.json"]["requirements"]
+    ]
+    for name, key in (("scene_checks.json", "contracts"), ("checks.json", "checks")):
+        view_docs[name][key] = [
+            row
+            for row in view_docs[name][key]
+            if str(row.get("owner_layer") or row.get("activates_at") or "") != layer_id
+        ]
+    still_materialized = sorted(
+        str(row.get("id"))
+        for row in view_docs["layers.json"]["layers"]
+        if row.get("execution") != "jit_deferred"
+    )
+    if not still_materialized:
+        pointer_path.unlink()
+        return None
+    view_hash = hashlib.sha256(
+        json.dumps(view_docs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    view = shot / STATE_DIR / "views" / view_hash
+    view.mkdir(parents=True, exist_ok=True)
+    for name in OVERLAY_ARTIFACTS:
+        atomic_write(view / name, json.dumps(view_docs[name], indent=2, sort_keys=True) + "\n")
+    atomic_write(
+        pointer_path,
+        json.dumps(
+            {
+                "schema": VIEW_SCHEMA,
+                "bundle_hash": bundle.content_hash,
+                "view_hash": view_hash,
+                "materialized_layers": still_materialized,
+                "artifacts": {
+                    name: (view / name).relative_to(shot).as_posix()
+                    for name in OVERLAY_ARTIFACTS
+                },
+                "hashes": {name: _sha256(view / name) for name in OVERLAY_ARTIFACTS},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+    return pointer_path
+
+
+def _owned_by(layer_row: dict | None) -> set[str]:
+    jit = (layer_row or {}).get("jit") or {}
+    return {str(rid) for rid in (jit.get("owned_requirements") or [])}
+
+
 def publish_materialization(
     shot_folder: str | Path,
     materialization_path: str | Path,

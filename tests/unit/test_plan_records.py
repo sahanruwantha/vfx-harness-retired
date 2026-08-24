@@ -1518,3 +1518,44 @@ def test_direct_required_bbox_claims_are_projected_composition_context(
     _write(tmp_path / "layers.json", stripped)
     findings, _ = _check_evidence_coherence(tmp_path)
     assert [f for f in findings if f.check == "composition-coverage"]
+
+
+def test_revert_materialization_restores_global_authority(tmp_path, monkeypatch) -> None:
+    """Re-materialization must design against GLOBAL authority. Without reverting, the
+    discarded view's register — where this layer's owned requirements were already
+    resolved concretely by its predecessor — is the base, and the replacement trips
+    owned-means-owed for requirements it never closed itself."""
+    from vfx_harness.orchestration.jit_materialization import (
+        publish_materialization,
+        revert_materialization,
+    )
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "revert-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    _passed_layer_one_outcome(tmp_path)
+    publish_materialization(tmp_path, payload)
+
+    from vfx_harness.orchestration.ledger import load_layers_from_path
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    materialized = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))
+    assert materialized["2"].execution == "ready"
+
+    revert_materialization(tmp_path, "2")
+
+    reverted = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))
+    assert reverted["2"].execution == "jit_deferred"
+    assert reverted["2"].stages == ()
+    register = json.loads(
+        selected_artifact_path(tmp_path, "requirements.json").read_text(encoding="utf-8")
+    )
+    owed = {
+        row["id"]: row["resolution"]["kind"]
+        for row in register["requirements"]
+        if row["id"] == "R-final-lock"
+    }
+    assert owed == {"R-final-lock": "deferred_owner"}
