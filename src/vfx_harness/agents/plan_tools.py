@@ -1183,6 +1183,68 @@ def build_plan_tools(
         return _text(f"Recorded as Q{qid}. Continue planning on: {args['assumption']}")
 
     @tool(
+        "escalate_vocabulary_gap",
+        "Record that NO evidence kind can express a claim you must close. This is the "
+        "honest alternative to padding: a typed durable record of the requirement, the "
+        "kinds you attempted, and why each cannot certify the claim. Close the "
+        "requirement with an explicit decision resolution that references the returned "
+        "gap id — never with a trivially-satisfiable contract (those are rejected at "
+        "validation). Gaps are visible to the operator and to future planning sessions.",
+        {
+            "type": "object",
+            "properties": {
+                "requirement_id": {"type": "string"},
+                "claim": {"type": "string"},
+                "attempted": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "why_it_cannot_certify": {"type": "string"},
+                        },
+                        "required": ["kind", "why_it_cannot_certify"],
+                    },
+                    "minItems": 1,
+                },
+                "note": {"type": "string"},
+            },
+            "required": ["requirement_id", "claim", "attempted"],
+        },
+    )
+    async def escalate_vocabulary_gap(args):
+        record_dir = shot_folder / "state" / "plan-escalations"
+        record_dir.mkdir(parents=True, exist_ok=True)
+        path = record_dir / "vocabulary-gaps.jsonl"
+        existing = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+        gap_id = f"VG-{len(existing) + 1:03d}"
+        record = {
+            "schema": "vfx-harness.vocabulary-gap/v1",
+            "id": gap_id,
+            "requirement_id": str(args["requirement_id"]),
+            "claim": str(args["claim"]),
+            "attempted": [
+                {
+                    "kind": str(item.get("kind") or ""),
+                    "why_it_cannot_certify": str(item.get("why_it_cannot_certify") or ""),
+                }
+                for item in args["attempted"]
+            ],
+            "note": str(args.get("note") or ""),
+            "run_id": layout.run_id,
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        log(f"plan-lab vocabulary gap {gap_id}: {args['requirement_id']} — {str(args['claim'])[:70]}", 1)
+        return _text(
+            f"Recorded {gap_id} for {args['requirement_id']}. Close the requirement with an "
+            f"explicit decision resolution referencing {gap_id} (statement + "
+            f"decision_strength), not a contract. The gap is durable state: the harness "
+            f"grows the vocabulary against it, and a later generation re-binds the "
+            f"requirement to a real metric."
+        )
+
+    @tool(
         "run_gate",
         "Run the free deterministic plan gate against the current working artifacts. "
         "Use during draft, verify, or repair after a coherent artifact sweep so cross-file "
@@ -1345,7 +1407,7 @@ def build_plan_tools(
     # of an omission.
     video = sorted((shot_folder / "refs").glob("*.mp4")) if (shot_folder / "refs").is_dir() else []
     tools = [measure_ref, measure_check, measure_checks, spike, ask_supervisor,
-             evidence_vocabulary, gate_preview]
+             evidence_vocabulary, gate_preview, escalate_vocabulary_gap]
     if include_gate:
         tools.append(run_gate)
     if video:

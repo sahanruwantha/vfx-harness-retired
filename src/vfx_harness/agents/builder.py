@@ -2294,6 +2294,29 @@ def _render_evidence(
     return _scope_unit_evidence(evidence, active_unit, int(m.frame))
 
 
+def _reproduction_hint(row: dict) -> str:
+    """The exact local invocation that re-measures a failing contract row.
+
+    Guidance that arrives attached to the failure it explains gets used; the same
+    guidance delivered ambiently does not (`vfx inspect` flags diagnostic tools that
+    were never called on every measured layer)."""
+    kind = str(row.get("metric") or row.get("kind") or "")
+    objects = [name for name in (row.get("objects") or []) if name]
+    subject = objects[0] if objects else "<role object>"
+    frame = row.get("frame") or (row.get("frames") or [None])[0]
+    if kind.startswith("bbox_"):
+        return f"check_scene(kind='bbox', object='{subject}', frame={frame})"
+    if kind == "keyframe_schedule":
+        return f"list_keyframes(object='{subject}')"
+    if kind in {"curve_derivative_max", "onset_order", "radial_distance_trend", "transform_return_delta"}:
+        return f"check_scene(kind='motion', object='{subject}', frames=[…judged window…])"
+    if kind == "mesh_vertex_count":
+        return f"check_scene(kind='mesh', object='{subject}')"
+    if kind in {"path_clearance_min"}:
+        return f"check_scene(kind='visibility', object='{subject}', frame={frame}) + run_bpy distance probe"
+    return ""
+
+
 def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evidence: list[dict]) -> dict | None:
     """Let exact executable claims decide an atomic unit without a vision call."""
     if unit is None:
@@ -2335,9 +2358,11 @@ def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evid
                 + ". This is a binding defect, not a build defect — the metric cannot "
                 "apply to what the claim names; it needs re-materialization, not a repair."
             )
+        hint = _reproduction_hint(row)
         return (
             f"{head} executable contract fails: {row.get('metric')} reads "
             f"{row.get('value')} against {row.get('target')}"
+            + (f" · reproduce: {hint}" if hint else "")
         )
 
     issues = [_issue(row) for row in [*failures, *worklist_failures]]

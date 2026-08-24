@@ -282,11 +282,12 @@ this unit mutates the cumulative scene, so `image_contracts` must remain empty h
 of the output file runs the full materialization validator and returns its findings to you;
 repair and rewrite until it reports VALIDATION PASSED — the terminal gate applies the same
 validator. Call `evidence_vocabulary` BEFORE authoring contracts — it enumerates every
-contract kind, its evidence domain, and required fields; when no kind can express a claim,
-escalate through `ask_supervisor` instead of padding with a trivially-satisfiable contract
-(vacuous shapes are rejected at validation). After VALIDATION PASSED, call `gate_preview`
-once: it applies the exact terminal gate to the resulting consumer view, and a finding fixed
-here costs one write instead of a retracted generation. Do not edit
+contract kind, its evidence domain, and required fields. When no kind can express a claim,
+call `escalate_vocabulary_gap` (typed durable record) and close the requirement with an
+explicit decision resolution referencing the gap id — never pad with a trivially-satisfiable
+contract (vacuous shapes are rejected at validation). After VALIDATION PASSED, call
+`gate_preview` once: it applies the exact terminal gate to the resulting consumer view, and
+a finding fixed here costs one write instead of a retracted generation. Do not edit
 global authority, create unit state, write prose, or write another file."""
     kickoff = _materialization_kickoff(shot.folder, layer, bundle, rel_target, replacing)
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}-materialize"
@@ -295,13 +296,15 @@ global authority, create unit state, write prose, or write another file."""
         blender=blender,
         lab_dir=lab_dir,
         measure_ref_paths=tuple(ref for _frame, ref in layer.judges),
-        enabled_tools=frozenset(
-            {"measure_ref", "spike", "ask_supervisor", "evidence_vocabulary", "gate_preview"}
-        ),
+        enabled_tools=frozenset({
+            "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
+            "gate_preview", "escalate_vocabulary_gap",
+        }),
     )
     rserver, rnames = build_recipe_tools()
     materialization_tools = _phase_tools(
-        pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary", "gate_preview"
+        pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
+        "gate_preview", "escalate_vocabulary_gap",
     )
     options = ClaudeAgentOptions(
         model=model,
