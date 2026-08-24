@@ -63,3 +63,18 @@ def test_upstream_only_evidence_never_seals_the_current_layer() -> None:
 
     assert state["may_seal"] is False  # no current-layer contract
     assert state["interfaces_ready"] is True
+
+
+def test_unmeasurable_metric_reads_as_inapplicable_not_failed() -> None:
+    """`smooth_fraction` over a camera rig reads None because there is no mesh to shade.
+    Reporting that as "fails" sent two repair rounds after something no build could fix
+    (run 20260824T060927Z). A metric that could not be measured is a binding defect."""
+    import inspect
+
+    from vfx_harness.agents import builder
+
+    source = inspect.getsource(builder)
+    assert 'if row.get("value") is None:' in source
+    assert "INAPPLICABLE to its subject" in source
+    assert "binding defect, not a build defect" in source
+    assert "re-materialization, not a repair" in source

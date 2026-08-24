@@ -2190,11 +2190,25 @@ def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evid
         row for row in evidence if row.get("source") == "builder_state" and not row.get("pass")
     ]
     passed = not missing and not failures and not worklist_failures
-    issues = [
-        f"[check:{row['id']}] executable contract fails: {row.get('metric')} reads "
-        f"{row.get('value')} against {row.get('target')}"
-        for row in [*failures, *worklist_failures]
-    ]
+    # A metric that could not be measured is not a metric that measured and missed.
+    # `smooth_fraction` over camera roles reads None because there is no mesh to shade;
+    # reporting that as "fails" sent two repair rounds after something unfixable
+    # (run 20260824T060927Z). Name it as inapplicable and point at the binding.
+    def _issue(row: dict) -> str:
+        head = f"[check:{row['id']}]"
+        if row.get("value") is None:
+            return (
+                f"{head} contract is INAPPLICABLE to its subject: {row.get('metric')} "
+                f"could not be measured on these roles (target {row.get('target')}). "
+                "This is a binding defect, not a build defect — the metric cannot apply "
+                "to what the claim names; it needs re-materialization, not a repair."
+            )
+        return (
+            f"{head} executable contract fails: {row.get('metric')} reads "
+            f"{row.get('value')} against {row.get('target')}"
+        )
+
+    issues = [_issue(row) for row in [*failures, *worklist_failures]]
     issues.extend(f"[check:{eid}] required bound evidence was not produced" for eid in missing)
     scored_axes = [key for key, _description in axes]
     score = 5 if passed else 1
