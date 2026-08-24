@@ -390,15 +390,132 @@ the repository root or guess an alternative location.
 """
 
 
-def _script_options(shot: Shot, *, mode: str, script_rel: str) -> ClaudeAgentOptions:
+def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
+    """One tool that lets a script session SEE the scene its artifact rebuilds.
+
+    Run 20260824T103842Z-afec73's canonical repairs reasoned soundly from text findings
+    alone and rewrote a correct script into one whose camera faced away from the set at
+    every frame — the rebuilt consequences of an edit were invisible to the session
+    editing it. probe_candidate rebuilds the CURRENT artifact in a disposable worker and
+    returns the authoritative evidence rows, evaluated camera/role world transforms at
+    the judge frames, and a small solid render per frame."""
+    import anyio
+    from claude_agent_sdk import create_sdk_mcp_server, tool
+
+    calls = 0
+
+    def _probe() -> dict:
+        from vfx_harness.blender.session import BlenderSession
+        from vfx_harness.evidence.scene_checks import layer_evidence as scene_layer_evidence
+
+        probe_dir = Path(probe_ctx["scratch_dir"])
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        verify = BlenderSession(
+            blender=probe_ctx["blender"], artifacts_dir=probe_dir, cwd=None
+        ).start()
+        try:
+            verify.run(_RESET, journal=False)
+            verify.run(_preamble(shot), journal=False)
+            for prior in probe_ctx["prior_paths"]:
+                verify.run(Path(prior).read_text(encoding="utf-8"), journal=False)
+            verify.run((shot.folder / script_rel).read_text(encoding="utf-8"), journal=False)
+            role_patterns = list(probe_ctx.get("roles") or [])
+            frames_out = []
+            for frame, ref in probe_ctx["judges"]:
+                rows = scene_layer_evidence(
+                    shot.folder, str(probe_ctx["layer_id"]), frame=int(frame), session=verify
+                )
+                transforms = verify.run(
+                    "import bpy, json, math, fnmatch\n"
+                    f"sc=bpy.context.scene; sc.frame_set({int(frame)})\n"
+                    "dg=bpy.context.evaluated_depsgraph_get()\n"
+                    "out={'camera': None, 'roles': {}}\n"
+                    "cam=sc.camera\n"
+                    "if cam:\n"
+                    "    ev=cam.evaluated_get(dg)\n"
+                    "    out['camera']={'name':cam.name,\n"
+                    "        'world_location':[round(v,3) for v in ev.matrix_world.translation],\n"
+                    "        'world_rotation_deg':[round(math.degrees(a),1) for a in ev.matrix_world.to_euler()]}\n"
+                    f"patterns={json.dumps(role_patterns)}\n"
+                    "for o in sc.objects:\n"
+                    "    role=str(o.get('bvfx_role') or '')\n"
+                    "    if role and (not patterns or any(fnmatch.fnmatchcase(role,p) for p in patterns)):\n"
+                    "        bucket=out['roles'].setdefault(role,[])\n"
+                    "        if len(bucket)<8:\n"
+                    "            ev=o.evaluated_get(dg)\n"
+                    "            bucket.append({'name':o.name,\n"
+                    "                'world_location':[round(v,3) for v in ev.matrix_world.translation]})\n"
+                    "RESULT=out\n",
+                    journal=False,
+                ).get("result") or {}
+                try:
+                    render = verify.render(frame=int(frame), mode="solid", scale=0.33)
+                except Exception as exc:  # a render failure is a finding, not a crash
+                    render = f"render failed: {str(exc)[:120]}"
+                frames_out.append({
+                    "frame": int(frame),
+                    "ref": str(ref),
+                    "camera": transforms.get("camera"),
+                    "roles": transforms.get("roles"),
+                    "solid_render": render,
+                    "evidence": [
+                        {
+                            key: row.get(key)
+                            for key in ("id", "kind", "value", "target", "pass", "error")
+                            if row.get(key) is not None
+                        }
+                        for row in rows
+                    ],
+                })
+            return {"script": script_rel, "frames": frames_out}
+        finally:
+            verify.close()
+
+    @tool(
+        "probe_candidate",
+        f"Rebuild the CURRENT `{script_rel}` from an empty scene in a disposable worker "
+        "and return, per judge frame: the authoritative evidence rows the gate will "
+        "compute, the evaluated camera and role world transforms, and a solid-mode "
+        "render you can Read as an image. Call it BEFORE diagnosing and AFTER editing — "
+        "an edit whose rebuilt consequences you have not seen is a guess. Deterministic, "
+        "no model cost; capped at three calls.",
+        {"type": "object", "properties": {}},
+    )
+    async def probe_candidate(args):
+        nonlocal calls
+        calls += 1
+        if calls > 3:
+            return {"content": [{"type": "text", "text": "probe_candidate call cap reached (3)"}], "is_error": True}
+        try:
+            result = await anyio.to_thread.run_sync(_probe)
+        except Exception as exc:
+            log(f"! probe_candidate failed: {str(exc)[:120]}", 1)
+            return {"content": [{"type": "text", "text": f"probe failed: {exc}"}], "is_error": True}
+        return {"content": [{"type": "text", "text": json.dumps(result, indent=1)}]}
+
+    server = create_sdk_mcp_server(name="candidate", version="0.1.0", tools=[probe_candidate])
+    return server, ["mcp__candidate__probe_candidate"]
+
+
+def _script_options(
+    shot: Shot, *, mode: str, script_rel: str, probe_ctx: dict | None = None
+) -> ClaudeAgentOptions:
     finalize = mode == "finalize"
     phase = {"mode": mode}
+    mcp_servers = {}
+    probe_tools: list[str] = []
+    if probe_ctx is not None:
+        server, probe_tools = _build_probe_candidate_server(shot, script_rel, probe_ctx)
+        mcp_servers["candidate"] = server
     return ClaudeAgentOptions(
         model=script_model(),
         system_prompt=_SCRIPT_SYSTEM,
         cwd=str(shot.folder),
         hooks=builder_hooks(shot.folder, [shot.folder], script_rel=script_rel, phase=phase),
-        allowed_tools=(["Read", "Write", "Glob"] if finalize else ["Read", "Edit", "Grep"]),
+        mcp_servers=mcp_servers,
+        allowed_tools=(
+            [*(["Read", "Write", "Glob"] if finalize else ["Read", "Edit", "Grep"]), *probe_tools]
+        ),
         disallowed_tools=(
             ["Edit", "Bash", "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"]
             if finalize
@@ -413,7 +530,15 @@ def _script_options(shot: Shot, *, mode: str, script_rel: str) -> ClaudeAgentOpt
     )
 
 
-async def _run_script_agent(shot: Shot, *, mode: str, script_rel: str, prompt: str, verbose: bool) -> dict:
+async def _run_script_agent(
+    shot: Shot,
+    *,
+    mode: str,
+    script_rel: str,
+    prompt: str,
+    verbose: bool,
+    probe_ctx: dict | None = None,
+) -> dict:
     """Run one phase-pure file session and return its terminal SDK accounting.
 
     ``query()`` is deliberately not used here.  On ``error_max_turns`` its subprocess
@@ -421,7 +546,9 @@ async def _run_script_agent(shot: Shot, *, mode: str, script_rel: str, prompt: s
     transaction after Edit had already mutated the artifact.  A streaming client keeps
     the same narrow session alive across the checkpoint, just as the live builder does.
     """
-    async with ClaudeSDKClient(options=_script_options(shot, mode=mode, script_rel=script_rel)) as agent:
+    async with ClaudeSDKClient(
+        options=_script_options(shot, mode=mode, script_rel=script_rel, probe_ctx=probe_ctx)
+    ) as agent:
         await agent.query(prompt)
         info = await _drain_once(agent, verbose)
         if info["subtype"] == "error_max_turns":
@@ -3005,6 +3132,19 @@ async def build_unit(
         except Exception as e:  # never block finalize on a nicety
             log(f"journal unavailable ({str(e)[:60]})")
         phase["mode"] = "finalize"
+        probe_ctx = {
+            "blender": session.blender,
+            "scratch_dir": str(
+                run_artifacts.ensure(shot.folder, command="build").scratch / "candidate-probe"
+            ),
+            "prior_paths": [str(path) for path in prior_paths],
+            "judges": [
+                (int(frame), str(ref))
+                for frame, ref in (layer.judges if layer is not None else [(m.frame, m.ref)])
+            ],
+            "layer_id": str(getattr(layer, "id", m.id)),
+            "roles": list(active_unit.mutates.roles) if active_unit is not None else [],
+        }
         with costlog.scoped(role="finalizer", phase="finalize_script", model=script_model()):
             fin = await _run_script_agent(
                 shot,
@@ -3012,6 +3152,7 @@ async def build_unit(
                 script_rel=script_rel,
                 prompt=finalize_prompt(shot, m, priors=priors, script_rel=script_rel, journal_rel=journal_rel),
                 verbose=verbose,
+                probe_ctx=probe_ctx,
             )
         if fin["subtype"] in _TRUNCATED:
             # The script is probably half-written; verifying it would record a look
@@ -3107,6 +3248,7 @@ async def build_unit(
                             rejected_repairs=rejected_repairs,
                         ),
                         verbose=verbose,
+                        probe_ctx=probe_ctx,
                     )
             except Exception as exc:
                 # Edit is not atomic with the SDK session: the agent can mutate the file
