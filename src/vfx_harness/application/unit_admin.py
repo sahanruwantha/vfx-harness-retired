@@ -103,6 +103,20 @@ def _replan(args: argparse.Namespace) -> int:
             evidence.append(str(hard_approval))
     if not evidence:
         raise SystemExit("replan requires --evidence or --falsification")
+    # Under unit-first authority the base bundle carries no unit DAG — the layer's units
+    # live only in its materialized view and durable state, and the state's recorded
+    # plan hash (the materialized view, not the bundle file) is the truthful old
+    # identity. The base bundle stays in the audit record via trigger/evidence.
+    state = load_unit_state(shot.folder, layer_id)
+    state_unit_ids = set((state or {}).get("units") or {})
+    deferred_base = not old_layer.stages and bool(state_unit_ids)
+    if deferred_base:
+        old_plan_hash = str((state or {}).get("plan_hash") or old_plan_hash)
+    orphaned = sorted(
+        state_unit_ids - {unit.id for unit in old_layer.stages} - {unit.id for unit in new_layer.stages}
+        if deferred_base
+        else set()
+    )
     effects = replan_effects(old_layer.stages, new_layer.stages)
     if getattr(args, "preview", False):
         print(
@@ -111,7 +125,8 @@ def _replan(args: argparse.Namespace) -> int:
             f"removed={','.join(effects['removed']) or '-'}; "
             f"changed={','.join(effects['changed']) or '-'}; "
             f"invalidated={','.join(effects['invalidated']) or '-'}; "
-            f"preserved={','.join(effects['preserved']) or '-'}"
+            f"preserved={','.join(effects['preserved']) or '-'}; "
+            f"orphaned={','.join(orphaned) or '-'}"
         )
         return 0
     record = apply_replan(
@@ -126,6 +141,7 @@ def _replan(args: argparse.Namespace) -> int:
         evidence=evidence,
         falsification_id=falsification_id,
         hard_constraint_approval=hard_approval,
+        discard_accepted=bool(getattr(args, "discard_accepted", False)),
     )
     print(
         f"replanned layer {layer_id} from {base.content_hash[:16]} to "
@@ -133,7 +149,8 @@ def _replan(args: argparse.Namespace) -> int:
         f"added={','.join(record['added']) or '-'}; "
         f"removed={','.join(record['removed']) or '-'}; "
         f"changed={','.join(record['changed']) or '-'}; "
-        f"preserved={','.join(record['preserved']) or '-'}"
+        f"preserved={','.join(record['preserved']) or '-'}; "
+        f"orphaned={','.join(record.get('orphaned') or []) or '-'}"
     )
     return 0
 
@@ -216,6 +233,12 @@ def main() -> int:
     replan.add_argument(
         "--hard-constraint-approval",
         help="human approval evidence required when the finding names a hard constraint",
+    )
+    replan.add_argument(
+        "--discard-accepted",
+        action="store_true",
+        help="retire accepted units too; discarding proven work is a deliberate decision "
+        "and is recorded with the transaction",
     )
     replan.add_argument(
         "--preview",

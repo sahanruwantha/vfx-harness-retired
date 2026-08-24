@@ -7,6 +7,11 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Made `vfx units replan` able to express generation supersession under unit-first authority:
+  when both bundles carry empty layer DAGs, the old identity is durable state's own recorded
+  plan hash, state units absent from the new generation are superseded with audit ("orphaned"
+  in the replan record), and retiring an accepted orphan requires `--discard-accepted` or a
+  typed falsification record.
 - Taught bundle resolution the `plans/ownership_mapping.json` member the publisher already seals,
   and made publication refuse any member resolution cannot read — the first mapping-carrying
   bundle published as clean and then failed closed for every consumer (the

@@ -114,6 +114,71 @@ def test_public_replan_moves_state_between_explicit_and_current_bundles(
     assert "replanned layer 1" in capsys.readouterr().out
 
 
+def _generation_supersession_args(tmp_path, monkeypatch, *, discard_accepted=False, preview=False):
+    """Both generations are unit-first (bundle layer DAGs empty); the old units live
+    only in durable state, seeded by the superseded generation's materialization."""
+    old_root = tmp_path / "old-bundle"
+    new_root = tmp_path / "new-bundle"
+    old_root.mkdir()
+    new_root.mkdir()
+    (old_root / "layers.json").write_bytes(b"old deferred layers\n")
+    (new_root / "layers.json").write_bytes(b"new deferred layers\n")
+    old_units = (_unit("iris_bootstrap"), _unit("iris_detail", depends_on=["iris_bootstrap"]))
+    initialize(tmp_path, "1", old_units, plan_hash="materialized-view-hash")
+    transition(tmp_path, "1", "iris_bootstrap", "planning", reason="t")
+    transition(tmp_path, "1", "iris_bootstrap", "building", reason="t")
+    transition(tmp_path, "1", "iris_bootstrap", "frozen", reason="t")
+    transition(tmp_path, "1", "iris_bootstrap", "evaluating", reason="t")
+    transition(tmp_path, "1", "iris_bootstrap", "passed", reason="t")
+
+    monkeypatch.setattr(unit_admin, "load_shot", lambda folder: SimpleNamespace(folder=tmp_path))
+    monkeypatch.setattr(
+        unit_admin, "resolve_current", lambda folder: SimpleNamespace(root=new_root, content_hash="b" * 64)
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "resolve_published_bundle",
+        lambda folder, **kwargs: SimpleNamespace(root=old_root, content_hash="a" * 64),
+    )
+    monkeypatch.setattr(unit_admin, "load_layers", lambda shot: {"1": SimpleNamespace(stages=())})
+    monkeypatch.setattr(unit_admin, "load_layers_from_path", lambda path: {"1": SimpleNamespace(stages=())})
+    return SimpleNamespace(
+        folder=str(tmp_path),
+        layer="1",
+        base_run="old-run",
+        base_bundle="a" * 64,
+        owner="operator",
+        trigger="generation superseded; clean-slate rebuild",
+        evidence=["gate:new-clean"],
+        discard_accepted=discard_accepted,
+        preview=preview,
+    )
+
+
+def test_generation_supersession_retires_state_units_with_audit(tmp_path, monkeypatch, capsys) -> None:
+    """Republication under unit-first authority: both bundles carry empty layer DAGs, so
+    the bundle-level diff is blind to the materialized units in durable state. They must
+    be superseded WITH audit — and retiring the accepted one is an explicit decision."""
+    args = _generation_supersession_args(tmp_path, monkeypatch, preview=True)
+    assert unit_admin._replan(args) == 0
+    assert "orphaned=iris_bootstrap,iris_detail" in capsys.readouterr().out
+
+    args.preview = False
+    with pytest.raises(ValueError, match="discarding proven work"):
+        unit_admin._replan(args)
+
+    args.discard_accepted = True
+    assert unit_admin._replan(args) == 0
+    state = load(tmp_path, "1")
+    assert state["units"] == {}
+    assert state["plan_hash"] == unit_admin.hashlib.sha256(b"new deferred layers\n").hexdigest()
+    archived = {row["id"] for row in state["superseded"]}
+    assert {"iris_bootstrap", "iris_detail"} <= archived
+    record = state["replans"][-1]
+    assert record["orphaned"] == ["iris_bootstrap", "iris_detail"]
+    assert record["discard_accepted"] is True
+
+
 def test_public_retry_preserves_failed_history_and_reopens_unit(tmp_path, monkeypatch, capsys) -> None:
     units = (_unit("blockout"),)
     initialize(tmp_path, "1", units, plan_hash="plan")

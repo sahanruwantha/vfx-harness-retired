@@ -568,6 +568,7 @@ def apply_replan(
     evidence: list[str],
     falsification_id: str | None = None,
     hard_constraint_approval: str | None = None,
+    discard_accepted: bool = False,
 ) -> dict:
     """Atomically publish state effects and an audit record for a validated DAG amendment."""
     if not owner.strip() or not trigger.strip() or not evidence:
@@ -577,9 +578,25 @@ def apply_replan(
     value = load(folder, layer_id)
     if not value:
         raise ValueError("work-unit state is not initialized")
-    validate_current(value, layer_id, old_units)
-    if str(value.get("layer")) != str(layer_id) or value.get("plan_hash") != old_plan_hash:
-        raise ValueError("replan base layer/plan hash does not match active state")
+    state_unit_ids = set(value.get("units") or {})
+    # Under unit-first authority a generation's bundle carries no unit DAG: the layer's
+    # units exist only in its materialized view and this durable state. Superseding such
+    # a generation therefore arrives with an EMPTY base DAG while state holds the real
+    # units; the state itself is the only truthful old identity (layer + its recorded
+    # plan hash), and every state unit absent from the new DAG must be retired WITH an
+    # audit trail — the bundle-level diff alone would have dropped them silently.
+    deferred_base = not old_units and bool(state_unit_ids)
+    if deferred_base:
+        if str(value.get("layer")) != str(layer_id):
+            raise ValueError(
+                f"work-unit state belongs to layer {value.get('layer')}, not {layer_id}"
+            )
+        if value.get("plan_hash") != old_plan_hash:
+            raise ValueError("replan base layer/plan hash does not match active state")
+    else:
+        validate_current(value, layer_id, old_units)
+        if str(value.get("layer")) != str(layer_id) or value.get("plan_hash") != old_plan_hash:
+            raise ValueError("replan base layer/plan hash does not match active state")
 
     old = {unit.id: unit for unit in old_units}
     effects = replan_effects(old_units, new_units)
@@ -588,11 +605,26 @@ def apply_replan(
     changed = set(effects["changed"])
     invalidated = set(effects["invalidated"])
     preserved = set(effects["preserved"])
+    orphaned = state_unit_ids - set(old) - {unit.id for unit in new_units} if deferred_base else set()
     now = _now()
+
+    retiring = sorted(removed | (invalidated & set(old)) | orphaned)
+    # A published DAG amendment is itself the recorded authority for the units it
+    # removes or invalidates — but ORPHANS are invisible to the amendment diff (they
+    # exist only in materialization-era state), so retiring an accepted orphan needs
+    # its own explicit decision, exactly like --discard-accepted at rematerialization.
+    accepted_orphans = sorted(
+        uid for uid in orphaned if (value.get("units", {}).get(uid) or {}).get("status") == "passed"
+    )
+    if accepted_orphans and not discard_accepted and falsification_id is None:
+        raise ValueError(
+            f"replan would retire accepted unit(s) {', '.join(accepted_orphans)}; "
+            "discarding proven work requires --discard-accepted or a typed falsification record"
+        )
 
     next_slots: dict[str, dict] = {}
     superseded = list(value.get("superseded") or [])
-    for uid in sorted(removed | (invalidated & set(old))):
+    for uid in retiring:
         prior = dict(value["units"].get(uid) or {})
         prior.update(
             {
@@ -637,6 +669,10 @@ def apply_replan(
         "invalidated": sorted(invalidated),
         "preserved": sorted(preserved),
     }
+    if orphaned:
+        record["orphaned"] = sorted(orphaned)
+    if discard_accepted:
+        record["discard_accepted"] = True
     if falsification_id is not None:
         record["falsification_id"] = str(falsification_id)
     if hard_constraint_approval is not None:
