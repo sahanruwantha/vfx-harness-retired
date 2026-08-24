@@ -635,7 +635,7 @@ async def _rematerialize_layer(
         resolve_current,
         selected_artifact_path,
     )
-    from vfx_harness.orchestration.unit_state import apply_replan
+    from vfx_harness.orchestration.unit_state import apply_replan, supersede_layer_units
     from vfx_harness.orchestration.unit_state import load as load_unit_state
 
     owner, trigger, evidence = authority
@@ -676,17 +676,33 @@ async def _rematerialize_layer(
     )
     refreshed = load_layers(shot)[layer_id]
     if state:
-        apply_replan(
-            shot.folder,
-            layer_id,
-            old_units,
-            refreshed.stages,
-            old_plan_hash=old_plan_hash,
-            new_plan_hash=_plan_hash(),
-            owner=owner,
-            trigger=trigger,
-            evidence=evidence,
-        )
+        try:
+            apply_replan(
+                shot.folder,
+                layer_id,
+                old_units,
+                refreshed.stages,
+                old_plan_hash=old_plan_hash,
+                new_plan_hash=_plan_hash(),
+                owner=owner,
+                trigger=trigger,
+                evidence=evidence,
+            )
+        except ValueError as exc:
+            # The replan base can be unreconstructable — a prior partial transaction
+            # left state naming a DAG that no longer exists, or its digests predate a
+            # WorkUnit schema change. Nothing is accepted (checked above), so retire the
+            # orphaned units under this transaction's authority instead of leaving state
+            # to be hand-edited.
+            log(f"replan base unusable ({str(exc)[:90]}); superseding layer units", 1)
+            supersede_layer_units(
+                shot.folder,
+                layer_id,
+                owner=owner,
+                trigger=trigger,
+                evidence=evidence,
+                plan_hash=_plan_hash(),
+            )
         log(
             f"work-unit state superseded → {', '.join(u.id for u in refreshed.stages)}",
             1,

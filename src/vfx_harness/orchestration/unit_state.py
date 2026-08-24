@@ -17,6 +17,9 @@ from vfx_harness.domain.work_units import UNIT_STATES, WorkUnit, validate_unit_d
 from vfx_harness.observability.provenance import atomic_write
 
 SCHEMA = 1
+# Bump whenever WorkUnit gains or loses a field: `unit_digest` hashes the whole record,
+# so a schema change makes every stored digest incomparable rather than wrong.
+DIGEST_SCHEMA = 2
 STATE_DIR = "state/work-units"
 
 _TRANSITIONS = {
@@ -81,6 +84,13 @@ def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) ->
     actual = {uid: row.get("unit_hash") for uid, row in value["units"].items()}
     if set(actual) != set(expected):
         raise ValueError("work-unit state IDs do not match the active layer DAG; apply a transactional replan")
+    if int(value.get("digest_schema", 1)) != DIGEST_SCHEMA:
+        # `unit_digest` hashes the whole WorkUnit, so ADDING a field changes every
+        # stored digest and would brick durable state on any schema growth (adding
+        # `look_capabilities` did exactly that). Digests from another schema are not
+        # comparable, so identity is verified here and the replan closure — which
+        # recomputes both sides under the current schema — decides what is preserved.
+        return
     changed = sorted(uid for uid in expected if actual.get(uid) != expected[uid])
     if changed:
         raise ValueError(
@@ -107,6 +117,7 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
         now = _now()
         value = {
             **current,
+            "digest_schema": DIGEST_SCHEMA,
             "plan_hash": plan_hash,
             "revision": int(current.get("revision", 0)) + 1,
             "units": {
@@ -130,6 +141,7 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
     now = _now()
     value = {
         "schema": SCHEMA,
+        "digest_schema": DIGEST_SCHEMA,
         "layer": str(layer_id),
         "plan_hash": plan_hash,
         "revision": 1,
@@ -144,6 +156,66 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
         },
         "superseded": [],
         "replans": [],
+        "updated": now,
+    }
+    _write(_path(folder, layer_id), value)
+    return value
+
+
+def supersede_layer_units(
+    folder: str | Path,
+    layer_id: str,
+    *,
+    owner: str,
+    trigger: str,
+    evidence: list[str],
+    plan_hash: str,
+) -> dict:
+    """Retire every unit of a layer whose authority was replaced, under an audited
+    transaction. Refuses when any unit has been accepted.
+
+    Re-materialization publishes a new view and then moves state; if the move cannot
+    validate — the old DAG is gone, or its digests predate a WorkUnit schema change —
+    the state is orphaned and no `apply_replan` base can be reconstructed. This retires
+    it explicitly, with the operator's owner/trigger/evidence recorded, rather than
+    leaving it to be hand-edited or silently reseeded.
+    """
+    if not owner.strip() or not trigger.strip() or not evidence:
+        raise ValueError("superseding layer units requires owner, trigger, and evidence")
+    value = load(folder, layer_id)
+    if not value:
+        return {}
+    accepted = sorted(
+        uid for uid, row in value["units"].items() if row.get("status") == "passed"
+    )
+    if accepted:
+        raise ValueError(
+            f"layer {layer_id} has accepted unit(s) {', '.join(accepted)}; "
+            "move that state with a replan transaction instead"
+        )
+    now = _now()
+    superseded = list(value.get("superseded") or [])
+    for uid in sorted(value["units"]):
+        prior = dict(value["units"][uid])
+        prior.update(
+            {
+                "id": uid,
+                "status": "superseded",
+                "superseded_at": now,
+                "superseded_by_plan": plan_hash,
+                "owner": owner,
+                "trigger": trigger,
+                "evidence": list(evidence),
+            }
+        )
+        superseded.append(prior)
+    value = {
+        **value,
+        "digest_schema": DIGEST_SCHEMA,
+        "units": {},
+        "superseded": superseded,
+        "plan_hash": plan_hash,
+        "revision": int(value.get("revision", 0)) + 1,
         "updated": now,
     }
     _write(_path(folder, layer_id), value)
