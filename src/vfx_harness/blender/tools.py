@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import fnmatch
 import io
 import json
 import math
@@ -387,6 +388,26 @@ _LOOK_METRICS = {
 }
 
 
+_ROLE_MANIFEST = (
+    "RESULT = {o.name: str(o.get('bvfx_role') or '') for o in bpy.context.scene.objects}"
+)
+
+
+def _role_in_scope(role: str, allowed: tuple[str, ...]) -> bool:
+    """A namespace owns its dot-delimited descendants, never a similar sibling.
+
+    Mirrors the canonical replay rule in `builder._scope_added_object_errors` so live
+    feedback and the deterministic gate cannot disagree about what is in scope."""
+    if not role:
+        return False
+    for pattern in allowed:
+        if fnmatch.fnmatchcase(role, pattern):
+            return True
+        if not any(token in pattern for token in "*?[") and role.startswith(pattern + "."):
+            return True
+    return False
+
+
 def _layer_feedback_policy(shot_dir: Path | None, layer_id: str | None) -> dict:
     """Derive comparison advice from the axes this layer can actually change."""
     from vfx_harness.domain.work_units import read_document
@@ -625,6 +646,7 @@ def build_blender_tools(
     layer_id: str | None = None,
     comparison_state: dict | None = None,
     feedback_groups: list[str] | None = None,
+    mutation_roles: tuple[str, ...] | None = None,
 ):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
     `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…).
@@ -695,6 +717,35 @@ def build_blender_tools(
                 f"\n⚠ +{oa} objects — collapse to ONE instanced mesh "
                 f"(bvfx_scatter_emissive) instead of per-object creation."
             )
+        # Scope is checked at canonical replay, which is AFTER the build spends its
+        # whole budget: run 20260823T154920Z created camera, housing, tunnel and light
+        # objects outside its declared roles and learned nothing until the end. Surface
+        # the violation on the call that caused it, while the fix is one edit away.
+        if mutation_roles and isinstance(oa, int) and oa > 0:
+            try:
+                manifest = (await _call("run", code=_ROLE_MANIFEST, journal=False)).get(
+                    "result"
+                ) or {}
+                known = comparison_state.setdefault("_scope_seen", set())
+                offenders = []
+                for name, role in sorted(manifest.items()):
+                    if name in known:
+                        continue
+                    known.add(name)
+                    if not _role_in_scope(str(role), mutation_roles):
+                        offenders.append(
+                            f"{name!r} role={str(role) or '<none>'}"
+                        )
+                if offenders:
+                    warn += (
+                        "\n⚠ SCOPE VIOLATION — this unit may only create objects in "
+                        + ", ".join(mutation_roles)
+                        + ": " + "; ".join(offenders[:6])
+                        + "\nCanonical replay rejects these deterministically. Delete "
+                        "them or tag them with a role inside your declared scope."
+                    )
+            except BlenderError:
+                pass  # never fail a build call on the scope probe
         # Scene contracts are the live execution authority. Evaluate them immediately
         # after every mutation so convergence is a state transition, not a suggestion the
         # model may overlook for another 80 turns. Pixel checks still happen after the

@@ -86,3 +86,53 @@ def test_work_unit_parses_and_defaults_capabilities() -> None:
     assert capability_feedback_groups(parsed.look_capabilities) == frozenset(
         {"detail", "color"}
     )
+
+
+def test_materialization_requires_an_explicit_capability_declaration(
+    tmp_path, monkeypatch
+) -> None:
+    """Silence is not a declaration: an omitted key is indistinguishable from
+    "owns no appearance", which is how run 20260823T154920Z left an appearance-owning
+    unit without image feedback. An explicit [] is the legal way to own none."""
+    import json
+
+    from tests.unit.test_plan_records import _add_deferred_layer, _candidate, _jit_payload, _write
+    from vfx_harness.observability import run_artifacts
+    from vfx_harness.orchestration.jit_materialization import validate_materialization
+    from vfx_harness.orchestration.plan_authority import publish_current
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "capability-declaration")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    for stage in data["layer"]["stages"]:
+        stage.pop("look_capabilities", None)
+    _write(payload, data)
+
+    with pytest.raises(ValueError, match="must declare look_capabilities"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+def test_live_scope_rule_matches_the_canonical_replay_rule() -> None:
+    """Live feedback and the deterministic gate must not disagree about scope."""
+    from vfx_harness.agents.builder import _scope_added_object_errors
+    from vfx_harness.blender.tools import _role_in_scope
+
+    allowed = ("iris.blades", "iris_lights.*")
+    for role, expected in (
+        ("iris.blades.lead", True),      # namespace owns dot-descendants
+        ("iris.blades", True),
+        ("iris_lights.rim", True),
+        ("iris.housing", False),         # sibling namespace is NOT owned
+        ("camera", False),
+        ("", False),                     # untagged helper objects
+    ):
+        assert _role_in_scope(role, allowed) is expected, role
+        errors = _scope_added_object_errors({}, {"obj": role}, allowed)
+        assert bool(errors) is (not expected), role

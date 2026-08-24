@@ -2431,6 +2431,7 @@ def _try_revalidate(
     layer,
     ledger: Ledger,
     t_layer: float,
+    active_unit=None,
 ) -> Ledger | None:
     """Replay an unchanged sealed layer without launching builder or critic models."""
     if layer is None:
@@ -2454,7 +2455,10 @@ def _try_revalidate(
         _run_prior_paths(session, prior_paths)
         before_objects = _scene_object_manifest(session)
         session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
-        unit = layer.stages[0] if len(layer.stages) == 1 else None
+        # The unit whose script just replayed owns the scope being checked. Falling back
+        # to "the only stage" silently SKIPPED scope entirely for every multi-unit
+        # layer — a fast path that cannot verify scope must not be taken at all.
+        unit = active_unit or (layer.stages[0] if len(layer.stages) == 1 else None)
         if unit is not None and unit.mutates.mode == "scoped":
             scope_errors = _scope_added_object_errors(
                 before_objects, _scene_object_manifest(session), unit.mutates.roles
@@ -2462,6 +2466,15 @@ def _try_revalidate(
             if scope_errors:
                 log(f"REVALIDATE miss: scoped artifact violation ({'; '.join(scope_errors[:3])})", 1)
                 return None
+        elif unit is None and any(
+            stage.mutates.mode == "scoped" for stage in layer.stages
+        ):
+            log(
+                "REVALIDATE miss: layer has scoped units but no active unit to check "
+                "their artifact scope against",
+                1,
+            )
+            return None
     except Exception as exc:
         log(f"REVALIDATE miss: deterministic replay failed ({str(exc)[:120]})", 1)
         return None
@@ -2587,7 +2600,8 @@ async def build_unit(
     t_layer = time.monotonic()
 
     revalidated = _try_revalidate(
-        shot, m, script_rel, prior_paths, session, layer=layer, ledger=ledger, t_layer=t_layer
+        shot, m, script_rel, prior_paths, session, layer=layer, ledger=ledger,
+        t_layer=t_layer, active_unit=active_unit,
     )
     if revalidated is not None:
         return revalidated
@@ -2637,6 +2651,11 @@ async def build_unit(
         layer_id=getattr(layer, "id", m.id),
         comparison_state=comparison_state,
         feedback_groups=sorted(_feedback_groups) if _declared_capabilities else None,
+        mutation_roles=(
+            active_unit.mutates.roles
+            if active_unit is not None and active_unit.mutates.mode == "scoped"
+            else None
+        ),
     )
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names))

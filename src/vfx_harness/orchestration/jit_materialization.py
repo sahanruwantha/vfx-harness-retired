@@ -176,6 +176,25 @@ def validate_materialization(
         temp_path.unlink(missing_ok=True)
     layer = parsed[layer_id]
 
+    # Look scope is typed authority, and silence is not a declaration: a unit that omits
+    # the key is indistinguishable from one that declares "no appearance", which is how
+    # run 20260823T154920Z left an appearance-owning unit without image feedback. An
+    # explicit empty list is the legal way to own no appearance.
+    undeclared = sorted(
+        str(stage.get("id") or "<unnamed>")
+        for stage in (layer_row.get("stages") or [])
+        if isinstance(stage, dict) and "look_capabilities" not in stage
+    )
+    if undeclared:
+        from vfx_harness.domain.work_units import LOOK_CAPABILITIES
+
+        raise ValueError(
+            "materialized unit(s) must declare look_capabilities: "
+            + ", ".join(undeclared)
+            + f" — a subset of {', '.join(sorted(LOOK_CAPABILITIES))}, or [] to own no "
+            "appearance"
+        )
+
     jit = global_row.get("jit") or {}
     reserved = tuple(map(str, jit.get("reserved_roles") or []))
     escaped = sorted({

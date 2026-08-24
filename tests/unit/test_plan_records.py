@@ -126,6 +126,16 @@ def _add_deferred_layer(root: Path) -> None:
     })
 
 
+def _declaring(layer: dict) -> dict:
+    """Materialized stages must declare look_capabilities; [] owns no appearance."""
+    row = dict(layer)
+    row["stages"] = [
+        {**stage, "look_capabilities": stage.get("look_capabilities", [])}
+        for stage in row.get("stages") or []
+    ]
+    return row
+
+
 def _jit_payload(root: Path, bundle_hash: str) -> Path:
     layers = json.loads((root / "layers.json").read_text(encoding="utf-8"))["layers"]
     layer = dict(layers[1])
@@ -149,6 +159,7 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
                            "evidence": [{"kind": "scene_contract", "id": "polish-lock"}],
                        }]},
         "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": [],
     }]
     path = root / "jit.json"
     _write(path, {
@@ -231,7 +242,7 @@ def test_deferred_root_materializes_without_fabricated_outcome(
     _write(payload, {
         "schema": "vfx-harness.jit-layer-materialization/v1",
         "bundle_hash": bundle.content_hash,
-        "layer": {**ready_layer, "execution": "ready"},
+        "layer": _declaring({**ready_layer, "execution": "ready"}),
         "scene_contracts": [{
             "id": "final-lock", "kind": "frame_delta", "owner_layer": "1",
             "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
@@ -1179,7 +1190,7 @@ def test_root_materialization_validates_with_deferred_dependents(
     _write(payload, {
         "schema": "vfx-harness.jit-layer-materialization/v1",
         "bundle_hash": bundle.content_hash,
-        "layer": {**ready_layer, "execution": "ready"},
+        "layer": _declaring({**ready_layer, "execution": "ready"}),
         "scene_contracts": [{
             "id": "final-lock", "kind": "frame_delta", "owner_layer": "1",
             "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
