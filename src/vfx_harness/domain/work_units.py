@@ -481,12 +481,16 @@ class EvaluationPolicy:
         return cls(primary, judges, temporal, claims, composition)
 
 
-# Scene capabilities a unit makes available to its dependents. Declared, never spelled:
+# Scene capabilities a unit makes available to its dependents, and to the rules that
+# judge it. `geometry` means "objects under my roles carry polygons", which is what a
+# mesh metric needs and cannot otherwise learn: smooth_fraction over a camera rig reads
+# None forever, and run 20260824T060927Z burned two repair rounds on that.
+# Declared, never spelled:
 # the composition-bootstrap rule detected camera ownership by substring-matching
 # "camera" in mutated role names, so `cam_rig` — the harness's own default camera-rig
 # role, and the role the approved camera decision keys against — was invisible, and a
 # dependent could not be projected through a camera that demonstrably existed.
-UNIT_PROVIDES = {"camera"}
+UNIT_PROVIDES = {"camera", "geometry"}
 
 
 def parse_provides(value: Any, where: str) -> tuple[str, ...]:

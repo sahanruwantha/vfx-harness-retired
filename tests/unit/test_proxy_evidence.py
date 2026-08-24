@@ -106,3 +106,55 @@ def test_appearance_ownership_demands_candidate_bound_image_evidence() -> None:
     assert image_evidence_required_for(set(), ()) is False
     assert image_evidence_required_for({"img-1"}, ()) is True
     assert capability_feedback_groups(("material",)) >= {"detail", "color"}
+
+
+def _mesh_case(tmp_path, *, contract_roles, geometry_provider: bool):
+    """Layer with a camera unit and an iris-style unit; the mesh contract targets
+    `contract_roles`. Mirrors run 20260824T060927Z, where smooth_fraction was bound to
+    a camera rig that will never have polygons."""
+    def mutate(data: dict) -> None:
+        stage = data["layer"]["stages"][0]
+        stage["provides"] = ["geometry"] if geometry_provider else ["camera"]
+        contract = data["scene_contracts"][0]
+        contract["kind"] = "smooth_fraction"
+        contract["op"] = "max"
+        contract["hi"] = 0.02
+        contract["roles"] = contract_roles
+        for key in ("frames", "region", "lo", "value"):
+            contract.pop(key, None)
+        data["layer"]["stages"][0]["evaluation"]["claims"][0]["asserts"] = "scene"
+
+    return mutate
+
+
+def test_mesh_metric_on_a_camera_rig_is_rejected(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    with pytest.raises(ValueError, match="can only read None"):
+        _materialize(tmp_path, _mesh_case(
+            tmp_path, contract_roles=["polish.comp"], geometry_provider=False
+        ))
+
+
+def test_mesh_metric_on_declared_geometry_is_accepted(tmp_path, monkeypatch) -> None:
+    """The guard must discriminate, not reject every mesh metric."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _materialize(tmp_path, _mesh_case(
+        tmp_path, contract_roles=["polish.comp"], geometry_provider=True
+    ))
+
+
+def test_legacy_units_declaring_nothing_are_not_judged(tmp_path, monkeypatch) -> None:
+    """A unit that never had the chance to declare must not fail on the declaration."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+
+    def mutate(data: dict) -> None:
+        contract = data["scene_contracts"][0]
+        contract["kind"] = "smooth_fraction"
+        contract["op"] = "max"
+        contract["hi"] = 0.02
+        contract["roles"] = ["polish.comp"]
+        for key in ("frames", "region", "lo", "value"):
+            contract.pop(key, None)
+        data["layer"]["stages"][0]["evaluation"]["claims"][0]["asserts"] = "scene"
+
+    _materialize(tmp_path, mutate)  # no provides anywhere -> unjudged

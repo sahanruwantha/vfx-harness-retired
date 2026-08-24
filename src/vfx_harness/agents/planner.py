@@ -152,7 +152,7 @@ _MATERIALIZATION_EXAMPLE = """{
    "protects": {"selector": "all_active_upstream_interfaces",
                 "resolve_to_explicit_ids_at": "freeze"},
    "look_capabilities": ["<the appearance families THIS unit answers for>"],
-   "provides": ["<scene capabilities dependents may rely on, e.g. camera>"],
+   "provides": ["<capabilities this unit gives the scene: camera, geometry>"],
    "evaluation": {"primary_judge": 1, "judge": [{"frame": 1, "ref": "refs/<a judge ref>.png"}],
                   "temporal_evidence": "static",
                   "claims": [{
@@ -260,6 +260,11 @@ contracts, reference fingerprints, and techniques now from authored references p
 upstream outcomes. Copy every structured decision in `state/plan-resolutions.jsonl` whose
 `values.contract` roles fall inside this layer's reserved namespaces verbatim into
 `scene_contracts` — exact contract fields plus `decision_id` — bound to a required claim.
+Each stage declares `provides`: the scene capabilities it makes available. Declare
+`camera` if the unit creates the camera a dependent's framing evidence projects through,
+and `geometry` if objects under its roles carry polygons — mesh metrics (smooth_fraction,
+mesh_vertex_count, radial_inward_fraction) may only target roles a geometry provider
+owns, because on an empty or a camera they read None forever.
 Every required claim declares `asserts`: the evidence domain its proposition lives in.
 A metric may only close a claim it can support — a count proves existence, not sequence;
 geometry proves position, not appearance. Bind a temporal metric for behaviour over

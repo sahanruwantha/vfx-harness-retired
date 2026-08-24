@@ -250,6 +250,37 @@ def validate_materialization(
             "materialized contracts lack required producing claims: " + ", ".join(missing_claims)
         )
 
+    # A mesh metric needs polygons under the roles it selects. Units declare `geometry`
+    # when their roles carry meshes; a mesh metric aimed anywhere else reads None
+    # forever, which is a binding defect no build can repair. Only enforced once some
+    # unit in the layer declares anything, so legacy units are not judged on a
+    # declaration they never had the chance to make.
+    MESH_KINDS = {"smooth_fraction", "mesh_vertex_count", "radial_inward_fraction"}
+    declares_anything = any(unit.provides for unit in layer.stages)
+    geometry_roles = {
+        role
+        for unit in layer.stages
+        if "geometry" in unit.provides
+        for role in unit.mutates.roles
+    }
+    if declares_anything:
+        for row in scene_rows:
+            if str(row.get("kind")) not in MESH_KINDS:
+                continue
+            roles = [str(r) for r in (row.get("roles") or [])]
+            if roles and not any(
+                any(fnmatch.fnmatchcase(role, owned) or fnmatch.fnmatchcase(owned, role)
+                    for owned in geometry_roles)
+                for role in roles
+            ):
+                raise ValueError(
+                    f"contract {row.get('id')} uses mesh metric {row.get('kind')!r} on "
+                    f"roles {roles}, but no unit declaring provides:[\"geometry\"] owns "
+                    f"them (geometry roles: {sorted(geometry_roles) or 'none declared'}); "
+                    "it can only read None. Bind a metric that applies to these roles, "
+                    "or declare the unit that gives them polygons."
+                )
+
     # A metric may only close a claim it can actually support. Counting rim modules
     # proves they exist, not that they chase; radial closure proves an aperture is shut,
     # not that it reads as machined metal. Run 20260823T154920Z shipped both.
