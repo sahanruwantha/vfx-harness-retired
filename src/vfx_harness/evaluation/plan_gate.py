@@ -1395,9 +1395,21 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     if binding.get("kind") != "scene_contract":
                         continue
                     contract = scene_by_id.get(evidence_id) or {}
+                    # Two-sided measurement kinds observe the OTHER side of a relation:
+                    # clearance obstacles and parallax far-groups are inherently other
+                    # layers' roles (a persistent clearance contract exists precisely to
+                    # measure against geometry its owner will never mutate). The primary
+                    # selectors remain strictly inside mutation authority — repair
+                    # authority closes there; the compare side is a measurement subject.
+                    two_sided = str(contract.get("kind") or "") in {
+                        "path_clearance_min",
+                        "parallax_displacement_profile",
+                        "onset_order",
+                    }
+                    selector_keys = ("roles",) if two_sided else ("roles", "compare_roles")
                     selected_roles = {
                         str(value)
-                        for key in ("roles", "compare_roles")
+                        for key in selector_keys
                         for value in contract.get(key) or []
                     }
                     undeclared_roles = sorted(

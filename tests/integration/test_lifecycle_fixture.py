@@ -138,6 +138,15 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
                            "authority": "executable_required", "repair_owner": "lock",
                            "asserts": "temporal",
                            "evidence": [{"kind": "scene_contract", "id": "hold-schedule"}],
+                       }, {
+                           "id": "clear-claim",
+                           "proposition": "comp keeps clearance from future set geometry",
+                           "axis": "final_lock", "property": "path_clearance_min",
+                           "subject_roles": ["comp"], "subject_controls": ["hold"],
+                           "moments": [239, 240], "kind": "atomic", "required": True,
+                           "authority": "executable_required", "repair_owner": "lock",
+                           "asserts": "temporal",
+                           "evidence": [{"kind": "scene_contract", "id": "comp-clearance"}],
                        }]},
         "completion": "all_required_claims_and_protected_contracts_pass",
         "look_capabilities": [],
@@ -158,6 +167,16 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
                 "id": "hold-schedule", "decision_id": "A-hold", "owner_layer": "1",
                 "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
                 "axis": "final_lock",
+            },
+            {
+                # compare_roles name geometry OTHER generations' layers will own — the
+                # measurement side of a two-sided kind is exempt from mutation-authority
+                # closure (run 20260824T232758Z-c12e64: the first honest clearance
+                # contract was blocked for selecting the namespaces it must observe)
+                "id": "comp-clearance", "kind": "path_clearance_min", "owner_layer": "1",
+                "fault_owner": "1", "activates_at": "1", "lifecycle": "persistent",
+                "axis": "final_lock", "roles": ["comp"], "compare_roles": ["future.*"],
+                "frames": [239, 240], "op": "min", "lo": 0.5,
             },
         ],
         "image_contracts": [],
@@ -191,6 +210,7 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     families = {finding.check for finding in result.blocking}
     assert "global-preproduction" not in families, plan_gate.report(result)
     assert "decision-adoption" not in families, plan_gate.report(result)
+    assert "role-selector-closure" not in families, plan_gate.report(result)
     assert any(  # the unit plan does not exist yet — the gate must still demand it
         finding.check == "hierarchy" and "no just-in-time plan" in finding.what
         for finding in result.blocking
