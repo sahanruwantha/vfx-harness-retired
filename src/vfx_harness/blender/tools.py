@@ -62,23 +62,34 @@ def _merge_worklist_items(state: dict, new_items: list[str]) -> dict:
     return state
 
 
-def _scene_completion_state(evidence: list[dict], layer_id: str) -> dict:
+def _scene_completion_state(
+    evidence: list[dict], layer_id: str, required_ids: set[str] | None = None
+) -> dict:
     """Separate healthy inherited inputs from authority to seal the current layer.
 
     Persistent upstream interfaces must pass, but they cannot prove that a downstream
     department has performed its own work.  Only an active contract owned by the current
     layer may close the live mutation gate.  Layers with image-only/subjective completion
     keep mutation open until they voluntarily hand off to the critic.
+
+    `required_ids` are the contracts bound to the active unit's REQUIRED claims. A
+    contract that is never evaluated — selector matched nothing, probe errored, frame
+    group never ran — is neither a pass nor a failure, so presence-based sealing let a
+    unit close while a required claim had no evidence at all. Completeness is therefore
+    checked explicitly: absent required evidence blocks sealing exactly like a failure.
     """
     authoritative = [row for row in evidence if row.get("authoritative")]
     current = [row for row in authoritative if str(row.get("owner_layer") or "") == str(layer_id)]
     failures = [row for row in authoritative if not row.get("pass")]
+    evaluated = {str(row.get("id")) for row in evidence}
+    missing = sorted(set(required_ids) - evaluated) if required_ids else []
     return {
         "authoritative": authoritative,
         "current": current,
         "failures": failures,
-        "interfaces_ready": bool(authoritative) and not failures,
-        "may_seal": bool(current) and not failures,
+        "missing": missing,
+        "interfaces_ready": bool(authoritative) and not failures and not missing,
+        "may_seal": bool(current) and not failures and not missing,
     }
 
 
@@ -784,7 +795,7 @@ def build_blender_tools(
                         evidence = [row for row in evidence if str(row.get("id")) in active_ids]
                     evidence = list({str(row.get("id")): row for row in evidence}.values())
                     authoritative = [row for row in evidence if row.get("authoritative")]
-                state = _scene_completion_state(evidence, str(layer_id))
+                state = _scene_completion_state(evidence, str(layer_id), active_ids)
                 authoritative = state["authoritative"]
                 passed = [row for row in authoritative if row.get("pass")]
                 failed = state["failures"]
@@ -793,6 +804,19 @@ def build_blender_tools(
 
                     bump("automatic_scene_contract_probe")
                     contract_note = f"\nAUTHORITATIVE SCENE CONTRACTS: {len(passed)}/{len(authoritative)} pass"
+                    if state["missing"]:
+                        # Unevaluated required evidence used to read as silence. Name it:
+                        # a selector that matches nothing looks identical to a claim
+                        # nobody wrote, and both block sealing.
+                        comparison_state["scene_contracts_passed"] = False
+                        comparison_state["scene_interfaces_ready"] = False
+                        contract_note += (
+                            " · REQUIRED EVIDENCE NOT PRODUCED: "
+                            + ", ".join(state["missing"][:6])
+                            + "\n  These contracts are bound to required claims but were "
+                            "never evaluated — usually a selector matching no object, or "
+                            "a frame group that never ran. They cannot pass by absence."
+                        )
                     if failed:
                         comparison_state["scene_interfaces_ready"] = False
                         comparison_state["scene_contracts_passed"] = False
