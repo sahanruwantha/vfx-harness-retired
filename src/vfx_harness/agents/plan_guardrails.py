@@ -103,7 +103,7 @@ def validate_planner_artifact(folder: str | Path, name: str) -> list[str]:
             load_layers(load_shot(root))
             return []
         if name == "scene_checks.json":
-            from vfx_harness.evidence.scene_checks import validate_row
+            from vfx_harness.evidence.scene_checks import validate_row, validate_row_set
 
             rows = load_document(path, "contracts")
             errors = []
@@ -114,6 +114,7 @@ def validate_planner_artifact(folder: str | Path, name: str) -> list[str]:
                 error = validate_row(row)
                 if error:
                     errors.append(f"scene_checks.json[{index}] {row.get('id', '<missing>')}: {error}")
+            errors.extend(f"scene_checks.json {finding}" for finding in validate_row_set(rows))
             return errors
         if name == "checks.json":
             from vfx_harness.evidence.checks import load

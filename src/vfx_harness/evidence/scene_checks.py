@@ -438,6 +438,42 @@ def validate_row(row: dict) -> str | None:
     return None
 
 
+def validate_row_set(rows: list[dict]) -> list[str]:
+    """Cross-row contradictions no single row can reveal.
+
+    An auto-socket control_render_response demands a socket literally named 'Value'
+    on THE one node its selector matches; a node_socket_value pinning the same
+    (graph, node_roles) selector demands that node expose the pinned socket. Both
+    published together in run 20260825 (world-bloom-response wanted 'Value' on the
+    Glare its sibling pinned to 'Threshold' — CompositorNodeGlare exposes neither
+    a 'Value' input nor output), and the contradiction only surfaced two builds
+    and four repairs later. Explicitness costs one field; require it up front.
+    """
+    findings: list[str] = []
+    def _selector(row: dict) -> tuple[str, tuple[str, ...]]:
+        return (str(row.get("graph") or ""), tuple(sorted(_selectors(row, "node_roles"))))
+    pinned: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") != "node_socket_value":
+            continue
+        if row.get("socket") or row.get("socket_index") is not None:
+            pinned.setdefault(_selector(row), []).append(str(row.get("id") or "<missing>"))
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") != "control_render_response":
+            continue
+        if row.get("socket") or row.get("socket_index") is not None:
+            continue
+        selector = _selector(row)
+        if selector[1] and selector in pinned:
+            findings.append(
+                f"{row.get('id', '<missing>')}: auto-socket control_render_response shares "
+                f"selector {list(selector[1])} (graph {selector[0]!r}) with socket-pinned "
+                f"row(s) {pinned[selector]} — one node cannot be required to expose both a "
+                "literal 'Value' socket and the pinned socket; declare 'socket' on this row"
+            )
+    return findings
+
+
 def _blender_probe(rows: list[dict], frame: int) -> str:
     payload = json.dumps(rows)
     return f"""\

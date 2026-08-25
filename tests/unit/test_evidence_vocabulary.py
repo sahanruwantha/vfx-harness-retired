@@ -82,3 +82,31 @@ def test_two_sided_kinds_require_disjoint_selectors() -> None:
                  frames=[1, 2], op="min", lo=0.5)
         )
         assert error is not None and "disjoint" in error
+
+
+def test_auto_socket_response_sharing_a_pinned_selector_must_declare_its_socket() -> None:
+    """Run 20260825: world-bloom-response (auto socket -> literal 'Value') shared its
+    selector with world-bloom-threshold-bound (socket 'Threshold'), demanding a node
+    interface CompositorNodeGlare does not have; the contradiction surfaced two builds
+    and four repairs after publication. The row set must refuse it at authoring."""
+    from vfx_harness.evidence.scene_checks import validate_row_set
+
+    pinned = _row(
+        id="world-bloom-threshold-bound", kind="node_socket_value", graph="compositor",
+        node_roles=["world.bloom.compositor"], socket="Threshold", direction="input",
+        op="min", lo=0.8,
+    )
+    auto = _row(
+        id="world-bloom-response", kind="control_render_response", graph="compositor",
+        node_roles=["world.bloom.compositor"], probe_values=[0.0, 1.0], frame=150,
+        op="max", hi=0.15,
+    )
+    findings = validate_row_set([pinned, auto])
+    assert len(findings) == 1
+    assert "world-bloom-response" in findings[0]
+    assert "declare 'socket'" in findings[0]
+
+    # Declaring the socket, or measuring a different selector, is clean.
+    assert validate_row_set([pinned, {**auto, "socket": "Threshold"}]) == []
+    assert validate_row_set([pinned, {**auto, "node_roles": ["world.atmosphere.volume"]}]) == []
+    assert validate_row_set([auto]) == []

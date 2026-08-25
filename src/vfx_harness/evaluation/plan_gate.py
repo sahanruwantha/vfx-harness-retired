@@ -958,6 +958,21 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             out.append(Finding("contracts", True, "scene_checks.json", f"unreadable: {exc}"))
             scene_rows = []
+        from vfx_harness.evidence.scene_checks import validate_row_set
+
+        # Advisory here, refused at authoring: guardrails and validate_materialization
+        # raise on this shape for NEW row sets, but a published view may carry a
+        # grandfathered instance that a permissive node class (e.g. Math, whose inputs
+        # are literally named 'Value') satisfies honestly — blocking retroactively
+        # would poison sealed authority that measurably works.
+        for cross_row_finding in validate_row_set([r for r in scene_rows if isinstance(r, dict)]):
+            out.append(Finding(
+                "contracts",
+                False,
+                "scene_checks.json",
+                cross_row_finding,
+                "declare the response row's socket at this layer's next materialization",
+            ))
         seen: set[str] = set()
         for row in scene_rows:
             rid = str(row.get("id") or "<missing>") if isinstance(row, dict) else "<invalid>"

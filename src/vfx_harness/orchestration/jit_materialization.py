@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from vfx_harness.evidence.scene_checks import validate_row
+from vfx_harness.evidence.scene_checks import validate_row, validate_row_set
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.orchestration.ledger import Layer, load_layers_from_path
 
@@ -232,6 +232,8 @@ def validate_materialization(
     for row in image_rows:
         if str(row.get("owner_layer") or "") != layer_id:
             raise ValueError(f"image contract {row.get('id')} must be owned by layer {layer_id}")
+    for cross_row_finding in validate_row_set(scene_rows):
+        raise ValueError(f"scene contract {cross_row_finding}")
 
     required_bindings = {
         (binding.kind, binding.id)
