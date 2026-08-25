@@ -2382,6 +2382,14 @@ def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evid
                     "role/control tag from the duplicates so one node carries it; this "
                     "is this build's tagging defect to fix, not a binding defect."
                 )
+            if "has no requested" in lowered and "socket" in lowered:
+                return (
+                    f"{head} {row.get('metric')} could not be measured: {why}. When the "
+                    "contract names no socket, resolution looks for a socket literally "
+                    "named 'Value' (inputs then outputs) — tag a ShaderNodeValue whose "
+                    "output drives the quantity, or a node with a 'Value' socket; this "
+                    "is this build's tagging defect to fix, not a binding defect."
+                )
             return (
                 f"{head} contract is INAPPLICABLE to its subject: {row.get('metric')} "
                 f"could not be measured on these roles (target {row.get('target')})"

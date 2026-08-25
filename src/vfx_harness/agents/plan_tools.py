@@ -1323,7 +1323,11 @@ def build_plan_tools(
             "curve_derivative_max": ["frames [a,b]", "property (location|rotation_euler|scale)"],
             "onset_order": ["frames [a,b]", "compare_roles/compare_control_roles (disjoint)"],
             "transform_return_delta": ["frames [a,b]", "component (location|rotation|scale)"],
-            "control_render_response": ["graph", "node_roles", "probe_values [lo,hi]", "region [x0,y0,x1,y1]"],
+            "control_render_response": [
+                "graph", "node_roles", "probe_values [lo,hi]", "region [x0,y0,x1,y1]",
+                "socket/socket_index (optional — otherwise resolution needs a socket "
+                "literally named 'Value': the control tag belongs on a ShaderNodeValue)",
+            ],
             "frame_delta": ["frames [a,b]", "region (optional)"],
             "node_socket_value": [
                 "graph (material|compositor|world)",
