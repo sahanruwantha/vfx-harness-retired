@@ -1457,9 +1457,22 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         "parallax_displacement_profile",
                         "onset_order",
                     }
+                    # visible_fraction is observation-only: it mutates nothing, and it
+                    # exists precisely so the CAMERA answers for geometry it will never
+                    # own — run 20260825's spine escaped because visibility routed
+                    # through the geometry unit, which satisfied its own bbox rows by
+                    # convenient placement. Its roles are measurement subjects held to
+                    # plan-declared namespaces (control smuggling stays a violation).
+                    observation_only = str(contract.get("kind") or "") == "visible_fraction"
+                    if observation_only:
+                        primary_keys: tuple[str, ...] = ()
+                    elif two_sided:
+                        primary_keys = ("roles",)
+                    else:
+                        primary_keys = ("roles", "compare_roles")
                     selected_roles = {
                         str(value)
-                        for key in (("roles",) if two_sided else ("roles", "compare_roles"))
+                        for key in primary_keys
                         for value in contract.get(key) or []
                     }
                     undeclared_roles = sorted(
@@ -1467,11 +1480,12 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         for selector in selected_roles
                         if not _selector_declared(selector, mutable_roles)
                     )
-                    if two_sided:
+                    if two_sided or observation_only:
+                        measurement_key = "roles" if observation_only else "compare_roles"
                         undeclared_roles.extend(sorted(
                             selector
                             for selector in {
-                                str(value) for value in contract.get("compare_roles") or []
+                                str(value) for value in contract.get(measurement_key) or []
                             }
                             if not _selector_declared(selector, plan_declared_roles)
                         ))

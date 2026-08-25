@@ -713,3 +713,46 @@ def test_atomic_camera_and_blockout_closes_empty_scene_composition_bootstrap(tmp
         finding.check in {"composition-coverage", "composition-bootstrap"}
         for finding in findings
     )
+
+
+def test_visible_fraction_may_observe_roles_it_does_not_mutate(tmp_path: Path) -> None:
+    """Run 20260825: the camera unit must answer for interior visibility, measuring
+    proxies the geometry unit owns — routing visibility through the geometry owner let
+    convenient placement satisfy bbox rows while the spine never entered the chamber.
+    Observation-only rows close against plan-declared namespaces, not mutation
+    authority; a name the plan never declares anywhere is still a violation."""
+    doc = _layer_doc(temporal_id="vis")
+    # a second unit declares the observed namespace, so the plan knows the roles
+    scout = json.loads(json.dumps(doc["layers"][0]["stages"][0]))
+    scout["id"] = "blockout"
+    scout["plan"] = "plans/01_camera/00_blockout.md"
+    scout["mutates"] = {**scout["mutates"], "roles": ["proxy.interior"], "controls": []}
+    scout["evaluation"]["claims"] = []
+    doc["layers"][0]["stages"].insert(0, scout)
+    _write(tmp_path / "layers.json", doc)
+
+    def vis_row(row_id: str, roles: list[str]) -> dict:
+        return {
+            "id": row_id, "kind": "visible_fraction", "owner_layer": "1",
+            "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
+            "axis": "camera_framing", "roles": roles, "frame": 1,
+            "op": "min", "lo": 0.25,
+        }
+
+    _write(tmp_path / "scene_checks.json", {
+        "schema": 2,
+        "contracts": [vis_row("vis", ["proxy.interior"])],
+    })
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert not any(f.check == "role-selector-closure" for f in findings)
+
+    _write(tmp_path / "scene_checks.json", {
+        "schema": 2,
+        "contracts": [vis_row("vis", ["never.declared.anywhere"])],
+    })
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert any(
+        f.check == "role-selector-closure" and "never.declared.anywhere" in f.what
+        for f in findings
+    )
