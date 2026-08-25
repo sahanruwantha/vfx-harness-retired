@@ -212,21 +212,37 @@ class Claim:
 
         qualification = row.get("qualification")
         if authority == "qualified_qualitative_required":
-            q = _mapping(qualification, f"{where}.qualification")
-            qualification = {
-                "suite": _text(q.get("suite"), f"{where}.qualification.suite"),
-                "judge_model": _text(q.get("judge_model"), f"{where}.qualification.judge_model"),
-                "prompt": _text(q.get("prompt"), f"{where}.qualification.prompt"),
-                "evidence_shape": _text(
-                    q.get("evidence_shape"), f"{where}.qualification.evidence_shape"
-                ),
-                "artifact": _relative_path(q.get("artifact"), f"{where}.qualification.artifact"),
-                "artifact_sha256": _text(
-                    q.get("artifact_sha256"), f"{where}.qualification.artifact_sha256"
-                ).lower(),
-            }
+            # Walking this shape one missing-field error at a time cost run b603zc93p
+            # its whole session (it guessed criteria/judge_frames). Name the complete
+            # schema and the usual alternative in every failure.
+            _QUALIFICATION_SHAPE = (
+                f"{where}.qualification requires EXACTLY: suite, judge_model, prompt, "
+                "evidence_shape, artifact (repo-relative rubric file), artifact_sha256 "
+                "(64 lowercase hex of that file). This authority is rubric-file-backed "
+                "acceptance machinery — for appearance judged at build time, the usual "
+                "shape is authority: executable_required with asserts: image instead"
+            )
+            try:
+                q = _mapping(qualification, f"{where}.qualification")
+                qualification = {
+                    "suite": _text(q.get("suite"), f"{where}.qualification.suite"),
+                    "judge_model": _text(q.get("judge_model"), f"{where}.qualification.judge_model"),
+                    "prompt": _text(q.get("prompt"), f"{where}.qualification.prompt"),
+                    "evidence_shape": _text(
+                        q.get("evidence_shape"), f"{where}.qualification.evidence_shape"
+                    ),
+                    "artifact": _relative_path(q.get("artifact"), f"{where}.qualification.artifact"),
+                    "artifact_sha256": _text(
+                        q.get("artifact_sha256"), f"{where}.qualification.artifact_sha256"
+                    ).lower(),
+                }
+            except ValueError as exc:
+                raise ValueError(f"{exc}. {_QUALIFICATION_SHAPE}") from exc
             if not _SHA256.fullmatch(qualification["artifact_sha256"]):
-                raise ValueError(f"{where}.qualification.artifact_sha256 must be 64 lowercase hex characters")
+                raise ValueError(
+                    f"{where}.qualification.artifact_sha256 must be 64 lowercase hex "
+                    f"characters. {_QUALIFICATION_SHAPE}"
+                )
         elif qualification is not None:
             raise ValueError(f"{where}.qualification is only valid for qualified qualitative authority")
 
