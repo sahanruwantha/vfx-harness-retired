@@ -2850,6 +2850,10 @@ async def build_unit(
             if active_unit is not None and active_unit.mutates.mode == "scoped"
             else None
         ),
+        # priors have already replayed: their objects are prior authority, not this
+        # unit's violations — without this baseline the live scope check told every
+        # later unit to delete the previous layers' sealed work
+        scope_baseline=set(_scene_object_manifest(session)),
     )
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names))
@@ -4313,19 +4317,36 @@ async def _verify_script(
             )
             if scope_errors:
                 log("! scoped artifact violation: " + "; ".join(scope_errors[:6]))
-                ledger.record_round(
-                    m,
-                    kind="canonical",
-                    index=0,
-                    render="",
-                    verdict=_verdict({"scores": {}, "issues": scope_errors}),
-                )
+                verdict = _verdict({"scores": {}, "issues": scope_errors})
+                ledger.record_round(m, kind="canonical", index=0, render="", verdict=verdict)
+                # A scope violation is the MOST repairable canonical failure — its text
+                # names the offending objects and the allowed roles. Returning with no
+                # per-frame verdicts starved the repair loop (`failed` stayed empty) and
+                # runs 20260825T000404Z/022805Z each burned a manual `vfx units retry`
+                # on one-line role-tag fixes. Publish the violation AS the failing
+                # verdict for every judged frame so the repair loop engages.
+                if out_verdicts is not None:
+                    for frame, ref in (list(layer.judges) if layer is not None else [(m.frame, m.ref)]):
+                        out_verdicts.append(((frame, ref), {
+                            **verdict,
+                            "mean": 1.0,
+                            "pass": False,
+                            "issues": list(scope_errors),
+                        }))
                 return "failed"
     except BlenderError as e:
         log(f"! build script failed: {str(e)[:200]}")
-        ledger.record_round(
-            m, kind="canonical", index=0, render="", verdict=_verdict({"scores": {}, "issues": [f"script error: {e}"]})
-        )
+        verdict = _verdict({"scores": {}, "issues": [f"script error: {e}"]})
+        ledger.record_round(m, kind="canonical", index=0, render="", verdict=verdict)
+        # a script that cannot execute is equally repairable — feed the loop the error
+        if out_verdicts is not None:
+            for frame, ref in (list(layer.judges) if layer is not None else [(m.frame, m.ref)]):
+                out_verdicts.append(((frame, ref), {
+                    **verdict,
+                    "mean": 1.0,
+                    "pass": False,
+                    "issues": [f"script error: {e}"],
+                }))
         return "failed"
     judges = list(layer.judges) if layer is not None else [(m.frame, m.ref)]
     # Render serially (one Blender session), then score CONCURRENTLY — the critic calls

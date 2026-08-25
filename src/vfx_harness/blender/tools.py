@@ -405,17 +405,24 @@ _ROLE_MANIFEST = (
 )
 
 
-def _scope_offenders(manifest: dict, allowed: tuple[str, ...]) -> list[str]:
+def _scope_offenders(
+    manifest: dict, allowed: tuple[str, ...], baseline: set[str] | None = None
+) -> list[str]:
     """Objects whose semantic role falls outside the unit's declared authority.
 
     Reported on every call until fixed, never once-and-forgotten: builders create first
     and tag second, so suppressing a name after first sight hides an untagged object for
     the rest of the build — which is how an untagged curve reached canonical replay.
-    """
+
+    ``baseline`` is the manifest at unit start (after priors replayed): prior layers'
+    objects are THEIR authority, not this unit's violation. Without it every later unit
+    was told to delete the previous layers' work (runs 20260825T022805Z/023xxx flagged
+    layer 1's proxies against every layer-2 unit, advice that would have destroyed
+    sealed geometry if followed)."""
     return [
         f"{name!r} role={str(role) or '<none>'}"
         for name, role in sorted(manifest.items())
-        if not _role_in_scope(str(role), allowed)
+        if name not in (baseline or set()) and not _role_in_scope(str(role), allowed)
     ]
 
 
@@ -673,6 +680,7 @@ def build_blender_tools(
     comparison_state: dict | None = None,
     feedback_groups: list[str] | None = None,
     mutation_roles: tuple[str, ...] | None = None,
+    scope_baseline: set[str] | None = None,
 ):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
     `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…).
@@ -758,7 +766,7 @@ def build_blender_tools(
                 manifest = (await _call("run", code=_ROLE_MANIFEST, journal=False)).get(
                     "result"
                 ) or {}
-                offenders = _scope_offenders(manifest, mutation_roles)
+                offenders = _scope_offenders(manifest, mutation_roles, scope_baseline)
                 if offenders:
                     log(f"scope: {len(offenders)} object(s) outside declared roles", 1)
                     warn += (
