@@ -56,7 +56,7 @@ KNOWN_ROW_KEYS = frozenset({
     "decision_id", "frame", "frames", "frame_step", "region", "component", "samples",
     "motion_epsilon", "property", "tol", "uniform_tol", "direction", "domain",
     "graph", "socket", "socket_index", "socket_direction", "from_socket", "to_socket",
-    "probe_mode", "probe_scale", "probe_values", "response_metric",
+    "probe_mode", "probe_scale", "probe_values", "response_metric", "stat",
     "roles", "control_roles", "material_roles", "compare_roles",
     "compare_control_roles", "node_roles", "node_group_roles",
     "from_node_roles", "to_node_roles",
@@ -78,8 +78,9 @@ FRAME_SCOPED_KINDS = {
     # response with no frame, the silent f1 default measured a subject occluded at f1,
     # and two build attempts burned four repairs on a structurally-0.0 reading
     "control_render_response",
+    "render_region_stat",
 }
-FUNCTIONAL_KINDS = {"control_render_response", "frame_delta"}
+FUNCTIONAL_KINDS = {"control_render_response", "frame_delta", "render_region_stat"}
 SUPPORTED_KINDS = (
     OBJECT_KINDS | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS | TEMPORAL_KINDS | FUNCTIONAL_KINDS
 )
@@ -143,6 +144,13 @@ KIND_DEFINITIONS = {
     "animation_count": "animation datablocks on the selected semantic state",
     "compositor_enabled": "1 when compositing and a semantic compositor group exist",
     "control_render_response": "pixel response when a semantic numeric control is swept low to high",
+    "render_region_stat": (
+        "one absolute luminance statistic (mean or stddev, 0-255) of the rendered frame's "
+        "declared region. The exposure anchor: every relative metric (responses, deltas, "
+        "socket values) passes at any brightness, and run 20260825 sealed four lookdev "
+        "units over a composed frame reading mean 11/stddev 1.2 against refs at 32-81/28-64 "
+        "— measurably lit machinery, visually a dead plate. Copy targets from measure_ref"
+    ),
     "onset_order": (
         "comparison-role onset frame minus selected-role onset frame; positive means selected roles start first"
     ),
@@ -342,6 +350,28 @@ def validate_row(row: dict) -> str | None:
                     "Use a bound inside the frame, another kind, or record a "
                     "vocabulary-gap escalation"
                 )
+    if kind == "render_region_stat":
+        region = row.get("region")
+        if (
+            not isinstance(region, list)
+            or len(region) != 4
+            or not all(isinstance(v, (int, float)) for v in region)
+            or not all(0 <= float(v) <= 1 for v in region)
+            or not (region[0] < region[2] and region[1] < region[3])
+        ):
+            return "render_region_stat requires a normalized TOP-LEFT region"
+        if row.get("stat") not in {"mean", "stddev"}:
+            return "render_region_stat stat must be mean or stddev"
+        lo, hi = row.get("lo"), row.get("hi")
+        # the statistic lives in [0,255]; a bound outside it, or a floor at zero,
+        # passes every frame ever rendered — an anchor that anchors nothing
+        for bound in (lo, hi):
+            if isinstance(bound, (int, float)) and not isinstance(bound, bool) and not 0 <= float(bound) <= 255:
+                return "render_region_stat bounds live in [0,255]"
+        if row.get("op") == "min" and isinstance(lo, (int, float)) and not isinstance(lo, bool) and float(lo) <= 0:
+            return "render_region_stat min with lo<=0 passes any frame — vacuous"
+        if row.get("op") == "max" and isinstance(hi, (int, float)) and not isinstance(hi, bool) and float(hi) >= 255:
+            return "render_region_stat max with hi>=255 passes any frame — vacuous"
     if kind == "visible_fraction":
         lo, hi = row.get("lo"), row.get("hi")
         if row.get("op") == "min" and isinstance(lo, (int, float)) and not isinstance(lo, bool) and float(lo) <= 0:
@@ -1066,12 +1096,14 @@ def functional_evidence(
             images = []
             if row.get("kind") == "frame_delta":
                 probe_values = row["frames"]
+            elif row.get("kind") == "render_region_stat":
+                probe_values = [row["frame"]]
             else:
                 initial = session.run(_control_script(row), journal=False).get("result") or {}
                 original = float(initial["before"])
                 probe_values = row["probe_values"]
             for probe_value in probe_values:
-                if row.get("kind") != "frame_delta":
+                if row.get("kind") == "control_render_response":
                     session.run(_control_script(row, float(probe_value)), journal=False)
                     render_frame = int(row.get("frame", 1))
                 else:
@@ -1095,12 +1127,16 @@ def functional_evidence(
                             )
                         )
                     images.append(image)
-            low, high = images
-            if row.get("kind") == "frame_delta" or row.get("response_metric", "mean_delta") == "mae":
+            if row.get("kind") == "render_region_stat":
+                stats = ImageStat.Stat(images[0].convert("L"))
+                value = stats.mean[0] if row.get("stat") == "mean" else stats.stddev[0]
+            elif row.get("kind") == "frame_delta" or row.get("response_metric", "mean_delta") == "mae":
+                low, high = images
                 if low.size != high.size:
                     raise ValueError("rendered frames have different dimensions")
                 value = ImageStat.Stat(ImageChops.difference(low, high).convert("L")).mean[0]
             else:
+                low, high = images
                 low_mean = ImageStat.Stat(low.convert("L")).mean[0]
                 high_mean = ImageStat.Stat(high.convert("L")).mean[0]
                 value = high_mean - low_mean
@@ -1118,16 +1154,22 @@ def functional_evidence(
         # region, or frame named sent two builds hunting the control instead of the
         # measurement (run 17581c: mean_delta is luminance-only, so a hue-swap palette
         # control reads ~0; the row also measured the silent-default frame).
-        instrument = (
-            f"measured as {row.get('response_metric', 'mean_delta')}"
-            + (" (luminance-only: a pure hue shift reads ~0 — palette/tint semantics"
-               " need response_metric: mae)"
-               if row.get("kind") == "control_render_response"
-               and row.get("response_metric", "mean_delta") == "mean_delta"
-               else "")
-            + f" over region {row.get('region')}"
-            + (f" at frame {row.get('frame')}" if row.get("frame") is not None else "")
-        )
+        if row.get("kind") == "render_region_stat":
+            instrument = (
+                f"measured as luminance {row.get('stat')} (0-255) over region "
+                f"{row.get('region')} at frame {row.get('frame')}"
+            )
+        else:
+            instrument = (
+                f"measured as {row.get('response_metric', 'mean_delta')}"
+                + (" (luminance-only: a pure hue shift reads ~0 — palette/tint semantics"
+                   " need response_metric: mae)"
+                   if row.get("kind") == "control_render_response"
+                   and row.get("response_metric", "mean_delta") == "mean_delta"
+                   else "")
+                + f" over region {row.get('region')}"
+                + (f" at frame {row.get('frame')}" if row.get("frame") is not None else "")
+            )
         out.append(
             {
                 "id": str(row.get("id") or "<missing>"),

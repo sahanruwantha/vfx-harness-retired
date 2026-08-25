@@ -186,3 +186,32 @@ def test_control_render_response_must_declare_its_render_frame() -> None:
     error = validate_row(row) or ""
     assert "frame" in error
     assert validate_row({**row, "frame": 150}) is None
+
+
+def test_render_region_stat_is_the_exposure_anchor() -> None:
+    """Run 9ff4c5 sealed four lookdev units over a composed frame reading mean 11 /
+    stddev 1.2 against refs at 32-81 / 28-64: every relative metric (responses, deltas,
+    socket values) passes at any brightness, and nothing anchored the render to the
+    reference. The kind is frame-scoped, region-bound, and refuses vacuous bounds."""
+    from vfx_harness.evidence.scene_checks import (
+        FRAME_SCOPED_KINDS,
+        FUNCTIONAL_KINDS,
+        KIND_DOMAINS,
+        SUPPORTED_KINDS,
+    )
+
+    assert "render_region_stat" in SUPPORTED_KINDS
+    assert "render_region_stat" in FUNCTIONAL_KINDS
+    assert "render_region_stat" in FRAME_SCOPED_KINDS
+    assert KIND_DOMAINS["render_region_stat"] == "image"
+    row = _row(
+        id="anchor", kind="render_region_stat", stat="stddev", frame=150,
+        region=[0.2, 0.2, 0.8, 0.8], op="min", lo=16,
+    )
+    assert validate_row(row) is None
+    assert "frame" in (validate_row({**row, "frame": None}) or "")
+    assert "region" in (validate_row({**row, "region": None}) or "")
+    assert "stat" in (validate_row({**row, "stat": "median"}) or "")
+    assert "vacuous" in (validate_row({**row, "lo": 0}) or "")
+    assert "vacuous" in (validate_row({**row, "op": "max", "lo": None, "hi": 255}) or "")
+    assert "[0,255]" in (validate_row({**row, "lo": 300}) or "")

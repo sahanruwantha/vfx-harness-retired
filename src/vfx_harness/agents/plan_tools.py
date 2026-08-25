@@ -1342,6 +1342,13 @@ def build_plan_tools(
                 "component (optional, for vector sockets)",
             ],
             "node_count": ["graph (material|compositor|world)", "node_roles"],
+            "render_region_stat": [
+                "stat (mean|stddev, luminance 0-255)",
+                "region [x0,y0,x1,y1]",
+                "op min/max/band with targets copied from measure_ref's reading of the "
+                "judge reference — THE exposure anchor: every relative metric passes at "
+                "any brightness",
+            ],
             "visible_fraction": [
                 "roles (the surfaces this judge frame is judged ON — occluders need no "
                 "declaration, any closer surface counts)",
