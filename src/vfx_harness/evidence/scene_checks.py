@@ -360,8 +360,11 @@ def validate_row(row: dict) -> str | None:
             or not (region[0] < region[2] and region[1] < region[3])
         ):
             return "render_region_stat requires a normalized TOP-LEFT region"
-        if row.get("stat") not in {"mean", "stddev"}:
-            return "render_region_stat stat must be mean or stddev"
+        if row.get("stat") not in {"mean", "stddev", "mean_r", "mean_g", "mean_b"}:
+            return (
+                "render_region_stat stat must be mean, stddev, or a channel mean "
+                "(mean_r/mean_g/mean_b)"
+            )
         lo, hi = row.get("lo"), row.get("hi")
         # the statistic lives in [0,255]; a bound outside it, or a floor at zero,
         # passes every frame ever rendered — an anchor that anchors nothing
@@ -1139,8 +1142,16 @@ def functional_evidence(
                         )
                     images.append(image)
             if row.get("kind") == "render_region_stat":
-                stats = ImageStat.Stat(images[0].convert("L"))
-                value = stats.mean[0] if row.get("stat") == "mean" else stats.stddev[0]
+                stat_name = str(row.get("stat"))
+                if stat_name in {"mean_r", "mean_g", "mean_b"}:
+                    # hue is contractable: the luminance-only anchors passed a frame
+                    # whose RGB spread was 15 against the ref's 57 (run af3084 —
+                    # "bright but nearly colorless")
+                    channel = {"mean_r": 0, "mean_g": 1, "mean_b": 2}[stat_name]
+                    value = ImageStat.Stat(images[0].convert("RGB")).mean[channel]
+                else:
+                    stats = ImageStat.Stat(images[0].convert("L"))
+                    value = stats.mean[0] if stat_name == "mean" else stats.stddev[0]
             elif row.get("kind") == "frame_delta" or row.get("response_metric", "mean_delta") == "mae":
                 low, high = images
                 if low.size != high.size:

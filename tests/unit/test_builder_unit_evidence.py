@@ -173,7 +173,7 @@ def test_workunit_shape_changes_demand_a_digest_schema_bump() -> None:
                        }]},
         "completion": "all_required_claims_and_protected_contracts_pass",
     }
-    assert DIGEST_SCHEMA == 3
+    assert DIGEST_SCHEMA == 4
     assert unit_digest(WorkUnit.parse(row, "golden")) == (
-        "4de4e561b2fa86b6955618f49b1f4c5b9220a696697b0f4719c014144585342c"
+        "d5a8d319ba4482ea592ffd365588f212ba2132bfb0a9d799d0b3b99fdff71678"
     )

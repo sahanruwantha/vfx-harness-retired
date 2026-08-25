@@ -379,6 +379,10 @@ class MutationScope:
     controls: tuple[str, ...]
     script_spans: tuple[str, ...]
     control_roles: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # appearance-assignment authority over another layer's declared dressable roles
+    # (material-slot writes only by convention; geometry protection stays with the
+    # owner's contracts) — ADR-0007
+    dresses: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, value: Any, where: str) -> MutationScope:
@@ -388,13 +392,27 @@ class MutationScope:
             raise ValueError(f"{where}.mode must be 'scoped' or 'none'")
         roles = _strings(row.get("roles", []), f"{where}.roles")
         controls = _strings(row.get("controls", []), f"{where}.controls")
+        # Dressing: appearance-assignment authority over ANOTHER layer's declared
+        # dressable roles. Lookdev's whole ontology is putting materials on geometry it
+        # does not own; without a typed channel the composed judge frames stayed naked
+        # proxies while every per-unit contract passed (run 20260825T133513Z-af3084,
+        # composed 1.83/1.0 over sealed 5.0 units). ADR-0007.
+        dresses = _strings(row.get("dresses", []), f"{where}.dresses")
         spans = tuple(_relative_path(v, f"{where}.script_spans") for v in row.get("script_spans", []))
         if len(set(spans)) != len(spans):
             raise ValueError(f"{where}.script_spans contains duplicates")
-        if mode == "none" and any((roles, controls, spans)):
+        if mode == "none" and any((roles, controls, spans, dresses)):
             raise ValueError(f"{where} mode 'none' cannot declare mutation targets")
-        if mode == "scoped" and not any((roles, controls, spans)):
-            raise ValueError(f"{where} scoped mutation needs roles, controls, or script_spans")
+        if mode == "scoped" and not any((roles, controls, spans, dresses)):
+            raise ValueError(
+                f"{where} scoped mutation needs roles, controls, script_spans, or dresses"
+            )
+        overlap = sorted(set(dresses) & set(roles))
+        if overlap:
+            raise ValueError(
+                f"{where}.dresses overlaps mutation roles ({', '.join(overlap)}); a role "
+                "the unit already owns needs no dressing declaration"
+            )
         raw_mapping = row.get("control_roles", {})
         # Dataclass-to-JSON test/tooling paths serialize the empty tuple default as [].
         # Treat only that empty shape as the same legacy omission; non-empty mappings are
@@ -418,7 +436,7 @@ class MutationScope:
         if mapping and set(raw_mapping) != set(controls):
             missing = sorted(set(controls) - set(raw_mapping))
             raise ValueError(f"{where}.control_roles does not map controls: {', '.join(missing)}")
-        return cls(mode, roles, controls, spans, tuple(sorted(mapping)))
+        return cls(mode, roles, controls, spans, tuple(sorted(mapping)), dresses)
 
 
 @dataclass(frozen=True)

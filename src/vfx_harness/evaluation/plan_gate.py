@@ -1416,8 +1416,35 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             uid = str(unit.get("id") or "<missing>")
             evaluation = unit.get("evaluation") or {}
             mutates = unit.get("mutates") or {}
-            mutable_roles = {str(value) for value in mutates.get("roles") or []}
+            # dressed selectors carry appearance authority (ADR-0007), so contracts and
+            # claims about the dressed surfaces close through them like mutation roles
+            mutable_roles = {str(value) for value in mutates.get("roles") or []} | {
+                str(value) for value in mutates.get("dresses") or []
+            }
             mutable_controls = {str(value) for value in mutates.get("controls") or []}
+            declared_dressable_elsewhere = {
+                str(selector)
+                for other in layers
+                if isinstance(other, dict) and str(other.get("id")) != lid
+                for selector in other.get("dressable") or []
+            }
+            undeclared_dresses = sorted(
+                str(value)
+                for value in mutates.get("dresses") or []
+                if str(value) not in declared_dressable_elsewhere
+            )
+            if undeclared_dresses:
+                out.append(
+                    Finding(
+                        "dressing-closure",
+                        True,
+                        f"layer {lid} unit {uid}",
+                        "dresses selectors no other layer declares dressable: "
+                        + ", ".join(undeclared_dresses),
+                        "the owning layer's row must list these under `dressable`; "
+                        "dressing is granted by the owner, never taken",
+                    )
+                )
             for claim in evaluation.get("claims") or []:
                 if not isinstance(claim, dict) or not claim.get("required"):
                     continue

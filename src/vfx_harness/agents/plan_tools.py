@@ -1343,11 +1343,13 @@ def build_plan_tools(
             ],
             "node_count": ["graph (material|compositor|world)", "node_roles"],
             "render_region_stat": [
-                "stat (mean|stddev, luminance 0-255)",
+                "stat (mean|stddev luminance, or mean_r/mean_g/mean_b channel means, "
+                "all 0-255)",
                 "region [x0,y0,x1,y1]",
                 "op min/max/band with targets copied from measure_ref's reading of the "
                 "judge reference — THE exposure anchor: every relative metric passes at "
-                "any brightness",
+                "any brightness, and luminance-only anchors pass a colorless frame "
+                "(express 'amber' as mean_r above mean_b via two rows)",
             ],
             "visible_fraction": [
                 "roles (the surfaces this judge frame is judged ON — occluders need no "

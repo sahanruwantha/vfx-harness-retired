@@ -756,3 +756,34 @@ def test_visible_fraction_may_observe_roles_it_does_not_mutate(tmp_path: Path) -
         f.check == "role-selector-closure" and "never.declared.anywhere" in f.what
         for f in findings
     )
+
+
+def test_dressing_authority_is_granted_by_the_owner(tmp_path: Path) -> None:
+    """ADR-0007: run af3084's composed frames were layer 1's naked proxies — the
+    gunmetal existed on layer 2's own subjects because no unit could legally assign
+    materials to another layer's geometry. A unit declares mutates.dresses; the gate
+    blocks any selector no OTHER layer lists under dressable."""
+    doc = _layer_doc(temporal_id=None)
+    unit = doc["layers"][0]["stages"][0]
+    unit["mutates"] = {**unit["mutates"], "dresses": ["proxy.masses"]}
+    unit["evaluation"]["claims"][0]["subject_roles"] = ["hero", "proxy.masses"]
+    _write(tmp_path / "layers.json", doc)
+    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert any(
+        f.check == "dressing-closure" and f.blocking and "proxy.masses" in f.what
+        for f in findings
+    ), [str(f) for f in findings]
+
+    owner = json.loads(json.dumps(doc["layers"][0]))
+    owner["id"] = "0"
+    owner["script"] = "build/00_blockout.py"
+    owner["owns"] = []
+    owner["stages"] = []
+    owner["dressable"] = ["proxy.masses"]
+    doc["layers"].insert(0, owner)
+    _write(tmp_path / "layers.json", doc)
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert not any(f.check == "dressing-closure" for f in findings), [str(f) for f in findings]

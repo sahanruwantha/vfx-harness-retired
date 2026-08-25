@@ -176,6 +176,25 @@ def validate_materialization(
         temp_path.unlink(missing_ok=True)
     layer = parsed[layer_id]
 
+    # Dressing closure (ADR-0007): a unit may declare appearance-assignment authority
+    # only over selectors some OTHER layer explicitly marked dressable. Exact-string
+    # match, not glob-vs-glob: the owner names the surface it exposes, the dresser
+    # names the same surface.
+    declared_dressable = {
+        selector
+        for other in parsed.values()
+        if str(other.id) != str(layer_id)
+        for selector in other.dressable
+    }
+    for unit in layer.stages:
+        undeclared_dresses = sorted(set(unit.mutates.dresses) - declared_dressable)
+        if undeclared_dresses:
+            raise ValueError(
+                f"unit {unit.id} dresses {', '.join(undeclared_dresses)} — no other "
+                "layer declares these selectors dressable; the owning layer's row must "
+                "list them under `dressable` before a dressing unit may claim them"
+            )
+
     # Look scope is typed authority, and silence is not a declaration: a unit that omits
     # the key is indistinguishable from one that declares "no appearance", which is how
     # run 20260823T154920Z left an appearance-owning unit without image feedback. An
@@ -339,15 +358,15 @@ def validate_materialization(
             if claim.required
             for role in claim.subject_roles
         }
-        for mutation_role in unit.mutates.roles:
+        for mutation_role in [*unit.mutates.roles, *unit.mutates.dresses]:
             if not any(
                 fnmatch.fnmatchcase(role, mutation_role) or fnmatch.fnmatchcase(mutation_role, role)
                 for role in closure_roles
             ):
                 raise ValueError(
                     f"unit {unit.id}: mutation role {mutation_role!r} has no required "
-                    "claim; every mutated role needs a required claim whose "
-                    "subject_roles cover it, or must be dropped from mutates.roles"
+                    "claim; every mutated or dressed role needs a required claim whose "
+                    "subject_roles cover it, or must be dropped from mutates"
                 )
         for claim in unit.evaluation.claims:
             if not claim.required:

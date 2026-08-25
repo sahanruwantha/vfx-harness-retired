@@ -255,7 +255,12 @@ Write exactly `{rel_target}` as JSON with schema `{MATERIALIZATION_SCHEMA}`. It 
 globally owned requirement exactly once, either with one or more concrete contract ids or an
 explicit decision carrying `statement` and `decision_strength`. Preserve global layer structure
 exactly. Mutated roles must stay inside reserved namespaces. Every scene contract must be
-required evidence of a materialized producing claim. Choose unit structure, scene-truth
+required evidence of a materialized producing claim.
+A unit that must ASSIGN materials to another layer's geometry declares `mutates.dresses`:
+selectors the OWNING layer's row lists under `dressable` (granted by the owner, never
+taken; assignment-only authority — geometry stays protected by the owner's contracts).
+A layer whose proxies later layers must dress declares those selectors under `dressable`
+on its layer row; dressed roles need required claims exactly like mutation roles. Choose unit structure, scene-truth
 contracts, reference fingerprints, and techniques now from authored references plus sealed
 upstream outcomes. Copy every structured decision in `state/plan-resolutions.jsonl` whose
 `values.contract` roles fall inside this layer's reserved namespaces verbatim into

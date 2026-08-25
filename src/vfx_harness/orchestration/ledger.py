@@ -108,6 +108,9 @@ class Layer:
     stages: tuple[WorkUnit, ...] = ()
     execution: str = "ready"
     jit: JitLayerSpec | None = None
+    # Role selectors this layer's geometry exposes for LATER layers' dressing units to
+    # assign materials onto (ADR-0007). Declaring nothing keeps every role undressable.
+    dressable: tuple[str, ...] = ()
 
     @property
     def judge_frame(self) -> int:
@@ -307,6 +310,11 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                         f"coordination_owner {claim.coordination_owner!r}"
                     )
         judges = tuple((point.frame, point.ref) for point in points)
+        raw_dressable = g.get("dressable", [])
+        if not isinstance(raw_dressable, list) or any(
+            not isinstance(item, str) or not item.strip() for item in raw_dressable
+        ):
+            raise ValueError(f"{where}.dressable must be a list of non-empty role selectors")
         out[lid] = Layer(
             lid,
             str(g.get("script") or ""),
@@ -318,6 +326,7 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
             stages,
             execution,
             jit,
+            tuple(item.strip() for item in raw_dressable),
         )
     evidence_owners = {
         (binding.kind, binding.id): layer.id

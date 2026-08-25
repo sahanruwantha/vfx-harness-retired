@@ -25,7 +25,8 @@ SCHEMA = 1
 # differ. 3: EvidenceBinding gained optional per-moment bindings (8ab8f5d shipped the
 # field without the bump and bricked every layer's durable state until the replan).
 # The golden-digest test pins this pairing; changing the shape without bumping fails it.
-DIGEST_SCHEMA = 3
+# 4: MutationScope gained `dresses` (ADR-0007 appearance-assignment authority).
+DIGEST_SCHEMA = 4
 STATE_DIR = "state/work-units"
 
 _TRANSITIONS = {
