@@ -288,6 +288,27 @@ def validate_materialization(
     from vfx_harness.evidence.scene_checks import KIND_DOMAINS
 
     for unit in layer.stages:
+        # Every mutated role needs a required claim answering for it — the gate's
+        # claim-closure rule, enforced HERE so the write-hook reports it in-session.
+        # Run 20260825T015307Z-bc9109 published a materialization the validator called
+        # clean and the gate then blocked with 7 role-closure findings the session
+        # could no longer see.
+        closure_roles = {
+            role
+            for claim in unit.evaluation.claims
+            if claim.required
+            for role in claim.subject_roles
+        }
+        for mutation_role in unit.mutates.roles:
+            if not any(
+                fnmatch.fnmatchcase(role, mutation_role) or fnmatch.fnmatchcase(mutation_role, role)
+                for role in closure_roles
+            ):
+                raise ValueError(
+                    f"unit {unit.id}: mutation role {mutation_role!r} has no required "
+                    "claim; every mutated role needs a required claim whose "
+                    "subject_roles cover it, or must be dropped from mutates.roles"
+                )
         for claim in unit.evaluation.claims:
             if not claim.required:
                 continue
