@@ -2363,6 +2363,25 @@ def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evid
             # it left a probe of the live scene as the only way to learn that 50 objects
             # were in frame and the projection still returned nothing.
             why = str(row.get("error") or "").strip()
+            # Selector ambiguity/absence is the BUILDER's tagging to fix — run
+            # 20260825T044518Z's repair read the blanket "needs re-materialization"
+            # verdict for a 7-nodes-one-tag defect and deferred a fix that was one
+            # retag away. Only a metric that cannot apply to the subject CLASS is a
+            # binding defect.
+            lowered = why.lower()
+            if "matched 0 nodes" in lowered or "matched no objects" in lowered:
+                return (
+                    f"{head} {row.get('metric')} could not be measured: {why}. The "
+                    "contract's subject does not exist yet — CREATE it and tag it with "
+                    "the contract's role/control; this is this build's defect to fix."
+                )
+            if "matched" in lowered and "nodes" in lowered:
+                return (
+                    f"{head} {row.get('metric')} could not be measured: {why}. The "
+                    "semantic selector must resolve to EXACTLY ONE node — remove the "
+                    "role/control tag from the duplicates so one node carries it; this "
+                    "is this build's tagging defect to fix, not a binding defect."
+                )
             return (
                 f"{head} contract is INAPPLICABLE to its subject: {row.get('metric')} "
                 f"could not be measured on these roles (target {row.get('target')})"
