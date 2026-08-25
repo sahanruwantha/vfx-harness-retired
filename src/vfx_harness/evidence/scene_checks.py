@@ -549,8 +549,17 @@ def _transforms(items,frame):
         loc,rot,scale=item.evaluated_get(dg).matrix_world.decompose()
         out[item.name]=(loc.copy(),rot.copy(),scale.copy())
     return out
+def _seen_tags(row):
+    return sorted(set(_nr(n) for _g,_nt in _graphs(row) for n in _nt.nodes if _nr(n)))[:16]
+def _seen_object_roles():
+    return sorted(set(str(o.get('bvfx_role')) for o in bpy.data.objects if o.get('bvfx_role')))[:24]
+def _missobj(row):
+    # A bare "matched no objects" left probing the live scene as the only way to learn
+    # what WAS tagged; the miss must name both sides or every selector typo costs a session.
+    return ('roles '+repr(_p(row,'roles'))+' / control_roles '+repr(_p(row,'control_roles'))+
+            ' matched no objects; object roles present: '+(', '.join(_seen_object_roles()) or '(none)'))
 for row in _rows:
-    kind=row['kind']; value=None; error=''
+    kind=row['kind']; value=None; error=''; note=''
     # Every row measures its DECLARED frame with its own depsgraph. Temporal kinds
     # (keyframe_schedule, onset_order, …) excurse to other frames and never restored
     # the batch frame, so every later row silently measured whatever frame the previous
@@ -562,9 +571,11 @@ for row in _rows:
         _objects(row) if row.get('roles') or row.get('control_roles') else [])
     materials=_materials(row) if row.get('material_roles') else []; matched=[]
     try:
-        if kind=='object_count': value=len(objects)
+        if kind=='object_count':
+            value=len(objects)
+            if not objects and (row.get('roles') or row.get('control_roles')): note=_missobj(row)
         elif kind.startswith('bbox_'):
-            if not objects: raise ValueError('selector matched no objects')
+            if not objects: raise ValueError(_missobj(row))
             rec,empty=_projected(objects,_row_dg)
             if rec is None:
                 raise ValueError(
@@ -592,7 +603,7 @@ for row in _rows:
             value=sum(tested)/len(tested)
         elif kind=='object_property':
             vs=[_property(o,row['property']) for o in objects]
-            if not vs: raise ValueError('selector matched no objects')
+            if not vs: raise ValueError(_missobj(row))
             if max(vs)-min(vs)>float(row.get('uniform_tol',1e-6)):
                 raise ValueError('selected objects do not share one property value')
             value=sum(vs)/len(vs)
@@ -600,7 +611,7 @@ for row in _rows:
         elif kind=='material_user_count': value=sum(m.users for m in materials)
         elif kind=='material_assignment_fraction':
             wanted=_p(row,'material_roles')
-            if not objects: raise ValueError('selector matched no objects')
+            if not objects: raise ValueError(_missobj(row))
             good=0
             for o in objects:
                 assigned=[s.material for s in o.material_slots if s.material]
@@ -611,13 +622,24 @@ for row in _rows:
             for graph,nt in _graphs(row):
                 for node in nt.nodes:
                     if _m(_nr(node),wanted): matched.append((graph,node))
-            if kind=='node_count': value=len(matched)
+            if kind=='node_count':
+                value=len(matched)
+                if not matched and wanted:
+                    note=('node_roles '+repr(wanted)+' matched 0 nodes in '+repr(row.get('graph'))+
+                          ' graph(s); semantic tags present: '+(', '.join(_seen_tags(row)) or '(none)'))
             else:
-                if len(matched)!=1: raise ValueError(f'node selector matched {{len(matched)}} nodes')
+                if len(matched)!=1:
+                    raise ValueError('node_roles '+repr(wanted)+' matched '+str(len(matched))+' nodes'
+                                     +' in '+repr(row.get('graph'))+' graph(s); semantic tags present: '
+                                     +(', '.join(_seen_tags(row)) or '(none)'))
                 node=matched[0][1]; sockets=node.inputs if row.get('direction','input')=='input' else node.outputs
                 socket=(sockets[int(row['socket_index'])] if row.get('socket_index') is not None
                         else sockets.get(row['socket']))
-                if socket is None: raise ValueError('semantic node has no requested socket')
+                if socket is None:
+                    raise ValueError('semantic node '+node.bl_idname+' has no requested socket '
+                                     +repr(row.get('socket'))+'; available '
+                                     +row.get('direction','input')+' sockets: '
+                                     +(', '.join(s.name for s in sockets) or '(none)'))
                 raw=socket.default_value; comp=row.get('component')
                 value=float(raw[int(comp)]) if comp is not None else float(raw)
         elif kind=='node_link_count':
@@ -642,7 +664,7 @@ for row in _rows:
             if domain in ('all','scene'): values += [_scene]
             value=sum(_animated(v) for v in values if v is not None)
         elif kind=='keyframe_schedule':
-            if not objects: raise ValueError('selector matched no objects')
+            if not objects: raise ValueError(_missobj(row))
             samples=row['samples']; expected_frames={{int(s['frame']) for s in samples}}
             paths=set(samples[0]['values']); deltas=[]
             for o in objects:
@@ -667,7 +689,7 @@ for row in _rows:
             a,b=row['frames']; epsilon=float(row.get('motion_epsilon',1e-5))
             value=_onset(other,a,b,epsilon)-_onset(objects,a,b,epsilon)
         elif kind=='radial_distance_trend':
-            if not objects: raise ValueError('selector matched no objects')
+            if not objects: raise ValueError(_missobj(row))
             a,b=row['frames']; samples=[]
             for f in range(int(a),int(b)+1):
                 _scene.frame_set(int(f)); dg=bpy.context.evaluated_depsgraph_get()
@@ -677,7 +699,7 @@ for row in _rows:
             xs=list(range(len(samples))); xm=sum(xs)/len(xs); ym=sum(samples)/len(samples)
             value=sum((x-xm)*(y-ym) for x,y in zip(xs,samples))/max(sum((x-xm)**2 for x in xs),1e-12)
         elif kind=='transform_return_delta':
-            if not objects: raise ValueError('selector matched no objects')
+            if not objects: raise ValueError(_missobj(row))
             a,b=row['frames']; first=_transforms(objects,a); second=_transforms(objects,b)
             component=row.get('component','location'); deltas=[]
             for name in first:
@@ -686,7 +708,7 @@ for row in _rows:
                 else: deltas.append(first[name][1].rotation_difference(second[name][1]).angle)
             value=max(deltas)
         elif kind=='curve_derivative_max':
-            if not objects: raise ValueError('selector matched no objects')
+            if not objects: raise ValueError(_missobj(row))
             a,b=row['frames']; path=row.get('property') or 'location'
             deltas=[]; prev=None
             for f in range(int(a),int(b)+1):
@@ -701,7 +723,7 @@ for row in _rows:
             if not deltas: raise ValueError('frame window has no adjacent frame pair')
             value=max(deltas)
         elif kind=='path_clearance_min':
-            if not objects: raise ValueError('selector matched no objects')
+            if not objects: raise ValueError(_missobj(row))
             a,b=row['frames']; step=int(row.get('frame_step') or 1)
             obstacle_sel=_p(row,'compare_roles'); best=None
             for f in range(int(a),int(b)+1,step):
@@ -741,12 +763,14 @@ for row in _rows:
             if near_move<1e-6 and far_move<1e-6:
                 raise ValueError('neither group displaces on screen between the frames')
             value=1e9 if far_move<1e-6 else near_move/far_move
-    except Exception as exc: value=None; error=str(exc)[:160]
+    # 400, not 160: the miss diagnostics carry the selector AND the tags present,
+    # and a truncated enumeration reads as a complete one.
+    except Exception as exc: value=None; error=str(exc)[:400]
     _out.append({{'id':row['id'],'value':value,'objects':[o.name for o in objects],
       'roles':[str(o.get('bvfx_role','')) for o in objects],'materials':[m.name for m in materials],
       'controls':[str(o.get('bvfx_control','')) for o in objects],
       'material_roles':[str(m.get('bvfx_role','')) for m in materials],
-      'nodes':[n.name for g,n in matched],'error':error}})
+      'nodes':[n.name for g,n in matched],'error':error,'note':note}})
 RESULT=_out
 """
 
@@ -769,6 +793,7 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
                 "value": value,
                 "target": _target(row),
                 "pass": not error and _holds(row, reading.get("value")),
+                "note": str(reading.get("note") or ""),
                 "origin": "planner",
                 "source": "interface_contract",
                 "authoritative": True,
@@ -860,7 +885,12 @@ else:
     graphs=[nt] if nt else []
 nodes=[n for nt in graphs for n in nt.nodes
        if match(n.get('bvfx_control') or n.get('bvfx_role'),spec['node_roles'])]
-if len(nodes)!=1: raise ValueError(f"semantic control matched {{len(nodes)}} nodes")
+if len(nodes)!=1:
+    seen=sorted(set(str(n.get('bvfx_control') or n.get('bvfx_role')) for nt in graphs for n in nt.nodes
+                    if (n.get('bvfx_control') or n.get('bvfx_role'))))[:16]
+    raise ValueError("semantic control "+repr(spec['node_roles'])+" matched "+str(len(nodes))
+                     +" nodes in "+str(len(graphs))+" "+str(spec['graph'])+" graph(s);"
+                     +" semantic tags present: "+(", ".join(seen) or "(none)"))
 direction=spec.get('socket_direction') or 'auto'
 collections=(
     [('input',nodes[0].inputs)] if direction=='input' else
@@ -876,7 +906,14 @@ for candidate_direction,sockets in collections:
         candidate=None
     if candidate is not None:
         socket=candidate; resolved_direction=candidate_direction; break
-if socket is None: raise ValueError(f"semantic control has no requested {{direction}} socket")
+if socket is None:
+    raise ValueError("semantic control node "+nodes[0].bl_idname+" has no requested "+direction
+                     +" socket "+repr(spec.get('socket') or 'Value')
+                     +"; inputs="+repr([s.name for s in nodes[0].inputs][:12])
+                     +" outputs="+repr([s.name for s in nodes[0].outputs][:12])
+                     +". With no 'socket' declared the sweep resolves a socket literally named"
+                     +" 'Value': tag a ShaderNodeValue that drives the target property,"
+                     +" or declare 'socket' in the contract row.")
 before=float(socket.default_value)
 new={value!r}
 if new is not None: socket.default_value=float(new)
@@ -950,7 +987,9 @@ def functional_evidence(
                 high_mean = ImageStat.Stat(high.convert("L")).mean[0]
                 value = high_mean - low_mean
         except Exception as exc:
-            error = str(exc)[:160]
+            # 400, not 160: control-resolution misses enumerate the tags/sockets present,
+            # and a truncated enumeration reads as a complete one.
+            error = str(exc)[:400]
         finally:
             if original is not None:
                 try:

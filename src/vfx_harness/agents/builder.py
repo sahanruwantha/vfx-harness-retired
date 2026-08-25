@@ -465,8 +465,8 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                     "evidence": [
                         {
                             key: row.get(key)
-                            for key in ("id", "kind", "value", "target", "pass", "error")
-                            if row.get(key) is not None
+                            for key in ("id", "kind", "value", "target", "pass", "error", "note")
+                            if row.get(key) not in (None, "")
                         }
                         for row in rows
                     ],
@@ -2398,9 +2398,11 @@ def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evid
                 "apply to what the claim names; it needs re-materialization, not a repair."
             )
         hint = _reproduction_hint(row)
+        note = str(row.get("note") or "").strip()
         return (
             f"{head} executable contract fails: {row.get('metric')} reads "
             f"{row.get('value')} against {row.get('target')}"
+            + (f" — {note}" if note else "")
             + (f" · reproduce: {hint}" if hint else "")
         )
 
