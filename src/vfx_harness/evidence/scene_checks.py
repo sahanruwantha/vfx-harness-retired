@@ -458,6 +458,11 @@ def _materials(row):
     return sorted([m for m in bpy.data.materials
                    if _m(m.get('bvfx_role'),_p(row,'material_roles'))],key=lambda m:m.name)
 def _nr(n): return n.get('bvfx_control') or n.get('bvfx_role') or ''
+def _nm(n,pats):
+    # Either-of, never precedence: with `control or role` a control-tagged node's ROLE
+    # was unreachable by any selector — run 20260825 tagged AtmosphereVolume with both,
+    # and its role selector silently resolved to the wrong node ("matched 1").
+    return _m(n.get('bvfx_control'),pats) or _m(n.get('bvfx_role'),pats)
 def _graphs(row):
     if row.get('graph')=='material': return [(m.name,m.node_tree) for m in _materials(row) if m.node_tree]
     if row.get('graph')=='compositor':
@@ -550,7 +555,11 @@ def _transforms(items,frame):
         out[item.name]=(loc.copy(),rot.copy(),scale.copy())
     return out
 def _seen_tags(row):
-    return sorted(set(_nr(n) for _g,_nt in _graphs(row) for n in _nt.nodes if _nr(n)))[:16]
+    tags=[]
+    for _g,_nt in _graphs(row):
+        for n in _nt.nodes:
+            tags += [str(n.get('bvfx_control') or ''), str(n.get('bvfx_role') or '')]
+    return sorted(set(t for t in tags if t))[:16]
 def _seen_object_roles():
     return sorted(set(str(o.get('bvfx_role')) for o in bpy.data.objects if o.get('bvfx_role')))[:24]
 def _missobj(row):
@@ -621,7 +630,7 @@ for row in _rows:
             wanted=_p(row,'node_roles')
             for graph,nt in _graphs(row):
                 for node in nt.nodes:
-                    if _m(_nr(node),wanted): matched.append((graph,node))
+                    if _nm(node,wanted): matched.append((graph,node))
             if kind=='node_count':
                 value=len(matched)
                 if not matched and wanted:
@@ -646,8 +655,8 @@ for row in _rows:
             value=0
             for graph,nt in _graphs(row):
                 for link in nt.links:
-                    if (not _m(_nr(link.from_node),_p(row,'from_node_roles'))
-                            or not _m(_nr(link.to_node),_p(row,'to_node_roles'))):
+                    if (not _nm(link.from_node,_p(row,'from_node_roles'))
+                            or not _nm(link.to_node,_p(row,'to_node_roles'))):
                         continue
                     if row.get('from_socket') and link.from_socket.name!=row['from_socket']: continue
                     if row.get('to_socket') and link.to_socket.name!=row['to_socket']: continue
@@ -884,10 +893,11 @@ else:
     nt=bpy.context.scene.world.node_tree if bpy.context.scene.world and bpy.context.scene.world.use_nodes else None
     graphs=[nt] if nt else []
 nodes=[n for nt in graphs for n in nt.nodes
-       if match(n.get('bvfx_control') or n.get('bvfx_role'),spec['node_roles'])]
+       if match(n.get('bvfx_control'),spec['node_roles'])
+       or match(n.get('bvfx_role'),spec['node_roles'])]
 if len(nodes)!=1:
-    seen=sorted(set(str(n.get('bvfx_control') or n.get('bvfx_role')) for nt in graphs for n in nt.nodes
-                    if (n.get('bvfx_control') or n.get('bvfx_role'))))[:16]
+    seen=sorted(set(str(t) for nt in graphs for n in nt.nodes
+                    for t in (n.get('bvfx_control'),n.get('bvfx_role')) if t))[:16]
     raise ValueError("semantic control "+repr(spec['node_roles'])+" matched "+str(len(nodes))
                      +" nodes in "+str(len(graphs))+" "+str(spec['graph'])+" graph(s);"
                      +" semantic tags present: "+(", ".join(seen) or "(none)"))
