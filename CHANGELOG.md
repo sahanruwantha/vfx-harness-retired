@@ -7,6 +7,16 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Made every selector and socket miss report both sides: node/control misses enumerate the
+  semantic tags actually present in the searched graphs, socket misses enumerate the node's
+  real sockets plus the literal-`'Value'` resolution rule, measured zeros carry the same
+  enumeration as notes through evidence, probes, and verdicts. `probe_control` now renders
+  the one canonical control resolver instead of a private near-copy, selectors match control
+  and role tags either-of (a control tag no longer shadows a node's role), and an auto-socket
+  response row sharing its selector with a socket-pinned sibling is refused at authoring and
+  advisory at the gate
+  ([HIR-0018](docs/improvements/HIR-0018-selector-diagnostics-say-both-sides.md)).
+
 - Taught the plan gate the verified materialization lifecycle, added three evidence kinds
   (motion smoothness, persistent path clearance, parallax profile) with fail-closed vacuity
   linting, and gave planning/repair sessions decision-grade instruments — `evidence_vocabulary`,
