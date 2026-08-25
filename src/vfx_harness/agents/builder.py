@@ -2354,12 +2354,22 @@ def _executable_unit_verdict(
     # binding scoped to a frame NO claim moment covers stays due — loudly missing beats
     # silently never-checked.
     binding_moments: dict[str, set[int]] = {}
+    declared_moments: dict[str, set[int]] = {}
     for claim in required:
         for binding in claim.evidence:
             binding_moments.setdefault(binding.id, set()).update(
                 int(moment) for moment in claim.moments
             )
+            if getattr(binding, "moments", None) is not None:
+                declared_moments.setdefault(binding.id, set()).update(
+                    int(moment) for moment in binding.moments
+                )
     def _due_here(binding_id: str) -> bool:
+        # the author's declared moments are the model; frame-inference is only the
+        # fallback for undeclared bindings on frame-carrying contracts
+        declared_set = declared_moments.get(binding_id)
+        if declared_set is not None:
+            return int(frame) in declared_set
         declared = (contract_frames or {}).get(binding_id)
         if declared is None or int(declared) == int(frame):
             return True

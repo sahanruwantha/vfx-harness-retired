@@ -244,6 +244,25 @@ def validate_materialization(
             raise ValueError(f"image contract {row.get('id')} must be owned by layer {layer_id}")
     for cross_row_finding in validate_row_set(scene_rows):
         raise ValueError(f"scene contract {cross_row_finding}")
+    # A binding that declares its moments must include the bound contract's own frame:
+    # declaring moments [150] for a frame-72 contract authors evidence that can never
+    # be produced when it is due.
+    frame_by_id = {
+        str(row.get("id")): int(row["frame"])
+        for row in scene_rows
+        if isinstance(row, dict) and row.get("id") and row.get("frame") is not None
+    }
+    for unit in layer.stages:
+        for claim in unit.evaluation.claims:
+            for binding in claim.evidence:
+                declared = getattr(binding, "moments", None)
+                contract_frame = frame_by_id.get(str(binding.id))
+                if declared is not None and contract_frame is not None and contract_frame not in declared:
+                    raise ValueError(
+                        f"unit {unit.id} claim {claim.id} binds {binding.id} at moments "
+                        f"{sorted(declared)}, but that contract measures frame "
+                        f"{contract_frame} — a binding due when it cannot be produced"
+                    )
 
     required_bindings = {
         (binding.kind, binding.id)

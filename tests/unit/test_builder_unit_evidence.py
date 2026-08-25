@@ -103,3 +103,38 @@ def test_frame_scoped_bindings_are_due_at_their_own_frame() -> None:
     verdict = _executable_unit_verdict(unit, 72, [("a", "axis")], evidence_f72, contract_frames=stray)
     assert verdict is not None and not verdict["pass"]
     assert verdict["contract_gap"]
+
+
+def test_declared_binding_moments_outrank_frame_inference() -> None:
+    """The binding contract can now SAY which moments it settles; inference from the
+    contract's frame is only the fallback for undeclared bindings. Declared moments
+    also cannot stray outside the claim's judged set, and a materialization refuses a
+    binding declared due where its contract cannot produce."""
+    from types import SimpleNamespace
+
+    import pytest as _pytest
+
+    from vfx_harness.agents.builder import _executable_unit_verdict
+    from vfx_harness.domain.work_units import Claim
+
+    claim = SimpleNamespace(
+        required=True, authority="executable_required", moments=(72, 150),
+        evidence=[
+            SimpleNamespace(kind="scene_contract", id="vis-f72", moments=(72,)),
+            SimpleNamespace(kind="scene_contract", id="vis-f150", moments=(150,)),
+        ],
+    )
+    unit = SimpleNamespace(evaluation=SimpleNamespace(claims=[claim]))
+    evidence_f72 = [{"id": "vis-f72", "pass": True, "value": 0.9}]
+    verdict = _executable_unit_verdict(unit, 72, [("a", "axis")], evidence_f72, contract_frames={})
+    assert verdict is not None and verdict["pass"], verdict
+
+    row = {
+        "id": "c", "proposition": "p", "axis": "a", "property": "visible_fraction",
+        "subject_roles": ["r"], "subject_controls": [], "moments": [72, 150],
+        "kind": "atomic", "required": True, "authority": "executable_required",
+        "repair_owner": "u",
+        "evidence": [{"kind": "scene_contract", "id": "vis-f72", "moments": [72, 240]}],
+    }
+    with _pytest.raises(ValueError, match="outside this claim's judged set"):
+        Claim.parse(row, "claim")

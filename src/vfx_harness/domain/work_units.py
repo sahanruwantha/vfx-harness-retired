@@ -121,10 +121,18 @@ class EvidenceBinding:
 
     Collection labels such as ``scene_contracts`` are deliberately invalid.  A required
     claim must say which exact contract, qualification, or human decision can settle it.
+
+    ``moments`` states WHICH of the claim's judged moments this binding settles. The
+    vocabulary grew frame-scoped kinds after this contract was designed, so authors'
+    real intent ("vis-f72 belongs to moment 72") was inexpressible and due-ness had to
+    be inferred from the bound contract's frame (run 20260825: a [72, 150] claim was
+    faulted at each frame for the other frame's row). Declared moments win; inference
+    remains only a fallback for undeclared bindings.
     """
 
     kind: str
     id: str
+    moments: tuple[int, ...] | None = None
 
     @classmethod
     def parse(cls, value: Any, where: str) -> EvidenceBinding:
@@ -132,10 +140,13 @@ class EvidenceBinding:
         kind = row.get("kind")
         if kind not in EVIDENCE_KINDS:
             raise ValueError(f"{where}.kind must be one of {sorted(EVIDENCE_KINDS)}")
-        extra = sorted(set(row) - {"kind", "id"})
+        extra = sorted(set(row) - {"kind", "id", "moments"})
         if extra:
             raise ValueError(f"{where} has unknown fields: {', '.join(extra)}")
-        return cls(kind, _id(row.get("id"), f"{where}.id"))
+        moments = row.get("moments")
+        if moments is not None:
+            moments = _moments(moments, f"{where}.moments")
+        return cls(kind, _id(row.get("id"), f"{where}.id"), moments)
 
 
 def _bindings(value: Any, where: str) -> tuple[EvidenceBinding, ...]:
@@ -248,6 +259,14 @@ class Claim:
 
         repair_owner = _id(row.get("repair_owner"), f"{where}.repair_owner")
         evidence = _bindings(row.get("evidence"), f"{where}.evidence")
+        for index, binding in enumerate(evidence):
+            if binding.moments is not None:
+                stray = sorted(set(binding.moments) - set(moments))
+                if stray:
+                    raise ValueError(
+                        f"{where}.evidence[{index}].moments {sorted(binding.moments)} names "
+                        f"moments outside this claim's judged set {sorted(moments)}: {stray}"
+                    )
         evidence_kinds = {item.kind for item in evidence}
         if authority == "executable_required" and not evidence_kinds <= {
             "scene_contract",
