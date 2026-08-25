@@ -257,10 +257,17 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     assert "global-preproduction" not in families, plan_gate.report(result)
     assert "decision-adoption" not in families, plan_gate.report(result)
     assert "role-selector-closure" not in families, plan_gate.report(result)
-    assert any(  # the unit plan does not exist yet — the gate must still demand it
-        finding.check == "hierarchy" and "no just-in-time plan" in finding.what
-        for finding in result.blocking
-    )
+    # The unit plan does not exist yet — for a PENDING unit that is the designed
+    # state (the build flow generates and gate-attests it), named as an advisory,
+    # never blocking: blocking here deadlocked the first unit plan of a fresh-id
+    # layer on its sibling's equally-designed absence (run 0b6849).
+    jit_plan_findings = [
+        finding
+        for finding in result.findings
+        if finding.check == "hierarchy" and "no just-in-time plan" in finding.what
+    ]
+    assert jit_plan_findings, plan_gate.report(result)
+    assert not any(finding.blocking for finding in jit_plan_findings), plan_gate.report(result)
 
     # ── 4 · unit-plan publication: existence is not authority (leak seam) ──
     plan_path = tmp_path / "plans" / "01_finish" / "lock.md"

@@ -2371,13 +2371,28 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
         for unit in ready:
             path = work_unit_plan_path(folder, unit)
             if not path.is_file():
+                # HIR-0016 made the unit plan a BUILD-time artifact: generated, stamped,
+                # gated, and attested inside the build flow, with consumers refusing
+                # unattested authority. Before that flow runs, absence is the DESIGNED
+                # state — blocking here deadlocked the first unit plan of any fresh-id
+                # layer on its sibling's equally-designed absence (run 0b6849), while
+                # stale unattested files from a superseded generation satisfied the old
+                # existence check. Only state/artifact drift blocks: a unit whose state
+                # claims progress must have its plan on disk.
+                status = str(
+                    ((state.get("units") or {}).get(str(unit.id)) or {}).get("status")
+                    or "pending"
+                )
                 out.append(
                     Finding(
                         "hierarchy",
-                        True,
+                        status != "pending",
                         str(path.relative_to(folder)),
-                        f"ready unit {next_layer.id}.{unit.id} has no just-in-time plan",
-                        f"run `vfx plan {folder} --layer {next_layer.id} --unit {unit.id}`",
+                        f"ready unit {next_layer.id}.{unit.id} has no just-in-time plan"
+                        + ("" if status == "pending" else f" although its state is {status!r}"),
+                        "the build flow generates and gate-attests it at kickoff"
+                        if status == "pending"
+                        else f"run `vfx plan {folder} --layer {next_layer.id} --unit {unit.id}`",
                     )
                 )
             else:
