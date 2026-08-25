@@ -622,14 +622,17 @@ def _owned_by(layer_row: dict | None) -> set[str]:
     return {str(rid) for rid in (jit.get("owned_requirements") or [])}
 
 
-def publish_materialization(
-    shot_folder: str | Path,
-    materialization_path: str | Path,
-) -> Path:
-    """Validate and atomically select one cumulative materialized consumer view."""
+def _composed_documents(shot: Path, materialization_path: str | Path):
+    """Validate a payload and compose the five overlaid consumer documents.
+
+    Shared by publication (which writes the durable view + pointer) and the in-session
+    candidate preview (which stages the same documents into a throwaway consumer view)
+    — one composition, so the preview cannot diverge from what publication produces.
+    Runs 20260825T015307Z and 034337Z each published on a preview that had shown the
+    PRE-publication view: a false CLEAN, a retracted generation each."""
     from vfx_harness.orchestration.plan_authority import artifact_path, resolve_current
 
-    shot = Path(shot_folder).resolve()
+    shot = Path(shot).resolve()
     bundle = resolve_current(shot)
     global_layers = load_layers_from_path(bundle.root / "layers.json")
     payload = _document(Path(materialization_path))
@@ -660,25 +663,39 @@ def publish_materialization(
         resolutions_path=shot / "state" / "plan-resolutions.jsonl",
         base_requirements_path=base_requirements,
     )
+    return (
+        bundle,
+        materialized,
+        {
+            "layers.json": base_layers,
+            "scene_checks.json": base_scene,
+            "checks.json": base_checks,
+            "requirements.json": base_requirements,
+            "acceptance.json": base_acceptance,
+        },
+    )
 
-    layers_doc = _document(base_layers)
+
+def _overlay_documents(materialized, bases: dict) -> dict:
+    """Apply one validated materialization to its base documents, in memory."""
+    layer_id = str(materialized.layer.id)
+    layers_doc = _document(bases["layers.json"])
     layers_doc["layers"] = [
-        materialized.layer_row if str(row.get("id")) == materialized.layer.id else row
+        materialized.layer_row if str(row.get("id")) == layer_id else row
         for row in _rows(layers_doc, "layers", "layers.json")
     ]
-    scene_doc = _document(base_scene)
+    scene_doc = _document(bases["scene_checks.json"])
     scene_doc["contracts"] = [
         *_rows(scene_doc, "contracts", "scene_checks.json"),
         *materialized.scene_contracts,
     ]
-    checks_doc = _document(base_checks)
+    checks_doc = _document(bases["checks.json"])
     checks_doc["checks"] = [
         *_rows(checks_doc, "checks", "checks.json"),
         *materialized.image_contracts,
     ]
-    requirements_doc = _document(base_requirements)
-    requirement_rows = _rows(requirements_doc, "requirements", "requirements.json")
-    for row in requirement_rows:
+    requirements_doc = _document(bases["requirements.json"])
+    for row in _rows(requirements_doc, "requirements", "requirements.json"):
         requirement_id = str(row.get("id") or "")
         contract_ids = materialized.requirement_bindings.get(requirement_id)
         decision = materialized.requirement_decisions.get(requirement_id)
@@ -701,7 +718,7 @@ def publish_materialization(
                 "decision": decision["statement"],
                 "decision_strength": decision["decision_strength"],
             }
-    acceptance_doc = json.loads(base_acceptance.read_text(encoding="utf-8"))
+    acceptance_doc = json.loads(Path(bases["acceptance.json"]).read_text(encoding="utf-8"))
     if not isinstance(acceptance_doc, list):
         raise ValueError("acceptance.json must contain a list")
     acceptance_ids = {str(row.get("id")) for row in acceptance_doc if isinstance(row, dict)}
@@ -711,6 +728,79 @@ def publish_materialization(
     if duplicate_acceptance:
         raise ValueError("materialized acceptance ids already exist: " + ", ".join(duplicate_acceptance))
     acceptance_doc.extend(materialized.acceptance)
+    return {
+        "layers.json": layers_doc,
+        "scene_checks.json": scene_doc,
+        "checks.json": checks_doc,
+        "requirements.json": requirements_doc,
+        "acceptance.json": acceptance_doc,
+    }
+
+
+def stage_candidate_view(shot_folder: str | Path, materialization_path: str | Path, view: str | Path) -> None:
+    """Overlay an UNPUBLISHED materialization candidate onto a prepared consumer view.
+
+    The view then looks exactly as it would after publication — overlaid documents plus
+    a synthetic hash-pinned pointer — so the deterministic gate previews the candidate's
+    real consequences instead of the pre-publication world."""
+    shot = Path(shot_folder).resolve()
+    view = Path(view).resolve()
+    bundle, materialized, bases = _composed_documents(shot, materialization_path)
+    documents = _overlay_documents(materialized, bases)
+    for name, document in documents.items():
+        target = view / name
+        if target.is_symlink() or target.exists():
+            target.unlink()
+        target.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # the view's state/ is a symlink to the shot's; replace it with a copy whose
+    # jit-layers pointer pins the candidate documents just written
+    state_link = view / "state"
+    if state_link.is_symlink():
+        real_state = state_link.resolve()
+        state_link.unlink()
+        state_link.mkdir()
+        if real_state.is_dir():
+            for child in real_state.iterdir():
+                if child.name != "jit-layers":
+                    (state_link / child.name).symlink_to(child)
+    pointer_dir = view / "state" / "jit-layers"
+    pointer_dir.mkdir(parents=True, exist_ok=True)
+    pointer = {
+        "schema": VIEW_SCHEMA,
+        "bundle_hash": bundle.content_hash,
+        "view_hash": "candidate-preview",
+        "materialized_layers": sorted(
+            str(row.get("id"))
+            for row in documents["layers.json"]["layers"]
+            if row.get("execution") != "jit_deferred"
+        ),
+        "artifacts": {name: name for name in OVERLAY_ARTIFACTS},
+        "hashes": {name: _sha256(view / name) for name in OVERLAY_ARTIFACTS},
+    }
+    (pointer_dir / "current.json").write_text(
+        json.dumps(pointer, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def publish_materialization(
+    shot_folder: str | Path,
+    materialization_path: str | Path,
+) -> Path:
+    """Validate and atomically select one cumulative materialized consumer view."""
+    shot = Path(shot_folder).resolve()
+    bundle, materialized, bases = _composed_documents(shot, materialization_path)
+    base_layers = bases["layers.json"]
+    base_scene = bases["scene_checks.json"]
+    base_checks = bases["checks.json"]
+    base_requirements = bases["requirements.json"]
+    base_acceptance = bases["acceptance.json"]
+
+    documents = _overlay_documents(materialized, bases)
+    layers_doc = documents["layers.json"]
+    scene_doc = documents["scene_checks.json"]
+    checks_doc = documents["checks.json"]
+    requirements_doc = documents["requirements.json"]
+    acceptance_doc = documents["acceptance.json"]
     digest_payload = json.dumps(
         {
             "bundle": bundle.content_hash,

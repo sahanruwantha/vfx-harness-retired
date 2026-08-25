@@ -228,8 +228,21 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     assert "plans/ownership_mapping.json" in bundle_a.artifacts  # membership seam
     assert resolve_current(tmp_path).content_hash == bundle_a.content_hash
 
-    # ── 2 · materialize the dependency-ready root, adopting the approved decision ──
-    pointer = publish_materialization(tmp_path, _root_materialization(tmp_path, bundle_a.content_hash))
+    # ── 2 · the candidate preview shows the POST-publication world before publishing ──
+    from vfx_harness.orchestration.jit_materialization import stage_candidate_view
+
+    payload = _root_materialization(tmp_path, bundle_a.content_hash)
+    preview = prepare_consumer_view(layout_a)
+    stage_candidate_view(tmp_path, payload, preview)
+    previewed = plan_gate.run(preview)
+    preview_families = {finding.check for finding in previewed.blocking}
+    assert "global-preproduction" not in preview_families, plan_gate.report(previewed)
+    assert "decision-adoption" not in preview_families, plan_gate.report(previewed)
+    staged_contracts = json.loads((preview / "scene_checks.json").read_text(encoding="utf-8"))
+    assert any(row.get("id") == "comp-clearance" for row in staged_contracts["contracts"])
+
+    # ── 2b · materialize the dependency-ready root, adopting the approved decision ──
+    pointer = publish_materialization(tmp_path, payload)
     assert json.loads(pointer.read_text(encoding="utf-8"))["materialized_layers"] == ["1"]
 
     # ── 3 · the gate accepts the post-materialization view (lifecycle seam) ──

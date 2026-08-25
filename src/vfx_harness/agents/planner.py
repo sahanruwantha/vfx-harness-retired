@@ -300,6 +300,7 @@ global authority, create unit state, write prose, or write another file."""
             "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
             "gate_preview", "escalate_vocabulary_gap",
         }),
+        candidate_materialization=target,
     )
     rserver, rnames = build_recipe_tools()
     materialization_tools = _phase_tools(

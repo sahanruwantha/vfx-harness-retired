@@ -604,6 +604,7 @@ def build_plan_tools(
     run_layout: run_artifacts.RunLayout | None = None,
     measure_ref_paths: tuple[str, ...] | None = None,
     enabled_tools: frozenset[str] | None = None,
+    candidate_materialization: str | Path | None = None,
 ):
     shot_folder = Path(shot_folder)
     work = Path(tempfile.mkdtemp(prefix="planlab-"))  # raw ffmpeg output
@@ -1384,6 +1385,23 @@ def build_plan_tools(
 
         try:
             view = await anyio.to_thread.run_sync(prepare_consumer_view, layout)
+            candidate = Path(candidate_materialization) if candidate_materialization else None
+            if candidate is not None and candidate.is_file():
+                # stage the session's own unpublished payload so the gate previews the
+                # POST-publication world — two generations published on a false CLEAN
+                # because the preview saw the pre-publication view
+                from vfx_harness.orchestration.jit_materialization import stage_candidate_view
+
+                try:
+                    await anyio.to_thread.run_sync(
+                        lambda: stage_candidate_view(shot_folder, candidate, view)
+                    )
+                except (ValueError, OSError) as exc:
+                    return _text(
+                        f"candidate materialization does not validate, so the gate has "
+                        f"nothing to preview: {exc}",
+                        is_error=True,
+                    )
             result = await anyio.to_thread.run_sync(
                 lambda: plan_gate.run(view, require_scene_checks=False)
             )
