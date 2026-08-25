@@ -1325,8 +1325,13 @@ def build_plan_tools(
             "transform_return_delta": ["frames [a,b]", "component (location|rotation|scale)"],
             "control_render_response": [
                 "graph", "node_roles", "probe_values [lo,hi]", "region [x0,y0,x1,y1]",
+                "frame (the render frame the sweep measures — the subject must be "
+                "VISIBLE there; pair with a visible_fraction row)",
+                "response_metric (mean_delta is luminance-only and reads ~0 for pure "
+                "hue/tint shifts — palette semantics need mae)",
                 "socket/socket_index (optional — otherwise resolution needs a socket "
-                "literally named 'Value': the control tag belongs on a ShaderNodeValue)",
+                "literally named 'Value': the control tag belongs on a ShaderNodeValue, "
+                "and the tagged control must stay FREE of drivers)",
             ],
             "frame_delta": ["frames [a,b]", "region (optional)"],
             "node_socket_value": [

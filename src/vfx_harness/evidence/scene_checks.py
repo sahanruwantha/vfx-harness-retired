@@ -74,6 +74,10 @@ FRAME_SCOPED_KINDS = {
     "radial_inward_fraction",
     "object_property",
     "visible_fraction",
+    # a control sweep RENDERS at a frame; run 20260825 (17581c) authored a palette
+    # response with no frame, the silent f1 default measured a subject occluded at f1,
+    # and two build attempts burned four repairs on a structurally-0.0 reading
+    "control_render_response",
 }
 FUNCTIONAL_KINDS = {"control_render_response", "frame_delta"}
 SUPPORTED_KINDS = (
@@ -1110,6 +1114,20 @@ def functional_evidence(
                     session.run(_control_script(row, original), journal=False)
                 except Exception as exc:
                     error = f"restore failed: {exc}"[:160]
+        # The instrument itself is part of the reading: a failing 0.0 with no metric,
+        # region, or frame named sent two builds hunting the control instead of the
+        # measurement (run 17581c: mean_delta is luminance-only, so a hue-swap palette
+        # control reads ~0; the row also measured the silent-default frame).
+        instrument = (
+            f"measured as {row.get('response_metric', 'mean_delta')}"
+            + (" (luminance-only: a pure hue shift reads ~0 — palette/tint semantics"
+               " need response_metric: mae)"
+               if row.get("kind") == "control_render_response"
+               and row.get("response_metric", "mean_delta") == "mean_delta"
+               else "")
+            + f" over region {row.get('region')}"
+            + (f" at frame {row.get('frame')}" if row.get("frame") is not None else "")
+        )
         out.append(
             {
                 "id": str(row.get("id") or "<missing>"),
@@ -1118,6 +1136,7 @@ def functional_evidence(
                 "definition": KIND_DEFINITIONS[str(row.get("kind") or "control_render_response")],
                 "value": round(value, 4) if isinstance(value, (int, float)) else None,
                 "target": _target(row),
+                "note": instrument,
                 "pass": not error and _holds(row, value),
                 "origin": "planner",
                 "source": "interface_contract",

@@ -172,3 +172,17 @@ def test_materialization_requires_visibility_at_every_judge_frame(tmp_path) -> N
         validate_materialization(
             bundle.root, payload, expected_bundle_hash=bundle.content_hash
         )
+
+
+def test_control_render_response_must_declare_its_render_frame() -> None:
+    """Run 17581c: a palette response row with no frame silently rendered the f1
+    default, where the swept subject was fully occluded — a structurally-0.0 reading
+    that burned two builds and four repairs. Functional render rows are frame-scoped."""
+    row = _row(
+        id="resp", kind="control_render_response", graph="material",
+        material_roles=["m.*"], node_roles=["ctrl"], probe_values=[0.0, 1.0],
+        region=[0.35, 0.35, 0.65, 0.65], op="min", lo=0.02,
+    )
+    error = validate_row(row) or ""
+    assert "frame" in error
+    assert validate_row({**row, "frame": 150}) is None
