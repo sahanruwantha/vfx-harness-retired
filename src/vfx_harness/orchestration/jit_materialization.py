@@ -228,7 +228,17 @@ def validate_materialization(
         if error:
             raise ValueError(f"scene contract {row.get('id', '<missing>')}: {error}")
         if str(row.get("owner_layer") or row.get("activates_at") or "") != layer_id:
-            raise ValueError(f"scene contract {row.get('id')} must be owned by layer {layer_id}")
+            # Run 20260825 (bb54f1): a correctly-designed cross-layer visibility row
+            # died here as owner_layer=2 inside layer 1's materialization, and the bare
+            # "must be owned" message cost the whole session. Name the legal form.
+            raise ValueError(
+                f"scene contract {row.get('id')} must be owned by layer {layer_id} "
+                f"(it declares owner_layer={row.get('owner_layer')!r}). A contract this "
+                "layer authors but a LATER layer evaluates keeps "
+                f"owner_layer={layer_id!r} and sets activates_at to the later layer "
+                "(fault_owner may still name this layer); only rows this layer owns "
+                "may publish here"
+            )
     for row in image_rows:
         if str(row.get("owner_layer") or "") != layer_id:
             raise ValueError(f"image contract {row.get('id')} must be owned by layer {layer_id}")
