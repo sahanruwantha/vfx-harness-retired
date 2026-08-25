@@ -69,7 +69,7 @@ def _replan(args: argparse.Namespace) -> int:
     # a layer materializes).
     from vfx_harness.orchestration.plan_authority import active_plan_hash
 
-    new_plan_hash = active_plan_hash(shot.folder)
+    new_plan_hash = active_plan_hash(shot.folder, fallback_root=current.root)
     evidence = list(getattr(args, "evidence", None) or [])
     falsification_id = None
     hard_approval = getattr(args, "hard_constraint_approval", None)

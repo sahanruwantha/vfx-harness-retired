@@ -599,16 +599,23 @@ def authority_root(shot_folder: str | Path) -> Path:
     return resolve_current(shot_folder).root
 
 
-def active_plan_hash(shot_folder: str | Path) -> str:
+def active_plan_hash(shot_folder: str | Path, *, fallback_root: Path | None = None) -> str:
     """The ONE identity of the active layer DAG: sha256 of the RESOLVED layers.json.
 
     Under unit-first authority the bundle's sparse layers.json and the materialized
     view's overlay are different documents by design. units-replan hashed the bundle
     while build initialization hashed the view (run 20260825, view 381623c7): every
     rematerialize -> replan -> build sequence dead-ended on the two derivations, each
-    correctly refusing the other's hash."""
+    correctly refusing the other's hash.
+
+    `fallback_root`: a caller-resolved bundle root used only when the shot carries no
+    publication pointer (explicit-bundle administrative transactions on archived
+    fixtures); a pointer-carrying shot always resolves through the selected view."""
+    shot = Path(shot_folder).expanduser().resolve()
+    if fallback_root is not None and not (shot / POINTER).exists():
+        return hashlib.sha256((fallback_root / "layers.json").read_bytes()).hexdigest()
     return hashlib.sha256(
-        selected_artifact_path(shot_folder, "layers.json").read_bytes()
+        selected_artifact_path(shot, "layers.json").read_bytes()
     ).hexdigest()
 
 
