@@ -1014,6 +1014,20 @@ if socket is None:
                      +". With no 'socket' declared the sweep resolves a socket literally named"
                      +" 'Value': tag a ShaderNodeValue that drives the target property,"
                      +" or declare 'socket' in the contract row.")
+_tree=nodes[0].id_data
+_ad=getattr(_tree,'animation_data',None)
+_dpath=socket.path_from_id('default_value')
+if _ad and any(d.data_path==_dpath for d in (_ad.drivers or [])):
+    # A driver re-evaluates the socket every depsgraph update, so the sweep's write is
+    # silently clobbered and the measured response is always 0.0 — run 20260825
+    # (17581c) burned both repairs proving a beautiful frame-driven look that no
+    # contract could ever measure. Fail loudly with the workable rig instead.
+    raise ValueError("semantic control socket '"+socket.name+"' on "+nodes[0].name
+                     +" is DRIVER-OWNED: the sweep writes default_value and the driver"
+                     +" overwrites it at evaluation, so the measured response is always"
+                     +" 0. Keep the swept control FREE (e.g. a tagged ShaderNodeValue)"
+                     +" and combine it with the animated quantity via a Math node;"
+                     +" drive the Math operand, never the tagged control itself.")
 before=float(socket.default_value)
 new={value!r}
 if new is not None: socket.default_value=float(new)
