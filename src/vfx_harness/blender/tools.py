@@ -1497,62 +1497,23 @@ def build_blender_tools(
         if lock_error:
             return _text(lock_error, is_error=True)
 
-        selector = json.dumps(
-            {
-                k: args.get(k)
-                for k in (
-                    "graph",
-                    "material_role",
-                    "node_role",
-                    "socket",
-                    "socket_index",
-                    "socket_direction",
-                )
-            }
-        )
+        # ONE control resolver: probe_control kept its own copy of this script and the
+        # copies disagreed on diagnostics — the canonical resolver enumerates the tags
+        # present on a miss, the copy said only "matched 0 nodes" (ADR-0003's registry
+        # split, re-grown). The tool now renders the same script canonical evidence uses.
+        from vfx_harness.evidence.scene_checks import _control_script
+
+        selector_row = {
+            "graph": args.get("graph"),
+            "material_roles": [args["material_role"]] if args.get("material_role") else [],
+            "node_roles": [args["node_role"]] if args.get("node_role") else [],
+            "socket": args.get("socket"),
+            "socket_index": args.get("socket_index"),
+            "socket_direction": args.get("socket_direction"),
+        }
 
         def control_script(value=None):
-            payload = json.dumps(value)
-            return f"""\
-import bpy, fnmatch, json
-spec=json.loads({json.dumps(selector)})
-graphs=[]
-if spec['graph']=='material':
-    mats=[m for m in bpy.data.materials
-          if fnmatch.fnmatchcase(str(m.get('bvfx_role','')),spec['material_role'])]
-    graphs=[m.node_tree for m in mats if m.node_tree]
-elif spec['graph']=='compositor':
-    ng=getattr(bpy.context.scene,'compositing_node_group',None); graphs=[ng] if ng else []
-else:
-    nt=bpy.context.scene.world.node_tree if bpy.context.scene.world and bpy.context.scene.world.use_nodes else None
-    graphs=[nt] if nt else []
-nodes=[n for nt in graphs for n in nt.nodes
-       if fnmatch.fnmatchcase(
-           str(n.get('bvfx_control') or n.get('bvfx_role') or ''),spec['node_role'])]
-if len(nodes)!=1: raise ValueError(f"semantic control matched {{len(nodes)}} nodes")
-direction=spec.get('socket_direction') or 'auto'
-collections=(
-    [('input',nodes[0].inputs)] if direction=='input' else
-    [('output',nodes[0].outputs)] if direction=='output' else
-    [('input',nodes[0].inputs),('output',nodes[0].outputs)]
-)
-socket=None; resolved_direction=None
-for candidate_direction,sockets in collections:
-    try:
-        candidate=(sockets[int(spec['socket_index'])]
-                   if spec.get('socket_index') is not None
-                   else sockets.get(spec.get('socket') or 'Value'))
-    except IndexError:
-        candidate=None
-    if candidate is not None:
-        socket=candidate; resolved_direction=candidate_direction; break
-if socket is None: raise ValueError(f"semantic control has no requested {{direction}} socket")
-before=float(socket.default_value)
-new=json.loads({json.dumps(payload)})
-if new is not None: socket.default_value=float(new)
-RESULT={{'before':before,'after':float(socket.default_value),'node':nodes[0].name,
-        'socket':socket.name,'socket_direction':resolved_direction}}
-"""
+            return _control_script(selector_row, value=value)
 
         try:
             initial = await anyio.to_thread.run_sync(lambda: session.run(control_script(), journal=False))
