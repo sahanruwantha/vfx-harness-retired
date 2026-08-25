@@ -1324,6 +1324,18 @@ def build_plan_tools(
             "transform_return_delta": ["frames [a,b]", "component (location|rotation|scale)"],
             "control_render_response": ["graph", "node_roles", "probe_values [lo,hi]", "region [x0,y0,x1,y1]"],
             "frame_delta": ["frames [a,b]", "region (optional)"],
+            "node_socket_value": [
+                "graph (material|compositor|world)",
+                "node_roles",
+                "socket (name) or socket_index",
+                "direction (input|output)",
+                "component (optional, for vector sockets)",
+            ],
+            "node_count": ["graph (material|compositor|world)", "node_roles"],
+            "node_link_count": [
+                "graph", "from_node_roles", "to_node_roles",
+                "from_socket/to_socket (optional)",
+            ],
         }
         entries = {}
         for kind in sorted(SUPPORTED_KINDS):
