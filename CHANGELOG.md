@@ -7,6 +7,11 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Added `visible_fraction`, occlusion-true visibility evidence (camera-ray fraction of a
+  subject's on-screen surface samples), and made every judge frame require it at
+  materialization: a whole lookdev layer had been judged at frames where every subject sat
+  behind a solid blockout disc, invisible to projection-only bbox rows
+  ([HIR-0019](docs/improvements/HIR-0019-judge-frames-must-prove-visibility.md)).
 - Made every selector and socket miss report both sides: node/control misses enumerate the
   semantic tags actually present in the searched graphs, socket misses enumerate the node's
   real sockets plus the literal-`'Value'` resolution rule, measured zeros carry the same
