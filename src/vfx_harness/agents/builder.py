@@ -2329,7 +2329,13 @@ def _reproduction_hint(row: dict) -> str:
     return ""
 
 
-def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evidence: list[dict]) -> dict | None:
+def _executable_unit_verdict(
+    unit,
+    frame: int,
+    axes: list[tuple[str, str]],
+    evidence: list[dict],
+    contract_frames: dict[str, int] | None = None,
+) -> dict | None:
     """Let exact executable claims decide an atomic unit without a vision call."""
     if unit is None:
         return None
@@ -2340,7 +2346,30 @@ def _executable_unit_verdict(unit, frame: int, axes: list[tuple[str, str]], evid
     ]
     if not required or any(claim.authority != "executable_required" for claim in required):
         return None
-    required_ids = {binding.id for claim in required for binding in claim.evidence}
+    # A frame-scoped contract produces its reading at ITS declared frame only. A claim
+    # judging [72, 150] that binds vis-f72 AND vis-f150 was faulted at each frame for
+    # the OTHER frame's row (run 20260825: detail_instancing 'required bound evidence
+    # was not produced' at both frames with both rows green at their own). A binding is
+    # due here unless it is scoped to a different frame this claim also judges; a
+    # binding scoped to a frame NO claim moment covers stays due — loudly missing beats
+    # silently never-checked.
+    binding_moments: dict[str, set[int]] = {}
+    for claim in required:
+        for binding in claim.evidence:
+            binding_moments.setdefault(binding.id, set()).update(
+                int(moment) for moment in claim.moments
+            )
+    def _due_here(binding_id: str) -> bool:
+        declared = (contract_frames or {}).get(binding_id)
+        if declared is None or int(declared) == int(frame):
+            return True
+        return int(declared) not in binding_moments.get(binding_id, set())
+    required_ids = {
+        binding.id
+        for claim in required
+        for binding in claim.evidence
+        if _due_here(binding.id)
+    }
     by_id = {str(row.get("id")): row for row in evidence if row.get("id")}
     missing = sorted(required_ids - set(by_id))
     failures = [
@@ -2440,7 +2469,19 @@ async def _judge_unit_or_layer(
     active_unit=None,
     **kwargs,
 ) -> dict:
-    verdict = _executable_unit_verdict(active_unit, int(m.frame), axes, evidence)
+    from vfx_harness.evidence.scene_checks import load_rows as _load_contract_rows
+
+    try:
+        contract_frames = {
+            str(r.get("id")): int(r.get("frame"))
+            for r in _load_contract_rows(shot.folder)
+            if isinstance(r, dict) and r.get("id") and r.get("frame") is not None
+        }
+    except (OSError, ValueError):
+        contract_frames = {}
+    verdict = _executable_unit_verdict(
+        active_unit, int(m.frame), axes, evidence, contract_frames=contract_frames
+    )
     if verdict is None:
         return await _judge(
             shot,
