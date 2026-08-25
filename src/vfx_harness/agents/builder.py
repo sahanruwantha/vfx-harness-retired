@@ -2838,6 +2838,7 @@ async def build_unit(
         "image_evidence_required": image_evidence_required,
     }
     comparison_state = phase
+    scope_baseline: set[str] = set()
     bserver, bnames = build_blender_tools(
         session,
         assets_dir=shot.folder / "assets",
@@ -2850,10 +2851,11 @@ async def build_unit(
             if active_unit is not None and active_unit.mutates.mode == "scoped"
             else None
         ),
-        # priors have already replayed: their objects are prior authority, not this
-        # unit's violations — without this baseline the live scope check told every
-        # later unit to delete the previous layers' sealed work
-        scope_baseline=set(_scene_object_manifest(session)),
+        # populated AFTER reset+priors+warm-start replay below (the server is built
+        # first): prior layers' objects are their own authority, not this unit's
+        # violations — without the baseline the live scope check told every later
+        # unit to delete the previous layers' sealed work
+        scope_baseline=scope_baseline,
     )
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names))
@@ -2918,6 +2920,10 @@ async def build_unit(
             session.run(_RESET)
             session.run(_preamble(shot))
             priors = _run_prior_paths(session, prior_paths)
+
+    # The scene is now fully staged (priors + any warm-start replay): everything present
+    # is inherited authority the live scope check must not flag against this unit.
+    scope_baseline.update(_scene_object_manifest(session))
 
     # Per-layer, not per-process: the counts are attributed to one layer's report.
     reset_tool_use()
