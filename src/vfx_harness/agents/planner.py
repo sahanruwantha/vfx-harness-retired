@@ -858,6 +858,16 @@ async def generate_layer_plan(
         )
         if path.is_file() or path == target
     )
+    # The kickoff names the OVERLAID authority files (selected_artifact_path resolves
+    # layers/scene_checks/checks into state/jit-layers/views/…) and this layer's build
+    # scripts as required reading; run 20260824T235113Z-2d6b35's unit planner was denied
+    # both and planned from the kickoff excerpt alone. A session must be allowed to read
+    # what its own kickoff instructs it to read.
+    readable_roots = (
+        bundle.root,
+        shot.folder / "state" / "jit-layers",
+        shot.folder / "build",
+    )
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
@@ -873,7 +883,7 @@ async def generate_layer_plan(
         hooks=planner_hooks(
             shot.folder,
             readable_files=declared_reads,
-            readable_roots=(bundle.root,),
+            readable_roots=readable_roots,
             writable_files=(target,),
             strict_reads=True,
             completion_gate=False,
