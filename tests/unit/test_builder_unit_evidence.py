@@ -138,3 +138,42 @@ def test_declared_binding_moments_outrank_frame_inference() -> None:
     }
     with _pytest.raises(ValueError, match="outside this claim's judged set"):
         Claim.parse(row, "claim")
+
+
+def test_workunit_shape_changes_demand_a_digest_schema_bump() -> None:
+    """unit_digest hashes asdict(WorkUnit), so ANY field addition silently changes
+    every stored digest and bricks durable state unless DIGEST_SCHEMA is bumped with
+    it (8ab8f5d shipped optional binding moments without the bump; every layer's
+    retry refused until the replan). This golden pins the pairing: if this test
+    fails, the WorkUnit shape changed — bump DIGEST_SCHEMA in
+    orchestration/unit_state.py and update BOTH constants here together."""
+    from vfx_harness.domain.work_units import WorkUnit
+    from vfx_harness.orchestration.unit_state import DIGEST_SCHEMA, unit_digest
+
+    row = {
+        "id": "golden", "title": "Golden", "plan": "plans/units/golden.md",
+        "depends_on": [],
+        "mutates": {"mode": "scoped", "roles": ["g.role"], "controls": ["g_ctl"],
+                    "control_roles": {"g_ctl": ["g.role"]},
+                    "script_spans": ["build/units/01/golden.py"]},
+        "protects": {"selector": "all_active_upstream_interfaces",
+                     "resolve_to_explicit_ids_at": "freeze"},
+        "look_capabilities": [],
+        "evaluation": {"primary_judge": 1,
+                       "judge": [{"frame": 1, "ref": "refs/g.png"}],
+                       "temporal_evidence": "none",
+                       "claims": [{
+                           "id": "g-claim", "proposition": "golden holds",
+                           "axis": "g_axis", "property": "object_count",
+                           "subject_roles": ["g.role"], "subject_controls": [],
+                           "moments": [1], "kind": "atomic", "required": True,
+                           "authority": "executable_required", "repair_owner": "golden",
+                           "asserts": "scene",
+                           "evidence": [{"kind": "scene_contract", "id": "g-count"}],
+                       }]},
+        "completion": "all_required_claims_and_protected_contracts_pass",
+    }
+    assert DIGEST_SCHEMA == 3
+    assert unit_digest(WorkUnit.parse(row, "golden")) == (
+        "4de4e561b2fa86b6955618f49b1f4c5b9220a696697b0f4719c014144585342c"
+    )

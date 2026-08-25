@@ -19,7 +19,13 @@ from vfx_harness.observability.provenance import atomic_write
 SCHEMA = 1
 # Bump whenever WorkUnit gains or loses a field: `unit_digest` hashes the whole record,
 # so a schema change makes every stored digest incomparable rather than wrong.
-DIGEST_SCHEMA = 2
+# Bump WHENEVER the WorkUnit dataclass shape changes — unit_digest hashes asdict(unit),
+# so any field addition changes every stored digest, and validate_current only knows to
+# route cross-shape comparison through the replan closure when the schema numbers
+# differ. 3: EvidenceBinding gained optional per-moment bindings (8ab8f5d shipped the
+# field without the bump and bricked every layer's durable state until the replan).
+# The golden-digest test pins this pairing; changing the shape without bumping fails it.
+DIGEST_SCHEMA = 3
 STATE_DIR = "state/work-units"
 
 _TRANSITIONS = {
