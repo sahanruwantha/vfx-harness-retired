@@ -960,7 +960,10 @@ async def generate_layer_plan(
         from vfx_harness.orchestration.plan_authority import prepare_consumer_view
 
         gated = run_plan_gate(prepare_consumer_view(layout))
-        if not gated.clean:
+        # scoped: another layer's stuck STATE belongs to that layer's own transaction
+        # and must not block this layer's plan (run bwng97m5n: layer 1's amendment died
+        # on layer 2's 'no ready unit' finding)
+        if not gated.clean_for(str(layer.id)):
             raise RuntimeError(
                 f"generated unit plan {layer.id}.{selected.id} failed the deterministic gate:\n"
                 + gate_report(gated)

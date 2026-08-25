@@ -204,6 +204,11 @@ class Finding:
     where: str
     what: str
     fix: str = ""
+    # The layer whose STATE this finding is about, when it is about one layer's
+    # progress rather than the plan itself. Unit-plan generation for layer X must not
+    # be blocked by layer Y's stuck state (run bwng97m5n: layer 1's amendment died on
+    # 'layer 2 has no ready unit' — a finding the layer-2 rematerialization owns).
+    layer: str | None = None
 
     def __str__(self) -> str:
         head = "✗" if self.blocking else "·"
@@ -224,6 +229,16 @@ class GateResult:
     @property
     def clean(self) -> bool:
         return not self.blocking
+
+    def clean_for(self, layer_id: str) -> bool:
+        """Clean for generating THIS layer's unit plan: plan-wide findings and this
+        layer's own state findings block; another layer's state-progress findings do
+        not — they belong to that layer's own transaction."""
+        return not [
+            f
+            for f in self.blocking
+            if f.layer is None or str(f.layer) == str(layer_id)
+        ]
 
     @property
     def publishable_outcome(self) -> str:
@@ -2377,6 +2392,7 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
                     f"state/work-units/layer_{next_layer.id}.json",
                     str(exc),
                     "apply a transactional replan; stale unit state cannot authorize execution",
+                    layer=str(next_layer.id),
                 )
             )
             return out, {"unit_plans_required": 0, "layers_passed": len(passed)}
@@ -2393,6 +2409,7 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
                     f"layer {next_layer.id} work-unit DAG",
                     "no work unit is ready although the layer has not passed",
                     "resolve a blocked dependency or apply a transactional replan",
+                    layer=str(next_layer.id),
                 )
             )
         for unit in ready:

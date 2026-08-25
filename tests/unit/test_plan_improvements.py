@@ -787,3 +787,28 @@ def test_dressing_authority_is_granted_by_the_owner(tmp_path: Path) -> None:
     _write(tmp_path / "layers.json", doc)
     findings, _ = _check_evidence_coherence(tmp_path)
     assert not any(f.check == "dressing-closure" for f in findings), [str(f) for f in findings]
+
+
+def test_another_layers_stuck_state_does_not_block_this_layers_plan() -> None:
+    """Run bwng97m5n: layer 1's amendment generated a clean unit plan and died on
+    'layer 2 has no ready unit' — a state-progress finding the layer-2 transaction
+    owns. Layer-scoped findings block their own layer's generation and the global
+    verdict, never a sibling's plan."""
+    from vfx_harness.evaluation.plan_gate import Finding, GateResult
+
+    result = GateResult(
+        "shot",
+        findings=[
+            Finding("hierarchy", True, "layer 2 work-unit DAG", "no work unit is ready",
+                    "replan", layer="2"),
+        ],
+    )
+    assert not result.clean
+    assert result.clean_for("1")
+    assert not result.clean_for("2")
+
+    plan_wide = GateResult(
+        "shot",
+        findings=[Finding("contracts", True, "scene_checks.json", "bad row", "fix")],
+    )
+    assert not plan_wide.clean_for("1")
