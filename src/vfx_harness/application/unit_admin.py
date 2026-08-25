@@ -64,7 +64,12 @@ def _replan(args: argparse.Namespace) -> int:
     except KeyError as exc:
         raise SystemExit(f"current bundle has no layer {args.layer!r}") from exc
     old_plan_hash = hashlib.sha256((base.root / "layers.json").read_bytes()).hexdigest()
-    new_plan_hash = hashlib.sha256((current.root / "layers.json").read_bytes()).hexdigest()
+    # The target identity must be what build initialization will demand: the RESOLVED
+    # view's layers.json, not the bundle's sparse document (they differ by design once
+    # a layer materializes).
+    from vfx_harness.orchestration.plan_authority import active_plan_hash
+
+    new_plan_hash = active_plan_hash(shot.folder)
     evidence = list(getattr(args, "evidence", None) or [])
     falsification_id = None
     hard_approval = getattr(args, "hard_constraint_approval", None)

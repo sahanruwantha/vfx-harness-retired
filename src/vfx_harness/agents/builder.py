@@ -3673,9 +3673,9 @@ async def build_layer(
                 "multi-unit stages must write distinct unit scripts"
             )
 
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+    from vfx_harness.orchestration.plan_authority import active_plan_hash, selected_artifact_path
 
-    layers_hash = hashlib.sha256(selected_artifact_path(shot.folder, "layers.json").read_bytes()).hexdigest()
+    layers_hash = active_plan_hash(shot.folder)
     initialize(shot.folder, str(layer.id), layer.stages, plan_hash=layers_hash)
     prior_layers = _prior_layer_paths(shot, layer, force=force)
     state = load_unit_state(shot.folder, str(layer.id))

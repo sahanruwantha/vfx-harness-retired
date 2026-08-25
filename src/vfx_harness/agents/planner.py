@@ -51,7 +51,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -651,7 +650,6 @@ async def _rematerialize_layer(
     """
     from vfx_harness.orchestration.plan_authority import (
         resolve_current,
-        selected_artifact_path,
     )
     from vfx_harness.orchestration.unit_state import apply_replan, supersede_layer_units
     from vfx_harness.orchestration.unit_state import load as load_unit_state
@@ -674,9 +672,9 @@ async def _rematerialize_layer(
         log(f"discarding accepted unit(s) {', '.join(accepted)} by explicit request", 1)
 
     def _plan_hash() -> str:
-        return hashlib.sha256(
-            selected_artifact_path(shot.folder, "layers.json").read_bytes()
-        ).hexdigest()
+        from vfx_harness.orchestration.plan_authority import active_plan_hash
+
+        return active_plan_hash(shot.folder)
 
     old_units, old_plan_hash = layer.stages, _plan_hash()
     bundle = resolve_current(shot.folder)
@@ -771,16 +769,15 @@ async def generate_layer_plan(
         layers = load_layers(shot)
         layer = layers[str(layer_id)]
     from vfx_harness.domain.work_units import ready_units
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
-    from vfx_harness.orchestration.unit_state import initialize as initialize_unit_state
 
     # Same semantics as the build path: create fresh state, seed a legally-emptied set
     # after first materialization, return current when nothing changed, and fail closed
     # on any real DAG divergence. Run 20260823T152609Z materialized layer 1 successfully
     # and then died here on bare validate_current against post-replan empty state.
-    layers_hash = hashlib.sha256(
-        selected_artifact_path(shot.folder, "layers.json").read_bytes()
-    ).hexdigest()
+    from vfx_harness.orchestration.plan_authority import active_plan_hash
+    from vfx_harness.orchestration.unit_state import initialize as initialize_unit_state
+
+    layers_hash = active_plan_hash(shot.folder)
     state = initialize_unit_state(
         shot.folder, str(layer.id), layer.stages, plan_hash=layers_hash
     )

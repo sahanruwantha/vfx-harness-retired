@@ -599,6 +599,19 @@ def authority_root(shot_folder: str | Path) -> Path:
     return resolve_current(shot_folder).root
 
 
+def active_plan_hash(shot_folder: str | Path) -> str:
+    """The ONE identity of the active layer DAG: sha256 of the RESOLVED layers.json.
+
+    Under unit-first authority the bundle's sparse layers.json and the materialized
+    view's overlay are different documents by design. units-replan hashed the bundle
+    while build initialization hashed the view (run 20260825, view 381623c7): every
+    rematerialize -> replan -> build sequence dead-ended on the two derivations, each
+    correctly refusing the other's hash."""
+    return hashlib.sha256(
+        selected_artifact_path(shot_folder, "layers.json").read_bytes()
+    ).hexdigest()
+
+
 def selected_artifact_path(shot_folder: str | Path, name: str) -> Path:
     """Resolve selected authority, preserving pointer-less legacy fixtures temporarily.
 
