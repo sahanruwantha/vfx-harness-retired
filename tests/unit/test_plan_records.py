@@ -62,7 +62,11 @@ def _candidate(root: Path) -> None:
                                    "authority": "executable_required", "repair_owner": "lock",
                                    "asserts": "image",
                                    "evidence": [{"kind": "scene_contract", "id": "final-lock"}],
-                               }]},
+                               }],
+                               "composition_context": {
+                                   "frames": [239, 240],
+                                   "contract_ids": ["vis-f239", "vis-f240"],
+                               }},
                 "completion": "all_required_claims_and_protected_contracts_pass",
             }],
         }],
@@ -137,6 +141,17 @@ def _declaring(layer: dict) -> dict:
     return row
 
 
+def _vis_rows(layer_id: str, frames: tuple[int, ...], axis: str = "final_lock") -> list[dict]:
+    # validate_materialization requires occlusion-true visibility evidence at every
+    # judge frame (run 20260825: a lookdev layer was judged at frames where every
+    # subject sat behind a solid proxy disc and no contract could say so)
+    return [{
+        "id": f"vis-f{frame}", "kind": "visible_fraction", "owner_layer": layer_id,
+        "fault_owner": layer_id, "activates_at": layer_id, "lifecycle": "layer",
+        "axis": axis, "roles": ["comp"], "frame": frame, "op": "min", "lo": 0.25,
+    } for frame in frames]
+
+
 def _jit_payload(root: Path, bundle_hash: str) -> Path:
     layers = json.loads((root / "layers.json").read_text(encoding="utf-8"))["layers"]
     layer = dict(layers[1])
@@ -159,7 +174,11 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
                            "authority": "executable_required", "repair_owner": "polish",
                            "asserts": "image",
                            "evidence": [{"kind": "scene_contract", "id": "polish-lock"}],
-                       }]},
+                       }],
+                       "composition_context": {
+                           "frames": [239, 240],
+                           "contract_ids": ["vis-f239", "vis-f240"],
+                       }},
         "completion": "all_required_claims_and_protected_contracts_pass",
         "look_capabilities": [],
     }]
@@ -172,7 +191,7 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
             "id": "polish-lock", "kind": "frame_delta", "owner_layer": "2",
             "fault_owner": "2", "activates_at": "2", "lifecycle": "layer",
             "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
-        }],
+        }, *_vis_rows("2", (239, 240))],
         "image_contracts": [],
         "requirement_bindings": [{
             "requirement_id": "R-final-lock", "contract_ids": ["polish-lock"],
@@ -249,7 +268,7 @@ def test_deferred_root_materializes_without_fabricated_outcome(
             "id": "final-lock", "kind": "frame_delta", "owner_layer": "1",
             "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
             "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
-        }],
+        }, *_vis_rows("1", (239, 240))],
         "image_contracts": [],
         "requirement_bindings": [{
             "requirement_id": "R-final-lock", "contract_ids": ["final-lock"],
@@ -1287,7 +1306,7 @@ def test_root_materialization_validates_with_deferred_dependents(
             "id": "final-lock", "kind": "frame_delta", "owner_layer": "1",
             "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
             "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
-        }],
+        }, *_vis_rows("1", (239, 240))],
         "image_contracts": [],
         "requirement_bindings": [{
             "requirement_id": "R-final-lock", "contract_ids": ["final-lock"],

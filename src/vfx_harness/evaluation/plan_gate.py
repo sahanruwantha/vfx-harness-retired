@@ -973,6 +973,27 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                 cross_row_finding,
                 "declare the response row's socket at this layer's next materialization",
             ))
+        # Advisory mirror of validate_materialization's hard rule (new materializations
+        # cannot publish without it): a judge frame with no occlusion-true visibility
+        # row judges subjects nobody proved are on screen. Run 20260825: layer 2's
+        # every judged surface sat behind a solid proxy disc at both judge frames,
+        # invisible to projection-only bbox rows, and no rule fired because
+        # composition-coverage is scoped to camera-owning layers.
+        for lid in sorted(materialized_ids):
+            for frame in sorted(layer_frames.get(lid, set())):
+                if not any(
+                    r.get("kind") == "visible_fraction" and r.get("frame") == frame
+                    for r in scene_rows
+                    if isinstance(r, dict)
+                ):
+                    out.append(Finding(
+                        "composition-coverage",
+                        False,
+                        f"layer {lid} judge f{frame}",
+                        "no occlusion-true visibility contract at this judge frame",
+                        "add a visible_fraction row for the judged roles at this "
+                        "layer's next materialization",
+                    ))
         seen: set[str] = set()
         for row in scene_rows:
             rid = str(row.get("id") or "<missing>") if isinstance(row, dict) else "<invalid>"

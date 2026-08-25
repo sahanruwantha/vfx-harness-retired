@@ -242,6 +242,15 @@ def validate_materialization(
         if claim.required
         for binding in claim.evidence
     }
+    # Composition context (judge-frame visibility/framing rows) is a producer binding
+    # too: the gate already reads it as coverage, and the unit that stages the judged
+    # content answers for its context rows the same way it answers for claim evidence.
+    required_bindings.update(
+        ("scene_contract", str(contract_id))
+        for unit in layer.stages
+        if unit.evaluation.composition_context is not None
+        for contract_id in unit.evaluation.composition_context.contract_ids
+    )
     missing_claims = sorted(
         contract_id
         for contract_id, (kind, _row) in all_contracts.items()
@@ -483,6 +492,24 @@ def validate_materialization(
         raise ValueError(
             "materialized acceptance rows must use this layer's judge frames: "
             + ", ".join(bad_acceptance)
+        )
+    # A layer judged at a frame nobody proved shows its subject is judged on faith:
+    # run 20260825 sealed a whole lookdev layer whose every judged surface sat behind
+    # a solid proxy disc at both judge frames — projection-only bbox rows pass through
+    # occluders and layer 2 carried no context rows at f72/f150 at all. Every judge
+    # frame must carry occlusion-true visibility evidence for what the frame judges.
+    uncovered = sorted(
+        str(frame)
+        for frame in judge_frames
+        if not any(
+            row.get("kind") == "visible_fraction" and row.get("frame") == frame
+            for row in scene_rows
+        )
+    )
+    if uncovered:
+        raise ValueError(
+            "every judge frame needs a visible_fraction contract for the roles that "
+            "frame judges; missing at frame(s): " + ", ".join(uncovered)
         )
 
     return MaterializedLayer(

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.test_plan_records import _candidate, _declaring, _write
+from tests.unit.test_plan_records import _candidate, _declaring, _vis_rows, _write
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.jit_materialization import publish_materialization
@@ -175,7 +175,11 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
                            "authority": "executable_required", "repair_owner": "lock",
                            "asserts": "temporal",
                            "evidence": [{"kind": "scene_contract", "id": "comp-clearance"}],
-                       }]},
+                       }],
+                       "composition_context": {
+                           "frames": [239, 240],
+                           "contract_ids": ["vis-f239", "vis-f240"],
+                       }},
         "completion": "all_required_claims_and_protected_contracts_pass",
         "look_capabilities": [],
     }]
@@ -206,6 +210,7 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
                 "axis": "final_lock", "roles": ["comp"], "compare_roles": ["set.*"],
                 "frames": [239, 240], "op": "min", "lo": 0.5,
             },
+            *_vis_rows("1", (239, 240)),
         ],
         "image_contracts": [],
         "requirement_bindings": [{

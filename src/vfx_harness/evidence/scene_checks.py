@@ -30,6 +30,7 @@ OBJECT_KINDS = {
     "smooth_fraction",
     "radial_inward_fraction",
     "object_property",
+    "visible_fraction",
 }
 MATERIAL_KINDS = {"material_count", "material_user_count", "material_assignment_fraction"}
 NODE_KINDS = {"node_count", "node_socket_value", "node_link_count"}
@@ -72,6 +73,7 @@ FRAME_SCOPED_KINDS = {
     "mesh_vertex_count",
     "radial_inward_fraction",
     "object_property",
+    "visible_fraction",
 }
 FUNCTIONAL_KINDS = {"control_render_response", "frame_delta"}
 SUPPORTED_KINDS = (
@@ -85,6 +87,7 @@ SUPPORTED_KINDS = (
 _PROJECTED_KINDS = {
     "bbox_width", "bbox_height", "bbox_center_x",
     "bbox_center_y", "bbox_top_y", "bbox_bottom_y",
+    "visible_fraction",
 }
 KIND_DOMAINS: dict[str, str] = {
     **dict.fromkeys(TEMPORAL_KINDS, "temporal"),
@@ -120,6 +123,13 @@ KIND_DEFINITIONS = {
     "smooth_fraction": "fraction of matched mesh polygons using smooth shading",
     "radial_inward_fraction": "fraction where radial XY normal dot face centre <= 0 (inward)",
     "object_property": "numeric property read from every semantically selected object",
+    "visible_fraction": (
+        "of the selected roles' ON-SCREEN surface samples at the declared frame, the "
+        "fraction whose camera ray reaches subject surface before any other object; reads "
+        "0.0 when nothing of the subject is on screen. Occlusion truth — projection-only "
+        "bbox rows pass straight through an occluder (run 20260825: every interior subject "
+        "sat behind a solid proxy disc for all 240 frames and no contract could say so)"
+    ),
     "material_count": "number of materials whose bvfx_role matches material_roles",
     "material_user_count": "total Blender users of matched semantic materials",
     "material_assignment_fraction": "fraction of selected objects assigned a matching material role",
@@ -328,6 +338,12 @@ def validate_row(row: dict) -> str | None:
                     "Use a bound inside the frame, another kind, or record a "
                     "vocabulary-gap escalation"
                 )
+    if kind == "visible_fraction":
+        lo, hi = row.get("lo"), row.get("hi")
+        if row.get("op") == "min" and isinstance(lo, (int, float)) and not isinstance(lo, bool) and float(lo) <= 0:
+            return "visible_fraction min with lo<=0 passes even when fully occluded — vacuous"
+        if row.get("op") == "max" and isinstance(hi, (int, float)) and not isinstance(hi, bool) and float(hi) >= 1:
+            return "visible_fraction max with hi>=1 passes even when fully visible — vacuous"
     if kind == "object_property":
         prop = str(row.get("property") or "")
         if not _MEASURED_PROPERTY.match(prop):
@@ -628,6 +644,44 @@ for row in _rows:
                     f'at frame {{_FRAME}} ({{empty}} contributed no points)')
             x0,y0,x1,y1=rec['bbox']
             value={{'bbox_width':x1-x0,'bbox_height':y1-y0,'bbox_center_x':(x0+x1)/2,'bbox_center_y':(y0+y1)/2,'bbox_top_y':y0,'bbox_bottom_y':y1}}[kind]
+        elif kind=='visible_fraction':
+            # Of the subject's ON-SCREEN surface samples, the fraction whose camera ray
+            # reaches subject surface before anything else. On-screen-ness is bbox rows'
+            # claim (projection); this kind owns OCCLUSION — conflating them made a
+            # frame-filling subject read 0.0 because its sparse vertices all sat outside
+            # the frustum. Zero on-screen samples reads 0.0: judged-but-absent is the
+            # failure this kind exists to catch, not an instrument error.
+            if not objects: raise ValueError(_missobj(row))
+            if _scene.camera is None: raise ValueError('scene has no camera at the declared frame')
+            _mvp=_checks.camera_clip_matrix(_scene,_row_dg)
+            cam_loc=_scene.camera.matrix_world.translation
+            subjects=set(o.name for o in objects)
+            sampled=0; on_screen=0; seen=0
+            for o in objects:
+                ev=o.evaluated_get(_row_dg)
+                if ev.type!='MESH': continue
+                mw=ev.matrix_world
+                points=[]
+                verts=ev.data.vertices
+                vstride=max(1,len(verts)//32)
+                points += [mw@verts[vi].co for vi in range(0,len(verts),vstride)]
+                polys=ev.data.polygons
+                pstride=max(1,len(polys)//32)
+                points += [mw@polys[pi].center for pi in range(0,len(polys),pstride)]
+                for p in points:
+                    sampled+=1
+                    v=_mvp@p.to_4d()
+                    if v.w<=1e-9 or abs(v.x)>v.w or abs(v.y)>v.w or v.z<-v.w or v.z>v.w:
+                        continue
+                    d=p-cam_loc; dist=d.length
+                    if dist<=1e-6: continue
+                    on_screen+=1
+                    hit,_loc,_n,_i,hob,_m4=_scene.ray_cast(
+                        _row_dg,cam_loc,d.normalized(),distance=dist-1e-4)
+                    # a hit on the subject itself is the camera SEEING that subject
+                    if not hit or getattr(hob,'original',hob).name in subjects: seen+=1
+            if not sampled: raise ValueError('selected roles expose no evaluated mesh points to test')
+            value=seen/on_screen if on_screen else 0.0
         elif kind=='mesh_vertex_count':
             value=sum(len(o.evaluated_get(_row_dg).data.vertices)
                       for o in objects if o.type=='MESH')

@@ -1337,6 +1337,11 @@ def build_plan_tools(
                 "component (optional, for vector sockets)",
             ],
             "node_count": ["graph (material|compositor|world)", "node_roles"],
+            "visible_fraction": [
+                "roles (the surfaces this judge frame is judged ON — occluders need no "
+                "declaration, any closer surface counts)",
+                "op min lo≈0.2–0.5 for must-be-seen; op max hi<1 for not-yet-revealed",
+            ],
             "node_link_count": [
                 "graph", "from_node_roles", "to_node_roles",
                 "from_socket/to_socket (optional)",

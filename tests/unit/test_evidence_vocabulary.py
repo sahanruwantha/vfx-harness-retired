@@ -110,3 +110,65 @@ def test_auto_socket_response_sharing_a_pinned_selector_must_declare_its_socket(
     assert validate_row_set([pinned, {**auto, "socket": "Threshold"}]) == []
     assert validate_row_set([pinned, {**auto, "node_roles": ["world.atmosphere.volume"]}]) == []
     assert validate_row_set([auto]) == []
+
+
+def test_visible_fraction_is_registered_frame_scoped_and_compiles() -> None:
+    """Run 20260825: layer 2's every judged surface sat behind a solid proxy disc at
+    both judge frames; bbox rows project THROUGH occluders and nothing measured
+    occlusion. The kind exists so a judged-but-hidden subject is a failing number."""
+    from vfx_harness.evidence.scene_checks import (
+        FRAME_SCOPED_KINDS,
+        KIND_DOMAINS,
+        SUPPORTED_KINDS,
+    )
+
+    assert "visible_fraction" in SUPPORTED_KINDS
+    assert "visible_fraction" in FRAME_SCOPED_KINDS
+    assert KIND_DOMAINS["visible_fraction"] == "projected_composition"
+    row = _row(
+        id="vis", kind="visible_fraction", roles=["subject.*"], frame=72,
+        op="min", lo=0.25,
+    )
+    assert validate_row(row) is None
+    script = _blender_probe([row], 72)
+    compile(script, "<probe>", "exec")
+    assert "ray_cast" in script
+
+    assert "frame" in (validate_row({**row, "frame": None}) or "")
+    assert "roles" in (validate_row({**row, "roles": [], "control_roles": []}) or "")
+    assert "vacuous" in (validate_row({**row, "lo": 0}) or "")
+    assert "vacuous" in (validate_row({**row, "op": "max", "lo": None, "hi": 1.0}) or "")
+    assert validate_row({**row, "op": "max", "lo": None, "hi": 0.05}) is None
+
+
+def test_materialization_requires_visibility_at_every_judge_frame(tmp_path) -> None:
+    """The hard half of the rule (the gate half is advisory for grandfathered views):
+    a new materialization cannot publish a judge frame nobody proves shows anything."""
+    import json
+
+    import pytest as _pytest
+
+    from tests.unit.test_plan_records import (
+        _add_deferred_layer,
+        _candidate,
+        _jit_payload,
+        _write,
+    )
+    from vfx_harness.observability import run_artifacts
+    from vfx_harness.orchestration.jit_materialization import validate_materialization
+    from vfx_harness.orchestration.plan_authority import publish_current
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "vis-coverage")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["scene_contracts"] = [
+        row for row in data["scene_contracts"] if row["kind"] != "visible_fraction"
+    ]
+    _write(payload, data)
+    with _pytest.raises(ValueError, match="visible_fraction"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
