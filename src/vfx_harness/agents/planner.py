@@ -867,6 +867,9 @@ async def generate_layer_plan(
         bundle.root,
         shot.folder / "state" / "jit-layers",
         shot.folder / "build",
+        # a dependency's published, gate-attested plan is the interface a dependent
+        # unit plans against (run 20260825T…: blockout_proxies was denied camera_rig.md)
+        shot.folder / "plans" / "units",
     )
     options = ClaudeAgentOptions(
         model=model,
