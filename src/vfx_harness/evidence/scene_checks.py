@@ -406,6 +406,13 @@ def validate_row(row: dict) -> str | None:
                 + " appears on both sides, which forces the difference to 0 regardless "
                 "of the scene"
             )
+    if kind == "node_socket_value" and row.get("component") is not None:
+        component = str(row.get("component")).upper().strip()
+        if component not in {"0", "1", "2", "3", "R", "G", "B", "A"}:
+            return (
+                "node_socket_value component must be a channel index 0-3 or a letter "
+                "R/G/B/A"
+            )
     if kind == "transform_return_delta" and row.get("component", "location") not in {
         "location",
         "rotation",
@@ -774,6 +781,10 @@ for row in _rows:
                                      +row.get('direction','input')+' sockets: '
                                      +(', '.join(s.name for s in sockets) or '(none)'))
                 raw=socket.default_value; comp=row.get('component')
+                # authors write channels as letters; run d2ea42 authored component 'B'
+                # and int('B') killed the row as a binding defect
+                if comp is not None:
+                    comp={{'R':0,'G':1,'B':2,'A':3}}.get(str(comp).upper().strip(),comp)
                 value=float(raw[int(comp)]) if comp is not None else float(raw)
         elif kind=='node_link_count':
             value=0

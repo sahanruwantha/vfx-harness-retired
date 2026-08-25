@@ -215,3 +215,22 @@ def test_render_region_stat_is_the_exposure_anchor() -> None:
     assert "vacuous" in (validate_row({**row, "lo": 0}) or "")
     assert "vacuous" in (validate_row({**row, "op": "max", "lo": None, "hi": 255}) or "")
     assert "[0,255]" in (validate_row({**row, "lo": 300}) or "")
+
+
+def test_node_socket_component_accepts_channel_letters() -> None:
+    """Run d2ea42 authored component 'B' for a color socket's blue channel — the
+    human-native spelling — and int('B') killed the row as a binding defect. Letters
+    map to indices; garbage is refused at authoring."""
+    from vfx_harness.evidence.scene_checks import _blender_probe
+
+    row = _row(
+        id="chan", kind="node_socket_value", graph="material",
+        material_roles=["m.*"], node_roles=["ctrl"], socket="Base Color",
+        direction="input", component="B", op="min", lo=0.5,
+    )
+    assert validate_row(row) is None
+    assert validate_row({**row, "component": 2}) is None
+    assert "R/G/B/A" in (validate_row({**row, "component": "Q"}) or "")
+    script = _blender_probe([row], 1)
+    compile(script, "<probe>", "exec")
+    assert "'B':2" in script

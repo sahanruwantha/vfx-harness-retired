@@ -1339,7 +1339,7 @@ def build_plan_tools(
                 "node_roles",
                 "socket (name) or socket_index",
                 "direction (input|output)",
-                "component (optional, for vector sockets)",
+                "component (optional, for vector sockets: channel index 0-3 or R/G/B/A)",
             ],
             "node_count": ["graph (material|compositor|world)", "node_roles"],
             "render_region_stat": [
