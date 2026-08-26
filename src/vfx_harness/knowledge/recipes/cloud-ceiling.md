@@ -3,7 +3,7 @@ name: cloud-ceiling
 tags: [atmosphere, clouds, sky, ceiling, dome, nebula, storm, backdrop, eevee]
 blender: "5.2+"
 when: "the ref has a DENSE ROLLING CLOUD CEILING / storm-cloud canopy filling the upper frame (not thin wisps)"
-verified: true
+verified: false
 ---
 A rolling cloud CEILING cannot be a volume slab. PHYSICS: viewed edge-on, a wide slab's
 optical depth along the VIEW ray is huge (density × hundreds of units ≈ 10+) → fully

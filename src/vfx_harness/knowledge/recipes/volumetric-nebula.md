@@ -3,7 +3,7 @@ name: volumetric-nebula
 tags: [atmosphere, volume, clouds, nebula, fog, sky, eevee]
 blender: "5.2+"
 when: "colored nebulous glow / billowing clouds / haze behind or around a subject (not a flat sky)"
-verified: true
+verified: false
 ---
 SCOPE: this recipe is for WISPY haze/glow. If the ref shows a DENSE ROLLING CLOUD CEILING
 (storm canopy filling the upper frame), use the `cloud-ceiling` recipe instead — an

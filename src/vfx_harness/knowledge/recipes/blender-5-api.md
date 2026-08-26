@@ -3,7 +3,7 @@ name: blender-5-api
 tags: [api, blender5, engine, compositor, action, keyframes, eevee, gotcha]
 blender: "5.2"
 when: "bpy AttributeError/enum errors on engine, compositor (scene.node_tree), or action.fcurves"
-verified: true
+verified: false
 ---
 Blender 5.x moved several APIs the model reaches for by habit. The fixes:
 

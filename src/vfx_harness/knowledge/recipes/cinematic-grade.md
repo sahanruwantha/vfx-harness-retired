@@ -3,7 +3,7 @@ name: cinematic-grade
 tags: [grade, color, tonemap, filmic, contrast, finish, compositor, bloom, halation, exposure]
 blender: "5.2+"
 when: "the render looks flat / washed / video-ish and the ref is punchy and cinematic"
-verified: true
+verified: false
 ---
 Two cheap moves get most of the cinematic finish: a filmic view transform (so highlights
 roll off instead of clipping) and a compositor bloom on emissive elements.

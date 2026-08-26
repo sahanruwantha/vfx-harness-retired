@@ -3,7 +3,7 @@ name: legible-3d-typography
 tags: [typography, text, font, emission, billboard, camera, reveal, keyframes, hud, label, signage]
 blender: "5.2+"
 when: "a shot needs readable on-screen type — a label, a HUD/inventory list, a building sign — and it must hold up at delivery resolution"
-verified: true
+verified: false
 ---
 Blender FONT objects are sized in metres, but the critic judges type in PIXELS. Drive
 `curve.size` from a target CAP HEIGHT, then check the pixel height that cap subtends at the

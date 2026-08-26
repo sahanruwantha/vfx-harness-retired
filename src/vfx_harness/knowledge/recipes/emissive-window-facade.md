@@ -3,7 +3,7 @@ name: emissive-window-facade
 tags: [material, emission, windows, building, tower, greeble, hero, overlay, transparent, noise]
 blender: "5.2+"
 when: "a building/tower needs to read as a dark facade with a GRID OF GLOWING WINDOWS — or an imported/glb facade needs EXTRA lit cells added without repainting it"
-verified: true
+verified: false
 ---
 Use `bvfx_emissive_windows(obj, ...)`. Do NOT apply a uniform emission material to a hero
 building — it blows out into a featureless glow and the window/greeble detail disappears

@@ -3,7 +3,7 @@ name: emissive-halation
 tags: [bloom, glare, compositor, emission, finish, halation, night]
 blender: "5.2+"
 when: "lights render as crisp pixels; the reference's lights bleed into the air around them"
-verified: true
+verified: false
 ---
 Reference night footage halates — bright sources spill into surrounding pixels, which is
 what makes them read as *photographed* rather than *rendered*. Crisp emissive dots are the

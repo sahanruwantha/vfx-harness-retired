@@ -3,7 +3,7 @@ name: blackout-beat
 tags: [lighting, keyframes, compositor, glare, bloom, volume, emission, blackout, eevee, blender5]
 blender: "5.2+"
 when: "the shot must pass through a near-black frame (blackout, blink, impact, power-cut, invisible edit) inside a CONTINUOUS camera move — and the measured black% refuses to climb"
-verified: true
+verified: false
 ---
 A blackout is not "set the lights to zero". Zeroing every emission socket typically still
 leaves 10–15% of the frame off black, because three things keep emitting or occluding after

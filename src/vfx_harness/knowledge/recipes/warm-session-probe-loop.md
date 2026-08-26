@@ -3,7 +3,7 @@ name: warm-session-probe-loop
 tags: [workflow, measurement, probe, ablation, render, driver_namespace, blender5, gotcha]
 blender: "5.2+"
 when: "you need to measure a render many times inside one warm session while tuning — and want to know which node actually drives a metric before you spend turns tuning it"
-verified: true
+verified: false
 ---
 Tuning a layer against a reference means rendering-and-measuring dozens of times. Two things
 make that cheap: define the measurement helper ONCE and persist it across separate `run_bpy`

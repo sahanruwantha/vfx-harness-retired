@@ -1,7 +1,7 @@
 {
   "animated-shutter-profile": {
-    "at": "2026-08-15T02:13:00+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:56:46+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
     "code_sha256": "926b511ebaea3b6c",
@@ -17,8 +17,8 @@
     "why": "ran top-level code \u2192 keyframes +4"
   },
   "atmospheric-depth": {
-    "at": "2026-08-15T02:14:33+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:56:50+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
       "haze_box",
@@ -44,76 +44,28 @@
     "why": "ran haze_box+unlink_world_volume \u2192 materials +1, meshes +1, objects +1, shader_nodes +4, socket values changed"
   },
   "blackout-beat": {
-    "at": "2026-08-15T02:13:08+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:56:53+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
-    "called_by_recipe": [
-      "blackout_glare",
-      "curtain",
-      "envelope",
-      "kill_at",
-      "linearise"
-    ],
     "code_sha256": "5b75f2c86271929a",
-    "defined": [
-      "ks",
-      "envelope",
-      "blackout_glare",
-      "kill_at",
-      "curtain",
-      "linearise"
-    ],
-    "delta": {
-      "keyframes": 49,
-      "socket_value_sum": -13.0
-    },
     "fixture": "blackout-beat.py",
-    "invoked": [
-      {
-        "delta": {
-          "socket_value_sum": -13.0
-        },
-        "fn": "ks",
-        "ok": true
-      }
-    ],
     "name": "blackout-beat",
-    "note": null,
-    "verdict": "verified",
-    "why": "ran ks+blackout_glare+curtain+envelope+kill_at+linearise \u2192 keyframes +49, socket values changed"
+    "verdict": "unproven",
+    "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   },
   "blender-5-api": {
-    "at": "2026-08-18T07:47:17+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:56:55+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 4,
-    "called_by_recipe": [],
     "code_sha256": "d93d5f079da4e56b",
-    "defined": [
-      "all_fcurves",
-      "action_fcurves"
-    ],
-    "delta": {},
     "fixture": "blender-5-api.py",
-    "invoked": [
-      {
-        "delta": {},
-        "fn": "all_fcurves",
-        "ok": true
-      },
-      {
-        "delta": {},
-        "fn": "action_fcurves",
-        "ok": true
-      }
-    ],
     "name": "blender-5-api",
-    "note": null,
-    "verdict": "verified",
-    "why": "ran all_fcurves+action_fcurves \u2192 read-only, built nothing"
+    "verdict": "unproven",
+    "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   },
   "camera-parented-spill-lights": {
-    "at": "2026-08-15T02:13:12+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:56:57+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
       "rig_spill"
@@ -134,8 +86,8 @@
     "why": "ran rig_spill \u2192 keyframes +12, objects +3"
   },
   "camera-roll-rig": {
-    "at": "2026-08-15T02:13:14+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:00+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
       "build_roll_rig",
@@ -167,60 +119,28 @@
     "why": "ran _fcurves+build_roll_rig+key_roll+key_spine \u2192 keyframes +25"
   },
   "cinematic-grade": {
-    "at": "2026-08-15T02:13:16+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:02+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
-    "called_by_recipe": [],
     "code_sha256": "ce76c2989dfe0eee",
-    "defined": [
-      "dip_glare_size"
-    ],
-    "delta": {
-      "keyframes": 4,
-      "node_groups": 1,
-      "shader_nodes": 3,
-      "socket_value_sum": 47.80000000000001
-    },
     "fixture": "cinematic-grade.py",
-    "invoked": [
-      {
-        "delta": {
-          "keyframes": 4
-        },
-        "fn": "dip_glare_size",
-        "ok": true
-      }
-    ],
     "name": "cinematic-grade",
-    "note": null,
-    "verdict": "verified",
-    "why": "ran dip_glare_size \u2192 keyframes +4, node_groups +1, shader_nodes +3, socket values changed"
+    "verdict": "unproven",
+    "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   },
   "cloud-ceiling": {
-    "at": "2026-08-15T02:14:30+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:05+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
-    "called_by_recipe": [],
     "code_sha256": "a02d473d06248398",
-    "defined": [],
-    "delta": {
-      "materials": 2,
-      "meshes": 2,
-      "objects": 2,
-      "shader_nodes": 27,
-      "socket_value_sum": 1093.2975000000001,
-      "vertex_coord_sum": -0.302
-    },
     "fixture": null,
-    "invoked": [],
     "name": "cloud-ceiling",
-    "note": null,
-    "verdict": "verified",
-    "why": "ran top-level code \u2192 materials +2, meshes +2, objects +2, shader_nodes +27, socket values changed, vertex coords moved"
+    "verdict": "unproven",
+    "why": "recipe: NameError: name 'bvfx_volume' is not defined"
   },
   "curve-draw-on-glow": {
-    "at": "2026-08-15T02:13:20+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:08+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
       "draw_on_curve",
@@ -247,8 +167,8 @@
     "why": "ran draw_on_curve+skirt_material \u2192 curves +2, keyframes +8, materials +1, objects +2, shader_nodes +12, socket values changed"
   },
   "dark-void-staging": {
-    "at": "2026-08-15T02:13:22+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:11+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
     "code_sha256": "c2913437c7c990bd",
@@ -266,56 +186,38 @@
     "why": "ran top-level code \u2192 materials +1, shader_nodes +5, socket values changed"
   },
   "emissive-halation": {
-    "at": "2026-08-15T02:14:38+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:14+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
-    "called_by_recipe": [],
     "code_sha256": "f2284961a4b0f37c",
-    "defined": [],
-    "delta": {
-      "node_groups": 1,
-      "shader_nodes": 3,
-      "socket_value_sum": 47.750000000000014
-    },
     "fixture": "emissive-halation.py",
-    "invoked": [],
     "name": "emissive-halation",
-    "note": null,
-    "verdict": "verified",
-    "why": "ran top-level code \u2192 node_groups +1, shader_nodes +3, socket values changed"
+    "verdict": "unproven",
+    "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   },
   "emissive-window-facade": {
-    "at": "2026-08-15T02:13:26+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:16+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 5,
-    "called_by_recipe": [
-      "downstream",
-      "find",
-      "upstream"
-    ],
     "code_sha256": "718aa0f21ce03a5a",
-    "defined": [
-      "find",
-      "downstream",
-      "upstream"
-    ],
-    "delta": {
-      "materials": 2,
-      "meshes": 1,
-      "objects": 1,
-      "shader_nodes": 47,
-      "socket_value_sum": 167.81760000000003
-    },
     "fixture": "emissive-window-facade.py",
-    "invoked": [],
     "name": "emissive-window-facade",
-    "note": null,
-    "verdict": "verified",
-    "why": "ran downstream+find+upstream \u2192 materials +2, meshes +1, objects +1, shader_nodes +47, socket values changed"
+    "verdict": "unproven",
+    "why": "recipe: NameError: name 'bvfx_emissive_windows' is not defined"
+  },
+  "harness-lesson-rig-aim-ownership": {
+    "at": "2026-08-26T09:57:19+00:00",
+    "blender": "5.2.1 LTS",
+    "blocks": 1,
+    "code_sha256": "472c245df1529460",
+    "fixture": null,
+    "name": "harness-lesson-rig-aim-ownership",
+    "verdict": "unproven",
+    "why": "recipe: NameError: name 'samples' is not defined"
   },
   "industrial-metal": {
-    "at": "2026-08-15T02:14:21+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:21+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
     "code_sha256": "cc68c4cf128aa52e",
@@ -346,41 +248,18 @@
     "why": "ran bvfx_metal \u2192 materials +1, modifiers +1, shader_nodes +2, socket values changed"
   },
   "legible-3d-typography": {
-    "at": "2026-08-15T02:13:30+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:24+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
-    "called_by_recipe": [
-      "billboard_root",
-      "key_strength",
-      "key_vis",
-      "new_text"
-    ],
     "code_sha256": "355ad842e78e05a8",
-    "defined": [
-      "new_text",
-      "cap_px",
-      "billboard_root",
-      "key_vis",
-      "key_strength"
-    ],
-    "delta": {
-      "curves": 18,
-      "keyframes": 110,
-      "materials": 1,
-      "objects": 19,
-      "shader_nodes": 2,
-      "socket_value_sum": 3.9179999999999993
-    },
     "fixture": null,
-    "invoked": [],
     "name": "legible-3d-typography",
-    "note": null,
-    "verdict": "verified",
-    "why": "ran billboard_root+key_strength+key_vis+new_text \u2192 curves +18, keyframes +110, materials +1, objects +19, shader_nodes +2, socket values changed"
+    "verdict": "unproven",
+    "why": "recipe: NameError: name 'bvfx_emission' is not defined"
   },
   "look-envelope-decay": {
-    "at": "2026-08-15T02:13:32+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:26+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 2,
     "called_by_recipe": [
       "ksock"
@@ -401,8 +280,8 @@
     "why": "ran ksock \u2192 keyframes +42, socket values changed"
   },
   "milestone-delta-keying": {
-    "at": "2026-08-15T02:13:34+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:29+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 3,
     "called_by_recipe": [
       "_sample",
@@ -441,8 +320,8 @@
     "why": "ran _channelbag_fcurves+linearise+_sample+pin_then_ramp+set_keys \u2192 keyframes +4, socket values changed"
   },
   "mix-node-sockets": {
-    "at": "2026-08-15T02:13:36+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:32+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
     "code_sha256": "98cbbeb5ce0f9d6b",
@@ -459,8 +338,8 @@
     "why": "ran top-level code \u2192 shader_nodes +1, socket values changed"
   },
   "night-city-field": {
-    "at": "2026-08-15T02:14:26+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:35+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 2,
     "called_by_recipe": [],
     "code_sha256": "07bc1bf9da0c23ca",
@@ -490,8 +369,8 @@
     "why": "ran bvfx_window_mat \u2192 materials +1, shader_nodes +11, socket values changed"
   },
   "numpy-bulk-mesh-edit": {
-    "at": "2026-08-15T02:13:40+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:37+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
     "code_sha256": "db22853531983279",
@@ -507,8 +386,8 @@
     "why": "ran top-level code \u2192 vertex coords moved"
   },
   "point-cloud-displace-dissolve": {
-    "at": "2026-08-15T02:13:42+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:40+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
     "code_sha256": "8040f23bda141c19",
@@ -526,38 +405,18 @@
     "why": "ran top-level code \u2192 keyframes +2, modifiers +1, textures +1"
   },
   "screen-space-camera-elements": {
-    "at": "2026-08-15T02:13:44+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:42+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
-    "called_by_recipe": [
-      "instanced_blobs",
-      "screen_place",
-      "set_object_material"
-    ],
     "code_sha256": "64dbbbddbfadecd6",
-    "defined": [
-      "screen_place",
-      "instanced_blobs",
-      "set_object_material"
-    ],
-    "delta": {
-      "keyframes": 42,
-      "materials": 3,
-      "meshes": 1,
-      "objects": 3,
-      "shader_nodes": 6,
-      "socket_value_sum": 18.700000000000003
-    },
     "fixture": null,
-    "invoked": [],
     "name": "screen-space-camera-elements",
-    "note": null,
-    "verdict": "verified",
-    "why": "ran instanced_blobs+screen_place+set_object_material \u2192 keyframes +42, materials +3, meshes +1, objects +3, shader_nodes +6, socket values changed"
+    "verdict": "unproven",
+    "why": "recipe: NameError: name 'bvfx_emission' is not defined"
   },
   "stepped-visibility-swap": {
-    "at": "2026-08-15T02:13:46+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:45+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
       "stepped_swap"
@@ -576,44 +435,56 @@
     "verdict": "verified",
     "why": "ran stepped_swap \u2192 keyframes +12"
   },
-  "volumetric-nebula": {
-    "at": "2026-08-15T02:13:48+00:00",
-    "blender": "5.2.0 LTS",
-    "blocks": 1,
+  "volumetric-god-rays": {
+    "at": "2026-08-26T09:57:47+00:00",
+    "blender": "5.2.1 LTS",
+    "blocks": 3,
     "called_by_recipe": [],
-    "code_sha256": "dbb75e20f83add89",
-    "defined": [],
+    "code_sha256": "524b8f986814678c",
+    "defined": [
+      "shaft_blocker",
+      "haze_volume_material"
+    ],
     "delta": {
       "materials": 1,
-      "meshes": 1,
-      "objects": 1,
-      "shader_nodes": 21,
-      "socket_value_sum": 1055.73
+      "shader_nodes": 6,
+      "socket_value_sum": 1026.67
     },
     "fixture": null,
-    "invoked": [],
-    "name": "volumetric-nebula",
+    "invoked": [
+      {
+        "delta": {
+          "materials": 1,
+          "shader_nodes": 6,
+          "socket_value_sum": 1026.67
+        },
+        "fn": "haze_volume_material",
+        "ok": true
+      }
+    ],
+    "name": "volumetric-god-rays",
     "note": null,
     "verdict": "verified",
-    "why": "ran top-level code \u2192 materials +1, meshes +1, objects +1, shader_nodes +21, socket values changed"
+    "why": "ran haze_volume_material \u2192 materials +1, shader_nodes +6, socket values changed"
+  },
+  "volumetric-nebula": {
+    "at": "2026-08-26T09:57:49+00:00",
+    "blender": "5.2.1 LTS",
+    "blocks": 1,
+    "code_sha256": "dbb75e20f83add89",
+    "fixture": null,
+    "name": "volumetric-nebula",
+    "verdict": "unproven",
+    "why": "recipe: NameError: name 'bvfx_volume' is not defined"
   },
   "warm-session-probe-loop": {
-    "at": "2026-08-15T02:13:50+00:00",
-    "blender": "5.2.0 LTS",
+    "at": "2026-08-26T09:57:52+00:00",
+    "blender": "5.2.1 LTS",
     "blocks": 2,
-    "called_by_recipe": [
-      "_register"
-    ],
     "code_sha256": "1f2543bbc5242de3",
-    "defined": [
-      "_register"
-    ],
-    "delta": {},
     "fixture": "warm-session-probe-loop.py",
-    "invoked": [],
     "name": "warm-session-probe-loop",
-    "note": "measure_frame() rendered 80x45, band means [0.19882, 0.19872, 0.19878]",
-    "verdict": "verified",
-    "why": "ran _register \u2192 measure_frame() rendered 80x45, band means [0.19882, 0.19872, 0.19878]"
+    "verdict": "unproven",
+    "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   }
 }

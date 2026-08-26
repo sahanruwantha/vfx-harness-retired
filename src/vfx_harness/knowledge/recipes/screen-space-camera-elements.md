@@ -3,7 +3,7 @@ name: screen-space-camera-elements
 tags: [camera, parenting, screen-space, composition, instancing, emission, streaks, keyframes]
 blender: "5.2+"
 when: "an element must sit at a specific place IN FRAME (light streak, lens artifact, foreground blob, HUD/dirt element) and stay there while the camera rolls, whips or travels"
-verified: true
+verified: false
 ---
 Parent the element to the CAMERA (not the rig) with an identity parent-inverse. Its local
 space then *is* camera space, so you can place it from a normalized screen coordinate
