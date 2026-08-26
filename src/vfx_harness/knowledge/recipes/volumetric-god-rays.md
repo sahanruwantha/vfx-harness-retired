@@ -14,9 +14,12 @@ slab, no radiating structure". The physics they were missing:
 
 **A light shaft is a shadow phenomenon.** Rays radiating through a medium are the LIT gaps
 between OCCLUDED wedges. Light + volume alone gives you a uniform glow (or a hard projected
-slab — see trap 1). Light + volume + **blockers between the source and the camera** gives you
-shafts, because EEVEE carves the beam wherever geometry shadows the medium. No amount of
-density tuning creates radiating structure; only occlusion does.
+slab — see trap 1). No amount of density tuning creates radiating structure; only occlusion
+does. But WHICH occlusion mechanism works depends on the SOURCE SIZE — measure before you
+build (verify_change A/B, below):
+
+- **Small/hard source (point, spot, sun, small area):** volumetric shadow carving works.
+  Blockers between the source and the medium cut dark wedges through the haze.
 
 ```python
 sc = bpy.context.scene
@@ -25,19 +28,36 @@ sc.eevee.volumetric_shadow_samples = 16     # raise if shafts look chunky
 # volumetric_start/end must bracket BOTH the medium and the occluders (see atmospheric-depth)
 ```
 
-Then give the light something to shine PAST. Thin slats / spokes / a ring of blockers around
-the bright core, shadow-casting, camera-invisible if you only want their shadows:
+- **Large soft area source — MEASURED TRAP (layer-2 build27, 30×30 area light):** shadow
+  carving is a *byte-identical no-op* regardless of blocker size/position — the penumbra of
+  a huge source wraps around any modest occluder and refills the wedge. What actually moves
+  pixels when the camera faces the source: **camera-VISIBLE opaque slats silhouetted against
+  the glow**, breaking the beam face into bands directly. That is also how real crepuscular
+  rays read when you look into the light. Keep the slat BODIES outside the frustum where
+  possible and gap them off the hero core's measured bbox (`check_scene(kind='framing')`),
+  so you get bands without floating-slat artifacts.
 
 ```python
-def shaft_blocker(name, location, rotation, scale=(0.05, 2.0, 0.6)):
+def shaft_blocker(name, location, rotation, scale=(0.05, 2.0, 0.6), silhouette=False):
     bpy.ops.mesh.primitive_cube_add(size=1.0, location=location, rotation=rotation)
     ob = bpy.context.object
     ob.name = ob.data.name = name
     ob.scale = scale
-    ob.visible_camera = False        # shadow-only: carves the medium, never seen directly
+    # visible_camera=False is ONLY for the shadow-carving mechanism (small/hard source).
+    # For the silhouette mechanism it must stay True — an EEVEE camera-invisible object
+    # was measured contributing NOTHING to the beam face (delta 0.03/255 vs 53.87/255).
+    ob.visible_camera = bool(silhouette)
     return ob
-# a fan of 5-9 of these around the core, uneven angles/gaps -> uneven, organic ray spread
+# a fan of 5-9 of these, uneven angles/gaps -> uneven, organic ray spread. A/B every
+# placement with verify_change(baseline/compare) — this rig is cheap to measure and
+# expensive to guess.
 ```
+
+CLEARANCE RULE: blockers, domains and particulates are real world-role geometry — if a
+persistent camera-path clearance contract exists, your medium's objects are in its compare
+set. A domain box hugging the camera path can fail it silently in the candidate and blow up
+the NEXT build's revalidation. Check the declared clearance row before placing near-camera
+volume.
 
 SCOPE RULE: blockers are new objects — they are legal only under a semantic role YOUR unit
 declares. If your scope has no such role, do not invent one: position your medium so geometry

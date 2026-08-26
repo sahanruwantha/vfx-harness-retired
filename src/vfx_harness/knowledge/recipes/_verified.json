@@ -1,6 +1,6 @@
 {
   "animated-shutter-profile": {
-    "at": "2026-08-26T09:56:46+00:00",
+    "at": "2026-08-26T11:06:55+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
@@ -17,7 +17,7 @@
     "why": "ran top-level code \u2192 keyframes +4"
   },
   "atmospheric-depth": {
-    "at": "2026-08-26T09:56:50+00:00",
+    "at": "2026-08-26T11:06:57+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
@@ -44,7 +44,7 @@
     "why": "ran haze_box+unlink_world_volume \u2192 materials +1, meshes +1, objects +1, shader_nodes +4, socket values changed"
   },
   "blackout-beat": {
-    "at": "2026-08-26T09:56:53+00:00",
+    "at": "2026-08-26T11:06:59+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "code_sha256": "5b75f2c86271929a",
@@ -54,7 +54,7 @@
     "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   },
   "blender-5-api": {
-    "at": "2026-08-26T09:56:55+00:00",
+    "at": "2026-08-26T11:07:02+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 4,
     "code_sha256": "d93d5f079da4e56b",
@@ -64,7 +64,7 @@
     "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   },
   "camera-parented-spill-lights": {
-    "at": "2026-08-26T09:56:57+00:00",
+    "at": "2026-08-26T11:07:04+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
@@ -86,7 +86,7 @@
     "why": "ran rig_spill \u2192 keyframes +12, objects +3"
   },
   "camera-roll-rig": {
-    "at": "2026-08-26T09:57:00+00:00",
+    "at": "2026-08-26T11:07:07+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
@@ -119,7 +119,7 @@
     "why": "ran _fcurves+build_roll_rig+key_roll+key_spine \u2192 keyframes +25"
   },
   "cinematic-grade": {
-    "at": "2026-08-26T09:57:02+00:00",
+    "at": "2026-08-26T11:07:09+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "code_sha256": "ce76c2989dfe0eee",
@@ -129,7 +129,7 @@
     "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   },
   "cloud-ceiling": {
-    "at": "2026-08-26T09:57:05+00:00",
+    "at": "2026-08-26T11:07:12+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "code_sha256": "a02d473d06248398",
@@ -139,7 +139,7 @@
     "why": "recipe: NameError: name 'bvfx_volume' is not defined"
   },
   "curve-draw-on-glow": {
-    "at": "2026-08-26T09:57:08+00:00",
+    "at": "2026-08-26T11:07:14+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
@@ -167,7 +167,7 @@
     "why": "ran draw_on_curve+skirt_material \u2192 curves +2, keyframes +8, materials +1, objects +2, shader_nodes +12, socket values changed"
   },
   "dark-void-staging": {
-    "at": "2026-08-26T09:57:11+00:00",
+    "at": "2026-08-26T11:07:17+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
@@ -186,7 +186,7 @@
     "why": "ran top-level code \u2192 materials +1, shader_nodes +5, socket values changed"
   },
   "emissive-halation": {
-    "at": "2026-08-26T09:57:14+00:00",
+    "at": "2026-08-26T11:07:19+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "code_sha256": "f2284961a4b0f37c",
@@ -196,7 +196,7 @@
     "why": "fixture: NameError: name 'bvfx_glare_bloom' is not defined"
   },
   "emissive-window-facade": {
-    "at": "2026-08-26T09:57:16+00:00",
+    "at": "2026-08-26T11:07:22+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 5,
     "code_sha256": "718aa0f21ce03a5a",
@@ -206,7 +206,7 @@
     "why": "recipe: NameError: name 'bvfx_emissive_windows' is not defined"
   },
   "harness-lesson-rig-aim-ownership": {
-    "at": "2026-08-26T09:57:19+00:00",
+    "at": "2026-08-26T11:07:24+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "code_sha256": "472c245df1529460",
@@ -216,7 +216,7 @@
     "why": "recipe: NameError: name 'samples' is not defined"
   },
   "industrial-metal": {
-    "at": "2026-08-26T09:57:21+00:00",
+    "at": "2026-08-26T11:07:26+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
@@ -248,7 +248,7 @@
     "why": "ran bvfx_metal \u2192 materials +1, modifiers +1, shader_nodes +2, socket values changed"
   },
   "legible-3d-typography": {
-    "at": "2026-08-26T09:57:24+00:00",
+    "at": "2026-08-26T11:07:28+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "code_sha256": "355ad842e78e05a8",
@@ -258,7 +258,7 @@
     "why": "recipe: NameError: name 'bvfx_emission' is not defined"
   },
   "look-envelope-decay": {
-    "at": "2026-08-26T09:57:26+00:00",
+    "at": "2026-08-26T11:07:30+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 2,
     "called_by_recipe": [
@@ -280,7 +280,7 @@
     "why": "ran ksock \u2192 keyframes +42, socket values changed"
   },
   "milestone-delta-keying": {
-    "at": "2026-08-26T09:57:29+00:00",
+    "at": "2026-08-26T11:07:32+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 3,
     "called_by_recipe": [
@@ -320,7 +320,7 @@
     "why": "ran _channelbag_fcurves+linearise+_sample+pin_then_ramp+set_keys \u2192 keyframes +4, socket values changed"
   },
   "mix-node-sockets": {
-    "at": "2026-08-26T09:57:32+00:00",
+    "at": "2026-08-26T11:07:34+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
@@ -338,7 +338,7 @@
     "why": "ran top-level code \u2192 shader_nodes +1, socket values changed"
   },
   "night-city-field": {
-    "at": "2026-08-26T09:57:35+00:00",
+    "at": "2026-08-26T11:07:36+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 2,
     "called_by_recipe": [],
@@ -369,7 +369,7 @@
     "why": "ran bvfx_window_mat \u2192 materials +1, shader_nodes +11, socket values changed"
   },
   "numpy-bulk-mesh-edit": {
-    "at": "2026-08-26T09:57:37+00:00",
+    "at": "2026-08-26T11:07:38+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
@@ -386,7 +386,7 @@
     "why": "ran top-level code \u2192 vertex coords moved"
   },
   "point-cloud-displace-dissolve": {
-    "at": "2026-08-26T09:57:40+00:00",
+    "at": "2026-08-26T11:07:41+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [],
@@ -405,7 +405,7 @@
     "why": "ran top-level code \u2192 keyframes +2, modifiers +1, textures +1"
   },
   "screen-space-camera-elements": {
-    "at": "2026-08-26T09:57:42+00:00",
+    "at": "2026-08-26T11:07:43+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "code_sha256": "64dbbbddbfadecd6",
@@ -415,7 +415,7 @@
     "why": "recipe: NameError: name 'bvfx_emission' is not defined"
   },
   "stepped-visibility-swap": {
-    "at": "2026-08-26T09:57:45+00:00",
+    "at": "2026-08-26T11:07:45+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "called_by_recipe": [
@@ -436,11 +436,11 @@
     "why": "ran stepped_swap \u2192 keyframes +12"
   },
   "volumetric-god-rays": {
-    "at": "2026-08-26T09:57:47+00:00",
+    "at": "2026-08-26T11:07:47+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 3,
     "called_by_recipe": [],
-    "code_sha256": "524b8f986814678c",
+    "code_sha256": "855bc2322ff2b605",
     "defined": [
       "shaft_blocker",
       "haze_volume_material"
@@ -468,7 +468,7 @@
     "why": "ran haze_volume_material \u2192 materials +1, shader_nodes +6, socket values changed"
   },
   "volumetric-nebula": {
-    "at": "2026-08-26T09:57:49+00:00",
+    "at": "2026-08-26T11:07:49+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 1,
     "code_sha256": "dbb75e20f83add89",
@@ -478,7 +478,7 @@
     "why": "recipe: NameError: name 'bvfx_volume' is not defined"
   },
   "warm-session-probe-loop": {
-    "at": "2026-08-26T09:57:52+00:00",
+    "at": "2026-08-26T11:07:51+00:00",
     "blender": "5.2.1 LTS",
     "blocks": 2,
     "code_sha256": "1f2543bbc5242de3",
