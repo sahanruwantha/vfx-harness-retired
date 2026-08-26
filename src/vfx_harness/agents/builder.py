@@ -3060,6 +3060,35 @@ async def build_unit(
                 "and repair that state; do not delete it and rebuild the same rig. The final "
                 "script must still contain the complete layer delta.\n"
             )
+        # The operator's retry reason is durable state's most valuable line for THIS
+        # session, and it was never delivered: run bo636v8h1 wandered the exact sign
+        # inversion its reopen reason spelled out, because `vfx units retry --reason`
+        # landed in the unit history and the kickoff never read it.
+        if layer is not None and active_unit is not None:
+            try:
+                from vfx_harness.orchestration.unit_state import load as _load_unit_state
+
+                _events = (
+                    (_load_unit_state(shot.folder, str(layer.id)).get("units") or {})
+                    .get(str(active_unit.id), {})
+                    .get("history")
+                    or []
+                )
+                _reopen = next(
+                    (
+                        str(event.get("reason") or "")
+                        for event in reversed(_events)
+                        if event.get("to") == "retryable"
+                    ),
+                    "",
+                )
+            except (OSError, ValueError):
+                _reopen = ""
+            if _reopen:
+                hist += (
+                    "\nREOPENED BY OPERATOR — this retry exists because:\n"
+                    f"{_reopen}\n"
+                )
         if hist:
             log(f"prior attempts: surfacing {hist.count('    - ')} recurring complaint(s) to the builder", 1)
         _kickoff = builder_kickoff(
