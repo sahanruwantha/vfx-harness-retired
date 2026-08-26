@@ -696,6 +696,7 @@ def build_blender_tools(
     feedback_groups: list[str] | None = None,
     mutation_roles: tuple[str, ...] | None = None,
     scope_baseline: set[str] | None = None,
+    unit_scope: dict | None = None,
 ):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
     `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…).
@@ -898,6 +899,22 @@ def build_blender_tools(
                     f"\n⚠ automatic scene-contract probe unavailable: {type(exc).__name__}: {str(exc)[:100]}"
                 )
         return _text(body + meta + warn + contract_note)
+
+    @tool(
+        "unit_scope",
+        "Compiled scope of the ACTIVE work unit: mutation roles/controls/dresses/"
+        "script_spans, bound contract ids (kind, roles, frame), claims, judge frames, "
+        "and every bvfx_* helper injected into run_bpy. Same card as kickoff and "
+        "CLAUDE.md. Query this; do not inspect.getsource or guess a sibling unit.",
+        {"type": "object", "properties": {}, "required": []},
+    )
+    async def unit_scope_tool(_args):
+        if not unit_scope:
+            return _text(
+                "no active work unit — unit_scope is compiled per unit",
+                is_error=True,
+            )
+        return _text(json.dumps(unit_scope, indent=2, sort_keys=True))
 
     @tool(
         "inspect_scene",
@@ -1650,6 +1667,7 @@ def build_blender_tools(
 
     tools = [
         run_bpy,
+        unit_scope_tool,
         inspect_scene,
         inspect_nodes,
         list_keyframes,

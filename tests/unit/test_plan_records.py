@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from vfx_harness.domain.plan_records import load_active_structured_decisions
 from vfx_harness.evaluation.plan_gate import _check_meta_records
 from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.observability import run_artifacts
@@ -29,6 +30,14 @@ from vfx_harness.orchestration.plan_due import (
 def _write(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+
+
+def _select_generation(root: Path, bundle_hash: str) -> None:
+    """Pin the folder to one generation hash so ledger adoption can key to it."""
+    _write(root / ".plan-consumer-view.json", {
+        "schema": "vfx-harness.plan-consumer-view/v1",
+        "content_hash": bundle_hash,
+    })
 
 
 def _candidate(root: Path) -> None:
@@ -743,7 +752,7 @@ def test_structured_human_decision_must_be_adopted_exactly_by_required_contract(
     }
     (state / "plan-resolutions.jsonl").write_text(json.dumps({
         "schema": "vfx-harness.plan-resolutions/v1",
-        "bundle_hash": "prior-bundle",
+        "bundle_hash": "view-bundle",
         "kind": "assumption",
         "id": "A-camera",
         "status": "satisfied",
@@ -751,6 +760,7 @@ def test_structured_human_decision_must_be_adopted_exactly_by_required_contract(
         "decision": "approved exact camera spine",
         "values": {"contract": expected},
     }) + "\n", encoding="utf-8")
+    _select_generation(tmp_path, "view-bundle")
 
     findings, _ = _check_meta_records(tmp_path)
     assert any(
@@ -1105,7 +1115,7 @@ def test_typed_promises_are_rejected_by_the_loader(tmp_path: Path) -> None:
         load_layers_from_path(tmp_path / "layers.json")
 
 
-def _structured_camera_decision(root: Path) -> dict:
+def _structured_camera_decision(root: Path, bundle_hash: str = "view-bundle") -> dict:
     state = root / "state"
     state.mkdir(exist_ok=True)
     expected = {
@@ -1120,7 +1130,7 @@ def _structured_camera_decision(root: Path) -> dict:
     }
     (state / "plan-resolutions.jsonl").write_text(json.dumps({
         "schema": "vfx-harness.plan-resolutions/v1",
-        "bundle_hash": "prior-bundle",
+        "bundle_hash": bundle_hash,
         "kind": "assumption",
         "id": "A-camera",
         "status": "satisfied",
@@ -1128,6 +1138,7 @@ def _structured_camera_decision(root: Path) -> dict:
         "decision": "approved exact camera spine",
         "values": {"contract": expected},
     }) + "\n", encoding="utf-8")
+    _select_generation(root, bundle_hash)
     return expected
 
 
@@ -1234,6 +1245,166 @@ def test_materialization_must_adopt_owned_structured_decision(tmp_path: Path) ->
     )
     assert any(
         row.get("decision_id") == "A-polish" for row in materialized.scene_contracts
+    )
+
+
+def test_load_active_structured_decisions_keys_to_selected_bundle_and_retires(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "plan-resolutions.jsonl"
+    selected = "a" * 64
+    other = "b" * 64
+    contract = {"kind": "keyframe_schedule", "roles": ["cam_rig"], "op": "max", "hi": 0.001}
+    replacement = {**contract, "hi": 0.002}
+    rows = [
+        {
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": other, "kind": "assumption", "id": "A2",
+            "status": "satisfied", "values": {"contract": contract},
+        },
+        {
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": selected, "kind": "assumption", "id": "A2",
+            "status": "satisfied", "values": {"contract": contract},
+        },
+        {
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": selected, "kind": "assumption", "id": "A2",
+            "status": "falsified", "decision": "calibration occludes the subject",
+        },
+        {
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": selected, "kind": "assumption", "id": "A3",
+            "status": "satisfied", "values": {"contract": replacement},
+        },
+        {
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": selected, "kind": "assumption", "id": "A3",
+            "status": "superseded",
+        },
+        {
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": selected, "kind": "assumption", "id": "A4",
+            "status": "satisfied", "values": {"contract": replacement},
+        },
+    ]
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    active = load_active_structured_decisions(ledger, bundle_hash=selected)
+    assert "A2" not in active
+    assert "A3" not in active
+    assert active["A4"].contract["hi"] == 0.002
+    assert load_active_structured_decisions(ledger, bundle_hash=other)["A2"].id == "A2"
+
+
+def test_other_generation_structured_decision_is_inert_at_the_gate(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _structured_camera_decision(tmp_path, bundle_hash="other-generation")
+    _select_generation(tmp_path, "view-bundle")
+
+    findings, _ = _check_meta_records(tmp_path)
+    assert not any(finding.check == "decision-adoption" for finding in findings)
+
+
+def test_other_generation_structured_decision_does_not_force_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    expected = {
+        "kind": "keyframe_schedule",
+        "roles": ["polish.comp"],
+        "samples": [
+            {"frame": 239, "values": {"location": [0, 0, 0]}},
+            {"frame": 240, "values": {"location": [0, 0, 0]}},
+        ],
+        "op": "max",
+        "hi": 0.001,
+    }
+    state = tmp_path / "state"
+    state.mkdir(exist_ok=True)
+    (state / "plan-resolutions.jsonl").write_text(json.dumps({
+        "schema": "vfx-harness.plan-resolutions/v1",
+        "bundle_hash": "other-generation",
+        "kind": "assumption",
+        "id": "A-polish",
+        "status": "satisfied",
+        "evidence": [{"kind": "human_decision", "id": "user-approved-polish"}],
+        "decision": "approved polish hold",
+        "values": {"contract": expected},
+    }) + "\n", encoding="utf-8")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+
+    validate_materialization(
+        bundle.root, payload,
+        expected_bundle_hash=bundle.content_hash,
+        resolutions_path=state / "plan-resolutions.jsonl",
+    )
+
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["scene_contracts"][0]["decision_id"] = "A-polish"
+    _write(payload, data)
+    with pytest.raises(ValueError, match="not active on the selected bundle"):
+        validate_materialization(
+            bundle.root, payload,
+            expected_bundle_hash=bundle.content_hash,
+            resolutions_path=state / "plan-resolutions.jsonl",
+        )
+
+
+def test_later_falsified_row_retires_structured_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    expected = {
+        "kind": "keyframe_schedule",
+        "roles": ["polish.comp"],
+        "samples": [
+            {"frame": 239, "values": {"location": [0, 0, 0]}},
+            {"frame": 240, "values": {"location": [0, 0, 0]}},
+        ],
+        "op": "max",
+        "hi": 0.001,
+    }
+    state = tmp_path / "state"
+    state.mkdir(exist_ok=True)
+    (state / "plan-resolutions.jsonl").write_text(
+        json.dumps({
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": bundle.content_hash,
+            "kind": "assumption",
+            "id": "A-polish",
+            "status": "satisfied",
+            "evidence": [{"kind": "human_decision", "id": "user-approved-polish"}],
+            "decision": "approved polish hold",
+            "values": {"contract": expected},
+        })
+        + "\n"
+        + json.dumps({
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": bundle.content_hash,
+            "kind": "assumption",
+            "id": "A-polish",
+            "status": "falsified",
+            "evidence": [{"kind": "human_decision", "id": "operator-falsified-polish"}],
+            "decision": "calibration occludes the subject; explicit replan",
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+
+    validate_materialization(
+        bundle.root, payload,
+        expected_bundle_hash=bundle.content_hash,
+        resolutions_path=state / "plan-resolutions.jsonl",
     )
 
 
@@ -1717,3 +1888,116 @@ def test_revert_materialization_restores_global_authority(tmp_path, monkeypatch)
         if row["id"] == "R-final-lock"
     }
     assert owed == {"R-final-lock": "deferred_owner"}
+
+
+def test_unselected_revert_leaves_live_pointer(tmp_path, monkeypatch) -> None:
+    """Remat must not select the reverted overlay. Run 3af3b7 selected a hole, then
+    died on a broken pipe before the replacement published — live authority lost the
+    layer, unit state still said passed (HIR-0026)."""
+    from vfx_harness.orchestration.jit_materialization import (
+        publish_materialization,
+        revert_materialization,
+    )
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "unselected-revert-run")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    _passed_layer_one_outcome(tmp_path)
+    publish_materialization(tmp_path, payload)
+
+    pointer = tmp_path / "state" / "jit-layers" / "current.json"
+    before = pointer.read_bytes()
+    overlay = revert_materialization(tmp_path, "2", select=False)
+
+    assert overlay is not None
+    assert pointer.read_bytes() == before
+    overlay_layers = load_layers_from_path(overlay / "layers.json")
+    assert overlay_layers["2"].execution == "jit_deferred"
+    live = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))
+    assert live["2"].execution == "ready"
+
+    overlay_register = json.loads((overlay / "requirements.json").read_text(encoding="utf-8"))
+    overlay_kind = {
+        row["id"]: row["resolution"]["kind"]
+        for row in overlay_register["requirements"]
+        if row["id"] == "R-final-lock"
+    }
+    assert overlay_kind == {"R-final-lock": "deferred_owner"}
+
+    with pytest.raises(ValueError, match="already resolved concretely"):
+        publish_materialization(tmp_path, payload)
+    assert pointer.read_bytes() == before
+
+    published = publish_materialization(tmp_path, payload, overlay_root=overlay)
+    assert published == pointer
+    selected = json.loads(pointer.read_text(encoding="utf-8"))
+    assert "2" in selected["materialized_layers"]
+    after = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))
+    assert after["2"].execution == "ready"
+
+
+def test_unselected_revert_of_last_layer_does_not_unlink_pointer(
+    tmp_path, monkeypatch
+) -> None:
+    """select=False must still return the overlay and must not unlink current.json
+    even when the reverted view has no remaining materialized layers."""
+    from vfx_harness.orchestration.jit_materialization import revert_materialization
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    ready_layer = document["layers"][0]
+    deferred_layer = {**ready_layer, "execution": "jit_deferred", "stages": []}
+    deferred_layer["jit"] = {
+        "depends_on_layers": [],
+        "required_outcomes": [],
+        "reserved_roles": ["comp"],
+        "owned_requirements": ["R-final-lock"],
+    }
+    document["schema"] = 5
+    document["layers"] = [deferred_layer]
+    _write(tmp_path / "layers.json", document)
+    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
+        "due": {"kind": "before_layer", "layer": "1"},
+    }
+    _write(tmp_path / "requirements.json", requirements)
+    _write(tmp_path / "obligations.json", {
+        "schema": "vfx-harness.obligations/v1", "obligations": [],
+    })
+    layout = run_artifacts.create(tmp_path, "unselected-last-layer")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = tmp_path / "root-jit.json"
+    _write(payload, {
+        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "bundle_hash": bundle.content_hash,
+        "layer": _declaring({**ready_layer, "execution": "ready"}),
+        "scene_contracts": [{
+            "id": "final-lock", "kind": "frame_delta", "owner_layer": "1",
+            "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
+            "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
+        }, *_vis_rows("1", (239, 240))],
+        "image_contracts": [],
+        "requirement_bindings": [{
+            "requirement_id": "R-final-lock", "contract_ids": ["final-lock"],
+        }],
+        "acceptance": [],
+    })
+    publish_materialization(tmp_path, payload)
+
+    pointer = tmp_path / "state" / "jit-layers" / "current.json"
+    assert pointer.is_file()
+    before = pointer.read_bytes()
+    overlay = revert_materialization(tmp_path, "1", select=False)
+
+    assert overlay is not None
+    assert pointer.is_file()
+    assert pointer.read_bytes() == before
+    overlay_layers = load_layers_from_path(overlay / "layers.json")
+    assert overlay_layers["1"].execution == "jit_deferred"

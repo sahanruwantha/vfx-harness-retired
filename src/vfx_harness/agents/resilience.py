@@ -112,7 +112,8 @@ async def run_session(
     `attempt_fn` runs one session and returns whatever text it collected (assistant output),
     which is where the real error message lives. `succeeded` is the caller's post-condition
     — an exception-free run that produced nothing is a FAILURE here, which is precisely the
-    case that cost two rounds.
+    case that cost two rounds. Turn exhaustion fails closed even when that post-condition
+    already holds: a written candidate is not a select (HIR-0027).
     """
     last = ""
     for n in range(1, attempts + 1):
@@ -121,19 +122,24 @@ async def run_session(
             said = await attempt_fn()
         except Exception as e:
             said, err = "", str(e)
+        # Exhaustion is a failed transaction even when the caller’s post-condition
+        # already holds (a candidate file exists). Checking succeeded() first let
+        # remat5 (975cb6) return, then publish_materialization raise on the dirty
+        # document — terminal_cause process_error, not max_turns_exhausted.
+        blob = f"{err}\n{said}"
+        if _MAX_TURNS.search(blob):
+            last = (err or said or "produced no output and raised nothing").strip()[:300]
+            raise AgentSessionFailure(
+                f"{label} exhausted its model turn budget: {last}",
+                "max_turns_exhausted",
+            )
         if succeeded():
             if n > 1:
                 log(f"{label}: succeeded on attempt {n}/{attempts}")
             return
         # No exception and no output is the shape that reports success having done nothing.
-        blob = f"{err}\n{said}"
         kind = classify(blob)
         last = (err or said or "produced no output and raised nothing").strip()[:300]
-        if _MAX_TURNS.search(blob):
-            raise AgentSessionFailure(
-                f"{label} exhausted its model turn budget: {last}",
-                "max_turns_exhausted",
-            )
         if kind == "terminal":
             log(f"! {label}: TERMINAL failure, not retrying — {last}")
             cause = "usage_limit" if _USAGE_LIMIT.search(blob) else "terminal_service_error"

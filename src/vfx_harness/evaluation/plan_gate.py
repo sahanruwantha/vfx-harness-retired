@@ -1782,12 +1782,18 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
     # A human-approved calibration is durable authority only when its operative values
     # are self-contained.  Structured values in the append-only resolution ledger must
     # be copied exactly into one required executable contract; a prose paraphrase or a
-    # pointer to an unavailable prior plan is not an adoption mechanism.
+    # pointer to an unavailable prior plan is not an adoption mechanism. Adoption is
+    # last-write-wins for the selected bundle: another generation's values.contract is
+    # inert, and a later superseded or falsified row retires the id (HIR-0028).
     decision_path = folder / "state" / "plan-resolutions.jsonl"
-    structured_decisions: dict[str, tuple[int, dict]] = {}
-    if decision_path.is_file():
-        from vfx_harness.domain.plan_records import resolution_decision_strength
+    from vfx_harness.domain.plan_records import (
+        load_active_structured_decisions,
+        read_selected_bundle_hash,
+        resolution_decision_strength,
+    )
 
+    selected_bundle = read_selected_bundle_hash(folder)
+    if decision_path.is_file():
         for line_no, line in enumerate(
             decision_path.read_text(encoding="utf-8").splitlines(), 1
         ):
@@ -1811,18 +1817,25 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                     f"state/plan-resolutions.jsonl:{line_no}", str(exc),
                 ))
                 continue
+            if str(row.get("bundle_hash") or "") != (selected_bundle or ""):
+                continue
             if row.get("status") != "satisfied" or not isinstance(row.get("values"), dict):
                 continue
-            decision_id = str(row.get("id") or "").strip()
             contract = row["values"].get("contract")
-            if not decision_id or not isinstance(contract, dict) or not contract:
-                findings.append(Finding(
-                    "decision-adoption", True, f"state/plan-resolutions.jsonl:{line_no}",
-                    "structured resolution must provide values.contract",
-                    "embed the complete executable contract fields in the approved resolution",
-                ))
+            if isinstance(contract, dict) and contract:
                 continue
-            structured_decisions[decision_id] = (line_no, contract)
+            findings.append(Finding(
+                "decision-adoption", True, f"state/plan-resolutions.jsonl:{line_no}",
+                "structured resolution must provide values.contract",
+                "embed the complete executable contract fields in the approved resolution",
+            ))
+
+    structured_decisions: dict[str, tuple[int, dict]] = {}
+    if selected_bundle:
+        for decision in load_active_structured_decisions(
+            decision_path, bundle_hash=selected_bundle
+        ).values():
+            structured_decisions[decision.id] = (decision.line_no, decision.contract)
 
     try:
         unit_first_layers = json.loads((folder / "layers.json").read_text(encoding="utf-8"))

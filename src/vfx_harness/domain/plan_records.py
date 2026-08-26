@@ -7,6 +7,7 @@ shot state keyed to that bundle's content hash.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import re
@@ -18,6 +19,9 @@ REQUIREMENTS_SCHEMA = "vfx-harness.requirements/v1"
 OBLIGATIONS_SCHEMA = "vfx-harness.obligations/v1"
 ASSUMPTIONS_SCHEMA = "vfx-harness.assumptions/v1"
 RESOLUTIONS_SCHEMA = "vfx-harness.plan-resolutions/v1"
+CONSUMER_VIEW_MARKER = ".plan-consumer-view.json"
+PLAN_POINTER = Path("plans/current.json")
+RETIRED_RESOLUTION_STATUSES = frozenset({"superseded", "falsified"})
 
 RESOLUTION_KINDS = {"contract", "obligation", "deferred_owner", "decision"}
 DUE_KINDS = {"before_unit", "unit_completion", "before_layer", "before_acceptance"}
@@ -399,6 +403,107 @@ def load_assumptions(root: str | Path) -> tuple[Assumption, ...]:
             falsification_contract_ids,
         ))
     return tuple(out)
+
+
+def read_selected_bundle_hash(folder: str | Path) -> str | None:
+    """Return the generation hash this folder claims, without resolving the bundle.
+
+    A consumer view carries ``.plan-consumer-view.json``; a shot folder carries
+    ``plans/current.json``. Either is enough to key the append-only ledger.
+    Missing or unreadable markers leave the ledger inert rather than adopting
+    every generation's structured decisions.
+    """
+    root = Path(folder)
+    marker = root / CONSUMER_VIEW_MARKER
+    if marker.is_file():
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            digest = payload.get("content_hash")
+            if isinstance(digest, str) and digest.strip():
+                return digest.strip()
+    pointer = root / PLAN_POINTER
+    if pointer.is_file():
+        try:
+            payload = json.loads(pointer.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            digest = payload.get("content_hash")
+            if isinstance(digest, str) and digest.strip():
+                return digest.strip()
+    return None
+
+
+def roles_match_reserved(roles: list[str], reserved: tuple[str, ...]) -> bool:
+    """True when every role is covered by at least one reserved namespace pattern."""
+    if not roles or not reserved:
+        return False
+    return all(
+        any(
+            fnmatch.fnmatchcase(role, pattern) or fnmatch.fnmatchcase(pattern, role)
+            for pattern in reserved
+        )
+        for role in roles
+    )
+
+
+@dataclass(frozen=True)
+class StructuredDecision:
+    """One active ``values.contract`` adoption for the selected bundle."""
+
+    id: str
+    line_no: int
+    contract: dict[str, Any]
+    decision: str
+
+
+def load_active_structured_decisions(
+    path: str | Path, *, bundle_hash: str
+) -> dict[str, StructuredDecision]:
+    """Last-write-wins structured contracts for exactly one published bundle.
+
+    Rows keyed to another generation are inert. A later ``superseded`` or
+    ``falsified`` row for the same id on this bundle retires it. Satisfied
+    rows without ``values.contract`` are prose approvals, not adoption.
+    Unreadable lines are skipped: ledger integrity is the plan gate's finding.
+    """
+    path = Path(path)
+    if not path.is_file() or not bundle_hash:
+        return {}
+    active: dict[str, StructuredDecision] = {}
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("bundle_hash") or "") != bundle_hash:
+            continue
+        decision_id = str(row.get("id") or "").strip()
+        if not decision_id:
+            continue
+        status = str(row.get("status") or "")
+        if status in RETIRED_RESOLUTION_STATUSES:
+            active.pop(decision_id, None)
+            continue
+        if status != "satisfied" or not isinstance(row.get("values"), dict):
+            continue
+        contract = row["values"].get("contract")
+        if not isinstance(contract, dict) or not contract:
+            continue
+        active[decision_id] = StructuredDecision(
+            id=decision_id,
+            line_no=line_no,
+            contract=contract,
+            decision=str(row.get("decision") or "").strip(),
+        )
+    return active
 
 
 def load_resolutions(

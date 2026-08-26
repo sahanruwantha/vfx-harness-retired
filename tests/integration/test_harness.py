@@ -2282,6 +2282,7 @@ def main():
     check("lists every judge frame", all(f"f{f}" in body for f, _ in lay.judges))
     check("carries fingerprints", "mean 0.5" in body)
     check("has summary instructions", "Summary instructions" in body)
+    check("embeds the compiled unit-scope card", "UNIT SCOPE CARD" in body and "bvfx_role" in body)
     clear_layer_context(shot)
     check("clear_layer_context removes it", not (shot.folder / "CLAUDE.md").exists())
 
@@ -2293,6 +2294,7 @@ def main():
     _, names = build_blender_tools(S(), shot_dir=shot.folder, layer_id="1")
     short = [n.split("__")[-1] for n in names]
     check("render_frames registered", "render_frames" in short)
+    check("compiled unit_scope registered", "unit_scope" in short)
     check("transactional semantic control sweep registered", "probe_control" in short)
     check("script_map + worklist registered", {"script_map", "worklist"} <= set(short))
     check("ask_supervisor NOT in build tools", "ask_supervisor" not in short)

@@ -30,8 +30,9 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
   truncation, cancellation, SDK failure, or worker failure.
 - Use generic evidence primitives. Derive subjects, frames, regions, targets, stages, and
   tolerances from each shot's brief and references.
-- Make the active agent smarter with ground truth, instruments, and context compiled to the
-  work unit; do not scale by enlarging the agent session or asking it to rediscover authority.
+- Make the active agent smarter with ground truth, instruments, context compiled to the
+  work unit, and a queryable unit-scope card; do not scale by enlarging the agent session
+  or asking it to rediscover authority.
 - Give autonomous blocking authority only to executable or currently qualified qualitative
   claims; otherwise improve evidence/judgement or require audited human adjudication.
 - Give interaction defects a bounded coordination owner; broader balancing must replan.
@@ -47,6 +48,9 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 - Let a local fix trade away an already passing frame, unit, interface, or upstream layer.
 - Repair a fault in a downstream layer when its semantic owner is known upstream.
 - Ship partial/unvalidated edits or call an interrupted agent result complete.
+- Let rematerialization select a reverted overlay before the replacement publishes.
+- Let an exhausted session publish because a candidate file exists.
+- Let a prior generation's structured decision bind the selected bundle.
 - Let a builder silently rewrite its plan, broaden repair scope, or misclassify blocked work.
 - Add compatibility fallbacks that silently revive obsolete plans, schemas, selectors, or
   execution contracts; migrations are explicit and fail closed.

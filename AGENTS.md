@@ -180,7 +180,14 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   validation reports every collectable finding in one write, each addressed by an RFC 6901 JSON
   pointer; field repair is `patch_materialization` on the candidate file. Unreadable JSON, wrong
   schema, wrong bundle hash, and a non-object layer remain fatal. Historical plan bundles are
-  not a repair instrument (HIR-0023).
+  not a repair instrument (HIR-0023). Rematerialization writes a reverted overlay as the design
+  base and selects only when the replacement publishes; crash, truncation, or a broken pipe
+  leaves the previously selected view (HIR-0026). Task and Agent are not remat repair
+  instruments. An exhausted materialization session does not publish: max-turns is a failed
+  transaction, not a select (HIR-0027). Structured decision adoption is last-write-wins for
+  the selected bundle only: a `values.contract` row keyed to another generation is inert, a
+  later `superseded` or `falsified` row for the same id on this bundle retires it, and
+  materialization copies the compiled binding set rather than every ledger line (HIR-0028).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is
   irreversible, or is expensive to be wrong about later; otherwise defer it to the owning layer
   (ADR-0005).
@@ -258,8 +265,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   A role is one dotted token (`[A-Za-z0-9._-]+`); commas are not membership — tag once or split
   hosts (HIR-0022). Builder scene tools (`inspect_scene`, `check_scene`, `list_keyframes`)
   address `role`; a miss names the requested selector and the names and roles that exist
-  (HIR-0018). An unknown authored change blocks candidate freeze until it is classified,
-  reverted, or added through a plan amendment.
+  (HIR-0018). Kickoff, `CLAUDE.md`, and the `unit_scope` tool share one compiled card for the
+  active unit: mutation roles/controls/dresses/spans, bound contracts, claims, judge frames,
+  and the `run_bpy` helper inventory. Query that card; do not `inspect.getsource` or guess a
+  sibling unit (HIR-0025). An unknown authored change blocks candidate freeze until it is
+  classified, reverted, or added through a plan amendment.
 - Protection wildcards resolve to an explicit sorted contract-id closure at freeze; evaluation,
   repair, resume, and revalidation use that recorded closure, never a re-evaluated wildcard.
 - Appearance on another layer's geometry is owner-granted authority: the owner declares

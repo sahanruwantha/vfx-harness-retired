@@ -56,7 +56,8 @@ document.
 - The materialization write-hook splits that list. `patch_materialization` is
   registered only when a candidate path is set; it JSON-decodes `value`, patches,
   and returns VALIDATION PASSED or remaining findings. `Edit` stays denied.
-- The materialization session denies Glob and Grep (`MATERIALIZATION_DENIED_TOOLS`).
+- The materialization session denies Glob, Grep, Task, and Agent
+  (`MATERIALIZATION_DENIED_TOOLS`; HIR-0026 added the delegation tools).
   Authority is the selected bundle, `state/plan-resolutions.jsonl`, and
   `plans/outcomes/`.
 
@@ -97,6 +98,6 @@ and the patch tool. Existing materialization documents are unchanged.
   field set; the session still `Write`s those. Pointers cover the field-precise
   walk that exhausted remat.
 - `patch_materialization` cannot replace the document root.
-- Production `l1-remat4` is still the acceptance gate for HIR-0019 (iris-crossing
-  spine; interior `visible_fraction` at f72/f150 owned by layer 1). This HIR does
-  not cheapen that rebuild against a falsified view.
+- Production `l1-remat4` (`3af3b7`) died on a broken pipe after selecting a
+  reverted overlay that hollowed layer 1 (HIR-0026). The HIR-0019 spine gate is
+  the next remat that publishes, not a rebuild against the discarded view.

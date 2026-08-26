@@ -122,6 +122,11 @@ _LIGHT_APIS = re.compile(r"light_add|bpy\.data\.lights|lights\.new|type\s*=\s*['
 
 def _decision_value_signals(shot_folder: Path) -> tuple[set[str], list[tuple[str, str, set[str]]]]:
     """Falsification contract ids and adopted value shapes from recorded decisions."""
+    from vfx_harness.domain.plan_records import (
+        load_active_structured_decisions,
+        read_selected_bundle_hash,
+    )
+
     falsification_ids: set[str] = set()
     adopted: list[tuple[str, str, set[str]]] = []
     try:
@@ -142,13 +147,18 @@ def _decision_value_signals(shot_folder: Path) -> tuple[set[str], list[tuple[str
                 continue
             falsification = row.get("falsification") or {}
             falsification_ids.update(map(str, falsification.get("contract_ids") or []))
-            contract = (row.get("values") or {}).get("contract") or {}
-            if contract.get("kind"):
-                adopted.append((
-                    str(row.get("id") or "?"),
-                    str(contract["kind"]),
-                    {str(role) for role in contract.get("roles") or []},
-                ))
+        selected = read_selected_bundle_hash(shot_folder)
+        if selected:
+            for decision in load_active_structured_decisions(
+                resolutions, bundle_hash=selected
+            ).values():
+                kind = decision.contract.get("kind")
+                if kind:
+                    adopted.append((
+                        decision.id,
+                        str(kind),
+                        {str(role) for role in decision.contract.get("roles") or []},
+                    ))
     return falsification_ids, adopted
 
 
@@ -605,6 +615,7 @@ def build_plan_tools(
     measure_ref_paths: tuple[str, ...] | None = None,
     enabled_tools: frozenset[str] | None = None,
     candidate_materialization: str | Path | None = None,
+    overlay_root: str | Path | None = None,
 ):
     shot_folder = Path(shot_folder)
     work = Path(tempfile.mkdtemp(prefix="planlab-"))  # raw ffmpeg output
@@ -1418,7 +1429,9 @@ def build_plan_tools(
 
                 try:
                     await anyio.to_thread.run_sync(
-                        lambda: stage_candidate_view(shot_folder, candidate, view)
+                        lambda: stage_candidate_view(
+                            shot_folder, candidate, view, overlay_root=overlay_root
+                        )
                     )
                 except (ValueError, OSError) as exc:
                     return _text(
@@ -1494,10 +1507,13 @@ def build_plan_tools(
         try:
             bundle = resolve_current(shot_folder)
             base_layers = selected_view_artifact(
-                shot_folder, "layers.json", bundle.content_hash
+                shot_folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
             ) or artifact_path(shot_folder, "layers.json")
             base_requirements = selected_view_artifact(
-                shot_folder, "requirements.json", bundle.content_hash
+                shot_folder,
+                "requirements.json",
+                bundle.content_hash,
+                overlay_root=overlay_root,
             ) or artifact_path(shot_folder, "requirements.json")
             findings = await anyio.to_thread.run_sync(
                 lambda: apply_materialization_patch(

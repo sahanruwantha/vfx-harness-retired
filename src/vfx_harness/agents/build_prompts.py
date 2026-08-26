@@ -564,6 +564,7 @@ def builder_kickoff(
     plan_excerpt: str = "",
     also_judged: list | None = None,
     history: str = "",
+    unit_scope: dict | None = None,
 ) -> str:
     adir = shot.folder / "assets"
     assets = sorted(p.name for p in adir.iterdir() if (p / "model.glb").is_file()) if adir.is_dir() else []
@@ -597,6 +598,11 @@ def builder_kickoff(
             "fails closed. Validate these contracts "
             "before declaring convergence.\n\n"
         )
+    scope_block = ""
+    if unit_scope:
+        from vfx_harness.agents.unit_scope import format_unit_scope_card
+
+        scope_block = format_unit_scope_card(unit_scope) + "\n\n"
     if priors:
         start_line = (
             f"THE SCENE IS NOT EMPTY: the earlier delta script(s) {priors} have already "
@@ -632,6 +638,7 @@ def builder_kickoff(
         f"REFERENCE: read `{m.ref}` — match its colour, composition and camera state.\n"
         f"{extra}"
         f"Also read `brief.md` for the shot's intent and palette.\n\n"
+        f"{scope_block}"
         f"{contract_block}"
         f"{plan_block}"
         f"{history}"

@@ -7,6 +7,20 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Rematerialization writes a reverted overlay as the design base and selects only
+  when the replacement publishes: a crash, truncation, or broken pipe leaves the
+  previously selected view. Materialization sessions also deny Task/Agent
+  ([HIR-0026](docs/improvements/HIR-0026-remat-revert-must-not-select-a-hole.md)).
+  An exhausted session does not publish because a candidate file exists
+  ([HIR-0027](docs/improvements/HIR-0027-max-turns-must-not-publish.md)).
+  Structured `values.contract` adoption is last-write-wins for the selected bundle:
+  a prior generation's row is inert, a later superseded or falsified row retires
+  the id, and materialization copies the compiled binding set
+  ([HIR-0028](docs/improvements/HIR-0028-structured-decisions-bind-the-selected-bundle.md)).
+- The active work unit is compiled into one scope card — mutation surface, bound
+  contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
+  kickoff, `CLAUDE.md`, and the `unit_scope` tool
+  ([HIR-0025](docs/improvements/HIR-0025-unit-scope-was-a-translation-job.md)).
 - An empty `path_clearance_min` obstacle selection is not a passing clearance: the 1e9
   sentinel never PASSes, and authoring refuses sentinel-scale or zero-floor bounds
   ([HIR-0024](docs/improvements/HIR-0024-empty-path-clearance-is-not-a-pass.md)).

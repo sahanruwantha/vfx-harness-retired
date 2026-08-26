@@ -12,7 +12,8 @@ mutation is a harness defect, not a model limitation to paper over with a longer
 ## Wanted
 
 - New instruments at the owning boundary when a role is forced to guess
-- Context compiled to the active work unit
+- Context compiled to the active work unit (kickoff, CLAUDE.md, and `unit_scope`)
+- Binding structured decisions compiled to the selected bundle at materialization
 - Tool policy that enumerates legal actions and names violations
 - Closed-loop mutation: every write has a matching observation
 - Earned qualitative judgment where executable evidence cannot decide

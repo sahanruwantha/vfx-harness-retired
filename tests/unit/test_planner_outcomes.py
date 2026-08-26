@@ -114,10 +114,70 @@ def test_materialization_kickoff_carries_row_and_readable_paths(tmp_path: Path) 
     assert '"script": "build/01_boot.py"' in kickoff
     assert "state/plan-resolutions.jsonl" in kickoff
     assert "plans/outcomes/" in kickoff
+    assert "Binding structured decisions" in kickoff
+    assert "are inert" in kickoff
     # The schema example must cover the fields attempts 2-3 died discovering.
     for field in ('"plan"', '"protects"', '"control_roles"', '"proposition"',
                   '"requirement_bindings"', '"completion"'):
         assert field in kickoff, f"schema example missing {field}"
+
+
+def test_materialization_kickoff_lists_only_selected_bundle_decisions(tmp_path: Path) -> None:
+    bundle_root = tmp_path / "runs" / "r1" / "checkpoints" / "plans" / "bundles" / "abc"
+    bundle_root.mkdir(parents=True)
+    row = {
+        "id": "1", "script": "build/01_boot.py", "title": "Bootstrap",
+        "primary_judge": 1, "judge": [{"frame": 1, "ref": "refs/a.png"}],
+        "owns": ["camera_path_fidelity"], "evidence_domains": ["scene"],
+        "reads": "authored brief", "execution": "jit_deferred", "stages": [],
+        "jit": {"reserved_roles": ["cam_rig"]},
+    }
+    (bundle_root / "layers.json").write_text(
+        json.dumps({"schema": 5, "layers": [row]}), encoding="utf-8"
+    )
+    state = tmp_path / "state"
+    state.mkdir()
+    contract = {
+        "kind": "keyframe_schedule",
+        "roles": ["cam_rig"],
+        "samples": [{"frame": 1, "values": {"location": [0, 0, 0]}}],
+        "op": "max",
+        "hi": 0.001,
+    }
+    (state / "plan-resolutions.jsonl").write_text(
+        json.dumps({
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": "other-generation",
+            "kind": "assumption",
+            "id": "A2",
+            "status": "satisfied",
+            "decision": "prior-generation falsified spine",
+            "values": {"contract": contract},
+        })
+        + "\n"
+        + json.dumps({
+            "schema": "vfx-harness.plan-resolutions/v1",
+            "bundle_hash": "abc123",
+            "kind": "assumption",
+            "id": "A-now",
+            "status": "satisfied",
+            "decision": "selected-bundle spine",
+            "values": {"contract": contract},
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    bundle = SimpleNamespace(root=bundle_root, content_hash="abc123")
+    layer = SimpleNamespace(
+        id="1", title="Bootstrap", jit=SimpleNamespace(reserved_roles=["cam_rig"])
+    )
+
+    kickoff = planner._materialization_kickoff(tmp_path, layer, bundle, "out.json")
+
+    assert '"id": "A-now"' in kickoff
+    assert "selected-bundle spine" in kickoff
+    assert "prior-generation falsified spine" not in kickoff
+    assert "A2" not in kickoff
 
 
 def test_two_pass_verify_exhaustion_falls_back_to_candidate(
@@ -239,6 +299,24 @@ def test_rematerialize_refuses_to_discard_accepted_work(tmp_path, monkeypatch) -
     source = inspect.getsource(_planner._rematerialize_layer)
     assert "--discard-accepted" in source
     assert "if accepted and not discard_accepted:" in source
+
+
+def test_already_deferred_rematerialize_still_runs_the_transaction() -> None:
+    """Run 3af3b7 selected a hole; layer 1 is jit_deferred. The next --rematerialize
+    must still take _rematerialize_layer (discard, unpublished overlay, apply_replan),
+    not unpack a 4-tuple as 3 and skip unit-state movement."""
+    import inspect
+
+    from vfx_harness.agents import planner as _planner
+
+    source = inspect.getsource(_planner.generate_layer_plan)
+    assert "if rematerialize is not None and layer.execution == \"ready\":" not in source
+    assert "if rematerialize is not None:" in source
+    assert "_owner, replacing, _evidence = rematerialize" not in source
+    remat = inspect.getsource(_planner._rematerialize_layer)
+    assert "select=False" in remat
+    assert "overlay_root=overlay" in remat
+    assert "discard_accepted=discard_accepted" in remat
 
 
 def test_rematerialization_kickoff_carries_the_replacement_reason(tmp_path: Path) -> None:

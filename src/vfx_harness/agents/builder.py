@@ -2939,6 +2939,13 @@ async def build_unit(
     }
     comparison_state = phase
     scope_baseline: set[str] = set()
+    unit_scope_card = None
+    if active_unit is not None:
+        from vfx_harness.agents.unit_scope import compile_unit_scope_for_shot
+
+        unit_scope_card = compile_unit_scope_for_shot(
+            shot, active_unit, str(getattr(layer, "id", m.id))
+        )
     bserver, bnames = build_blender_tools(
         session,
         assets_dir=shot.folder / "assets",
@@ -2956,6 +2963,7 @@ async def build_unit(
         # violations — without the baseline the live scope check told every later
         # unit to delete the previous layers' sealed work
         scope_baseline=scope_baseline,
+        unit_scope=unit_scope_card,
     )
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names))
@@ -3119,6 +3127,7 @@ async def build_unit(
             plan_excerpt=plan_excerpt,
             also_judged=also or None,
             history=hist,
+            unit_scope=unit_scope_card,
         )
         transcript.prompt(
             _kickoff,

@@ -110,10 +110,28 @@ def test_spike_refuses_adopted_decision_and_falsification_hypotheses(tmp_path) -
 
     state = tmp_path / "state"
     state.mkdir()
+    selected = "a" * 64
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "plans" / "current.json").write_text(
+        json.dumps({"content_hash": selected}) + "\n", encoding="utf-8"
+    )
     (state / "plan-resolutions.jsonl").write_text(
-        '{"id": "A2", "values": {"contract": {"kind": "keyframe_schedule", '
-        '"roles": ["cam_rig"], "samples": []}}, '
-        '"falsification": {"contract_ids": ["SC-L1-16-housing-bbox-height-f36"]}}\n',
+        json.dumps({
+            "id": "A2",
+            "bundle_hash": selected,
+            "status": "satisfied",
+            "values": {
+                "contract": {
+                    "kind": "keyframe_schedule",
+                    "roles": ["cam_rig"],
+                    "samples": [],
+                }
+            },
+            "falsification": {
+                "contract_ids": ["SC-L1-16-housing-bbox-height-f36"],
+            },
+        })
+        + "\n",
         encoding="utf-8",
     )
 
@@ -202,7 +220,16 @@ def test_materialization_session_denies_glob_and_registers_patch(tmp_path: Path)
     from vfx_harness.agents.plan_tools import build_plan_tools
     from vfx_harness.agents.planner import MATERIALIZATION_DENIED_TOOLS
 
-    assert MATERIALIZATION_DENIED_TOOLS == ["Bash", "Edit", "Glob", "Grep"]
+    assert MATERIALIZATION_DENIED_TOOLS == [
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Task",
+        "Agent",
+        "ListAgents",
+        "ScheduleWakeup",
+    ]
 
     candidate = tmp_path / "jit-layer-1.json"
     candidate.write_text("{}", encoding="utf-8")

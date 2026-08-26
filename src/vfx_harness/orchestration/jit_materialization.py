@@ -20,6 +20,7 @@ from typing import Any
 from vfx_harness.domain.json_pointer import encode as json_ptr
 from vfx_harness.domain.json_pointer import format_finding
 from vfx_harness.domain.json_pointer import set_at as set_pointer
+from vfx_harness.domain.plan_records import load_active_structured_decisions
 from vfx_harness.evidence.scene_checks import validate_row, validate_row_set
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.orchestration.ledger import Layer, load_layers_from_path
@@ -466,43 +467,44 @@ def validate_materialization(
     # adopted HERE: a schema-5 global bundle publishes no contracts, so the global gate
     # only proves an owner exists. The exact executable copy — and its binding to a
     # required producing claim, enforced just above for every contract — lands at the
-    # owner's materialization.
+    # owner's materialization. Adoption is last-write-wins for the selected bundle
+    # only: a prior generation's values.contract is inert, and a later superseded or
+    # falsified row retires the id (HIR-0028).
     ledger_path = (
         Path(resolutions_path)
         if resolutions_path is not None
         else root / "state" / "plan-resolutions.jsonl"
     )
-    if ledger_path.is_file():
-        for line in ledger_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                resolution = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # ledger integrity is the plan gate's finding, not this one
-            if resolution.get("status") != "satisfied" or not isinstance(
-                resolution.get("values"), dict
-            ):
-                continue
-            decision_id = str(resolution.get("id") or "").strip()
-            contract = resolution["values"].get("contract")
-            if not decision_id or not isinstance(contract, dict) or not contract:
-                continue
-            roles = [str(role) for role in (contract.get("roles") or [])]
-            if not roles or not all(_matches_reserved(role, reserved) for role in roles):
-                continue
-            adopted = [
-                row for row in scene_rows
-                if str(row.get("decision_id") or "") == decision_id
-                and all(row.get(key) == value for key, value in contract.items())
-            ]
-            if not adopted:
-                note(
-                    json_ptr("scene_contracts"),
-                    f"materialization must adopt structured decision {decision_id}: copy "
-                    "values.contract exactly into scene_contracts, keep decision_id, and "
-                    "bind it to a required claim",
-                )
+    active_decisions = load_active_structured_decisions(
+        ledger_path, bundle_hash=expected_bundle_hash
+    )
+    for decision in active_decisions.values():
+        roles = [str(role) for role in (decision.contract.get("roles") or [])]
+        if not roles or not all(_matches_reserved(role, reserved) for role in roles):
+            continue
+        adopted = [
+            row for row in scene_rows
+            if str(row.get("decision_id") or "") == decision.id
+            and all(row.get(key) == value for key, value in decision.contract.items())
+        ]
+        if not adopted:
+            note(
+                json_ptr("scene_contracts"),
+                f"materialization must adopt structured decision {decision.id}: copy "
+                "values.contract exactly into scene_contracts, keep decision_id, and "
+                "bind it to a required claim",
+            )
+    for index, row in enumerate(scene_rows):
+        if not isinstance(row, dict):
+            continue
+        decision_id = str(row.get("decision_id") or "").strip()
+        if decision_id and decision_id not in active_decisions:
+            note(
+                json_ptr("scene_contracts", index, "decision_id"),
+                f"scene contract adopts decision {decision_id!r} which is not active "
+                "on the selected bundle; copy only the compiled binding set, or omit "
+                "decision_id for a newly authored contract",
+            )
 
     raw_bindings = payload.get("requirement_bindings")
     if not isinstance(raw_bindings, list):
@@ -733,10 +735,26 @@ def apply_materialization_patch(
     return findings
 
 
-def selected_view_artifact(shot_folder: str | Path, name: str, bundle_hash: str) -> Path | None:
-    """Return a verified materialized consumer artifact when one is selected."""
+def selected_view_artifact(
+    shot_folder: str | Path,
+    name: str,
+    bundle_hash: str,
+    *,
+    overlay_root: str | Path | None = None,
+) -> Path | None:
+    """Return a materialized consumer artifact.
+
+    ``overlay_root`` is an unpublished view directory used as a remat design base.
+    It is never the live pointer: a crash must not leave the shot on a hole the
+    replacement never published.
+    """
     if name not in OVERLAY_ARTIFACTS:
         return None
+    if overlay_root is not None:
+        path = Path(overlay_root) / name
+        if not path.is_file():
+            raise ValueError(f"overlay base is missing {name}")
+        return path
     shot = Path(shot_folder)
     pointer = shot / CURRENT
     if not pointer.is_file():
@@ -761,8 +779,10 @@ def selected_view_artifact(shot_folder: str | Path, name: str, bundle_hash: str)
     return path
 
 
-def revert_materialization(shot_folder: str | Path, layer_id: str) -> Path | None:
-    """Remove one layer's materialized contribution from the selected view.
+def revert_materialization(
+    shot_folder: str | Path, layer_id: str, *, select: bool = True
+) -> Path | None:
+    """Compose a view with one layer restored to global deferred authority.
 
     Re-materialization must design against GLOBAL authority, not against the view it is
     replacing. Without this, the discarded view's register — where this layer's owned
@@ -770,6 +790,10 @@ def revert_materialization(shot_folder: str | Path, layer_id: str) -> Path | Non
     trips the owned-means-owed rule for requirements its predecessor closed. The layer's
     rows revert to the bundle's deferred authority; every other layer's materialization
     is preserved untouched.
+
+    ``select=True`` (tests, explicit discard) writes the live pointer.
+    ``select=False`` writes the overlay directory only: remat uses it as the design
+    base and selects the replacement, or the previous pointer stays in force.
     """
     from vfx_harness.orchestration.plan_authority import resolve_current
 
@@ -824,9 +848,6 @@ def revert_materialization(shot_folder: str | Path, layer_id: str) -> Path | Non
         for row in view_docs["layers.json"]["layers"]
         if row.get("execution") != "jit_deferred"
     )
-    if not still_materialized:
-        pointer_path.unlink()
-        return None
     view_hash = hashlib.sha256(
         json.dumps(view_docs, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -834,6 +855,11 @@ def revert_materialization(shot_folder: str | Path, layer_id: str) -> Path | Non
     view.mkdir(parents=True, exist_ok=True)
     for name in OVERLAY_ARTIFACTS:
         atomic_write(view / name, json.dumps(view_docs[name], indent=2, sort_keys=True) + "\n")
+    if not select:
+        return view
+    if not still_materialized:
+        pointer_path.unlink()
+        return None
     atomic_write(
         pointer_path,
         json.dumps(
@@ -861,7 +887,9 @@ def _owned_by(layer_row: dict | None) -> set[str]:
     return {str(rid) for rid in (jit.get("owned_requirements") or [])}
 
 
-def _composed_documents(shot: Path, materialization_path: str | Path):
+def _composed_documents(
+    shot: Path, materialization_path: str | Path, *, overlay_root: str | Path | None = None
+):
     """Validate a payload and compose the five overlaid consumer documents.
 
     Shared by publication (which writes the durable view + pointer) and the in-session
@@ -879,20 +907,20 @@ def _composed_documents(shot: Path, materialization_path: str | Path):
     if layer_id not in global_layers:
         raise ValueError(f"JIT materialization names unknown layer {layer_id!r}")
     _require_upstream_outcomes(shot, global_layers[layer_id])
-    base_layers = selected_view_artifact(shot, "layers.json", bundle.content_hash) or artifact_path(
-        shot, "layers.json"
-    )
+    base_layers = selected_view_artifact(
+        shot, "layers.json", bundle.content_hash, overlay_root=overlay_root
+    ) or artifact_path(shot, "layers.json")
     base_scene = selected_view_artifact(
-        shot, "scene_checks.json", bundle.content_hash
+        shot, "scene_checks.json", bundle.content_hash, overlay_root=overlay_root
     ) or artifact_path(shot, "scene_checks.json")
-    base_checks = selected_view_artifact(shot, "checks.json", bundle.content_hash) or artifact_path(
-        shot, "checks.json"
-    )
+    base_checks = selected_view_artifact(
+        shot, "checks.json", bundle.content_hash, overlay_root=overlay_root
+    ) or artifact_path(shot, "checks.json")
     base_requirements = selected_view_artifact(
-        shot, "requirements.json", bundle.content_hash
+        shot, "requirements.json", bundle.content_hash, overlay_root=overlay_root
     ) or artifact_path(shot, "requirements.json")
     base_acceptance = selected_view_artifact(
-        shot, "acceptance.json", bundle.content_hash
+        shot, "acceptance.json", bundle.content_hash, overlay_root=overlay_root
     ) or artifact_path(shot, "acceptance.json")
     materialized = validate_materialization(
         bundle.root,
@@ -976,7 +1004,13 @@ def _overlay_documents(materialized, bases: dict) -> dict:
     }
 
 
-def stage_candidate_view(shot_folder: str | Path, materialization_path: str | Path, view: str | Path) -> None:
+def stage_candidate_view(
+    shot_folder: str | Path,
+    materialization_path: str | Path,
+    view: str | Path,
+    *,
+    overlay_root: str | Path | None = None,
+) -> None:
     """Overlay an UNPUBLISHED materialization candidate onto a prepared consumer view.
 
     The view then looks exactly as it would after publication — overlaid documents plus
@@ -984,7 +1018,9 @@ def stage_candidate_view(shot_folder: str | Path, materialization_path: str | Pa
     real consequences instead of the pre-publication world."""
     shot = Path(shot_folder).resolve()
     view = Path(view).resolve()
-    bundle, materialized, bases = _composed_documents(shot, materialization_path)
+    bundle, materialized, bases = _composed_documents(
+        shot, materialization_path, overlay_root=overlay_root
+    )
     documents = _overlay_documents(materialized, bases)
     for name, document in documents.items():
         target = view / name
@@ -1024,10 +1060,14 @@ def stage_candidate_view(shot_folder: str | Path, materialization_path: str | Pa
 def publish_materialization(
     shot_folder: str | Path,
     materialization_path: str | Path,
+    *,
+    overlay_root: str | Path | None = None,
 ) -> Path:
     """Validate and atomically select one cumulative materialized consumer view."""
     shot = Path(shot_folder).resolve()
-    bundle, materialized, bases = _composed_documents(shot, materialization_path)
+    bundle, materialized, bases = _composed_documents(
+        shot, materialization_path, overlay_root=overlay_root
+    )
     base_layers = bases["layers.json"]
     base_scene = bases["scene_checks.json"]
     base_checks = bases["checks.json"]

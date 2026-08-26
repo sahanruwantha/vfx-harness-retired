@@ -94,8 +94,19 @@ from .builder import _one_user_message
 
 # Materialization authority is the selected bundle, the decision ledger, sealed
 # outcomes, and the candidate file. Glob/Grep of historical bundles is not a repair
-# instrument; Edit is JSON text-edit of the wrong document (HIR-0023).
-MATERIALIZATION_DENIED_TOOLS = ["Bash", "Edit", "Glob", "Grep"]
+# instrument; Edit is JSON text-edit of the wrong document (HIR-0023). Task/Agent
+# are not remat repair instruments: a spawned Explore burned remat4 reading denied
+# paths, then the process died on a broken pipe (HIR-0026).
+MATERIALIZATION_DENIED_TOOLS = [
+    "Bash",
+    "Edit",
+    "Glob",
+    "Grep",
+    "Task",
+    "Agent",
+    "ListAgents",
+    "ScheduleWakeup",
+]
 
 
 def mapping_expander(workspace: Path, registry, mapping_path: Path):
@@ -183,6 +194,46 @@ _MATERIALIZATION_EXAMPLE = """{
 }"""
 
 
+def _binding_decisions_block(shot_folder: Path, layer, bundle_hash: str) -> str:
+    """Compile the structured decisions this layer must copy — not the whole ledger.
+
+    Remat5 copied a prior generation's A2 spine because the prompt said to scan
+    ``state/plan-resolutions.jsonl``. The selected bundle is the key; other
+    generations are inert (HIR-0028).
+    """
+    from vfx_harness.domain.plan_records import (
+        load_active_structured_decisions,
+        roles_match_reserved,
+    )
+
+    reserved = tuple(
+        str(pattern)
+        for pattern in (getattr(getattr(layer, "jit", None), "reserved_roles", None) or [])
+    )
+    active = load_active_structured_decisions(
+        shot_folder / "state" / "plan-resolutions.jsonl",
+        bundle_hash=bundle_hash,
+    )
+    binding = [
+        {
+            "id": decision.id,
+            "decision": decision.decision,
+            "values": {"contract": decision.contract},
+        }
+        for decision in active.values()
+        if roles_match_reserved(
+            [str(role) for role in (decision.contract.get("roles") or [])],
+            reserved,
+        )
+    ]
+    return (
+        "Binding structured decisions for this layer on the selected bundle "
+        "(copy each verbatim into scene_contracts with decision_id; ledger rows "
+        "keyed to another generation, or retired by a later superseded/falsified "
+        f"row, are inert):\n{json.dumps(binding, indent=1)}\n"
+    )
+
+
 def _materialization_kickoff(
     shot_folder: Path, layer, bundle, rel_target: str, replacing: str | None = None
 ) -> str:
@@ -215,6 +266,7 @@ def _materialization_kickoff(
         f"`requirements.json`, and `global.md` are the authority you must satisfy.\n"
         f"Your exact global layer row — copy the structural fields verbatim into the "
         f"replacement layer:\n{json.dumps(global_row, indent=1)}\n"
+        f"{_binding_decisions_block(shot_folder, layer, bundle.content_hash)}"
         f"Durable decision ledger (readable): state/plan-resolutions.jsonl\n"
         f"Sealed upstream outcomes (readable): plans/outcomes/\n"
         f"Document shape (generic minimal-valid example — replace every placeholder, "
@@ -224,9 +276,20 @@ def _materialization_kickoff(
 
 
 async def _materialize_deferred_layer(
-    shot, layer, *, model: str, blender: str, max_turns: int, replacing: str | None = None
+    shot,
+    layer,
+    *,
+    model: str,
+    blender: str,
+    max_turns: int,
+    replacing: str | None = None,
+    overlay_root: str | Path | None = None,
 ) -> None:
-    """Close one layer's owned requirements with concrete authority, then select its view."""
+    """Close one layer's owned requirements with concrete authority, then select its view.
+
+    ``overlay_root`` is an unpublished reverted overlay used as the remat design base.
+    Publication is the only select; a crash must not have already moved the live pointer.
+    """
     from vfx_harness.orchestration.jit_materialization import (
         MATERIALIZATION_SCHEMA,
         publish_materialization,
@@ -253,10 +316,13 @@ async def _materialize_deferred_layer(
         # write hook refuse dresses the publication path would accept (run bm9og09xw).
         try:
             base_layers = selected_view_artifact(
-                shot.folder, "layers.json", bundle.content_hash
+                shot.folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
             ) or artifact_path(shot.folder, "layers.json")
             base_requirements = selected_view_artifact(
-                shot.folder, "requirements.json", bundle.content_hash
+                shot.folder,
+                "requirements.json",
+                bundle.content_hash,
+                overlay_root=overlay_root,
             ) or artifact_path(shot.folder, "requirements.json")
             findings, _materialized = inspect_materialization(
                 bundle.root,
@@ -283,9 +349,10 @@ taken; assignment-only authority — geometry stays protected by the owner's con
 A layer whose proxies later layers must dress declares those selectors under `dressable`
 on its layer row; dressed roles need required claims exactly like mutation roles. Choose unit structure, scene-truth
 contracts, reference fingerprints, and techniques now from authored references plus sealed
-upstream outcomes. Copy every structured decision in `state/plan-resolutions.jsonl` whose
-`values.contract` roles fall inside this layer's reserved namespaces verbatim into
-`scene_contracts` — exact contract fields plus `decision_id` — bound to a required claim.
+upstream outcomes. Copy each binding structured decision listed in the kickoff
+verbatim into `scene_contracts` — exact contract fields plus `decision_id` — bound
+to a required claim. Ledger rows keyed to another generation, or retired by a later
+superseded or falsified row, are inert: do not copy them.
 Each stage declares `provides`: the scene capabilities it makes available. Declare
 `camera` if the unit creates the camera a dependent's framing evidence projects through,
 and `geometry` if objects under its roles carry polygons — mesh metrics (smooth_fraction,
@@ -328,6 +395,7 @@ global authority, create unit state, write prose, or write another file."""
             "gate_preview", "escalate_vocabulary_gap", "patch_materialization",
         }),
         candidate_materialization=target,
+        overlay_root=overlay_root,
     )
     rserver, rnames = build_recipe_tools()
     materialization_tools = _phase_tools(
@@ -382,7 +450,7 @@ global authority, create unit state, write prose, or write another file."""
         succeeded=lambda: target.is_file() and target.stat().st_mtime_ns != before,
         label=f"materialize layer {layer.id}",
     )
-    publish_materialization(shot.folder, target)
+    publish_materialization(shot.folder, target, overlay_root=overlay_root)
     log(f"deferred layer {layer.id} materialized against bundle {bundle.content_hash[:12]}")
 
 DRAFT_MODEL = DEFAULT_EXECUTION_MODEL
@@ -665,7 +733,7 @@ async def generate_plan(
 
 
 async def _rematerialize_layer(
-    shot, layer, authority: tuple[str, str, list[str]], *, model, blender, max_turns
+    shot, layer, authority: tuple[str, str, list[str], bool], *, model, blender, max_turns
 ):
     """Discard a materialized layer view and design it again from global authority.
 
@@ -716,9 +784,21 @@ async def _rematerialize_layer(
     # resolved) is the base, and the replacement trips owned-means-owed.
     from vfx_harness.orchestration.jit_materialization import revert_materialization
 
-    revert_materialization(shot.folder, layer_id)
+    overlay = revert_materialization(shot.folder, layer_id, select=False)
+    if overlay is not None:
+        log(
+            f"designing replacement against unpublished overlay {overlay.name}; "
+            "live pointer stays until publication",
+            1,
+        )
     await _materialize_deferred_layer(
-        shot, deferred, model=model, blender=blender, max_turns=max_turns, replacing=trigger
+        shot,
+        deferred,
+        model=model,
+        blender=blender,
+        max_turns=max_turns,
+        replacing=trigger,
+        overlay_root=overlay,
     )
     refreshed = load_layers(shot)[layer_id]
     if state:
@@ -733,6 +813,7 @@ async def _rematerialize_layer(
                 owner=owner,
                 trigger=trigger,
                 evidence=evidence,
+                discard_accepted=discard_accepted,
             )
         except ValueError as exc:
             # The replan base can be unreconstructable — a prior partial transaction
@@ -765,7 +846,7 @@ async def generate_layer_plan(
     model: str | None = None,
     blender: str = "blender",
     max_turns: int = 24,
-    rematerialize: tuple[str, str, list[str]] | None = None,
+    rematerialize: tuple[str, str, list[str], bool] | None = None,
 ) -> Path:
     """Generate one work-unit plan after its declared dependencies have sealed outcomes.
 
@@ -782,29 +863,22 @@ async def generate_layer_plan(
         layer = layers[str(layer_id)]
     except KeyError as exc:
         raise KeyError(f"unknown layer {layer_id!r}; available: {', '.join(layers)}") from exc
-    if rematerialize is not None and layer.execution == "ready":
+    if rematerialize is not None:
+        # A prior remat that selected a hole then crashed leaves this layer
+        # jit_deferred in the live view. The replacement still needs the discard
+        # check, unpublished overlay, and apply_replan — unpacking a 4-tuple as 3
+        # and skipping unit-state movement is how remat5 would publish then die
+        # (HIR-0026).
         layer = await _rematerialize_layer(
             shot, layer, rematerialize, model=model, blender=blender, max_turns=max_turns
         )
     elif layer.execution == "jit_deferred":
-        # A rematerialize request against an already-deferred layer (a prior attempt
-        # crashed after its revert) still carries the operator's trigger: run bdqotztcp
-        # silently dropped it here and the session designed without the one instruction
-        # the transaction existed to deliver — a view with no dressing scope.
-        replacing = None
-        if rematerialize is not None:
-            _owner, replacing, _evidence = rematerialize
-            log(
-                f"layer {layer_id} is already deferred; carrying the rematerialization "
-                "trigger into fresh materialization"
-            )
         await _materialize_deferred_layer(
             shot,
             layer,
             model=model,
             blender=blender,
             max_turns=max_turns,
-            replacing=replacing,
         )
         layers = load_layers(shot)
         layer = layers[str(layer_id)]

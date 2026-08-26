@@ -116,13 +116,13 @@ _HOLD_CONTRACT = {
 }
 
 
-def _approve_hold_decision(root: Path) -> None:
+def _approve_hold_decision(root: Path, bundle_hash: str) -> None:
     state = root / "state"
     state.mkdir(exist_ok=True)
     (state / "plan-resolutions.jsonl").write_text(
         json.dumps({
             "schema": "vfx-harness.plan-resolutions/v1",
-            "bundle_hash": "prior-bundle",
+            "bundle_hash": bundle_hash,
             "kind": "assumption",
             "id": "A-hold",
             "status": "satisfied",
@@ -227,9 +227,9 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     # ── 1 · publish generation A: sparse all-deferred authority, mapping sealed ──
     _candidate(tmp_path)
     _deferred_root(tmp_path)
-    _approve_hold_decision(tmp_path)
     layout_a = run_artifacts.create(tmp_path, "gen-a")
     bundle_a = publish_current(tmp_path, layout_a, outcome="clean_with_deferred")
+    _approve_hold_decision(tmp_path, bundle_a.content_hash)
     assert "plans/ownership_mapping.json" in bundle_a.artifacts  # membership seam
     assert resolve_current(tmp_path).content_hash == bundle_a.content_hash
 

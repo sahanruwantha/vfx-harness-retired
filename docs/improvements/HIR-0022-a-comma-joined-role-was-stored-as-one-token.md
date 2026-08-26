@@ -92,5 +92,4 @@ reverting the alphabet module and the three tool schemas.
 
 - One role per host until a real membership API exists. That is intentional.
 - `inspect_nodes` still addresses material/object display names.
-- Compiled unit-scope cards (kickoff + queryable inventory) are a follow-up; these
-  tools are the queryable half of that card, not the compiled kickoff projection.
+- Compiled unit-scope cards shipped as HIR-0025.

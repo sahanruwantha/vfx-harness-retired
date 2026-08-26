@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from vfx_harness.agents.unit_scope import compile_unit_scope, format_unit_scope_card, helper_inventory
 from vfx_harness.domain.brief import Shot
 from vfx_harness.orchestration.escalate import answers_block, open_block
 from vfx_harness.orchestration.layer_plans import work_unit_plan_path
@@ -90,6 +91,23 @@ def write_layer_context(
         f"- `{claim.id}` ({claim.authority}, repair `{claim.repair_owner}`): {claim.proposition}"
         for claim in unit.evaluation.claims
     )
+    try:
+        from vfx_harness.evidence.scene_checks import load_rows
+
+        contracts = load_rows(shot.folder)
+    except (OSError, ValueError):
+        contracts = []
+    try:
+        scope_card = format_unit_scope_card(
+            compile_unit_scope(
+                unit=unit,
+                layer_id=str(layer.id),
+                contracts=contracts,
+                helpers=helper_inventory(),
+            )
+        )
+    except ValueError as exc:
+        raise RuntimeError(f"unit scope card is invalid: {exc}") from exc
     body = f"""{_HEADER}
 # Layer {layer.id} — {layer.title}
 
@@ -124,6 +142,9 @@ Permitted mutation surface:
 Required and advisory claims:
 {claim_rows}
 
+## Compiled unit scope
+{scope_card}
+
 ## Frames you answer for
 The finished script is rendered and scored at EVERY frame below and passes only if all
 of them clear. A change that fixes one and breaks another is not a fix.
@@ -154,6 +175,7 @@ these axes.
 When summarising this conversation, ALWAYS preserve:
 - MODE `LIVE_BUILD`, authoritative plan `{plan_rel}`, layer id, owned axes, and every
   judge frame listed above; active unit `{unit.id}` and its mutation surface
+- the compiled unit-scope card (roles, bound contracts, helpers); query `unit_scope`
 - semantic `bvfx_role` values and material interfaces created so far
 - measured values already converged on, and values already ruled out with their measurement
 - which of the judge frames currently pass and which do not
