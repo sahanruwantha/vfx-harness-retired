@@ -698,6 +698,19 @@ def _hinted(e: BaseException) -> BaseException | None:
             if attr in msg:
                 return AttributeError(f"{msg}\nHINT: {hint}")
 
+    if isinstance(e, RuntimeError) and "Node type" in msg and "undefined" in msg and "Compositor" in msg:
+        # 5.x unified node trees: the value/math/ramp utility nodes exist only under
+        # their Shader* names, and sessions reach for CompositorNodeValue/Math/
+        # ValToRGB/MixColor by habit — four sessions burned turns on this exact
+        # RuntimeError before one thought to poll node_type_poll.
+        return RuntimeError(
+            f"{msg}\nHINT: 5.x compositor trees are UNIFIED — utility nodes keep their "
+            "Shader* idnames inside compositor groups: use ShaderNodeValue, "
+            "ShaderNodeMath, ShaderNodeValToRGB, ShaderNodeMix. Compositor-specific "
+            "nodes (Glare, ColorBalance, AlphaOver, RGBToBW) keep CompositorNode* "
+            "names. When unsure: nt.bl_rna ... node_type_poll, or inspect_nodes."
+        )
+
     if isinstance(e, KeyError):
         # bpy collections do say which key missed, but never what IS there, so the
         # builder's next move is another blind guess at the name.
