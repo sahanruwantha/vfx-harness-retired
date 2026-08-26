@@ -755,11 +755,19 @@ for row in _rows:
         elif kind=='material_assignment_fraction':
             wanted=_p(row,'material_roles')
             if not objects: raise ValueError(_missobj(row))
+            # only material-capable members are judged: an Empty marker counted as
+            # "unassigned" makes the metric unsatisfiable over any mixed selection
+            # (run 20260826: the dressed collective tier role includes layer 1's
+            # Empties and the honest 3/3-mesh dressing read 0.5 forever)
+            capable=[o for o in objects if hasattr(o.data,'materials') if o.data is not None]
+            if not capable:
+                raise ValueError('selected roles contain no material-capable objects '
+                                 '(types: '+', '.join(sorted(set(o.type for o in objects)))+')')
             good=0
-            for o in objects:
+            for o in capable:
                 assigned=[s.material for s in o.material_slots if s.material]
                 good+=int(bool(assigned) and all(_m(m.get('bvfx_role'),wanted) for m in assigned))
-            value=good/len(objects)
+            value=good/len(capable)
         elif kind in ('node_count','node_socket_value'):
             wanted=_p(row,'node_roles')
             for graph,nt in _graphs(row):
