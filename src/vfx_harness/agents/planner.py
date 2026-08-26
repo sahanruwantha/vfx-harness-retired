@@ -236,14 +236,30 @@ async def _materialize_deferred_layer(
     rel_target = target.relative_to(shot.folder).as_posix()
 
     def _validate_target() -> list[str]:
-        from vfx_harness.orchestration.jit_materialization import validate_materialization
+        from vfx_harness.orchestration.jit_materialization import (
+            selected_view_artifact,
+            validate_materialization,
+        )
+        from vfx_harness.orchestration.plan_authority import artifact_path
 
+        # Mirror publication EXACTLY: the base must be the view-resolved layers, not the
+        # bundle's sparse rows — other layers' materialized declarations (ADR-0007
+        # dressable grants) live only in their overlays, and the sparse base made the
+        # write hook refuse dresses the publication path would accept (run bm9og09xw).
         try:
+            base_layers = selected_view_artifact(
+                shot.folder, "layers.json", bundle.content_hash
+            ) or artifact_path(shot.folder, "layers.json")
+            base_requirements = selected_view_artifact(
+                shot.folder, "requirements.json", bundle.content_hash
+            ) or artifact_path(shot.folder, "requirements.json")
             validate_materialization(
                 bundle.root,
                 target,
                 expected_bundle_hash=bundle.content_hash,
+                base_layers_path=base_layers,
                 resolutions_path=shot.folder / "state" / "plan-resolutions.jsonl",
+                base_requirements_path=base_requirements,
             )
         except (ValueError, OSError) as exc:
             return [str(exc)]
