@@ -113,6 +113,10 @@ SUPPORTED_OPS = {"band", "eq", "min", "max"}
 _MEASURED_PROPERTY = re.compile(
     r"^(?:(?:delta_)?location|(?:delta_)?rotation_euler|scale|dimensions)(?:\.\d+)?$"
     r"|^data\.(?:lens|angle|clip_start|clip_end|energy|size|sensor_width|sensor_height|ortho_scale)$"
+    # data.users is Blender-maintained datablock reference counting — read-only to
+    # builders and the honest instancing proof (shared mesh data => users > 1). Two
+    # materializer sessions escalated its absence as a vocabulary gap.
+    r"|^data\.users$"
     r"|^(?:hide_render|hide_viewport)$"
 )
 
