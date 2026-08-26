@@ -658,6 +658,12 @@ _ATTR_HINTS = {
                                "not node.elements.",
     "default_value": "shader-type sockets carry a LINK, not a value — link a node into "
                      "it instead of assigning default_value.",
+    "'Action' object has no attribute 'fcurves'":
+        "5.x actions are SLOTTED — curves live at action.layers[*].strips[*]"
+        ".channelbags[*].fcurves, and a channelbag binds one slot (match it to the "
+        "target via adt.action_slot). Walk that path, or read curves through the "
+        "existing helpers (bvfx_fcurves(target) inside worker scripts; the "
+        "milestone-delta-keying recipe shows the full pattern).",
 }
 
 
