@@ -589,6 +589,22 @@ def _bvfx_role(obj, role, owner_layer=None):
     role = str(role or "").strip()
     if not role or any(ch.isspace() for ch in role):
         raise ValueError("bvfx_role: role must be a non-empty dotted token without spaces")
+    # Semantic identity belongs to its owner. Run 20260826 (build14) rewrote a layer-1
+    # marker's role to lookdev.* so an assignment-fraction denominator would shrink —
+    # a pass-by-theft no closure could see, because the audit is creation-based and the
+    # owner's contracts select by the very role being stolen. Dressing (ADR-0007)
+    # grants material assignment, never identity.
+    current_owner = obj.get("bvfx_owner_layer")
+    if (
+        current_owner is not None
+        and owner_layer is not None
+        and str(current_owner) != str(owner_layer)
+    ):
+        raise ValueError(
+            f"bvfx_role: {getattr(obj, 'name', '<node>')!r} is owned by layer "
+            f"{current_owner} (role {obj.get('bvfx_role')!r}); layer {owner_layer} may "
+            "not retag it — another layer's semantic identity is never yours to rewrite"
+        )
     obj["bvfx_role"] = role
     if owner_layer is not None:
         obj["bvfx_owner_layer"] = str(owner_layer)
