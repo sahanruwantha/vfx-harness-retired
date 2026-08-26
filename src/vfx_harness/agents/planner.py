@@ -780,12 +780,24 @@ async def generate_layer_plan(
             shot, layer, rematerialize, model=model, blender=blender, max_turns=max_turns
         )
     elif layer.execution == "jit_deferred":
+        # A rematerialize request against an already-deferred layer (a prior attempt
+        # crashed after its revert) still carries the operator's trigger: run bdqotztcp
+        # silently dropped it here and the session designed without the one instruction
+        # the transaction existed to deliver — a view with no dressing scope.
+        replacing = None
+        if rematerialize is not None:
+            _owner, replacing, _evidence = rematerialize
+            log(
+                f"layer {layer_id} is already deferred; carrying the rematerialization "
+                "trigger into fresh materialization"
+            )
         await _materialize_deferred_layer(
             shot,
             layer,
             model=model,
             blender=blender,
             max_turns=max_turns,
+            replacing=replacing,
         )
         layers = load_layers(shot)
         layer = layers[str(layer_id)]
