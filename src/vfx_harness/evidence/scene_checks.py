@@ -17,6 +17,7 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageStat
 
 from vfx_harness.domain.contracts import active_for, load_document, validate_lifecycle
+from vfx_harness.domain.semantic_roles import selector_punctuation_error
 
 OBJECT_KINDS = {
     "bbox_width",
@@ -229,6 +230,9 @@ def validate_row(row: dict) -> str | None:
         return "missing id"
     if any(key in row for key in ("objects", "materials", "nodes")):
         return "datablock-name selectors are removed; use semantic role selectors"
+    punctuation = selector_punctuation_error(row)
+    if punctuation:
+        return punctuation
     life = validate_lifecycle(row)
     if life:
         return life
@@ -548,7 +552,7 @@ _scene.frame_set(_FRAME); _camera=_scene.camera; _out=[]
 def _p(row,key):
     v=row.get(key) or []
     return [v] if isinstance(v,str) else v
-def _m(v,pats): return any(fnmatch.fnmatchcase(str(v or ''),p) for p in pats)
+_m=_checks.match_semantic
 def _objects(row):
     return sorted([o for o in _scene.objects
                    if (not _p(row,'roles') or _m(o.get('bvfx_role'),_p(row,'roles')))
@@ -1030,9 +1034,10 @@ def _control_script(row: dict, value=None) -> str:
         }
     )
     return f"""\
-import bpy, fnmatch, json
+import bpy, json
+import checks as _checks
 spec=json.loads({json.dumps(spec)})
-def match(value, patterns): return any(fnmatch.fnmatchcase(str(value or ''), p) for p in patterns)
+match=_checks.match_semantic
 graphs=[]
 if spec['graph']=='material':
     mats=[m for m in bpy.data.materials if match(m.get('bvfx_role'),spec['material_roles'])]

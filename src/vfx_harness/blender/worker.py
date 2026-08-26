@@ -586,9 +586,9 @@ def _bvfx_role(obj, role, owner_layer=None):
         obj = bpy.data.objects.get(obj)
     if obj is None:
         raise ValueError("bvfx_role: object does not exist")
-    role = str(role or "").strip()
-    if not role or any(ch.isspace() for ch in role):
-        raise ValueError("bvfx_role: role must be a non-empty dotted token without spaces")
+    import checks
+
+    role = checks.validate_role_token(role)
     # Semantic identity belongs to its owner. Run 20260826 (build14) rewrote a layer-1
     # marker's role to lookdev.* so an assignment-fraction denominator would shrink —
     # a pass-by-theft no closure could see, because the audit is creation-based and the
@@ -819,7 +819,10 @@ def h_run(a: dict) -> dict:
 
 
 def h_inspect(a: dict) -> dict:
+    import checks
+
     section = a.get("section", "all")
+    role_filter = str(a.get("role") or "").strip() or None
     sc = bpy.context.scene
     out: list[str] = []
     if section in ("all", "render"):
@@ -836,11 +839,24 @@ def h_inspect(a: dict) -> dict:
         out.append(f"world: {sc.world.name} use_nodes={sc.world.use_nodes}")
     if section in ("all", "objects"):
         out.append("objects:")
+        shown = 0
         for o in sc.objects:
+            role = str(o.get("bvfx_role") or "")
+            if role_filter and not checks.match_semantic(role, [role_filter]):
+                continue
+            shown += 1
+            owner = str(o.get("bvfx_owner_layer") or "-")
             loc = tuple(round(v, 2) for v in o.location)
             mods = ",".join(m.type for m in o.modifiers) or "-"
             psys = ",".join(p.name for p in getattr(o, "particle_systems", [])) or "-"
-            out.append(f"  {o.name} [{o.type}] loc={loc} mods={mods} psys={psys}")
+            out.append(
+                f"  {o.name} [{o.type}] role={role or '-'} owner={owner} "
+                f"loc={loc} mods={mods} psys={psys}"
+            )
+        if role_filter and shown == 0:
+            raise ValueError(
+                checks.format_object_miss(inventory=checks.object_inventory(), role=role_filter)
+            )
     if section in ("all", "materials"):
         out.append("materials: " + (", ".join(m.name for m in bpy.data.materials) or "-"))
     return {"text": "\n".join(out)}
@@ -914,10 +930,12 @@ def _action_fcurves(obj, action):
 
 
 def h_keyframes(a: dict) -> dict:
-    name = a["object"]
-    obj = bpy.data.objects.get(name)
-    if obj is None:
-        raise KeyError(f"no object named {name!r}")
+    import checks
+
+    role = str(a.get("role") or "").strip() or None
+    name = str(a.get("object") or "").strip() or None
+    obj = checks.resolve_object(role=role, name=name)
+    name = obj.name
     ad = obj.animation_data
     if not ad or not ad.action:
         return {"text": f"{name}: no animation"}

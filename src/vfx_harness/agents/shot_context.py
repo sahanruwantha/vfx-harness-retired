@@ -146,8 +146,9 @@ these axes.
 - Objective metrics beat opinion. If a render's measured gap to the reference is reported
   to you, treat it as fact and fix the number.
 - Scene contracts prefer semantic roles over object names. Tag owned objects with
-  `bvfx_role(obj, "department.subject.part", owner_layer="{layer.id}")`; names are labels,
-  while `bvfx_role` is the stable interface that survives renames.
+  `bvfx_role(obj, "department.subject.part", owner_layer="{layer.id}")` — one dotted token
+  per host, commas are not membership. Names are labels, while `bvfx_role` is the stable
+  interface that survives renames. inspect_scene / check_scene / list_keyframes take `role=`.
 
 {supervisor}## Summary instructions
 When summarising this conversation, ALWAYS preserve:

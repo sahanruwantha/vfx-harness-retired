@@ -11,6 +11,8 @@ from vfx_harness.evaluation.plan_gate import _check_meta_records
 from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.jit_materialization import (
+    apply_materialization_patch,
+    inspect_materialization,
     publish_materialization,
     validate_materialization,
 )
@@ -473,6 +475,54 @@ def test_jit_materialization_rejects_candidate_sensitive_image_contracts(tmp_pat
         validate_materialization(
             bundle.root, payload, expected_bundle_hash=bundle.content_hash
         )
+
+
+def test_materialization_reports_independent_findings_with_pointers(tmp_path: Path) -> None:
+    """l1-remat3 walked one field-precise error per full-document rewrite. Two independent
+    defects must land in one write, each addressed by a JSON pointer, and a pointer patch
+    must leave the remaining finding then clear the document."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "pointer-findings")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["scene_contracts"][1]["owner_layer"] = "9"
+    document["layer"]["stages"][0].pop("look_capabilities")
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "/scene_contracts/1/owner_layer:" in text
+    assert "must be owned by layer 2" in text
+    assert "/layer/stages/0/look_capabilities:" in text
+    assert "must declare look_capabilities" in text
+
+    remaining = apply_materialization_patch(
+        bundle.root,
+        payload,
+        "/scene_contracts/1/owner_layer",
+        "2",
+        expected_bundle_hash=bundle.content_hash,
+    )
+    remaining_text = "\n".join(remaining)
+    assert "/scene_contracts/1/owner_layer:" not in remaining_text
+    assert "/layer/stages/0/look_capabilities:" in remaining_text
+
+    cleared = apply_materialization_patch(
+        bundle.root,
+        payload,
+        "/layer/stages/0/look_capabilities",
+        [],
+        expected_bundle_hash=bundle.content_hash,
+    )
+    assert cleared == []
+    validate_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
 
 
 def test_deferred_layer_has_no_fake_units_and_materializes_through_bound_contract(

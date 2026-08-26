@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -195,3 +196,25 @@ def test_calibration_singles_stay_bounded_before_any_batch() -> None:
     assert budget.take_batch()
     budget.reset_after_batch()
     assert budget.take_single()         # reset restores precise follow-up probes
+
+
+def test_materialization_session_denies_glob_and_registers_patch(tmp_path: Path) -> None:
+    from vfx_harness.agents.plan_tools import build_plan_tools
+    from vfx_harness.agents.planner import MATERIALIZATION_DENIED_TOOLS
+
+    assert MATERIALIZATION_DENIED_TOOLS == ["Bash", "Edit", "Glob", "Grep"]
+
+    candidate = tmp_path / "jit-layer-1.json"
+    candidate.write_text("{}", encoding="utf-8")
+    _server, names = build_plan_tools(
+        tmp_path,
+        enabled_tools=frozenset({"patch_materialization"}),
+        candidate_materialization=candidate,
+    )
+    assert {name.split("__")[-1] for name in names} == {"patch_materialization"}
+
+    _server, absent = build_plan_tools(
+        tmp_path,
+        enabled_tools=frozenset({"patch_materialization"}),
+    )
+    assert absent == []

@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.json_pointer import encode as json_ptr
+from vfx_harness.domain.json_pointer import format_finding
+from vfx_harness.domain.json_pointer import set_at as set_pointer
 from vfx_harness.evidence.scene_checks import validate_row, validate_row_set
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.orchestration.ledger import Layer, load_layers_from_path
@@ -141,16 +144,23 @@ def validate_materialization(
     global_row = by_id.get(layer_id)
     if global_row is None or global_row.get("execution") != "jit_deferred":
         raise ValueError(f"layer {layer_id!r} is not selected jit_deferred authority")
+
+    findings: list[str] = []
+
+    def note(pointer: str, message: str) -> None:
+        findings.append(format_finding(pointer, message))
+
     if layer_row.get("execution") not in {None, "ready"}:
-        raise ValueError("materialized layer execution must be ready")
+        note(json_ptr("layer", "execution"), "materialized layer execution must be ready")
     layer_row = dict(layer_row)
     layer_row["execution"] = "ready"
     layer_row.pop("jit", None)
     structural = ("id", "script", "title", "primary_judge", "judge", "owns", "evidence_domains", "reads")
     changed = [key for key in structural if layer_row.get(key) != global_row.get(key)]
     if changed:
-        raise ValueError(
-            "JIT materialization changes global structural authority: " + ", ".join(changed)
+        note(
+            json_ptr("layer"),
+            "JIT materialization changes global structural authority: " + ", ".join(changed),
         )
 
     base_document = (
@@ -170,99 +180,136 @@ def validate_materialization(
         json.dump(
             {"schema": base_document.get("schema", 4), "layers": combined_layers}, handle
         )
+    parsed = None
+    layer = None
     try:
         parsed = load_layers_from_path(temp_path)
+        layer = parsed[layer_id]
+    except (ValueError, KeyError, TypeError) as exc:
+        note(json_ptr("layer", "stages"), f"layer stages did not parse: {exc}")
     finally:
         temp_path.unlink(missing_ok=True)
-    layer = parsed[layer_id]
 
     # Dressing closure (ADR-0007): a unit may declare appearance-assignment authority
     # only over selectors some OTHER layer explicitly marked dressable. Exact-string
     # match, not glob-vs-glob: the owner names the surface it exposes, the dresser
     # names the same surface.
-    declared_dressable = {
-        selector
-        for other in parsed.values()
-        if str(other.id) != str(layer_id)
-        for selector in other.dressable
-    }
-    for unit in layer.stages:
-        undeclared_dresses = sorted(set(unit.mutates.dresses) - declared_dressable)
-        if undeclared_dresses:
-            raise ValueError(
-                f"unit {unit.id} dresses {', '.join(undeclared_dresses)} — no other "
-                "layer declares these selectors dressable; the owning layer's row must "
-                "list them under `dressable` before a dressing unit may claim them"
-            )
+    if parsed is not None and layer is not None:
+        declared_dressable = {
+            selector
+            for other in parsed.values()
+            if str(other.id) != str(layer_id)
+            for selector in other.dressable
+        }
+        for unit_index, unit in enumerate(layer.stages):
+            undeclared_dresses = sorted(set(unit.mutates.dresses) - declared_dressable)
+            if undeclared_dresses:
+                note(
+                    json_ptr("layer", "stages", unit_index, "mutates", "dresses"),
+                    f"unit {unit.id} dresses {', '.join(undeclared_dresses)} — no other "
+                    "layer declares these selectors dressable; the owning layer's row must "
+                    "list them under `dressable` before a dressing unit may claim them",
+                )
 
     # Look scope is typed authority, and silence is not a declaration: a unit that omits
     # the key is indistinguishable from one that declares "no appearance", which is how
     # run 20260823T154920Z left an appearance-owning unit without image feedback. An
     # explicit empty list is the legal way to own no appearance.
-    undeclared = sorted(
-        str(stage.get("id") or "<unnamed>")
-        for stage in (layer_row.get("stages") or [])
-        if isinstance(stage, dict) and "look_capabilities" not in stage
-    )
-    if undeclared:
-        from vfx_harness.domain.work_units import LOOK_CAPABILITIES
+    from vfx_harness.domain.work_units import LOOK_CAPABILITIES
 
-        raise ValueError(
-            "materialized unit(s) must declare look_capabilities: "
-            + ", ".join(undeclared)
-            + f" — a subset of {', '.join(sorted(LOOK_CAPABILITIES))}, or [] to own no "
-            "appearance"
-        )
+    for stage_index, stage in enumerate(layer_row.get("stages") or []):
+        if isinstance(stage, dict) and "look_capabilities" not in stage:
+            note(
+                json_ptr("layer", "stages", stage_index, "look_capabilities"),
+                "materialized unit(s) must declare look_capabilities: "
+                + str(stage.get("id") or "<unnamed>")
+                + f" — a subset of {', '.join(sorted(LOOK_CAPABILITIES))}, or [] to own no "
+                "appearance",
+            )
 
     jit = global_row.get("jit") or {}
     reserved = tuple(map(str, jit.get("reserved_roles") or []))
-    escaped = sorted({
-        role
-        for unit in layer.stages
-        for role in unit.mutates.roles
-        if not _matches_reserved(role, reserved)
-    })
-    if escaped:
-        raise ValueError(
-            "materialized roles escape global namespace reservations: " + ", ".join(escaped)
-        )
+    if layer is not None:
+        for unit_index, unit in enumerate(layer.stages):
+            escaped = sorted(
+                role for role in unit.mutates.roles if not _matches_reserved(role, reserved)
+            )
+            if escaped:
+                note(
+                    json_ptr("layer", "stages", unit_index, "mutates", "roles"),
+                    "materialized roles escape global namespace reservations: "
+                    + ", ".join(escaped),
+                )
 
-    scene_rows = _rows(payload, "scene_contracts", "materialization")
-    image_rows = _rows(payload, "image_contracts", "materialization")
+    try:
+        scene_rows = _rows(payload, "scene_contracts", "materialization")
+    except ValueError as exc:
+        note(json_ptr("scene_contracts"), str(exc))
+        scene_rows = []
+    try:
+        image_rows = _rows(payload, "image_contracts", "materialization")
+    except ValueError as exc:
+        note(json_ptr("image_contracts"), str(exc))
+        image_rows = []
     if image_rows:
-        raise ValueError(
+        note(
+            json_ptr("image_contracts"),
             "materialization.image_contracts must be empty; candidate-sensitive image "
-            "checks are proposed after the producing unit mutates the cumulative scene"
+            "checks are proposed after the producing unit mutates the cumulative scene",
         )
+    seen_ids: dict[str, int] = {}
+    for index, row in enumerate(scene_rows):
+        cid = str(row.get("id") or "")
+        if not cid or cid in seen_ids:
+            note(
+                json_ptr("scene_contracts", index, "id"),
+                "materialized contract ids must be present and unique",
+            )
+        else:
+            seen_ids[cid] = index
+    for index, row in enumerate(image_rows):
+        cid = str(row.get("id") or "")
+        if not cid or cid in seen_ids:
+            note(
+                json_ptr("image_contracts", index, "id"),
+                "materialized contract ids must be present and unique",
+            )
+        else:
+            seen_ids[cid] = index
     all_contracts = {
         str(row.get("id")): ("scene_contract", row) for row in scene_rows if row.get("id")
     }
     all_contracts.update({
         str(row.get("id")): ("image_contract", row) for row in image_rows if row.get("id")
     })
-    if len(all_contracts) != len(scene_rows) + len(image_rows):
-        raise ValueError("materialized contract ids must be present and unique")
-    for row in scene_rows:
+    for index, row in enumerate(scene_rows):
         error = validate_row(row)
         if error:
-            raise ValueError(f"scene contract {row.get('id', '<missing>')}: {error}")
+            note(
+                json_ptr("scene_contracts", index),
+                f"scene contract {row.get('id', '<missing>')}: {error}",
+            )
         if str(row.get("owner_layer") or row.get("activates_at") or "") != layer_id:
             # Run 20260825 (bb54f1): a correctly-designed cross-layer visibility row
             # died here as owner_layer=2 inside layer 1's materialization, and the bare
             # "must be owned" message cost the whole session. Name the legal form.
-            raise ValueError(
+            note(
+                json_ptr("scene_contracts", index, "owner_layer"),
                 f"scene contract {row.get('id')} must be owned by layer {layer_id} "
                 f"(it declares owner_layer={row.get('owner_layer')!r}). A contract this "
                 "layer authors but a LATER layer evaluates keeps "
                 f"owner_layer={layer_id!r} and sets activates_at to the later layer "
                 "(fault_owner may still name this layer); only rows this layer owns "
-                "may publish here"
+                "may publish here",
             )
-    for row in image_rows:
+    for index, row in enumerate(image_rows):
         if str(row.get("owner_layer") or "") != layer_id:
-            raise ValueError(f"image contract {row.get('id')} must be owned by layer {layer_id}")
+            note(
+                json_ptr("image_contracts", index, "owner_layer"),
+                f"image contract {row.get('id')} must be owned by layer {layer_id}",
+            )
     for cross_row_finding in validate_row_set(scene_rows):
-        raise ValueError(f"scene contract {cross_row_finding}")
+        note(json_ptr("scene_contracts"), f"scene contract {cross_row_finding}")
     # A binding that declares its moments must include the bound contract's own frame:
     # declaring moments [150] for a frame-72 contract authors evidence that can never
     # be produced when it is due.
@@ -271,42 +318,52 @@ def validate_materialization(
         for row in scene_rows
         if isinstance(row, dict) and row.get("id") and row.get("frame") is not None
     }
-    for unit in layer.stages:
-        for claim in unit.evaluation.claims:
-            for binding in claim.evidence:
-                declared = getattr(binding, "moments", None)
-                contract_frame = frame_by_id.get(str(binding.id))
-                if declared is not None and contract_frame is not None and contract_frame not in declared:
-                    raise ValueError(
-                        f"unit {unit.id} claim {claim.id} binds {binding.id} at moments "
-                        f"{sorted(declared)}, but that contract measures frame "
-                        f"{contract_frame} — a binding due when it cannot be produced"
-                    )
+    if layer is not None:
+        for unit_index, unit in enumerate(layer.stages):
+            for claim in unit.evaluation.claims:
+                for binding in claim.evidence:
+                    declared = getattr(binding, "moments", None)
+                    contract_frame = frame_by_id.get(str(binding.id))
+                    if (
+                        declared is not None
+                        and contract_frame is not None
+                        and contract_frame not in declared
+                    ):
+                        note(
+                            json_ptr("layer", "stages", unit_index, "evaluation", "claims"),
+                            f"unit {unit.id} claim {claim.id} binds {binding.id} at moments "
+                            f"{sorted(declared)}, but that contract measures frame "
+                            f"{contract_frame} — a binding due when it cannot be produced",
+                        )
 
-    required_bindings = {
-        (binding.kind, binding.id)
-        for unit in layer.stages
-        for claim in unit.evaluation.claims
-        if claim.required
-        for binding in claim.evidence
-    }
-    # Composition context (judge-frame visibility/framing rows) is a producer binding
-    # too: the gate already reads it as coverage, and the unit that stages the judged
-    # content answers for its context rows the same way it answers for claim evidence.
-    required_bindings.update(
-        ("scene_contract", str(contract_id))
-        for unit in layer.stages
-        if unit.evaluation.composition_context is not None
-        for contract_id in unit.evaluation.composition_context.contract_ids
-    )
+    required_bindings: set[tuple[str, str]] = set()
+    if layer is not None:
+        required_bindings = {
+            (binding.kind, binding.id)
+            for unit in layer.stages
+            for claim in unit.evaluation.claims
+            if claim.required
+            for binding in claim.evidence
+        }
+        # Composition context (judge-frame visibility/framing rows) is a producer binding
+        # too: the gate already reads it as coverage, and the unit that stages the judged
+        # content answers for its context rows the same way it answers for claim evidence.
+        required_bindings.update(
+            ("scene_contract", str(contract_id))
+            for unit in layer.stages
+            if unit.evaluation.composition_context is not None
+            for contract_id in unit.evaluation.composition_context.contract_ids
+        )
     missing_claims = sorted(
         contract_id
         for contract_id, (kind, _row) in all_contracts.items()
         if (kind, contract_id) not in required_bindings
     )
-    if missing_claims:
-        raise ValueError(
-            "materialized contracts lack required producing claims: " + ", ".join(missing_claims)
+    if missing_claims and layer is not None:
+        note(
+            json_ptr("layer", "stages"),
+            "materialized contracts lack required producing claims: "
+            + ", ".join(missing_claims),
         )
 
     # A mesh metric needs polygons under the roles it selects. Units declare `geometry`
@@ -314,31 +371,35 @@ def validate_materialization(
     # forever, which is a binding defect no build can repair. Only enforced once some
     # unit in the layer declares anything, so legacy units are not judged on a
     # declaration they never had the chance to make.
-    MESH_KINDS = {"smooth_fraction", "mesh_vertex_count", "radial_inward_fraction"}
-    declares_anything = any(unit.provides for unit in layer.stages)
-    geometry_roles = {
-        role
-        for unit in layer.stages
-        if "geometry" in unit.provides
-        for role in unit.mutates.roles
-    }
-    if declares_anything:
-        for row in scene_rows:
-            if str(row.get("kind")) not in MESH_KINDS:
-                continue
-            roles = [str(r) for r in (row.get("roles") or [])]
-            if roles and not any(
-                any(fnmatch.fnmatchcase(role, owned) or fnmatch.fnmatchcase(owned, role)
-                    for owned in geometry_roles)
-                for role in roles
-            ):
-                raise ValueError(
-                    f"contract {row.get('id')} uses mesh metric {row.get('kind')!r} on "
-                    f"roles {roles}, but no unit declaring provides:[\"geometry\"] owns "
-                    f"them (geometry roles: {sorted(geometry_roles) or 'none declared'}); "
-                    "it can only read None. Bind a metric that applies to these roles, "
-                    "or declare the unit that gives them polygons."
-                )
+    if layer is not None:
+        MESH_KINDS = {"smooth_fraction", "mesh_vertex_count", "radial_inward_fraction"}
+        declares_anything = any(unit.provides for unit in layer.stages)
+        geometry_roles = {
+            role
+            for unit in layer.stages
+            if "geometry" in unit.provides
+            for role in unit.mutates.roles
+        }
+        if declares_anything:
+            for index, row in enumerate(scene_rows):
+                if str(row.get("kind")) not in MESH_KINDS:
+                    continue
+                roles = [str(r) for r in (row.get("roles") or [])]
+                if roles and not any(
+                    any(
+                        fnmatch.fnmatchcase(role, owned) or fnmatch.fnmatchcase(owned, role)
+                        for owned in geometry_roles
+                    )
+                    for role in roles
+                ):
+                    note(
+                        json_ptr("scene_contracts", index, "kind"),
+                        f"contract {row.get('id')} uses mesh metric {row.get('kind')!r} on "
+                        f"roles {roles}, but no unit declaring provides:[\"geometry\"] owns "
+                        f"them (geometry roles: {sorted(geometry_roles) or 'none declared'}); "
+                        "it can only read None. Bind a metric that applies to these roles, "
+                        "or declare the unit that gives them polygons.",
+                    )
 
     # A metric may only close a claim it can actually support. Counting rim modules
     # proves they exist, not that they chase; radial closure proves an aperture is shut,
@@ -346,54 +407,60 @@ def validate_materialization(
     from vfx_harness.domain.work_units import STRUCTURAL_CLAIM_DOMAINS
     from vfx_harness.evidence.scene_checks import KIND_DOMAINS
 
-    for unit in layer.stages:
-        # Every mutated role needs a required claim answering for it — the gate's
-        # claim-closure rule, enforced HERE so the write-hook reports it in-session.
-        # Run 20260825T015307Z-bc9109 published a materialization the validator called
-        # clean and the gate then blocked with 7 role-closure findings the session
-        # could no longer see.
-        closure_roles = {
-            role
-            for claim in unit.evaluation.claims
-            if claim.required
-            for role in claim.subject_roles
-        }
-        for mutation_role in [*unit.mutates.roles, *unit.mutates.dresses]:
-            if not any(
-                fnmatch.fnmatchcase(role, mutation_role) or fnmatch.fnmatchcase(mutation_role, role)
-                for role in closure_roles
-            ):
-                raise ValueError(
-                    f"unit {unit.id}: mutation role {mutation_role!r} has no required "
-                    "claim; every mutated or dressed role needs a required claim whose "
-                    "subject_roles cover it, or must be dropped from mutates"
-                )
-        for claim in unit.evaluation.claims:
-            if not claim.required:
-                continue
-            if claim.asserts is None:
-                raise ValueError(
-                    f"required claim {claim.id} must declare `asserts` — the evidence "
-                    "domain its proposition lives in — so its metrics can be checked "
-                    "against what they can certify"
-                )
-            if claim.asserts not in STRUCTURAL_CLAIM_DOMAINS:
-                continue  # image/human evidence is candidate-bound, proved at build time
+    if layer is not None:
+        for unit_index, unit in enumerate(layer.stages):
+            # Every mutated role needs a required claim answering for it — the gate's
+            # claim-closure rule, enforced HERE so the write-hook reports it in-session.
+            # Run 20260825T015307Z-bc9109 published a materialization the validator called
+            # clean and the gate then blocked with 7 role-closure findings the session
+            # could no longer see.
+            closure_roles = {
+                role
+                for claim in unit.evaluation.claims
+                if claim.required
+                for role in claim.subject_roles
+            }
+            for mutation_role in [*unit.mutates.roles, *unit.mutates.dresses]:
+                if not any(
+                    fnmatch.fnmatchcase(role, mutation_role)
+                    or fnmatch.fnmatchcase(mutation_role, role)
+                    for role in closure_roles
+                ):
+                    note(
+                        json_ptr("layer", "stages", unit_index, "mutates"),
+                        f"unit {unit.id}: mutation role {mutation_role!r} has no required "
+                        "claim; every mutated or dressed role needs a required claim whose "
+                        "subject_roles cover it, or must be dropped from mutates",
+                    )
+            for claim in unit.evaluation.claims:
+                if not claim.required:
+                    continue
+                if claim.asserts is None:
+                    note(
+                        json_ptr("layer", "stages", unit_index, "evaluation", "claims"),
+                        f"required claim {claim.id} must declare `asserts` — the evidence "
+                        "domain its proposition lives in — so its metrics can be checked "
+                        "against what they can certify",
+                    )
+                    continue
+                if claim.asserts not in STRUCTURAL_CLAIM_DOMAINS:
+                    continue  # image/human evidence is candidate-bound, proved at build time
 
-            def _domain_of(binding_id: str) -> str:
-                entry = all_contracts.get(binding_id)
-                if entry is None:
-                    return "unknown"
-                return KIND_DOMAINS.get(str(entry[1].get("kind")), "unknown")
+                def _domain_of(binding_id: str) -> str:
+                    entry = all_contracts.get(binding_id)
+                    if entry is None:
+                        return "unknown"
+                    return KIND_DOMAINS.get(str(entry[1].get("kind")), "unknown")
 
-            bound = {binding.id: _domain_of(binding.id) for binding in claim.evidence}
-            if claim.asserts not in set(bound.values()):
-                summary = ", ".join(f"{cid}={domain}" for cid, domain in bound.items())
-                raise ValueError(
-                    f"claim {claim.id} asserts {claim.asserts!r} but none of its bound "
-                    f"evidence can certify that domain ({summary or 'no bindings'}); "
-                    f"bind a {claim.asserts} metric"
-                )
+                bound = {binding.id: _domain_of(binding.id) for binding in claim.evidence}
+                if claim.asserts not in set(bound.values()):
+                    summary = ", ".join(f"{cid}={domain}" for cid, domain in bound.items())
+                    note(
+                        json_ptr("layer", "stages", unit_index, "evaluation", "claims"),
+                        f"claim {claim.id} asserts {claim.asserts!r} but none of its bound "
+                        f"evidence can certify that domain ({summary or 'no bindings'}); "
+                        f"bind a {claim.asserts} metric",
+                    )
 
     # A structured human decision whose roles live in this layer's reserved namespaces is
     # adopted HERE: a schema-5 global bundle publishes no contracts, so the global gate
@@ -430,35 +497,59 @@ def validate_materialization(
                 and all(row.get(key) == value for key, value in contract.items())
             ]
             if not adopted:
-                raise ValueError(
+                note(
+                    json_ptr("scene_contracts"),
                     f"materialization must adopt structured decision {decision_id}: copy "
                     "values.contract exactly into scene_contracts, keep decision_id, and "
-                    "bind it to a required claim"
+                    "bind it to a required claim",
                 )
 
     raw_bindings = payload.get("requirement_bindings")
     if not isinstance(raw_bindings, list):
-        raise ValueError("materialization.requirement_bindings must be a list")
+        note(json_ptr("requirement_bindings"), "materialization.requirement_bindings must be a list")
+        raw_bindings = []
     requirement_bindings: dict[str, tuple[str, ...]] = {}
     requirement_decisions: dict[str, dict[str, str]] = {}
     for index, binding in enumerate(raw_bindings):
         if not isinstance(binding, dict):
-            raise ValueError(f"requirement_bindings[{index}] must be an object")
+            note(
+                json_ptr("requirement_bindings", index),
+                f"requirement_bindings[{index}] must be an object",
+            )
+            continue
         requirement_id = str(binding.get("requirement_id") or "")
-        if not requirement_id or requirement_id in requirement_bindings or requirement_id in requirement_decisions:
-            raise ValueError(f"requirement_bindings[{index}].requirement_id must be unique")
+        if (
+            not requirement_id
+            or requirement_id in requirement_bindings
+            or requirement_id in requirement_decisions
+        ):
+            note(
+                json_ptr("requirement_bindings", index, "requirement_id"),
+                f"requirement_bindings[{index}].requirement_id must be unique",
+            )
+            continue
         contract_ids = tuple(map(str, binding.get("contract_ids") or []))
         decision = binding.get("decision")
         if contract_ids and decision is not None:
-            raise ValueError(f"requirement {requirement_id} cannot bind contracts and a decision")
+            note(
+                json_ptr("requirement_bindings", index),
+                f"requirement {requirement_id} cannot bind contracts and a decision",
+            )
+            continue
         if contract_ids:
             if len(set(contract_ids)) != len(contract_ids):
-                raise ValueError(f"requirement {requirement_id} contains duplicate contract ids")
+                note(
+                    json_ptr("requirement_bindings", index, "contract_ids"),
+                    f"requirement {requirement_id} contains duplicate contract ids",
+                )
+                continue
             missing = sorted(set(contract_ids) - set(all_contracts))
             if missing:
-                raise ValueError(
-                    f"requirement {requirement_id} names absent contracts: {', '.join(missing)}"
+                note(
+                    json_ptr("requirement_bindings", index, "contract_ids"),
+                    f"requirement {requirement_id} names absent contracts: {', '.join(missing)}",
                 )
+                continue
             requirement_bindings[requirement_id] = contract_ids
         elif isinstance(decision, dict):
             statement = str(decision.get("statement") or "").strip()
@@ -466,16 +557,19 @@ def validate_materialization(
             if not statement or strength not in {
                 "hard_constraint", "approved_start", "planner_start", "confirmed_outcome"
             }:
-                raise ValueError(
-                    f"requirement {requirement_id} decision must have statement and decision_strength"
+                note(
+                    json_ptr("requirement_bindings", index, "decision"),
+                    f"requirement {requirement_id} decision must have statement and decision_strength",
                 )
+                continue
             requirement_decisions[requirement_id] = {
                 "statement": statement,
                 "decision_strength": strength,
             }
         else:
-            raise ValueError(
-                f"requirement {requirement_id} must bind contracts or an explicit typed decision"
+            note(
+                json_ptr("requirement_bindings", index),
+                f"requirement {requirement_id} must bind contracts or an explicit typed decision",
             )
 
     owned = set(map(str, jit.get("owned_requirements") or []))
@@ -496,50 +590,63 @@ def validate_materialization(
     }
     unknown_owned = sorted(rid for rid in owned if rid not in register)
     if unknown_owned:
-        raise ValueError(
-            "owned requirements missing from the register: " + ", ".join(unknown_owned)
+        note(
+            json_ptr("requirement_bindings"),
+            "owned requirements missing from the register: " + ", ".join(unknown_owned),
         )
     concrete_owned = sorted(
-        rid for rid in owned if register[rid].get("kind") != "deferred_owner"
+        rid for rid in owned if rid in register and register[rid].get("kind") != "deferred_owner"
     )
     if concrete_owned:
-        raise ValueError(
+        note(
+            json_ptr("requirement_bindings"),
             "owned requirements are already resolved concretely in the register: "
             + ", ".join(concrete_owned)
             + " — the bundle's ownership is inconsistent authority; republish the "
-            "global plan instead of materializing around it"
+            "global plan instead of materializing around it",
         )
     foreign = sorted(
         rid for rid in owned
-        if str(register[rid].get("owner_layer") or "") != layer_id
+        if rid in register and str(register[rid].get("owner_layer") or "") != layer_id
     )
     if foreign:
-        raise ValueError(
+        note(
+            json_ptr("requirement_bindings"),
             "owned requirements are deferred to another layer in the register: "
-            + ", ".join(foreign)
+            + ", ".join(foreign),
         )
     missing_requirements = sorted(owned - bound)
     extra_requirements = sorted(bound - owned)
     if missing_requirements or extra_requirements:
-        raise ValueError(
+        note(
+            json_ptr("requirement_bindings"),
             "JIT owned-requirement closure is incomplete"
             + (f"; missing {', '.join(missing_requirements)}" if missing_requirements else "")
-            + (f"; unknown {', '.join(extra_requirements)}" if extra_requirements else "")
+            + (f"; unknown {', '.join(extra_requirements)}" if extra_requirements else ""),
         )
 
     acceptance = payload.get("acceptance", [])
     if not isinstance(acceptance, list) or any(not isinstance(row, dict) for row in acceptance):
-        raise ValueError("materialization.acceptance must be a list of objects")
-    judge_frames = {frame for frame, _ref in layer.judges}
+        note(json_ptr("acceptance"), "materialization.acceptance must be a list of objects")
+        acceptance = []
+    if layer is not None:
+        judge_frames = {frame for frame, _ref in layer.judges}
+    else:
+        judge_frames = {
+            int(row["frame"])
+            for row in (layer_row.get("judge") or [])
+            if isinstance(row, dict) and isinstance(row.get("frame"), int)
+        }
     bad_acceptance = sorted(
         str(row.get("id") or "<missing>")
         for row in acceptance
         if row.get("frame") not in judge_frames
     )
     if bad_acceptance:
-        raise ValueError(
+        note(
+            json_ptr("acceptance"),
             "materialized acceptance rows must use this layer's judge frames: "
-            + ", ".join(bad_acceptance)
+            + ", ".join(bad_acceptance),
         )
     # A layer judged at a frame nobody proved shows its subject is judged on faith:
     # run 20260825 sealed a whole lookdev layer whose every judged surface sat behind
@@ -555,11 +662,16 @@ def validate_materialization(
         )
     )
     if uncovered:
-        raise ValueError(
+        note(
+            json_ptr("scene_contracts"),
             "every judge frame needs a visible_fraction contract for the roles that "
-            "frame judges; missing at frame(s): " + ", ".join(uncovered)
+            "frame judges; missing at frame(s): " + ", ".join(uncovered),
         )
 
+    if findings:
+        raise ValueError("\n".join(findings))
+    if layer is None:
+        raise ValueError(format_finding(json_ptr("layer", "stages"), "layer stages did not parse"))
     return MaterializedLayer(
         layer,
         layer_row,
@@ -569,6 +681,56 @@ def validate_materialization(
         requirement_decisions,
         tuple(acceptance),
     )
+
+
+def inspect_materialization(
+    global_root: str | Path,
+    materialization_path: str | Path,
+    *,
+    expected_bundle_hash: str,
+    base_layers_path: str | Path | None = None,
+    resolutions_path: str | Path | None = None,
+    base_requirements_path: str | Path | None = None,
+) -> tuple[list[str], MaterializedLayer | None]:
+    """Return every collectable finding without requiring the caller to catch ValueError."""
+    try:
+        return [], validate_materialization(
+            global_root,
+            materialization_path,
+            expected_bundle_hash=expected_bundle_hash,
+            base_layers_path=base_layers_path,
+            resolutions_path=resolutions_path,
+            base_requirements_path=base_requirements_path,
+        )
+    except ValueError as exc:
+        return [line for line in str(exc).split("\n") if line], None
+
+
+def apply_materialization_patch(
+    global_root: str | Path,
+    materialization_path: str | Path,
+    pointer: str,
+    value: Any,
+    *,
+    expected_bundle_hash: str,
+    base_layers_path: str | Path | None = None,
+    resolutions_path: str | Path | None = None,
+    base_requirements_path: str | Path | None = None,
+) -> list[str]:
+    """Set one JSON pointer on the candidate file and return remaining findings."""
+    path = Path(materialization_path)
+    payload = _document(path)
+    set_pointer(payload, pointer, value)
+    atomic_write(path, json.dumps(payload, indent=1) + "\n")
+    findings, _materialized = inspect_materialization(
+        global_root,
+        path,
+        expected_bundle_hash=expected_bundle_hash,
+        base_layers_path=base_layers_path,
+        resolutions_path=resolutions_path,
+        base_requirements_path=base_requirements_path,
+    )
+    return findings
 
 
 def selected_view_artifact(shot_folder: str | Path, name: str, bundle_hash: str) -> Path | None:

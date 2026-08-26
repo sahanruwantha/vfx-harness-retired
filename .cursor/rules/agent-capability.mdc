@@ -1,0 +1,29 @@
+---
+description: Make VFX Harness agents smarter through instruments, not prompt patches
+alwaysApply: true
+---
+
+# Agent capability
+
+Making the agents smarter is a first-class goal alongside the control system. An agent
+forced to guess, rediscover authority, or act without seeing the effect of its last
+mutation is a harness defect, not a model limitation to paper over with a longer prompt.
+
+## Wanted
+
+- New instruments at the owning boundary when a role is forced to guess
+- Context compiled to the active work unit
+- Tool policy that enumerates legal actions and names violations
+- Closed-loop mutation: every write has a matching observation
+- Earned qualitative judgment where executable evidence cannot decide
+
+## Not wanted
+
+- Larger prompts or longer sessions as the scaling strategy
+- Prompt-only patches for mechanical defects
+- A confident model verdict replacing executable evidence
+- Extra mutation authority so a builder can "figure it out"
+
+Query, measure, enumerate, close the loop, abstain when evidence is insufficient.
+A recurring guess is a missing tool: build it at the owning boundary and grant it to the
+roles that need it. Binding copy lives in `AGENTS.md`.

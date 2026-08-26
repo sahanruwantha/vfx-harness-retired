@@ -7,6 +7,20 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- An audited `vfx units retry` of a unit whose executable rows already pass may mutate
+  until the first in-session verdict: the convergence guard no longer treats a failed
+  qualitative claim as sealed work
+  ([HIR-0021](docs/improvements/HIR-0021-a-reopened-unit-may-do-the-work-its-retry-prescribes.md)).
+- Materialization findings are pointer-addressed and returned together: the write-hook and
+  `patch_materialization` operate on RFC 6901 locations in the candidate file, not a
+  one-error-per-rewrite walk and not Glob of prior bundles
+  ([HIR-0023](docs/improvements/HIR-0023-materialization-findings-are-pointer-addressed.md)).
+- Made a semantic role one dotted token: `_bvfx_role` rejects commas and other
+  non-token characters (CSV is not membership), contract selectors refuse the same
+  punctuation at authoring, and `inspect_scene` / `check_scene` / `list_keyframes`
+  address `role=` through the one matcher, naming present names and roles on a miss
+  ([HIR-0022](docs/improvements/HIR-0022-a-comma-joined-role-was-stored-as-one-token.md),
+  [HIR-0018](docs/improvements/HIR-0018-selector-diagnostics-say-both-sides.md)).
 - Added `visible_fraction`, occlusion-true visibility evidence (camera-ray fraction of a
   subject's on-screen surface samples), and made every judge frame require it at
   materialization: a whole lookdev layer had been judged at frames where every subject sat

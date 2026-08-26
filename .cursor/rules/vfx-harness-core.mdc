@@ -1,9 +1,14 @@
 ---
-description: Core VFX Harness architecture and change protocol
+description: Core VFX Harness architecture, agent capability, and change protocol
 alwaysApply: true
 ---
 
 # VFX Harness core rules
+
+The harness is a control system and an agent-capability product. Model judgment proposes;
+typed contracts, evidence, checkpoints, and replay accept. Making agents smarter is a
+first-class goal: instruments, bounded unit context, tool policy, and closed loops — not
+larger prompts, and not model confidence as acceptance.
 
 - Read `AGENTS.md` and the relevant `docs/architecture`, ADR, HIR, and tests first.
 - Follow `docs/operations/improvement-lifecycle.md` for pain points and behavior changes.

@@ -739,11 +739,29 @@ def main():
         )
         check(
             "framing mistakes fail before reaching the Blender worker",
-            "object" in (_check_args_error("framing", {"frame": 1}) or ""),
+            "role=" in (_check_args_error("framing", {"frame": 1}) or ""),
+        )
+        check(
+            "check_scene refuses role and object together",
+            "not both" in (
+                _check_args_error(
+                    "visibility",
+                    {"object": "camera", "role": "cam_rig.camera", "frame": 1},
+                )
+                or ""
+            ),
+        )
+        check(
+            "check_scene accepts a role instead of a display name",
+            _check_args_error("visibility", {"role": "cam_rig.camera", "frame": 1}) is None,
         )
         check(
             "motion needs two frames before reaching the Blender worker",
             "at least 2" in (_check_args_error("motion", {"object": "Hero", "frames": [1]}) or ""),
+        )
+        check(
+            "passes checks do not require a role",
+            _check_args_error("passes", {"frame": 1}) is None,
         )
         check(
             "layout comparison suppresses look-action advice",
@@ -1601,6 +1619,42 @@ def main():
     )
     _phase["scene_contracts_passed"] = False
     check("a critic-backed revision reopens live mutation", _phase_call("mcp__blender__run_bpy") is None)
+    # Attempts 5-7 of 2.atmosphere (2026-08-26): a unit reopened after a failed critic
+    # verdict starts with every executable row passing, so the guard denied the exact
+    # edits the retry reason prescribed — a deadlock between the guard's contract flags
+    # and acceptance. The reopen arm keeps mutation legal until the first in-session
+    # verdict retires it.
+    _phase.update({"scene_contracts_passed": True, "judgment_unresolved": True})
+    check(
+        "an operator-reopened failed judgment keeps live mutation legal",
+        _phase_call("mcp__blender__run_bpy") is None,
+    )
+    _phase["judgment_unresolved"] = False
+    check(
+        "the first in-session verdict retires the reopen arm",
+        _phase_call("mcp__blender__run_bpy") == "deny",
+    )
+    # The arm derives from the unit's LIVE lifecycle fact, not any retryable record in
+    # history: a later seal or amendment re-entry consumes the reopen, else a retired
+    # retry reason steers (and un-cuffs) a rebuilt unit — stale-context injection.
+    from vfx_harness.agents.builder import _live_reopen_reason
+
+    check(
+        "a live reopen reason is surfaced",
+        _live_reopen_reason([{"to": "retryable", "reason": "r1"}, {"to": "building"}]) == "r1",
+    )
+    check(
+        "a seal retires the reopen record",
+        _live_reopen_reason(
+            [{"to": "retryable", "reason": "r1"}, {"to": "building"}, {"to": "passed"}]
+        ) == "",
+    )
+    check(
+        "an amendment re-entry retires the reopen record",
+        _live_reopen_reason(
+            [{"to": "retryable", "reason": "r1"}, {"to": "pending"}, {"to": "building"}]
+        ) == "",
+    )
     _live_opts = _builder_options(shot, {}, [], [], script_rel="build/01_layout.py")
     _final_opts = _script_options(shot, mode="finalize", script_rel="build/01_layout.py")
     _repair_opts = _script_options(shot, mode="repair", script_rel="build/01_layout.py")

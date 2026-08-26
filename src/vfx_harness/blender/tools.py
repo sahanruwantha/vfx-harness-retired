@@ -490,15 +490,26 @@ def _comparison_mode_scale(args: dict, base_lock: tuple | None) -> tuple[str, fl
     return mode, scale
 
 
+def _object_or_role_error(args: dict, tool: str) -> str | None:
+    """Builder tools address roles; display names are the fallback, never both."""
+    has_object = bool(str(args.get("object") or "").strip())
+    has_role = bool(str(args.get("role") or "").strip())
+    if has_object and has_role:
+        return f"{tool}: pass role= or object=, not both"
+    if not has_object and not has_role:
+        return f"{tool}: requires role= (semantic selector) or object= (display name)"
+    return None
+
+
 def _check_args_error(kind: str, args: dict) -> str | None:
     requirements = {
-        "visibility": ("object", "frame"),
-        "framing": ("object",),
-        "motion": ("object", "frames"),
-        "mesh": ("object",),
-        "scale": ("object",),
+        "visibility": ("frame",),
+        "framing": (),
+        "motion": ("frames",),
+        "mesh": (),
+        "scale": (),
         "passes": ("frame",),
-        "bbox": ("object", "frame"),
+        "bbox": ("frame",),
     }
     missing = [name for name in requirements[kind] if args.get(name) is None]
     if kind == "framing" and args.get("frame") is None and not args.get("frames"):
@@ -507,6 +518,10 @@ def _check_args_error(kind: str, args: dict) -> str | None:
         return f"check_scene(kind={kind!r}) requires " + ", ".join(dict.fromkeys(missing))
     if kind == "motion" and len(args.get("frames") or []) < 2:
         return "check_scene(kind='motion') requires frames with at least 2 entries"
+    if kind != "passes":
+        selector = _object_or_role_error(args, f"check_scene(kind={kind!r})")
+        if selector:
+            return selector
     return None
 
 
@@ -718,7 +733,8 @@ def build_blender_tools(
         "a tinted haze sky; bvfx_glare_bloom(...) for EEVEE-Next bloom; "
         "bvfx_emission(name,color,strength). To DEBUG a material/world, use inspect_nodes "
         "instead of rendering repeatedly to guess. Tag every contract-facing datablock "
-        "with bvfx_role(target,'material.floor.worn',owner_layer='2') and every shader/"
+        "with bvfx_role(target,'material.floor.worn',owner_layer='2') — one dotted "
+        "token per host, commas are not membership — and every shader/"
         "compositor control with bvfx_control(node,'control.orb.gain',owner_layer='2'); "
         "semantic roles survive renames and are the only supported contract interface.",
         {"type": "object", "properties": {"script": {"type": "string"}}, "required": ["script"]},
@@ -886,16 +902,33 @@ def build_blender_tools(
     @tool(
         "inspect_scene",
         "Read the scene as text (Tier-1, free, no render): objects+transforms+modifiers"
-        "+particle systems, materials, world, and render settings. Use this to verify "
-        "structure before spending a render.",
+        "+particle systems, materials, world, and render settings. Each object line "
+        "includes role= and owner=. Pass role= to filter by semantic bvfx_role "
+        "(fnmatch). Use this to verify structure before spending a render.",
         {
             "type": "object",
-            "properties": {"section": {"type": "string", "enum": ["all", "objects", "materials", "world", "render"]}},
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["all", "objects", "materials", "world", "render"],
+                },
+                "role": {
+                    "type": "string",
+                    "description": "optional bvfx_role selector (fnmatch); miss names present roles and names",
+                },
+            },
             "required": [],
         },
     )
     async def inspect_scene(args):
-        r = await _call("inspect", section=args.get("section", "all"))
+        try:
+            r = await _call(
+                "inspect",
+                section=args.get("section", "all"),
+                **({"role": args["role"]} if args.get("role") else {}),
+            )
+        except BlenderError as e:
+            return _text(str(e), is_error=True)
         return _text(r["text"])
 
     @tool(
@@ -917,12 +950,24 @@ def build_blender_tools(
     @tool(
         "list_keyframes",
         "The Graph-Editor read (Tier-1, free): every F-curve on an object as "
-        "frame→value pairs with interpolation. Use to verify easing/timing without rendering.",
-        {"type": "object", "properties": {"object": {"type": "string"}}, "required": ["object"]},
+        "frame→value pairs with interpolation. Address by role= (bvfx_role); object= "
+        "is the display-name fallback. Use to verify easing/timing without rendering.",
+        {
+            "type": "object",
+            "properties": {
+                "role": {"type": "string", "description": "bvfx_role selector (preferred)"},
+                "object": {"type": "string", "description": "display name; use role= instead"},
+            },
+            "required": [],
+        },
     )
     async def list_keyframes(args):
+        selector = _object_or_role_error(args, "list_keyframes")
+        if selector:
+            return _text(selector, is_error=True)
+        payload = {k: v for k, v in args.items() if k in ("role", "object") and v}
         try:
-            r = await _call("keyframes", object=args["object"])
+            r = await _call("keyframes", **payload)
         except BlenderError as e:
             return _text(str(e), is_error=True)
         return _text(r["text"])
@@ -1044,11 +1089,13 @@ def build_blender_tools(
         "unbroken, 'mesh' counts non-manifold edges, loose verts, n-gons, poles and "
         "disconnected islands, 'scale' checks dimensions and that scale is applied, "
         "'passes' checks the render buffer for NaN/Inf/negative pixels, 'bbox' returns the "
-        "oracle crop box to hand to render_pass. Use these to VERIFY a claim you would "
-        "otherwise write in a comment. Required arguments: visibility=object+frame; "
-        "framing=object+(frame or frames); motion=object+2+ frames; mesh/scale=object; "
-        "passes=frame; bbox=object+frame. For intentional open shells, mesh accepts "
-        "allow_boundary=true and still rejects branch/wire edges.",
+        "oracle crop box to hand to render_pass. Address subjects with role= (bvfx_role); "
+        "object= is the display-name fallback. A miss names present roles and names. "
+        "Required arguments: visibility=role-or-object+frame; "
+        "framing=role-or-object+(frame or frames); motion=role-or-object+2+ frames; "
+        "mesh/scale=role-or-object; passes=frame; bbox=role-or-object+frame. For "
+        "intentional open shells, mesh accepts allow_boundary=true and still rejects "
+        "branch/wire edges.",
         {
             "type": "object",
             "properties": {
@@ -1056,7 +1103,14 @@ def build_blender_tools(
                     "type": "string",
                     "enum": ["visibility", "framing", "motion", "mesh", "scale", "passes", "bbox"],
                 },
-                "object": {"type": "string"},
+                "role": {
+                    "type": "string",
+                    "description": "bvfx_role selector (preferred); fnmatch; exactly one object",
+                },
+                "object": {
+                    "type": "string",
+                    "description": "display name; use role= instead when you know the semantic role",
+                },
                 "frame": {"type": "integer"},
                 "frames": {"type": "array", "items": {"type": "integer"}},
                 "samples": {"type": "integer"},

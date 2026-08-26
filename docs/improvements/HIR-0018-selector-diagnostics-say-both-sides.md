@@ -118,3 +118,12 @@ re-scope atmosphere response to a construction that can respond (bounded volume
 domain in a material graph, per the `bvfx_volume` recipe). Either-of matching may
 surface latent both-tag ambiguities in previously sealed evidence at next
 revalidation; that is the honest reading and the intended fail-closed behavior.
+
+## Follow-up (2026-08-26)
+
+The builder scene tools still addressed display names after this record landed, so
+HIR-0018 was unbound on the surface the builder actually calls. HIR-0022 routes
+`inspect_scene`, `check_scene`, and `list_keyframes` through the one `match_semantic`
+resolver and makes a miss name present names **and** roles. Object-count and node
+misses in authoritative evidence already enumerated tags; the builder tools now do
+the same.

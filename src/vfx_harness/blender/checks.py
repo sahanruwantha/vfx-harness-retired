@@ -12,23 +12,40 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _GEOM_PATH = os.path.join(_HERE, "geom.py")
+_ROLES_PATH = os.path.abspath(os.path.join(_HERE, "..", "domain", "semantic_roles.py"))
 
-# Loaded BY PATH, not as `vfx_harness.blender.geom`. Blender ships its own Python without the repo's
-# dependencies, so importing the package runs `vfx_harness/__init__.py` and dies on
-# `dotenv`. geom.py is deliberately dependency-free so the same arithmetic can run both
-# inside Blender and in the no-Blender test suite — one implementation, two callers.
+# Loaded BY PATH, not as `vfx_harness.blender.*`. Blender ships its own Python without
+# the repo's dependencies, so importing the package is not the worker path. geom.py and
+# domain/semantic_roles.py are dependency-free so the same arithmetic / matching can run
+# both inside Blender and in the no-Blender test suite — one implementation, two callers.
 _spec = importlib.util.spec_from_file_location("bvfx_geom", _GEOM_PATH)
 _geom = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_geom)
+
+try:
+    from vfx_harness.domain import semantic_roles as _roles
+except ImportError:
+    if "bvfx_roles" in sys.modules:
+        _roles = sys.modules["bvfx_roles"]
+    else:
+        _rspec = importlib.util.spec_from_file_location("bvfx_roles", _ROLES_PATH)
+        _roles = importlib.util.module_from_spec(_rspec)
+        sys.modules["bvfx_roles"] = _roles
+        _rspec.loader.exec_module(_roles)
 
 frustum_union_ndc = _geom.frustum_union_ndc
 BOX_EDGES = _geom.BOX_EDGES
 mesh_issues = _geom.mesh_issues
 motion_from_positions = _geom.motion_from_positions
 scale_issues = _geom.scale_issues
+validate_role_token = _roles.validate_role_token
+match_semantic = _roles.match_semantic
+format_object_miss = _roles.format_object_miss
+pick_objects = _roles.pick_objects
 
 
 def camera_clip_matrix(scene, depsgraph):
@@ -67,13 +84,43 @@ def camera_clip_matrix(scene, depsgraph):
     return proj @ ev.matrix_world.inverted()
 
 
-def _obj(name: str):
+def object_inventory() -> list[dict]:
+    """Warm-scene name/role/owner/type rows for miss diagnostics and inspect."""
     import bpy
 
-    obj = bpy.data.objects.get(name)
+    return [
+        {
+            "name": o.name,
+            "role": str(o.get("bvfx_role") or ""),
+            "owner": str(o.get("bvfx_owner_layer") or ""),
+            "type": o.type,
+        }
+        for o in bpy.context.scene.objects
+    ]
+
+
+def resolve_object(*, role: str | None = None, name: str | None = None):
+    """Exactly one scene object. Role matching is ``match_semantic`` (ADR-0003)."""
+    import bpy
+
+    inventory = object_inventory()
+    hits = pick_objects(inventory, role=role, name=name)
+    if not hits:
+        raise ValueError(format_object_miss(inventory=inventory, role=role, name=name))
+    if len(hits) > 1:
+        listed = ", ".join(f"{row['name']!r} role={row['role']!r}" for row in hits)
+        raise ValueError(
+            f"role {role!r} matched {len(hits)} objects ({listed}); "
+            "pass an exact role so the check has one subject"
+        )
+    obj = bpy.data.objects.get(hits[0]["name"])
     if obj is None:
-        raise KeyError(f"no object named {name!r}")
+        raise ValueError(format_object_miss(inventory=inventory, role=role, name=name))
     return obj
+
+
+def _obj(name: str):
+    return resolve_object(name=name)
 
 
 def _camera():
@@ -426,8 +473,17 @@ def subject_bbox(name: str, frame: int) -> dict:
     }
 
 
+_OBJECT_CHECK_KINDS = frozenset(
+    {"visibility", "framing", "motion", "mesh", "scale", "bbox", "subject_bbox"}
+)
+
+
 def dispatch(kind: str, args: dict) -> dict:
     k = (kind or "").lower()
+    if k in _OBJECT_CHECK_KINDS:
+        role = str(args.get("role") or "").strip() or None
+        name = str(args.get("object") or "").strip() or None
+        args = {**args, "object": resolve_object(role=role, name=name).name}
     if k == "visibility":
         return check_visibility(args["object"], int(args["frame"]), int(args.get("samples", 27)))
     if k == "framing":

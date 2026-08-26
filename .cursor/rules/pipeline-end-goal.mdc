@@ -30,6 +30,8 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
   truncation, cancellation, SDK failure, or worker failure.
 - Use generic evidence primitives. Derive subjects, frames, regions, targets, stages, and
   tolerances from each shot's brief and references.
+- Make the active agent smarter with ground truth, instruments, and context compiled to the
+  work unit; do not scale by enlarging the agent session or asking it to rediscover authority.
 - Give autonomous blocking authority only to executable or currently qualified qualitative
   claims; otherwise improve evidence/judgement or require audited human adjudication.
 - Give interaction defects a bounded coordination owner; broader balancing must replan.
@@ -39,6 +41,8 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 - Hardcode shot names, subject names, fixed frames, fixed stage counts, or Beacon-specific
   assumptions in core pipeline code.
 - Treat one layer as one giant unrestricted agent session.
+- Enlarge prompts or sessions as the way complexity scales, or replace evidence with a
+  confident model verdict.
 - Let multiple workers mutate the same scene or script concurrently.
 - Let a local fix trade away an already passing frame, unit, interface, or upstream layer.
 - Repair a fault in a downstream layer when its semantic owner is known upstream.

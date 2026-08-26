@@ -2313,19 +2313,21 @@ def _reproduction_hint(row: dict) -> str:
     guidance delivered ambiently does not (`vfx inspect` flags diagnostic tools that
     were never called on every measured layer)."""
     kind = str(row.get("metric") or row.get("kind") or "")
+    roles = [token for token in (row.get("roles") or []) if token]
     objects = [name for name in (row.get("objects") or []) if name]
     subject = objects[0] if objects else "<role object>"
+    addr = f"role='{roles[0]}'" if roles else f"object='{subject}'"
     frame = row.get("frame") or (row.get("frames") or [None])[0]
     if kind.startswith("bbox_"):
-        return f"check_scene(kind='bbox', object='{subject}', frame={frame})"
+        return f"check_scene(kind='bbox', {addr}, frame={frame})"
     if kind == "keyframe_schedule":
-        return f"list_keyframes(object='{subject}')"
+        return f"list_keyframes({addr})"
     if kind in {"curve_derivative_max", "onset_order", "radial_distance_trend", "transform_return_delta"}:
-        return f"check_scene(kind='motion', object='{subject}', frames=[…judged window…])"
+        return f"check_scene(kind='motion', {addr}, frames=[…judged window…])"
     if kind == "mesh_vertex_count":
-        return f"check_scene(kind='mesh', object='{subject}')"
+        return f"check_scene(kind='mesh', {addr})"
     if kind in {"path_clearance_min"}:
-        return f"check_scene(kind='visibility', object='{subject}', frame={frame}) + run_bpy distance probe"
+        return f"check_scene(kind='visibility', {addr}, frame={frame}) + run_bpy distance probe"
     return ""
 
 
@@ -2837,6 +2839,24 @@ def _try_revalidate(
     return ledger
 
 
+def _live_reopen_reason(events) -> str:
+    """The operator's retry reason, iff it is still the unit's live lifecycle fact.
+
+    Newest-first scan stopping at the first lifecycle marker: a reopen record is
+    consumed by a later seal (`passed`) or an amendment re-entry (`pending`).
+    Surfacing a retired record — or arming mutation on it — is stale-context
+    injection, the same defect as a superseded approach's role names steering a
+    rematerialized unit.
+    """
+    for event in reversed(events or []):
+        to_state = event.get("to")
+        if to_state == "retryable":
+            return str(event.get("reason") or "")
+        if to_state in ("passed", "pending"):
+            break
+    return ""
+
+
 def _retry_warm_start(previous_status: str, script_path: Path) -> bool:
     """Whether a fresh retry should replay its last artifact into the warm scene."""
     retryable = {"failed", "judge_conflict", "contract_gap", "truncated", "in_progress"}
@@ -3074,17 +3094,17 @@ async def build_unit(
                     .get("history")
                     or []
                 )
-                _reopen = next(
-                    (
-                        str(event.get("reason") or "")
-                        for event in reversed(_events)
-                        if event.get("to") == "retryable"
-                    ),
-                    "",
-                )
+                _reopen = _live_reopen_reason(_events)
             except (OSError, ValueError):
                 _reopen = ""
             if _reopen:
+                # One record, two consumers: the prompt block below explains the retry
+                # to the model, and the phase arm unlocks mutation for it. Arming on the
+                # reopen record is exact, not heuristic — the convergence guard only
+                # bites when every executable row passes, so a unit that was still
+                # terminal-failed and audibly reopened must have failed on evidence the
+                # guard cannot observe (its canonical judgment).
+                phase["judgment_unresolved"] = True
                 hist += (
                     "\nREOPENED BY OPERATOR — this retry exists because:\n"
                     f"{_reopen}\n"
@@ -3215,8 +3235,12 @@ async def build_unit(
             if rnd >= rounds:
                 break
             comparison_state["round"] = rnd + 1
-            # A critic-backed revision is the only event that reopens geometry mutation.
+            # A fresh in-session verdict owns the mutation window from here: reset the
+            # contract flag for one bounded revision, and retire the cross-session
+            # reopen arm — the round discipline, not the operator's retry record, now
+            # decides when mutation is legal.
             phase["scene_contracts_passed"] = False
+            phase["judgment_unresolved"] = False
             if plateaued and layer is not None and not reviewed:
                 reviewed = True
                 log(f"plateau ({verdict['mean']} ≤ prev) — escalating to APPROACH REVIEW")

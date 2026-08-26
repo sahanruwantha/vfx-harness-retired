@@ -478,7 +478,15 @@ def builder_phase_guard(phase: dict[str, Any], script_rel: str | None) -> HookMa
     async def _check(inp, tool_use_id, ctx) -> dict:
         tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
         mode = phase.get("mode", "live")
+        # judgment_unresolved: the unit was reopened by an audited operator retry after
+        # its latest canonical judgment failed — blocking evidence this guard's contract
+        # flags cannot represent. Denying here deadlocks the unit: every executable row
+        # passes, so "converged" reads true while acceptance keeps failing (attempts 5-7
+        # of 2.atmosphere, 2026-08-26, ~6 denials per session against a delivered repair
+        # prescription). Mutation stays open until the first in-session verdict, where
+        # the round discipline takes over and retires the arm.
         if (mode == "live" and phase.get("scene_contracts_passed")
+                and not phase.get("judgment_unresolved")
                 and tool.endswith("run_bpy")):
             bump("convergence_mutation_blocked")
             if phase.get("image_evidence_required") and not phase.get("pixel_contracts_passed"):

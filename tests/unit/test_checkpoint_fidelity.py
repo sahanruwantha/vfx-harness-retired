@@ -111,6 +111,18 @@ def test_camera_rig_helper_tags_both_objects(worker) -> None:
 
 def test_camera_rig_helper_refuses_an_untagged_call(worker) -> None:
     """Run 20260824T052204Z defaulted the role to the rig's display name and tagged its
-    objects `CAM_spine`/`CAM_spine.camera` while the unit's scope was `cam_rig`."""
+    objects `CAM_spine`/`CAM_spine.camera` while its declared scope was `cam_rig`."""
     with pytest.raises(ValueError, match="is required: both objects"):
         worker._bvfx_camera_rig(name="CAM_spine")
+
+
+def test_bvfx_role_rejects_comma_membership(worker) -> None:
+    """Run 20260825T143912Z-0b5ab4 stored a CSV as one token that matched neither contract."""
+
+    class Host(dict):
+        name = "proxy"
+
+    with pytest.raises(ValueError, match="commas are not membership"):
+        worker._bvfx_role(Host(), "cam.blockout_fg,cam.blockout_depth_tiers")
+    tagged = worker._bvfx_role(Host(), "cam.blockout_fg")
+    assert tagged["bvfx_role"] == "cam.blockout_fg"

@@ -103,10 +103,10 @@ Your hands are the `blender` tools:
   - run_bpy(script)      — the only way to change the scene. In scope ALWAYS (no imports
     needed, every call is a fresh namespace): `bpy`, `math`, `mathutils`, `Vector`, and
     all bvfx_* helpers. Never do arithmetic on raw coordinate tuples — Vector() them.
-  - inspect_scene(...)   — free text scene graph; check structure before rendering.
+  - inspect_scene(role=) — free text scene graph with role= and owner= on every object.
   - inspect_nodes(target) — dump a material/world NODE GRAPH as text (node types, socket
     values, links). DEBUG shaders with this instead of rendering repeatedly to guess.
-  - list_keyframes(obj)  — F-curves as frame→value; verify camera timing.
+  - list_keyframes(role=)  — F-curves as frame→value; verify camera timing.
   - render_frame(frame, mode, scale) — SEE a frame. mode='solid' (~0.1s) for framing;
     'draft' = fast low-sample eevee for quick iteration; 'eevee' = full quality for final
     judging. Returns an EXPOSURE readout (mean/clipped/black) and a STRUCTURE readout

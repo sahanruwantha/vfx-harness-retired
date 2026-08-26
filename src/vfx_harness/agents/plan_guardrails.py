@@ -196,13 +196,15 @@ def target_validation_feedback(
                 "hookEventName": "PostToolUse",
                 "additionalContext": f"VALIDATION PASSED for {expected.name}.",
             }}
-        detail = "\n".join(f"- {item}" for item in errors[:20])
+        detail = "\n".join(f"- {item}" for item in errors)
         log(f"! write-time validation: {expected.name} has {len(errors)} error(s)", 1)
         return {"hookSpecificOutput": {
             "hookEventName": "PostToolUse",
             "additionalContext": (
                 f"VALIDATION FAILED for {expected.name}. Fix it now while this context "
-                f"is warm; do not wait for the terminal gate.\n{detail}"
+                f"is warm; do not wait for the terminal gate. Each finding is "
+                f"`{{json_pointer}}: {{message}}`; call patch_materialization for a named "
+                f"pointer.\n{detail}"
             ),
         }}
 

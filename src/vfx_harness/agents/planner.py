@@ -92,6 +92,11 @@ from vfx_harness.orchestration.ledger import load_layers, load_layers_from_path
 
 from .builder import _one_user_message
 
+# Materialization authority is the selected bundle, the decision ledger, sealed
+# outcomes, and the candidate file. Glob/Grep of historical bundles is not a repair
+# instrument; Edit is JSON text-edit of the wrong document (HIR-0023).
+MATERIALIZATION_DENIED_TOOLS = ["Bash", "Edit", "Glob", "Grep"]
+
 
 def mapping_expander(workspace: Path, registry, mapping_path: Path):
     """The warm authoring loop: each mapping write is validated with enumerated errors
@@ -133,10 +138,10 @@ def _with_target_feedback(hooks: dict, target: Path, validate) -> dict:
     return hooks
 
 
-# The materialization document's unit/stage/claim schema exists only in validators the
-# session cannot read. Attempt 3 (run 48a0f1) walked it one field-precise error per write
-# and exhausted 24 turns thirteen writes deep. This generic minimal-valid shape turns the
-# walk into a diff; every value is a placeholder to replace, no shot vocabulary.
+# The materialization document's unit/stage/claim schema exists only in validators.
+# Collectable findings now return as `{json_pointer}: {message}` in one write; field
+# repair is `patch_materialization`. This example remains the document shape — every
+# value is a placeholder to replace, no shot vocabulary.
 _MATERIALIZATION_EXAMPLE = """{
  "schema": "<materialization schema id from your instructions>",
  "bundle_hash": "<selected bundle hash>",
@@ -237,8 +242,8 @@ async def _materialize_deferred_layer(
 
     def _validate_target() -> list[str]:
         from vfx_harness.orchestration.jit_materialization import (
+            inspect_materialization,
             selected_view_artifact,
-            validate_materialization,
         )
         from vfx_harness.orchestration.plan_authority import artifact_path
 
@@ -253,7 +258,7 @@ async def _materialize_deferred_layer(
             base_requirements = selected_view_artifact(
                 shot.folder, "requirements.json", bundle.content_hash
             ) or artifact_path(shot.folder, "requirements.json")
-            validate_materialization(
+            findings, _materialized = inspect_materialization(
                 bundle.root,
                 target,
                 expected_bundle_hash=bundle.content_hash,
@@ -261,9 +266,9 @@ async def _materialize_deferred_layer(
                 resolutions_path=shot.folder / "state" / "plan-resolutions.jsonl",
                 base_requirements_path=base_requirements,
             )
-        except (ValueError, OSError) as exc:
+            return findings
+        except OSError as exc:
             return [str(exc)]
-        return []
     system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
 Write exactly `{rel_target}` as JSON with schema `{MATERIALIZATION_SCHEMA}`. It must contain
 `bundle_hash`, the complete replacement `layer` with execution `ready`, non-empty bounded stages,
@@ -299,15 +304,17 @@ none will be told surface quality is out of scope. A unit that genuinely changes
 appearance declares an empty list.
 Image checks are candidate-sensitive: the builder proposes them only after
 this unit mutates the cumulative scene, so `image_contracts` must remain empty here. Every write
-of the output file runs the full materialization validator and returns its findings to you;
-repair and rewrite until it reports VALIDATION PASSED — the terminal gate applies the same
-validator. Call `evidence_vocabulary` BEFORE authoring contracts — it enumerates every
+of the output file runs the full materialization validator and returns every collectable
+finding as `{{json_pointer}}: {{message}}` in one report. When a finding names a pointer, call
+`patch_materialization` with that pointer and a JSON-encoded value; the tool re-validates
+and returns remaining findings or VALIDATION PASSED. A full Write is for a missing document,
+not field-level repair. Call `evidence_vocabulary` BEFORE authoring contracts — it enumerates every
 contract kind, its evidence domain, and required fields. When no kind can express a claim,
 call `escalate_vocabulary_gap` (typed durable record) and close the requirement with an
 explicit decision resolution referencing the gap id — never pad with a trivially-satisfiable
 contract (vacuous shapes are rejected at validation). After VALIDATION PASSED, call
 `gate_preview` once: it applies the exact terminal gate to the resulting consumer view, and
-a finding fixed here costs one write instead of a retracted generation. Do not edit
+a finding fixed here costs one patch instead of a retracted generation. Do not edit
 global authority, create unit state, write prose, or write another file."""
     kickoff = _materialization_kickoff(shot.folder, layer, bundle, rel_target, replacing)
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}-materialize"
@@ -318,14 +325,14 @@ global authority, create unit state, write prose, or write another file."""
         measure_ref_paths=tuple(ref for _frame, ref in layer.judges),
         enabled_tools=frozenset({
             "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
-            "gate_preview", "escalate_vocabulary_gap",
+            "gate_preview", "escalate_vocabulary_gap", "patch_materialization",
         }),
         candidate_materialization=target,
     )
     rserver, rnames = build_recipe_tools()
     materialization_tools = _phase_tools(
         pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
-        "gate_preview", "escalate_vocabulary_gap",
+        "gate_preview", "escalate_vocabulary_gap", "patch_materialization",
     )
     options = ClaudeAgentOptions(
         model=model,
@@ -333,7 +340,7 @@ global authority, create unit state, write prose, or write another file."""
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
         allowed_tools=["Read", "Write", *materialization_tools, *rnames],
-        disallowed_tools=["Bash", "Edit"],
+        disallowed_tools=list(MATERIALIZATION_DENIED_TOOLS),
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,
         setting_sources=[],

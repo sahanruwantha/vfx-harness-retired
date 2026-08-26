@@ -1448,6 +1448,78 @@ def build_plan_tools(
         repair = plan_gate.feedback(result)
         return _text(body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""))
 
+    @tool(
+        "patch_materialization",
+        "Set one RFC 6901 JSON Pointer on the candidate materialization file, then "
+        "re-validate. Use this when a validation finding names a pointer. `value` is "
+        "JSON-encoded (string, number, object, array, true, false, or null). Cannot "
+        "replace the document root. Returns VALIDATION PASSED or the remaining findings.",
+        {
+            "type": "object",
+            "properties": {
+                "pointer": {
+                    "type": "string",
+                    "description": "JSON Pointer such as /scene_contracts/2/owner_layer",
+                },
+                "value": {
+                    "type": "string",
+                    "description": "JSON-encoded replacement at that pointer",
+                },
+            },
+            "required": ["pointer", "value"],
+        },
+    )
+    async def patch_materialization(args):
+        candidate = Path(candidate_materialization) if candidate_materialization else None
+        if candidate is None:
+            return _text(
+                "patch_materialization is only available during layer materialization",
+                is_error=True,
+            )
+        pointer = str(args.get("pointer") or "")
+        raw_value = args.get("value")
+        if not pointer:
+            return _text("pointer is required", is_error=True)
+        try:
+            value = json.loads(str(raw_value))
+        except (TypeError, json.JSONDecodeError) as exc:
+            return _text(f"value must be JSON-encoded: {exc}", is_error=True)
+        from vfx_harness.orchestration.jit_materialization import (
+            apply_materialization_patch,
+            selected_view_artifact,
+        )
+        from vfx_harness.orchestration.plan_authority import artifact_path, resolve_current
+
+        try:
+            bundle = resolve_current(shot_folder)
+            base_layers = selected_view_artifact(
+                shot_folder, "layers.json", bundle.content_hash
+            ) or artifact_path(shot_folder, "layers.json")
+            base_requirements = selected_view_artifact(
+                shot_folder, "requirements.json", bundle.content_hash
+            ) or artifact_path(shot_folder, "requirements.json")
+            findings = await anyio.to_thread.run_sync(
+                lambda: apply_materialization_patch(
+                    bundle.root,
+                    candidate,
+                    pointer,
+                    value,
+                    expected_bundle_hash=bundle.content_hash,
+                    base_layers_path=base_layers,
+                    resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
+                    base_requirements_path=base_requirements,
+                )
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            return _text(str(exc), is_error=True)
+        if not findings:
+            return _text(f"VALIDATION PASSED for {candidate.name}.")
+        detail = "\n".join(f"- {item}" for item in findings)
+        return _text(
+            f"VALIDATION FAILED for {candidate.name}. Remaining findings:\n{detail}",
+            is_error=True,
+        )
+
     # probe_video / contact_sheet / extract_frames were DEFINED and never registered, so
     # they were unreachable on every shot — not just stills-only ones. contact_sheet's own
     # description reads "This is how you do the scene read", and it has never once been
@@ -1461,6 +1533,8 @@ def build_plan_tools(
     video = sorted((shot_folder / "refs").glob("*.mp4")) if (shot_folder / "refs").is_dir() else []
     tools = [measure_ref, measure_check, measure_checks, spike, ask_supervisor,
              evidence_vocabulary, gate_preview, escalate_vocabulary_gap]
+    if candidate_materialization is not None:
+        tools.append(patch_materialization)
     if include_gate:
         tools.append(run_gate)
     if video:
