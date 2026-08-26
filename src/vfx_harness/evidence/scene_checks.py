@@ -46,6 +46,9 @@ TEMPORAL_KINDS = {
     "parallax_displacement_profile",
 }
 WINDOW_KINDS = TEMPORAL_KINDS - {"keyframe_schedule"}
+# Empty compare_roles used to report 1e9 and PASS every min-bound ("vacuously clear").
+# That sealed collision contracts against nothing. The sentinel is not a distance.
+PATH_CLEARANCE_UNMEASURED = 1e9
 # Every key the evaluator, gate, and orchestration actually read off a contract row.
 # A row carrying anything else is not "extra metadata" — it is a claim the harness
 # silently ignores. Run 20260823T154920Z shipped `at_frame: 36`, nothing read it,
@@ -172,9 +175,9 @@ KIND_DEFINITIONS = {
     ),
     "path_clearance_min": (
         "minimum distance from the selected objects' evaluated origins to compare_roles "
-        "mesh surfaces across the frame window; an empty obstacle selection reads 1e9 — "
-        "vacuously clear until the obstacle geometry exists (pair with lifecycle: "
-        "persistent so it re-evaluates as geometry arrives)"
+        "mesh surfaces across the frame window; an empty obstacle selection is not a "
+        "measurement (fail closed). Persistent lifecycle re-evaluates the same row as "
+        "obstacle geometry arrives — it does not make absence a PASS"
     ),
     "parallax_displacement_profile": (
         "screen-space displacement of the selected group's centroid divided by the "
@@ -202,6 +205,11 @@ def _holds(row: dict, value) -> bool:
         return False
     try:
         value = float(value)
+        if (
+            str(row.get("kind")) == "path_clearance_min"
+            and value >= PATH_CLEARANCE_UNMEASURED
+        ):
+            return False
         op = row.get("op", "band")
         if op == "band":
             return float(row["lo"]) <= value <= float(row["hi"])
@@ -452,6 +460,24 @@ def validate_row(row: dict) -> str | None:
         step = row.get("frame_step", 1)
         if isinstance(step, bool) or not isinstance(step, int) or step < 1:
             return "path_clearance_min frame_step must be a positive integer"
+        lo, hi = row.get("lo"), row.get("hi")
+        if row.get("op") == "min" and isinstance(lo, (int, float)) and not isinstance(lo, bool):
+            if float(lo) <= 0:
+                return "path_clearance_min min with lo<=0 passes any measured distance — vacuous"
+            if float(lo) >= PATH_CLEARANCE_UNMEASURED:
+                return (
+                    "path_clearance_min lo at or above 1e9 is the empty-selection sentinel, "
+                    "not a distance — vacuous"
+                )
+        if (
+            row.get("op") == "max"
+            and isinstance(hi, (int, float))
+            and not isinstance(hi, bool)
+            and float(hi) >= PATH_CLEARANCE_UNMEASURED
+        ):
+            return (
+                "path_clearance_min max with hi>=1e9 passes any measured distance — vacuous"
+            )
     if kind == "frame_delta":
         region = row.get("region")
         if region is not None and (
@@ -888,11 +914,12 @@ for row in _rows:
         elif kind=='path_clearance_min':
             if not objects: raise ValueError(_missobj(row))
             a,b=row['frames']; step=int(row.get('frame_step') or 1)
-            obstacle_sel=_p(row,'compare_roles'); best=None
+            obstacle_sel=_p(row,'compare_roles'); best=None; saw_obstacle=False
             for f in range(int(a),int(b)+1,step):
                 _scene.frame_set(int(f)); dg=bpy.context.evaluated_depsgraph_get()
                 obstacles=[o for o in _scene.objects
                            if o.type=='MESH' and _m(o.get('bvfx_role'),obstacle_sel)]
+                if obstacles: saw_obstacle=True
                 points=[o.evaluated_get(dg).matrix_world.translation.copy() for o in objects]
                 for obstacle in obstacles:
                     ev=obstacle.evaluated_get(dg)
@@ -904,8 +931,19 @@ for row in _rows:
                         if hit:
                             distance=((ev.matrix_world@local)-point).length
                             best=distance if best is None or distance<best else best
-            # empty obstacle selection: vacuously clear until the geometry exists
-            value=1e9 if best is None else best
+            if best is None:
+                mesh_roles=sorted({{str(o.get('bvfx_role')) for o in _scene.objects
+                    if o.type=='MESH' and o.get('bvfx_role')}})[:24]
+                if not saw_obstacle:
+                    raise ValueError(
+                        'compare_roles '+repr(obstacle_sel)+
+                        ' matched no mesh obstacles; mesh roles present: '+
+                        (', '.join(mesh_roles) or '(none)')+
+                        ' — empty obstacle selection is not clearance')
+                raise ValueError(
+                    'compare_roles '+repr(obstacle_sel)+
+                    ' matched mesh obstacles but closest_point_on_mesh produced no distance')
+            value=best
         elif kind=='parallax_displacement_profile':
             far_group=_objects({{**row,'roles':_p(row,'compare_roles'),'control_roles':[]}})
             if not objects or not far_group:
@@ -945,6 +983,17 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
         reading = readings.get(str(row.get("id")), {})
         error = validate_row(row) or str(reading.get("error") or "")
         value = reading.get("value")
+        if (
+            str(row.get("kind")) == "path_clearance_min"
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and float(value) >= PATH_CLEARANCE_UNMEASURED
+        ):
+            error = error or (
+                "path_clearance_min empty obstacle selection is not clearance "
+                "(the 1e9 sentinel never PASSes)"
+            )
+            value = None
         if isinstance(value, float):
             value = round(value, 6)
         out.append(
@@ -955,7 +1004,7 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
                 "definition": KIND_DEFINITIONS.get(str(row.get("kind") or ""), ""),
                 "value": value,
                 "target": _target(row),
-                "pass": not error and _holds(row, reading.get("value")),
+                "pass": not error and _holds(row, value),
                 "note": str(reading.get("note") or ""),
                 "origin": "planner",
                 "source": "interface_contract",

@@ -234,3 +234,52 @@ def test_node_socket_component_accepts_channel_letters() -> None:
     script = _blender_probe([row], 1)
     compile(script, "<probe>", "exec")
     assert "'B':2" in script
+
+
+def test_empty_path_clearance_sentinel_never_passes() -> None:
+    """Layer 1 sealed a collision row at 1e9: empty compare_roles reported the
+    unmeasured sentinel and every min-bound held. Absence is not clearance."""
+    from vfx_harness.evidence.scene_checks import (
+        PATH_CLEARANCE_UNMEASURED,
+        _blender_probe,
+        _evidence,
+        _holds,
+    )
+
+    row = _row(
+        id="collision",
+        kind="path_clearance_min",
+        roles=["cam_rig"],
+        compare_roles=["geo.*"],
+        frames=[1, 2],
+        op="min",
+        lo=0.5,
+        lifecycle="persistent",
+    )
+    assert validate_row(row) is None
+    assert not _holds(row, PATH_CLEARANCE_UNMEASURED)
+    findings = _evidence([row], [{"id": "collision", "value": 1e9, "error": ""}])
+    assert findings[0]["pass"] is False
+    assert findings[0]["value"] is None
+    assert "1e9" in findings[0]["error"]
+    probe = _blender_probe([row], 1)
+    assert "value=1e9 if best is None" not in probe
+    assert "empty obstacle selection is not clearance" in probe
+    assert "mesh roles present" in probe
+    compile(probe, "probe", "exec")
+
+
+def test_path_clearance_sentinel_and_zero_floor_are_vacuous() -> None:
+    row = _row(
+        id="c",
+        kind="path_clearance_min",
+        roles=["cam_rig"],
+        compare_roles=["geo.*"],
+        frames=[1, 2],
+        op="min",
+        lo=0.5,
+    )
+    assert "vacuous" in (validate_row({**row, "lo": 0}) or "")
+    assert "vacuous" in (validate_row({**row, "lo": 1e9}) or "")
+    assert "vacuous" in (validate_row({**row, "op": "max", "lo": None, "hi": 1e9}) or "")
+    assert validate_row(row) is None

@@ -1315,6 +1315,7 @@ def build_plan_tools(
                 "frames [a,b]",
                 "compare_roles (obstacle roles, disjoint from roles)",
                 "frame_step (optional)",
+                "empty compare_roles match is not clearance (fail closed, not 1e9)",
             ],
             "parallax_displacement_profile": [
                 "frames [a,b]",
@@ -1376,8 +1377,8 @@ def build_plan_tools(
             }
         note = (
             "Projected (bbox_*) targets must lie inside the normalized frame; "
-            "path_clearance_min with lifecycle 'persistent' re-evaluates as obstacle "
-            "geometry arrives (empty obstacle selection reads vacuously clear)."
+            "path_clearance_min fails closed on an empty obstacle selection — persistent "
+            "lifecycle re-evaluates as geometry arrives, it does not make absence a PASS."
         )
         return _text(json.dumps({"kinds": entries, "note": note}, indent=1))
 

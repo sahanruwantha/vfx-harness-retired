@@ -229,7 +229,8 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `visible_fraction` coverage; nothing-on-screen reads 0.0 and is a failing measurement, not an
   instrument error (HIR-0019).
 - Absence fails closed: a required contract never evaluated blocks sealing; unknown keys are
-  rejected naming the accepted set; silence is never consent (HIR-0014).
+  rejected naming the accepted set; silence is never consent (HIR-0014). An empty obstacle
+  selection is not path clearance — the 1e9 sentinel never PASSes (HIR-0024).
 - Claims are atomic propositions defined by the planner; the judge never expands its own scope.
   Required claims combine with logical AND — passing claims cannot average away a failure.
   Batching is transport, never aggregation; failed, borderline, disputed, or repaired claims are

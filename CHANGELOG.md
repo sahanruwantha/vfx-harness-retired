@@ -7,6 +7,9 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- An empty `path_clearance_min` obstacle selection is not a passing clearance: the 1e9
+  sentinel never PASSes, and authoring refuses sentinel-scale or zero-floor bounds
+  ([HIR-0024](docs/improvements/HIR-0024-empty-path-clearance-is-not-a-pass.md)).
 - An audited `vfx units retry` of a unit whose executable rows already pass may mutate
   until the first in-session verdict: the convergence guard no longer treats a failed
   qualitative claim as sealed work

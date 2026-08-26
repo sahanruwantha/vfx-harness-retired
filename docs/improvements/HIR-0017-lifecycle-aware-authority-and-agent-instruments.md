@@ -118,4 +118,6 @@ re-materialized under the new vocabulary — the composition-coverage finding al
 demands this, and `revert_materialization` is the designed route. Not closed here:
 `_rematerialize_layer`'s ready-era transaction still predates two-phase attestation
 (noted in HIR-0016), and the vocabulary will lag new claim types by design — the gap
-record is the backlog mechanism, not a fix for it.
+record is the backlog mechanism, not a fix for it. Empty `path_clearance_min` reading
+as 1e9 PASS is retracted by
+[HIR-0024](HIR-0024-empty-path-clearance-is-not-a-pass.md): absence is not clearance.
