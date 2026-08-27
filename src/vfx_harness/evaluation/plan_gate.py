@@ -808,6 +808,44 @@ def _check_evidence(folder: Path, plan: str) -> tuple[list[Finding], dict]:
     return out, {"tickets": len(tickets), "spiked": n_spiked, "researched": n_research}
 
 
+def _cross_row_contract_findings(scene_rows: list) -> list[Finding]:
+    """Split grandfathered advisory lint from jointly unsatisfiable published pairs.
+
+    Auto-socket ``control_render_response`` vs a pinned sibling is refused at
+    authoring; a published view that already measures honestly stays advisory.
+    A ``keyframe_schedule`` whose consecutive samples already exceed a same-role
+    ``curve_derivative_max.hi`` cannot pass (HIR-0030) — that finding blocks.
+    """
+    from vfx_harness.evidence.scene_checks import (
+        schedule_smoothness_contradictions,
+        validate_row_set,
+    )
+
+    scene_dicts = [row for row in scene_rows if isinstance(row, dict)]
+    out: list[Finding] = []
+    pair_messages: set[str] = set()
+    for pair in schedule_smoothness_contradictions(scene_dicts):
+        pair_messages.add(pair["message"])
+        out.append(Finding(
+            "contracts",
+            True,
+            "scene_checks.json",
+            pair["message"],
+            "raise hi, widen the sample span, or reduce Δ — interpolation cannot invent a third option",
+        ))
+    for cross_row_finding in validate_row_set(scene_dicts):
+        if cross_row_finding in pair_messages:
+            continue
+        out.append(Finding(
+            "contracts",
+            False,
+            "scene_checks.json",
+            cross_row_finding,
+            "declare the response row's socket at this layer's next materialization",
+        ))
+    return out
+
+
 def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tuple[list[Finding], dict]:
     from vfx_harness.evidence.scene_checks import validate_row as validate_scene_check
 
@@ -973,21 +1011,9 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             out.append(Finding("contracts", True, "scene_checks.json", f"unreadable: {exc}"))
             scene_rows = []
-        from vfx_harness.evidence.scene_checks import validate_row_set
-
-        # Advisory here, refused at authoring: guardrails and validate_materialization
-        # raise on this shape for NEW row sets, but a published view may carry a
-        # grandfathered instance that a permissive node class (e.g. Math, whose inputs
-        # are literally named 'Value') satisfies honestly — blocking retroactively
-        # would poison sealed authority that measurably works.
-        for cross_row_finding in validate_row_set([r for r in scene_rows if isinstance(r, dict)]):
-            out.append(Finding(
-                "contracts",
-                False,
-                "scene_checks.json",
-                cross_row_finding,
-                "declare the response row's socket at this layer's next materialization",
-            ))
+        # Auto-socket lint stays advisory for grandfathered published views.
+        # Unsatisfiable schedule/smoothness pairs block (HIR-0030).
+        out.extend(_cross_row_contract_findings(scene_rows))
         # Advisory mirror of validate_materialization's hard rule (new materializations
         # cannot publish without it): a judge frame with no occlusion-true visibility
         # row judges subjects nobody proved are on screen. Run 20260825: layer 2's
@@ -1499,13 +1525,47 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         "parallax_displacement_profile",
                         "onset_order",
                     }
-                    # visible_fraction is observation-only: it mutates nothing, and it
-                    # exists precisely so the CAMERA answers for geometry it will never
-                    # own — run 20260825's spine escaped because visibility routed
-                    # through the geometry unit, which satisfied its own bbox rows by
-                    # convenient placement. Its roles are measurement subjects held to
-                    # plan-declared namespaces (control smuggling stays a violation).
-                    observation_only = str(contract.get("kind") or "") == "visible_fraction"
+                    # visible_fraction is repaired by a unit that can change the rays
+                    # (HIR-0051). The camera exception remains: a provides:["camera"]
+                    # owner may observe plan-declared geometry it does not mutate
+                    # (HIR-0019). A volume-only unit cannot bind mesh vis as required
+                    # repair — that hole let atmosphere own proxy_core raycasts.
+                    vis_kind = str(contract.get("kind") or "") == "visible_fraction"
+                    observation_only = False
+                    if vis_kind:
+                        from vfx_harness.domain.work_units import (
+                            VIS_REPAIR_OWNER_RULE,
+                            vis_roles_unrepairable_by,
+                        )
+
+                        owner_id = str(claim.get("repair_owner") or uid)
+                        owner = stages.get(owner_id) or unit
+                        owner_mutates = owner.get("mutates") or {}
+                        unrepaired = vis_roles_unrepairable_by(
+                            provides=owner.get("provides") or [],
+                            mutation_roles=[
+                                *(owner_mutates.get("roles") or []),
+                                *(owner_mutates.get("dresses") or []),
+                            ],
+                            vis_roles=contract.get("roles") or [],
+                        )
+                        if unrepaired:
+                            out.append(
+                                Finding(
+                                    "vis-repair-owner",
+                                    True,
+                                    f"layer {lid} unit {uid} claim {claim.get('id', '?')} "
+                                    f"contract {evidence_id}",
+                                    "visible_fraction roles are not repairable by "
+                                    f"{owner_id}: " + ", ".join(unrepaired),
+                                    "bind vis on a unit that provides camera or mutates/"
+                                    "dresses every named role; "
+                                    + VIS_REPAIR_OWNER_RULE,
+                                )
+                            )
+                        observation_only = "camera" in {
+                            str(item) for item in (owner.get("provides") or [])
+                        }
                     if observation_only:
                         primary_keys: tuple[str, ...] = ()
                     elif two_sided:

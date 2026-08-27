@@ -63,6 +63,28 @@ def _merge_worklist_items(state: dict, new_items: list[str]) -> dict:
     return state
 
 
+def _refresh_unpaid_image_debts(comparison_state: dict, shot_dir: str | Path | None) -> list[dict]:
+    """Recompute unpaid image-contract debts from disk after propose_checks / mutation."""
+    from vfx_harness.domain.image_debts import (
+        debts_from_dicts,
+        unpaid_image_contract_debts,
+    )
+    from vfx_harness.evidence.checks import load_image_contract_payment_rows
+
+    cards = debts_from_dicts(comparison_state.get("image_debts"))
+    if not cards or not shot_dir:
+        comparison_state["unpaid_image_debts"] = []
+        return []
+    unpaid = [
+        card.as_dict()
+        for card in unpaid_image_contract_debts(
+            cards, load_image_contract_payment_rows(shot_dir)
+        )
+    ]
+    comparison_state["unpaid_image_debts"] = unpaid
+    return unpaid
+
+
 def _scene_completion_state(
     evidence: list[dict], layer_id: str, required_ids: set[str] | None = None
 ) -> dict:
@@ -73,8 +95,9 @@ def _scene_completion_state(
     layer may close the live mutation gate.  Layers with image-only/subjective completion
     keep mutation open until they voluntarily hand off to the critic.
 
-    `required_ids` are the contracts bound to the active unit's REQUIRED claims. A
-    contract that is never evaluated — selector matched nothing, probe errored, frame
+    `required_ids` are the SCENE contracts bound to the active unit's required claims
+    (HIR-0048: image-contract debts are a separate card, not a scene-selector miss).
+    A contract that is never evaluated — selector matched nothing, probe errored, frame
     group never ran — is neither a pass nor a failure, so presence-based sealing let a
     unit close while a required claim had no evidence at all. Completeness is therefore
     checked explicitly: absent required evidence blocks sealing exactly like a failure.
@@ -294,8 +317,14 @@ def _check_report(kind: str, r: dict) -> str:
             if r.get("active_frame_span")
             else ""
         )
+        span = r.get("peak_speed_span") or []
+        peak = (
+            f"f{span[0]}→f{span[1]}"
+            if isinstance(span, list) and len(span) == 2
+            else f"f{r.get('peak_speed_frame')}"
+        )
         lines.append(
-            f"  max speed {r.get('max_speed')} u/f (f{r.get('peak_speed_frame')}) · "
+            f"  max speed {r.get('max_speed')} u/f ({peak}) · "
             f"max |accel| {r.get('max_accel')} u/f^2 · "
             f"max |jerk| {r.get('max_jerk')} u/f^3 · "
             f"{'one unbroken move' if r.get('unbroken') else 'BROKEN move'}{holds}"
@@ -466,6 +495,21 @@ def _layer_feedback_policy(shot_dir: Path | None, layer_id: str | None) -> dict:
     }
 
 
+def preview_render_mode(
+    look_actions: bool, requested: str | None, *, look_default: str
+) -> str:
+    """Live preview default: Workbench when the unit owns no look, else the look default.
+
+    Canonical EEVEE remains the sealed artifact. Run ``20260826T170413Z-ba2b4c`` created
+    a temp sun to light an EEVEE verify on an executable-only camera unit. ``render_pass``
+    already forces matcap when ``look_actions`` is false; ``render_frame`` and
+    ``verify_change`` still defaulted to EEVEE/draft.
+    """
+    if requested:
+        return str(requested)
+    return look_default if look_actions else "solid"
+
+
 def _comparison_lock_error(locks: dict, key: tuple, settings: tuple) -> str | None:
     """Lock one frame/crop's render settings for the duration of a build round."""
     previous = locks.get(key)
@@ -571,6 +615,144 @@ def _pixel_contract_gate(
         "authoritative": True,
     }
     return bool(row["pass"]), [row]
+
+
+def _unpaid_image_debt_note(state: dict) -> str:
+    """Payment path for owed image-contract ids. Not a selector miss; not critic handoff."""
+    unpaid = list(state.get("unpaid_image_debts") or [])
+    if not unpaid:
+        return ""
+    listed = ", ".join(
+        f"{row.get('id')} (f{row.get('frame')}, {row.get('property')}, {row.get('axis')})"
+        for row in unpaid
+        if isinstance(row, dict)
+    )
+    return (
+        "\nIMAGE-CONTRACT DEBTS UNPAID: "
+        + listed
+        + ". Call propose_checks with those exact ids; frame, property kind, and axis "
+        "must match. A role or control retag cannot produce them. compare_frame "
+        "evaluates paid rows; unpaid debts are not critic handoff."
+    )
+
+
+def followup_after_scene_contracts_pass(state: dict) -> str:
+    """What the builder may do after bound scene rows pass.
+
+    Look ownership is not an image-contract set. Treating it as one told a
+    look unit that 3/3 existence rows were a critic handoff and locked
+    ``run_bpy`` before appearance iteration (HIR-0044). Unpaid image-contract
+    debts are a compiled card, not a scene-selector miss (HIR-0048).
+    """
+    unpaid_note = _unpaid_image_debt_note(state)
+    if unpaid_note:
+        return "\nSCENE CONTRACTS PASS." + unpaid_note
+    if state.get("look_unsettled"):
+        return (
+            "\nSCENE CONTRACTS PASS: executable existence/wiring is done. This unit "
+            "still owns look and binds no image contract; run_bpy remains open. "
+            "Use render_frame / compare_frame as observation, not as a mutation lock."
+        )
+    if state.get("image_evidence_required"):
+        return (
+            "\nSCENE CONTRACTS PASS: call one FULL-FRAME compare_frame now. "
+            "This unit binds authoritative image evidence; a failed bound "
+            "check reopens one repair. Further run_bpy edits are blocked "
+            "until that comparison."
+        )
+    return (
+        "\nUNIT HANDOFF READY: every bound executable scene contract "
+        "passes and this unit binds no image contract. Use the required "
+        "diagnostics, then stop; no beauty comparison is required."
+    )
+
+
+def followup_after_image_gate_pass(state: dict, gate_rows: list) -> str:
+    """Empty image-contract rows are not a critic handoff (HIR-0044)."""
+    if state.get("look_unsettled"):
+        return (
+            "\nLOOK ITERATION OPEN: no bound image contract closed this plate. "
+            "A 0/0 image-contract pass is not critic handoff; mutation remains legal."
+        )
+    unpaid = _unpaid_image_debt_note(state)
+    if unpaid:
+        return unpaid
+    if not gate_rows:
+        return (
+            "\nNO BOUND IMAGE CONTRACTS on this comparison. 0/0 pass is not critic "
+            "handoff; it does not certify look."
+        )
+    return (
+        "\nCRITIC HANDOFF READY: current-layer scene and image "
+        "contracts pass. Do not mutate again without critic-backed evidence."
+    )
+
+
+CANNOT_EXPRESS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "contract_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "failing or contradictory contract ids",
+        },
+        "reason": {
+            "type": "string",
+            "description": "why no in-scope edit can pass, with the measured floor if any",
+        },
+    },
+    "required": ["contract_ids", "reason"],
+}
+
+CANNOT_EXPRESS_DESCRIPTION = (
+    "Record that the failing contracts cannot be satisfied inside this unit's "
+    "mutation scope or without contradicting another sealed contract. This STOPS "
+    "further repair attempts and records a typed plan defect (hypothesis_falsified). "
+    "Use it when interpolation, a child object, extra mutation, or an unpaid "
+    "image-contract debt cannot legally pass — not for a fix you have not measured. "
+    "Name the bare contract ids (no check: prefix). Distinct from ask_supervisor, "
+    "which does not block."
+)
+
+
+def record_cannot_express(comparison_state: dict | None, args: dict) -> dict:
+    """Write a typed in-scope abstention onto the session the repair loop reads."""
+    from vfx_harness.domain.image_debts import (
+        classify_cannot_express,
+        debts_from_dicts,
+        normalize_evidence_id,
+    )
+
+    ids = [
+        normalize_evidence_id(item)
+        for item in (args.get("contract_ids") or [])
+        if str(item).strip()
+    ]
+    reason = str(args.get("reason") or "").strip()
+    if not ids or not reason:
+        return _text(
+            "cannot_express_in_scope requires non-empty contract_ids and reason",
+            is_error=True,
+        )
+    if comparison_state is None:
+        return _text(
+            "cannot_express_in_scope is not bound in this session",
+            is_error=True,
+        )
+    debts = debts_from_dicts(comparison_state.get("image_debts"))
+    classification = classify_cannot_express(ids, debts)
+    comparison_state["cannot_express"] = {
+        "contract_ids": ids,
+        "reason": reason,
+        "classification": classification,
+    }
+    return _text(
+        "Recorded cannot_express_in_scope for "
+        + ", ".join(ids)
+        + f" ({classification}). Do not edit the script further. The harness will stop "
+        "remaining repairs and publish a typed plan defect; vfx units replan consumes it. "
+        f"Reason: {reason}"
+    )
 
 
 def _to_metric_size(im: Image.Image) -> Image.Image:
@@ -687,6 +869,31 @@ def _compare_image(cand_path: str, ref_path: Path, caption: str, *, feedback_gro
     }
 
 
+def _run_bpy_instrument_hint(script: str, error: str) -> str:
+    """Name the existing instrument when free-form bpy reinvents a check_scene kind.
+
+    Run 20260826T170413Z-ba2b4c died on ``BVHTree.FromMesh`` while
+    ``path_clearance_min`` / ``check_scene(kind='motion')`` already measured the
+    same quantity. A second clearance implementation is not a fix.
+    """
+    blob = f"{script}\n{error}"
+    extra = ""
+    if "FromMesh" in blob or "BVHTree" in blob or "find_nearest" in blob or "closest_dist" in blob:
+        extra = (
+            "\nHINT: do not invent a BVH/nearest-point probe in run_bpy. Path clearance "
+            "is the bound ``path_clearance_min`` contract (obstacles via compare_roles; "
+            "the worker uses closest_point_on_mesh). Motion smoothness is "
+            "check_scene(kind='motion', role=..., frames=[...]). BVHTree.FromMesh is not "
+            "the 5.x constructor (FromBMesh) and is not the instrument."
+        )
+    elif "to_mesh(" in blob and "clearance" in blob.lower():
+        extra = (
+            "\nHINT: mesh-distance probes belong to the path_clearance_min contract and "
+            "check_scene, not a private to_mesh loop."
+        )
+    return error + extra if extra and extra.strip() not in error else error
+
+
 def build_blender_tools(
     session: BlenderSession,
     assets_dir: str | Path | None = None,
@@ -744,7 +951,7 @@ def build_blender_tools(
         try:
             r = await _call("run", code=args["script"])
         except BlenderError as e:
-            return _text(str(e), is_error=True)
+            return _text(_run_bpy_instrument_hint(str(args.get("script") or ""), str(e)), is_error=True)
         # A successful script may have changed pixels even when this layer has no scene
         # completion contract. Never carry an earlier comparison verdict across it.
         comparison_state["pixel_contracts_passed"] = False
@@ -835,6 +1042,7 @@ def build_blender_tools(
                     evidence = list({str(row.get("id")): row for row in evidence}.values())
                     authoritative = [row for row in evidence if row.get("authoritative")]
                 state = _scene_completion_state(evidence, str(layer_id), active_ids)
+                _refresh_unpaid_image_debts(comparison_state, shot_dir)
                 authoritative = state["authoritative"]
                 passed = [row for row in authoritative if row.get("pass")]
                 failed = state["failures"]
@@ -844,17 +1052,16 @@ def build_blender_tools(
                     bump("automatic_scene_contract_probe")
                     contract_note = f"\nAUTHORITATIVE SCENE CONTRACTS: {len(passed)}/{len(authoritative)} pass"
                     if state["missing"]:
-                        # Unevaluated required evidence used to read as silence. Name it:
-                        # a selector that matches nothing looks identical to a claim
-                        # nobody wrote, and both block sealing.
+                        # Unevaluated required SCENE evidence used to read as silence.
+                        # Image-contract debts are a separate card (HIR-0048).
                         comparison_state["scene_contracts_passed"] = False
                         comparison_state["scene_interfaces_ready"] = False
                         contract_note += (
-                            " · REQUIRED EVIDENCE NOT PRODUCED: "
+                            " · REQUIRED SCENE EVIDENCE NOT PRODUCED: "
                             + ", ".join(state["missing"][:6])
-                            + "\n  These contracts are bound to required claims but were "
-                            "never evaluated — usually a selector matching no object, or "
-                            "a frame group that never ran. They cannot pass by absence."
+                            + "\n  These scene contracts are bound to required claims but "
+                            "were never evaluated — usually a selector matching no object, "
+                            "or a frame group that never ran. They cannot pass by absence."
                         )
                     if failed:
                         comparison_state["scene_interfaces_ready"] = False
@@ -870,20 +1077,11 @@ def build_blender_tools(
                         comparison_state["scene_interfaces_ready"] = True
                         comparison_state["current_scene_contracts_present"] = True
                         comparison_state["scene_contracts_passed"] = True
-                        if comparison_state.get("image_evidence_required"):
-                            contract_note += (
-                                "\nSCENE CONTRACTS PASS: call one FULL-FRAME compare_frame now. "
-                                "This unit binds authoritative image evidence; a failed bound "
-                                "check reopens one repair. Further run_bpy edits are blocked "
-                                "until that comparison."
-                            )
-                        else:
+                        if not comparison_state.get("look_unsettled") and not comparison_state.get(
+                            "image_evidence_required"
+                        ):
                             comparison_state["pixel_contracts_passed"] = True
-                            contract_note += (
-                                "\nUNIT HANDOFF READY: every bound executable scene contract "
-                                "passes and this unit binds no image contract. Use the required "
-                                "diagnostics, then stop; no beauty comparison is required."
-                            )
+                        contract_note += followup_after_scene_contracts_pass(comparison_state)
                     else:
                         comparison_state["scene_interfaces_ready"] = True
                         comparison_state["current_scene_contracts_present"] = False
@@ -891,9 +1089,16 @@ def build_blender_tools(
                         contract_note += (
                             "\nINHERITED INTERFACES PASS, but this layer owns no active "
                             "scene completion contract. They prove healthy inputs, not "
-                            "that the current layer is finished; live mutation remains "
-                            "open until the builder hands its scoped work to the critic."
+                            "that the current layer is finished."
                         )
+                        unpaid_note = _unpaid_image_debt_note(comparison_state)
+                        if unpaid_note:
+                            contract_note += unpaid_note
+                        else:
+                            contract_note += (
+                                " Live mutation remains open until the builder hands "
+                                "its scoped work off."
+                            )
             except Exception as exc:
                 contract_note = (
                     f"\n⚠ automatic scene-contract probe unavailable: {type(exc).__name__}: {str(exc)[:100]}"
@@ -966,9 +1171,12 @@ def build_blender_tools(
 
     @tool(
         "list_keyframes",
-        "The Graph-Editor read (Tier-1, free): every F-curve on an object as "
-        "frame→value pairs with interpolation. Address by role= (bvfx_role); object= "
-        "is the display-name fallback. Use to verify easing/timing without rendering.",
+        "The Graph-Editor read (Tier-1, free): every F-curve on an object AND its "
+        "data-block (Light/Camera energy lives on data.energy) as frame→value pairs "
+        "with interpolation. Address by role= (bvfx_role); a shared role lists every "
+        "host (including hide_render). object= is the display-name fallback for one "
+        "host. Use to verify easing/timing without rendering. A keyframe_schedule "
+        "sample path energy matches data.energy; a custom ['energy'] is a different path.",
         {
             "type": "object",
             "properties": {
@@ -994,8 +1202,10 @@ def build_blender_tools(
         "See one frame. mode='solid'/'wire' = fast Workbench (~0.1s, composition/"
         "silhouette); mode='draft' = fast low-sample EEVEE (~0.5s, quick look checks — "
         "use this while iterating); mode='eevee' = full-quality look (~1-3s, for final "
-        "judging). scale is 0..1 (default 0.4). Returns the image + an EXPOSURE readout "
-        "(mean/clipped/black) so you can catch blowout objectively.",
+        "judging). On a unit with no look capabilities the default is solid (geometry "
+        "without lights). Pass mode='eevee' only when you need beauty. scale is 0..1 "
+        "(default 0.4). Returns the image + an EXPOSURE readout (mean/clipped/black) "
+        "so you can catch blowout objectively.",
         {
             "type": "object",
             "properties": {
@@ -1007,13 +1217,21 @@ def build_blender_tools(
         },
     )
     async def render_frame(args):
+        mode = preview_render_mode(
+            feedback_policy["look_actions"], args.get("mode"), look_default="eevee"
+        )
         try:
             r = await _call(
-                "render", frame=int(args["frame"]), mode=args.get("mode", "eevee"), scale=float(args.get("scale", 0.4))
+                "render", frame=int(args["frame"]), mode=mode, scale=float(args.get("scale", 0.4))
             )
         except BlenderError as e:
             return _text(str(e), is_error=True)
         cap = f"frame {r['frame']} ({r['mode']})" + _warn_suffix(r)
+        if not feedback_policy["look_actions"] and not args.get("mode"):
+            cap += (
+                " · Workbench default for an executable-only unit "
+                "(pass mode='eevee' for beauty; lighting is not this unit's scope)"
+            )
         return _image(r["image_path"], cap, feedback_groups=feedback_policy["groups"])
 
     @tool(
@@ -1107,7 +1325,9 @@ def build_blender_tools(
         "disconnected islands, 'scale' checks dimensions and that scale is applied, "
         "'passes' checks the render buffer for NaN/Inf/negative pixels, 'bbox' returns the "
         "oracle crop box to hand to render_pass. Address subjects with role= (bvfx_role); "
-        "object= is the display-name fallback. A miss names present roles and names. "
+        "a shared role that matches several hosts is not a miss — pass object= with one "
+        "of the named hosts. object= is the display-name fallback. A miss names present "
+        "roles and names. "
         "Required arguments: visibility=role-or-object+frame; "
         "framing=role-or-object+(frame or frames); motion=role-or-object+2+ frames; "
         "mesh/scale=role-or-object; passes=frame; bbox=role-or-object+frame. For "
@@ -1122,7 +1342,10 @@ def build_blender_tools(
                 },
                 "role": {
                     "type": "string",
-                    "description": "bvfx_role selector (preferred); fnmatch; exactly one object",
+                    "description": (
+                        "bvfx_role selector (preferred); fnmatch; exactly one host — "
+                        "if several share the role, pass object="
+                    ),
                 },
                 "object": {
                     "type": "string",
@@ -1202,7 +1425,8 @@ def build_blender_tools(
         "stored frame at the IDENTICAL settings and returns |before-after| plus mean/max "
         "delta. A near-black result means the edit was a visible no-op. Use this whenever "
         "you are changing a node, light, visibility state, modifier, or small feature and "
-        "cannot prove from a numeric scene check that the intended pixels moved.",
+        "cannot prove from a numeric scene check that the intended pixels moved. On a unit "
+        "with no look capabilities the default mode is solid (Workbench), not draft EEVEE.",
         {
             "type": "object",
             "properties": {
@@ -1223,7 +1447,9 @@ def build_blender_tools(
             if args.get("frame") is None:
                 return _text("baseline requires frame", is_error=True)
             frame = int(args["frame"])
-            mode = str(args.get("mode", "draft"))
+            mode = preview_render_mode(
+                feedback_policy["look_actions"], args.get("mode"), look_default="draft"
+            )
             scale = float(args.get("scale", 0.5))
             try:
                 rendered = await _call("render", frame=frame, mode=mode, scale=scale)
@@ -1235,12 +1461,17 @@ def build_blender_tools(
             dest = root / f"baseline_{label}_f{frame:04d}_{mode}.png"
             shutil.copyfile(src, dest)
             change_baselines[label] = (dest, frame, mode, scale)
-            return _image(
-                str(dest),
+            cap = (
                 f"change baseline '{label}' captured at f{frame} "
                 f"mode={mode} scale={scale:g}. Make ONE edit, then call "
-                f"verify_change(action='compare', label='{label}').",
+                f"verify_change(action='compare', label='{label}')."
             )
+            if not feedback_policy["look_actions"] and not args.get("mode"):
+                cap += (
+                    " Workbench default for an executable-only unit "
+                    "(pass mode='eevee' for beauty; lighting is not this unit's scope)."
+                )
+            return _image(str(dest), cap)
 
         prior = change_baselines.get(label)
         if prior is None:
@@ -1368,9 +1599,8 @@ def build_blender_tools(
                     comparison_state["pixel_contracts_passed"] = True
                     if comparison_state.get("current_scene_contracts_present"):
                         comparison_state["scene_contracts_passed"] = True
-                        gate_note += (
-                            "\nCRITIC HANDOFF READY: current-layer scene and image "
-                            "contracts pass. Do not mutate again without critic-backed evidence."
+                        gate_note += followup_after_image_gate_pass(
+                            comparison_state, gate_rows
                         )
                     else:
                         gate_note += (
@@ -1922,7 +2152,9 @@ def build_blender_tools(
         "after and before are existing image artifact paths relative to the shot folder, "
         "never descriptions or labels. Survivors are appended to the "
         "runtime_checks.json evidence ledger; planner contracts remain immutable in "
-        "checks.json. Propose few and real.",
+        "checks.json. Propose few and real. When the active unit owes image-contract "
+        "debts, each kept row must use an owed id with matching frame, property kind, "
+        "and axis; a different id while debts remain is rejected naming requested vs owed.",
         {
             "type": "object",
             "properties": {
@@ -1963,8 +2195,14 @@ def build_blender_tools(
         },
     )
     async def propose_checks(args):
+        from vfx_harness.domain.image_debts import (
+            debts_from_dicts,
+            normalize_evidence_id,
+            reject_proposed_image_check,
+            unpaid_image_contract_debts,
+        )
         from vfx_harness.domain.work_units import read_document
-        from vfx_harness.evidence.checks import Check, verify_necessity
+        from vfx_harness.evidence.checks import Check, load_image_contract_payment_rows, verify_necessity
 
         if not shot_dir:
             return _text("propose_checks needs a shot dir", is_error=True)
@@ -2001,8 +2239,17 @@ def build_blender_tools(
         except Exception as e:
             return _text(f"could not read judge refs from layers.json: {str(e)[:100]}", is_error=True)
         kept, lines = [], []
+        debts = debts_from_dicts(comparison_state.get("image_debts"))
+        unpaid = unpaid_image_contract_debts(
+            debts, load_image_contract_payment_rows(root)
+        ) if debts else ()
         for d in list(args.get("checks") or [])[:20]:
-            cid = str(d.get("id", "?"))
+            cid = normalize_evidence_id(d.get("id", "?"))
+            debt_reject = reject_proposed_image_check(d, debts, unpaid=unpaid)
+            if debt_reject:
+                lines.append(f"  REJECTED {cid:10} {debt_reject}")
+                continue
+            d = {**d, "id": cid}
             try:
                 ref_rel = (
                     d.get("ref") or judge.get(int(d["frame"])) if d.get("frame") is not None else d.get("ref")
@@ -2058,11 +2305,31 @@ def build_blender_tools(
             have = {x.get("id") for x in cur}
             cur += [k for k in kept if k.get("id") not in have]
             spec.write_text(json.dumps(cur, indent=1) + "\n", encoding="utf-8")
-        return _text(f"{len(kept)} check(s) added to runtime_checks.json.\n" + "\n".join(lines))
+        _refresh_unpaid_image_debts(comparison_state, root)
+        remaining = comparison_state.get("unpaid_image_debts") or []
+        tail = ""
+        if remaining:
+            tail = (
+                "\nStill unpaid: "
+                + ", ".join(str(row.get("id")) for row in remaining)
+                + ". Candidate freeze will refuse until these ids are paid or "
+                "cannot_express_in_scope records unpaid_image_debt."
+            )
+        return _text(
+            f"{len(kept)} check(s) added to runtime_checks.json.\n" + "\n".join(lines) + tail
+        )
+
+    @tool(
+        "cannot_express_in_scope",
+        CANNOT_EXPRESS_DESCRIPTION,
+        CANNOT_EXPRESS_SCHEMA,
+    )
+    async def cannot_express_in_scope(args):
+        return record_cannot_express(comparison_state, args)
 
     # ask_supervisor is deliberately PLAN-ONLY: a layer that discovers an
     # ambiguity is already building on earlier layers' answer to it.
-    tools = [*tools, script_map, find_in_script, worklist, measure_regions, propose_checks]
+    tools = [*tools, script_map, find_in_script, worklist, cannot_express_in_scope, measure_regions, propose_checks]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)
     names = [f"mcp__{SERVER_NAME}__{t.name}" for t in tools]
     return server, names

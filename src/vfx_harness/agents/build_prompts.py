@@ -159,7 +159,10 @@ Your hands are the `blender` tools:
     `after` and `before` must be actual relative paths to render
     artifacts, never prose labels. The tool schema lists every supported metric. A new
     check must PASS on your render and FAIL on the state before your layer ran; if no such
-    check is necessary or no honest adversary exists, propose none.
+    check is necessary or no honest adversary exists, propose none. When the unit-scope
+    card lists owed image-contract debts, those exact ids (frame, property kind, axis)
+    are required payments — a different id is rejected, and a role retag cannot produce
+    the row.
   - measure_regions(frame, regions) — PROVE a structural claim instead of eyeballing it.
     Regions are normalised [x0,y0,x1,y1] in 0..1 from the TOP-LEFT; returns mean/σ/max/
     lit% per region plus every pairwise brightness ratio. Use it whenever a done-check is
@@ -1009,10 +1012,12 @@ def canonical_repair_prompt(
         f"this repair is embedded below: inspect `{script_rel}` only; do not search "
         f"plans, checks, runtime evidence, logs, journals, or unrelated build scripts.\n"
         f"Call `probe_candidate` FIRST: it rebuilds the current script from empty and "
-        f"returns the evidence rows, evaluated camera/role world transforms, and a "
-        f"solid render per judge frame — diagnose against what the artifact actually "
-        f"produces, not a theory of it. Probe again after your edit; an edit whose "
-        f"rebuilt consequences you have not seen is a guess.\n\n"
+        f"returns the evidence rows, evaluated camera/role world transforms, a solid "
+        f"geometry plate, and — on a look-owning unit — `look_render` (draft EEVEE). "
+        f"Diagnose critic look against look_render; solid_render is Workbench geometry "
+        f"and will lie about volumes, bloom, and occluders that exist to carve shafts. "
+        f"Probe again after your edit; an edit whose rebuilt consequences you have not "
+        f"seen is a guess.\n\n"
         f"CANONICAL VERIFICATION FAILED for unit {m.id}.\n\n"
         f"Your script `{script_rel}` was re-run FROM AN EMPTY SCENE and the result was "
         f"scored at every frame this unit answers for. These frames did not clear:\n\n"
@@ -1031,6 +1036,15 @@ def canonical_repair_prompt(
         f"not present, say so and leave that property unchanged. Do NOT start a new "
         f"approach, and do NOT re-tune the live scene and declare it fixed. Use "
         f"Grep / Read that span / Edit — never rewrite the whole "
-        f"file for a few values. When you are done, say so and the script will be "
+        f"file for a few values. If the failing contracts cannot both pass inside this "
+        f"unit (a sealed schedule vs a smoothness cap whose linear floor is already "
+        f"above `hi`, or a critic look axis with no in-scope lever that moves the "
+        f"plate, or an unpaid image-contract debt — a missing look id is not a "
+        f"control-tag miss and this session has no propose_checks), call "
+        f"`cannot_express_in_scope` — bound this session as "
+        f"`mcp__candidate__cannot_express_in_scope` — with the bare contract ids "
+        f"(no check: prefix) and stop editing. "
+        f"Do not ToolSearch for a blender tool; this session has no blender MCP. "
+        f"When you are done, say so and the script will be "
         f"re-verified from empty again."
     )

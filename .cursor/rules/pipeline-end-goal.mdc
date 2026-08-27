@@ -18,10 +18,15 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
   contracts, evidence policy, completion clause, checkpoint, and repair owner.
 - Plan each work unit just in time from sealed prior outcomes instead of using one giant plan.
 - Treat a wrong DAG/scope/owner as a versioned replan that preserves unaffected checkpoints,
-  invalidates dependants, and marks replaced work superseded.
+  invalidates dependants, and marks replaced work superseded. A sibling rematerialization that
+  only changes the combined layers.json hash is a preserve-all plan-identity adoption, not a
+  DAG change. Consuming a typed finding reopens that unit and its affected closure without
+  treating an unchanged JIT view as an empty-base add-all. Rematerialization of a layer that
+  already has accepted units is that same apply_replan: matching digests stay.
 - Select objects and controls by semantic roles/properties, never fragile display names.
 - Validate in widening rings: mutation -> unit -> interface regression -> layer regression ->
-  cross-layer regression -> full-shot acceptance.
+  cross-layer regression -> full-shot acceptance. Look-less layer composition fans in those
+  units' executable claims; it does not reopen a critic look vote.
 - Persist scripts, manifests, measurements, verdicts, hashes, and checkpoints on disk; do not
   rely on conversation memory or critic prose as execution authority.
 - Freeze a candidate before evaluation. Parallelize isolated evidence production, then fan in
@@ -49,8 +54,38 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 - Repair a fault in a downstream layer when its semantic owner is known upstream.
 - Ship partial/unvalidated edits or call an interrupted agent result complete.
 - Let rematerialization select a reverted overlay before the replacement publishes.
+- Refuse rematerialization solely because a sibling unit is accepted.
 - Let an exhausted session publish because a candidate file exists.
 - Let a prior generation's structured decision bind the selected bundle.
+- Let a materialization session invent judge frames to bind extra-frame contracts.
+- Publish a keyframe schedule whose samples already exceed a same-role smoothness cap.
+- Burn remaining repairs on an unsatisfiable published pair, or score look on no-signal plates.
+- Rank an off-scope recipe as builder permission.
+- Leave a smoothness fail as a scalar without its argmax adjacent-frame pair.
+- Treat a `keyframe_schedule` path miss as INAPPLICABLE, or match sample paths only against the object action.
+- Bind required `visible_fraction` on a unit that cannot change those rays (volume-only vis).
+- Let a multi-role `visible_fraction` PASS while a named role is below `lo`.
+- Let later geometry in the same layer seal while a sibling vis row fails.
+- Default look-less live `render_frame` / `verify_change` to EEVEE.
+- Persist `status.json` `detail` as the exit-code digit.
+- Run a materialization session without binding a transcript.
+- Reopen a critic look vote at composed canonical when every unit declared empty look capabilities.
+- Treat a sibling rematerialization's combined layers.json hash as a DAG change when
+  this layer's unit digests still match.
+- Compare a JIT-layer falsification `plan_hash` to the sparse bundle `layers.json`.
+- Leave a consumed `hypothesis_falsified` unit preserved because the published DAG
+  bytes did not change.
+- Teach a shared-role check_scene miss as "pass an exact role".
+- Let a look-owning repair diagnose critic look from Workbench solid only.
+- Leave repair `cannot_express_in_scope` only on the live blender MCP.
+- Treat a 0/0 image-contract pass as critic handoff on a look unit.
+- Let a unit judge frame with no required claim become a critic look vote.
+- Let a look-owning unit seal 5.0 on scene counts.
+- Let claim-closure retract a look `image_contract` debt as `does not exist`.
+- Freeze a candidate while owed image-contract ids are unpaid without typed abstention.
+- Let an f150 image measurement pay an f72 debt.
+- Prefix `check:` onto unpaid-debt ids in `cannot_express` or hypothesis-falsification records.
+- Compare a `check:`-prefixed falsification id to a bare contract row without stripping.
 - Let a builder silently rewrite its plan, broaden repair scope, or misclassify blocked work.
 - Add compatibility fallbacks that silently revive obsolete plans, schemas, selectors, or
   execution contracts; migrations are explicit and fail closed.

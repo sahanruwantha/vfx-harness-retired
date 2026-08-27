@@ -306,8 +306,11 @@ def test_exact_keyframe_schedule_is_typed_and_executable() -> None:
     }
 
     assert validate_row(row) is None
-    assert "actual_frames!=expected_frames" in _blender_probe([row], 1)
-    assert "action_slot" in _blender_probe([row], 1)
+    probe = _blender_probe([row], 1)
+    compile(probe, "<camera-spine-schedule>", "exec")
+    assert "actual_frames!=expected_frames" in probe
+    assert "action_slot" in probe
+    assert "_schedule_frames" in probe
     control_bound = {**row, "roles": [], "control_roles": ["camera_spine"]}
     assert validate_row(control_bound) is None
     assert "row.get('control_roles')" in _blender_probe([control_bound], 1)
@@ -716,19 +719,18 @@ def test_atomic_camera_and_blockout_closes_empty_scene_composition_bootstrap(tmp
 
 
 def test_visible_fraction_may_observe_roles_it_does_not_mutate(tmp_path: Path) -> None:
-    """Run 20260825: the camera unit must answer for interior visibility, measuring
-    proxies the geometry unit owns — routing visibility through the geometry owner let
-    convenient placement satisfy bbox rows while the spine never entered the chamber.
-    Observation-only rows close against plan-declared namespaces, not mutation
-    authority; a name the plan never declares anywhere is still a violation."""
+    """HIR-0019 / HIR-0051: a camera unit may observe plan-declared geometry vis.
+
+    Observation vis is camera-or-mutator, not any unit. A name the plan never
+    declares anywhere is still a violation."""
     doc = _layer_doc(temporal_id="vis")
-    # a second unit declares the observed namespace, so the plan knows the roles
     scout = json.loads(json.dumps(doc["layers"][0]["stages"][0]))
     scout["id"] = "blockout"
     scout["plan"] = "plans/01_camera/00_blockout.md"
     scout["mutates"] = {**scout["mutates"], "roles": ["proxy.interior"], "controls": []}
     scout["evaluation"]["claims"] = []
     doc["layers"][0]["stages"].insert(0, scout)
+    doc["layers"][0]["stages"][1]["provides"] = ["camera"]
     _write(tmp_path / "layers.json", doc)
 
     def vis_row(row_id: str, roles: list[str]) -> dict:
@@ -746,6 +748,7 @@ def test_visible_fraction_may_observe_roles_it_does_not_mutate(tmp_path: Path) -
     _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
     findings, _ = _check_evidence_coherence(tmp_path)
     assert not any(f.check == "role-selector-closure" for f in findings)
+    assert not any(f.check == "vis-repair-owner" for f in findings)
 
     _write(tmp_path / "scene_checks.json", {
         "schema": 2,

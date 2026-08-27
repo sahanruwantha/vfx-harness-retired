@@ -36,7 +36,8 @@ moment, dependency, repair owner, or regression risk changes. Each unit declares
 - one concrete goal and its dependencies;
 - semantic roles/controls it may mutate;
 - earlier contracts and interfaces it must protect;
-- relevant reference moments and an explicit primary moment;
+- relevant reference moments and an explicit primary moment, each covered by a
+  required claim;
 - static, keyframe, or motion evidence policy;
 - executable and qualitative completion conditions;
 - checkpoint, repair owner, and rollback boundary.

@@ -74,6 +74,17 @@ def _replan(args: argparse.Namespace) -> int:
     falsification_id = None
     hard_approval = getattr(args, "hard_constraint_approval", None)
     falsification_path = getattr(args, "falsification", None)
+    reopen: set[str] = set()
+    # Under unit-first authority the base bundle carries no unit DAG — the layer's units
+    # live only in its materialized view and durable state, and the state's recorded
+    # plan hash (the materialized view, not the bundle file) is the truthful old
+    # identity. Compare a falsification against that identity before the DAG diff
+    # (HIR-0049). The base bundle stays in the audit record via trigger/evidence.
+    state = load_unit_state(shot.folder, layer_id)
+    state_unit_ids = set((state or {}).get("units") or {})
+    deferred_base = not old_layer.stages and bool(state_unit_ids)
+    if deferred_base:
+        old_plan_hash = str((state or {}).get("plan_hash") or old_plan_hash)
     if falsification_path:
         target = Path(falsification_path)
         if not target.is_absolute():
@@ -94,8 +105,12 @@ def _replan(args: argparse.Namespace) -> int:
             )
         if finding.bundle_hash != base.content_hash or finding.plan_hash != old_plan_hash:
             raise SystemExit("falsification identities do not match the explicit base bundle")
-        old_by_id = {unit.id: unit for unit in old_layer.stages}
-        if finding.unit not in old_by_id or finding.unit_hash != unit_digest(old_by_id[finding.unit]):
+        identity_units = old_layer.stages if old_layer.stages else new_layer.stages
+        identity_by_id = {unit.id: unit for unit in identity_units}
+        if (
+            finding.unit not in identity_by_id
+            or finding.unit_hash != unit_digest(identity_by_id[finding.unit])
+        ):
             raise SystemExit("falsification unit identity does not match the base DAG")
         if finding.changes_hard_constraint and not hard_approval:
             raise SystemExit(
@@ -103,26 +118,32 @@ def _replan(args: argparse.Namespace) -> int:
                 "with the human approval evidence locator"
             )
         falsification_id = finding.record_id
+        reopen = {finding.unit, *finding.affected}
         evidence.append(relative)
         if hard_approval:
             evidence.append(str(hard_approval))
     if not evidence:
         raise SystemExit("replan requires --evidence or --falsification")
-    # Under unit-first authority the base bundle carries no unit DAG — the layer's units
-    # live only in its materialized view and durable state, and the state's recorded
-    # plan hash (the materialized view, not the bundle file) is the truthful old
-    # identity. The base bundle stays in the audit record via trigger/evidence.
-    state = load_unit_state(shot.folder, layer_id)
-    state_unit_ids = set((state or {}).get("units") or {})
-    deferred_base = not old_layer.stages and bool(state_unit_ids)
-    if deferred_base:
-        old_plan_hash = str((state or {}).get("plan_hash") or old_plan_hash)
+    old_units = old_layer.stages
+    if deferred_base and state is not None:
+        try:
+            validate_current(state, layer_id, new_layer.stages)
+            old_units = new_layer.stages
+        except ValueError:
+            old_units = ()
     orphaned = sorted(
         state_unit_ids - {unit.id for unit in old_layer.stages} - {unit.id for unit in new_layer.stages}
         if deferred_base
         else set()
     )
-    effects = replan_effects(old_layer.stages, new_layer.stages)
+    effects = replan_effects(old_units, new_layer.stages)
+    if reopen:
+        invalidated = set(effects["invalidated"]) | (reopen & {unit.id for unit in new_layer.stages})
+        effects = {
+            **effects,
+            "invalidated": sorted(invalidated),
+            "preserved": sorted(set(effects["preserved"]) - invalidated),
+        }
     if getattr(args, "preview", False):
         print(
             f"replan preview layer {layer_id}: "
@@ -137,7 +158,7 @@ def _replan(args: argparse.Namespace) -> int:
     record = apply_replan(
         shot.folder,
         layer_id,
-        old_layer.stages,
+        old_units,
         new_layer.stages,
         old_plan_hash=old_plan_hash,
         new_plan_hash=new_plan_hash,
@@ -147,6 +168,7 @@ def _replan(args: argparse.Namespace) -> int:
         falsification_id=falsification_id,
         hard_constraint_approval=hard_approval,
         discard_accepted=bool(getattr(args, "discard_accepted", False)),
+        reopen=reopen,
     )
     print(
         f"replanned layer {layer_id} from {base.content_hash[:16]} to "

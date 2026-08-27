@@ -67,6 +67,23 @@ def test_role_miss_names_present_names_and_roles() -> None:
     assert "camera" in text
 
 
+def test_shared_role_names_object_equals_not_a_more_exact_role() -> None:
+    """HIR-0041: check_scene(role=world.volumetric_haze) already passed an exact
+    role that nine hosts share. 'pass an exact role' is the wrong next action."""
+    from vfx_harness.domain.semantic_roles import format_object_ambiguous
+
+    text = format_object_ambiguous(
+        role="world.volumetric_haze",
+        hits=[
+            {"name": "atmo_haze_domain", "role": "world.volumetric_haze"},
+            {"name": "atmo_haze_shaft_blocker_00", "role": "world.volumetric_haze"},
+        ],
+    )
+    assert "matched 2 objects" in text
+    assert "pass object=" in text
+    assert "pass an exact role" not in text
+
+
 def test_pick_objects_hits_role_and_refuses_both() -> None:
     inventory = [
         {"name": "camera", "role": "cam_rig.camera"},

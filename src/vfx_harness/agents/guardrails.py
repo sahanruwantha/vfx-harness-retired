@@ -487,6 +487,7 @@ def builder_phase_guard(phase: dict[str, Any], script_rel: str | None) -> HookMa
         # the round discipline takes over and retires the arm.
         if (mode == "live" and phase.get("scene_contracts_passed")
                 and not phase.get("judgment_unresolved")
+                and not phase.get("look_unsettled")
                 and tool.endswith("run_bpy")):
             bump("convergence_mutation_blocked")
             if phase.get("image_evidence_required") and not phase.get("pixel_contracts_passed"):

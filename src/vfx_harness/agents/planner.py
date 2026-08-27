@@ -178,13 +178,17 @@ _MATERIALIZATION_EXAMPLE = """{
                    "moments": [1], "kind": "atomic", "required": true,
                    "authority": "executable_required", "repair_owner": "example_unit",
                    "asserts": "<scene|temporal|projected_composition|image|human>",
-                   "evidence": [{"kind": "scene_contract", "id": "example-contract"}]}]},
+                   "evidence": [{"kind": "scene_contract", "id": "example-contract"}]}],
+                  "composition_context": {"frames": [1], "contract_ids": ["example-vis"]}},
    "completion": "all_required_claims_and_protected_contracts_pass"}]
  },
  "scene_contracts": [{
   "id": "example-contract", "kind": "<contract kind>", "owner_layer": "<this layer id>",
   "fault_owner": "<this layer id>", "activates_at": "<this layer id>", "lifecycle": "layer",
-  "axis": "<an owned axis>", "op": "max", "hi": 0.01}],
+  "axis": "<an owned axis>", "op": "max", "hi": 0.01},
+  {"id": "example-vis", "kind": "visible_fraction", "owner_layer": "<this layer id>",
+   "fault_owner": "<this layer id>", "activates_at": "<this layer id>", "lifecycle": "layer",
+   "axis": "<an owned axis>", "roles": ["example_role.part"], "frame": 1, "op": "min", "lo": 0.5}],
  "image_contracts": [],
  "requirement_bindings": [
   {"requirement_id": "<owned id>", "contract_ids": ["example-contract"]},
@@ -234,6 +238,73 @@ def _binding_decisions_block(shot_folder: Path, layer, bundle_hash: str) -> str:
     )
 
 
+_TWO_SIDED_CONTRACT_BINDING = (
+    "Two-sided scene contracts (path_clearance_min, parallax_displacement_profile, "
+    "onset_order): bind the contract on the unit that mutates the primary `roles`; "
+    "`compare_roles` may name other plan-declared namespaces. visible_fraction is "
+    "repaired by a unit that provides camera or mutates/dresses every named role "
+    "on that row — not by any unit that can see a plan-declared selector. "
+    "A volume-only unit cannot bind mesh vis as required repair.\n"
+)
+
+
+def _frame_authority_block(global_row: dict) -> str:
+    """Compile this layer's judge subset rule — remat6 invented extra judge frames."""
+    from vfx_harness.domain.work_units import compile_frame_authority
+
+    return (
+        "Frame authority compiled from this layer's global row (do not invent "
+        "frames; do not Read a prior materialization to guess them):\n"
+        f"{json.dumps(compile_frame_authority(global_row), indent=1)}\n"
+    )
+
+
+def _sealed_outcomes_block(shot_folder: Path, layer, global_row: dict) -> str:
+    """Enumerate named upstream outcomes. A directory Read is a guess (HIR-0029)."""
+    jit_row = global_row.get("jit") if isinstance(global_row.get("jit"), dict) else {}
+    depends: list[str] = []
+    required: list[dict[str, str]] = []
+    layer_jit = getattr(layer, "jit", None)
+    if layer_jit is not None:
+        depends = [str(item) for item in (getattr(layer_jit, "depends_on_layers", None) or [])]
+        required = [
+            {"kind": str(kind), "id": str(oid)}
+            for kind, oid in (getattr(layer_jit, "required_outcomes", None) or [])
+        ]
+    if not depends:
+        depends = [str(item) for item in (jit_row.get("depends_on_layers") or [])]
+    if not required:
+        for item in jit_row.get("required_outcomes") or []:
+            if isinstance(item, dict) and item.get("kind") and item.get("id"):
+                required.append({"kind": str(item["kind"]), "id": str(item["id"])})
+    if not depends and not required:
+        return (
+            "Sealed upstream outcomes: none. This layer is a dependency root "
+            "(empty depends_on_layers and required_outcomes). Do not Read "
+            "plans/outcomes as a directory; leftover files from a discarded "
+            "materialization are not this design's authority.\n"
+        )
+    files: list[str] = []
+    for dep in depends:
+        try:
+            name = f"{int(dep):02d}.json"
+        except (TypeError, ValueError):
+            continue
+        rel = f"plans/outcomes/{name}"
+        if (shot_folder / rel).is_file():
+            files.append(rel)
+    card = {
+        "depends_on_layers": depends,
+        "required_outcomes": required,
+        "readable_files": files,
+    }
+    return (
+        "Sealed upstream outcomes this layer may read (named files, not a directory "
+        "listing). Leftover files from a discarded materialization of another layer "
+        f"are not this design's authority:\n{json.dumps(card, indent=1)}\n"
+    )
+
+
 def _materialization_kickoff(
     shot_folder: Path, layer, bundle, rel_target: str, replacing: str | None = None
 ) -> str:
@@ -266,9 +337,11 @@ def _materialization_kickoff(
         f"`requirements.json`, and `global.md` are the authority you must satisfy.\n"
         f"Your exact global layer row — copy the structural fields verbatim into the "
         f"replacement layer:\n{json.dumps(global_row, indent=1)}\n"
+        f"{_frame_authority_block(global_row)}"
+        f"{_TWO_SIDED_CONTRACT_BINDING}"
         f"{_binding_decisions_block(shot_folder, layer, bundle.content_hash)}"
         f"Durable decision ledger (readable): state/plan-resolutions.jsonl\n"
-        f"Sealed upstream outcomes (readable): plans/outcomes/\n"
+        f"{_sealed_outcomes_block(shot_folder, layer, global_row)}"
         f"Document shape (generic minimal-valid example — replace every placeholder, "
         f"add stages/contracts/claims as the layer needs):\n{_MATERIALIZATION_EXAMPLE}\n"
         f"Output: {rel_target}"
@@ -353,6 +426,10 @@ upstream outcomes. Copy each binding structured decision listed in the kickoff
 verbatim into `scene_contracts` — exact contract fields plus `decision_id` — bound
 to a required claim. Ledger rows keyed to another generation, or retired by a later
 superseded or falsified row, are inert: do not copy them.
+The kickoff compiles this layer's judge frames and extra-frame binding rule. Unit
+evaluation.judge, claim.moments, and composition_context.frames stay inside that
+list. Scene contracts may measure other frames; bind those ids through
+composition_context.contract_ids without adding the extra frames to the judge lists.
 Each stage declares `provides`: the scene capabilities it makes available. Declare
 `camera` if the unit creates the camera a dependent's framing evidence projects through,
 and `geometry` if objects under its roles carry polygons — mesh metrics (smooth_fraction,
@@ -368,9 +445,21 @@ for, a subset of detail, material, color, exposure, lighting, emission, atmosphe
 motion, grade. Declare exactly what the unit's own judged frames require — this decides
 the image feedback its builder receives, and an appearance-owning unit that declares
 none will be told surface quality is out of scope. A unit that genuinely changes no
-appearance declares an empty list.
+appearance declares an empty list — composed canonical then fans in those
+executable claims instead of a critic look vote.
+Every unit `evaluation.judge` frame must appear in at least one required claim's
+`moments`. A judge frame with no required claim is a contract_gap, not a critic look
+vote. Extra-frame scene contracts still bind through `composition_context.contract_ids`.
+A unit that declares `look_capabilities` must cover every judge frame with a required
+claim that asserts `image` and binds `image_contract` (or qualification / human_decision).
+Scene counts cannot certify appearance; that hole is a contract_gap, not a 5.0
+executable seal and not a critic look vote.
 Image checks are candidate-sensitive: the builder proposes them only after
-this unit mutates the cumulative scene, so `image_contracts` must remain empty here. Every write
+this unit mutates the cumulative scene, so `image_contracts` must remain empty here. Claim-closure
+counts the bound `image_contract` ids as producers; missing `checks.json` rows are debts, not
+`does not exist`. Those ids are builder-owed `propose_checks` payments (exact id, frame,
+property kind, axis); candidate freeze refuses while any remain unpaid without a typed
+`unpaid_image_debt` abstention. Every write
 of the output file runs the full materialization validator and returns every collectable
 finding as `{{json_pointer}}: {{message}}` in one report. When a finding names a pointer, call
 `patch_materialization` with that pointer and a JSON-encoded value; the tool re-validates
@@ -445,11 +534,32 @@ global authority, create unit state, write prose, or write another file."""
                 said.append(signal)
         return "\n".join(said)[-4000:]
 
-    await run_session(
-        _attempt,
-        succeeded=lambda: target.is_file() and target.stat().st_mtime_ns != before,
-        label=f"materialize layer {layer.id}",
+    costlog.bind(shot.folder, role="plan:materialize", model=model, tag=str(layer.id))
+    tpath = transcript.bind(shot.folder, "plan", label=f"materialize-layer-{layer.id}")
+    if tpath:
+        log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
+    transcript.prompt(
+        kickoff,
+        role="kickoff",
+        mode="PLAN_MATERIALIZE",
+        model=model,
+        layer=layer.id,
+        replacing=replacing,
+        max_turns=max_turns,
     )
+    try:
+        await run_session(
+            _attempt,
+            succeeded=lambda: target.is_file() and target.stat().st_mtime_ns != before,
+            label=f"materialize layer {layer.id}",
+        )
+    except Exception as exc:
+        log(f"! materialize session died: {str(exc)[:200]}")
+        transcript.event("died", error=str(exc)[:2000])
+        raise
+    finally:
+        transcript.unbind()
+        costlog.unbind()
     publish_materialization(shot.folder, target, overlay_root=overlay_root)
     log(f"deferred layer {layer.id} materialized against bundle {bundle.content_hash[:12]}")
 
@@ -735,14 +845,17 @@ async def generate_plan(
 async def _rematerialize_layer(
     shot, layer, authority: tuple[str, str, list[str], bool], *, model, blender, max_turns
 ):
-    """Discard a materialized layer view and design it again from global authority.
+    """Replace a materialized layer view and move durable unit state through apply_replan.
 
     Materialization is a decision, and a decision proven wrong must be replaceable —
     layer 1 of run 20260823T154920Z shipped defective contracts, proxied claims, and a
     unit whose script escaped its own scope. This does NOT add a supersession authority:
     the view is republished through `publish_materialization` and durable unit state
-    moves through the existing `apply_replan` transaction. It fails closed on accepted
-    work, because discarding a proven checkpoint is a different, heavier decision.
+    moves through `apply_replan`. Matching unit digests stay, including accepted
+    checkpoints. Changed, removed, or downstream-invalidated units are superseded
+    even if they had passed — that is a DAG amendment, not a discard. `--discard-accepted`
+    remains the heavier act: accepted orphans, and wiping state when the replan base
+    is unusable (HIR-0052).
     """
     from vfx_harness.orchestration.plan_authority import (
         resolve_current,
@@ -758,14 +871,18 @@ async def _rematerialize_layer(
         for uid, row in (state.get("units") or {}).items()
         if row.get("status") == "passed"
     )
-    if accepted and not discard_accepted:
-        raise ValueError(
-            f"layer {layer_id} has accepted unit(s) {', '.join(accepted)}; "
-            "re-materialization would discard proven work — move that state with "
-            "`vfx units replan`, or pass --discard-accepted to retire it deliberately"
+    if accepted and discard_accepted:
+        log(
+            f"discard-accepted: accepted unit(s) {', '.join(accepted)} may retire "
+            "if the replacement orphans them or the replan base is unusable",
+            1,
         )
-    if accepted:
-        log(f"discarding accepted unit(s) {', '.join(accepted)} by explicit request", 1)
+    elif accepted:
+        log(
+            f"accepted unit(s) {', '.join(accepted)} stay unless the replacement "
+            "DAG invalidates them",
+            1,
+        )
 
     def _plan_hash() -> str:
         from vfx_harness.orchestration.plan_authority import active_plan_hash
@@ -776,7 +893,7 @@ async def _rematerialize_layer(
     bundle = resolve_current(shot.folder)
     deferred = load_layers_from_path(bundle.root / "layers.json")[layer_id]
     log(
-        f"re-materializing layer {layer_id}: discarding {len(old_units)} unit(s) "
+        f"re-materializing layer {layer_id}: replacing {len(old_units)} unit(s) "
         f"({', '.join(u.id for u in old_units) or 'none'}) — {trigger}"
     )
     # Design against global authority, not against the view being replaced: otherwise
@@ -818,9 +935,11 @@ async def _rematerialize_layer(
         except ValueError as exc:
             # The replan base can be unreconstructable — a prior partial transaction
             # left state naming a DAG that no longer exists, or its digests predate a
-            # WorkUnit schema change. Nothing is accepted (checked above), so retire the
-            # orphaned units under this transaction's authority instead of leaving state
-            # to be hand-edited.
+            # WorkUnit schema change. Wiping accepted checkpoints is --discard-accepted;
+            # otherwise fail closed with the view already published and state unmoved
+            # (HIR-0052).
+            if accepted and not discard_accepted:
+                raise
             log(f"replan base unusable ({str(exc)[:90]}); superseding layer units", 1)
             supersede_layer_units(
                 shot.folder,
@@ -865,10 +984,10 @@ async def generate_layer_plan(
         raise KeyError(f"unknown layer {layer_id!r}; available: {', '.join(layers)}") from exc
     if rematerialize is not None:
         # A prior remat that selected a hole then crashed leaves this layer
-        # jit_deferred in the live view. The replacement still needs the discard
-        # check, unpublished overlay, and apply_replan — unpacking a 4-tuple as 3
-        # and skipping unit-state movement is how remat5 would publish then die
-        # (HIR-0026).
+        # jit_deferred in the live view. The replacement still needs the unpublished
+        # overlay and apply_replan — unpacking a 4-tuple as 3 and skipping unit-state
+        # movement is how remat5 would publish then die (HIR-0026). Accepted units
+        # are not a door refuse; apply_replan preserves matching digests (HIR-0052).
         layer = await _rematerialize_layer(
             shot, layer, rematerialize, model=model, blender=blender, max_turns=max_turns
         )
@@ -1010,7 +1129,9 @@ async def generate_layer_plan(
         kickoff, shot, refs=tuple(ref for ref in shot.refs if ref.name in judge_names)
     )
     costlog.bind(shot.folder, role="plan:layer", model=model, tag=str(layer.id))
-    transcript.bind(shot.folder, "plan", label=f"layer-{layer.id}")
+    tpath = transcript.bind(shot.folder, "plan", label=f"layer-{layer.id}")
+    if tpath:
+        log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
     transcript.prompt(
         kickoff, role="kickoff", mode="PLAN_LAYER", model=model, layer=layer.id, refs=[p.name for p in shot.refs]
     )
@@ -1325,14 +1446,14 @@ def main() -> None:
     ap.add_argument(
         "--rematerialize",
         action="store_true",
-        help="with --layer, discard the layer's materialized view and design it again "
-        "from global authority; refuses when any unit has been accepted",
+        help="with --layer, replace the layer's materialized view and design it again "
+        "from global authority; apply_replan preserves units whose digests still match",
     )
     ap.add_argument(
         "--discard-accepted",
         action="store_true",
-        help="with --rematerialize, retire accepted units too; discarding proven work "
-        "is a deliberate decision and is recorded with the transaction",
+        help="with --rematerialize, permit retiring accepted orphans and wiping state "
+        "when the replan base is unusable; matching digests still stay through apply_replan",
     )
     ap.add_argument("--owner", help="authority applying a --rematerialize transaction")
     ap.add_argument("--trigger", help="why the materialized view is being replaced")

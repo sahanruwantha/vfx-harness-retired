@@ -76,6 +76,16 @@ def format_object_miss(
     )
 
 
+def format_object_ambiguous(*, role: str, hits: Sequence[Mapping[str, str]]) -> str:
+    """HIR-0041: a shared role is not a miss; name the hosts and the legal next action."""
+    listed = ", ".join(f"{row['name']!r} role={row['role']!r}" for row in hits)
+    return (
+        f"role {role!r} matched {len(hits)} objects ({listed}); "
+        "a single-subject check needs exactly one host — pass object= with one of those names. "
+        "An exact role string is already what you passed; sharing a role is not a selector miss"
+    )
+
+
 def pick_objects(
     inventory: Sequence[Mapping[str, str]],
     *,

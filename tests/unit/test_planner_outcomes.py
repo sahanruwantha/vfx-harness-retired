@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -113,12 +114,16 @@ def test_materialization_kickoff_carries_row_and_readable_paths(tmp_path: Path) 
     assert "runs/r1/checkpoints/plans/bundles/abc/" in kickoff
     assert '"script": "build/01_boot.py"' in kickoff
     assert "state/plan-resolutions.jsonl" in kickoff
-    assert "plans/outcomes/" in kickoff
+    assert "This layer is a dependency root" in kickoff
+    assert "Do not Read plans/outcomes as a directory" in kickoff
     assert "Binding structured decisions" in kickoff
     assert "are inert" in kickoff
+    assert '"layer_judge_frames": [\n  1\n ]' in kickoff
+    assert "composition_context.contract_ids" in kickoff
+    assert "path_clearance_min" in kickoff
     # The schema example must cover the fields attempts 2-3 died discovering.
     for field in ('"plan"', '"protects"', '"control_roles"', '"proposition"',
-                  '"requirement_bindings"', '"completion"'):
+                  '"requirement_bindings"', '"completion"', '"composition_context"'):
         assert field in kickoff, f"schema example missing {field}"
 
 
@@ -265,40 +270,188 @@ def test_until_clean_main_exits_three_and_preserves_dirty_plan(tmp_path, monkeyp
     assert not (tmp_path / "plan.provenance.json").exists()
 
 
-def test_rematerialize_refuses_to_discard_accepted_work(tmp_path, monkeypatch) -> None:
-    """Re-materialization replaces a design decision, not proven work. A layer with an
-    accepted unit must go through the heavier replan transaction instead."""
-    import anyio as _anyio
+def _mark_passed(folder, layer_id: str, *unit_ids: str) -> None:
+    import json as _json
 
-    from vfx_harness.agents import planner as _planner
+    path = folder / "state" / "work-units" / f"layer_{layer_id}.json"
+    value = _json.loads(path.read_text(encoding="utf-8"))
+    for uid in unit_ids:
+        value["units"][uid]["status"] = "passed"
+    path.write_text(_json.dumps(value), encoding="utf-8")
 
+
+def _patch_remat_design(monkeypatch, tmp_path, *, new_units, overlay_name="overlay"):
+    """Skip model design; publish `new_units` as the replacement DAG."""
+    overlay = tmp_path / overlay_name
+    overlay.mkdir(exist_ok=True)
+    called = {"materialize": False}
+
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.plan_authority.resolve_current",
+        lambda folder: SimpleNamespace(root=tmp_path, content_hash="b" * 64),
+    )
+    monkeypatch.setattr(
+        planner,
+        "load_layers_from_path",
+        lambda path: {"2": SimpleNamespace(id="2", execution="jit_deferred", stages=())},
+    )
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.jit_materialization.revert_materialization",
+        lambda *a, **k: overlay,
+    )
+
+    async def fake_materialize(*args, **kwargs):
+        called["materialize"] = True
+
+    monkeypatch.setattr(planner, "_materialize_deferred_layer", fake_materialize)
+    monkeypatch.setattr(
+        planner,
+        "load_layers",
+        lambda shot: {"2": SimpleNamespace(id="2", stages=new_units)},
+    )
+    hashes = ["old-hash"]
+
+    def fake_plan_hash(folder, **kwargs):
+        if hashes:
+            return hashes.pop(0)
+        return "new-hash"
+
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.plan_authority.active_plan_hash",
+        fake_plan_hash,
+    )
+    return called
+
+
+def test_rematerialize_preserves_accepted_units_whose_digests_match(
+    tmp_path, monkeypatch
+) -> None:
+    """HIR-0052: remat is apply_replan. A passed sibling whose digest still matches
+    stays passed; a changed unit and its dependant reopen. The door must not refuse
+    because accepted units exist."""
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.orchestration.unit_state import initialize, load
+
+    materials = _unit("materials")
+    atmosphere = _unit("atmosphere", depends_on=["materials"])
+    lighting = _unit("lighting", depends_on=["atmosphere"])
+    old_units = (materials, atmosphere, lighting)
+    new_atmosphere = _unit(
+        "atmosphere", depends_on=["materials"], proposition_suffix=" vis moved"
+    )
+    new_units = (materials, new_atmosphere, lighting)
+    initialize(tmp_path, "2", old_units, plan_hash="old-hash")
+    _mark_passed(tmp_path, "2", "materials", "atmosphere", "lighting")
+    called = _patch_remat_design(monkeypatch, tmp_path, new_units=new_units)
     shot = SimpleNamespace(folder=tmp_path, id="shot")
-    layer = SimpleNamespace(id="1", execution="ready", stages=())
-    monkeypatch.setattr(
-        _planner, "load_unit_state_for_test", lambda *a, **k: None, raising=False
-    )
-    monkeypatch.setattr(
-        "vfx_harness.orchestration.unit_state.load",
-        lambda folder, layer_id: {
-            "layer": "1",
-            "units": {"done": {"status": "passed"}, "next": {"status": "pending"}},
-        },
-    )
+    layer = SimpleNamespace(id="2", execution="ready", stages=old_units)
 
     async def invoke():
-        return await _planner._rematerialize_layer(
-            shot, layer, ("owner", "trigger", ["run:x"], False),
-            model="m", blender="blender", max_turns=4,
+        return await planner._rematerialize_layer(
+            shot,
+            layer,
+            ("operator", "vis-repair-owner", ["evals/plan"], False),
+            model="m",
+            blender="blender",
+            max_turns=4,
         )
 
-    with pytest.raises(ValueError, match="accepted unit\\(s\\) done"):
-        _anyio.run(invoke)
-    # Discarding proven work must be expressible, but never implicit: the refusal names
-    # the override rather than leaving the operator to hand-edit state.
-    import inspect
-    source = inspect.getsource(_planner._rematerialize_layer)
-    assert "--discard-accepted" in source
-    assert "if accepted and not discard_accepted:" in source
+    refreshed = anyio.run(invoke)
+    assert called["materialize"] is True
+    assert refreshed.stages == new_units
+    state = load(tmp_path, "2")
+    assert state["units"]["materials"]["status"] == "passed"
+    assert state["units"]["atmosphere"]["status"] == "pending"
+    assert state["units"]["lighting"]["status"] == "pending"
+    record = state["replans"][-1]
+    assert record["preserved"] == ["materials"]
+    assert "atmosphere" in record["changed"]
+    assert "lighting" in record["invalidated"]
+    assert record.get("discard_accepted") is None
+    source = inspect.getsource(planner._rematerialize_layer)
+    assert "re-materialization would discard proven work" not in source
+    assert "stay unless the replacement" in source
+
+
+def test_rematerialize_unusable_base_does_not_wipe_accepted_units(
+    tmp_path, monkeypatch
+) -> None:
+    """Publication then a failed apply_replan must not supersede accepted seals
+    unless the operator passed --discard-accepted."""
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.orchestration.unit_state import initialize, load
+
+    units = (_unit("materials"),)
+    initialize(tmp_path, "2", units, plan_hash="old-hash")
+    _mark_passed(tmp_path, "2", "materials")
+    _patch_remat_design(monkeypatch, tmp_path, new_units=units)
+    superseded = {"called": False}
+
+    def boom(*args, **kwargs):
+        raise ValueError("replan base layer/plan hash does not match active state")
+
+    def capture_supersede(*args, **kwargs):
+        superseded["called"] = True
+        return {}
+
+    monkeypatch.setattr("vfx_harness.orchestration.unit_state.apply_replan", boom)
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.unit_state.supersede_layer_units",
+        capture_supersede,
+    )
+    shot = SimpleNamespace(folder=tmp_path, id="shot")
+    layer = SimpleNamespace(id="2", execution="ready", stages=units)
+
+    async def invoke():
+        return await planner._rematerialize_layer(
+            shot,
+            layer,
+            ("operator", "vis-repair-owner", ["evals/plan"], False),
+            model="m",
+            blender="blender",
+            max_turns=4,
+        )
+
+    with pytest.raises(ValueError, match="replan base"):
+        anyio.run(invoke)
+    assert superseded["called"] is False
+    assert load(tmp_path, "2")["units"]["materials"]["status"] == "passed"
+
+
+def test_rematerialize_unusable_base_wipes_only_with_discard_accepted(
+    tmp_path, monkeypatch
+) -> None:
+    """--discard-accepted remains the unusable-base wipe, not the door on remat."""
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.orchestration.unit_state import initialize, load
+
+    units = (_unit("materials"),)
+    initialize(tmp_path, "2", units, plan_hash="old-hash")
+    _mark_passed(tmp_path, "2", "materials")
+    _patch_remat_design(monkeypatch, tmp_path, new_units=units)
+
+    def boom(*args, **kwargs):
+        raise ValueError("replan base layer/plan hash does not match active state")
+
+    monkeypatch.setattr("vfx_harness.orchestration.unit_state.apply_replan", boom)
+    shot = SimpleNamespace(folder=tmp_path, id="shot")
+    layer = SimpleNamespace(id="2", execution="ready", stages=units)
+
+    async def invoke():
+        return await planner._rematerialize_layer(
+            shot,
+            layer,
+            ("operator", "vis-repair-owner", ["evals/plan"], True),
+            model="m",
+            blender="blender",
+            max_turns=4,
+        )
+
+    anyio.run(invoke)
+    state = load(tmp_path, "2")
+    assert state["units"] == {}
+    assert state["superseded"][-1]["id"] == "materials"
+    assert state["superseded"][-1]["status"] == "superseded"
 
 
 def test_already_deferred_rematerialize_still_runs_the_transaction() -> None:
@@ -346,3 +499,62 @@ def test_rematerialization_kickoff_carries_the_replacement_reason(tmp_path: Path
     assert replacing.startswith("REPLACING A DISCARDED MATERIALIZATION")
     assert "camera must be the dependency root" in replacing
     assert "do not reproduce the structure being replaced" in replacing
+
+
+def test_materialization_kickoff_compiles_frame_authority_and_named_outcomes(
+    tmp_path: Path,
+) -> None:
+    """Remat6 Read plans/outcomes as a directory, then put extra-frame vis on
+    composition_context.frames until max-turns. Kickoff must compile the subset
+    rule from the global row and name outcome files, not a directory."""
+    bundle_root = tmp_path / "runs" / "r1" / "checkpoints" / "plans" / "bundles" / "abc"
+    bundle_root.mkdir(parents=True)
+    row = {
+        "id": "2", "script": "build/02.py", "title": "Look",
+        "primary_judge": 1, "judge": [{"frame": 1, "ref": "refs/a.png"},
+                                      {"frame": 240, "ref": "refs/a.png"}],
+        "owns": ["look"], "evidence_domains": ["scene"],
+        "reads": "authored brief", "execution": "jit_deferred", "stages": [],
+        "jit": {
+            "depends_on_layers": ["1"],
+            "required_outcomes": [{"kind": "scene_contract", "id": "upstream-lock"}],
+            "reserved_roles": ["look.*"],
+            "owned_requirements": ["R-look"],
+        },
+    }
+    (bundle_root / "layers.json").write_text(
+        json.dumps({"schema": 5, "layers": [row]}), encoding="utf-8"
+    )
+    outcomes = tmp_path / "plans" / "outcomes"
+    outcomes.mkdir(parents=True)
+    (outcomes / "01.json").write_text('{"layer": "1", "status": "passed"}\n', encoding="utf-8")
+    (outcomes / "02.json").write_text('{"layer": "2", "status": "passed"}\n', encoding="utf-8")
+    bundle = SimpleNamespace(root=bundle_root, content_hash="abc123")
+    layer = SimpleNamespace(
+        id="2",
+        title="Look",
+        jit=SimpleNamespace(
+            depends_on_layers=["1"],
+            required_outcomes=(("scene_contract", "upstream-lock"),),
+        ),
+    )
+
+    kickoff = planner._materialization_kickoff(tmp_path, layer, bundle, "out.json")
+
+    assert '"layer_judge_frames": [\n  1,\n  240\n ]' in kickoff
+    assert "Do not add those frames to" in kickoff
+    assert '"readable_files": [\n  "plans/outcomes/01.json"\n ]' in kickoff
+    assert "plans/outcomes/02.json" not in kickoff
+    assert "Do not Read plans/outcomes as a directory" not in kickoff
+
+
+def test_materialize_deferred_layer_binds_a_transcript() -> None:
+    """Remat6's failure loop was unreconstructable: log_message only journals when
+    transcript is bound, and materialization never bound."""
+    import inspect
+
+    source = inspect.getsource(planner._materialize_deferred_layer)
+    assert "transcript.bind" in source
+    assert "materialize-layer-" in source
+    assert "transcript.unbind" in source
+    assert "costlog.bind" in source

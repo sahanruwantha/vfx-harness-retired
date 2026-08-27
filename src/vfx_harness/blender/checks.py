@@ -45,6 +45,7 @@ scale_issues = _geom.scale_issues
 validate_role_token = _roles.validate_role_token
 match_semantic = _roles.match_semantic
 format_object_miss = _roles.format_object_miss
+format_object_ambiguous = _roles.format_object_ambiguous
 pick_objects = _roles.pick_objects
 
 
@@ -108,11 +109,7 @@ def resolve_object(*, role: str | None = None, name: str | None = None):
     if not hits:
         raise ValueError(format_object_miss(inventory=inventory, role=role, name=name))
     if len(hits) > 1:
-        listed = ", ".join(f"{row['name']!r} role={row['role']!r}" for row in hits)
-        raise ValueError(
-            f"role {role!r} matched {len(hits)} objects ({listed}); "
-            "pass an exact role so the check has one subject"
-        )
+        raise ValueError(format_object_ambiguous(role=str(role or ""), hits=hits))
     obj = bpy.data.objects.get(hits[0]["name"])
     if obj is None:
         raise ValueError(format_object_miss(inventory=inventory, role=role, name=name))

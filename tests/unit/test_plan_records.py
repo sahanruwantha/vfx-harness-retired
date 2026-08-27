@@ -486,6 +486,53 @@ def test_jit_materialization_rejects_candidate_sensitive_image_contracts(tmp_pat
         )
 
 
+def test_materialization_rejects_uncovered_unit_judge_frame(tmp_path: Path) -> None:
+    """HIR-0045: atmosphere judged f150 with claims only at f72."""
+    from vfx_harness.domain.work_units import UNIT_JUDGE_CLAIM_COVERAGE_RULE
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "uncovered-judge")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["layer"]["stages"][0]["evaluation"]["claims"][0]["moments"] = [239]
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "/layer/stages/0/evaluation/judge:" in text
+    assert "no required claim moment" in text
+    assert "240" in text
+    assert UNIT_JUDGE_CLAIM_COVERAGE_RULE in text
+
+
+def test_materialization_rejects_look_without_image_domain(tmp_path: Path) -> None:
+    """HIR-0046: look-owning polish with only a scene binding cannot publish."""
+    from vfx_harness.domain.work_units import LOOK_REQUIRES_IMAGE_DOMAIN_RULE
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "look-without-image")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["layer"]["stages"][0]["look_capabilities"] = ["color"]
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "/layer/stages/0/look_capabilities:" in text
+    assert "no required image-domain claim" in text
+    assert LOOK_REQUIRES_IMAGE_DOMAIN_RULE in text
+
+
 def test_materialization_reports_independent_findings_with_pointers(tmp_path: Path) -> None:
     """l1-remat3 walked one field-precise error per full-document rewrite. Two independent
     defects must land in one write, each addressed by a JSON pointer, and a pointer patch
@@ -1113,6 +1160,38 @@ def test_typed_promises_are_rejected_by_the_loader(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="superseded"):
         load_layers_from_path(tmp_path / "layers.json")
+
+
+def test_claim_moments_outside_judge_name_extra_frame_binding(tmp_path: Path) -> None:
+    from vfx_harness.domain.work_units import EXTRA_FRAME_BINDING_RULE
+
+    _candidate(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["layers"][0]["stages"][0]["evaluation"]["claims"][0]["moments"] = [239, 240, 12]
+    _write(tmp_path / "layers.json", data)
+
+    with pytest.raises(ValueError) as raised:
+        load_layers_from_path(tmp_path / "layers.json")
+    message = str(raised.value)
+    assert "moments outside its judge set: [12]" in message
+    assert EXTRA_FRAME_BINDING_RULE in message
+
+
+def test_unit_judge_outside_layer_names_extra_frame_binding(tmp_path: Path) -> None:
+    from vfx_harness.domain.work_units import EXTRA_FRAME_BINDING_RULE
+
+    _candidate(tmp_path)
+    data = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    data["layers"][0]["stages"][0]["evaluation"]["judge"].append(
+        {"frame": 12, "ref": "refs/a.png"}
+    )
+    _write(tmp_path / "layers.json", data)
+
+    with pytest.raises(ValueError) as raised:
+        load_layers_from_path(tmp_path / "layers.json")
+    message = str(raised.value)
+    assert "judges frames outside the layer contract: [12]" in message
+    assert EXTRA_FRAME_BINDING_RULE in message
 
 
 def _structured_camera_decision(root: Path, bundle_hash: str = "view-bundle") -> dict:

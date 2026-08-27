@@ -320,7 +320,32 @@ def validate_materialization(
         if isinstance(row, dict) and row.get("id") and row.get("frame") is not None
     }
     if layer is not None:
+        from vfx_harness.domain.work_units import (
+            LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
+            UNIT_JUDGE_CLAIM_COVERAGE_RULE,
+            VIS_REPAIR_OWNER_RULE,
+            uncovered_unit_judge_frames,
+            unearned_look_judge_frames,
+            vis_roles_unrepairable_by,
+        )
+
         for unit_index, unit in enumerate(layer.stages):
+            missing_frames = uncovered_unit_judge_frames(unit)
+            if missing_frames:
+                note(
+                    json_ptr("layer", "stages", unit_index, "evaluation", "judge"),
+                    f"unit {unit.id} judges frame(s) {list(missing_frames)} with no "
+                    f"required claim moment. {UNIT_JUDGE_CLAIM_COVERAGE_RULE}",
+                )
+            unearned_frames = unearned_look_judge_frames(unit)
+            if unearned_frames:
+                note(
+                    json_ptr("layer", "stages", unit_index, "look_capabilities"),
+                    f"unit {unit.id} declares look_capabilities "
+                    f"{list(unit.look_capabilities)} but judge frame(s) "
+                    f"{list(unearned_frames)} have no required image-domain claim. "
+                    f"{LOOK_REQUIRES_IMAGE_DOMAIN_RULE}",
+                )
             for claim in unit.evaluation.claims:
                 for binding in claim.evidence:
                     declared = getattr(binding, "moments", None)
@@ -436,6 +461,34 @@ def validate_materialization(
             for claim in unit.evaluation.claims:
                 if not claim.required:
                     continue
+                owner = next(
+                    (item for item in layer.stages if item.id == claim.repair_owner),
+                    unit,
+                )
+                for binding in claim.evidence:
+                    if binding.kind != "scene_contract":
+                        continue
+                    bound = all_contracts.get(binding.id)
+                    if not bound or bound[0] != "scene_contract":
+                        continue
+                    vis_row = bound[1]
+                    if str(vis_row.get("kind") or "") != "visible_fraction":
+                        continue
+                    unrepaired = vis_roles_unrepairable_by(
+                        provides=owner.provides,
+                        mutation_roles=[*owner.mutates.roles, *owner.mutates.dresses],
+                        vis_roles=vis_row.get("roles") or [],
+                    )
+                    if unrepaired:
+                        note(
+                            json_ptr(
+                                "layer", "stages", unit_index, "evaluation", "claims"
+                            ),
+                            f"unit {unit.id} claim {claim.id} binds visible_fraction "
+                            f"{binding.id} on {list(unrepaired)}; repair_owner "
+                            f"{owner.id} neither provides camera nor mutates/dresses "
+                            f"those roles. {VIS_REPAIR_OWNER_RULE}",
+                        )
                 if claim.asserts is None:
                     note(
                         json_ptr("layer", "stages", unit_index, "evaluation", "claims"),

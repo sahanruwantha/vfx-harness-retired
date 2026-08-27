@@ -117,6 +117,58 @@ def test_unit_scope_card_is_the_active_unit_not_a_sibling() -> None:
     assert "fg-exist" not in dumped
     assert "cam_rig" in dumped
     assert "bvfx_role" in dumped
+    assert "owed image-contract debts" in dumped
+    assert "(none)" in dumped.split("owed image-contract debts")[1].split("run_bpy")[0]
+
+
+def test_unit_scope_lists_owed_image_contract_debts() -> None:
+    look = {
+        "id": "claim.look",
+        "proposition": "the plate matches the owned look",
+        "axis": "form",
+        "property": "render_region_stat",
+        "subject_roles": ["cam_rig"],
+        "subject_controls": [],
+        "moments": [1],
+        "kind": "atomic",
+        "required": True,
+        "authority": "executable_required",
+        "repair_owner": "camera_rig",
+        "asserts": "image",
+        "evidence": [{"kind": "image_contract", "id": "cam-look-f1"}],
+    }
+    row = {
+        "id": "camera_rig",
+        "title": "camera_rig",
+        "plan": "plans/camera_rig.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["cam_rig"],
+            "controls": ["camera_rig.gain"],
+            "script_spans": ["build/units/01/camera_rig.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 1,
+            "judge": [{"frame": 1, "ref": "refs/a.png"}],
+            "temporal_evidence": "none",
+            "claims": [_claim("camera_rig", contract_id="cam-spine"), look],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": ["material"],
+    }
+    unit = WorkUnit.parse(row, "unit.camera_rig")
+    card = compile_unit_scope(unit=unit, layer_id="1", contracts=_contracts())
+    assert card["image_debts"] == [
+        {"id": "cam-look-f1", "axis": "form", "frame": 1, "property": "render_region_stat"}
+    ]
+    dumped = format_unit_scope_card(card)
+    assert "cam-look-f1" in dumped
+    assert "owed image-contract debts" in dumped
 
 
 def test_unknown_bound_contract_names_requested_and_present() -> None:

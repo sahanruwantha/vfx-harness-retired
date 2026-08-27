@@ -39,7 +39,9 @@ operation.
   downstream work past it. `--force` is a bounded debugging experiment, never a deliverable.
 - Reading order after any invocation: `runs/latest.json`, then the selected run's
   `manifest.json`, `status.json`, `reports/summary.json`, `artifacts.json`. Fail closed on an
-  unsupported manifest schema. Open detail (`reports/layers/`, `plan_gate.json`, `evidence/`,
+  unsupported manifest schema. `status.json` `detail` is the stop meaning, never the exit-code
+  digit (HIR-0037). Materialization writes `logs/transcripts/plan/materialize-layer-*.jsonl`
+  (HIR-0038). Open detail (`reports/layers/`, `plan_gate.json`, `evidence/`,
   transcripts, checkpoints) only when the summary names a reason. Never diagnose by recursively
   listing the shot or grepping every transcript, and never parse meaning from filenames.
 - Shot-root legacy directories (`logs/`, `renders/`, `.artifacts/`, `.snapshots/`, `.versions/`)
@@ -134,10 +136,23 @@ effect.
   to the roles that need it; do not tune prompts to guess better.
 
 Wanted capability work: new instruments, compiled unit context, tighter tool policy, closed-loop
-mutation, and earned qualitative judgment where executable evidence cannot decide. Not wanted:
-larger prompts or longer sessions as the scaling strategy, prompt-only patches for mechanical
-defects, a confident model verdict replacing executable evidence, or extra mutation authority so
-a builder can "figure it out".
+mutation, in-scope recipe retrieval that can abstain, repair abstention that stops the budget,
+named argmax on scalar bound evidence, look-less live Workbench preview, look-owning repair
+probe that includes draft beauty, shared-role tools that name object= or enumerate hosts,
+bound materialization transcripts, teaching status details, look-less composed canonical that
+fans in unit executable claims, repair `cannot_express_in_scope` bound on the candidate
+session, look-without-image-contracts that does not lock `run_bpy` on a 0/0 handoff,
+unit judge frames covered by required claims rather than a critic fall-through,
+look-owning units that cannot seal on scene counts, claim-closure that counts
+look image-contract ids as build-time debts, a compiled image-debt card that
+freeze refuses while unpaid without typed abstention, a keyframe_schedule path
+miss that names object and data-block fcurve paths instead of INAPPLICABLE, a
+required `visible_fraction` claim repaired only by a camera or role-mutator,
+per-role vis AND so a union cannot hide a subject, geometry units that
+freeze-protect active-layer vis, and
+earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
+prompt-only patches for mechanical defects, a confident model verdict replacing executable
+evidence, or extra mutation authority so a builder can "figure it out".
 
 The same standard binds coding agents on this repository: resolve unknowns by reading authority,
 running code, or adding a probe — never by assumption.
@@ -182,12 +197,43 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   schema, wrong bundle hash, and a non-object layer remain fatal. Historical plan bundles are
   not a repair instrument (HIR-0023). Rematerialization writes a reverted overlay as the design
   base and selects only when the replacement publishes; crash, truncation, or a broken pipe
-  leaves the previously selected view (HIR-0026). Task and Agent are not remat repair
+  leaves the previously selected view (HIR-0026). Rematerialization of a layer that already
+  has accepted units is `apply_replan`: matching digests stay, including `passed`;
+  changed or downstream-invalidated units are superseded even if they had passed.
+  `--discard-accepted` retires accepted orphans and wipes state only when the replan
+  base is unusable — it is not the door on remat (HIR-0052). Task and Agent are not remat repair
   instruments. An exhausted materialization session does not publish: max-turns is a failed
   transaction, not a select (HIR-0027). Structured decision adoption is last-write-wins for
   the selected bundle only: a `values.contract` row keyed to another generation is inert, a
   later `superseded` or `falsified` row for the same id on this bundle retires it, and
   materialization copies the compiled binding set rather than every ledger line (HIR-0028).
+  Unit judge frames, claim moments, and `composition_context.frames` are a subset of the
+  layer judge list compiled into the materialization kickoff. Every unit judge frame
+  must appear in a required claim's `moments`; an uncovered frame is a contract_gap,
+  not a critic look vote (HIR-0045).   A look-owning unit must cover every judge
+  frame with a required image-domain claim; scene counts cannot seal appearance
+  (HIR-0046). Claim-closure counts those bound `image_contract` ids as
+  producers even while `checks.json` is empty; missing image rows are
+  build-time debts, not `does not exist` (HIR-0047). Those ids compile to a
+  payment card (id, frame, property, axis); `propose_checks` must match all
+  four fields; candidate freeze refuses while any remain unpaid without a
+  typed `unpaid_image_debt` abstention; ids are bare, never `check:`;
+  readers of falsification `contract_ids` strip that prefix
+  (HIR-0048). Scene contracts may measure other frames; bind
+  those ids through `composition_context.contract_ids` without adding the extra
+  frames to the judge lists. Claim-closure counts those ids as bound producers.
+  A dependency root has no sealed outcomes to directory-Read (HIR-0029).
+  A `keyframe_schedule` whose consecutive samples already exceed a same-role
+  `curve_derivative_max.hi` is refused at materialization, authoring, and the
+  plan gate — interpolation cannot invent a third option (HIR-0030).
+  A required claim that binds `visible_fraction` is repaired by a unit that
+  `provides: ["camera"]` or mutates/dresses every `roles` selector on that row;
+  a volume-only unit cannot bind mesh vis as required repair. Multi-role vis is
+  logical AND across named roles. A unit that `provides: ["geometry"]`
+  freeze-protects lifecycle-active vis on this layer, including sibling-owned
+  rows (HIR-0051).
+  Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
+  `log_message` journals only when bound (HIR-0038).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is
   irreversible, or is expensive to be wrong about later; otherwise defer it to the owning layer
   (ADR-0005).
@@ -199,7 +245,16 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   creates a confirmed outcome; records without a strength read as hard constraints (ADR-0004).
 - Unit plans publish only through the gate-attested two-phase transaction (HIR-0016). Do not
   hand-author placeholder units, edit `state/jit-layers/current.json`, or reinitialize,
-  hand-edit, or delete durable work-unit state to make a new DAG fit.
+  hand-edit, or delete durable work-unit state to make a new DAG fit. A selected
+  `layers.json` hash change that leaves this layer's unit IDs and digests unchanged
+  is a preserve-all plan-identity adoption, not a DAG replan and not permission to
+  empty-base-replan that layer (HIR-0040). Rematerialization of a layer that already has
+  accepted units is the same `apply_replan`: matching digests stay; `--discard-accepted`
+  is not the door on remat (HIR-0052). `vfx units replan --falsification`
+  on a JIT layer compares `plan_hash` and unit digest to durable state and the
+  selected view, not sha256 of the sparse bundle `layers.json`; consuming the
+  finding reopens that unit and its affected closure even when the published
+  DAG bytes are unchanged (HIR-0049).
 - When passing requires a decision, dependency, ownership, scope, contract, or sealed-outcome
   change outside the active unit, record `hypothesis_falsified` and stop. Replanning is a
   versioned transaction: freeze accepted state, validate the amendment, compute the complete
@@ -234,10 +289,17 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   declared, never inferred (HIR-0015, ADR-0003).
 - Projection-only rows prove screen placement, not visibility. Judge frames require
   `visible_fraction` coverage; nothing-on-screen reads 0.0 and is a failing measurement, not an
-  instrument error (HIR-0019).
+  instrument error (HIR-0019). Multi-role `visible_fraction` is AND across named roles;
+  a union scalar cannot hide a subject below `lo`. A required vis claim is repaired
+  by a camera unit or the mutator of those roles, not a volume-only unit (HIR-0051).
 - Absence fails closed: a required contract never evaluated blocks sealing; unknown keys are
   rejected naming the accepted set; silence is never consent (HIR-0014). An empty obstacle
   selection is not path clearance — the 1e9 sentinel never PASSes (HIR-0024).
+  A `curve_derivative_max` miss names the argmax adjacent-frame pair and compact
+  over-`hi` segments; a scalar without its argmax is an estimate (HIR-0035).
+  A `keyframe_schedule` path miss names the requested aliases (`P`, `data.P`)
+  and the fcurve data_paths on the object and its data-block; empty keys are a
+  failing measurement, not INAPPLICABLE (HIR-0050).
 - Claims are atomic propositions defined by the planner; the judge never expands its own scope.
   Required claims combine with logical AND — passing claims cannot average away a failure.
   Batching is transport, never aggregation; failed, borderline, disputed, or repaired claims are
@@ -251,6 +313,19 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   repair is justified by unsupported measurement prose.
 - Executable-only units call no visual critic; evidence is filtered to the active unit's exact
   bindings; sibling and future contracts cannot judge a unit or authorize a repair.
+  A declaring unit's `look_capabilities: []` is that executable-only authority — not a cue
+  to scan axis identifiers for look groups. A candidate plate with no optical signal is
+  not a look score: fail closed without calling the critic (HIR-0032). Composed
+  canonical of a layer whose units all declare empty look capabilities fans in those
+  units' executable claims; omitting `active_unit` is not permission to reopen a
+  critic look vote on `layer.owns` (HIR-0039). `vfx build` exits 9 when units passed
+  but the composed ledger verdict did not. A unit judge frame with no required claim
+  is a contract_gap, not a critic look vote (HIR-0045). A look-owning unit
+  cannot seal 5.0 on scene counts (HIR-0046). Claim-closure counts look
+  `image_contract` ids as bound producers while `checks.json` is still empty
+  (HIR-0047). A matching `runtime_checks.json` row is consumed as payment;
+  unpaid debts are not scene-selector misses or critic handoff; readers of
+  falsification `contract_ids` strip a `check:` prefix (HIR-0048).
 - Interaction claims declare a coordination owner and the exact shared controls it may balance;
   atomic claims stay protected, and anything broader enters transactional replanning.
 - Warm-scene success proves nothing durable. The deterministic script and its empty-scene replay
@@ -265,13 +340,39 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   A role is one dotted token (`[A-Za-z0-9._-]+`); commas are not membership — tag once or split
   hosts (HIR-0022). Builder scene tools (`inspect_scene`, `check_scene`, `list_keyframes`)
   address `role`; a miss names the requested selector and the names and roles that exist
-  (HIR-0018). Kickoff, `CLAUDE.md`, and the `unit_scope` tool share one compiled card for the
+  (HIR-0018). A shared role on several hosts is not an inexact selector: `check_scene`
+  names `object=` as the next action, and `list_keyframes` lists every host
+  including data-block curves (`data.energy` on a Light) (HIR-0041, HIR-0050).
+  Kickoff, `CLAUDE.md`, and the `unit_scope` tool share one compiled card for the
   active unit: mutation roles/controls/dresses/spans, bound contracts, claims, judge frames,
   and the `run_bpy` helper inventory. Query that card; do not `inspect.getsource` or guess a
-  sibling unit (HIR-0025). An unknown authored change blocks candidate freeze until it is
-  classified, reverted, or added through a plan amendment.
+  sibling unit (HIR-0025). Materialization kickoff compiles this layer's judge frames
+  and extra-frame id-binding; two-sided `path_clearance_min` `roles` bind on the unit
+  that mutates them (HIR-0029). Every unit judge frame must appear in a required
+  claim's moments; an uncovered frame is a contract_gap, not a critic look vote
+  (HIR-0045). A required claim that binds `visible_fraction` is repaired by a
+  unit that `provides: ["camera"]` or mutates/dresses those roles; a volume-only
+  unit cannot bind mesh vis as required repair (HIR-0051). A look-owning unit must bind image-domain evidence at every
+  judge frame; scene counts cannot seal appearance (HIR-0046). Claim-closure
+  counts those `image_contract` ids as debts, not missing bindings
+  (HIR-0047). Freeze refuses while an owed look id has neither a coherent
+  `propose_checks` row nor `unpaid_image_debt` abstention; canonical repair
+  cannot author evaluation contracts (HIR-0048). `find_recipe` ranks against the active unit's mutation
+  roles and abstains naming the query and the roles present; a lighting hit is not
+  permission on a camera unit (HIR-0033). `run_bpy` errors that reinvent
+  `path_clearance_min` or `BVHTree.FromMesh` name the bound instrument (HIR-0034).
+  Live `render_frame` / `verify_change` default to Workbench `solid` when the
+  unit has no look capabilities; canonical EEVEE remains the sealed artifact
+  (HIR-0036). Repair `probe_candidate` on a look-owning unit also returns draft
+  EEVEE `look_render`; solid is geometry, not the critic plate (HIR-0042). Live
+  `run_bpy` stays open when a look-owning unit binds no image contract; 0/0
+  image rows are not critic handoff (HIR-0044). An
+  unknown authored change blocks candidate freeze until it is classified, reverted,
+  or added through a plan amendment.
 - Protection wildcards resolve to an explicit sorted contract-id closure at freeze; evaluation,
   repair, resume, and revalidation use that recorded closure, never a re-evaluated wildcard.
+  A unit that `provides: ["geometry"]` also freeze-protects lifecycle-active
+  `visible_fraction` rows on this layer, including sibling-owned vis (HIR-0051).
 - Appearance on another layer's geometry is owner-granted authority: the owner declares
   `dressable` selectors, the dresser declares `dresses`, validation closes over both, and
   dressing is material assignment only — moving, deleting, or remeshing a dressed object breaks
@@ -280,7 +381,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   semantic edit per attempt, then re-evaluate failing AND protected evidence; accept only
   monotonic progress without regression, otherwise restore the snapshot. Truncation,
   cancellation, SDK failure, or worker failure is a rollback path, never permission to retain an
-  unvalidated edit.
+  unvalidated edit. `cannot_express_in_scope` stops remaining repair attempts and records
+  `hypothesis_falsified`; an unsatisfiable published schedule/smoothness pair does not
+  consume the next attempt (HIR-0031). Canonical repair binds that tool on the candidate
+  server — it is not a blender MCP ToolSearch (HIR-0043). A `keyframe_schedule` path
+  miss names requested aliases vs present fcurve paths and stays in repair; it is
+  not INAPPLICABLE and not `cannot_express_in_scope` by default (HIR-0050).
 - Faults route to their semantic owner. A downstream layer never compensates for a broken
   upstream interface, geometry, material, animation, or other sealed responsibility. A repair
   that cannot express the fix inside its authorized scope stops with a typed plan defect; it

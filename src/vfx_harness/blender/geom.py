@@ -40,6 +40,7 @@ def motion_from_positions(frames: Sequence[int], positions: Sequence[Sequence[fl
             "max_jerk": 0.0,
             "unbroken": True,
             "peak_speed_frame": None,
+            "peak_speed_span": None,
             "speeds": [],
             "accels": [],
         }
@@ -98,6 +99,7 @@ def motion_from_positions(frames: Sequence[int], positions: Sequence[Sequence[fl
         "max_jerk": round(max(jerks), 4) if jerks else 0.0,
         "unbroken": unbroken,
         "peak_speed_frame": speed_at[peak_i],
+        "peak_speed_span": [frames[peak_i], speed_at[peak_i]],
         "speeds": [round(s, 4) for s in speeds],
         "accels": [round(a, 4) for a in accels],
         "active_frame_span": active_span,

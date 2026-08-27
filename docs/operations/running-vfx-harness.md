@@ -93,6 +93,22 @@ Add `--preview` to validate the same authority and print the added, removed, cha
 and preserved unit sets without publishing the state transaction.
 
 Do not reinitialize, hand-edit, or delete stale work-unit state to make a new DAG fit.
+When only the combined `layers.json` hash changed and this layer's unit IDs and
+digests still match (a sibling rematerialization), `vfx build` adopts the new
+hash and preserves statuses; do not empty-base-replan that layer (HIR-0040).
+A JIT-layer finding's `plan_hash` is the selected view hash (durable
+work-unit `plan_hash`), not sha256 of the sparse global `layers.json`.
+`--preview` must show the finding's unit and affected closure as invalidated;
+an unrelated passed sibling stays preserved (HIR-0049).
+A `keyframe_schedule` empty-key or path miss is a build defect (key sample
+path `P` as object `P`, `data.P`, or the data-block fcurve); do not treat it
+as rematerialize-only INAPPLICABLE (HIR-0050).
+A required `visible_fraction` claim is repaired by a camera unit or the
+mutator of those roles, not a volume-only unit (HIR-0051). Rematerialize
+the owning layer without `--discard-accepted`: matching accepted digests
+stay, the vis-owner closure is superseded (HIR-0052). Do not empty-base
+the layer, and do not consume a finding first unless the replacement
+leaves that unit's digest unchanged.
 
 When a deterministic failure has been fixed, or an in-flight planning/build/repair session was
 interrupted, reopen the same unit through the audited retry transition. This preserves the prior

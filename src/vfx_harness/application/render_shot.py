@@ -136,7 +136,7 @@ def main() -> None:
                        out=args.out, force=args.force)
         except IncompleteRender as e:
             log(f"INCOMPLETE CHAIN — {e}")
-            raise SystemExit(7) from None
+            raise run_artifacts.RequestedExit(7, f"INCOMPLETE CHAIN — {e}") from None
 
 
 if __name__ == "__main__":

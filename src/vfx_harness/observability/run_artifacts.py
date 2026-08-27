@@ -28,6 +28,30 @@ LATEST_SCHEMA = "vfx-harness.latest-run/v1"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _RESERVED_STATUS_FIELDS = {"schema", "run_id", "state", "updated_at", "exit_code", "detail"}
 
+# Integer SystemExit codes stringify to the digit ("7"), which is truthy and used to
+# become status.json detail. Map the digit back to the meaning the driver already has.
+EXIT_DETAILS = {
+    3: "TRUNCATED — raise the budget or split the layer",
+    4: "CHAIN BROKEN — a prior layer's script no longer composes",
+    5: "unanswered plan questions — settle them first",
+    6: "UNACCEPTED PRIOR — a lower layer must pass first",
+    7: "INCOMPLETE CHAIN",
+    8: "plan is STALE against brief.md — re-plan",
+    9: "layer ran cleanly but its VERDICT was not a pass",
+}
+
+
+class RequestedExit(SystemExit):
+    """Integer process exit that still carries a human detail for status.json."""
+
+    def __init__(self, code: int, detail: str, *, terminal_cause: str = "requested_exit"):
+        self.detail = str(detail).strip() or EXIT_DETAILS.get(int(code), f"exit {code}")
+        self.terminal_cause = terminal_cause
+        super().__init__(int(code))
+
+    def __str__(self) -> str:
+        return self.detail
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -240,13 +264,22 @@ def _terminal_record(exc: BaseException) -> tuple[str, int, str, str]:
         }.get(outcome, "gate_rejected")
     if not cause:
         cause = "requested_exit" if isinstance(exc, SystemExit) else "process_error"
-    detail = str(exc).strip() or {
-        "max_turns_exhausted": "model turn budget exhausted",
-        "usage_limit": "model usage limit reached",
-        "session_stalled": "model session produced no publishable artifact",
-        "gate_stalled": "plan gate stopped improving",
-        "plan_budget_exhausted": "plan repair budget exhausted",
-    }.get(cause, exc.__class__.__name__)
+    raw = str(exc).strip()
+    # str(SystemExit(7)) is "7". Prefer an explicit detail, then the meaning map.
+    if isinstance(exc, SystemExit) and isinstance(exc.code, int) and (
+        not raw or raw == str(exc.code)
+    ):
+        detail = EXIT_DETAILS.get(exc.code, f"exit {exc.code}")
+    elif raw:
+        detail = raw
+    else:
+        detail = {
+            "max_turns_exhausted": "model turn budget exhausted",
+            "usage_limit": "model usage limit reached",
+            "session_stalled": "model session produced no publishable artifact",
+            "gate_stalled": "plan gate stopped improving",
+            "plan_budget_exhausted": "plan repair budget exhausted",
+        }.get(cause, exc.__class__.__name__)
     return "failed", int(code), cause, detail
 
 

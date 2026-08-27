@@ -84,7 +84,10 @@ plan bundle and then become selected by the atomic shot-root pointer.
 
 1. Read `runs/latest.json`, or select a run with `vfx inspect --run <id>`.
 2. Validate `manifest.json.schema`; fail closed on an unsupported schema.
-3. Read `status.json` before interpreting partial output.
+3. Read `status.json` before interpreting partial output. `detail` is the stop
+   meaning, never the exit-code digit (`str(SystemExit(7))` is `"7"`; HIR-0037).
+   Materialization sessions bind `logs/transcripts/plan/materialize-layer-*.jsonl`
+   (HIR-0038).
 4. Read `reports/summary.json` for decisions and findings.
 5. Use `artifacts.json` to locate detail; do not recursively scan or parse meaning from names.
 6. Open transcripts, renders, or checkpoints only when the summary identifies a reason.

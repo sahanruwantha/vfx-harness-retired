@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
+from itertools import pairwise
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageStat
@@ -49,6 +51,9 @@ WINDOW_KINDS = TEMPORAL_KINDS - {"keyframe_schedule"}
 # Empty compare_roles used to report 1e9 and PASS every min-bound ("vacuously clear").
 # That sealed collision contracts against nothing. The sentinel is not a distance.
 PATH_CLEARANCE_UNMEASURED = 1e9
+# A keyframe_schedule path/frame miss must fail op:max even when evaluated values
+# accidentally match the samples (static RNA, drivers, custom props on another path).
+KEYFRAME_SCHEDULE_PATH_MISS_OVER_HI = 1.0
 # Every key the evaluator, gate, and orchestration actually read off a contract row.
 # A row carrying anything else is not "extra metadata" — it is a claim the harness
 # silently ignores. Run 20260823T154920Z shipped `at_frame: 36`, nothing read it,
@@ -137,11 +142,11 @@ KIND_DEFINITIONS = {
     "radial_inward_fraction": "fraction where radial XY normal dot face centre <= 0 (inward)",
     "object_property": "numeric property read from every semantically selected object",
     "visible_fraction": (
-        "of the selected roles' ON-SCREEN surface samples at the declared frame, the "
-        "fraction whose camera ray reaches subject surface before any other object; reads "
-        "0.0 when nothing of the subject is on screen. Occlusion truth — projection-only "
-        "bbox rows pass straight through an occluder (run 20260825: every interior subject "
-        "sat behind a solid proxy disc for all 240 frames and no contract could say so)"
+        "of each named role's ON-SCREEN surface samples at the declared frame, the "
+        "fraction whose camera ray reaches that role's surface before any other object; "
+        "the scalar is the min across named roles (logical AND — a union cannot hide a "
+        "failing subject). Reads 0.0 when nothing of a named role is on screen. "
+        "Occlusion truth — projection-only bbox rows pass straight through an occluder"
     ),
     "material_count": "number of materials whose bvfx_role matches material_roles",
     "material_user_count": "total Blender users of matched semantic materials",
@@ -166,12 +171,15 @@ KIND_DEFINITIONS = {
     "transform_return_delta": "selected transform-component delta between two declared frames",
     "keyframe_schedule": (
         "maximum property error against an exact semantic keyframe schedule; any missing or "
-        "extra keyed frame fails the contract"
+        "extra keyed frame fails the contract. Sample path P matches object P, object "
+        "`data.P`, or the data-block P fcurve; a path miss names those aliases and the "
+        "data_paths present and fails closed — it is not an unmeasurable binding defect"
     ),
     "frame_delta": "mean absolute rendered-pixel delta between two declared frames",
     "curve_derivative_max": (
         "maximum per-frame evaluated change of one transform property across the whole "
-        "frame window; bounds smoothness where endpoint deltas cannot"
+        "frame window; bounds smoothness where endpoint deltas cannot. The evidence note "
+        "names the argmax adjacent-frame pair and every segment that exceeds hi"
     ),
     "path_clearance_min": (
         "minimum distance from the selected objects' evaluated origins to compare_roles "
@@ -187,6 +195,94 @@ KIND_DEFINITIONS = {
 }
 
 
+def keyframe_schedule_path_aliases(path: str) -> tuple[str, ...]:
+    """Object-level data_paths that satisfy one sample key.
+
+    Camera ``location`` lives on the object. Light ``energy`` lives on the Light
+    ID (object fcurve ``data.energy``, or data-block fcurve ``energy``). An explicit
+    ``data.`` or custom-property path (``["energy"]``) stays exact — custom props
+    are not a silent alias for RNA energy.
+    """
+    token = str(path or "").strip()
+    if not token:
+        return ()
+    if token.startswith(("[", "data.")):
+        return (token,)
+    return (token, f"data.{token}")
+
+
+def keyframe_schedule_matching_frames(
+    *,
+    object_paths: dict[str, set[int]],
+    data_paths: dict[str, set[int]],
+    sample_path: str,
+) -> set[int]:
+    """Frames keyed for ``sample_path`` on the object action and its data-block."""
+    aliases = set(keyframe_schedule_path_aliases(sample_path))
+    frames: set[int] = set()
+    for data_path, keyed in object_paths.items():
+        if data_path in aliases:
+            frames |= set(keyed)
+    for data_path, keyed in data_paths.items():
+        if data_path in aliases or f"data.{data_path}" in aliases:
+            frames |= set(keyed)
+    return frames
+
+
+def keyframe_schedule_present_paths(
+    object_data_paths: list[str],
+    datablock_data_paths: list[str],
+) -> list[str]:
+    """Inventory the schedule instrument will name on a miss (HIR-0018 both sides)."""
+    out = [str(path) for path in object_data_paths]
+    for path in datablock_data_paths:
+        token = str(path)
+        out.append(token if token.startswith("data.") else f"data.{token}")
+    return out
+
+
+def keyframe_schedule_miss_note(
+    host: str,
+    path: str,
+    *,
+    actual_frames: list[int] | set[int],
+    expected_frames: list[int] | set[int],
+    present_paths: list[str],
+) -> str:
+    aliases = list(keyframe_schedule_path_aliases(path))
+    present = ", ".join(repr(item) for item in present_paths) if present_paths else "(none)"
+    return (
+        f"{host} {path!r} aliases {aliases}: keyframes "
+        f"{sorted(actual_frames)} != {sorted(expected_frames)}; "
+        f"fcurve data_paths present: {present}"
+    )
+
+
+def keyframe_schedule_path_miss_value(hi: float | None) -> float:
+    """Numeric fail for a path/frame miss; always exceeds ``op: max`` ``hi``."""
+    return float(hi or 0) + KEYFRAME_SCHEDULE_PATH_MISS_OVER_HI
+
+
+def visible_fraction_min(
+    role_fractions: Mapping[str, float], named_roles: Sequence[str]
+) -> float:
+    """AND across named roles: missing or empty is 0.0, not a pooled union."""
+    if named_roles:
+        return min(float(role_fractions.get(role, 0.0)) for role in named_roles)
+    values = [float(value) for value in role_fractions.values()]
+    return min(values) if values else 0.0
+
+
+def visible_fraction_note(role_fractions: Mapping[str, float]) -> str:
+    if not role_fractions:
+        return ""
+    parts = [
+        f"{role}={float(frac):.6g}"
+        for role, frac in sorted(role_fractions.items())
+    ]
+    return "per-role " + ", ".join(parts)
+
+
 def _target(row: dict) -> str:
     op = row.get("op", "band")
     if op == "band":
@@ -200,10 +296,16 @@ def _target(row: dict) -> str:
     return str(op)
 
 
-def _holds(row: dict, value) -> bool:
+def _holds(row: dict, value, *, role_fractions: Mapping[str, float] | None = None) -> bool:
     if value is None:
         return False
     try:
+        if str(row.get("kind")) == "visible_fraction":
+            named = [str(item) for item in _selectors(row, "roles")]
+            if named and isinstance(role_fractions, Mapping):
+                lo = float(row.get("lo") or 0)
+                if any(float(role_fractions.get(role, 0.0)) < lo for role in named):
+                    return False
         value = float(value)
         if (
             str(row.get("kind")) == "path_clearance_min"
@@ -532,6 +634,186 @@ def validate_row(row: dict) -> str | None:
     return None
 
 
+def _sample_vector(values: dict, property_name: str) -> tuple[float, ...] | None:
+    raw = values.get(property_name)
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return (float(raw),)
+    if (
+        isinstance(raw, list)
+        and raw
+        and all(not isinstance(item, bool) and isinstance(item, (int, float)) for item in raw)
+    ):
+        return tuple(float(item) for item in raw)
+    return None
+
+
+def schedule_derivative_floor(schedule: dict, property_name: str) -> dict | None:
+    """Worst consecutive-sample linear floor for one property (max-component, matching the probe).
+
+    ``curve_derivative_max`` reads max(|Δcomponent|) per adjacent frame. LINEAR between
+    two sealed keys is already that floor: no handle or extra key can go slower while
+    still hitting both samples. Run ``20260826T170413Z-ba2b4c`` burned two repairs on
+    f1 y=−30 → f24 y=140 (170/23 ≈ 7.39) against ``hi: 6.0``.
+    """
+    samples = schedule.get("samples")
+    if not isinstance(samples, list) or len(samples) < 2:
+        return None
+    ordered = sorted(
+        (row for row in samples if isinstance(row, dict) and isinstance(row.get("frame"), int)),
+        key=lambda row: int(row["frame"]),
+    )
+    worst: dict | None = None
+    for left, right in pairwise(ordered):
+        frame_a, frame_b = int(left["frame"]), int(right["frame"])
+        if frame_b <= frame_a:
+            continue
+        vec_a = _sample_vector(left.get("values") or {}, property_name)
+        vec_b = _sample_vector(right.get("values") or {}, property_name)
+        if vec_a is None or vec_b is None or len(vec_a) != len(vec_b):
+            continue
+        delta = max(abs(after - before) for before, after in zip(vec_a, vec_b, strict=True))
+        floor = delta / (frame_b - frame_a)
+        if worst is None or floor > float(worst["floor"]):
+            worst = {
+                "floor": floor,
+                "frame_a": frame_a,
+                "frame_b": frame_b,
+                "delta": delta,
+            }
+    return worst
+
+
+def _coalesce_adjacent(
+    segments: list[tuple[int, int, float]],
+) -> list[tuple[int, int, float, int]]:
+    """Merge contiguous adjacent-frame pairs into ``(start, end, peak, pair_count)``."""
+    if not segments:
+        return []
+    out: list[tuple[int, int, float, int]] = []
+    start, end, peak = segments[0]
+    count = 1
+    for frame_a, frame_b, delta in segments[1:]:
+        if frame_a == end:
+            end = frame_b
+            peak = max(peak, delta)
+            count += 1
+            continue
+        out.append((start, end, peak, count))
+        start, end, peak, count = frame_a, frame_b, delta, 1
+    out.append((start, end, peak, count))
+    return out
+
+
+def _argmax_span(
+    segments: list[tuple[int, int, float]],
+) -> tuple[int, int, float] | None:
+    """Longest coalesced span at the peak delta; ties prefer the earlier start."""
+    if not segments:
+        return None
+    peak = max(item[2] for item in segments)
+    at_peak = [item for item in segments if item[2] >= peak - 1e-9]
+    start, end, delta, _count = max(
+        _coalesce_adjacent(at_peak), key=lambda span: (span[3], -span[0])
+    )
+    return start, end, delta
+
+
+def curve_derivative_note(
+    segments: list[tuple[int, int, float]],
+    *,
+    hi: float | None = None,
+    limit: int = 8,
+) -> str:
+    """Name the argmax adjacent-frame span and compact segments that already exceed ``hi``.
+
+    Run ``20260826T170413Z-ba2b4c`` reported ``7.391312`` with an empty note. LINEAR
+    interpolation makes every pair in f1→f24 the same max-component delta; coalescing
+    those pairs is the measurement, not a first-pair accident. A scalar without its
+    argmax is an estimate.
+    """
+    span = _argmax_span(segments)
+    if span is None:
+        return ""
+    frame_a, frame_b, peak = span
+    parts = [f"argmax f{frame_a}→f{frame_b} ({peak:.6g})"]
+    if hi is None:
+        return parts[0]
+    over = [item for item in segments if item[2] > float(hi) + 1e-9]
+    if not over:
+        return parts[0]
+    shown: list[str] = []
+    spans = _coalesce_adjacent(over)
+    for start, end, delta, count in spans[:limit]:
+        piece = f"f{start}→f{end}={delta:.6g}"
+        if count > 1:
+            piece += f" ×{count}"
+        shown.append(piece)
+    extra = f" +{len(spans) - limit} more" if len(spans) > limit else ""
+    parts.append("exceeds hi " + ", ".join(shown) + extra)
+    return "; ".join(parts)
+
+
+def _derivative_segments(raw) -> list[tuple[int, int, float]]:
+    out: list[tuple[int, int, float]] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            continue
+        try:
+            start, end, delta = int(item[0]), int(item[1]), float(item[2])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(item[2], bool) or end <= start:
+            continue
+        out.append((start, end, delta))
+    return out
+
+
+def _optional_hi(row: dict) -> float | None:
+    hi = row.get("hi")
+    if isinstance(hi, bool) or not isinstance(hi, (int, float)):
+        return None
+    return float(hi)
+
+
+def schedule_smoothness_contradictions(rows: list[dict]) -> list[dict[str, str]]:
+    """Pair a schedule with a same-role derivative cap whose hi is below the linear floor."""
+    schedules = [row for row in rows if isinstance(row, dict) and row.get("kind") == "keyframe_schedule"]
+    derivatives = [row for row in rows if isinstance(row, dict) and row.get("kind") == "curve_derivative_max"]
+    out: list[dict[str, str]] = []
+    for deriv in derivatives:
+        hi = deriv.get("hi")
+        if isinstance(hi, bool) or not isinstance(hi, (int, float)):
+            continue
+        roles = tuple(sorted(str(role) for role in _selectors(deriv, "roles")))
+        if not roles:
+            continue
+        prop = str(deriv.get("property") or "location")
+        for schedule in schedules:
+            if tuple(sorted(str(role) for role in _selectors(schedule, "roles"))) != roles:
+                continue
+            worst = schedule_derivative_floor(schedule, prop)
+            if worst is None or float(worst["floor"]) <= float(hi) + 1e-9:
+                continue
+            schedule_id = str(schedule.get("id") or "<missing>")
+            deriv_id = str(deriv.get("id") or "<missing>")
+            span = int(worst["frame_b"]) - int(worst["frame_a"])
+            out.append({
+                "schedule_id": schedule_id,
+                "smoothness_id": deriv_id,
+                "message": (
+                    f"{deriv_id}: hi {hi} is below the linear floor {worst['floor']:.6g} of "
+                    f"{schedule_id} samples ({prop} Δ={worst['delta']:.6g} over frames "
+                    f"{worst['frame_a']}→{worst['frame_b']}, {span} frames). Raise hi, widen "
+                    "the span, or reduce Δ — interpolation cannot invent a third option"
+                ),
+            })
+    return out
+
+
 def validate_row_set(rows: list[dict]) -> list[str]:
     """Cross-row contradictions no single row can reveal.
 
@@ -542,6 +824,10 @@ def validate_row_set(rows: list[dict]) -> list[str]:
     Glare its sibling pinned to 'Threshold' — CompositorNodeGlare exposes neither
     a 'Value' input nor output), and the contradiction only surfaced two builds
     and four repairs later. Explicitness costs one field; require it up front.
+
+    A ``keyframe_schedule`` whose consecutive samples already exceed a same-role
+    ``curve_derivative_max`` ``hi`` is the same class: the builder cannot satisfy
+    both (run 20260826T170413Z-ba2b4c).
     """
     findings: list[str] = []
     def _selector(row: dict) -> tuple[str, tuple[str, ...]]:
@@ -565,6 +851,7 @@ def validate_row_set(rows: list[dict]) -> list[str]:
                 f"row(s) {pinned[selector]} — one node cannot be required to expose both a "
                 "literal 'Value' socket and the pinned socket; declare 'socket' on this row"
             )
+    findings.extend(row["message"] for row in schedule_smoothness_contradictions(rows))
     return findings
 
 
@@ -663,6 +950,39 @@ def _fcurves(target):
             if not bags: bags=list(getattr(strip,'channelbags',[]))
             for cb in bags: out.extend(cb.fcurves)
     return out
+def _path_aliases(path):
+    p=str(path)
+    if p.startswith('[') or p.startswith('data.'):
+        return (p,)
+    return (p, 'data.'+p)
+def _eval_property(target,path):
+    last=None
+    for alias in _path_aliases(path):
+        try: return _raw_property(target, alias)
+        except Exception as exc: last=exc
+    raise last
+def _host_fcurves(o):
+    rows=[]
+    for fc in _fcurves(o):
+        rows.append(('object', fc.data_path, fc))
+    data=getattr(o,'data',None)
+    if data is not None:
+        for fc in _fcurves(data):
+            rows.append(('data', fc.data_path, fc))
+    return rows
+def _schedule_frames(o, path):
+    aliases=set(_path_aliases(path)); frames=set()
+    for kind, dp, fc in _host_fcurves(o):
+        if kind=='object' and dp in aliases:
+            frames.update(int(round(k.co.x)) for k in fc.keyframe_points)
+        elif kind=='data' and (dp in aliases or ('data.'+dp) in aliases):
+            frames.update(int(round(k.co.x)) for k in fc.keyframe_points)
+    return frames
+def _present_paths(o):
+    out=[]
+    for kind, dp, _fc in _host_fcurves(o):
+        out.append(dp if kind=='object' else (dp if str(dp).startswith('data.') else 'data.'+dp))
+    return out
 def _state(items,frame):
     _scene.frame_set(int(frame)); dg=bpy.context.evaluated_depsgraph_get(); out=[]
     for item in items:
@@ -698,7 +1018,7 @@ def _missobj(row):
     return ('roles '+repr(_p(row,'roles'))+' / control_roles '+repr(_p(row,'control_roles'))+
             ' matched no objects; object roles present: '+(', '.join(_seen_object_roles()) or '(none)'))
 for row in _rows:
-    kind=row['kind']; value=None; error=''; note=''
+    kind=row['kind']; value=None; error=''; note=''; segments=[]; role_fractions={{}}
     # Every row measures its DECLARED frame with its own depsgraph. Temporal kinds
     # (keyframe_schedule, onset_order, …) excurse to other frames and never restored
     # the batch frame, so every later row silently measured whatever frame the previous
@@ -723,43 +1043,51 @@ for row in _rows:
             x0,y0,x1,y1=rec['bbox']
             value={{'bbox_width':x1-x0,'bbox_height':y1-y0,'bbox_center_x':(x0+x1)/2,'bbox_center_y':(y0+y1)/2,'bbox_top_y':y0,'bbox_bottom_y':y1}}[kind]
         elif kind=='visible_fraction':
-            # Of the subject's ON-SCREEN surface samples, the fraction whose camera ray
-            # reaches subject surface before anything else. On-screen-ness is bbox rows'
-            # claim (projection); this kind owns OCCLUSION — conflating them made a
-            # frame-filling subject read 0.0 because its sparse vertices all sat outside
-            # the frustum. Zero on-screen samples reads 0.0: judged-but-absent is the
-            # failure this kind exists to catch, not an instrument error.
+            # Of EACH named role's ON-SCREEN surface samples, the fraction whose camera
+            # ray reaches that role before anything else. A pooled union hid a failing
+            # core behind passing rings (HIR-0051): the scalar is min(per-role), and a
+            # named role with no samples reads 0.0. Zero on-screen samples is a failing
+            # measurement, not an instrument error (HIR-0019).
             if not objects: raise ValueError(_missobj(row))
             if _scene.camera is None: raise ValueError('scene has no camera at the declared frame')
-            _mvp=_checks.camera_clip_matrix(_scene,_row_dg)
-            cam_loc=_scene.camera.matrix_world.translation
-            subjects=set(o.name for o in objects)
-            sampled=0; on_screen=0; seen=0
-            for o in objects:
-                ev=o.evaluated_get(_row_dg)
-                if ev.type!='MESH': continue
-                mw=ev.matrix_world
-                points=[]
-                verts=ev.data.vertices
-                vstride=max(1,len(verts)//32)
-                points += [mw@verts[vi].co for vi in range(0,len(verts),vstride)]
-                polys=ev.data.polygons
-                pstride=max(1,len(polys)//32)
-                points += [mw@polys[pi].center for pi in range(0,len(polys),pstride)]
-                for p in points:
-                    sampled+=1
-                    v=_mvp@p.to_4d()
-                    if v.w<=1e-9 or abs(v.x)>v.w or abs(v.y)>v.w or v.z<-v.w or v.z>v.w:
-                        continue
-                    d=p-cam_loc; dist=d.length
-                    if dist<=1e-6: continue
-                    on_screen+=1
-                    hit,_loc,_n,_i,hob,_m4=_scene.ray_cast(
-                        _row_dg,cam_loc,d.normalized(),distance=dist-1e-4)
-                    # a hit on the subject itself is the camera SEEING that subject
-                    if not hit or getattr(hob,'original',hob).name in subjects: seen+=1
-            if not sampled: raise ValueError('selected roles expose no evaluated mesh points to test')
-            value=seen/on_screen if on_screen else 0.0
+            def _vis_frac(sel):
+                if not sel: return 0.0
+                _mvp=_checks.camera_clip_matrix(_scene,_row_dg)
+                cam_loc=_scene.camera.matrix_world.translation
+                subjects=set(o.name for o in sel)
+                sampled=0; on_screen=0; seen=0
+                for o in sel:
+                    ev=o.evaluated_get(_row_dg)
+                    if ev.type!='MESH': continue
+                    mw=ev.matrix_world
+                    points=[]
+                    verts=ev.data.vertices
+                    vstride=max(1,len(verts)//32)
+                    points += [mw@verts[vi].co for vi in range(0,len(verts),vstride)]
+                    polys=ev.data.polygons
+                    pstride=max(1,len(polys)//32)
+                    points += [mw@polys[pi].center for pi in range(0,len(polys),pstride)]
+                    for p in points:
+                        sampled+=1
+                        v=_mvp@p.to_4d()
+                        if v.w<=1e-9 or abs(v.x)>v.w or abs(v.y)>v.w or v.z<-v.w or v.z>v.w:
+                            continue
+                        d=p-cam_loc; dist=d.length
+                        if dist<=1e-6: continue
+                        on_screen+=1
+                        hit,_loc,_n,_i,hob,_m4=_scene.ray_cast(
+                            _row_dg,cam_loc,d.normalized(),distance=dist-1e-4)
+                        if not hit or getattr(hob,'original',hob).name in subjects: seen+=1
+                if not sampled: return 0.0
+                return seen/on_screen if on_screen else 0.0
+            named=_p(row,'roles')
+            if named:
+                for role in named:
+                    role_fractions[str(role)]=_vis_frac(_objects({{**row,'roles':[role]}}))
+                value=min(role_fractions.values()) if role_fractions else 0.0
+                note='per-role '+', '.join(r+'='+('%.6g'%role_fractions[r]) for r in named)
+            else:
+                value=_vis_frac(objects)
         elif kind=='mesh_vertex_count':
             value=sum(len(o.evaluated_get(_row_dg).data.vertices)
                       for o in objects if o.type=='MESH')
@@ -855,20 +1183,37 @@ for row in _rows:
         elif kind=='keyframe_schedule':
             if not objects: raise ValueError(_missobj(row))
             samples=row['samples']; expected_frames={{int(s['frame']) for s in samples}}
-            paths=set(samples[0]['values']); deltas=[]
+            paths=set(samples[0]['values']); deltas=[]; miss=[]
+            miss_floor=float(row.get('hi') or 0)+1.0
             for o in objects:
-                action=getattr(getattr(o,'animation_data',None),'action',None)
-                if action is None: raise ValueError('scheduled object has no action')
+                present=_present_paths(o)
+                frames_ok=True
                 for path in paths:
-                    actual_frames={{int(round(k.co.x)) for fc in _fcurves(o)
-                                   if fc.data_path==path for k in fc.keyframe_points}}
+                    actual_frames=_schedule_frames(o, path)
                     if actual_frames!=expected_frames:
-                        raise ValueError(f'{{path}} keyframes {{sorted(actual_frames)}} != {{sorted(expected_frames)}}')
+                        frames_ok=False
+                        miss.append(
+                            o.name+' '+repr(path)+' aliases '+repr(list(_path_aliases(path)))+
+                            ': keyframes '+repr(sorted(actual_frames))+' != '+repr(sorted(expected_frames))+
+                            '; fcurve data_paths present: '+
+                            (', '.join(repr(p) for p in present) or '(none)'))
                 for sample in samples:
                     _scene.frame_set(int(sample['frame'])); dg=bpy.context.evaluated_depsgraph_get()
                     ev=o.evaluated_get(dg)
                     for path,expected in sample['values'].items():
-                        deltas.append(_delta(_raw_property(ev,path),expected))
+                        try:
+                            deltas.append(_delta(_eval_property(ev,path),expected))
+                        except Exception as exc:
+                            frames_ok=False
+                            miss.append(
+                                o.name+' '+repr(path)+' unreadable: '+str(exc)[:160]+
+                                '; fcurve data_paths present: '+
+                                (', '.join(repr(p) for p in present) or '(none)'))
+                            deltas.append(miss_floor)
+                if not frames_ok:
+                    deltas.append(miss_floor)
+            if miss:
+                note='; '.join(miss)[:400]
             value=max(deltas) if deltas else 0.0
         elif kind=='onset_order':
             other=_objects({{**row,
@@ -899,16 +1244,21 @@ for row in _rows:
         elif kind=='curve_derivative_max':
             if not objects: raise ValueError(_missobj(row))
             a,b=row['frames']; path=row.get('property') or 'location'
-            deltas=[]; prev=None
+            deltas=[]; prev=None; prev_f=None
             for f in range(int(a),int(b)+1):
                 _scene.frame_set(int(f)); dg=bpy.context.evaluated_depsgraph_get()
-                cur=[_raw_property(o.evaluated_get(dg),path) for o in objects]
+                cur=[_eval_property(o.evaluated_get(dg),path) for o in objects]
                 if prev is not None:
+                    pair=None
                     for before,after in zip(prev,cur):
                         bv=before if isinstance(before,tuple) else (before,)
                         av=after if isinstance(after,tuple) else (after,)
-                        deltas.append(max(abs(x-y) for x,y in zip(av,bv)))
-                prev=cur
+                        step=max(abs(x-y) for x,y in zip(av,bv))
+                        pair=step if pair is None or step>pair else pair
+                    if pair is not None:
+                        deltas.append(pair)
+                        segments.append([int(prev_f), int(f), pair])
+                prev=cur; prev_f=f
             if not deltas: raise ValueError('frame window has no adjacent frame pair')
             value=max(deltas)
         elif kind=='path_clearance_min':
@@ -971,7 +1321,8 @@ for row in _rows:
       'roles':[str(o.get('bvfx_role','')) for o in objects],'materials':[m.name for m in materials],
       'controls':[str(o.get('bvfx_control','')) for o in objects],
       'material_roles':[str(m.get('bvfx_role','')) for m in materials],
-      'nodes':[n.name for g,n in matched],'error':error,'note':note}})
+      'nodes':[n.name for g,n in matched],'error':error,'note':note,'segments':segments,
+      'role_fractions':role_fractions}})
 RESULT=_out
 """
 
@@ -996,6 +1347,28 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
             value = None
         if isinstance(value, float):
             value = round(value, 6)
+        note = str(reading.get("note") or "")
+        extra: dict = {}
+        if str(row.get("kind")) == "curve_derivative_max":
+            parsed = _derivative_segments(reading.get("segments"))
+            formatted = curve_derivative_note(parsed, hi=_optional_hi(row))
+            if formatted:
+                note = formatted
+            span = _argmax_span(parsed)
+            if span is not None:
+                extra["argmax_frames"] = [span[0], span[1]]
+                extra["argmax_delta"] = round(span[2], 6)
+        role_fracs = reading.get("role_fractions")
+        if (
+            str(row.get("kind")) == "visible_fraction"
+            and isinstance(role_fracs, dict)
+            and role_fracs
+        ):
+            extra["role_fractions"] = {
+                str(key): round(float(frac), 6) for key, frac in role_fracs.items()
+            }
+            if not note:
+                note = visible_fraction_note(extra["role_fractions"])
         out.append(
             {
                 "id": str(row.get("id") or "<missing>"),
@@ -1004,8 +1377,10 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
                 "definition": KIND_DEFINITIONS.get(str(row.get("kind") or ""), ""),
                 "value": value,
                 "target": _target(row),
-                "pass": not error and _holds(row, value),
-                "note": str(reading.get("note") or ""),
+                "pass": not error and _holds(
+                    row, value, role_fractions=extra.get("role_fractions")
+                ),
+                "note": note,
                 "origin": "planner",
                 "source": "interface_contract",
                 "authoritative": True,
@@ -1019,6 +1394,7 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
                 "materials": list(reading.get("materials") or []),
                 "material_roles": list(reading.get("material_roles") or []),
                 "nodes": list(reading.get("nodes") or []),
+                **extra,
                 **({"error": error} if error else {}),
             }
         )

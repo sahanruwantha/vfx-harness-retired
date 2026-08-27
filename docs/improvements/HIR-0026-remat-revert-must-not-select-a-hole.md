@@ -124,12 +124,14 @@ site and dropping `overlay_root`. That reintroduces the hole.
 ## Remaining limitations
 
 - A remat of a layer that is already `jit_deferred` in the live view
-  still enters `_rematerialize_layer`: discard check, unpublished overlay
-  (identity for that layer), publication select, then apply_replan. The
-  live view is not the only design base, and unit state is not left
-  pointing at the discarded DAG.
+  still enters `_rematerialize_layer`: unpublished overlay (identity for
+  that layer), publication select, then apply_replan. The live view is not
+  the only design base, and unit state is not left pointing at the discarded
+  DAG. Accepted units are not a door refuse (HIR-0052).
 - Denying Task does not prevent every SDK-side spawn if a future runtime
   adds another delegation name; the list is a ratchet, not a capability
   probe.
-- Publication after a successful remat still discards the previous layer
-  DAG; `--discard-accepted` remains an explicit operator act.
+- Publication after a successful remat still replaces the previous layer
+  view; `apply_replan` preserves matching unit digests. `--discard-accepted`
+  remains the unusable-base / accepted-orphan wipe, not the door on remat
+  (HIR-0052).

@@ -65,6 +65,40 @@ def test_upstream_only_evidence_never_seals_the_current_layer() -> None:
     assert state["interfaces_ready"] is True
 
 
+def test_scene_pass_with_unpaid_image_debts_is_not_selector_miss_or_handoff() -> None:
+    """HIR-0048: 5/5 scene rows with two unpaid look ids is a payment note."""
+    from vfx_harness.blender.tools import followup_after_image_gate_pass, followup_after_scene_contracts_pass
+
+    state = {
+        "look_unsettled": False,
+        "image_evidence_required": True,
+        "unpaid_image_debts": [
+            {
+                "id": "materials-energy-look-f72",
+                "frame": 72,
+                "property": "render_region_stat",
+                "axis": "material_energy_language",
+            },
+            {
+                "id": "materials-energy-look-f150",
+                "frame": 150,
+                "property": "render_region_stat",
+                "axis": "material_energy_language",
+            },
+        ],
+    }
+    note = followup_after_scene_contracts_pass(state)
+    assert "SCENE CONTRACTS PASS" in note
+    assert "IMAGE-CONTRACT DEBTS UNPAID" in note
+    assert "materials-energy-look-f72" in note
+    assert "materials-energy-look-f150" in note
+    assert "CRITIC HANDOFF" not in note
+    assert "selector matching no object" not in note
+    image_note = followup_after_image_gate_pass(state, [])
+    assert "IMAGE-CONTRACT DEBTS UNPAID" in image_note
+    assert "CRITIC HANDOFF" not in image_note
+
+
 def test_unmeasurable_metric_reads_as_inapplicable_not_failed() -> None:
     """`smooth_fraction` over a camera rig reads None because there is no mesh to shade.
     Reporting that as "fails" sent two repair rounds after something no build could fix
@@ -90,7 +124,7 @@ def test_projection_failure_names_its_reason() -> None:
     from vfx_harness.agents import builder
     from vfx_harness.evidence import scene_checks
 
-    assert 'why = str(row.get("error") or "").strip()' in inspect.getsource(builder)
+    assert 'why = str(row.get("error") or row.get("note") or "").strip()' in inspect.getsource(builder)
 
     probe = inspect.getsource(scene_checks._blender_probe)
     assert "selector matched no objects" in probe

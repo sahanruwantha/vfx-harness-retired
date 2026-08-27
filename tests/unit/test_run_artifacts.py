@@ -169,6 +169,41 @@ def test_model_turn_exhaustion_is_not_reported_as_generic_failure(
     assert "turn budget" in status["detail"]
 
 
+def test_integer_systemexit_detail_is_the_meaning_not_the_digit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """vfx build exit 7 wrote status.json detail '7'. str(SystemExit(7)) is truthy."""
+    shot = tmp_path / "incomplete"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "direct-incomplete")
+
+    with pytest.raises(SystemExit) as raised, run_artifacts.invocation(shot, "build") as layout:
+        raise SystemExit(7)
+
+    assert raised.value.code == 7
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["exit_code"] == 7
+    assert status["detail"] == "INCOMPLETE CHAIN"
+    assert status["detail"] != "7"
+
+
+def test_requested_exit_keeps_the_exception_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot = tmp_path / "unpassed"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "direct-unpassed")
+
+    with pytest.raises(run_artifacts.RequestedExit), run_artifacts.invocation(shot, "build") as layout:
+        raise run_artifacts.RequestedExit(7, "INCOMPLETE CHAIN — unit cam_spine failed")
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["exit_code"] == 7
+    assert "cam_spine" in status["detail"]
+
+
 def test_reader_refuses_shot_root_legacy_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

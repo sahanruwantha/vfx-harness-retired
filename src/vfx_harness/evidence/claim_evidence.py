@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.work_units import EXTRA_FRAME_BINDING_RULE
 from vfx_harness.observability import run_artifacts
 
 OBSERVATION_KINDS = {"measurable", "qualitative"}
@@ -266,6 +267,18 @@ def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> Closure
         "scene_contract": {str(row.get("id")): row for row in scene_rows if row.get("id")},
         "image_contract": {str(row.get("id")): row for row in image_rows if row.get("id")},
     }
+    from vfx_harness.domain.image_debts import (
+        metric_matches_property,
+        normalize_evidence_id,
+    )
+    from vfx_harness.evidence.checks import load_image_contract_payment_rows
+
+    runtime_by_id = {
+        normalize_evidence_id(row.get("id")): row
+        for row in load_image_contract_payment_rows(root)
+        if normalize_evidence_id(row.get("id"))
+        and str(row.get("origin") or "") == "builder"
+    }
     findings: list[ClosureFinding] = []
     claim_bindings: dict[str, frozenset[str]] = {}
     bound: set[str] = set()
@@ -304,7 +317,11 @@ def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> Closure
                 outside = sorted(set(claim.moments) - unit_frames)
                 if outside:
                     findings.append(
-                        ClosureFinding(where, f"moments outside the unit judge set: {outside}")
+                        ClosureFinding(
+                            where,
+                            f"moments outside the unit judge set: {outside}. "
+                            f"{EXTRA_FRAME_BINDING_RULE}",
+                        )
                     )
                 if claim.property in _CIRCULAR_PROPERTIES:
                     findings.append(
@@ -317,7 +334,19 @@ def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> Closure
                 for binding in claim.evidence:
                     if binding.kind in catalogs:
                         record = catalogs[binding.kind].get(binding.id)
+                        if record is None and binding.kind == "image_contract":
+                            record = runtime_by_id.get(normalize_evidence_id(binding.id))
                         if record is None:
+                            if binding.kind == "image_contract":
+                                # Materialization forbids candidate-sensitive checks.json
+                                # rows. HIR-0046 requires the look claim to bind the id
+                                # now; HIR-0047 counts that id as a producer so the unit
+                                # plan is not retracted for a debt the builder still owes.
+                                # A runtime_checks.json row that matches id/axis/frame is
+                                # a paid debt (HIR-0048); absence here is still a debt.
+                                ids.add(binding.id)
+                                bound.add(binding.id)
+                                continue
                             findings.append(
                                 ClosureFinding(
                                     where,
@@ -337,7 +366,23 @@ def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> Closure
                             findings.append(
                                 ClosureFinding(
                                     where,
-                                    f"binding {binding.id!r} targets f{record['frame']} outside claim moments",
+                                    f"binding {binding.id!r} targets f{record['frame']} "
+                                    f"outside claim moments. {EXTRA_FRAME_BINDING_RULE}",
+                                )
+                            )
+                        if (
+                            binding.kind == "image_contract"
+                            and record.get("metric")
+                            and not metric_matches_property(
+                                str(record.get("metric") or ""),
+                                str(claim.property or ""),
+                            )
+                        ):
+                            findings.append(
+                                ClosureFinding(
+                                    where,
+                                    f"binding {binding.id!r} metric {record.get('metric')!r} "
+                                    f"does not certify property {claim.property!r}",
                                 )
                             )
                         ids.add(binding.id)
@@ -351,12 +396,27 @@ def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> Closure
                                     f"qualification binding {binding.id!r} does not match suite {suite!r}",
                                 )
                             )
-                    # semantic_diff and human_decision are declared evidence paths whose
-                    # runtime result cannot exist at plan time. Their typed ids are still
-                    # part of the claim closure and are resolved at evaluation.
+                    # semantic_diff, human_decision, and unbound image_contract ids are
+                    # declared evidence paths whose runtime result cannot exist at plan
+                    # time. Their typed ids are still part of the claim closure and are
+                    # resolved at evaluation (HIR-0047).
                 if claim.id in claim_bindings:
                     findings.append(ClosureFinding(where, "claim id is duplicated across work units"))
                 claim_bindings[claim.id] = frozenset(ids)
+            context = unit.evaluation.composition_context
+            if context is not None:
+                context_where = f"layer {layer_id} unit {unit.id} composition_context"
+                for cid in context.contract_ids:
+                    record = catalogs["scene_contract"].get(cid)
+                    if record is None:
+                        findings.append(
+                            ClosureFinding(
+                                context_where,
+                                f"scene_contract binding {cid!r} does not exist",
+                            )
+                        )
+                        continue
+                    bound.add(cid)
 
     missing = sorted(required - bound)
     for cid in missing:

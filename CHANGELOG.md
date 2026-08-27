@@ -17,6 +17,83 @@ live in the linked Harness Improvement Records.
   a prior generation's row is inert, a later superseded or falsified row retires
   the id, and materialization copies the compiled binding set
   ([HIR-0028](docs/improvements/HIR-0028-structured-decisions-bind-the-selected-bundle.md)).
+  Extra-frame scene contracts bind through `composition_context.contract_ids`; the
+  kickoff compiles the layer judge list and named sealed outcomes, and judge-set
+  rejections name that binding
+  ([HIR-0029](docs/improvements/HIR-0029-extra-frame-contracts-bind-through-ids.md)).
+  Published `keyframe_schedule` samples that already exceed a same-role
+  `curve_derivative_max.hi` are refused at authoring, materialization, and the
+  plan gate
+  ([HIR-0030](docs/improvements/HIR-0030-schedule-smoothness-linear-floor.md)).
+  Repair records `cannot_express_in_scope` and skips the remaining budget instead
+  of burning the next attempt
+  ([HIR-0031](docs/improvements/HIR-0031-cannot-express-stops-repair-budget.md)).
+  A declaring unit's empty `look_capabilities` is executable-only, and a
+  no-signal plate is not a look score
+  ([HIR-0032](docs/improvements/HIR-0032-no-look-on-no-signal-plates.md)).
+  `find_recipe` abstains when the hit requires mutation roles the unit does not
+  own
+  ([HIR-0033](docs/improvements/HIR-0033-find-recipe-abstains-off-scope.md)).
+  `run_bpy` errors that reinvent `path_clearance_min` name the bound instrument
+  ([HIR-0034](docs/improvements/HIR-0034-run-bpy-names-bound-instruments.md)).
+  A `curve_derivative_max` miss names the argmax adjacent-frame pair
+  ([HIR-0035](docs/improvements/HIR-0035-curve-derivative-names-argmax.md)).
+  Look-less live `render_frame` / `verify_change` default to Workbench solid
+  ([HIR-0036](docs/improvements/HIR-0036-lookless-preview-defaults-to-workbench.md)).
+  Integer `SystemExit` `status.json` detail is the meaning, not the digit
+  ([HIR-0037](docs/improvements/HIR-0037-status-detail-names-the-stop.md)).
+  Materialization sessions bind a durable transcript
+  ([HIR-0038](docs/improvements/HIR-0038-materialization-binds-transcript.md)).
+  Composed canonical of a look-less layer fans in unit executable claims
+  instead of a critic look vote; `vfx build` exits 9 when units passed but
+  the composed verdict did not
+  ([HIR-0039](docs/improvements/HIR-0039-lookless-composition-is-not-a-critic.md)).
+  A sibling rematerialization that only changes the combined `layers.json`
+  hash adopts that identity and preserves the unchanged layer's unit
+  statuses; it is not a DAG replan
+  ([HIR-0040](docs/improvements/HIR-0040-sibling-view-hash-is-not-a-dag-change.md)).
+  A shared `bvfx_role` on several hosts names `object=` as the next action
+  for a single-subject check, and `list_keyframes` enumerates every host
+  ([HIR-0041](docs/improvements/HIR-0041-shared-role-is-not-an-inexact-selector.md)).
+  `probe_candidate` on a look-owning unit returns a draft beauty plate;
+  Workbench solid is not the critic's domain
+  ([HIR-0042](docs/improvements/HIR-0042-look-probe-is-not-workbench-solid.md)).
+  Canonical repair binds `cannot_express_in_scope` on the candidate server
+  ([HIR-0043](docs/improvements/HIR-0043-repair-must-bind-cannot-express.md)).
+  A look-owning unit with no image bindings does not lock `run_bpy` on a
+  0/0 critic handoff
+  ([HIR-0044](docs/improvements/HIR-0044-look-without-image-contracts-is-not-a-handoff.md)).
+  A unit judge frame with no required claim is a contract_gap, not a critic look
+  vote
+  ([HIR-0045](docs/improvements/HIR-0045-uncovered-judge-frame-is-not-a-critic.md)).
+  A look-owning unit cannot seal 5.0 on scene counts; every judge frame needs a
+  required image-domain claim
+  ([HIR-0046](docs/improvements/HIR-0046-look-ownership-is-not-a-scene-seal.md)).
+  Claim-closure counts those bound `image_contract` ids as producers while
+  `checks.json` is still empty
+  ([HIR-0047](docs/improvements/HIR-0047-image-contract-debt-is-not-missing.md)).
+  Owed look `image_contract` ids compile to a payment card; `propose_checks`
+  must match id, frame, property kind, and axis; candidate freeze refuses
+  while any remain unpaid without a typed `unpaid_image_debt` abstention;
+  the `render_region_stat` family is the `METRICS` `region_*` prefix, and
+  falsification-id readers strip `check:`
+  ([HIR-0048](docs/improvements/HIR-0048-unpaid-image-debt-is-not-a-selector-miss.md)).
+  A JIT-layer `--falsification` compares `plan_hash` to the materialized view
+  / durable state, not the sparse bundle file, and reopens the finding's
+  unit plus affected closure without empty-base-replanning passed siblings
+  ([HIR-0049](docs/improvements/HIR-0049-jit-falsification-identity-is-the-view-hash.md)).
+  A `keyframe_schedule` sample path matches object `P`, object `data.P`, and
+  the data-block `P` fcurve; a path miss names both sides and fails closed
+  instead of reading as INAPPLICABLE
+  ([HIR-0050](docs/improvements/HIR-0050-keyframe-schedule-path-miss-is-not-inapplicable.md)).
+  A required `visible_fraction` claim is repaired by a camera unit or the
+  mutator of those roles; multi-role vis is AND across named roles; geometry
+  units freeze-protect active-layer vis including sibling rows
+  ([HIR-0051](docs/improvements/HIR-0051-occlusion-needs-a-ray-changing-owner.md)).
+  Rematerialization of a layer that already has accepted units is
+  `apply_replan`: matching digests stay; `--discard-accepted` is not the
+  door on remat
+  ([HIR-0052](docs/improvements/HIR-0052-remat-with-accepted-units-is-apply-replan.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

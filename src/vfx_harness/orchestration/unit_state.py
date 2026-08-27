@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from vfx_harness.domain.work_units import UNIT_STATES, WorkUnit, validate_unit_dag
+from vfx_harness.domain.work_units import (
+    UNIT_STATES,
+    WorkUnit,
+    geometry_vis_protection_ids,
+    validate_unit_dag,
+)
 from vfx_harness.observability.provenance import atomic_write
 
 SCHEMA = 1
@@ -144,7 +150,32 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
         validate_current(current, layer_id, units)
         if current.get("plan_hash") == plan_hash:
             return current
-        raise ValueError("work-unit plan changed; apply a transactional replan instead of reinitializing")
+        # `plan_hash` is sha256 of the selected layers.json, which names every
+        # materialized layer. A sibling rematerialization changes that file while
+        # this layer's unit DAG can be byte-identical. That is a plan-identity
+        # adoption, not a DAG change: empty-base `vfx units replan` would treat
+        # every unit as added and reset passed checkpoints (HIR-0040).
+        if int(current.get("digest_schema", 1)) != DIGEST_SCHEMA:
+            raise ValueError(
+                "work-unit plan changed; apply a transactional replan instead of reinitializing"
+            )
+        apply_replan(
+            folder,
+            layer_id,
+            units,
+            units,
+            old_plan_hash=str(current["plan_hash"]),
+            new_plan_hash=plan_hash,
+            owner="vfx-harness.initialize",
+            trigger=(
+                "selected layers.json identity changed while this layer's unit DAG is unchanged"
+            ),
+            evidence=[f"layers.json sha256 {plan_hash}"],
+        )
+        adopted = load(folder, layer_id)
+        if not adopted:
+            raise ValueError("work-unit state disappeared during plan-identity adoption")
+        return adopted
     now = _now()
     value = {
         "schema": SCHEMA,
@@ -274,6 +305,7 @@ def freeze_checkpoint(
     settings_hash: str,
     script_hash: str,
     input_hash: str,
+    layer_active_vis_ids: Iterable[str] = (),
 ) -> dict:
     """Resolve wildcards once and persist the immutable candidate boundary."""
     value = load(folder, layer_id)
@@ -284,14 +316,15 @@ def freeze_checkpoint(
         raise KeyError(f"unknown work unit {unit.id!r}")
     if slot.get("status") not in {"building", "repairing"}:
         raise ValueError(f"cannot freeze {unit.id} from state {slot.get('status')}")
-    protected = unit.protects.resolve(active_contract_ids)
+    protected = set(unit.protects.resolve(active_contract_ids))
+    protected.update(geometry_vis_protection_ids(unit.provides, layer_active_vis_ids))
     checkpoint = {
         "at": _now(),
         "candidate_hash": str(candidate_hash),
         "settings_hash": str(settings_hash),
         "script_hash": str(script_hash),
         "input_hash": str(input_hash),
-        "protected_contract_ids": list(protected),
+        "protected_contract_ids": sorted(protected),
         "unit_hash": unit_digest(unit),
     }
     before = slot["status"]
@@ -576,6 +609,7 @@ def apply_replan(
     falsification_id: str | None = None,
     hard_constraint_approval: str | None = None,
     discard_accepted: bool = False,
+    reopen: frozenset[str] | set[str] | tuple[str, ...] | None = None,
 ) -> dict:
     """Atomically publish state effects and an audit record for a validated DAG amendment."""
     if not owner.strip() or not trigger.strip() or not evidence:
@@ -606,12 +640,14 @@ def apply_replan(
             raise ValueError("replan base layer/plan hash does not match active state")
 
     old = {unit.id: unit for unit in old_units}
+    new_ids = {unit.id for unit in new_units}
     effects = replan_effects(old_units, new_units)
     added = set(effects["added"])
     removed = set(effects["removed"])
     changed = set(effects["changed"])
-    invalidated = set(effects["invalidated"])
-    preserved = set(effects["preserved"])
+    reopen_ids = {str(uid) for uid in (reopen or ()) if str(uid)}
+    invalidated = set(effects["invalidated"]) | (reopen_ids & new_ids)
+    preserved = set(old) & new_ids - invalidated
     orphaned = state_unit_ids - set(old) - {unit.id for unit in new_units} if deferred_base else set()
     now = _now()
 

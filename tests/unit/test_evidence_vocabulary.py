@@ -53,6 +53,62 @@ def test_new_kinds_validate_and_compile_into_the_probe() -> None:
     for row in rows:
         assert validate_row(row) is None, (row["id"], validate_row(row))
     compile(_blender_probe(rows, 1), "probe", "exec")
+    probe = _blender_probe(rows, 1)
+    assert "segments.append" in probe
+    assert "prev_f" in probe
+
+
+def test_curve_derivative_evidence_names_argmax_segment() -> None:
+    """Run 20260826T170413Z-ba2b4c: value 7.391312, empty note. The probe already
+    walked every adjacent pair; the note must name f23→f24 (or whichever pair peaked)."""
+    from vfx_harness.evidence.scene_checks import _evidence, curve_derivative_note
+
+    note = curve_derivative_note(
+        [(1, 2, 1.0), (23, 24, 7.391312), (239, 240, 0.2)],
+        hi=6.0,
+    )
+    assert "argmax f23→f24" in note
+    assert "7.391" in note
+    assert "exceeds hi" in note
+    assert "f23→f24=" in note
+    assert curve_derivative_note([(1, 2, 0.5)], hi=6.0) == "argmax f1→f2 (0.5)"
+    linear = [(frame, frame + 1, 7.391312) for frame in range(1, 24)]
+    linear_note = curve_derivative_note(linear, hi=6.0)
+    assert "argmax f1→f24" in linear_note
+    assert "×23" in linear_note
+
+    row = _row(
+        id="cam-location-smoothness",
+        kind="curve_derivative_max",
+        roles=["cam_rig"],
+        property="location",
+        frames=[1, 240],
+        op="max",
+        hi=6.0,
+    )
+    [ev] = _evidence(
+        [row],
+        [{
+            "id": "cam-location-smoothness",
+            "value": 7.391312,
+            "segments": [[1, 2, 1.0], [23, 24, 7.391312]],
+        }],
+    )
+    assert ev["pass"] is False
+    assert ev["argmax_frames"] == [23, 24]
+    assert ev["argmax_delta"] == 7.391312
+    assert "argmax f23→f24" in ev["note"]
+
+    [linear_ev] = _evidence(
+        [row],
+        [{
+            "id": "cam-location-smoothness",
+            "value": 7.391312,
+            "segments": [[frame, frame + 1, 7.391312] for frame in range(1, 24)],
+        }],
+    )
+    assert linear_ev["argmax_frames"] == [1, 24]
+    assert "argmax f1→f24" in linear_ev["note"]
 
 
 def test_projected_bounds_outside_the_frame_are_vacuous() -> None:
@@ -112,6 +168,61 @@ def test_auto_socket_response_sharing_a_pinned_selector_must_declare_its_socket(
     assert validate_row_set([auto]) == []
 
 
+def test_schedule_smoothness_refuses_linear_floor_above_hi() -> None:
+    """Run 20260826T170413Z-ba2b4c: f1 y=-30 → f24 y=140 is 170/23 ≈ 7.39 against hi 6.0."""
+    from vfx_harness.evidence.scene_checks import validate_row_set
+
+    schedule = _row(
+        id="cam-spine-schedule",
+        kind="keyframe_schedule",
+        roles=["cam_rig"],
+        op="max",
+        hi=0.01,
+        samples=[
+            {"frame": 1, "values": {"location": [0.0, -30.0, 0.0]}},
+            {"frame": 24, "values": {"location": [2.0, 140.0, 5.0]}},
+            {"frame": 40, "values": {"location": [-2.0, 172.0, 7.0]}},
+        ],
+    )
+    smooth = _row(
+        id="cam-location-smoothness",
+        kind="curve_derivative_max",
+        roles=["cam_rig"],
+        property="location",
+        op="max",
+        hi=6.0,
+        frames=[1, 240],
+    )
+    findings = validate_row_set([schedule, smooth])
+    assert len(findings) == 1
+    assert "cam-location-smoothness" in findings[0]
+    assert "cam-spine-schedule" in findings[0]
+    assert "linear floor" in findings[0]
+    assert "7.39" in findings[0]
+    assert "interpolation cannot invent a third option" in findings[0]
+    assert validate_row_set([schedule, {**smooth, "hi": 8.0}]) == []
+    other_role = {**smooth, "id": "other-smooth", "roles": ["cam.iris_face"]}
+    assert validate_row_set([schedule, other_role]) == []
+
+    from vfx_harness.evaluation.plan_gate import _cross_row_contract_findings
+
+    gate = _cross_row_contract_findings([schedule, smooth])
+    assert len(gate) == 1 and gate[0].blocking is True
+    auto_only = _cross_row_contract_findings([
+        _row(
+            id="world-bloom-threshold-bound", kind="node_socket_value", graph="compositor",
+            node_roles=["world.bloom.compositor"], socket="Threshold", direction="input",
+            op="min", lo=0.8,
+        ),
+        _row(
+            id="world-bloom-response", kind="control_render_response", graph="compositor",
+            node_roles=["world.bloom.compositor"], probe_values=[0.0, 1.0], frame=150,
+            op="max", hi=0.15,
+        ),
+    ])
+    assert auto_only and auto_only[0].blocking is False
+
+
 def test_visible_fraction_is_registered_frame_scoped_and_compiles() -> None:
     """Run 20260825: layer 2's every judged surface sat behind a solid proxy disc at
     both judge frames; bbox rows project THROUGH occluders and nothing measured
@@ -133,6 +244,8 @@ def test_visible_fraction_is_registered_frame_scoped_and_compiles() -> None:
     script = _blender_probe([row], 72)
     compile(script, "<probe>", "exec")
     assert "ray_cast" in script
+    assert "role_fractions" in script
+    assert "per-role" in script
 
     assert "frame" in (validate_row({**row, "frame": None}) or "")
     assert "roles" in (validate_row({**row, "roles": [], "control_roles": []}) or "")

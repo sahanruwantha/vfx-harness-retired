@@ -98,13 +98,15 @@ def test_appearance_ownership_demands_candidate_bound_image_evidence() -> None:
     declares look ownership must produce image evidence before it may seal, even when
     it binds no image contract at materialization (none can exist there)."""
     from vfx_harness.agents.build_prompts import capability_feedback_groups
-    from vfx_harness.agents.builder import image_evidence_required_for
+    from vfx_harness.agents.builder import image_evidence_required_for, look_unsettled_for
 
     # The unit that failed: no image binding could exist at materialization, and before
     # this rule its declared appearance ownership demanded nothing at build time either.
     assert image_evidence_required_for(set(), ("material",)) is True
     assert image_evidence_required_for(set(), ()) is False
     assert image_evidence_required_for({"img-1"}, ()) is True
+    assert look_unsettled_for(set(), ("material",)) is True
+    assert look_unsettled_for({"img-1"}, ("material",)) is False
     assert capability_feedback_groups(("material",)) >= {"detail", "color"}
 
 

@@ -155,6 +155,46 @@ def test_spike_refuses_adopted_decision_and_falsification_hypotheses(tmp_path) -
     assert revalue is not None and "re-measures decision A2" in revalue
 
 
+def test_spike_refuses_check_prefixed_falsification_ids(tmp_path) -> None:
+    """HIR-0048: historical hf contract_ids used check:; the spike guard must still match."""
+    from vfx_harness.agents.plan_tools import _spike_ineligibility
+
+    state = tmp_path / "state"
+    state.mkdir()
+    selected = "b" * 64
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "plans" / "current.json").write_text(
+        json.dumps({"content_hash": selected}) + "\n", encoding="utf-8"
+    )
+    (state / "plan-resolutions.jsonl").write_text(
+        json.dumps({
+            "id": "look-debt",
+            "bundle_hash": selected,
+            "status": "satisfied",
+            "falsification": {
+                "contract_ids": [
+                    "check:form-look-f40",
+                    "check:form-look-f150",
+                ],
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    prefixed = _spike_ineligibility(
+        "", None,
+        [{"id": "form-look-f40", "kind": "render_region_stat", "frame": 40}],
+        tmp_path,
+    )
+    assert prefixed is not None and "falsification path" in prefixed
+    sibling = _spike_ineligibility(
+        "", None,
+        [{"id": "form-look-f150", "kind": "render_region_stat", "frame": 150}],
+        tmp_path,
+    )
+    assert sibling is not None and "falsification path" in sibling
+
+
 def test_spike_refuses_self_fulfilling_and_lighting_hypotheses(tmp_path) -> None:
     from vfx_harness.agents.plan_tools import _spike_ineligibility
 

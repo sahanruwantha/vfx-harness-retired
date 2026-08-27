@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.image_debts import image_contract_debt_cards
 from vfx_harness.domain.work_units import WorkUnit
 
 SCHEMA = "vfx-harness.unit-scope/v1"
@@ -142,6 +143,7 @@ def compile_unit_scope(
             f"present: {', '.join(present)}"
         )
     inventory = tuple(helpers) if helpers is not None else helper_inventory()
+    image_debts = [card.as_dict() for card in image_contract_debt_cards(unit)]
     return {
         "schema": SCHEMA,
         "unit_id": unit.id,
@@ -176,6 +178,7 @@ def compile_unit_scope(
             for claim in unit.evaluation.claims
         ],
         "contracts": [_contract_row(by_id[cid]) for cid in bound],
+        "image_debts": image_debts,
         "helpers": [dict(row) for row in inventory],
     }
 
@@ -214,6 +217,12 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         for row in (card.get("contracts") or [])
         if isinstance(row, Mapping)
     ) or "  - (none bound)"
+    debts = "\n".join(
+        f"  - `{row['id']}` frame={row.get('frame')} property={row.get('property')} "
+        f"axis={row.get('axis')}"
+        for row in (card.get("image_debts") or [])
+        if isinstance(row, Mapping)
+    ) or "  - (none)"
     helpers = "\n".join(
         f"  - `{row['signature']}`"
         for row in (card.get("helpers") or [])
@@ -231,5 +240,7 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         f"judge frames: {frames or 'none'} (primary f{judge.get('primary')})\n"
         f"claims:\n{claims}\n"
         f"bound scene contracts:\n{contracts}\n"
+        f"owed image-contract debts (propose_checks, exact id/frame/property/axis):\n"
+        f"{debts}\n"
         f"run_bpy helpers (injected):\n{helpers}"
     )

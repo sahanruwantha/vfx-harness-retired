@@ -208,8 +208,12 @@ one compact ticket per independently controllable value; semantic `bvfx_role` an
 `bvfx_control` values it creates/reads; contract IDs instead of copied check prose;
 comparison settings locked for the round; the relevant failed approach in at most five
 lines; and an automatic stop clause once authoritative checks pass and no evidence-backed
-owned-axis defect remains. Runtime checks are evaluation-only and may never be promoted to
-hard plan requirements. Do not ask a layer to repair controls owned by another layer.
+owned-axis defect remains. Runtime check thresholds are evaluation-only and may never be promoted to
+hard plan requirements. Executable `image_contract` ids on required look
+claims ARE the stop clause: name those exact ids as builder-owed
+`propose_checks` work (id, frame, property kind, axis). Do not describe them
+as critic-only judge comparison. Do not ask a layer to repair controls owned
+by another layer.
 
 After writing `{target}`, call `gate_preview` once: it applies the exact terminal
 deterministic gate to the staged consumer view. A finding fixed here costs one edit; the

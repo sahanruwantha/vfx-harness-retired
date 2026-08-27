@@ -366,7 +366,7 @@ def main() -> None:
                       args.repair)
         except IncompleteChain as e:
             log(f"INCOMPLETE CHAIN — {e}")
-            raise SystemExit(7) from None
+            raise run_artifacts.RequestedExit(7, f"INCOMPLETE CHAIN — {e}") from None
 
 
 if __name__ == "__main__":

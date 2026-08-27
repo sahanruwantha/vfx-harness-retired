@@ -73,6 +73,9 @@ def main():
         _scene_completion_state,
         _stats,
         build_blender_tools,
+        followup_after_image_gate_pass,
+        followup_after_scene_contracts_pass,
+        record_cannot_express,
     )
     from vfx_harness.domain.brief import load_shot
     from vfx_harness.evidence.checks import _metric_regions
@@ -1617,6 +1620,12 @@ def main():
         "a passing live scene contract closes speculative mutation immediately",
         _phase_call("mcp__blender__run_bpy") == "deny",
     )
+    _phase["look_unsettled"] = True
+    check(
+        "look without bound image contracts does not lock run_bpy on scene pass",
+        _phase_call("mcp__blender__run_bpy") is None,
+    )
+    _phase["look_unsettled"] = False
     _phase["scene_contracts_passed"] = False
     check("a critic-backed revision reopens live mutation", _phase_call("mcp__blender__run_bpy") is None)
     # Attempts 5-7 of 2.atmosphere (2026-08-26): a unit reopened after a failed critic
@@ -1671,6 +1680,47 @@ def main():
         "REPAIR_SCRIPT can patch but cannot replace",
         "Edit" in _repair_opts.allowed_tools
         and {"Write", "Glob"} <= set(_repair_opts.disallowed_tools),
+    )
+    _repair_state = {}
+    _repair_bound = _script_options(
+        shot,
+        mode="repair",
+        script_rel="build/01_layout.py",
+        probe_ctx={
+            "blender": "echo",
+            "scratch_dir": str(_sf / "scratch"),
+            "prior_paths": [],
+            "judges": [],
+            "layer_id": "1",
+            "roles": [],
+            "comparison_state": _repair_state,
+        },
+    )
+    check(
+        "REPAIR_SCRIPT binds cannot_express_in_scope on the candidate server",
+        "mcp__candidate__cannot_express_in_scope" in _repair_bound.allowed_tools,
+    )
+    check(
+        "REPAIR_SCRIPT does not bind propose_checks",
+        all("propose_checks" not in name for name in _repair_bound.allowed_tools),
+    )
+    _final_bound = _script_options(
+        shot,
+        mode="finalize",
+        script_rel="build/01_layout.py",
+        probe_ctx={
+            "blender": "echo",
+            "scratch_dir": str(_sf / "scratch"),
+            "prior_paths": [],
+            "judges": [],
+            "layer_id": "1",
+            "roles": [],
+            "comparison_state": _repair_state,
+        },
+    )
+    check(
+        "FINALIZE_SCRIPT does not bind cannot_express_in_scope",
+        "mcp__candidate__cannot_express_in_scope" not in _final_bound.allowed_tools,
     )
     check(
         "critic has enough structured-output protocol headroom",
@@ -2207,6 +2257,11 @@ def main():
     check(
         "search finds by intent", "night-city-field" in [h["name"] for h in search_recipes("make the city look real")]
     )
+    check(
+        "camera-only mutation roles abstain lighting recipes",
+        "camera-parented-spill-lights"
+        not in [h["name"] for h in search_recipes("camera parented spill lights", mutation_roles=["cam_rig"])],
+    )
     filtered_index = recipe_index(context="camera barrel roll timing", limit=5)
     check("ticket-aware recipe index keeps the relevant discovery", "camera-roll-rig" in filtered_index, filtered_index)
     check("ticket-aware recipe index is bounded", filtered_index.count("\n  - ") <= 5)
@@ -2295,6 +2350,58 @@ def main():
     short = [n.split("__")[-1] for n in names]
     check("render_frames registered", "render_frames" in short)
     check("compiled unit_scope registered", "unit_scope" in short)
+    check("cannot_express_in_scope registered", "cannot_express_in_scope" in short)
+    check("propose_checks registered on live blender", "propose_checks" in short)
+    _abstain = {}
+    _abstain_result = record_cannot_express(
+        _abstain, {"contract_ids": ["haze-shaft-gradient-link"], "reason": "density did not move pixels"}
+    )
+    check(
+        "record_cannot_express writes the shared session state",
+        _abstain["cannot_express"]["contract_ids"] == ["haze-shaft-gradient-link"]
+        and not _abstain_result.get("is_error"),
+    )
+    check(
+        "look-unsettled scene pass does not claim bound image evidence",
+        "binds authoritative image evidence" not in followup_after_scene_contracts_pass(
+            {"look_unsettled": True, "image_evidence_required": True}
+        )
+        and "run_bpy remains open" in followup_after_scene_contracts_pass(
+            {"look_unsettled": True, "image_evidence_required": True}
+        ),
+    )
+    check(
+        "0/0 image rows are not critic handoff",
+        "CRITIC HANDOFF" not in followup_after_image_gate_pass({"look_unsettled": True}, []),
+    )
+    check(
+        "unpaid image debts are not critic handoff",
+        "IMAGE-CONTRACT DEBTS UNPAID" in followup_after_scene_contracts_pass(
+            {
+                "unpaid_image_debts": [
+                    {
+                        "id": "look-f72",
+                        "frame": 72,
+                        "property": "render_region_stat",
+                        "axis": "form",
+                    }
+                ]
+            }
+        )
+        and "CRITIC HANDOFF" not in followup_after_image_gate_pass(
+            {
+                "unpaid_image_debts": [
+                    {
+                        "id": "look-f72",
+                        "frame": 72,
+                        "property": "render_region_stat",
+                        "axis": "form",
+                    }
+                ]
+            },
+            [],
+        ),
+    )
     check("transactional semantic control sweep registered", "probe_control" in short)
     check("script_map + worklist registered", {"script_map", "worklist"} <= set(short))
     check("ask_supervisor NOT in build tools", "ask_supervisor" not in short)

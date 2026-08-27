@@ -30,6 +30,27 @@ def test_layout_unit_declaring_nothing_receives_no_look_prescription() -> None:
     assert capability_feedback_groups(("motion",)) == frozenset({"motion"})
 
 
+def test_continuity_axis_scan_is_not_used_for_a_declaring_empty_unit() -> None:
+    """cam_spine declared look_capabilities: [] and still got motion feedback because
+    camera_continuity contains 'continuity'. Empty declared capabilities are authority."""
+    axes = [("camera_continuity", "smooth path"), ("camera_collision_clearance", "clear")]
+    scanned = axis_feedback_groups(axes)
+    assert scanned, "the identifier scan is the trap this test pins"
+    assert capability_feedback_groups(()) == frozenset()
+
+
+def test_executable_only_preview_defaults_to_workbench() -> None:
+    """cam_spine created a temp sun to light an EEVEE verify. Live preview on a
+    declaring empty look unit defaults to solid; an explicit eevee request is honored."""
+    from vfx_harness.blender.tools import preview_render_mode
+
+    assert preview_render_mode(False, None, look_default="eevee") == "solid"
+    assert preview_render_mode(False, None, look_default="draft") == "solid"
+    assert preview_render_mode(False, "eevee", look_default="eevee") == "eevee"
+    assert preview_render_mode(True, None, look_default="eevee") == "eevee"
+    assert preview_render_mode(True, None, look_default="draft") == "draft"
+
+
 def test_capabilities_are_validated_against_a_closed_vocabulary() -> None:
     assert parse_look_capabilities(["material", "detail"], "unit.look") == (
         "material",
@@ -61,7 +82,7 @@ def test_work_unit_parses_and_defaults_capabilities() -> None:
     from tests.architecture.test_staged_architecture import _unit
 
     unit = _unit("blockout")
-    assert unit.look_capabilities == ()  # legacy rows stay valid and fall back
+    assert unit.look_capabilities == ()  # omitted key parses empty; materialization requires an explicit list
 
     from tests.architecture.test_staged_architecture import _claim
     from vfx_harness.domain.work_units import WorkUnit
@@ -171,3 +192,433 @@ def test_camera_ownership_is_declared_not_spelled() -> None:
 
     # The legacy spelling heuristic must never have decided this unit.
     assert not any("camera" in r.lower() for r in ("cam_rig",))
+
+
+def test_lookless_composition_fans_in_unit_claims() -> None:
+    """Run 20260827T031330Z-c4687e: both L1 units sealed executable-only, then
+    composed canonical called _judge because active_unit was omitted."""
+    from types import SimpleNamespace
+
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.agents.builder import (
+        _composition_judge_unit,
+        _executable_unit_verdict,
+    )
+
+    path = _unit("cam_path")
+    proxies = _unit("proxies", depends_on=["cam_path"])
+    layer = SimpleNamespace(id="1", stages=(path, proxies))
+    fan_in = _composition_judge_unit(layer)
+    assert fan_in is not None
+    assert fan_in.look_capabilities == ()
+    claim_ids = {claim.id for claim in fan_in.evaluation.claims}
+    assert claim_ids == {"claim.cam_path", "claim.proxies"}
+    assert set(fan_in.mutates.roles) == set()
+
+    axes = [("camera_continuity", "path"), ("camera_collision_clearance", "clear")]
+    evidence = [
+        {"id": "contract.cam_path", "pass": True, "authoritative": True},
+        {"id": "contract.proxies", "pass": True, "authoritative": True},
+    ]
+    verdict = _executable_unit_verdict(fan_in, 40, axes, evidence)
+    assert verdict is not None and verdict["pass"] is True
+    assert verdict["decided_by"] == "unit_executable_evidence"
+
+
+def test_look_owning_stage_keeps_composed_critic_path() -> None:
+    from types import SimpleNamespace
+
+    from tests.architecture.test_staged_architecture import _claim, _unit
+    from vfx_harness.agents.builder import _composition_judge_unit
+    from vfx_harness.domain.work_units import WorkUnit
+
+    path = _unit("cam_path")
+    row = {
+        "id": "surfacing",
+        "title": "Surfacing",
+        "plan": "plans/units/surfacing.md",
+        "depends_on": ["cam_path"],
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["lookdev.primary_material"],
+            "controls": [],
+            "script_spans": ["build/units/02/surfacing.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 40,
+            "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+            "temporal_evidence": "none",
+            "claims": [_claim("surfacing")],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": ["material"],
+    }
+    surfacing = WorkUnit.parse(row, "unit.surfacing")
+    layer = SimpleNamespace(id="2", stages=(path, surfacing))
+    assert _composition_judge_unit(layer) is None
+
+
+def test_lookless_uncovered_frame_is_contract_gap(monkeypatch) -> None:
+    """Look-less empty claims at a canonical frame used to auto-pass 5.0 (HIR-0045)."""
+    from types import SimpleNamespace
+
+    import anyio
+
+    from vfx_harness.agents.builder import _judge_unit_or_layer
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("uncovered judge frame must not call _judge")
+
+    monkeypatch.setattr("vfx_harness.agents.builder._judge", _boom)
+    monkeypatch.setattr(
+        "vfx_harness.evidence.scene_checks.load_rows", lambda _folder: []
+    )
+    unit = SimpleNamespace(
+        id="cam_path_core",
+        look_capabilities=(),
+        evaluation=SimpleNamespace(claims=(), judges=()),
+        mutates=SimpleNamespace(roles=("cam_rig",)),
+    )
+    shot = SimpleNamespace(folder=SimpleNamespace())
+    milestone = SimpleNamespace(frame=1, id="1")
+
+    async def _run():
+        return await _judge_unit_or_layer(
+            shot,
+            milestone,
+            "renders/black.png",
+            [("camera_continuity", "path")],
+            session=None,
+            verbose=False,
+            scope=None,
+            evidence=[],
+            active_unit=unit,
+        )
+
+    verdict = anyio.run(_run)
+    assert verdict["pass"] is False
+    assert verdict["contract_gap"] is True
+    assert verdict["issues"] == []
+    assert verdict["decided_by"] == "uncovered_judge_frame"
+
+
+def test_lookless_nonexecutable_claim_still_skips_critic(monkeypatch) -> None:
+    """If executable verdict abstains, look-less still must not enter _judge."""
+    from types import SimpleNamespace
+
+    import anyio
+
+    from vfx_harness.agents.builder import _judge_unit_or_layer
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("look-less evaluation must not call _judge")
+
+    monkeypatch.setattr("vfx_harness.agents.builder._judge", _boom)
+    monkeypatch.setattr(
+        "vfx_harness.evidence.scene_checks.load_rows", lambda _folder: []
+    )
+    unit = SimpleNamespace(
+        id="cam_path_core",
+        look_capabilities=(),
+        evaluation=SimpleNamespace(
+            claims=(
+                SimpleNamespace(
+                    required=True,
+                    moments=(1,),
+                    authority="human_required",
+                    evidence=(),
+                ),
+            )
+        ),
+        mutates=SimpleNamespace(roles=("cam_rig",)),
+    )
+    shot = SimpleNamespace(folder=SimpleNamespace())
+    milestone = SimpleNamespace(frame=1, id="1")
+
+    async def _run():
+        return await _judge_unit_or_layer(
+            shot,
+            milestone,
+            "renders/black.png",
+            [("camera_continuity", "path")],
+            session=None,
+            verbose=False,
+            scope=None,
+            evidence=[],
+            active_unit=unit,
+        )
+
+    verdict = anyio.run(_run)
+    assert verdict["pass"] is False
+    assert verdict["contract_gap"] is True
+    assert verdict["decided_by"] == "lookless_requires_executable_claims"
+
+
+def test_uncovered_judge_frame_does_not_call_the_critic(monkeypatch) -> None:
+    """Run 20260827T050158Z-7d5924 atmosphere: claims only at f72, judge also f150."""
+    from types import SimpleNamespace
+
+    import anyio
+
+    from tests.architecture.test_staged_architecture import _claim
+    from vfx_harness.agents.builder import _judge_unit_or_layer
+    from vfx_harness.domain.work_units import WorkUnit
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("uncovered look frame must not call _judge")
+
+    monkeypatch.setattr("vfx_harness.agents.builder._judge", _boom)
+    monkeypatch.setattr(
+        "vfx_harness.evidence.scene_checks.load_rows", lambda _folder: []
+    )
+    row = {
+        "id": "atmosphere",
+        "title": "Atmosphere",
+        "plan": "plans/units/atmosphere.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["world.volumetric_haze"],
+            "controls": [],
+            "script_spans": ["build/units/02/atmosphere.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 72,
+            "judge": [
+                {"frame": 72, "ref": "refs/f072.png"},
+                {"frame": 150, "ref": "refs/f150.png"},
+            ],
+            "temporal_evidence": "none",
+            "claims": [_claim("atmosphere", frame=72)],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": ["atmosphere"],
+    }
+    unit = WorkUnit.parse(row, "unit.atmosphere")
+    shot = SimpleNamespace(folder=SimpleNamespace())
+    milestone = SimpleNamespace(frame=150, id="2")
+
+    async def _run():
+        return await _judge_unit_or_layer(
+            shot,
+            milestone,
+            "renders/2@atmosphere_canonical_f150.png",
+            [("atmospheric_scale_reinforcement", "shafts")],
+            session=None,
+            verbose=False,
+            scope=None,
+            evidence=[],
+            active_unit=unit,
+        )
+
+    verdict = anyio.run(_run)
+    assert verdict["pass"] is False
+    assert verdict["contract_gap"] is True
+    assert verdict["issues"] == []
+    assert verdict["decided_by"] == "uncovered_judge_frame"
+
+
+def test_look_owning_scene_only_claims_do_not_seal_or_call_the_critic(monkeypatch) -> None:
+    """Run 20260827T060800Z-8bd92a: look units sealed 5.0 on counts, then composed
+    canonical was the first look vote (HIR-0046)."""
+    from types import SimpleNamespace
+
+    import anyio
+
+    from tests.architecture.test_staged_architecture import _claim
+    from vfx_harness.agents.builder import (
+        _executable_unit_verdict,
+        _judge_unit_or_layer,
+    )
+    from vfx_harness.domain.work_units import WorkUnit
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("look without image domain must not call _judge")
+
+    monkeypatch.setattr("vfx_harness.agents.builder._judge", _boom)
+    monkeypatch.setattr(
+        "vfx_harness.evidence.scene_checks.load_rows", lambda _folder: []
+    )
+    row = {
+        "id": "materials_energy",
+        "title": "Materials",
+        "plan": "plans/units/materials_energy.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["lookdev.material_primary"],
+            "controls": [],
+            "script_spans": ["build/units/02/materials_energy.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 72,
+            "judge": [{"frame": 72, "ref": "refs/f072.png"}],
+            "temporal_evidence": "none",
+            "claims": [_claim("materials_energy", frame=72)],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": ["material", "color"],
+    }
+    unit = WorkUnit.parse(row, "unit.materials_energy")
+    axes = [("material_energy_language", "palette")]
+    evidence = [{"id": "contract.materials_energy", "pass": True, "authoritative": True}]
+    executable = _executable_unit_verdict(unit, 72, axes, evidence)
+    assert executable is not None
+    assert executable["pass"] is False
+    assert executable["decided_by"] == "look_without_image_domain"
+    assert executable["issues"] == []
+
+    shot = SimpleNamespace(folder=SimpleNamespace())
+    milestone = SimpleNamespace(frame=72, id="2")
+
+    async def _run():
+        return await _judge_unit_or_layer(
+            shot,
+            milestone,
+            "renders/2@materials_energy_canonical_f72.png",
+            axes,
+            session=None,
+            verbose=False,
+            scope=None,
+            evidence=evidence,
+            active_unit=unit,
+        )
+
+    verdict = anyio.run(_run)
+    assert verdict["pass"] is False
+    assert verdict["contract_gap"] is True
+    assert verdict["issues"] == []
+    assert verdict["decided_by"] == "look_without_image_domain"
+
+
+def test_look_owning_image_contract_still_seals_on_executable_evidence() -> None:
+    from tests.architecture.test_staged_architecture import _claim
+    from vfx_harness.agents.builder import _executable_unit_verdict
+    from vfx_harness.domain.work_units import WorkUnit
+
+    claim = _claim("surfacing")
+    claim["asserts"] = "image"
+    claim["evidence"] = [{"kind": "image_contract", "id": "surfacing-look"}]
+    row = {
+        "id": "surfacing",
+        "title": "Surfacing",
+        "plan": "plans/units/surfacing.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["lookdev.primary_material"],
+            "controls": [],
+            "script_spans": ["build/units/02/surfacing.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 40,
+            "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+            "temporal_evidence": "none",
+            "claims": [claim],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": ["material"],
+    }
+    unit = WorkUnit.parse(row, "unit.surfacing")
+    verdict = _executable_unit_verdict(
+        unit,
+        40,
+        [("material_energy_language", "palette")],
+        [{"id": "surfacing-look", "pass": True, "authoritative": True}],
+    )
+    assert verdict is not None and verdict["pass"] is True
+    assert verdict["decided_by"] == "unit_executable_evidence"
+
+
+def test_missing_image_contract_is_unpaid_debt_not_selector_miss() -> None:
+    from tests.architecture.test_staged_architecture import _claim
+    from vfx_harness.agents.builder import _executable_unit_verdict
+    from vfx_harness.domain.work_units import WorkUnit
+
+    look = _claim("surfacing")
+    look["asserts"] = "image"
+    look["property"] = "render_region_stat"
+    look["evidence"] = [{"kind": "image_contract", "id": "surfacing-look"}]
+    scene = _claim("surfacing", cid="claim.scene")
+    row = {
+        "id": "surfacing",
+        "title": "Surfacing",
+        "plan": "plans/units/surfacing.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["lookdev.primary_material"],
+            "controls": [],
+            "script_spans": ["build/units/02/surfacing.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 40,
+            "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+            "temporal_evidence": "none",
+            "claims": [scene, look],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": ["material"],
+    }
+    unit = WorkUnit.parse(row, "unit.surfacing")
+    missing = _executable_unit_verdict(
+        unit,
+        40,
+        [("material_energy_language", "palette")],
+        [{"id": "contract.surfacing", "pass": True, "authoritative": True}],
+    )
+    assert missing is not None and missing["pass"] is False
+    assert missing["contract_gap"] is True
+    joined = " ".join(missing["issues"])
+    assert "surfacing-look" in joined
+    assert "unpaid image-contract debt" in joined
+    assert "check:" not in joined
+    sealed = _executable_unit_verdict(
+        unit,
+        40,
+        [("material_energy_language", "palette")],
+        [
+            {"id": "contract.surfacing", "pass": True, "authoritative": True},
+            {"id": "surfacing-look", "pass": True, "authoritative": True},
+        ],
+    )
+    assert sealed is not None and sealed["pass"] is True
+
+
+def test_look_without_image_contracts_stays_unsettled() -> None:
+    """HIR-0044: atmosphere 3/3 existence is not a critic handoff."""
+    from vfx_harness.agents.builder import look_unsettled_for
+
+    assert look_unsettled_for(set(), ("atmosphere",)) is True
+    assert look_unsettled_for({"img-1"}, ("atmosphere",)) is False
+    assert look_unsettled_for(set(), ()) is False
+
+
+def test_probe_preview_adds_draft_only_for_look_units() -> None:
+    """HIR-0042: repair 5f4489 diagnosed EEVEE look from Workbench solid and hid
+    the shaft occluders that only look like slats in solid."""
+    from vfx_harness.agents.builder import probe_preview_modes
+
+    assert probe_preview_modes(()) == ("solid",)
+    assert probe_preview_modes([]) == ("solid",)
+    assert probe_preview_modes(("atmosphere",)) == ("solid", "draft")

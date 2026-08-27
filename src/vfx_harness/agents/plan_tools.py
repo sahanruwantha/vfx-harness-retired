@@ -122,6 +122,7 @@ _LIGHT_APIS = re.compile(r"light_add|bpy\.data\.lights|lights\.new|type\s*=\s*['
 
 def _decision_value_signals(shot_folder: Path) -> tuple[set[str], list[tuple[str, str, set[str]]]]:
     """Falsification contract ids and adopted value shapes from recorded decisions."""
+    from vfx_harness.domain.image_debts import normalize_evidence_ids
     from vfx_harness.domain.plan_records import (
         load_active_structured_decisions,
         read_selected_bundle_hash,
@@ -133,7 +134,7 @@ def _decision_value_signals(shot_folder: Path) -> tuple[set[str], list[tuple[str
         from vfx_harness.domain.plan_records import load_assumptions
 
         for record in load_assumptions(shot_folder):
-            falsification_ids.update(record.falsification_contract_ids)
+            falsification_ids.update(normalize_evidence_ids(record.falsification_contract_ids))
     except (OSError, ValueError):
         pass
     resolutions = Path(shot_folder) / "state" / "plan-resolutions.jsonl"
@@ -146,7 +147,9 @@ def _decision_value_signals(shot_folder: Path) -> tuple[set[str], list[tuple[str
             except json.JSONDecodeError:
                 continue
             falsification = row.get("falsification") or {}
-            falsification_ids.update(map(str, falsification.get("contract_ids") or []))
+            falsification_ids.update(
+                normalize_evidence_ids(falsification.get("contract_ids") or [])
+            )
         selected = read_selected_bundle_hash(shot_folder)
         if selected:
             for decision in load_active_structured_decisions(
@@ -176,6 +179,8 @@ def _spike_ineligibility(
     adopted decision values, decision falsification paths, self-fulfilling construction
     facts, and proxy lighting/visibility reads are refused deterministically.
     """
+    from vfx_harness.domain.image_debts import normalize_evidence_id
+
     falsification_ids, adopted = _decision_value_signals(Path(shot_folder))
     for row in contracts:
         if not isinstance(row, dict):
@@ -188,7 +193,7 @@ def _spike_ineligibility(
                 "its producing unit proves the adopted contract against the real scene, and "
                 "failure routes through the decision's falsification path."
             )
-        if row_id in falsification_ids:
+        if normalize_evidence_id(row_id) in falsification_ids:
             return (
                 f"spike refused: contract {row_id} is a recorded decision's runtime "
                 "falsification path. Only its producing unit may generate that evidence, in "

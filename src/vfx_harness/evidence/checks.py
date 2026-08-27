@@ -489,6 +489,40 @@ def load(path: Path) -> list[Check]:
     return checks
 
 
+def load_image_contract_payment_rows(shot_folder: str | Path) -> list[dict]:
+    """Planner ``checks.json`` rows plus builder ``runtime_checks.json`` payments.
+
+    An image-contract debt is paid only when a row here matches the compiled card
+    (id, frame, property kind, axis). Sibling leftover runtime rows are ignored
+    at freeze because they do not match an owed card (HIR-0048).
+    """
+    root = Path(shot_folder)
+    rows: list[dict] = []
+    try:
+        from vfx_harness.domain.contracts import load_document
+        from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+        planner_spec = selected_artifact_path(root, "checks.json")
+        for row in load_document(planner_spec, "checks"):
+            if isinstance(row, dict) and row.get("id"):
+                rows.append(row)
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    runtime = root / "runtime_checks.json"
+    if runtime.is_file():
+        try:
+            loaded = json.loads(runtime.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = []
+        if isinstance(loaded, list):
+            rows.extend(
+                row
+                for row in loaded
+                if isinstance(row, dict) and row.get("origin") == "builder" and row.get("id")
+            )
+    return rows
+
+
 def layer_evidence(
     shot_folder: str | Path, layer_id: str, *, frame: int, ref: str, render: str | Path, stage: str = "pre_grade"
 ) -> list[dict]:

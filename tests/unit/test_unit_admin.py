@@ -56,6 +56,44 @@ def test_populated_state_still_fails_closed_without_a_replan(tmp_path) -> None:
         initialize(tmp_path, "1", (_unit("different_unit"),), plan_hash="two")
 
 
+def test_initialize_adopts_layers_hash_when_unit_dag_is_unchanged(tmp_path) -> None:
+    """Sibling rematerialization rewrites combined layers.json; this layer's units
+    can stay identical. Adopting the new hash must preserve passed/failed slots
+    (HIR-0040). Empty-base replan would have marked every unit added."""
+    import json as _json
+
+    units = (_unit("blockout"), _unit("camera", depends_on=["blockout"]))
+    initialize(tmp_path, "1", units, plan_hash="old-combined-view")
+    path = tmp_path / "state" / "work-units" / "layer_1.json"
+    value = _json.loads(path.read_text(encoding="utf-8"))
+    value["units"]["blockout"]["status"] = "passed"
+    value["units"]["camera"]["status"] = "failed"
+    path.write_text(_json.dumps(value), encoding="utf-8")
+
+    adopted = initialize(tmp_path, "1", units, plan_hash="new-combined-view")
+
+    assert adopted["plan_hash"] == "new-combined-view"
+    assert adopted["units"]["blockout"]["status"] == "passed"
+    assert adopted["units"]["camera"]["status"] == "failed"
+    record = adopted["replans"][-1]
+    assert record["preserved"] == ["blockout", "camera"]
+    assert record["added"] == []
+    assert record["changed"] == []
+    assert record["owner"] == "vfx-harness.initialize"
+
+
+def test_initialize_still_refuses_digest_mismatch_as_replan(tmp_path) -> None:
+    initialize(tmp_path, "1", (_unit("blockout"),), plan_hash="one")
+
+    with pytest.raises(ValueError, match="hashes do not match the active layer DAG"):
+        initialize(
+            tmp_path,
+            "1",
+            (_unit("blockout", proposition_suffix=" changed"),),
+            plan_hash="two",
+        )
+
+
 def test_public_replan_moves_state_between_explicit_and_current_bundles(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -340,3 +378,143 @@ def test_public_replan_requires_human_evidence_for_hard_constraint(
     assert unit_admin._replan(args) == 0
     record = load(tmp_path, "1")["replans"][-1]
     assert record["hard_constraint_approval"] == args.hard_constraint_approval
+
+
+def test_public_replan_reopens_falsified_unit_when_dag_bytes_are_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    """Consuming a finding is itself the amendment. A same-digest DAG must still
+    reopen the falsified unit; preserving hypothesis_falsified would leave the
+    layer unbuildable (HIR-0049)."""
+    args, finding = _falsified_replan_fixture(
+        tmp_path, monkeypatch, strength="approved_start"
+    )
+    units = (_unit("blockout"),)
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers",
+        lambda shot: {"1": SimpleNamespace(stages=units)},
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers_from_path",
+        lambda path: {"1": SimpleNamespace(stages=units)},
+    )
+
+    assert unit_admin._replan(args) == 0
+
+    state = load(tmp_path, "1")
+    assert state["units"]["blockout"]["status"] == "pending"
+    assert state["replans"][-1]["falsification_id"] == finding["record_id"]
+    assert state["replans"][-1]["invalidated"] == ["blockout"]
+    assert state["replans"][-1]["preserved"] == []
+
+
+def test_public_replan_consumes_jit_falsification_against_view_identity(
+    tmp_path, monkeypatch
+) -> None:
+    """A JIT layer's finding names the materialized view hash. Comparing that to
+    sha256 of the sparse bundle layers.json is a false mismatch; empty-base add
+    of every unit would also drop an unrelated passed sibling (HIR-0040, HIR-0049)."""
+    import json as _json
+
+    old_root = tmp_path / "old-bundle"
+    new_root = tmp_path / "new-bundle"
+    old_root.mkdir()
+    new_root.mkdir()
+    (old_root / "layers.json").write_bytes(b"sparse global\n")
+    (new_root / "layers.json").write_bytes(b"new layers\n")
+    view_hash = hashlib.sha256(b"view layers\n").hexdigest()
+    materials = _unit("materials_energy", script_span="build/02/materials_energy.py")
+    lighting = _unit(
+        "lighting_bloom",
+        depends_on=["materials_energy"],
+        script_span="build/02/lighting_bloom.py",
+    )
+    props = _unit("props", script_span="build/02/props.py")
+    current_units = (materials, lighting, props)
+    initialize(tmp_path, "2", current_units, plan_hash=view_hash)
+    path = tmp_path / "state" / "work-units" / "layer_2.json"
+    value = _json.loads(path.read_text(encoding="utf-8"))
+    value["units"]["props"]["status"] = "passed"
+    path.write_text(_json.dumps(value), encoding="utf-8")
+    transition(tmp_path, "2", "materials_energy", "planning", reason="ready")
+    transition(tmp_path, "2", "materials_energy", "building", reason="started")
+    finding = record_hypothesis_falsification(
+        tmp_path,
+        "2",
+        materials,
+        current_units,
+        bundle_hash="a" * 64,
+        unit_plan_hash="c" * 64,
+        candidate_hash="d" * 64,
+        settings_hash="e" * 64,
+        contract_ids=["materials-energy-look-f72"],
+        observations=[{"classification": "unsatisfiable_in_scope"}],
+        decisions=[],
+        conflict={
+            "kind": "contract",
+            "required_authority": "pay the owed image contracts",
+            "roles": [],
+            "controls": [],
+        },
+        evidence=["runs/run/evidence/look.json"],
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_shot",
+        lambda folder: SimpleNamespace(folder=tmp_path),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "resolve_current",
+        lambda folder: SimpleNamespace(root=new_root, content_hash="b" * 64),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "resolve_published_bundle",
+        lambda folder, **kwargs: SimpleNamespace(root=old_root, content_hash="a" * 64),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers",
+        lambda shot: {"2": SimpleNamespace(stages=current_units)},
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers_from_path",
+        lambda path: {"2": SimpleNamespace(stages=())},
+    )
+    relative = (
+        "state/work-units/hypothesis-falsifications/"
+        f"{finding['record_id']}.json"
+    )
+    args = SimpleNamespace(
+        folder=str(tmp_path),
+        layer="2",
+        base_run="old-run",
+        base_bundle="a" * 64,
+        owner="operator",
+        trigger="executable hypothesis falsified",
+        evidence=[],
+        falsification=relative,
+        hard_constraint_approval=None,
+        preview=False,
+        discard_accepted=False,
+    )
+
+    assert finding["identities"]["plan_hash"] == view_hash
+    bundle_file_hash = hashlib.sha256((old_root / "layers.json").read_bytes()).hexdigest()
+    assert finding["identities"]["plan_hash"] != bundle_file_hash
+    assert unit_admin._replan(args) == 0
+
+    state = load(tmp_path, "2")
+    assert state["units"]["materials_energy"]["status"] == "pending"
+    assert state["units"]["lighting_bloom"]["status"] == "pending"
+    assert state["units"]["props"]["status"] == "passed"
+    record = state["replans"][-1]
+    assert record["falsification_id"] == finding["record_id"]
+    assert record["added"] == []
+    assert "props" in record["preserved"]
+    assert "materials_energy" in record["invalidated"]
+    assert "lighting_bloom" in record["invalidated"]

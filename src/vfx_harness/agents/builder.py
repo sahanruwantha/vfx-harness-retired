@@ -27,6 +27,7 @@ import time
 from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
+from types import SimpleNamespace
 
 import anyio
 from claude_agent_sdk import (
@@ -43,7 +44,6 @@ from vfx_harness.agents.approach import review as approach_review
 from vfx_harness.agents.approach import revision_from_review
 from vfx_harness.agents.build_prompts import (
     CRITIC_SYSTEM,
-    axes_own_look,
     axis_feedback_groups,
     builder_kickoff,
     builder_system,
@@ -191,6 +191,10 @@ class BuildTruncated(RuntimeError):
 
 class BuildUnpassed(RuntimeError):
     """A direct build completed without accepting every unit in its requested layer."""
+
+
+class LayerVerdictFailed(RuntimeError):
+    """Units passed but the composed layer ledger verdict did not."""
 
 
 class UnpassedPrior(RuntimeError):
@@ -381,13 +385,22 @@ def _builder_options(
 
 _SCRIPT_SYSTEM = """\
 You are a narrow build-artifact agent. Follow the requested MODE exactly. You do not have
-Blender tools and must not redesign the scene. In FINALIZE_SCRIPT, publish the complete
-requested script once with Write and never Edit it. In REPAIR_SCRIPT, make only the stated
-local correction with Edit and never replace the whole file. Read only the named script,
-journal, plan, and verdict evidence needed for that operation. Your working directory is
-already the shot folder: use every named relative path verbatim. Never prefix a path with
-the repository root or guess an alternative location.
+Blender scene tools and must not redesign the warm scene. In FINALIZE_SCRIPT, publish the
+complete requested script once with Write and never Edit it. In REPAIR_SCRIPT, make only
+the stated local correction with Edit and never replace the whole file. Repair binds
+`cannot_express_in_scope` on the candidate server — call it when no in-scope edit can
+satisfy the failing ids; ToolSearch for a blender tool will miss it. Read only the named
+script, journal, plan, and verdict evidence needed for that operation. Your working
+directory is already the shot folder: use every named relative path verbatim. Never prefix
+a path with the repository root or guess an alternative location.
 """
+
+
+def probe_preview_modes(look_capabilities) -> tuple[str, ...]:
+    """Solid is geometry. A look-owning unit also gets a draft beauty plate (HIR-0042)."""
+    if capability_feedback_groups(look_capabilities or ()):
+        return ("solid", "draft")
+    return ("solid",)
 
 
 def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
@@ -403,6 +416,7 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     calls = 0
+    comparison_state = probe_ctx.get("comparison_state")
 
     def _probe() -> dict:
         from vfx_harness.blender.session import BlenderSession
@@ -424,6 +438,7 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
             except Exception as exc:
                 rig_contract = {"ok": None, "issues": [f"check failed: {str(exc)[:120]}"]}
             role_patterns = list(probe_ctx.get("roles") or [])
+            preview_modes = probe_preview_modes(probe_ctx.get("look_capabilities") or ())
             frames_out = []
             for frame, ref in probe_ctx["judges"]:
                 rows = scene_layer_evidence(
@@ -456,7 +471,7 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                     render = verify.render(frame=int(frame), mode="solid", scale=0.33)
                 except Exception as exc:  # a render failure is a finding, not a crash
                     render = f"render failed: {str(exc)[:120]}"
-                frames_out.append({
+                frame_row = {
                     "frame": int(frame),
                     "ref": str(ref),
                     "camera": transforms.get("camera"),
@@ -470,7 +485,19 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                         }
                         for row in rows
                     ],
-                })
+                }
+                if "draft" in preview_modes:
+                    try:
+                        look = verify.render(frame=int(frame), mode="draft", scale=0.33)
+                    except Exception as exc:
+                        look = f"render failed: {str(exc)[:120]}"
+                    frame_row["look_render"] = look
+                    frame_row["look_render_note"] = (
+                        "draft EEVEE beauty — the critic's domain. solid_render is "
+                        "Workbench geometry and is not the look plate; do not hide "
+                        "occluders because they read as slats in solid"
+                    )
+                frames_out.append(frame_row)
             return {"script": script_rel, "rig_contract": rig_contract, "frames": frames_out}
         finally:
             verify.close()
@@ -479,10 +506,12 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
         "probe_candidate",
         f"Rebuild the CURRENT `{script_rel}` from an empty scene in a disposable worker "
         "and return, per judge frame: the authoritative evidence rows the gate will "
-        "compute, the evaluated camera and role world transforms, and a solid-mode "
-        "render you can Read as an image. Call it BEFORE diagnosing and AFTER editing — "
-        "an edit whose rebuilt consequences you have not seen is a guess. Deterministic, "
-        "no model cost; capped at three calls.",
+        "compute, the evaluated camera and role world transforms, a solid-mode geometry "
+        "render, and — when the unit declares look capabilities — a draft EEVEE look "
+        "plate (`look_render`). Diagnose look against look_render, not solid_render. "
+        "Call it BEFORE diagnosing and AFTER editing — an edit whose rebuilt "
+        "consequences you have not seen is a guess. Deterministic, no model cost; "
+        "capped at three calls.",
         {"type": "object", "properties": {}},
     )
     async def probe_candidate(args):
@@ -497,8 +526,27 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
             return {"content": [{"type": "text", "text": f"probe failed: {exc}"}], "is_error": True}
         return {"content": [{"type": "text", "text": json.dumps(result, indent=1)}]}
 
-    server = create_sdk_mcp_server(name="candidate", version="0.1.0", tools=[probe_candidate])
-    return server, ["mcp__candidate__probe_candidate"]
+    tools = [probe_candidate]
+    names = ["mcp__candidate__probe_candidate"]
+    if comparison_state is not None:
+        from vfx_harness.blender.tools import (
+            CANNOT_EXPRESS_DESCRIPTION,
+            CANNOT_EXPRESS_SCHEMA,
+            record_cannot_express,
+        )
+
+        @tool(
+            "cannot_express_in_scope",
+            CANNOT_EXPRESS_DESCRIPTION,
+            CANNOT_EXPRESS_SCHEMA,
+        )
+        async def cannot_express_in_scope(args):
+            return record_cannot_express(comparison_state, args)
+
+        tools.append(cannot_express_in_scope)
+        names.append("mcp__candidate__cannot_express_in_scope")
+    server = create_sdk_mcp_server(name="candidate", version="0.1.0", tools=tools)
+    return server, names
 
 
 def _script_options(
@@ -509,7 +557,10 @@ def _script_options(
     mcp_servers = {}
     probe_tools: list[str] = []
     if probe_ctx is not None:
-        server, probe_tools = _build_probe_candidate_server(shot, script_rel, probe_ctx)
+        ctx = probe_ctx
+        if finalize:
+            ctx = {key: value for key, value in probe_ctx.items() if key != "comparison_state"}
+        server, probe_tools = _build_probe_candidate_server(shot, script_rel, ctx)
         mcp_servers["candidate"] = server
     if not finalize:
         # repairs design mechanisms; the cookbook's harness lessons (rig aim ownership,
@@ -1632,6 +1683,43 @@ def _repair_action(delta: dict, attempt: int, max_attempts: int | None = None) -
     return "rollback_retry" if attempt < max_attempts else "rollback_stop"
 
 
+def _canonical_failing_ids(verdicts: list) -> set[str]:
+    ids: set[str] = set()
+    for _frame_ref, verdict in verdicts or []:
+        for row in verdict.get("evidence") or []:
+            if row.get("id") and row.get("authoritative") and not row.get("pass"):
+                ids.add(str(row["id"]))
+    return ids
+
+
+def _unsatisfiable_pair_findings(shot: Shot, failing_ids: set[str]) -> list[dict]:
+    """Schedule vs smoothness pairs that failing evidence has already proved unsatisfiable."""
+    from vfx_harness.evidence.scene_checks import load_rows, schedule_smoothness_contradictions
+
+    if not failing_ids:
+        return []
+    try:
+        rows = load_rows(shot.folder)
+    except (OSError, ValueError, KeyError):
+        return []
+    return [
+        pair
+        for pair in schedule_smoothness_contradictions(rows)
+        if {pair["schedule_id"], pair["smoothness_id"]} & failing_ids
+    ]
+
+
+def _image_optical_signal(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    from PIL import Image
+
+    from vfx_harness.evidence.compare_panels import focus_signal
+
+    with Image.open(path) as image:
+        return focus_signal(image)
+
+
 def _repair_change_summary(before: str, after: str, limit: int = 3200) -> str:
     """Small, prompt-safe account of a rejected script edit for the next repair agent."""
     changed = [
@@ -2026,6 +2114,32 @@ async def _judge(
             log(f"motion strip skipped: {str(exc)[:80]}", 1)
     focus_references = _focus_references(shot, m, focus_frames_override)
     required = _required_focus_requests(shot, str(m.id).split("@", 1)[0], int(m.frame), axes)
+    signal = _image_optical_signal(shot.folder / candidate_rel)
+    if signal is not None and not signal["has_signal"]:
+        log(
+            f"candidate {candidate_rel} has no optical signal "
+            f"(stddev={signal['stddev']}, edges={signal['edge_mean']}, "
+            f"range={signal['dynamic_range']}) — not calling the critic",
+            1,
+        )
+        scored_axes = [key for key, _description in axes]
+        return {
+            "scores": dict.fromkeys(scored_axes, 1),
+            "mean": 1.0,
+            "pass": False,
+            "issues": [
+                "candidate plate has no optical signal (black/empty). A look score on "
+                "this frame is not a judgment — light and surface this unit in a unit "
+                "that declares look_capabilities, or keep the critic off executable-only units"
+            ],
+            "scored_axes": scored_axes,
+            "na_axes": [],
+            "observations": [],
+            "decided_by": "no_optical_signal",
+            "judge_conflict": False,
+            "contract_gap": False,
+            "signal": signal,
+        }
     focus_panels = []
     if required:
         log(f"contract requires {len(required)} aligned focus panel(s) before judgment", 1)
@@ -2214,12 +2328,29 @@ def _image_reproduction(live: str | Path, canonical: str | Path) -> dict:
     return result
 
 
+def _geometry_protected_vis_ids(shot: Shot, layer, unit, frame: int | None = None) -> set[str]:
+    """Lifecycle-active vis ids a geometry unit must re-evaluate (HIR-0051)."""
+    from vfx_harness.domain.contracts import load_document
+    from vfx_harness.domain.work_units import (
+        geometry_vis_protection_ids,
+        layer_active_visible_fraction_ids,
+    )
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    if unit is None or "geometry" not in getattr(unit, "provides", ()):
+        return set()
+    rows = load_document(selected_artifact_path(shot.folder, "scene_checks.json"), "contracts")
+    vis = layer_active_visible_fraction_ids(rows, str(layer.id), frame=frame)
+    return set(geometry_vis_protection_ids(unit.provides, vis))
+
+
 def _unit_evidence_ids(unit, frame: int) -> set[str] | None:
     """Exact evidence boundary for one work unit at one judge moment.
 
-    Returning ``None`` preserves layer/composed evaluation. A unit returns a set even
-    when empty so a malformed or missing binding cannot silently fall back to every
-    contract in the parent layer.
+    Returning ``None`` preserves look-owning layer/composed evaluation. A unit
+    returns a set even when empty so a malformed or missing binding cannot
+    silently fall back to every contract in the parent layer. Look-less
+    composition passes a fan-in unit so this is not ``None`` (HIR-0039).
     """
     if unit is None:
         return None
@@ -2240,6 +2371,16 @@ def image_evidence_required_for(image_bindings, capabilities) -> bool:
     return bool(image_bindings) or bool(capabilities)
 
 
+def look_unsettled_for(image_bindings, capabilities) -> bool:
+    """Look ownership without bound image contracts must not lock live mutation.
+
+    ``image_evidence_required_for`` is still true for look units (canonical still
+    needs a critic). Using that same flag as a ``run_bpy`` lock treated 0/0 image
+    rows as critic handoff (HIR-0044).
+    """
+    return bool(capability_feedback_groups(capabilities or ())) and not bool(image_bindings)
+
+
 def _unit_completion_evidence_ids(unit) -> set[str] | None:
     """All evidence required before a bounded unit may stop mutating.
 
@@ -2257,11 +2398,36 @@ def _unit_completion_evidence_ids(unit) -> set[str] | None:
     }
 
 
-def _scope_unit_evidence(evidence: list[dict], unit, frame: int) -> list[dict]:
+def _unit_scene_evidence_ids(unit) -> set[str] | None:
+    """Scene-contract ids for the live probe (HIR-0048).
+
+    ``_unit_completion_evidence_ids`` includes image-contract debts. Mixing those
+    into ``_scene_completion_state`` taught selector-miss copy and critic handoff.
+    """
+    if unit is None:
+        return None
+    ids: set[str] = set()
+    for claim in unit.evaluation.claims:
+        if not claim.required:
+            continue
+        for binding in claim.evidence:
+            if binding.kind == "scene_contract":
+                ids.add(binding.id)
+    context = unit.evaluation.composition_context
+    if context:
+        ids.update(context.contract_ids)
+    return ids
+
+
+def _scope_unit_evidence(
+    evidence: list[dict], unit, frame: int, extra_ids: set[str] | None = None
+) -> list[dict]:
     """Keep only evidence explicitly bound by the active unit's moment."""
     ids = _unit_evidence_ids(unit, frame)
     if ids is None:
         return evidence
+    if extra_ids:
+        ids = set(ids) | {str(item) for item in extra_ids}
     return [
         row
         for row in evidence
@@ -2303,7 +2469,13 @@ def _render_evidence(
     except Exception as exc:
         log(f"! live-scene evidence unavailable: {str(exc)[:90]}", 1)
     evidence.extend(_worklist_evidence(shot.folder, str(layer.id)))
-    return _scope_unit_evidence(evidence, active_unit, int(m.frame))
+    extra = set()
+    if active_unit is not None:
+        try:
+            extra = _geometry_protected_vis_ids(shot, layer, active_unit, int(m.frame))
+        except (OSError, ValueError, KeyError):
+            extra = set()
+    return _scope_unit_evidence(evidence, active_unit, int(m.frame), extra_ids=extra)
 
 
 def _reproduction_hint(row: dict) -> str:
@@ -2331,12 +2503,81 @@ def _reproduction_hint(row: dict) -> str:
     return ""
 
 
+def _scene_contract_issue(row: dict) -> str:
+    """Turn one evidence row into a repair-facing issue string.
+
+    A metric that cannot apply to the subject CLASS is a binding defect
+    (``smooth_fraction`` on a camera rig). A ``keyframe_schedule`` path or
+    key-set miss is a measured fail: the kind applies; the named RNA path is
+    unkeyed or on another data_path (HIR-0050).
+    """
+    head = f"[check:{row['id']}]"
+    if row.get("value") is None:
+        # The evidence row already carries WHY it could not be measured; withholding
+        # it left a probe of the live scene as the only way to learn that 50 objects
+        # were in frame and the projection still returned nothing.
+        why = str(row.get("error") or row.get("note") or "").strip()
+        # Selector ambiguity/absence is the BUILDER's tagging to fix — run
+        # 20260825T044518Z's repair read the blanket "needs re-materialization"
+        # verdict for a 7-nodes-one-tag defect and deferred a fix that was one
+        # retag away. Only a metric that cannot apply to the subject CLASS is a
+        # binding defect.
+        lowered = why.lower()
+        metric = str(row.get("metric") or row.get("kind") or "")
+        if metric == "keyframe_schedule":
+            return (
+                f"{head} executable contract fails: keyframe_schedule could not read "
+                f"the named sample path (target {row.get('target')})"
+                + (f" — {why}" if why else "")
+                + ". Key that path on the object or its data-block; list_keyframes "
+                "names every fcurve data_path present. This is this build's defect "
+                "to fix, not a binding defect."
+            )
+        if "matched 0 nodes" in lowered or "matched no objects" in lowered:
+            return (
+                f"{head} {row.get('metric')} could not be measured: {why}. The "
+                "contract's subject does not exist yet — CREATE it and tag it with "
+                "the contract's role/control; this is this build's defect to fix."
+            )
+        if "matched" in lowered and "nodes" in lowered:
+            return (
+                f"{head} {row.get('metric')} could not be measured: {why}. The "
+                "semantic selector must resolve to EXACTLY ONE node — remove the "
+                "role/control tag from the duplicates so one node carries it; this "
+                "is this build's tagging defect to fix, not a binding defect."
+            )
+        if "has no requested" in lowered and "socket" in lowered:
+            return (
+                f"{head} {row.get('metric')} could not be measured: {why}. When the "
+                "contract names no socket, resolution looks for a socket literally "
+                "named 'Value' (inputs then outputs) — tag a ShaderNodeValue whose "
+                "output drives the quantity, or a node with a 'Value' socket; this "
+                "is this build's tagging defect to fix, not a binding defect."
+            )
+        return (
+            f"{head} contract is INAPPLICABLE to its subject: {row.get('metric')} "
+            f"could not be measured on these roles (target {row.get('target')})"
+            + (f" — {why}" if why else "")
+            + ". This is a binding defect, not a build defect — the metric cannot "
+            "apply to what the claim names; it needs re-materialization, not a repair."
+        )
+    hint = _reproduction_hint(row)
+    note = str(row.get("note") or "").strip()
+    return (
+        f"{head} executable contract fails: {row.get('metric')} reads "
+        f"{row.get('value')} against {row.get('target')}"
+        + (f" — {note}" if note else "")
+        + (f" · reproduce: {hint}" if hint else "")
+    )
+
+
 def _executable_unit_verdict(
     unit,
     frame: int,
     axes: list[tuple[str, str]],
     evidence: list[dict],
     contract_frames: dict[str, int] | None = None,
+    extra_required_ids: set[str] | None = None,
 ) -> dict | None:
     """Let exact executable claims decide an atomic unit without a vision call."""
     if unit is None:
@@ -2348,6 +2589,10 @@ def _executable_unit_verdict(
     ]
     if not required or any(claim.authority != "executable_required" for claim in required):
         return None
+    from vfx_harness.domain.work_units import unearned_look_judge_frames
+
+    if int(frame) in unearned_look_judge_frames(unit):
+        return _look_without_image_domain_verdict(unit, int(frame), axes)
     # A frame-scoped contract produces its reading at ITS declared frame only. A claim
     # judging [72, 150] that binds vis-f72 AND vis-f150 was faulted at each frame for
     # the OTHER frame's row (run 20260825: detail_instancing 'required bound evidence
@@ -2382,6 +2627,8 @@ def _executable_unit_verdict(
         for binding in claim.evidence
         if _due_here(binding.id)
     }
+    if extra_required_ids:
+        required_ids |= {str(item) for item in extra_required_ids}
     by_id = {str(row.get("id")): row for row in evidence if row.get("id")}
     missing = sorted(required_ids - set(by_id))
     failures = [
@@ -2393,62 +2640,29 @@ def _executable_unit_verdict(
         row for row in evidence if row.get("source") == "builder_state" and not row.get("pass")
     ]
     passed = not missing and not failures and not worklist_failures
-    # A metric that could not be measured is not a metric that measured and missed.
-    # `smooth_fraction` over camera roles reads None because there is no mesh to shade;
-    # reporting that as "fails" sent two repair rounds after something unfixable
-    # (run 20260824T060927Z). Name it as inapplicable and point at the binding.
-    def _issue(row: dict) -> str:
-        head = f"[check:{row['id']}]"
-        if row.get("value") is None:
-            # The evidence row already carries WHY it could not be measured; withholding
-            # it left a probe of the live scene as the only way to learn that 50 objects
-            # were in frame and the projection still returned nothing.
-            why = str(row.get("error") or "").strip()
-            # Selector ambiguity/absence is the BUILDER's tagging to fix — run
-            # 20260825T044518Z's repair read the blanket "needs re-materialization"
-            # verdict for a 7-nodes-one-tag defect and deferred a fix that was one
-            # retag away. Only a metric that cannot apply to the subject CLASS is a
-            # binding defect.
-            lowered = why.lower()
-            if "matched 0 nodes" in lowered or "matched no objects" in lowered:
-                return (
-                    f"{head} {row.get('metric')} could not be measured: {why}. The "
-                    "contract's subject does not exist yet — CREATE it and tag it with "
-                    "the contract's role/control; this is this build's defect to fix."
-                )
-            if "matched" in lowered and "nodes" in lowered:
-                return (
-                    f"{head} {row.get('metric')} could not be measured: {why}. The "
-                    "semantic selector must resolve to EXACTLY ONE node — remove the "
-                    "role/control tag from the duplicates so one node carries it; this "
-                    "is this build's tagging defect to fix, not a binding defect."
-                )
-            if "has no requested" in lowered and "socket" in lowered:
-                return (
-                    f"{head} {row.get('metric')} could not be measured: {why}. When the "
-                    "contract names no socket, resolution looks for a socket literally "
-                    "named 'Value' (inputs then outputs) — tag a ShaderNodeValue whose "
-                    "output drives the quantity, or a node with a 'Value' socket; this "
-                    "is this build's tagging defect to fix, not a binding defect."
-                )
-            return (
-                f"{head} contract is INAPPLICABLE to its subject: {row.get('metric')} "
-                f"could not be measured on these roles (target {row.get('target')})"
-                + (f" — {why}" if why else "")
-                + ". This is a binding defect, not a build defect — the metric cannot "
-                "apply to what the claim names; it needs re-materialization, not a repair."
-            )
-        hint = _reproduction_hint(row)
-        note = str(row.get("note") or "").strip()
-        return (
-            f"{head} executable contract fails: {row.get('metric')} reads "
-            f"{row.get('value')} against {row.get('target')}"
-            + (f" — {note}" if note else "")
-            + (f" · reproduce: {hint}" if hint else "")
-        )
+    issues = [_scene_contract_issue(row) for row in [*failures, *worklist_failures]]
+    from vfx_harness.domain.image_debts import (
+        UNPAID_IMAGE_DEBT_RULE,
+        image_contract_debt_cards,
+        normalize_evidence_id,
+    )
 
-    issues = [_issue(row) for row in [*failures, *worklist_failures]]
-    issues.extend(f"[check:{eid}] required bound evidence was not produced" for eid in missing)
+    due_image = {
+        card.id
+        for card in image_contract_debt_cards(unit)
+        if card.frame == int(frame)
+    }
+    for eid in missing:
+        bare = normalize_evidence_id(eid)
+        if bare in due_image:
+            issues.append(
+                f"{bare} unpaid image-contract debt: no checks.json or runtime_checks.json "
+                "row. Call propose_checks with this exact id, frame, property kind, and axis "
+                "on an existing run render. A role or control retag cannot produce it. "
+                + UNPAID_IMAGE_DEBT_RULE
+            )
+        else:
+            issues.append(f"{bare} required bound evidence was not produced")
     scored_axes = [key for key, _description in axes]
     score = 5 if passed else 1
     return {
@@ -2465,6 +2679,201 @@ def _executable_unit_verdict(
         "decided_by": "unit_executable_evidence",
         "judge_conflict": False,
         "contract_gap": bool(missing),
+    }
+
+
+def _composition_judge_unit(layer):
+    """Fan-in unit for composed canonical when every stage is executable-only.
+
+    Multi-unit composition used to call ``_verify_script`` with ``active_unit=None``,
+    which ``_judge_unit_or_layer`` treats as a critic session. Look-less camera layers
+    then scored EEVEE-black plates as look 1.0 on every ``layer.owns`` axis, including
+    axes with no required unit claim (run 20260827T031330Z-c4687e, HIR-0039).
+    """
+    stages = tuple(getattr(layer, "stages", ()) or ())
+    if not stages:
+        return None
+    if any(tuple(getattr(unit, "look_capabilities", ()) or ()) for unit in stages):
+        return None
+    claims = tuple(
+        claim for unit in stages for claim in (unit.evaluation.claims or ())
+    )
+    required = [claim for claim in claims if claim.required]
+    if not required:
+        return None
+    if any(claim.authority != "executable_required" for claim in required):
+        return None
+    from vfx_harness.domain.work_units import MutationScope
+
+    roles = tuple(
+        dict.fromkeys(role for unit in stages for role in unit.mutates.roles)
+    )
+    controls = tuple(
+        dict.fromkeys(control for unit in stages for control in unit.mutates.controls)
+    )
+    return SimpleNamespace(
+        id=f"{getattr(layer, 'id', 'layer')}._composition",
+        look_capabilities=(),
+        evaluation=SimpleNamespace(claims=claims),
+        mutates=MutationScope(
+            mode="scoped",
+            roles=roles,
+            controls=controls,
+            script_spans=(),
+        ),
+    )
+
+
+def _required_claims_at(unit, frame: int):
+    """Required claims whose moments include this canonical frame."""
+    claims = tuple(getattr(getattr(unit, "evaluation", None), "claims", ()) or ())
+    return [
+        claim
+        for claim in claims
+        if getattr(claim, "required", False) and int(frame) in (getattr(claim, "moments", ()) or ())
+    ]
+
+
+def _look_without_image_domain_verdict(
+    unit, frame: int, axes: list[tuple[str, str]]
+) -> dict:
+    """Look ownership with only scene claims is not a 5.0 seal (HIR-0046).
+
+    Canonical ``contract_gap`` skips repair only when ``issues`` is empty.
+    """
+    from vfx_harness.domain.work_units import LOOK_REQUIRES_IMAGE_DOMAIN_RULE
+
+    scored_axes = [key for key, _description in axes]
+    axis = scored_axes[0] if scored_axes else "coverage"
+    unit_id = str(getattr(unit, "id", "unit") or "unit")
+    capabilities = tuple(getattr(unit, "look_capabilities", ()) or ())
+    observation = {
+        "id": "look-without-image-domain",
+        "kind": "measurable",
+        "axis": axis,
+        "property": "look_image_domain",
+        "observation": (
+            f"unit {unit_id} declares look_capabilities {list(capabilities)} "
+            f"but frame {int(frame)} has no required image-domain claim"
+        ),
+        "action": (
+            "add a required claim that asserts image and binds image_contract "
+            "(or qualification / human_decision), or declare look_capabilities []"
+        ),
+        "moment": int(frame),
+        "roles": list(getattr(getattr(unit, "mutates", None), "roles", ()) or ()),
+        "claim_id": None,
+        "check_ids": [],
+        "panel_ids": [],
+    }
+    gap = {
+        "state": "contract_gap",
+        "observation": observation,
+        "reason": LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
+        "check_ids": [],
+    }
+    return {
+        "scores": dict.fromkeys(scored_axes, 1),
+        "mean": 1.0,
+        "pass": False,
+        "issues": [],
+        "scored_axes": scored_axes,
+        "na_axes": [],
+        "observations": [],
+        "evidence": [],
+        "evidence_failures": [],
+        "missing_evidence": [],
+        "decided_by": "look_without_image_domain",
+        "judge_conflict": False,
+        "contract_gap": True,
+        "contract_gaps": [gap],
+        "observation_reconciliation": [gap],
+    }
+
+
+def _uncovered_judge_frame_verdict(unit, frame: int, axes: list[tuple[str, str]]) -> dict:
+    """A unit judge frame with no required claim is not a critic look vote (HIR-0045).
+
+    Canonical ``contract_gap`` skips repair only when ``issues`` is empty, so the
+    teaching text lives on the gap observation, not ``issues``.
+    """
+    from vfx_harness.domain.work_units import UNIT_JUDGE_CLAIM_COVERAGE_RULE
+
+    scored_axes = [key for key, _description in axes]
+    axis = scored_axes[0] if scored_axes else "coverage"
+    unit_id = str(getattr(unit, "id", "unit") or "unit")
+    roles = tuple(getattr(getattr(unit, "mutates", None), "roles", ()) or ())
+    observation = {
+        "id": "uncovered-judge-frame",
+        "kind": "measurable",
+        "axis": axis,
+        "property": "required_claim_moment",
+        "observation": (
+            f"unit {unit_id} judges frame {int(frame)} but no required claim "
+            "includes that moment"
+        ),
+        "action": (
+            "add a required claim whose moments include this frame, or drop the "
+            "frame from the unit judge set"
+        ),
+        "moment": int(frame),
+        "roles": list(roles),
+        "claim_id": None,
+        "check_ids": [],
+        "panel_ids": [],
+    }
+    gap = {
+        "state": "contract_gap",
+        "observation": observation,
+        "reason": UNIT_JUDGE_CLAIM_COVERAGE_RULE,
+        "check_ids": [],
+    }
+    return {
+        "scores": dict.fromkeys(scored_axes, 1),
+        "mean": 1.0,
+        "pass": False,
+        "issues": [],
+        "scored_axes": scored_axes,
+        "na_axes": [],
+        "observations": [],
+        "evidence": [],
+        "evidence_failures": [],
+        "missing_evidence": [],
+        "decided_by": "uncovered_judge_frame",
+        "judge_conflict": False,
+        "contract_gap": True,
+        "contract_gaps": [gap],
+        "observation_reconciliation": [gap],
+    }
+
+
+def _lookless_without_executable_verdict(unit, frame: int, axes: list[tuple[str, str]]) -> dict:
+    """Look-less evaluation must not fall through to ``_judge`` (HIR-0032, HIR-0039)."""
+    scored_axes = [key for key, _description in axes]
+    required = [
+        claim
+        for claim in unit.evaluation.claims
+        if claim.required and int(frame) in claim.moments
+    ]
+    if not required:
+        return _uncovered_judge_frame_verdict(unit, frame, axes)
+    return {
+        "scores": dict.fromkeys(scored_axes, 1),
+        "mean": 1.0,
+        "pass": False,
+        "issues": [
+            "look-less evaluation cannot be settled by a visual critic; required "
+            "claims at this frame must be executable_required"
+        ],
+        "scored_axes": scored_axes,
+        "na_axes": [],
+        "observations": [],
+        "evidence": [],
+        "evidence_failures": [],
+        "missing_evidence": [],
+        "decided_by": "lookless_requires_executable_claims",
+        "judge_conflict": False,
+        "contract_gap": True,
     }
 
 
@@ -2491,10 +2900,34 @@ async def _judge_unit_or_layer(
         }
     except (OSError, ValueError):
         contract_frames = {}
+    if active_unit is not None and not _required_claims_at(active_unit, int(m.frame)):
+        return _uncovered_judge_frame_verdict(active_unit, int(m.frame), axes)
+    from vfx_harness.domain.work_units import unearned_look_judge_frames
+
+    if active_unit is not None and int(m.frame) in unearned_look_judge_frames(active_unit):
+        return _look_without_image_domain_verdict(active_unit, int(m.frame), axes)
+    extra_required = set()
+    layer = kwargs.pop("layer", None)
+    if active_unit is not None and layer is not None:
+        try:
+            extra_required = _geometry_protected_vis_ids(
+                shot, layer, active_unit, int(m.frame)
+            )
+        except (OSError, ValueError, KeyError):
+            extra_required = set()
     verdict = _executable_unit_verdict(
-        active_unit, int(m.frame), axes, evidence, contract_frames=contract_frames
+        active_unit,
+        int(m.frame),
+        axes,
+        evidence,
+        contract_frames=contract_frames,
+        extra_required_ids=extra_required,
     )
     if verdict is None:
+        if active_unit is not None and not tuple(
+            getattr(active_unit, "look_capabilities", ()) or ()
+        ):
+            return _lookless_without_executable_verdict(active_unit, int(m.frame), axes)
         return await _judge(
             shot,
             m,
@@ -2507,7 +2940,7 @@ async def _judge_unit_or_layer(
             **kwargs,
         )
     status = "PASS ✅" if verdict["pass"] else "REVISE ✎"
-    expected = len(_unit_evidence_ids(active_unit, int(m.frame)) or ())
+    expected = len((_unit_evidence_ids(active_unit, int(m.frame)) or set()) | extra_required)
     observed = expected - len(verdict["missing_evidence"])
     log(f"unit evidence: {observed}/{expected} bound checks observed · {status}", 1)
     for issue in verdict["issues"][:6]:
@@ -2911,13 +3344,22 @@ async def build_unit(
     # at all (legacy schema-4 layers) falls back to scanning axis identifiers, which
     # silently denied an appearance-owning unit its own feedback in run 20260823T154920Z.
     _declared_capabilities = tuple(getattr(active_unit, "look_capabilities", ()) or ())
+    # A declaring work unit owns look scope even when the tuple is empty: [] means
+    # executable-only (HIR-0032). Falling back to axis-identifier scanning treated
+    # camera_continuity as motion look-feedback and called the critic on black plates.
     _feedback_groups = (
         capability_feedback_groups(_declared_capabilities)
-        if _declared_capabilities
+        if active_unit is not None
         else axis_feedback_groups(axes)
     )
     _look_actions = bool(_feedback_groups)
-    active_evidence_ids = _unit_completion_evidence_ids(active_unit)
+    active_evidence_ids = _unit_scene_evidence_ids(active_unit)
+    if active_evidence_ids is not None and layer is not None:
+        try:
+            extra_vis = _geometry_protected_vis_ids(shot, layer, active_unit)
+        except (OSError, ValueError, KeyError):
+            extra_vis = set()
+        active_evidence_ids = set(active_evidence_ids) | extra_vis
     active_image_evidence_ids = {
         binding.id
         for claim in (active_unit.evaluation.claims if active_unit else ())
@@ -2928,14 +3370,27 @@ async def build_unit(
     image_evidence_required = image_evidence_required_for(
         active_image_evidence_ids, _declared_capabilities
     )
+    look_unsettled = look_unsettled_for(
+        active_image_evidence_ids, _declared_capabilities
+    )
+    from vfx_harness.domain.image_debts import image_contract_debt_cards
+
+    image_debts = (
+        [card.as_dict() for card in image_contract_debt_cards(active_unit)]
+        if active_unit is not None
+        else []
+    )
     phase = {
         "mode": "live",
         "round": 1,
         "frame": int(m.frame),
         "look_actions": _look_actions,
+        "look_unsettled": look_unsettled,
         "active_evidence_ids": active_evidence_ids,
         "active_image_evidence_ids": active_image_evidence_ids,
         "image_evidence_required": image_evidence_required,
+        "image_debts": image_debts,
+        "unpaid_image_debts": list(image_debts),
     }
     comparison_state = phase
     scope_baseline: set[str] = set()
@@ -2952,7 +3407,7 @@ async def build_unit(
         shot_dir=shot.folder,
         layer_id=getattr(layer, "id", m.id),
         comparison_state=comparison_state,
-        feedback_groups=sorted(_feedback_groups) if _declared_capabilities else None,
+        feedback_groups=sorted(_feedback_groups) if active_unit is not None else None,
         mutation_roles=(
             active_unit.mutates.roles
             if active_unit is not None and active_unit.mutates.mode == "scoped"
@@ -2966,7 +3421,12 @@ async def build_unit(
         unit_scope=unit_scope_card,
     )
     rserver, rnames = build_recipe_tools(
-        on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names))
+        on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names)),
+        mutation_roles=(
+            tuple(active_unit.mutates.roles)
+            if active_unit is not None and active_unit.mutates.mode == "scoped"
+            else None
+        ),
     )
     mcp_servers = {"blender": bserver, "recipes": rserver}
     tool_names = bnames + rnames
@@ -3201,6 +3661,7 @@ async def build_unit(
                 active_unit=active_unit,
                 motion_frames_override=_layer_motion_frames(layer, m, shot.frames),
                 allow_motion=_layer_needs_motion(layer),
+                layer=layer,
             )
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             convergence_stop = _evidence_convergence_stop(layer, verdict)
@@ -3333,6 +3794,10 @@ async def build_unit(
             ],
             "layer_id": str(getattr(layer, "id", m.id)),
             "roles": list(active_unit.mutates.roles) if active_unit is not None else [],
+            "look_capabilities": list(
+                getattr(active_unit, "look_capabilities", ()) or ()
+            ),
+            "comparison_state": comparison_state,
         }
         with costlog.scoped(role="finalizer", phase="finalize_script", model=script_model()):
             fin = await _run_script_agent(
@@ -3368,29 +3833,71 @@ async def build_unit(
         # text dark") and discarded every one. Closing that gap by hand — read the log,
         # diagnose, edit the plan, re-run — cost $16.52 and two rounds of human attention
         # for feedback the pipeline was already holding.
-        canonical = await _verify_script(
-            shot,
-            m,
-            script_rel,
-            prior_paths,
-            session,
-            axes,
-            ledger,
-            verbose,
-            live_best_mean=best["mean"],
-            live_best_render=best.get("render"),
-            live_best_verdict=best.get("verdict"),
-            scope=scope,
-            layer=layer,
-            active_unit=active_unit,
-            out_verdicts=canon_verdicts,
+        from vfx_harness.domain.image_debts import (
+            UNPAID_IMAGE_DEBT,
+            freeze_refusal,
+            image_contract_debt_cards,
+            unpaid_image_contract_debts,
         )
+        from vfx_harness.evidence.checks import load_image_contract_payment_rows
+
+        skip_canonical = False
+        if active_unit is not None:
+            unpaid_cards = unpaid_image_contract_debts(
+                image_contract_debt_cards(active_unit),
+                load_image_contract_payment_rows(shot.folder),
+            )
+            refusal = freeze_refusal(unpaid_cards, comparison_state.get("cannot_express"))
+            if refusal:
+                log(
+                    "✗ candidate freeze refused — unpaid image-contract debts "
+                    + ", ".join(refusal["ids"]),
+                    1,
+                )
+                comparison_state["cannot_express"] = {
+                    "contract_ids": refusal["ids"],
+                    "reason": refusal["reason"],
+                    "classification": refusal["classification"],
+                }
+                skip_canonical = True
+            elif (
+                str((comparison_state.get("cannot_express") or {}).get("classification") or "")
+                == UNPAID_IMAGE_DEBT
+            ):
+                log(
+                    "unpaid_image_debt abstention recorded — skipping canonical "
+                    "(no legal payer after freeze)",
+                    1,
+                )
+                skip_canonical = True
+        if skip_canonical:
+            canonical = "failed"
+        else:
+            canonical = await _verify_script(
+                shot,
+                m,
+                script_rel,
+                prior_paths,
+                session,
+                axes,
+                ledger,
+                verbose,
+                live_best_mean=best["mean"],
+                live_best_render=best.get("render"),
+                live_best_verdict=best.get("verdict"),
+                scope=scope,
+                layer=layer,
+                active_unit=active_unit,
+                out_verdicts=canon_verdicts,
+            )
 
         # Repair rounds, bounded. The target here is the SCRIPT's output from an empty
         # scene — not the live scene the builder has been tuning, which is why it must be
         # re-verified canonically or the loop would keep re-passing live and failing here.
         rejected_repairs: list[str] = []
         for attempt in range(1, MAX_CANON_REPAIRS + 1):
+            if skip_canonical:
+                break
             if canonical != "failed":
                 break
             failed = [(f, v) for (f, _r), v in (canon_verdicts or []) if not v.get("pass")]
@@ -3404,6 +3911,23 @@ async def build_unit(
             # never made it into the repair path.
             holding = [(f, v) for (f, _r), v in (canon_verdicts or []) if v.get("pass")]
             if not failed:
+                break
+            unsat = _unsatisfiable_pair_findings(shot, _canonical_failing_ids(canon_verdicts or []))
+            if unsat and not comparison_state.get("cannot_express"):
+                comparison_state["cannot_express"] = {
+                    "contract_ids": sorted({
+                        pair["schedule_id"] for pair in unsat
+                    } | {pair["smoothness_id"] for pair in unsat}),
+                    "reason": unsat[0]["message"],
+                }
+            if comparison_state.get("cannot_express"):
+                payload = comparison_state["cannot_express"]
+                log(
+                    "bound contracts cannot be satisfied inside this unit — skipping "
+                    f"canonical repair {attempt}/{MAX_CANON_REPAIRS}: "
+                    + str(payload.get("reason") or payload.get("contract_ids")),
+                    1,
+                )
                 break
             log(
                 f"canonical failed on {len(failed)} frame(s) — repair {attempt}/"
@@ -3474,6 +3998,19 @@ async def build_unit(
                 if attempt < MAX_CANON_REPAIRS:
                     continue
                 break
+            if comparison_state.get("cannot_express"):
+                shutil.copyfile(backup, shot.folder / script_rel)
+                payload = comparison_state["cannot_express"]
+                log(
+                    "cannot_express_in_scope recorded — restored pre-repair script and "
+                    "stopped remaining repairs: "
+                    + ", ".join(payload.get("contract_ids") or []),
+                    1,
+                )
+                canon_verdicts.clear()
+                canon_verdicts.extend(pre_verdicts)
+                canonical = pre_canonical
+                break
             # Re-verify, then compare against EVERY frame's pre-repair score rather than
             # only the failing ones — see _repair_delta, which owns both judgements (did
             # this break a passing frame, and did it move toward a pass at all).
@@ -3540,6 +4077,8 @@ async def build_unit(
                 if action == "rollback_retry":
                     continue
                 break
+        if comparison_state.get("cannot_express"):
+            ledger._slot(m)["cannot_express"] = dict(comparison_state["cannot_express"])
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with
     # finalize-from-best-snapshot the clean rebuild often outscores every live round:
@@ -3705,7 +4244,7 @@ async def build_unit(
                 "tools": tool_use_summary(
                     motion_owned=_layer_needs_motion(layer),
                     automatic_scene_checks=int(snapshot_counts().get("automatic_scene_contract_probe", 0)),
-                    look_feedback_applicable=axes_own_look(axes),
+                    look_feedback_applicable=_look_actions,
                 ),
             },
         )
@@ -3975,7 +4514,10 @@ async def build_layer(
                     unit_status = "failed_unrecorded_plan_finding"
             elif unit_status == "failed":
                 try:
-                    finding = _record_bound_contract_falsification(shot, layer, unit, milestone, ledger)
+                    finding = (
+                        _record_unsatisfiable_pair_falsification(shot, layer, unit, milestone, ledger)
+                        or _record_bound_contract_falsification(shot, layer, unit, milestone, ledger)
+                    )
                 except (OSError, ValueError, KeyError) as exc:
                     transition(
                         shot.folder,
@@ -4031,6 +4573,12 @@ async def build_layer(
                 for row in load_document(selected_artifact_path(shot.folder, "scene_checks.json"), "contracts")
                 if active_for(row, layer.id) and int(row.get("owner_layer")) < int(layer.id)
             }
+        from vfx_harness.domain.work_units import layer_active_visible_fraction_ids
+
+        scene_rows = load_document(
+            selected_artifact_path(shot.folder, "scene_checks.json"), "contracts"
+        )
+        vis_ids = layer_active_visible_fraction_ids(scene_rows, layer.id)
         artifact = shot.folder / artifact_for(unit)
         slot = ledger._slot(milestone)
         best_render = shot.folder / str((slot.get("best") or {}).get("render") or "")
@@ -4043,6 +4591,7 @@ async def build_layer(
             settings_hash=hashlib.sha256(b"eevee:0.5").hexdigest(),
             script_hash=digest(artifact) or "missing",
             input_hash=layers_hash,
+            layer_active_vis_ids=vis_ids,
         )
         transition(shot.folder, str(layer.id), unit.id, "evaluating", reason="canonical evaluation sealed")
         from vfx_harness.orchestration.plan_due import resolve_unit_completion
@@ -4106,6 +4655,12 @@ async def build_layer(
     )
     axes = _owned_axes(await ensure_axes(shot, verbose), layer)
     canonical: list = []
+    composition_unit = _composition_judge_unit(layer)
+    if composition_unit is not None:
+        log(
+            "composed canonical fans in look-less unit claims — no critic look vote",
+            1,
+        )
     result = await _verify_script(
         shot,
         milestone,
@@ -4117,6 +4672,7 @@ async def build_layer(
         verbose,
         scope=scope,
         layer=layer,
+        active_unit=composition_unit,
         out_verdicts=canonical,
     )
     status = "passed" if result == "passed" else result
@@ -4256,6 +4812,85 @@ def _persist_contract_gaps(shot: Shot, layer, m: Milestone, render_rel: str, ver
             json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
         rows=rows,
+    )
+
+
+def _record_unsatisfiable_pair_falsification(shot: Shot, layer, unit, milestone, ledger) -> dict | None:
+    """Escalate a published schedule/smoothness pair (or cannot_express) as a plan defect.
+
+    Classification is arithmetic plus an explicit in-scope abstention, not a named
+    decision path: consecutive ``keyframe_schedule`` samples already exceed
+    ``curve_derivative_max.hi``, so no in-scope interpolation can pass. Run
+    ``20260826T170413Z-ba2b4c`` spent two repairs proving that floor.
+    """
+    from vfx_harness.orchestration.layer_plans import work_unit_plan_path
+    from vfx_harness.orchestration.plan_authority import resolve_current
+    from vfx_harness.orchestration.unit_state import record_hypothesis_falsification
+
+    slot = ledger._slot(milestone)
+    declared = slot.get("cannot_express") if isinstance(slot.get("cannot_express"), dict) else {}
+    failing = {
+        str(item["id"])
+        for row in (slot.get("rounds") or [])
+        if row.get("kind") == "canonical"
+        for item in (row.get("evidence") or [])
+        if isinstance(item, dict) and item.get("id") and not item.get("pass")
+    }
+    pairs = _unsatisfiable_pair_findings(shot, failing)
+    contract_ids = list(declared.get("contract_ids") or [])
+    reason = str(declared.get("reason") or "")
+    if pairs:
+        contract_ids = sorted({
+            *contract_ids,
+            *(pair["schedule_id"] for pair in pairs),
+            *(pair["smoothness_id"] for pair in pairs),
+        })
+        reason = reason or pairs[0]["message"]
+    if not contract_ids or not reason:
+        return None
+    bundle = resolve_current(shot.folder)
+    script_rel = slot.get("script")
+    if not script_rel:
+        raise ValueError("terminal canonical verdict has no recorded build script")
+    candidate_hash = hashlib.sha256((shot.folder / script_rel).read_bytes()).hexdigest()
+    settings_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "script": str(script_rel),
+                "contract_ids": contract_ids,
+                "run_id": (slot.get("rounds") or [{}])[-1].get("run_id"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    unit_plan = work_unit_plan_path(shot.folder, unit)
+    classification = str(declared.get("classification") or "unsatisfiable_in_scope")
+    from vfx_harness.domain.image_debts import conflict_authority
+
+    return record_hypothesis_falsification(
+        shot.folder,
+        str(layer.id),
+        unit,
+        layer.stages,
+        bundle_hash=bundle.content_hash,
+        unit_plan_hash=hashlib.sha256(unit_plan.read_bytes()).hexdigest(),
+        candidate_hash=candidate_hash,
+        settings_hash=settings_hash,
+        contract_ids=contract_ids,
+        observations=[{
+            "contract_ids": contract_ids,
+            "reason": reason,
+            "classification": classification,
+        }],
+        decisions=[],
+        conflict={
+            "kind": "contract",
+            "required_authority": conflict_authority(classification),
+            "roles": list(unit.mutates.roles),
+            "controls": list(unit.mutates.controls),
+        },
+        evidence=[str(script_rel)],
     )
 
 
@@ -4602,6 +5237,7 @@ async def _verify_script(
             motion_evidence=canonical_motion_evidence,
             allow_motion=_layer_needs_motion(layer),
             focus_frames_override=[int(m_i.frame)],
+            layer=layer,
         )
 
     if len(shots_) == 1:
@@ -4722,6 +5358,10 @@ async def _run(
             raise BuildUnpassed(
                 f"layer {g.id} did not accept every work unit: {', '.join(unpassed)}"
             )
+        if status not in {"passed", "reproduced"}:
+            raise LayerVerdictFailed(
+                f"layer {g.id} units passed but the composed verdict is {status!r}"
+            )
     finally:
         session.close()
         # This was imported and never called. write_layer_context() overwrites CLAUDE.md
@@ -4765,16 +5405,19 @@ def main() -> None:
         # traceback on top would bury both under a stack nobody needs.
         except BuildTruncated as e:
             log(f"BUILD TRUNCATED — {e}")
-            raise SystemExit(3) from None
+            raise run_artifacts.RequestedExit(3, f"BUILD TRUNCATED — {e}") from None
         except BuildUnpassed as e:
             log(f"BUILD UNPASSED — {e}")
-            raise SystemExit(7) from None
+            raise run_artifacts.RequestedExit(7, f"INCOMPLETE CHAIN — {e}") from None
+        except LayerVerdictFailed as e:
+            log(f"LAYER VERDICT — {e}")
+            raise run_artifacts.RequestedExit(9, str(e)) from None
         except ChainBroken as e:
             log(f"CHAIN BROKEN — {e}")
-            raise SystemExit(4) from None
+            raise run_artifacts.RequestedExit(4, f"CHAIN BROKEN — {e}") from None
         except UnpassedPrior as e:
             log(f"UNACCEPTED PRIOR — {e}")
-            raise SystemExit(6) from None
+            raise run_artifacts.RequestedExit(6, f"UNACCEPTED PRIOR — {e}") from None
 
 
 if __name__ == "__main__":

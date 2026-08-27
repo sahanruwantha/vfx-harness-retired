@@ -645,9 +645,10 @@ def h_ping(a: dict) -> dict:
 # Blender 4.x attribute -> the 5.x way. Surfaced inline so a wrong guess costs one
 # tool call instead of a retry loop.
 _ATTR_HINTS = {
-    "glare_type": "in 5.x Glare settings are INPUT SOCKETS, not attributes. Use the "
-                  "helper: bvfx_glare_bloom(threshold=..., size=..., strength=...). To "
-                  "read the graph use inspect_nodes('compositor').",
+    "FromMesh": "BVHTree.FromMesh is not the 5.x constructor (use FromBMesh) and is "
+                "not the clearance instrument. Use the bound path_clearance_min "
+                "contract / closest_point_on_mesh, or check_scene(kind='motion') "
+                "for smoothness — do not invent a nearest-point probe in run_bpy.",
     "node_tree": "scene.node_tree is GONE in 5.x — the compositor is "
                  "scene.compositing_node_group. Prefer bvfx_glare_bloom / "
                  "inspect_nodes('compositor') over poking it directly.",
@@ -930,19 +931,45 @@ def _action_fcurves(obj, action):
 
 
 def h_keyframes(a: dict) -> dict:
+    import bpy
     import checks
 
     role = str(a.get("role") or "").strip() or None
     name = str(a.get("object") or "").strip() or None
-    obj = checks.resolve_object(role=role, name=name)
-    name = obj.name
-    ad = obj.animation_data
-    if not ad or not ad.action:
-        return {"text": f"{name}: no animation"}
-    lines = [f"{name}: action {ad.action.name}"]
-    for fc in _action_fcurves(obj, ad.action):
-        keys = [(round(k.co[0], 1), round(k.co[1], 3), k.interpolation) for k in fc.keyframe_points]
-        lines.append(f"  {fc.data_path}[{fc.array_index}]: {keys}")
+    inventory = checks.object_inventory()
+    hits = checks.pick_objects(inventory, role=role, name=name)
+    if not hits:
+        raise ValueError(checks.format_object_miss(inventory=inventory, role=role, name=name))
+    lines: list[str] = []
+    if role and len(hits) > 1:
+        lines.append(
+            f"role {role!r} matched {len(hits)} objects; listing every host "
+            "(check_scene still needs object= for a single-subject kind)"
+        )
+    for row in hits:
+        obj = bpy.data.objects.get(row["name"])
+        if obj is None:
+            continue
+        listed = False
+        ad = obj.animation_data
+        if ad and ad.action:
+            listed = True
+            lines.append(f"{obj.name}: action {ad.action.name}")
+            for fc in _action_fcurves(obj, ad.action):
+                keys = [(round(k.co[0], 1), round(k.co[1], 3), k.interpolation) for k in fc.keyframe_points]
+                lines.append(f"  {fc.data_path}[{fc.array_index}]: {keys}")
+        data = getattr(obj, "data", None)
+        dad = getattr(data, "animation_data", None) if data is not None else None
+        if dad and dad.action:
+            listed = True
+            lines.append(f"{obj.name}.data: action {dad.action.name}")
+            for fc in _action_fcurves(data, dad.action):
+                keys = [(round(k.co[0], 1), round(k.co[1], 3), k.interpolation) for k in fc.keyframe_points]
+                path = fc.data_path
+                shown = path if str(path).startswith("data.") else f"data.{path}"
+                lines.append(f"  {shown}[{fc.array_index}]: {keys}")
+        if not listed:
+            lines.append(f"{obj.name}: no animation")
     return {"text": "\n".join(lines)}
 
 

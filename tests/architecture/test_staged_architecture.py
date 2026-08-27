@@ -194,6 +194,409 @@ def test_claim_closure_reports_unbound_owned_contract(tmp_path):
     assert any(finding.where == "contract.unbound" for finding in closure.findings)
 
 
+def test_claim_closure_counts_composition_context_ids_as_bound(tmp_path):
+    """Remat7 published extra-frame vis via composition_context.contract_ids; the
+    validator counted them as producers, then claim-closure unbound them and
+    retracted the unit plan (HIR-0029)."""
+    (tmp_path / "scene_checks.json").write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "contracts": [
+                    {"id": "contract.form", "axis": "form", "owner_layer": "1", "frame": 40},
+                    {"id": "contract.extra", "axis": "form", "owner_layer": "1", "frame": 12},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "checks.json").write_text(
+        json.dumps({"schema": 2, "checks": []}), encoding="utf-8"
+    )
+    row = {
+        "id": "form",
+        "title": "form",
+        "plan": "plans/04_lighting/form.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": [],
+            "controls": [],
+            "script_spans": ["build/04_lighting.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 40,
+            "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+            "temporal_evidence": "none",
+            "claims": [_claim("form")],
+            "composition_context": {
+                "frames": [40],
+                "contract_ids": ["contract.extra"],
+            },
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+    }
+    unit = WorkUnit.parse(row, "unit.form")
+    closure = validate_claim_closure(
+        tmp_path, [SimpleNamespace(id="1", owns=("form",), stages=(unit,))]
+    )
+    assert closure.clean
+    assert "contract.extra" in closure.bound_contract_ids
+
+
+def test_extra_frame_evidence_binding_names_id_path(tmp_path):
+    (tmp_path / "scene_checks.json").write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "contracts": [
+                    {"id": "contract.form", "axis": "form", "owner_layer": "1", "frame": 40},
+                    {"id": "contract.extra", "axis": "form", "owner_layer": "1", "frame": 12},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "checks.json").write_text(
+        json.dumps({"schema": 2, "checks": []}), encoding="utf-8"
+    )
+    claim = _claim("form")
+    claim["evidence"] = [
+        {"kind": "scene_contract", "id": "contract.form"},
+        {"kind": "scene_contract", "id": "contract.extra"},
+    ]
+    row = {
+        "id": "form",
+        "title": "form",
+        "plan": "plans/04_lighting/form.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": [],
+            "controls": [],
+            "script_spans": ["build/04_lighting.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 40,
+            "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+            "temporal_evidence": "none",
+            "claims": [claim],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+    }
+    unit = WorkUnit.parse(row, "unit.form")
+    closure = validate_claim_closure(
+        tmp_path, [SimpleNamespace(id="1", owns=("form",), stages=(unit,))]
+    )
+    assert not closure.clean
+    assert any("outside claim moments" in finding.what for finding in closure.findings)
+    assert any("composition_context.contract_ids" in finding.what for finding in closure.findings)
+
+
+def test_claim_closure_counts_image_contract_debts_as_bound(tmp_path):
+    """HIR-0046 published look image_contract ids while checks.json stayed empty;
+    claim-closure then retracted the unit plan (run 20260827T080852Z-a0351a)."""
+    (tmp_path / "scene_checks.json").write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "contracts": [
+                    {"id": "contract.form", "axis": "form", "owner_layer": "1", "frame": 40},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "checks.json").write_text(
+        json.dumps({"schema": 2, "checks": []}), encoding="utf-8"
+    )
+    look = _claim("form", cid="claim.look", frame=40)
+    look["asserts"] = "image"
+    look["evidence"] = [{"kind": "image_contract", "id": "form-look-f40"}]
+    row = {
+        "id": "form",
+        "title": "form",
+        "plan": "plans/04_lighting/form.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": [],
+            "controls": [],
+            "script_spans": ["build/04_lighting.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 40,
+            "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+            "temporal_evidence": "none",
+            "claims": [_claim("form"), look],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": ["material"],
+    }
+    unit = WorkUnit.parse(row, "unit.form")
+    closure = validate_claim_closure(
+        tmp_path, [SimpleNamespace(id="1", owns=("form",), stages=(unit,))]
+    )
+    assert closure.clean, tuple(finding.what for finding in closure.findings)
+    assert "form-look-f40" in closure.bound_contract_ids
+    assert not any("does not exist" in finding.what for finding in closure.findings)
+
+
+def test_claim_closure_still_checks_existing_image_contract_axis(tmp_path):
+    (tmp_path / "scene_checks.json").write_text(
+        json.dumps({"schema": 2, "contracts": []}), encoding="utf-8"
+    )
+    (tmp_path / "checks.json").write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "checks": [
+                    {"id": "form-look-f40", "axis": "other", "owner_layer": "1", "frame": 40},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    look = _claim("form", cid="claim.look", frame=40)
+    look["asserts"] = "image"
+    look["evidence"] = [{"kind": "image_contract", "id": "form-look-f40"}]
+    unit = WorkUnit.parse(
+        {
+            "id": "form",
+            "title": "form",
+            "plan": "plans/04_lighting/form.md",
+            "depends_on": [],
+            "mutates": {
+                "mode": "scoped",
+                "roles": [],
+                "controls": [],
+                "script_spans": ["build/04_lighting.py"],
+            },
+            "protects": {
+                "selector": "all_active_upstream_interfaces",
+                "resolve_to_explicit_ids_at": "freeze",
+            },
+            "evaluation": {
+                "primary_judge": 40,
+                "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+                "temporal_evidence": "none",
+                "claims": [look],
+            },
+            "completion": "all_required_claims_and_protected_contracts_pass",
+            "look_capabilities": ["material"],
+        },
+        "unit.form",
+    )
+    closure = validate_claim_closure(
+        tmp_path, [SimpleNamespace(id="1", owns=("form",), stages=(unit,))]
+    )
+    assert not closure.clean
+    assert any("belongs to axis" in finding.what for finding in closure.findings)
+
+
+def _empty_catalogs(tmp_path, *, scene_rows: list | None = None):
+    (tmp_path / "scene_checks.json").write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "contracts": scene_rows
+                if scene_rows is not None
+                else [
+                    {"id": "contract.form", "axis": "form", "owner_layer": "1", "frame": 40},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "checks.json").write_text(
+        json.dumps({"schema": 2, "checks": []}), encoding="utf-8"
+    )
+
+
+def _look_claim(*, cid: str = "form-look-f40", frame: int = 40) -> dict:
+    look = _claim("form", cid="claim.look", frame=frame)
+    look["asserts"] = "image"
+    look["property"] = "render_region_stat"
+    look["evidence"] = [{"kind": "image_contract", "id": cid}]
+    return look
+
+
+def test_claim_closure_consumes_matching_runtime_image_row(tmp_path):
+    """HIR-0048: a coherent runtime_checks payment is consumed, not left as a debt."""
+    from vfx_harness.domain.image_debts import image_contract_debt_cards, unpaid_image_contract_debts
+    from vfx_harness.evidence.checks import load_image_contract_payment_rows
+
+    _empty_catalogs(tmp_path)
+    look = _look_claim()
+    row = {
+        "id": "form",
+        "title": "form",
+        "plan": "plans/04_lighting/form.md",
+        "depends_on": [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": [],
+            "controls": [],
+            "script_spans": ["build/04_lighting.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 40,
+            "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+            "temporal_evidence": "none",
+            "claims": [_claim("form"), look],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": ["material"],
+    }
+    unit = WorkUnit.parse(row, "unit.form")
+    (tmp_path / "runtime_checks.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "form-look-f40",
+                    "origin": "builder",
+                    "axis": "form",
+                    "frame": 40,
+                    "metric": "region_mean",
+                    "layer": "1",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    closure = validate_claim_closure(
+        tmp_path, [SimpleNamespace(id="1", owns=("form",), stages=(unit,))]
+    )
+    assert closure.clean, tuple(finding.what for finding in closure.findings)
+    assert "form-look-f40" in closure.bound_contract_ids
+    assert "form-look-f40" in closure.claim_bindings["claim.look"]
+    unpaid = unpaid_image_contract_debts(
+        image_contract_debt_cards(unit),
+        load_image_contract_payment_rows(tmp_path),
+    )
+    assert unpaid == ()
+
+
+def test_claim_closure_rejects_runtime_image_row_wrong_frame(tmp_path):
+    _empty_catalogs(tmp_path, scene_rows=[])
+    look = _look_claim()
+    unit = WorkUnit.parse(
+        {
+            "id": "form",
+            "title": "form",
+            "plan": "plans/04_lighting/form.md",
+            "depends_on": [],
+            "mutates": {
+                "mode": "scoped",
+                "roles": [],
+                "controls": [],
+                "script_spans": ["build/04_lighting.py"],
+            },
+            "protects": {
+                "selector": "all_active_upstream_interfaces",
+                "resolve_to_explicit_ids_at": "freeze",
+            },
+            "evaluation": {
+                "primary_judge": 40,
+                "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+                "temporal_evidence": "none",
+                "claims": [look],
+            },
+            "completion": "all_required_claims_and_protected_contracts_pass",
+            "look_capabilities": ["material"],
+        },
+        "unit.form",
+    )
+    (tmp_path / "runtime_checks.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "form-look-f40",
+                    "origin": "builder",
+                    "axis": "form",
+                    "frame": 150,
+                    "metric": "region_mean",
+                    "layer": "1",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    closure = validate_claim_closure(
+        tmp_path, [SimpleNamespace(id="1", owns=("form",), stages=(unit,))]
+    )
+    assert not closure.clean
+    assert any("f150" in finding.what and "outside claim moments" in finding.what for finding in closure.findings)
+
+
+def test_claim_closure_rejects_runtime_image_row_wrong_axis(tmp_path):
+    _empty_catalogs(tmp_path, scene_rows=[])
+    look = _look_claim()
+    unit = WorkUnit.parse(
+        {
+            "id": "form",
+            "title": "form",
+            "plan": "plans/04_lighting/form.md",
+            "depends_on": [],
+            "mutates": {
+                "mode": "scoped",
+                "roles": [],
+                "controls": [],
+                "script_spans": ["build/04_lighting.py"],
+            },
+            "protects": {
+                "selector": "all_active_upstream_interfaces",
+                "resolve_to_explicit_ids_at": "freeze",
+            },
+            "evaluation": {
+                "primary_judge": 40,
+                "judge": [{"frame": 40, "ref": "refs/f040.png"}],
+                "temporal_evidence": "none",
+                "claims": [look],
+            },
+            "completion": "all_required_claims_and_protected_contracts_pass",
+            "look_capabilities": ["material"],
+        },
+        "unit.form",
+    )
+    (tmp_path / "runtime_checks.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "form-look-f40",
+                    "origin": "builder",
+                    "axis": "other",
+                    "frame": 40,
+                    "metric": "region_mean",
+                    "layer": "1",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    closure = validate_claim_closure(
+        tmp_path, [SimpleNamespace(id="1", owns=("form",), stages=(unit,))]
+    )
+    assert not closure.clean
+    assert any("belongs to axis" in finding.what for finding in closure.findings)
+
+
 def test_explicit_primary_is_not_reordered(tmp_path):
     unit = _unit("complete")
     doc = {
@@ -556,3 +959,22 @@ def test_provenance_tracks_schema_declared_unit_plan_paths(tmp_path):
     plan.write_text("changed bounded unit plan\n", encoding="utf-8")
 
     assert any(unit.plan in problem and "edited" in problem.lower() for problem in provenance_check(tmp_path))
+
+
+def test_render_region_stat_family_tracks_the_metrics_registry():
+    """HIR-0048 residual / ADR-0003: payment must not hand-copy METRICS region_* keys."""
+    from vfx_harness.domain import image_debts
+    from vfx_harness.domain.image_debts import (
+        IMAGE_PROPERTY_PREFIXES,
+        metric_matches_property,
+        metrics_certifying_property,
+    )
+    from vfx_harness.evidence.checks import METRICS
+
+    assert not hasattr(image_debts, "IMAGE_PROPERTY_METRICS")
+    prefix = IMAGE_PROPERTY_PREFIXES["render_region_stat"]
+    family = metrics_certifying_property("render_region_stat", METRICS)
+    assert family == frozenset(name for name in METRICS if name.startswith(prefix))
+    assert family, "METRICS lost its region_* family"
+    for name in METRICS:
+        assert metric_matches_property(name, "render_region_stat") is (name in family)

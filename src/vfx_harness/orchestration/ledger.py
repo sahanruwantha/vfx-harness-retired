@@ -20,6 +20,7 @@ from pathlib import Path
 
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.work_units import (
+    EXTRA_FRAME_BINDING_RULE,
     JudgePoint,
     WorkUnit,
     read_document,
@@ -278,7 +279,8 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
             outside = sorted(unit_frames - layer_frames)
             if outside:
                 raise ValueError(
-                    f"{where}.stages.{unit.id} judges frames outside the layer contract: {outside}"
+                    f"{where}.stages.{unit.id} judges frames outside the layer contract: "
+                    f"{outside}. {EXTRA_FRAME_BINDING_RULE}"
                 )
             for claim in unit.evaluation.claims:
                 validate_qualification(path.parent, claim, f"{where}.stages.{unit.id}.claims.{claim.id}")
@@ -291,7 +293,7 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                 if outside_moments:
                     raise ValueError(
                         f"{where}.stages.{unit.id} claim {claim.id} has moments outside "
-                        f"its judge set: {outside_moments}"
+                        f"its judge set: {outside_moments}. {EXTRA_FRAME_BINDING_RULE}"
                     )
                 if claim.repair_owner not in unit_ids:
                     raise ValueError(
