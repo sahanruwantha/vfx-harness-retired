@@ -79,6 +79,8 @@ delegates to that same primitive, preserving the meaningful distinction between 
   and the composed empty-scene replay passed all seven frames. The run exited 0 and
   published Layer 1.
 
+Implementation commit: `80e0039` (`fix: scope candidate evidence to active unit`).
+
 ## Release and rollback
 
 No persisted schema changes. `probe_ctx` is process-local and the candidate MCP remains
