@@ -156,6 +156,10 @@ live in the linked Harness Improvement Records.
   and requirement bindings no surviving staged unit uses, without reopening whole-stage
   patch authority
   ([HIR-0104](docs/improvements/HIR-0104-materialization-decomposition-has-typed-unstage.md)).
+- Invalid JSON-pointer list locations now report the live list length, valid range,
+  indexed stable row ids, and the exact append action. Negative indices are rejected
+  instead of mutating from the end
+  ([HIR-0105](docs/improvements/HIR-0105-json-pointer-rejection-enumerates-live-list.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

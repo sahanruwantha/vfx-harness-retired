@@ -32,18 +32,46 @@ def format_finding(pointer: str, message: str) -> str:
     return f"{pointer}: {message}" if pointer else message
 
 
+def _list_index(token: str, current: list[Any], *, allow_append: bool) -> int:
+    """Parse one RFC 6901 array token and teach the exact legal locations."""
+    if token == "-":
+        if allow_append:
+            return len(current)
+        raise ValueError("JSON pointer '-' is not a get location")
+    if not token.isascii() or not token.isdecimal():
+        raise ValueError(
+            f"JSON pointer list index must be a non-negative integer; got {token!r}. "
+            + _list_location_card(current, allow_append=allow_append)
+        )
+    index = int(token)
+    if index >= len(current):
+        raise ValueError(
+            f"JSON pointer index {index} is out of range. "
+            + _list_location_card(current, allow_append=allow_append)
+        )
+    return index
+
+
+def _list_location_card(current: list[Any], *, allow_append: bool) -> str:
+    """Describe list occupancy without making the caller rediscover indices."""
+    length = len(current)
+    if length:
+        locations = f"valid existing indices are 0..{length - 1}"
+    else:
+        locations = "there are no existing indices"
+    identified = [
+        f"{index}:{row['id']}"
+        for index, row in enumerate(current)
+        if isinstance(row, dict) and str(row.get("id") or "").strip()
+    ]
+    identities = f"; indexed ids are [{', '.join(identified)}]" if identified else ""
+    append = "; use '-' as the final token to append" if allow_append else ""
+    return f"list length is {length}; {locations}{identities}{append}"
+
+
 def _step(current: Any, token: str) -> Any:
     if isinstance(current, list):
-        if token == "-":
-            raise ValueError("JSON pointer '-' is not a get location")
-        try:
-            index = int(token)
-        except ValueError as exc:
-            raise ValueError(f"JSON pointer list index must be an integer; got {token!r}") from exc
-        try:
-            return current[index]
-        except IndexError as exc:
-            raise ValueError(f"JSON pointer index {index} is out of range") from exc
+        return current[_list_index(token, current, allow_append=False)]
     if isinstance(current, dict):
         if token not in current:
             raise ValueError(f"JSON pointer key {token!r} is absent")
@@ -71,14 +99,7 @@ def set_at(document: Any, pointer: str, value: Any) -> None:
         if last == "-":
             current.append(value)
             return
-        try:
-            index = int(last)
-        except ValueError as exc:
-            raise ValueError(f"JSON pointer list index must be an integer; got {last!r}") from exc
-        try:
-            current[index] = value
-        except IndexError as exc:
-            raise ValueError(f"JSON pointer index {index} is out of range") from exc
+        current[_list_index(last, current, allow_append=True)] = value
         return
     if isinstance(current, dict):
         current[last] = value

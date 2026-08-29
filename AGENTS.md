@@ -160,6 +160,9 @@ effect.
 - Rejections teach: tool failures and validation rejections name the violated contract, expected
   versus found, and the legal next actions. A selector miss reports both sides — what was
   requested and what actually exists (HIR-0018).
+- A JSON-pointer list miss reports the live length, valid indices, stable row ids when
+  present, and `-` as the final-token append action. Negative indices never mutate from
+  the end; candidate repair does not make the materializer guess list occupancy (HIR-0105).
 - An unresolved write-family rejection names the unresolved mutated roles, the family
   already derived for siblings, its registry-backed write-kind witnesses, and the legal
   mutation selector fields. Comparison selectors such as `compare_roles` are read-only
