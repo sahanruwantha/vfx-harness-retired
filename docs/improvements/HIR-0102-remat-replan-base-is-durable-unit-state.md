@@ -126,7 +126,7 @@ prior transcript, or filename inference enters the transaction.
 - A fresh `.venv/bin/vfx evals plan /home/sahan/Desktop/vfx-test` reports CLEAN
   for 7 layers, 34 axes, and 11 scene contracts.
 
-Implementation commit is recorded after the verified diff is committed.
+Implementation commit: `e119d12` (`fix: reconcile remat from durable unit digests`).
 
 ## Release and rollback
 

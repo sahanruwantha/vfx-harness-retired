@@ -103,7 +103,7 @@ until `publish_materialization` atomically selects the replacement.
 - Final rematerialization `20260829T084759Z-067de2` again used the unpublished
   overlay path and completed successfully.
 
-Implementation commit is recorded after the verified diff is committed.
+Implementation commit: `1ae1a95` (`fix: rebase remat on selected generation`).
 
 ## Release and rollback
 
