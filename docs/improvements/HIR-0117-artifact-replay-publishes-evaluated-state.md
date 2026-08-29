@@ -86,6 +86,8 @@ accidental side effect of observation.
   `20260829T192957Z-f915e1` replayed the cumulative artifact from empty and passed all
   seven frames at 5.0 in 1.3 seconds.
 
+Implementation commit: `ea11aa2` (`fix: publish evaluated state between artifacts`).
+
 ## Release and rollback
 
 No persisted schema change. The existing falsification remains audit evidence but is
