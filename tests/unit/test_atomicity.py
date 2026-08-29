@@ -1001,6 +1001,121 @@ def test_plan_gate_rejects_control_owned_point_projection(tmp_path: Path) -> Non
     assert "does not provide camera" in point[0].what
 
 
+@pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])
+def test_camera_observes_point_only_through_consumed_interface(
+    tmp_path: Path, role: str
+) -> None:
+    doc = _layer_doc(temporal_id="target-x")
+    camera = doc["layers"][0]["stages"][0]
+    camera["id"] = "camera"
+    camera["plan"] = "plans/01_camera/01_camera.md"
+    camera["depends_on"] = ["target"]
+    camera["provides"] = ["camera"]
+    camera["mutates"] = {
+        **camera["mutates"],
+        "roles": ["camera.rig"],
+        "controls": [],
+        "control_roles": {},
+    }
+    camera["evaluation"]["claims"][0].update({
+        "id": "camera-aligns-target",
+        "property": "projected_origin_x",
+        "subject_roles": ["camera.rig", role],
+        "subject_controls": [],
+        "repair_owner": "camera",
+        "asserts": "projected_composition",
+        "evidence": [{"kind": "scene_contract", "id": "target-x"}],
+    })
+    target = json.loads(json.dumps(camera))
+    target["id"] = "target"
+    target["plan"] = "plans/01_camera/00_target.md"
+    target["depends_on"] = []
+    target["provides"] = []
+    target.pop("consumes", None)
+    target["mutates"] = {
+        **target["mutates"],
+        "roles": [role],
+        "controls": ["target.hold"],
+        "control_roles": {"target.hold": [role]},
+        "script_spans": ["build/units/01_camera/00_target.py"],
+    }
+    target["evaluation"]["claims"] = [{
+        **target["evaluation"]["claims"][0],
+        "id": "target-exists",
+        "property": "object_count",
+        "subject_roles": [role],
+        "subject_controls": ["target.hold"],
+        "repair_owner": "target",
+        "asserts": "scene",
+        "evidence": [{"kind": "scene_contract", "id": "target-count"}],
+    }]
+    camera["consumes"] = [{
+        "producer": "target",
+        "interface_id": "target.publish",
+        "kind": "placement_control",
+    }]
+    doc["layers"][0]["stages"] = [target, camera]
+    _write(tmp_path / "layers.json", doc)
+    _write(tmp_path / "scene_checks.json", {
+        "schema": 2,
+        "contracts": [
+            _count_row("target-count", [role]),
+            {
+                **_count_row("target-x", [role], kind="projected_origin_x"),
+                "frame": 1,
+                "op": "band",
+                "lo": 0.45,
+                "hi": 0.55,
+            },
+        ],
+    })
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert not any(f.check == "point-projection-interface" for f in findings)
+    assert not any(
+        f.check in {"role-selector-closure", "control-selector-closure"}
+        and "target-x" in f.where
+        for f in findings
+    )
+
+    camera.pop("consumes")
+    _write(tmp_path / "layers.json", doc)
+    findings, _ = _check_evidence_coherence(tmp_path)
+    interface = [f for f in findings if f.check == "point-projection-interface"]
+    assert interface and interface[0].blocking
+    assert "consumes no compatible typed interface" in interface[0].what
+
+
+def test_camera_cannot_mutate_the_point_it_observes(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="target-x")
+    camera = doc["layers"][0]["stages"][0]
+    camera["provides"] = ["camera"]
+    camera["mutates"]["roles"] = ["camera.rig", "target.point"]
+    camera["evaluation"]["claims"][0].update({
+        "subject_roles": ["camera.rig", "target.point"],
+        "repair_owner": "move",
+        "asserts": "projected_composition",
+    })
+    _write(tmp_path / "layers.json", doc)
+    _write(tmp_path / "scene_checks.json", {
+        "schema": 2,
+        "contracts": [{
+            **_count_row("target-x", ["target.point"], kind="projected_origin_x"),
+            "frame": 1,
+            "op": "band",
+            "lo": 0.45,
+            "hi": 0.55,
+        }],
+    })
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    interface = [f for f in findings if f.check == "point-projection-interface"]
+    assert interface and "also mutates observed selector" in interface[0].what
+
+
 def test_materialization_refuses_mixed_clusters_and_keeps_single_cluster(
     tmp_path: Path,
 ) -> None:

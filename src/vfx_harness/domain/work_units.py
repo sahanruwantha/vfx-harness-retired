@@ -973,9 +973,132 @@ LOOK_CAPABILITIES: dict[str, tuple[str, ...]] = {
 PROJECTED_ORIGIN_REPAIR_RULE = (
     "projected_origin_x/y is camera-alignment evidence: its required claim's "
     "repair_owner provides camera. A fixed Empty/control producer proves world state "
-    "with scene evidence; the downstream camera owner depends on that producer and "
-    "owns projection through the camera. Do not fit the target after the camera."
+    "with scene evidence; the downstream camera owner consumes that producer's exact "
+    "typed placement interface and owns projection through the camera. The observed "
+    "role/control is read-only. Do not fit the target after the camera."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PointProjectionInterfaceGap:
+    unit_id: str
+    contract_id: str
+    selector: str
+    producer_ids: tuple[str, ...]
+    reason: str
+
+
+def point_projection_interface_gaps(
+    units: Sequence[WorkUnit],
+    rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+) -> tuple[PointProjectionInterfaceGap, ...]:
+    """Require camera-owned point projection to read a typed producer interface.
+
+    A same-layer target is a predecessor value, not camera mutation authority. If the
+    selector is produced in this DAG, the camera owner must consume an interface that
+    exports it. Roles owned only by an accepted upstream layer remain legal through the
+    layer dependency/protected-interface mechanism.
+    """
+    from vfx_harness.domain.publish_interfaces import (
+        exported_role_tokens_from_unit,
+    )
+    from vfx_harness.evidence.scene_checks import PROJECTED_ORIGIN_KINDS
+
+    unit_rows = tuple(units)
+    by_id = {unit.id: unit for unit in unit_rows}
+    row_by_id = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+
+    def _matches(selector: str, declarations: Iterable[str]) -> bool:
+        return plan_selector_declared(selector, tuple(str(value) for value in declarations))
+
+    def _exported_controls(producer: WorkUnit) -> tuple[str, ...]:
+        if producer.publishes:
+            return tuple(
+                value
+                for spec in producer.publishes
+                for key, value in spec.exports
+                if key == "control" or key.endswith("_control")
+            )
+        return producer.mutates.controls[:1]
+
+    gaps: list[PointProjectionInterfaceGap] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for declaring_unit in unit_rows:
+        for claim in declaring_unit.evaluation.claims:
+            if not claim.required:
+                continue
+            owner = by_id.get(claim.repair_owner)
+            if owner is None or "camera" not in owner.provides:
+                continue  # the independent ownership rule reports this case
+            for binding in claim.evidence:
+                if binding.kind != "scene_contract":
+                    continue
+                row = row_by_id.get(binding.id)
+                if row is None or str(row.get("kind") or "") not in PROJECTED_ORIGIN_KINDS:
+                    continue
+                for field, mutation_field in (("roles", "roles"), ("control_roles", "controls")):
+                    for raw_selector in row.get(field) or ():
+                        selector = str(raw_selector)
+                        owner_values = getattr(owner.mutates, mutation_field)
+                        if _matches(selector, owner_values):
+                            key = (owner.id, binding.id, selector, "owner_mutation")
+                            if key not in seen:
+                                seen.add(key)
+                                gaps.append(
+                                    PointProjectionInterfaceGap(
+                                        owner.id,
+                                        binding.id,
+                                        selector,
+                                        (owner.id,),
+                                        "owner_mutation",
+                                    )
+                                )
+                            continue
+                        producers = tuple(
+                            producer
+                            for producer in unit_rows
+                            if producer.id != owner.id
+                            and _matches(selector, getattr(producer.mutates, mutation_field))
+                        )
+                        if not producers:
+                            continue
+                        compatible: list[str] = []
+                        for producer in producers:
+                            exported = (
+                                exported_role_tokens_from_unit(producer)
+                                if field == "roles"
+                                else _exported_controls(producer)
+                            )
+                            if not _matches(selector, exported):
+                                continue
+                            offered = set(offered_interface_keys(producer))
+                            if any(
+                                consume.producer == producer.id
+                                and (consume.interface_id, consume.kind) in offered
+                                for consume in owner.consumes
+                            ):
+                                compatible.append(producer.id)
+                        if compatible:
+                            continue
+                        producer_ids = tuple(sorted(producer.id for producer in producers))
+                        key = (owner.id, binding.id, selector, "missing_consumption")
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        gaps.append(
+                            PointProjectionInterfaceGap(
+                                owner.id,
+                                binding.id,
+                                selector,
+                                producer_ids,
+                                "missing_consumption",
+                            )
+                        )
+    return tuple(gaps)
 
 
 def parse_look_capabilities(value: Any, where: str) -> tuple[str, ...]:

@@ -359,7 +359,9 @@ def validate_materialization(
     if layer is not None:
         from vfx_harness.domain.work_units import (
             GEOMETRY_VIS_DEPENDENCY_RULE,
+            PROJECTED_ORIGIN_REPAIR_RULE,
             geometry_vis_dependency_gaps,
+            point_projection_interface_gaps,
         )
 
         unit_index_by_id = {unit.id: index for index, unit in enumerate(layer.stages)}
@@ -375,6 +377,27 @@ def validate_materialization(
                 f"{gap.contract_id}, but role {gap.role!r} is produced only by "
                 f"non-dependency unit(s) {list(gap.producer_ids)}. "
                 + GEOMETRY_VIS_DEPENDENCY_RULE,
+            )
+        for gap in point_projection_interface_gaps(layer.stages, scene_rows):
+            if gap.reason == "owner_mutation":
+                detail = (
+                    f"camera owner also mutates observed selector {gap.selector!r}"
+                )
+            else:
+                detail = (
+                    f"selector {gap.selector!r} is produced by "
+                    f"{list(gap.producer_ids)}, but the camera owner consumes no "
+                    "compatible typed interface"
+                )
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    "consumes",
+                ),
+                f"point-projection contract {gap.contract_id}: {detail}. "
+                + PROJECTED_ORIGIN_REPAIR_RULE,
             )
 
         from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
@@ -978,6 +1001,7 @@ def stage_materialization_unit(
     from vfx_harness.domain.work_units import (
         PROJECTED_ORIGIN_REPAIR_RULE,
         WorkUnit,
+        point_projection_interface_gaps,
     )
 
     path = Path(materialization_path)
@@ -1076,6 +1100,21 @@ def stage_materialization_unit(
                         f"{owner.id}, which does not provide camera. "
                         + PROJECTED_ORIGIN_REPAIR_RULE
                     )
+    interface_gaps = point_projection_interface_gaps(proposed_units, all_contracts)
+    if interface_gaps:
+        gap = interface_gaps[0]
+        if gap.reason == "owner_mutation":
+            detail = f"camera owner mutates observed selector {gap.selector!r}"
+        else:
+            detail = (
+                f"selector {gap.selector!r} is produced by {list(gap.producer_ids)} "
+                "without a compatible consumed interface"
+            )
+        raise ValueError(
+            "point-projection interface refused before staging: "
+            f"unit {gap.unit_id} contract {gap.contract_id}: {detail}. "
+            + PROJECTED_ORIGIN_REPAIR_RULE
+        )
     gaps = atomicity_gaps(
         proposed_units,
         all_contracts,

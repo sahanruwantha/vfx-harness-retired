@@ -553,6 +553,10 @@ Each stage declares `provides`: the scene capabilities it makes available. Decla
 and `geometry` if objects under its roles carry polygons — mesh metrics (smooth_fraction,
 mesh_vertex_count, radial_inward_fraction) may only target roles a geometry provider
 owns, because on an empty or a camera they read None forever.
+Cross-unit observation is explicit. When a camera claim binds `projected_origin_x/y`
+to a target produced by another unit, the target publishes a typed `placement_control`
+and the camera unit declares both `depends_on` and the exact `consumes` row. The target
+selector stays read-only; never add it to the camera unit's mutation roles or controls.
 Every required claim declares `asserts`: the evidence domain its proposition lives in.
 A metric may only close a claim it can support — a count proves existence, not sequence;
 geometry proves position, not appearance. Bind a temporal metric for behaviour over

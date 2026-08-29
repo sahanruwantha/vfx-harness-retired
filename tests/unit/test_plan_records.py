@@ -952,6 +952,11 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
         "title": "Camera alignment",
         "plan": "plans/units/camera.md",
         "depends_on": ["target"],
+        "consumes": [{
+            "producer": "target",
+            "interface_id": "target.publish",
+            "kind": "placement_control",
+        }],
         "mutates": {
             "mode": "scoped",
             "roles": ["camera.rig"],
@@ -1035,6 +1040,40 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
 
     assert [unit.id for unit in materialized.layer.stages] == ["target", "camera"]
     assert all(row["kind"] != "visible_fraction" for row in materialized.scene_contracts)
+
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    staged = tmp_path / f"point-interface-{role.replace('.', '-')}.json"
+    seed_materialization_candidate(
+        bundle.root, staged, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    stage_materialization_unit(
+        staged,
+        unit=target,
+        scene_contracts=[document["scene_contracts"][0]],
+        requirement_bindings=[],
+    )
+    camera_without_interface = json.loads(json.dumps(camera))
+    camera_without_interface.pop("consumes")
+    before = staged.read_bytes()
+    with pytest.raises(ValueError, match="point-projection interface refused before staging"):
+        stage_materialization_unit(
+            staged,
+            unit=camera_without_interface,
+            scene_contracts=document["scene_contracts"][1:],
+            requirement_bindings=document["requirement_bindings"],
+        )
+    assert staged.read_bytes() == before
+
+    document["layer"]["stages"][1].pop("consumes")
+    _write(payload, document)
+    with pytest.raises(ValueError, match="consumes no compatible typed interface"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
 
 
 def test_camera_unit_must_mutate_the_globally_bound_interface_role(tmp_path: Path) -> None:

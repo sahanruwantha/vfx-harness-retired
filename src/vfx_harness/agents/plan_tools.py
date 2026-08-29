@@ -1465,8 +1465,9 @@ def build_plan_tools(
             "Projected bbox_* and projected_origin_* targets must lie inside the normalized frame; "
             "bbox/visible_fraction require rendered surfaces, while projected_origin_* is "
             "the camera-owner alignment instrument for Empty/control hosts. The control "
-            "producer proves fixed world state with scene evidence; the camera successor "
-            "owns projection. "
+            "producer proves fixed world state with scene evidence and publishes a typed "
+            "placement_control; the camera successor depends on it, declares the exact "
+            "consume, and owns projection without mutating the observed selector. "
             "path_clearance_min fails closed on an empty obstacle selection — persistent "
             "lifecycle re-evaluates as geometry arrives, it does not make absence a PASS."
         )

@@ -290,7 +290,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   that declares `consumes` is ready only when that exact producer interface id/kind is
   digest-matched. A dependency with no `consumes` is a legal status-only edge and grants
   no interface. The live builder card carries only the exact consumed interfaces from
-  direct predecessors, with producer digests (HIR-0084).
+  direct predecessors, with producer digests (HIR-0084). A camera-owned
+  `projected_origin_x/y` row may observe a same-layer target only through an exact
+  consumed producer interface; the selector is read-only and never enters camera
+  mutation authority (HIR-0096).
   Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
   `log_message` journals only when bound (HIR-0038).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is

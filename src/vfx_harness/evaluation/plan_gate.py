@@ -1376,6 +1376,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     # deferred reservations — the universe a two-sided contract's measurement side may
     # observe (its own repair authority still closes on the primary selectors)
     plan_declared_roles: set[str] = set()
+    plan_declared_controls: set[str] = set()
     global_layers = _global_authority_layers(folder, layers)
     for layer_row in global_layers:
         if not isinstance(layer_row, dict):
@@ -1389,6 +1390,8 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             if isinstance(stage_row, dict):
                 for pattern in (stage_row.get("mutates") or {}).get("roles") or []:
                     plan_declared_roles.add(str(pattern))
+                for pattern in (stage_row.get("mutates") or {}).get("controls") or []:
+                    plan_declared_controls.add(str(pattern))
 
     def _selector_declared(selector: str, declarations: set[str]) -> bool:
         return any(
@@ -1433,8 +1436,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         try:
             from vfx_harness.domain.work_units import (
                 GEOMETRY_VIS_DEPENDENCY_RULE,
+                PROJECTED_ORIGIN_REPAIR_RULE,
                 WorkUnit,
                 geometry_vis_dependency_gaps,
+                point_projection_interface_gaps,
             )
 
             typed_stages = tuple(
@@ -1455,6 +1460,27 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     f"{gap.contract_id}, but role {gap.role!r} is produced only by "
                     f"non-dependency unit(s) {', '.join(gap.producer_ids)}",
                     GEOMETRY_VIS_DEPENDENCY_RULE,
+                )
+            )
+        for gap in point_projection_interface_gaps(typed_stages, scene_rows):
+            if gap.reason == "owner_mutation":
+                what = (
+                    f"camera owner also mutates observed selector {gap.selector!r} "
+                    f"for point-projection contract {gap.contract_id}"
+                )
+            else:
+                what = (
+                    f"point-projection contract {gap.contract_id} observes selector "
+                    f"{gap.selector!r} produced by {', '.join(gap.producer_ids)}, but "
+                    "the camera owner consumes no compatible typed interface"
+                )
+            out.append(
+                Finding(
+                    "point-projection-interface",
+                    True,
+                    f"layer {lid} unit {gap.unit_id}",
+                    what,
+                    PROJECTED_ORIGIN_REPAIR_RULE,
                 )
             )
         from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
@@ -1775,6 +1801,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     # (HIR-0019). A volume-only unit cannot bind mesh vis as required
                     # repair — that hole let atmosphere own proxy_core raycasts.
                     vis_kind = str(contract.get("kind") or "") == "visible_fraction"
+                    point_kind = str(contract.get("kind") or "") in PROJECTED_ORIGIN_KINDS
                     observation_only = False
                     if vis_kind:
                         from vfx_harness.domain.work_units import (
@@ -1807,6 +1834,12 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                                     + VIS_REPAIR_OWNER_RULE,
                                 )
                             )
+                        observation_only = "camera" in {
+                            str(item) for item in (owner.get("provides") or [])
+                        }
+                    if point_kind:
+                        owner_id = str(claim.get("repair_owner") or uid)
+                        owner = stages.get(owner_id) or unit
                         observation_only = "camera" in {
                             str(item) for item in (owner.get("provides") or [])
                         }
@@ -1848,7 +1881,12 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                                 "required evidence and repair authority must close together",
                             )
                         )
-                    selected_controls = {
+                    observed_controls = (
+                        {str(value) for value in contract.get("control_roles") or []}
+                        if point_kind and observation_only
+                        else set()
+                    )
+                    selected_controls = set() if point_kind and observation_only else {
                         str(value)
                         for key in ("control_roles", "compare_control_roles")
                         for value in contract.get(key) or []
@@ -1858,16 +1896,26 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         for selector in selected_controls
                         if not _selector_declared(selector, mutable_controls)
                     )
+                    undeclared.extend(sorted(
+                        selector
+                        for selector in observed_controls
+                        if not _selector_declared(selector, plan_declared_controls)
+                    ))
                     if undeclared:
+                        repair = (
+                            PROJECTED_ORIGIN_REPAIR_RULE
+                            if observed_controls
+                            else "declare each selected control in mutates.controls and map it "
+                            "through control_roles; contract selectors and mutation authority "
+                            "must share the same typed ids"
+                        )
                         out.append(
                             Finding(
                                 "control-selector-closure",
                                 True,
                                 f"layer {lid} unit {uid} contract {evidence_id}",
                                 "selects undeclared semantic controls: " + ", ".join(undeclared),
-                                "declare each selected control in mutates.controls and map it "
-                                "through control_roles; contract selectors and mutation authority "
-                                "must share the same typed ids",
+                                repair,
                             )
                         )
             if evaluation.get("temporal_evidence") == "motion":
