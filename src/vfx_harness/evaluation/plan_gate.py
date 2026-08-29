@@ -1224,7 +1224,11 @@ def _check_unit_dependencies(folder: Path) -> list[Finding]:
 def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     """Check temporal, composition, and mutation ownership coverage across contracts."""
     from vfx_harness.domain.contracts import load_document
-    from vfx_harness.evidence.scene_checks import TEMPORAL_KINDS
+    from vfx_harness.evidence.scene_checks import (
+        BBOX_KINDS,
+        CAMERA_REQUIRED_KINDS,
+        TEMPORAL_KINDS,
+    )
 
     try:
         layers = read_document(folder / "layers.json")
@@ -1244,14 +1248,6 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         str(row.get("id"))
         for row in scene_rows
         if isinstance(row, dict) and row.get("kind") in TEMPORAL_KINDS | {"frame_delta"}
-    }
-    bbox_kinds = {
-        "bbox_width",
-        "bbox_height",
-        "bbox_center_x",
-        "bbox_center_y",
-        "bbox_top_y",
-        "bbox_bottom_y",
     }
     composition_tokens = ("camera", "composition", "framing", "staging")
     scene_by_id = {
@@ -1422,7 +1418,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         and any(
                             isinstance(binding, dict)
                             and binding.get("kind") == "scene_contract"
-                            and scene_by_id.get(str(binding.get("id")), {}).get("kind") in bbox_kinds
+                            and scene_by_id.get(str(binding.get("id")), {}).get("kind") in BBOX_KINDS
                             and scene_by_id.get(str(binding.get("id")), {}).get("frame") == frame
                             for binding in claim.get("evidence") or []
                         )
@@ -1437,7 +1433,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     if (
                         contract_ids
                         and all(
-                            cid in scene_by_id and scene_by_id[cid].get("kind") in bbox_kinds
+                            cid in scene_by_id and scene_by_id[cid].get("kind") in BBOX_KINDS
                             for cid in contract_ids
                         )
                         and any(scene_by_id[cid].get("frame") == frame for cid in contract_ids)
@@ -1462,7 +1458,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         if frame in source_frames and any(
                             str(row.get("id")) in source_contracts
                             and
-                            row.get("kind") in bbox_kinds
+                            row.get("kind") in BBOX_KINDS
                             and row.get("frame") == frame
                             and str(row.get("activates_at") or "") == lid
                             for row in scene_rows
@@ -1491,21 +1487,29 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             }
             context = evaluation.get("composition_context") or {}
             bound_ids.update(str(value) for value in context.get("contract_ids") or [])
-            bbox_ids = sorted(
+            camera_required_ids = sorted(
                 cid
                 for cid in bound_ids
-                if cid in scene_by_id and scene_by_id[cid].get("kind") in bbox_kinds
+                if cid in scene_by_id
+                and scene_by_id[cid].get("kind") in CAMERA_REQUIRED_KINDS
             )
-            if bbox_ids and not _camera_available_to(uid):
+            if camera_required_ids and not _camera_available_to(uid):
+                kinds = sorted(
+                    {
+                        str(scene_by_id[cid].get("kind"))
+                        for cid in camera_required_ids
+                    }
+                )
                 out.append(
                     Finding(
                         "composition-bootstrap",
                         True,
                         f"layer {lid} unit {uid}",
-                        "bbox evidence is due before any declared camera is available",
-                        "make the first camera and its measurable blockout one atomic scoped unit, "
-                        "or depend on a unit that declares `provides: [\"camera\"]`; a blockout "
-                        "cannot be projected through a camera owned only by its dependent",
+                        "camera-dependent evidence is due before any declared camera is "
+                        f"available: {', '.join(kinds)} ({', '.join(camera_required_ids)})",
+                        "provide the camera in this unit or depend on a unit that declares "
+                        "`provides: [\"camera\"]`; projected and rendered evidence cannot "
+                        "be evaluated through a camera owned only by a later unit or layer",
                     )
                 )
         for unit in layer.get("stages") or []:

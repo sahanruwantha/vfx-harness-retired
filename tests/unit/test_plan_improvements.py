@@ -718,6 +718,64 @@ def test_atomic_camera_and_blockout_closes_empty_scene_composition_bootstrap(tmp
     )
 
 
+def test_visible_fraction_cannot_be_due_before_a_camera_dependency(tmp_path: Path) -> None:
+    """A geometry owner may repair visibility, but it cannot measure it camera-less."""
+    doc = _layer_doc(temporal_id="subject-visible")
+    unit = doc["layers"][0]["stages"][0]
+    unit["evaluation"]["claims"][0]["evidence"] = [
+        {"kind": "scene_contract", "id": "subject-visible"}
+    ]
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "subject-visible",
+                    "kind": "visible_fraction",
+                    "roles": ["atrium.shell"],
+                    "frame": 17,
+                }
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    bootstrap = [f for f in findings if f.check == "composition-bootstrap"]
+    assert len(bootstrap) == 1
+    assert "visible_fraction (subject-visible)" in bootstrap[0].what
+
+    unit["provides"] = ["camera"]
+    _write(tmp_path / "layers.json", doc)
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert not any(f.check == "composition-bootstrap" for f in findings)
+
+
+def test_render_based_contract_cannot_be_due_before_a_camera_dependency(tmp_path: Path) -> None:
+    """The camera capability rule covers render instruments, not only projection rows."""
+    doc = _layer_doc(temporal_id="light-response")
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {"id": "light-response", "kind": "render_region_stat", "frame": 9}
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    bootstrap = [f for f in findings if f.check == "composition-bootstrap"]
+    assert len(bootstrap) == 1
+    assert "render_region_stat (light-response)" in bootstrap[0].what
+
+
 def test_visible_fraction_may_observe_roles_it_does_not_mutate(tmp_path: Path) -> None:
     """HIR-0019 / HIR-0051: a camera unit may observe plan-declared geometry vis.
 

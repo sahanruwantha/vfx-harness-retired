@@ -172,7 +172,7 @@ per-role vis AND so a union cannot hide a subject, geometry units that
 freeze-protect active-layer vis, a plan gate that rejects geometry units whose protected
 same-layer vis producer is outside their dependency closure, a derived write-cluster
 gate that names mixed mutation families, typed digest-bound successor publish
-interfaces, and
+interfaces, camera-dependent evidence that cannot publish before a camera provider, and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -262,6 +262,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   rows (HIR-0051). If a protected vis role is produced by another same-layer unit,
   that producer must be in the geometry unit's transitive dependency closure; a future
   producer is an unsealable DAG and publication fails closed (HIR-0057).
+  Every scene-contract kind that projects or renders through the active camera must bind
+  on a unit whose dependency closure (or an earlier materialized layer) provides a camera;
+  otherwise publication fails `composition-bootstrap` (HIR-0085).
   A work unit publishes one derived write-cluster (role-namespace × host class ×
   instrument family); authored family strings are padding and do not satisfy the
   gate. Instrument family comes from typed mutation targets and write-kind evidence;

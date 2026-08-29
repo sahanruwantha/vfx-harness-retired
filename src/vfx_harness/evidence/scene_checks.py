@@ -98,11 +98,18 @@ SUPPORTED_KINDS = (
 # certified a chase claim with `object_count` and a "reads as layered machined metal"
 # claim with radial closure — both metrics measured correctly, and neither could support
 # the claim it was bound to.
-_PROJECTED_KINDS = {
+BBOX_KINDS = frozenset({
     "bbox_width", "bbox_height", "bbox_center_x",
     "bbox_center_y", "bbox_top_y", "bbox_bottom_y",
-    "visible_fraction",
-}
+})
+_PROJECTED_KINDS = BBOX_KINDS | {"visible_fraction"}
+# These instruments cannot produce a reading without ``scene.camera``.  Keep the
+# capability beside the canonical metric registry so planning and execution do not
+# maintain divergent guesses about which evidence needs a camera.  Functional kinds
+# render a frame; parallax and the projected kinds call the camera projection helpers.
+CAMERA_REQUIRED_KINDS = frozenset(
+    _PROJECTED_KINDS | FUNCTIONAL_KINDS | {"parallax_displacement_profile"}
+)
 KIND_DOMAINS: dict[str, str] = {
     **dict.fromkeys(TEMPORAL_KINDS, "temporal"),
     **dict.fromkeys(_PROJECTED_KINDS, "projected_composition"),
