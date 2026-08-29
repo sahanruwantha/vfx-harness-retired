@@ -441,15 +441,23 @@ def _check_report(kind: str, r: dict) -> str:
     the finding has to read as a finding, not as a payload to be re-derived.
     """
     issues = r.get("issues") or []
-    head = f"check {kind}: " + ("PASS ✅" if r.get("ok") else "ISSUES ✗")
+    if kind == "visibility":
+        head = "check visibility: " + ("OBSERVED ✅" if r.get("ok") else "ISSUES ✗")
+    else:
+        head = f"check {kind}: " + ("PASS ✅" if r.get("ok") else "ISSUES ✗")
     lines = [head]
     for i in issues:
         lines.append(f"  ✗ {i}")
     if kind == "visibility":
         lines.append(
-            f"  visible fraction {r.get('visible_fraction')} "
-            f"({r.get('hits')} hit · {r.get('occluded')} occluded · "
-            f"{r.get('missed')} missed of {r.get('samples')} rays)"
+            f"  canonical visible_fraction {r.get('visible_fraction')} "
+            f"({r.get('visible_samples')} visible · {r.get('occluded_samples')} occluded "
+            f"of {r.get('on_screen_samples')} on-screen surface samples; "
+            f"{r.get('off_screen_samples')} off-screen)"
+        )
+        lines.append(
+            "  no universal threshold applies here — use contract_result(id=...) for "
+            "the active contract's authoritative PASS/FAIL."
         )
     elif kind == "framing":
         lines.append("  coordinates: [x0,y0,x1,y1], origin TOP-LEFT (x right, y down)")
@@ -508,7 +516,7 @@ def _check_report(kind: str, r: dict) -> str:
             "  hand this straight to render_pass(crop=…, res_pct=400) — an "
             "oracle crop measures far better than a guessed one."
         )
-    if not issues and kind in ("visibility", "framing", "motion", "mesh", "scale"):
+    if not issues and kind in ("framing", "motion", "mesh", "scale"):
         lines.append("  nothing to fix on this check — the numbers above are the record.")
     return "\n".join(lines)
 
@@ -710,6 +718,11 @@ def _check_args_error(kind: str, args: dict) -> str | None:
         return f"check_scene(kind={kind!r}) requires " + ", ".join(dict.fromkeys(missing))
     if kind == "motion" and len(args.get("frames") or []) < 2:
         return "check_scene(kind='motion') requires frames with at least 2 entries"
+    if kind == "visibility" and args.get("samples") is not None:
+        return (
+            "check_scene(kind='visibility') uses the canonical registry sampling policy; "
+            "omit samples"
+        )
     if kind != "passes":
         selector = _object_or_role_error(args, f"check_scene(kind={kind!r})")
         if selector:
@@ -2037,8 +2050,9 @@ def build_blender_tools(
         "check_scene",
         "JUDGMENT-FREE checks on the scene itself — no critic, no cost, no render (except "
         "`passes`). This is the whole class of defect a beauty render CANNOT show: "
-        "kind='visibility' ray-casts the camera to the object (a hero behind a wall looks "
-        "fine until you look for it), 'framing' gives the NDC bbox/width/centre via "
+        "kind='visibility' reports the canonical on-screen surface visible_fraction "
+        "without inventing a pass threshold (use contract_result for the bound target), "
+        "'framing' gives the NDC bbox/width/centre via "
         "world_to_camera_view, 'motion' gives max speed/accel/jerk and whether the move is "
         "unbroken, 'mesh' counts non-manifold edges, loose verts, n-gons, poles and "
         "disconnected islands, 'scale' checks dimensions and that scale is applied, "
@@ -2072,7 +2086,6 @@ def build_blender_tools(
                 },
                 "frame": {"type": "integer"},
                 "frames": {"type": "array", "items": {"type": "integer"}},
-                "samples": {"type": "integer"},
                 "scale": {"type": "number"},
                 "allow_boundary": {
                     "type": "boolean",

@@ -1088,34 +1088,8 @@ for row in _rows:
             if _scene.camera is None: raise ValueError('scene has no camera at the declared frame')
             def _vis_frac(sel):
                 if not sel: return 0.0
-                _mvp=_checks.camera_clip_matrix(_scene,_row_dg)
-                cam_loc=_scene.camera.matrix_world.translation
-                subjects=set(o.name for o in sel)
-                sampled=0; on_screen=0; seen=0
-                for o in sel:
-                    ev=o.evaluated_get(_row_dg)
-                    if ev.type!='MESH': continue
-                    mw=ev.matrix_world
-                    points=[]
-                    verts=ev.data.vertices
-                    vstride=max(1,len(verts)//32)
-                    points += [mw@verts[vi].co for vi in range(0,len(verts),vstride)]
-                    polys=ev.data.polygons
-                    pstride=max(1,len(polys)//32)
-                    points += [mw@polys[pi].center for pi in range(0,len(polys),pstride)]
-                    for p in points:
-                        sampled+=1
-                        v=_mvp@p.to_4d()
-                        if v.w<=1e-9 or abs(v.x)>v.w or abs(v.y)>v.w or v.z<-v.w or v.z>v.w:
-                            continue
-                        d=p-cam_loc; dist=d.length
-                        if dist<=1e-6: continue
-                        on_screen+=1
-                        hit,_loc,_n,_i,hob,_m4=_scene.ray_cast(
-                            _row_dg,cam_loc,d.normalized(),distance=dist-1e-4)
-                        if not hit or getattr(hob,'original',hob).name in subjects: seen+=1
-                if not sampled: return 0.0
-                return seen/on_screen if on_screen else 0.0
+                return _checks.surface_visible_fraction(
+                    _scene,_row_dg,_scene.camera,sel)['visible_fraction']
             named=_p(row,'roles')
             if named:
                 for role in named:

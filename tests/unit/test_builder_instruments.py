@@ -292,6 +292,31 @@ def test_motion_instrument_names_the_peak_speed_span() -> None:
     assert "f1→f24" not in without_span
 
 
+def test_visibility_report_is_canonical_observation_not_a_second_threshold() -> None:
+    from vfx_harness.blender.tools import _check_args_error, _check_report
+
+    report = _check_report(
+        "visibility",
+        {
+            "ok": True,
+            "visible_fraction": 0.428571,
+            "visible_samples": 6,
+            "occluded_samples": 8,
+            "on_screen_samples": 14,
+            "off_screen_samples": 0,
+            "issues": [],
+        },
+    )
+
+    assert "OBSERVED" in report
+    assert "canonical visible_fraction 0.428571" in report
+    assert "contract_result" in report
+    assert not report.startswith("check visibility: PASS")
+    assert "omit samples" in (
+        _check_args_error("visibility", {"object": "hero", "frame": 1, "samples": 27}) or ""
+    )
+
+
 def test_record_cannot_express_requires_ids_and_reason() -> None:
     from vfx_harness.blender.tools import record_cannot_express
 

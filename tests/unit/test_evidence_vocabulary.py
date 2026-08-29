@@ -243,7 +243,8 @@ def test_visible_fraction_is_registered_frame_scoped_and_compiles() -> None:
     assert validate_row(row) is None
     script = _blender_probe([row], 72)
     compile(script, "<probe>", "exec")
-    assert "ray_cast" in script
+    assert "_checks.surface_visible_fraction" in script
+    assert "def _vis_frac" in script
     assert "role_fractions" in script
     assert "per-role" in script
 

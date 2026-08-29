@@ -129,68 +129,100 @@ def _camera():
     return cam
 
 
-def check_visibility(name: str, frame: int, samples: int = 27) -> dict:
-    """Ray-cast from the camera to bbox corners + a grid on the bbox. Visible
-    fraction is the share of samples whose first hit is the target (or nothing
-    closer than the target)."""
+def surface_visible_fraction(scene, depsgraph, camera, objects) -> dict:
+    """Canonical occlusion-true surface visibility sampler.
+
+    The denominator is the selected meshes' on-screen evaluated surface samples,
+    matching the ``visible_fraction`` scene-contract definition. Keep this in the
+    Blender sibling module so live diagnostics and generated contract probes call one
+    implementation (ADR-0003), rather than merely sharing a metric name.
+    """
+    subjects = {obj.name for obj in objects}
+    mvp = camera_clip_matrix(scene, depsgraph)
+    camera_location = camera.matrix_world.translation
+    sampled = on_screen = seen = 0
+    for obj in objects:
+        evaluated = obj.evaluated_get(depsgraph)
+        if evaluated.type != "MESH":
+            continue
+        world = evaluated.matrix_world
+        points = []
+        vertices = evaluated.data.vertices
+        vertex_stride = max(1, len(vertices) // 32)
+        points.extend(
+            world @ vertices[index].co for index in range(0, len(vertices), vertex_stride)
+        )
+        polygons = evaluated.data.polygons
+        polygon_stride = max(1, len(polygons) // 32)
+        points.extend(
+            world @ polygons[index].center for index in range(0, len(polygons), polygon_stride)
+        )
+        for point in points:
+            sampled += 1
+            projected = mvp @ point.to_4d()
+            if (
+                projected.w <= 1e-9
+                or abs(projected.x) > projected.w
+                or abs(projected.y) > projected.w
+                or projected.z < -projected.w
+                or projected.z > projected.w
+            ):
+                continue
+            direction = point - camera_location
+            distance = direction.length
+            if distance <= 1e-6:
+                continue
+            on_screen += 1
+            hit, _location, _normal, _index, hit_object, _matrix = scene.ray_cast(
+                depsgraph,
+                camera_location,
+                direction.normalized(),
+                distance=distance - 1e-4,
+            )
+            original = getattr(hit_object, "original", hit_object)
+            if not hit or (original is not None and original.name in subjects):
+                seen += 1
+    value = seen / on_screen if on_screen else 0.0
+    return {
+        "visible_fraction": value,
+        "surface_samples": sampled,
+        "on_screen_samples": on_screen,
+        "visible_samples": seen,
+        "occluded_samples": on_screen - seen,
+        "off_screen_samples": sampled - on_screen,
+    }
+
+
+def check_visibility(name: str, frame: int) -> dict:
+    """Observe canonical surface visibility for one rendered subject.
+
+    This diagnostic has no universal acceptance threshold. Exact PASS/FAIL belongs
+    to the active contract and is exposed by ``contract_result``.
+    """
     import bpy
-    from mathutils import Vector
 
     sc = bpy.context.scene
     sc.frame_set(int(frame))
     bpy.context.view_layer.update()
     obj, cam = _obj(name), _camera()
     deps = bpy.context.evaluated_depsgraph_get()
-    origin = cam.matrix_world.translation
-    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
-    # A grid through the bbox, inclusive of corners. bound_box is 8 corners; take
-    # min/max per axis and lerp between them.
-    x0, x1 = min(c.x for c in corners), max(c.x for c in corners)
-    y0, y1 = min(c.y for c in corners), max(c.y for c in corners)
-    z0, z1 = min(c.z for c in corners), max(c.z for c in corners)
-    pts = []
-    steps = max(2, round(samples ** (1 / 3)))
-    for i in range(steps):
-        for j in range(steps):
-            for k in range(steps):
-                pts.append(
-                    Vector(
-                        (
-                            x0 + (x1 - x0) * i / (steps - 1),
-                            y0 + (y1 - y0) * j / (steps - 1),
-                            z0 + (z1 - z0) * k / (steps - 1),
-                        )
-                    )
-                )
-    hits = occluded = missed = 0
-    for pt in pts:
-        direction = pt - origin
-        dist = direction.length
-        if dist < 1e-8:
-            continue
-        direction.normalize()
-        hit, _loc, _n, _i, hit_obj, _m = sc.ray_cast(deps, origin, direction, distance=dist + 1e-4)
-        if not hit:
-            missed += 1
-            continue
-        if hit_obj is not None and hit_obj.name == obj.name:
-            hits += 1
-        else:
-            occluded += 1
-    n = hits + occluded + missed
-    frac = hits / n if n else 0.0
+    reading = surface_visible_fraction(sc, deps, cam, [obj])
+    fraction = float(reading["visible_fraction"])
+    on_screen = int(reading["on_screen_samples"])
+    visible = int(reading["visible_samples"])
+    if not on_screen:
+        issues = [f"{name} has no on-screen surface samples at f{frame}"]
+    elif not visible:
+        issues = [f"{name} is fully occluded at f{frame} across {on_screen} on-screen samples"]
+    else:
+        issues = []
     return {
-        "ok": frac >= 0.5,
+        "ok": not issues,
         "object": name,
         "frame": int(frame),
-        "visible_fraction": round(frac, 3),
-        "hits": hits,
-        "occluded": occluded,
-        "missed": missed,
-        "samples": n,
-        "issues": []
-        if frac >= 0.5
-        else [f"{name} visible in {frac:.0%} of camera rays at f{frame} ({occluded} occluded, {missed} missed)"],
+        **reading,
+        "visible_fraction": round(fraction, 6),
+        "issues": issues,
     }
 
 
@@ -514,7 +546,7 @@ def dispatch(kind: str, args: dict) -> dict:
             raise ValueError(subject_error)
         args = {**args, "object": resolved.name}
     if k == "visibility":
-        return check_visibility(args["object"], int(args["frame"]), int(args.get("samples", 27)))
+        return check_visibility(args["object"], int(args["frame"]))
     if k == "framing":
         frames = args.get("frames") or [int(args["frame"])]
         return check_framing(args["object"], [int(f) for f in frames])
