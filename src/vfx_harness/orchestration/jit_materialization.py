@@ -1023,6 +1023,27 @@ def stage_materialization_unit(
         ):
             raise ValueError("layer_updates.dressable must be a list of non-empty strings")
         payload["layer"]["dressable"] = dressable
+    # Atomicity belongs at the unit boundary. Waiting until finalization accepts an
+    # oversized unit into scratch and then asks the model to perform cross-unit JSON
+    # surgery — exactly the monolithic repair this staged protocol exists to remove.
+    from vfx_harness.domain.atomicity import atomicity_gaps
+
+    current_units = [
+        WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)
+    ]
+    all_contracts = [*_rows(payload, "scene_contracts", "candidate"), *contracts]
+    gaps = atomicity_gaps(
+        [*current_units, parsed],
+        all_contracts,
+        layer_id=str((payload.get("layer") or {}).get("id") or ""),
+        raw_stages=[*stages, unit],
+    )
+    if gaps:
+        detail = "; ".join(
+            f"unit {gap.unit_id} {gap.code}: {gap.detail}" for gap in gaps
+        )
+        raise ValueError("unit atomicity refused before staging: " + detail)
+
     stages.append(unit)
     payload["scene_contracts"].extend(contracts)
     payload["requirement_bindings"].extend(bindings)

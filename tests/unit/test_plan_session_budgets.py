@@ -331,6 +331,7 @@ def test_materialization_registers_incremental_unit_staging_tools(tmp_path: Path
         tmp_path,
         enabled_tools=frozenset({
             "stage_materialization_unit",
+            "materialization_status",
             "finalize_materialization",
         }),
         candidate_materialization=candidate,
@@ -338,6 +339,7 @@ def test_materialization_registers_incremental_unit_staging_tools(tmp_path: Path
 
     assert {name.split("__")[-1] for name in names} == {
         "stage_materialization_unit",
+        "materialization_status",
         "finalize_materialization",
     }
 

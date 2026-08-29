@@ -170,7 +170,7 @@ _MATERIALIZATION_EXAMPLE = """{
    "look_capabilities": ["<the appearance families THIS unit answers for>"],
    "provides": ["<capabilities this unit gives the scene: camera, geometry>"],
    "evaluation": {"primary_judge": 1, "judge": [{"frame": 1, "ref": "refs/<a judge ref>.png"}],
-                  "temporal_evidence": "static",
+                  "temporal_evidence": "none",
                   "claims": [{
                    "id": "example-claim", "proposition": "one testable sentence",
                    "axis": "<an axis this layer owns>", "property": "<contract kind>",
@@ -524,7 +524,8 @@ async def _materialize_deferred_layer(
     system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
 The harness has already seeded `{rel_target}` with schema `{MATERIALIZATION_SCHEMA}`, bundle
 identity, exact global layer structure, and empty collections. Do not generate or Write the whole
-document. Call `stage_materialization_unit` once per independently bounded unit, including only
+document or Read the seeded file; `materialization_status` supplies compact progress if needed.
+Call `stage_materialization_unit` once per independently bounded unit, including only
 that unit, its scene contracts, and the owned requirement bindings it closes. After all units are
 staged, call `finalize_materialization`; repair its complete findings with
 `patch_materialization`, then finalize again. The completed candidate must contain non-empty
@@ -607,7 +608,7 @@ global authority, create unit state, write prose, or write another file."""
         enabled_tools=frozenset({
             "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
             "gate_preview", "escalate_vocabulary_gap", "stage_materialization_unit",
-            "finalize_materialization", "patch_materialization",
+            "materialization_status", "finalize_materialization", "patch_materialization",
         }),
         candidate_materialization=target,
         overlay_root=overlay_root,
@@ -616,7 +617,7 @@ global authority, create unit state, write prose, or write another file."""
     materialization_tools = _phase_tools(
         pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
         "gate_preview", "escalate_vocabulary_gap", "stage_materialization_unit",
-        "finalize_materialization", "patch_materialization",
+        "materialization_status", "finalize_materialization", "patch_materialization",
     )
     options = ClaudeAgentOptions(
         model=model,

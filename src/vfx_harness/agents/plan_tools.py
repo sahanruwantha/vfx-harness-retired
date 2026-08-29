@@ -1384,7 +1384,8 @@ def build_plan_tools(
             "object_property": [
                 "frame",
                 "property (Blender-evaluated path only — custom properties are "
-                "self-certification and rejected)",
+                "self-certification and rejected; vector components use numeric paths "
+                "such as location.2 or rotation_euler.1, not location.z)",
             ],
             "path_clearance_min": [
                 "frames [a,b]",
@@ -1597,6 +1598,38 @@ def build_plan_tools(
         )
 
     @tool(
+        "materialization_status",
+        "Return compact harness-owned progress for the seeded materialization candidate: "
+        "staged unit ids and counts only. Use this instead of Read; raw candidate JSON is "
+        "not a model context surface.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    async def materialization_status(args):
+        candidate = Path(candidate_materialization) if candidate_materialization else None
+        if candidate is None:
+            return _text(
+                "materialization_status is only available during layer materialization",
+                is_error=True,
+            )
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            units = [
+                str(row.get("id"))
+                for row in ((payload.get("layer") or {}).get("stages") or [])
+                if isinstance(row, dict)
+            ]
+            contracts = payload.get("scene_contracts") or []
+            requirements = payload.get("requirement_bindings") or []
+        except (OSError, ValueError, AttributeError, json.JSONDecodeError) as exc:
+            return _text(f"materialization status unavailable: {exc}", is_error=True)
+        return _text(json.dumps({
+            "staged_units": units,
+            "unit_count": len(units),
+            "scene_contract_count": len(contracts),
+            "requirement_binding_count": len(requirements),
+        }))
+
+    @tool(
         "finalize_materialization",
         "Validate the complete incrementally staged candidate against global authority "
         "and the current consumer view. Call only after every unit and owned requirement "
@@ -1765,6 +1798,7 @@ def build_plan_tools(
     if candidate_materialization is not None:
         tools.extend([
             stage_materialization_unit_tool,
+            materialization_status,
             finalize_materialization,
             patch_materialization,
         ])

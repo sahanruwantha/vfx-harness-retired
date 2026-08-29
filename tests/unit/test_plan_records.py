@@ -480,6 +480,83 @@ def test_materialization_candidate_is_seeded_and_staged_one_unit_at_a_time(
     assert target.read_bytes() == before
 
 
+def test_materialization_refuses_mixed_unit_before_it_enters_staged_scratch(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "staging-atomicity")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "mixed-incremental.json"
+    seed_materialization_candidate(
+        bundle.root,
+        target,
+        layer_id="2",
+        bundle_hash=bundle.content_hash,
+    )
+    unit = full["layer"]["stages"][0]
+    unit["provides"] = ["camera"]
+    unit["evaluation"]["claims"][0]["evidence"].append({
+        "kind": "scene_contract",
+        "id": "camera-motion",
+    })
+    unit["evaluation"]["claims"][0]["evidence"].append({
+        "kind": "scene_contract",
+        "id": "camera-lens",
+    })
+    contracts = [
+        *full["scene_contracts"],
+        {
+            "id": "camera-motion",
+            "kind": "keyframe_schedule",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.comp"],
+            "samples": [
+                {"frame": 239, "values": {"location": [0, 0, 0]}},
+                {"frame": 240, "values": {"location": [0, 0, 1]}},
+            ],
+            "op": "max",
+            "hi": 0.01,
+        },
+        {
+            "id": "camera-lens",
+            "kind": "object_property",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.comp"],
+            "frame": 239,
+            "property": "data.lens",
+            "op": "band",
+            "lo": 35,
+            "hi": 55,
+        },
+    ]
+    before = target.read_bytes()
+
+    with pytest.raises(ValueError, match=r"atomicity refused before staging.*mixed_clusters"):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=contracts,
+            requirement_bindings=full["requirement_bindings"],
+        )
+
+    assert target.read_bytes() == before
+
+
 def test_schema_five_global_publication_rejects_ready_preproduction(tmp_path: Path) -> None:
     from vfx_harness.evaluation.plan_gate import _check_contracts
 

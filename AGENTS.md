@@ -428,6 +428,8 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   Its unpublished candidate is seeded deterministically and staged one bounded unit at a
   time; generic `Write` is denied, and only a fully validated candidate may satisfy the
   session postcondition (HIR-0092).
+  Derived write-cluster atomicity is checked before each unit enters staged scratch; a
+  mixed unit never becomes an accepted prefix that later repair must split (HIR-0093).
   Materialization kickoff compiles this layer's judge frames
   and extra-frame id-binding; two-sided `path_clearance_min` `roles` bind on the unit
   that mutates them (HIR-0029). Every unit judge frame must appear in a required
