@@ -127,6 +127,38 @@ def digest_matched_passed(
     return sealed
 
 
+def ready_from_durable_state(
+    folder: str | Path,
+    layer_id: str,
+    units: tuple[WorkUnit, ...],
+    *,
+    eligible_passed: set[str] | None = None,
+) -> tuple[WorkUnit, ...]:
+    """Resolve the ready set from one fresh durable-state snapshot.
+
+    A multi-unit build mutates unit state after every accepted checkpoint. Holding the
+    snapshot that existed before a producer ran makes its newly passed digest invisible
+    to the next scheduling decision. Read, validate, derive passed ids, and verify
+    producer digests together so readiness cannot mix lifecycle generations.
+
+    ``eligible_passed`` may narrow passed rows whose replay artifacts are locally
+    available to a caller; it can never broaden durable acceptance.
+    """
+    from vfx_harness.domain.work_units import ready_units
+
+    state = load(folder, layer_id)
+    validate_current(state, layer_id, units)
+    passed = {
+        str(uid)
+        for uid, row in ((state or {}).get("units") or {}).items()
+        if isinstance(row, dict) and row.get("status") == "passed"
+    }
+    if eligible_passed is not None:
+        passed &= {str(uid) for uid in eligible_passed}
+    sealed = digest_matched_passed(state, units) & passed
+    return ready_units(units, passed, sealed_producers=sealed)
+
+
 def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) -> None:
     """Reject stale state before it grants planning or dependency authority."""
     if not value:

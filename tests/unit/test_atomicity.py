@@ -36,6 +36,7 @@ from vfx_harness.evidence.scene_checks import SUPPORTED_KINDS
 from vfx_harness.orchestration.unit_state import (
     digest_matched_passed,
     initialize,
+    ready_from_durable_state,
     replan_effects,
     unit_digest,
 )
@@ -552,6 +553,45 @@ def test_assembly_is_unready_until_producer_digest_and_interface_match(tmp_path:
         )
         if gap.code == "missing_consumption"
     ]
+
+
+@pytest.mark.parametrize(
+    ("producer_id", "successor_id"),
+    [
+        ("product_master", "product_assembly"),
+        ("motion_curve", "motion_finish"),
+    ],
+)
+def test_ready_query_refreshes_state_after_producer_passes(
+    tmp_path: Path, producer_id: str, successor_id: str
+) -> None:
+    """A scheduling decision may not reuse the snapshot from before a unit ran."""
+    producer = _unit(
+        producer_id,
+        roles=[f"{producer_id}.source"],
+        contract_id=f"{producer_id}.contract",
+    )
+    successor = _unit(
+        successor_id,
+        roles=[f"{successor_id}.result"],
+        contract_id=f"{successor_id}.contract",
+        depends_on=[producer_id],
+    )
+    initialize(tmp_path, "1", (producer, successor), plan_hash="plan-v1")
+    from vfx_harness.orchestration.unit_state import load, transition
+
+    stale = load(tmp_path, "1")
+    for status in ("planning", "building", "frozen", "evaluating", "passed"):
+        transition(tmp_path, "1", producer_id, status, reason="test")
+
+    assert digest_matched_passed(stale, (producer, successor)) == set()
+    ready = ready_from_durable_state(
+        tmp_path,
+        "1",
+        (producer, successor),
+        eligible_passed={producer_id},
+    )
+    assert [unit.id for unit in ready] == [successor_id]
 
 
 def test_authored_interface_change_invalidates_producer_digest() -> None:

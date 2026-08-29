@@ -4580,15 +4580,14 @@ async def build_layer(
             f"run `vfx plan {shot.folder} --layer {layer.id}` to materialize and gate it first"
         )
     from vfx_harness.domain.contracts import active_for, load_document
-    from vfx_harness.domain.work_units import ready_units
     from vfx_harness.observability.provenance import atomic_write
     from vfx_harness.orchestration.layer_plans import work_unit_plan_path, write_layer_outcome
     from vfx_harness.orchestration.revalidation import digest
     from vfx_harness.orchestration.unit_state import (
         block_dependents,
-        digest_matched_passed,
         freeze_checkpoint,
         initialize,
+        ready_from_durable_state,
         transition,
     )
     from vfx_harness.orchestration.unit_state import load as load_unit_state
@@ -4674,10 +4673,11 @@ async def build_layer(
         )
     strips = plan_strips(shot)
     while len(passed_units) < len(layer.stages):
-        ready = ready_units(
+        ready = ready_from_durable_state(
+            shot.folder,
+            str(layer.id),
             layer.stages,
-            passed_units,
-            sealed_producers=digest_matched_passed(state, layer.stages) & passed_units,
+            eligible_passed=passed_units,
         )
         pending = [unit for unit in ready if unit.id not in passed_units]
         if not pending:
