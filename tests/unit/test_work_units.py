@@ -208,3 +208,13 @@ def test_unit_ticket_schema_exposes_exact_consumes_and_optional_context(role: st
     wrong["evaluation"]["composition_context"] = {"frames": [], "contract_ids": []}
     errors = list(Draft202012Validator(schema).iter_errors(wrong))
     assert len(errors) >= 2
+
+    wrong = json.loads(json.dumps(ticket))
+    wrong["family"] = "camera"
+    errors = list(Draft202012Validator(schema).iter_errors(wrong))
+    assert any(
+        list(error.absolute_path) == []
+        and "Additional properties are not allowed" in error.message
+        and "'family'" in error.message
+        for error in errors
+    )

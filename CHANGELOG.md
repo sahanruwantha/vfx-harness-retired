@@ -103,6 +103,40 @@ live in the linked Harness Improvement Records.
   identity; readiness requires a declared interface id/kind match against a
   digest-matched producer
   ([HIR-0084](docs/improvements/HIR-0084-successor-interfaces-are-typed-references-bound-to-producer-digests.md)).
+- Camera-dependent evidence now requires a typed camera provider in the unit/layer
+  dependency closure; global camera capability is bound to reserved role selectors,
+  and materialized views retain that sparse global authority
+  ([HIR-0085](docs/improvements/HIR-0085-camera-dependent-evidence-needs-an-available-camera.md),
+  [HIR-0086](docs/improvements/HIR-0086-global-camera-capability-must-be-role-bound.md),
+  [HIR-0087](docs/improvements/HIR-0087-materialized-views-must-retain-global-capability-authority.md)).
+- Materialization repair accepts atomic pointer batches, scheduling refreshes durable
+  state before each ready-set decision, unit-plan publication writes to one fixed sink,
+  and layer materialization stages one bounded unit at a time with atomicity due before
+  the staged bytes change
+  ([HIR-0088](docs/improvements/HIR-0088-materialization-repairs-need-atomic-batches.md),
+  [HIR-0089](docs/improvements/HIR-0089-ready-set-must-read-current-durable-state.md),
+  [HIR-0091](docs/improvements/HIR-0091-unit-plan-output-is-a-fixed-sink.md),
+  [HIR-0092](docs/improvements/HIR-0092-materialization-stages-one-bounded-unit-at-a-time.md),
+  [HIR-0093](docs/improvements/HIR-0093-atomicity-is-due-at-unit-staging.md)).
+- Control hosts use camera-owned point projection rather than invented proxy mesh.
+  Object transforms remain control-state writes rather than inferred animation family,
+  and same-layer projection observes a digest-bound consumed interface without granting
+  mutation authority
+  ([HIR-0090](docs/improvements/HIR-0090-control-points-need-point-projection-not-proxy-mesh.md),
+  [HIR-0094](docs/improvements/HIR-0094-point-projection-is-camera-owned-alignment.md),
+  [HIR-0095](docs/improvements/HIR-0095-state-observation-does-not-invent-write-families.md),
+  [HIR-0096](docs/improvements/HIR-0096-point-projection-observes-a-consumed-interface.md)).
+- The staging tool exposes the closed WorkUnit schema, authored `family` padding is
+  rejected before generation or staging, camera availability comes only from typed
+  capability authority, and projection consumption must match the exact interface that
+  exports the selector
+  ([HIR-0097](docs/improvements/HIR-0097-unit-ticket-schema-is-an-agent-instrument.md),
+  [HIR-0098](docs/improvements/HIR-0098-camera-availability-is-only-a-typed-capability.md),
+  [HIR-0099](docs/improvements/HIR-0099-consumption-matches-the-exporting-interface.md)).
+- Materialization stage and patch writes share one locked, revision-checked transaction.
+  Patch cannot insert or replace stage rows, and unit-affecting field repairs pass the
+  local staging gates before candidate bytes change
+  ([HIR-0100](docs/improvements/HIR-0100-materialization-candidate-writes-are-serialized-transactions.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool
