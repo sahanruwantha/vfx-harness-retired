@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
+from jsonschema import Draft202012Validator
 
 from vfx_harness.domain.work_units import (
     EXTRA_FRAME_BINDING_RULE,
     LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
     UNIT_JUDGE_CLAIM_COVERAGE_RULE,
     EvaluationPolicy,
+    WorkUnit,
     compile_frame_authority,
     layer_judge_frames,
     uncovered_unit_judge_frames,
     unearned_look_judge_frames,
+    work_unit_authoring_schema,
 )
 
 
@@ -128,3 +133,78 @@ def test_composition_context_frames_outside_judge_name_extra_frame_binding() -> 
     assert "outside the judge set: [12]" in message
     assert EXTRA_FRAME_BINDING_RULE in message
     assert "composition_context.contract_ids" in message
+
+
+def _camera_ticket(role: str) -> dict:
+    return {
+        "id": "camera",
+        "title": "Camera",
+        "plan": "plans/units/camera.md",
+        "depends_on": ["target"],
+        "consumes": [{
+            "producer": "target",
+            "interface_id": "target.publish",
+            "kind": "placement_control",
+        }],
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["camera.rig"],
+            "controls": [],
+            "control_roles": {},
+            "script_spans": ["build/units/01/camera.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "look_capabilities": [],
+        "provides": ["camera"],
+        "evaluation": {
+            "primary_judge": 1,
+            "judge": [{"frame": 1, "ref": "refs/a.png"}],
+            "temporal_evidence": "none",
+            "claims": [{
+                "id": "camera-aligns",
+                "proposition": "the camera aligns to the predecessor point",
+                "axis": "camera_alignment",
+                "property": "projected_origin_x",
+                "subject_roles": ["camera.rig", role],
+                "subject_controls": [],
+                "moments": [1],
+                "kind": "atomic",
+                "required": True,
+                "authority": "executable_required",
+                "repair_owner": "camera",
+                "asserts": "projected_composition",
+                "evidence": [{"kind": "scene_contract", "id": "point-x"}],
+            }],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+    }
+
+
+@pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])
+def test_unit_ticket_schema_exposes_exact_consumes_and_optional_context(role: str) -> None:
+    schema = work_unit_authoring_schema()
+    ticket = _camera_ticket(role)
+
+    assert list(Draft202012Validator(schema).iter_errors(ticket)) == []
+    assert WorkUnit.parse(ticket, "ticket").consumes[0].producer == "target"
+
+    wrong = json.loads(json.dumps(ticket))
+    wrong["consumes"] = [{
+        "unit": "target", "control": "placement_control", "roles": [role]
+    }]
+    errors = list(Draft202012Validator(schema).iter_errors(wrong))
+    assert errors
+    assert any(list(error.absolute_path)[:1] == ["consumes"] for error in errors)
+
+    wrong = json.loads(json.dumps(ticket))
+    wrong["evaluation"]["temporal_evidence"] = "curve_derivative_max and schedule"
+    errors = list(Draft202012Validator(schema).iter_errors(wrong))
+    assert any("is not one of" in error.message for error in errors)
+
+    wrong = json.loads(json.dumps(ticket))
+    wrong["evaluation"]["composition_context"] = {"frames": [], "contract_ids": []}
+    errors = list(Draft202012Validator(schema).iter_errors(wrong))
+    assert len(errors) >= 2

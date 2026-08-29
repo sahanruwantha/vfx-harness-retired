@@ -149,10 +149,8 @@ def _with_target_feedback(hooks: dict, target: Path, validate) -> dict:
     return hooks
 
 
-# The materialization document's unit/stage/claim schema exists only in validators.
-# Collectable findings now return as `{json_pointer}: {message}` in one write; field
-# repair is `patch_materialization`. This example remains the document shape — every
-# value is a placeholder to replace, no shot vocabulary.
+# The unit-ticket tool exposes the closed WorkUnit schema. This remains only the outer
+# materialization document shape — every value is a placeholder, no shot vocabulary.
 _MATERIALIZATION_EXAMPLE = """{
  "schema": "<materialization schema id from your instructions>",
  "bundle_hash": "<selected bundle hash>",
@@ -178,17 +176,13 @@ _MATERIALIZATION_EXAMPLE = """{
                    "moments": [1], "kind": "atomic", "required": true,
                    "authority": "executable_required", "repair_owner": "example_unit",
                    "asserts": "<scene|temporal|projected_composition|image|human>",
-                   "evidence": [{"kind": "scene_contract", "id": "example-contract"}]}],
-                  "composition_context": {"frames": [1], "contract_ids": ["example-vis"]}},
+                   "evidence": [{"kind": "scene_contract", "id": "example-contract"}]}]},
    "completion": "all_required_claims_and_protected_contracts_pass"}]
  },
  "scene_contracts": [{
   "id": "example-contract", "kind": "<contract kind>", "owner_layer": "<this layer id>",
   "fault_owner": "<this layer id>", "activates_at": "<this layer id>", "lifecycle": "layer",
-  "axis": "<an owned axis>", "op": "max", "hi": 0.01},
-  {"id": "example-vis", "kind": "visible_fraction", "owner_layer": "<this layer id>",
-   "fault_owner": "<this layer id>", "activates_at": "<this layer id>", "lifecycle": "layer",
-   "axis": "<an owned axis>", "roles": ["example_role.part"], "frame": 1, "op": "min", "lo": 0.5}],
+  "axis": "<an owned axis>", "op": "max", "hi": 0.01}],
  "image_contracts": [],
  "requirement_bindings": [
   {"requirement_id": "<owned id>", "contract_ids": ["example-contract"]},
@@ -196,6 +190,18 @@ _MATERIALIZATION_EXAMPLE = """{
     "decision_strength": "approved_start"}}],
  "acceptance": []
 }"""
+
+_PUBLISH_CONSUME_EXAMPLE = """Typed predecessor handoff (exact field names):
+producer `publishes`: [{"id":"target.publish","kind":"placement_control",
+"schema":"vfx-harness.publish-interface/v1",
+"exports":{"role":"target.role","control":"target.control"}}]
+successor `depends_on`: ["target"]
+successor `consumes`: [{"producer":"target","interface_id":"target.publish",
+"kind":"placement_control"}]
+The successor observes exported selectors read-only; it does not add them to `mutates`.
+Omit `composition_context` when required claims directly bind the evidence. If present,
+it needs non-empty `frames` and exactly one of `source_unit` or non-empty `contract_ids`.
+"""
 
 
 def _binding_decisions_block(shot_folder: Path, layer, bundle_hash: str) -> str:
@@ -449,6 +455,7 @@ def _materialization_kickoff(
         f"{_TWO_SIDED_CONTRACT_BINDING}"
         f"{_binding_decisions_block(shot_folder, layer, bundle.content_hash)}"
         f"{_sealed_outcomes_block(shot_folder, layer, global_row)}"
+        f"{_PUBLISH_CONSUME_EXAMPLE}"
         f"Document shape (generic minimal-valid example — replace every placeholder, "
         f"add stages/contracts/claims as the layer needs):\n{_MATERIALIZATION_EXAMPLE}\n"
         f"Output: {rel_target}"
@@ -525,8 +532,10 @@ async def _materialize_deferred_layer(
 The harness has already seeded `{rel_target}` with schema `{MATERIALIZATION_SCHEMA}`, bundle
 identity, exact global layer structure, and empty collections. Do not generate or Write the whole
 document or Read the seeded file; `materialization_status` supplies compact progress if needed.
-Call `stage_materialization_unit` once per independently bounded unit, including only
-that unit, its scene contracts, and the owned requirement bindings it closes. After all units are
+Call `stage_materialization_unit` for one independently bounded unit, then wait for its
+result before authoring the next unit. Never issue several staging calls in one assistant
+turn. Include only that unit, its scene contracts, and the owned requirement bindings it
+closes. After all units are
 staged, call `finalize_materialization`; repair its complete findings with
 `patch_materialization`, then finalize again. The completed candidate must contain non-empty
 bounded stages and close every

@@ -121,10 +121,14 @@ def test_materialization_kickoff_carries_row_and_compiled_authority(tmp_path: Pa
     assert '"layer_judge_frames": [\n  1\n ]' in kickoff
     assert "composition_context.contract_ids" in kickoff
     assert "path_clearance_min" in kickoff
-    # The schema example must cover the fields attempts 2-3 died discovering.
+    # The outer example covers universal fields. Optional composition context is
+    # deliberately prose-only because showing it in every unit taught the model to
+    # author invalid empty rows; the staging tool carries its closed union schema.
     for field in ('"plan"', '"protects"', '"control_roles"', '"proposition"',
-                  '"requirement_bindings"', '"completion"', '"composition_context"'):
+                  '"requirement_bindings"', '"completion"'):
         assert field in kickoff, f"schema example missing {field}"
+    assert "Omit `composition_context`" in kickoff
+    assert '"producer":"target","interface_id":"target.publish"' in kickoff
 
 
 def test_materialization_kickoff_lists_only_selected_bundle_decisions(tmp_path: Path) -> None:

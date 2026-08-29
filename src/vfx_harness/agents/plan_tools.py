@@ -43,6 +43,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from vfx_harness.blender.session import resolve_blender
 from vfx_harness.blender.tools import _b64, _load, _metrics_line, _stats
+from vfx_harness.domain.work_units import work_unit_authoring_schema
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.provenance import atomic_write
@@ -1546,13 +1547,16 @@ def build_plan_tools(
         "stage_materialization_unit",
         "Stage exactly one bounded work unit plus the scene contracts and requirement "
         "bindings it owns into the harness-seeded candidate. There is no path argument. "
-        "Call once per unit so materialization progress is observable and context scales "
-        "with the unit, then call finalize_materialization. This is unpublished scratch "
+        "Issue one staging call, wait for its result, then author the next unit. The unit "
+        "parameter is a closed schema: use producer/interface_id/kind for consumes, one "
+        "of none/keyframes/motion for temporal_evidence, and omit composition_context "
+        "unless it has non-empty frames plus exactly one source_unit or contract_ids. "
+        "After all units, call finalize_materialization. This is unpublished scratch "
         "state; duplicate unit, contract, or requirement ids are refused.",
         {
             "type": "object",
             "properties": {
-                "unit": {"type": "object"},
+                "unit": work_unit_authoring_schema(),
                 "scene_contracts": {"type": "array", "items": {"type": "object"}},
                 "requirement_bindings": {
                     "type": "array",

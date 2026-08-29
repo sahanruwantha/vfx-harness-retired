@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8,<10",
+  "jsonschema>=4,<5", # validates agent-facing closed tool schemas in regression tests
   # Not a style preference. `build_unit()` called two functions this package never
   # imported, so every layer build died on a NameError while `import build_agent`
   # still succeeded — an unbound global resolves only when its line runs. Ruff's F821

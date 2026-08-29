@@ -294,6 +294,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `projected_origin_x/y` row may observe a same-layer target only through an exact
   consumed producer interface; the selector is read-only and never enters camera
   mutation authority (HIR-0096).
+  The incremental unit staging tool exposes the closed WorkUnit authoring schema:
+  temporal enums, optional composition-context union, and exact typed publish/consume
+  fields are enumerated before generation rather than learned through parser retries
+  (HIR-0097).
   Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
   `log_message` journals only when bound (HIR-0038).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is
