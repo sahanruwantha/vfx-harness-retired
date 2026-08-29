@@ -700,6 +700,7 @@ def build_plan_tools(
     prior_gate_signature: str | None = None
     materialization_write_lock = anyio.Lock()
     materialization_revision_token: str | None = None
+    materialization_axis_ids: tuple[str, ...] | None = None
     if candidate_materialization is not None:
         candidate_path = Path(candidate_materialization)
         if candidate_path.is_file():
@@ -708,6 +709,17 @@ def build_plan_tools(
             )
 
             materialization_revision_token = materialization_candidate_revision(candidate_path)
+            try:
+                candidate_payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+                materialization_axis_ids = tuple(
+                    str(value)
+                    for value in ((candidate_payload.get("layer") or {}).get("owns") or [])
+                    if str(value)
+                )
+            except (OSError, ValueError, AttributeError, json.JSONDecodeError):
+                # The staging transaction reports malformed candidate authority. Keep
+                # an empty enum here so the tool cannot accept guessed claim axes first.
+                materialization_axis_ids = ()
 
     @tool(
         "publish_unit_plan",
@@ -1563,13 +1575,15 @@ def build_plan_tools(
         "parameter is a closed schema: use producer/interface_id/kind for consumes, one "
         "of none/keyframes/motion for temporal_evidence, and omit composition_context "
         "unless it has non-empty frames plus exactly one source_unit or contract_ids. "
+        "Every claim.axis enumerates the active layer's exact owned axis ids. "
         "After all units, call finalize_materialization. This is unpublished scratch "
         "state; duplicate unit, contract, or requirement ids are refused.",
         {
             "type": "object",
             "properties": {
                 "unit": work_unit_authoring_schema(
-                    image_property_kinds=payable_image_property_kinds(METRICS)
+                    image_property_kinds=payable_image_property_kinds(METRICS),
+                    axis_ids=materialization_axis_ids,
                 ),
                 "scene_contracts": {"type": "array", "items": {"type": "object"}},
                 "requirement_bindings": {

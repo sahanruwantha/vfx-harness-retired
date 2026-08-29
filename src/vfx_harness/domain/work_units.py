@@ -1309,7 +1309,9 @@ def validate_unit_dag(units: tuple[WorkUnit, ...], where: str) -> None:
 
 
 def work_unit_authoring_schema(
-    *, image_property_kinds: Iterable[str] | None = None
+    *,
+    image_property_kinds: Iterable[str] | None = None,
+    axis_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Closed JSON schema exposed by the materialization unit-ticket tool.
 
@@ -1322,6 +1324,13 @@ def work_unit_authoring_schema(
 
     text = {"type": "string", "minLength": 1}
     positive_int = {"type": "integer", "minimum": 1}
+    claim_axis = dict(text)
+    if axis_ids is not None:
+        claim_axis = {
+            "type": "string",
+            "enum": sorted({str(value) for value in axis_ids}),
+            "description": "Exact axis owned by the active layer; do not invent prefixes.",
+        }
 
     def strings(*, nonempty: bool = False) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -1356,7 +1365,7 @@ def work_unit_authoring_schema(
         "properties": {
             "id": text,
             "proposition": text,
-            "axis": text,
+            "axis": claim_axis,
             "property": text,
             "subject_roles": strings(),
             "subject_controls": strings(),

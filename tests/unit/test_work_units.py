@@ -218,3 +218,20 @@ def test_unit_ticket_schema_exposes_exact_consumes_and_optional_context(role: st
         and "'family'" in error.message
         for error in errors
     )
+
+
+def test_unit_ticket_schema_enumerates_active_layer_axes() -> None:
+    schema = work_unit_authoring_schema(axis_ids=["iris_ingress_sequence"])
+    ticket = _camera_ticket("product.camera_target")
+    claim = ticket["evaluation"]["claims"][0]
+
+    claim["axis"] = "iris_ingress_sequence"
+    assert list(Draft202012Validator(schema).iter_errors(ticket)) == []
+
+    claim["axis"] = "iris.mechanism_topology"
+    errors = list(Draft202012Validator(schema).iter_errors(ticket))
+    assert any(
+        list(error.absolute_path)[-1:] == ["axis"]
+        and "iris_ingress_sequence" in error.message
+        for error in errors
+    )
