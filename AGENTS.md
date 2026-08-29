@@ -275,8 +275,13 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   frame with a required image-domain claim; scene counts cannot seal appearance
   (HIR-0046). Claim-closure counts those bound `image_contract` ids as
   producers even while `checks.json` is empty; missing image rows are
-  build-time debts, not `does not exist` (HIR-0047). Those ids compile to a
-  payment card (id, frame, property, axis); `propose_checks` must match all
+  build-time debts, not `does not exist` (HIR-0047). An image claim's `property`
+  must be payable by the canonical image-metric registry: authoring enumerates the
+  closed vocabulary, staging and materialization refuse free-form properties before
+  bytes publish, and the plan gate rejects incompatible selected views. Appearance
+  prose belongs in `proposition`, not in an invented evidence property (HIR-0111).
+  Those ids compile to a payment card (id, frame, property, axis); `propose_checks`
+  must match all
   four fields and binds each multi-frame batch row to its own immutable candidate
   handle (the batch handle is only a same-frame shorthand); candidate freeze refuses while any remain unpaid without a
   typed `unpaid_image_debt` abstention; ids are bare, never `check:`;
