@@ -181,7 +181,10 @@ freeze-protect active-layer vis, a plan gate that rejects geometry units whose p
 same-layer vis producer is outside their dependency closure, a derived write-cluster
 gate that names mixed mutation families, typed digest-bound successor publish
 interfaces, camera-dependent evidence that cannot publish before a camera provider,
-role-bound global camera capability whose dependency closure reaches every judged layer, and
+role-bound global camera capability whose dependency closure reaches every judged layer,
+typed camera availability that role names cannot impersonate, a closed unit-ticket schema
+on the staging tool, projection consumption that matches the exporting interface, locked
+revision-checked materialization candidate writes, and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".

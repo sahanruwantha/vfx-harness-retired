@@ -37,6 +37,12 @@ mutation is a harness defect, not a model limitation to paper over with a longer
 - Multi-role visible_fraction is AND; a union cannot hide a named role below lo
 - Geometry units freeze-protect lifecycle-active vis on this layer, including sibling rows
 - Derived write-cluster publication (no authored family string), read-only consumed interfaces, and digest-bound publish/consume identity
+- Camera availability only from typed `provides`; role names never imply a capability
+- Camera-dependent evidence cannot publish before a camera provider
+- Role-bound global camera capability whose dependency closure reaches every judged layer
+- Closed WorkUnit authoring schema on the staging tool
+- Point-projection consume matches the exporting interface
+- Locked revision-checked materialization candidate writes; patch cannot insert stage rows
 - Closed-loop mutation: every write has a matching observation
 - Earned qualitative judgment where executable evidence cannot decide
 

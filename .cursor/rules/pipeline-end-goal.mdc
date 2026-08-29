@@ -17,6 +17,9 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 - Give every work unit one bounded goal, one derived write-cluster, semantic mutation scope,
   dependencies, protected contracts, evidence policy, completion clause, checkpoint, repair
   owner, and typed successor interfaces.
+- Treat camera availability as typed `provides` / sparse `jit.provides` authority, never as
+  a role-name inference. Stage materialization through one locked, revision-checked candidate
+  transaction.
 - Plan each work unit just in time from sealed prior outcomes instead of using one giant plan.
 - Treat a wrong DAG/scope/owner as a versioned replan that preserves unaffected checkpoints,
   invalidates dependants, and marks replaced work superseded. A sibling rematerialization that
@@ -98,3 +101,18 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
   of those roles.
 - Collapse an unresolved write family to residual `control` when one namespace has
   mixed mutation targets.
+- Bind camera-dependent evidence before a typed camera provider is available in the unit
+  or earlier-layer closure.
+- Let a materialized unit invent camera capability without mutating a globally reserved
+  camera-interface role.
+- Read global capability or reserved namespaces from a ready overlay row that dropped `jit`.
+- Infer camera availability from role names, including `camera.target`.
+- Force bbox or `visible_fraction` on Empty/control hosts, or let a non-camera unit own
+  `projected_origin_*`.
+- Let a camera-owned projection consume any interface from the producer instead of the one
+  that exports the measured selector, or mutate that selector.
+- Let generic `Write` author a unit plan or the materialization wrapper.
+- Let a mixed write-cluster or authored family padding enter staged scratch, or let patch
+  append or replace stage rows.
+- Let overlapping materialization stage or patch writes clobber a previously staged prefix.
+- Treat a zero-animation bound as keyframe write authority.

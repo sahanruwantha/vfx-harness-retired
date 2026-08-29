@@ -816,11 +816,9 @@ class EvaluationPolicy:
 # judge it. `geometry` means "objects under my roles carry polygons", which is what a
 # mesh metric needs and cannot otherwise learn: smooth_fraction over a camera rig reads
 # None forever, and run 20260824T060927Z burned two repair rounds on that.
-# Declared, never spelled:
-# the composition-bootstrap rule detected camera ownership by substring-matching
-# "camera" in mutated role names, so `cam_rig` — the harness's own default camera-rig
-# role, and the role the approved camera decision keys against — was invisible, and a
-# dependent could not be projected through a camera that demonstrably existed.
+# Camera availability is only this typed declaration. Role names, including
+# `camera.target` and `cam_rig`, never imply a capability (HIR-0098). Composition-bootstrap
+# and later-layer propagation use the same set; a name heuristic is not a fallback.
 UNIT_PROVIDES = {"camera", "geometry"}
 # Capabilities whose availability changes what a later layer may legally plan. Geometry
 # is exported through typed successor interfaces; the active camera is shot-wide
