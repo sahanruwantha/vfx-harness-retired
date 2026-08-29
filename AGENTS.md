@@ -323,9 +323,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   reserved camera-interface roles (HIR-0086, ADR-0005).
   A work unit publishes one derived write-cluster (role-namespace × host class ×
   instrument family); authored family strings are padding and do not satisfy the
-  gate. Instrument family comes from typed mutation targets and write-kind evidence;
+  gate. A typed producer capability is additive mutation authority, not a fallback
+  label: geometry plus keyframe evidence is mesh plus keyframe work. Camera-host
+  placement and motion remain one camera family. Instrument family comes from typed mutation targets and write-kind evidence;
   object-level transforms are control state, and a zero-animation bound is observation,
-  not keyframe authority (HIR-0095). Unresolved families fail closed. Dressing, vis
+  not keyframe authority (HIR-0095, HIR-0112). Unresolved families fail closed. Dressing, vis
   observation/protection, and bounded
   coordination are typed exceptions. Consumed interfaces are read-only inputs — they
   do not grant mutation of producer export roles and cannot hide a mixed cluster.
@@ -587,6 +589,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `render`, color/display settings). Use transactional render diagnostics; renderer-policy
   authority requires a typed plan control, and infeasibility under canonical settings routes
   to `cannot_express_in_scope` (HIR-0076).
+  Before execution, every `run_bpy` payload is classified from high-confidence typed helper
+  and Blender API calls and checked against the one write-cluster in the compiled unit card.
+  Mixed payloads fail before scene mutation or journaling; `bvfx_role`/`bvfx_control` tagging
+  cannot launder mesh, shading, light, camera, volume, compositor, or keyframe work into scope.
+  Explicit `dresses` permits shading and camera-host keyframes remain camera work (HIR-0112).
   Candidate `probe_candidate` applies the same scoped new-object role validation as
   canonical verification before returning evidence; an undeclared helper/role is a probe
   failure, never a green repair read-back (HIR-0058).
