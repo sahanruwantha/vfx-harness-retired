@@ -295,6 +295,82 @@ def test_deferred_root_materializes_without_fabricated_outcome(
     assert selected["materialized_layers"] == ["1"]
 
 
+@pytest.mark.parametrize("camera_role", ["product.camera", "motion.rig"])
+def test_materialized_consumer_keeps_global_camera_capability_from_sparse_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, camera_role: str
+) -> None:
+    """A ready overlay has no jit block, but the gate must retain global interfaces.
+
+    Product and motion namespaces prove the mechanism is typed authority rather than a
+    camera-name heuristic. Before HIR-0087 both fixtures emitted global-capability
+    blockers immediately after a valid materialization.
+    """
+    from vfx_harness.evaluation.plan_gate import _check_contracts
+    from vfx_harness.orchestration.plan_authority import prepare_consumer_view
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    ready_layer = document["layers"][0]
+    stage = ready_layer["stages"][0]
+    stage["provides"] = ["camera"]
+    stage["mutates"]["roles"] = [camera_role]
+    stage["mutates"]["control_roles"] = {"hold": [camera_role]}
+    for claim in stage["evaluation"]["claims"]:
+        claim["subject_roles"] = [camera_role]
+    deferred_layer = {**ready_layer, "execution": "jit_deferred", "stages": []}
+    deferred_layer["jit"] = {
+        "depends_on_layers": [],
+        "required_outcomes": [],
+        "provides": {"camera": [camera_role]},
+        "reserved_roles": [camera_role],
+        "owned_requirements": ["R-final-lock"],
+    }
+    document["schema"] = 5
+    document["layers"] = [deferred_layer]
+    _write(tmp_path / "layers.json", document)
+    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
+        "due": {"kind": "before_layer", "layer": "1"},
+    }
+    _write(tmp_path / "requirements.json", requirements)
+    _write(tmp_path / "obligations.json", {
+        "schema": "vfx-harness.obligations/v1", "obligations": [],
+    })
+    layout = run_artifacts.create(tmp_path, f"global-capability-{camera_role.replace('.', '-')}")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = tmp_path / "root-jit.json"
+    visibility = _vis_rows("1", (239, 240))
+    for row in visibility:
+        row["roles"] = [camera_role]
+    _write(payload, {
+        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "bundle_hash": bundle.content_hash,
+        "layer": _declaring({**ready_layer, "execution": "ready"}),
+        "scene_contracts": [{
+            "id": "final-lock", "kind": "frame_delta", "owner_layer": "1",
+            "fault_owner": "1", "activates_at": "1", "lifecycle": "layer",
+            "axis": "final_lock", "frames": [239, 240], "op": "max", "hi": 0.01,
+        }, *visibility],
+        "image_contracts": [],
+        "requirement_bindings": [{
+            "requirement_id": "R-final-lock", "contract_ids": ["final-lock"],
+        }],
+        "acceptance": [],
+    })
+
+    publish_materialization(tmp_path, payload)
+    consumer = run_artifacts.create(tmp_path, f"consumer-{camera_role.replace('.', '-')}")
+    view = prepare_consumer_view(consumer)
+    overlaid = json.loads((view / "layers.json").read_text(encoding="utf-8"))
+    assert "jit" not in overlaid["layers"][0]
+
+    findings, _ = _check_contracts(view)
+    assert not [finding for finding in findings if finding.check == "global-capability"]
+
+
 def test_schema_five_global_publication_rejects_ready_preproduction(tmp_path: Path) -> None:
     from vfx_harness.evaluation.plan_gate import _check_contracts
 

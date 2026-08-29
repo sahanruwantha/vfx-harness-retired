@@ -146,6 +146,50 @@ def _materialized_view(folder: Path) -> tuple[set[str], set[str]]:
         return set(), set()
 
 
+def _global_authority_layers(folder: Path, consumer_layers: list[dict]) -> list[dict]:
+    """Return the immutable sparse layer rows behind a run-scoped consumer view.
+
+    Materialization deliberately replaces a deferred row with a ready execution row,
+    and ready rows cannot carry ``jit``. Global capability ownership, dependency
+    closure, and reserved namespaces nevertheless remain authority in the selected
+    bundle. Reading those predicates from the overlaid execution row forgets exactly
+    the interfaces that made the materialization legal.
+
+    The marker is not trusted by path alone: resolve the shot's selected bundle and
+    require the marker's root and digest to match it. Any malformed or stale marker
+    falls back to the consumer rows, which preserves the existing fail-closed result.
+    """
+    marker_path = folder / ".plan-consumer-view.json"
+    if not marker_path.is_file():
+        return consumer_layers
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        from vfx_harness.orchestration.plan_authority import (
+            CONSUMER_VIEW_SCHEMA,
+            resolve_current,
+        )
+
+        if marker.get("schema") != CONSUMER_VIEW_SCHEMA:
+            return consumer_layers
+        bundle = resolve_current(Path(str(marker["shot"])).resolve())
+        if (
+            bundle.root != Path(str(marker["bundle"])).resolve()
+            or bundle.content_hash != marker.get("content_hash")
+        ):
+            return consumer_layers
+        document = json.loads((bundle.root / "layers.json").read_text(encoding="utf-8"))
+        rows = document.get("layers") if document.get("schema") == 5 else None
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            return consumer_layers
+        if {str(row.get("id") or "") for row in rows} != {
+            str(row.get("id") or "") for row in consumer_layers
+        }:
+            return consumer_layers
+        return rows
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return consumer_layers
+
+
 # `[known ✓spiked — spike_04/spike_05, verified]` and friends.
 _TICKET = re.compile(r"^\*\*(G\d+\S*·\S*|[A-Z]\d+\S*)\s*·\s*(.+?)\*\*\s*(\[[^\]]*\])?", re.M)
 _URL = re.compile(r"https?://[^\s)`\]]+")
@@ -876,8 +920,9 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
     unit_first = isinstance(layers_document, dict) and layers_document.get("schema") == 5
     materialized_ids, pinned_overlays = _materialized_view(folder) if unit_first else (set(), set())
     if unit_first:
+        global_layers = _global_authority_layers(folder, layers)
         capability_closure: dict[str, set[str]] = {}
-        for index, layer in enumerate(layers):
+        for index, layer in enumerate(global_layers):
             lid = str(layer.get("id") or "?")
             jit = layer.get("jit") or {}
             raw_provides = jit.get("provides")
@@ -1299,11 +1344,15 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     # deferred reservations — the universe a two-sided contract's measurement side may
     # observe (its own repair authority still closes on the primary selectors)
     plan_declared_roles: set[str] = set()
-    for layer_row in layers:
+    global_layers = _global_authority_layers(folder, layers)
+    for layer_row in global_layers:
         if not isinstance(layer_row, dict):
             continue
         for pattern in (layer_row.get("jit") or {}).get("reserved_roles") or []:
             plan_declared_roles.add(str(pattern))
+    for layer_row in layers:
+        if not isinstance(layer_row, dict):
+            continue
         for stage_row in layer_row.get("stages") or []:
             if isinstance(stage_row, dict):
                 for pattern in (stage_row.get("mutates") or {}).get("roles") or []:
