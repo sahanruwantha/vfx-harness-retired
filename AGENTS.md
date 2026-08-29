@@ -284,7 +284,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   frame with a required image-domain claim; scene counts cannot seal appearance
   (HIR-0046). Claim-closure counts those bound `image_contract` ids as
   producers even while `checks.json` is empty; missing image rows are
-  build-time debts, not `does not exist` (HIR-0047). An image claim's `property`
+  build-time debts, not `does not exist` (HIR-0047). JIT owned-requirement
+  closure resolves contract ids through those same required-claim debt cards;
+  `image_contracts` stays empty, and an optional image reference cannot close
+  a required requirement (HIR-0122). An image claim's `property`
   must be payable by the canonical image-metric registry: authoring enumerates the
   closed vocabulary, staging and materialization refuse free-form properties before
   bytes publish, and the plan gate rejects incompatible selected views. Appearance
