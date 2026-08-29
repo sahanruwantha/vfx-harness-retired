@@ -52,6 +52,10 @@ live in the linked Harness Improvement Records.
   without first rasterizing; functional image metrics still derive raster need from
   the canonical registry
   ([HIR-0114](docs/improvements/HIR-0114-executable-only-evidence-precedes-raster.md)).
+  Candidate finalization and repair probes now expose only the active unit's exact
+  frame-bound evidence plus typed visibility protections, so sibling failures cannot
+  authorize an out-of-scope script edit
+  ([HIR-0115](docs/improvements/HIR-0115-candidate-readback-is-unit-scoped.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

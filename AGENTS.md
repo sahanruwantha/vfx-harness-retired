@@ -437,7 +437,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   fan-in, and revalidation must reach executable evidence without rendering; a
   registry-declared functional image metric still owes raster (HIR-0114). Evidence is
   filtered to the active unit's exact bindings; sibling and future contracts cannot
-  judge a unit or authorize a repair.
+  judge a unit or authorize a repair. Finalizer and repair `probe_candidate` read-back
+  uses the same unit-and-frame evidence boundary, including only typed geometry
+  visibility protection exceptions; it never exposes sibling rows as repair authority
+  (HIR-0115).
   A declaring unit's `look_capabilities: []` is that executable-only authority — not a cue
   to scan axis identifiers for look groups. A candidate plate with no optical signal is
   not a look score: fail closed without calling the critic (HIR-0032). Composed

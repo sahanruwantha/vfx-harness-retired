@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import difflib
 import fnmatch
 import hashlib
@@ -483,6 +484,18 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                         render=image_render,
                         stage=str(probe_ctx.get("image_stage") or "pre_grade"),
                     )
+                evidence_ids_by_frame = probe_ctx.get("evidence_ids_by_frame")
+                allowed_evidence_ids = (
+                    None
+                    if evidence_ids_by_frame is None
+                    else {
+                        str(item)
+                        for item in evidence_ids_by_frame.get(str(int(frame)), ())
+                    }
+                )
+                scoped_rows = _scope_bound_evidence(
+                    [*rows, *image_rows], allowed_evidence_ids
+                )
                 transforms = verify.run(
                     "import bpy, json, math, fnmatch\n"
                     f"sc=bpy.context.scene; sc.frame_set({int(frame)})\n"
@@ -517,7 +530,7 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                             for key in ("id", "kind", "value", "target", "pass", "error", "note")
                             if row.get(key) not in (None, "")
                         }
-                        for row in [*rows, *image_rows]
+                        for row in scoped_rows
                     ],
                 }
                 if raster_required:
@@ -2616,11 +2629,42 @@ def _scope_unit_evidence(
         return evidence
     if extra_ids:
         ids = set(ids) | {str(item) for item in extra_ids}
+    return _scope_bound_evidence(evidence, ids)
+
+
+def _scope_bound_evidence(
+    evidence: list[dict], ids: set[str] | None
+) -> list[dict]:
+    """Apply one exact compiled evidence boundary to an observation stream.
+
+    ``None`` is the intentional legacy/layer-wide authority. An empty set is a
+    bounded unit with no matching rows and must stay empty. Candidate read-back,
+    live evaluation, and canonical evaluation share this distinction so a sibling
+    failure cannot become repair authority (HIR-0115).
+    """
+    if ids is None:
+        return evidence
     return [
         row
         for row in evidence
         if str(row.get("id")) in ids or row.get("source") == "builder_state"
     ]
+
+
+def _unit_evidence_ids_by_frame(shot: Shot, layer, unit, judges) -> dict[str, list[str]] | None:
+    """Compile the exact candidate read-back boundary for each judged frame."""
+    if unit is None:
+        return None
+    compiled: dict[str, list[str]] = {}
+    for frame, _ref in judges:
+        ids = set(_unit_evidence_ids(unit, int(frame)) or set())
+        if layer is not None:
+            with contextlib.suppress(OSError, ValueError, KeyError):
+                ids.update(
+                    _geometry_protected_vis_ids(shot, layer, unit, int(frame))
+                )
+        compiled[str(int(frame))] = sorted(ids)
+    return compiled
 
 
 def _render_evidence(
@@ -4202,16 +4246,19 @@ async def build_unit(
         except Exception as e:  # never block finalize on a nicety
             log(f"journal unavailable ({str(e)[:60]})")
         phase["mode"] = "finalize"
+        probe_judges = list(
+            layer.judges if layer is not None else [(m.frame, m.ref)]
+        )
+        evidence_ids_by_frame = _unit_evidence_ids_by_frame(
+            shot, layer, active_unit, probe_judges
+        )
         probe_ctx = {
             "blender": session.blender,
             "scratch_dir": str(
                 run_artifacts.ensure(shot.folder, command="build").scratch / "candidate-probe"
             ),
             "prior_paths": [str(path) for path in prior_paths],
-            "judges": [
-                (int(frame), str(ref))
-                for frame, ref in (layer.judges if layer is not None else [(m.frame, m.ref)])
-            ],
+            "judges": [(int(frame), str(ref)) for frame, ref in probe_judges],
             "layer_id": str(getattr(layer, "id", m.id)),
             "scope_mode": (
                 str(active_unit.mutates.mode) if active_unit is not None else ""
@@ -4221,6 +4268,7 @@ async def build_unit(
                 getattr(active_unit, "look_capabilities", ()) or ()
             ),
             "raster_required": raster_required,
+            "evidence_ids_by_frame": evidence_ids_by_frame,
             "image_stage": (
                 "post_grade"
                 if any(

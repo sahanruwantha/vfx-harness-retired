@@ -5,8 +5,10 @@ from types import SimpleNamespace
 from vfx_harness.agents.builder import (
     _candidate_scope_errors,
     _scope_added_object_errors,
+    _scope_bound_evidence,
     _unit_completion_evidence_ids,
     _unit_evidence_ids,
+    _unit_evidence_ids_by_frame,
 )
 from vfx_harness.blender.tools import _bound_static_frames
 
@@ -47,6 +49,38 @@ def test_active_unit_static_evidence_is_produced_at_every_bound_frame() -> None:
     ]
 
     assert _bound_static_frames(rows, {"frame-1", "frame-36", "functional"}, 1) == [1, 36]
+
+
+def test_candidate_probe_evidence_is_exactly_unit_and_frame_scoped() -> None:
+    unit = SimpleNamespace(
+        evaluation=SimpleNamespace(
+            claims=(
+                SimpleNamespace(
+                    required=True,
+                    moments=(1,),
+                    evidence=(SimpleNamespace(id="target-height"),),
+                ),
+                SimpleNamespace(
+                    required=True,
+                    moments=(38,),
+                    evidence=(SimpleNamespace(id="target-static"),),
+                ),
+            )
+        )
+    )
+    ids = _unit_evidence_ids_by_frame(
+        SimpleNamespace(), None, unit, [(1, "f1.png"), (38, "f38.png")]
+    )
+
+    assert ids == {"1": ["target-height"], "38": ["target-static"]}
+    rows = [
+        {"id": "target-height", "pass": True},
+        {"id": "successor-camera-x", "pass": False},
+        {"id": "builder-worklist", "source": "builder_state", "pass": True},
+    ]
+    assert _scope_bound_evidence(rows, set(ids["1"])) == [rows[0], rows[2]]
+    assert _scope_bound_evidence(rows, set()) == [rows[2]]
+    assert _scope_bound_evidence(rows, None) == rows
 
 
 def test_scoped_artifact_rejects_persisted_untagged_and_undeclared_objects() -> None:
