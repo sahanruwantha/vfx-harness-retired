@@ -226,6 +226,167 @@ def test_lookless_composition_fans_in_unit_claims() -> None:
     assert verdict["decided_by"] == "unit_executable_evidence"
 
 
+def test_executable_scene_unit_does_not_require_raster(tmp_path, monkeypatch) -> None:
+    """A legal pre-camera control producer must not owe an impossible render."""
+    from types import SimpleNamespace
+
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.agents.builder import _unit_requires_raster
+
+    unit = _unit("control_target")
+    monkeypatch.setattr(
+        "vfx_harness.evidence.scene_checks.load_rows",
+        lambda _folder: [
+            {
+                "id": "contract.control_target",
+                "kind": "object_property",
+                "frame": 40,
+            }
+        ],
+    )
+
+    assert _unit_requires_raster(SimpleNamespace(folder=tmp_path), unit) is False
+
+
+def test_functional_scene_contract_still_requires_raster(tmp_path, monkeypatch) -> None:
+    """Binding spelling is not enough: registry-declared image metrics still render."""
+    from types import SimpleNamespace
+
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.agents.builder import _unit_requires_raster
+
+    unit = _unit("response")
+    monkeypatch.setattr(
+        "vfx_harness.evidence.scene_checks.load_rows",
+        lambda _folder: [
+            {
+                "id": "contract.response",
+                "kind": "render_region_stat",
+                "frame": 40,
+            }
+        ],
+    )
+
+    assert _unit_requires_raster(SimpleNamespace(folder=tmp_path), unit) is True
+
+
+def test_executable_canonical_replay_never_calls_render(tmp_path, monkeypatch) -> None:
+    """HIR-0114 regression: scene evidence must be checked before any raster call."""
+    from types import SimpleNamespace
+
+    import anyio
+
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.agents import builder
+
+    unit = _unit("control_target")
+    script_rel = "build/units/01/control_target.py"
+    script_path = tmp_path / script_rel
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("# deterministic control\n", encoding="utf-8")
+
+    monkeypatch.setattr(builder, "_preamble", lambda _shot: "")
+    monkeypatch.setattr(builder, "_run_prior_paths", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(builder, "_scene_object_manifest", lambda _session: {})
+    monkeypatch.setattr(
+        builder,
+        "_render_evidence",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "contract.control_target",
+                "pass": True,
+                "authoritative": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "vfx_harness.evidence.scene_checks.load_rows",
+        lambda _folder: [
+            {
+                "id": "contract.control_target",
+                "kind": "object_property",
+                "frame": 40,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        builder,
+        "_stash_render",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("executable-only canonical replay must not render")
+        ),
+    )
+
+    class _Session:
+        def run(self, *_args, **_kwargs):
+            return {"result": {}}
+
+    class _Ledger:
+        def __init__(self):
+            self.rounds = []
+
+        def record_round(self, *args, **kwargs):
+            self.rounds.append((args, kwargs))
+
+    layer = SimpleNamespace(
+        id="1",
+        judges=((40, "refs/f040.png"),),
+        stages=(unit,),
+        owns=("form",),
+    )
+    shot = SimpleNamespace(
+        folder=tmp_path,
+        frontmatter={"type": "motion"},
+        frames=100,
+    )
+    milestone = SimpleNamespace(
+        id="1@control_target",
+        frame=40,
+        ref="refs/f040.png",
+    )
+    ledger = _Ledger()
+    verdicts = []
+
+    async def _run():
+        return await builder._verify_script(
+            shot,
+            milestone,
+            script_rel,
+            [],
+            _Session(),
+            [("form", "declared form")],
+            ledger,
+            False,
+            layer=layer,
+            active_unit=unit,
+            out_verdicts=verdicts,
+        )
+
+    assert anyio.run(_run) == "passed"
+    assert verdicts[0][1]["decided_by"] == "unit_executable_evidence"
+    assert ledger.rounds
+
+
+def test_live_unit_render_is_guarded_by_typed_raster_need() -> None:
+    """Pin the producing live-loop branch that failed before canonical replay."""
+    import inspect
+
+    from vfx_harness.agents import builder
+
+    source = inspect.getsource(builder.build_unit)
+    assert "raster_required = _unit_requires_raster(shot, active_unit)" in source
+    assert (
+        "_stash_render(session, shot, m, f\"r{rnd}\") if raster_required else \"\""
+        in source
+    )
+    revalidate_source = inspect.getsource(builder._try_revalidate)
+    assert "raster_required = _unit_requires_raster(shot, active_unit)" in revalidate_source
+    assert "deterministic_executable_revalidation" in revalidate_source
+    probe_source = inspect.getsource(builder._build_probe_candidate_server)
+    assert 'raster_required = bool(probe_ctx.get("raster_required", True))' in probe_source
+    assert 'frame_row["raster_required"] = False' in probe_source
+
+
 def test_look_owning_stage_keeps_composed_critic_path() -> None:
     from types import SimpleNamespace
 

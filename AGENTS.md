@@ -432,8 +432,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
 - Critics describe qualitative residuals and cite evidence. They never override a passing
   authoritative measurement of the same fact and never prescribe unverified implementations. No
   repair is justified by unsupported measurement prose.
-- Executable-only units call no visual critic; evidence is filtered to the active unit's exact
-  bindings; sibling and future contracts cannot judge a unit or authorize a repair.
+- Executable-only units call no visual critic and owe no raster before their typed
+  scene/interface verdict. Live evaluation, canonical empty-scene replay, composed
+  fan-in, and revalidation must reach executable evidence without rendering; a
+  registry-declared functional image metric still owes raster (HIR-0114). Evidence is
+  filtered to the active unit's exact bindings; sibling and future contracts cannot
+  judge a unit or authorize a repair.
   A declaring unit's `look_capabilities: []` is that executable-only authority — not a cue
   to scan axis identifiers for look groups. A candidate plate with no optical signal is
   not a look score: fail closed without calling the critic (HIR-0032). Composed

@@ -715,7 +715,12 @@ def revision_prompt(m: Milestone, verdict: dict, candidate_rel: str) -> str:
 
 
 def finalize_prompt(
-    shot, m: Milestone, priors: list[str] | None = None, script_rel: str | None = None, journal_rel: str | None = None
+    shot,
+    m: Milestone,
+    priors: list[str] | None = None,
+    script_rel: str | None = None,
+    journal_rel: str | None = None,
+    raster_required: bool = True,
 ) -> str:
     script = script_rel or f"build/{m.id.lower()}.py"
     if priors:
@@ -729,12 +734,19 @@ def finalize_prompt(
             f"a script that rebuilds this entire scene from an EMPTY scene, reproducing "
             f"frame {m.frame} exactly as you have it"
         )
+    probe_evidence = (
+        "the evidence rows, camera/role transforms, and owed raster per judge frame"
+        if raster_required
+        else (
+            "the evidence rows and camera/role transforms; this executable-only unit "
+            "owes no raster, so the probe returns `raster_required: false` instead of images"
+        )
+    )
     return (
         f"MODE: FINALIZE_SCRIPT — the live search is over; publish its deterministic "
         f"artifact. Do not make new look decisions in this mode.\n"
         f"After writing the script, call `probe_candidate` once: it rebuilds your "
-        f"artifact from empty and returns the evidence rows, camera/role transforms, "
-        f"and a solid render per judge frame — confirm the distillation reproduces the "
+        f"artifact from empty and returns {probe_evidence} — confirm the distillation reproduces the "
         f"accepted state before you finish instead of leaving that discovery to the "
         f"canonical gate.\n\n"
         f"Now persist your work. Write `{script}` — {scope}. Assume the "
@@ -984,6 +996,7 @@ def canonical_repair_prompt(
     script_rel: str,
     holding: list | None = None,
     rejected_repairs: list[str] | None = None,
+    raster_required: bool = True,
 ) -> str:
     """Hand a CANONICAL failure back to the builder that wrote the script.
 
@@ -1031,6 +1044,15 @@ def canonical_repair_prompt(
             "different light path, placement, control, or other root mechanism while "
             "preserving the passing frames.\n"
         )
+    probe_evidence = (
+        "the evidence rows, evaluated camera/role world transforms, a solid geometry "
+        "plate, and any owed look raster"
+        if raster_required
+        else (
+            "the evidence rows and evaluated camera/role world transforms; this "
+            "executable-only unit returns `raster_required: false` instead of images"
+        )
+    )
     return (
         f"MODE: REPAIR_SCRIPT — edit the canonical artifact, not the warm scene.\n"
         f"Use Grep → Read the smallest span → Edit. Write must not "
@@ -1038,8 +1060,7 @@ def canonical_repair_prompt(
         f"this repair is embedded below: inspect `{script_rel}` only; do not search "
         f"plans, checks, runtime evidence, logs, journals, or unrelated build scripts.\n"
         f"Call `probe_candidate` FIRST: it rebuilds the current script from empty and "
-        f"returns the evidence rows, evaluated camera/role world transforms, a solid "
-        f"geometry plate, and — on a look-owning unit — `look_render` (draft EEVEE). "
+        f"returns {probe_evidence}. "
         f"Diagnose critic look against look_render; solid_render is Workbench geometry "
         f"and will lie about volumes, bloom, and occluders that exist to carve shafts. "
         f"Probe again after your edit; an edit whose rebuilt consequences you have not "

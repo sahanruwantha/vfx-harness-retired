@@ -48,6 +48,10 @@ live in the linked Harness Improvement Records.
   instead of a critic look vote; `vfx build` exits 9 when units passed but
   the composed verdict did not
   ([HIR-0039](docs/improvements/HIR-0039-lookless-composition-is-not-a-critic.md)).
+  Executable-only units now evaluate live and canonical scene/interface evidence
+  without first rasterizing; functional image metrics still derive raster need from
+  the canonical registry
+  ([HIR-0114](docs/improvements/HIR-0114-executable-only-evidence-precedes-raster.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

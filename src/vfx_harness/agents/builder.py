@@ -429,6 +429,7 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
 
     calls = 0
     comparison_state = probe_ctx.get("comparison_state")
+    raster_required = bool(probe_ctx.get("raster_required", True))
 
     def _probe() -> dict:
         from vfx_harness.blender.session import BlenderSession
@@ -460,21 +461,28 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
             except Exception as exc:
                 rig_contract = {"ok": None, "issues": [f"check failed: {str(exc)[:120]}"]}
             role_patterns = list(probe_ctx.get("roles") or [])
-            preview_modes = probe_preview_modes(probe_ctx.get("look_capabilities") or ())
+            preview_modes = (
+                probe_preview_modes(probe_ctx.get("look_capabilities") or ())
+                if raster_required
+                else ()
+            )
             frames_out = []
             for frame, ref in probe_ctx["judges"]:
                 rows = scene_layer_evidence(
                     shot.folder, str(probe_ctx["layer_id"]), frame=int(frame), session=verify
                 )
-                image_render = verify.render(frame=int(frame), mode="eevee", scale=0.5)
-                image_rows = image_layer_evidence(
-                    shot.folder,
-                    str(probe_ctx["layer_id"]),
-                    frame=int(frame),
-                    ref=str(ref),
-                    render=image_render,
-                    stage=str(probe_ctx.get("image_stage") or "pre_grade"),
-                )
+                image_render = None
+                image_rows = []
+                if raster_required:
+                    image_render = verify.render(frame=int(frame), mode="eevee", scale=0.5)
+                    image_rows = image_layer_evidence(
+                        shot.folder,
+                        str(probe_ctx["layer_id"]),
+                        frame=int(frame),
+                        ref=str(ref),
+                        render=image_render,
+                        stage=str(probe_ctx.get("image_stage") or "pre_grade"),
+                    )
                 transforms = verify.run(
                     "import bpy, json, math, fnmatch\n"
                     f"sc=bpy.context.scene; sc.frame_set({int(frame)})\n"
@@ -498,16 +506,11 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                     "RESULT=out\n",
                     journal=False,
                 ).get("result") or {}
-                try:
-                    render = verify.render(frame=int(frame), mode="solid", scale=0.33)
-                except Exception as exc:  # a render failure is a finding, not a crash
-                    render = f"render failed: {str(exc)[:120]}"
                 frame_row = {
                     "frame": int(frame),
                     "ref": str(ref),
                     "camera": transforms.get("camera"),
                     "roles": transforms.get("roles"),
-                    "solid_render": render,
                     "evidence": [
                         {
                             key: row.get(key)
@@ -516,8 +519,20 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                         }
                         for row in [*rows, *image_rows]
                     ],
-                    "image_contract_render": image_render,
                 }
+                if raster_required:
+                    try:
+                        render = verify.render(frame=int(frame), mode="solid", scale=0.33)
+                    except Exception as exc:  # a render failure is a finding, not a crash
+                        render = f"render failed: {str(exc)[:120]}"
+                    frame_row["solid_render"] = render
+                    frame_row["image_contract_render"] = image_render
+                else:
+                    frame_row["raster_required"] = False
+                    frame_row["raster_note"] = (
+                        "typed executable scene/interface unit; candidate replay owes "
+                        "no image or visual-critic evidence"
+                    )
                 if "draft" in preview_modes:
                     try:
                         look = verify.render(frame=int(frame), mode="draft", scale=0.33)
@@ -538,9 +553,11 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
         "probe_candidate",
         f"Rebuild the CURRENT `{script_rel}` from an empty scene in a disposable worker "
         "and return, per judge frame: the authoritative evidence rows the gate will "
-        "compute, the evaluated camera and role world transforms, a solid-mode geometry "
-        "render, and — when the unit declares look capabilities — a draft EEVEE look "
-        "plate (`look_render`). Diagnose look against look_render, not solid_render. "
+        "compute and the evaluated camera and role world transforms. When typed evidence "
+        "requires raster it also returns a solid-mode geometry render and, for declared "
+        "look capabilities, a draft EEVEE look plate (`look_render`). Executable-only "
+        "scene/interface units return `raster_required: false` instead of images. "
+        "Diagnose look against look_render, not solid_render. "
         "Call it BEFORE diagnosing and AFTER editing — an edit whose rebuilt "
         "consequences you have not seen is a guess. Deterministic, no model cost; "
         "capped at three calls.",
@@ -2502,6 +2519,56 @@ def look_unsettled_for(image_bindings, capabilities) -> bool:
     return bool(capability_feedback_groups(capabilities or ())) and not bool(image_bindings)
 
 
+def _unit_requires_raster(shot: Shot, unit) -> bool:
+    """Whether a bounded unit needs pixels to earn its verdict.
+
+    Empty ``look_capabilities`` already keeps the critic off executable-only units,
+    but the live and canonical loops historically rendered before reaching that
+    decision. That is both wasted evidence and structurally impossible for a legal
+    pre-camera control producer. Derive the raster boundary from typed authority and
+    the canonical metric registry rather than from role, layer, or shot names
+    (HIR-0114).
+    """
+    if unit is None:
+        return True
+    if tuple(getattr(unit, "look_capabilities", ()) or ()):
+        return True
+    required = [
+        claim
+        for claim in (getattr(getattr(unit, "evaluation", None), "claims", ()) or ())
+        if getattr(claim, "required", False)
+    ]
+    if not required or any(
+        getattr(claim, "authority", None) != "executable_required"
+        for claim in required
+    ):
+        return True
+    bindings = [
+        binding
+        for claim in required
+        for binding in (getattr(claim, "evidence", ()) or ())
+    ]
+    if any(getattr(binding, "kind", None) != "scene_contract" for binding in bindings):
+        return True
+
+    # Some scene-contract rows are executable image instruments (transactional
+    # render sweeps and frame statistics). Their domain comes from the one canonical
+    # registry; a copied private list would drift exactly as camera requirements did.
+    try:
+        from vfx_harness.evidence.scene_checks import FUNCTIONAL_KINDS, load_rows
+
+        bound = {str(binding.id) for binding in bindings}
+        return any(
+            str(row.get("id")) in bound and row.get("kind") in FUNCTIONAL_KINDS
+            for row in load_rows(shot.folder)
+            if isinstance(row, dict)
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        # A missing or malformed contract document will fail as executable evidence;
+        # rasterizing cannot repair its authority.
+        return False
+
+
 def _unit_completion_evidence_ids(unit) -> set[str] | None:
     """All evidence required before a bounded unit may stop mutating.
 
@@ -2560,7 +2627,7 @@ def _render_evidence(
     shot: Shot,
     layer,
     m: Milestone,
-    render_rel: str,
+    render_rel: str | None,
     session: BlenderSession,
     *,
     active_unit=None,
@@ -2573,20 +2640,22 @@ def _render_evidence(
         if any("grade" in str(axis).lower() for axis in (getattr(layer, "owns", ()) or ()))
         else "pre_grade"
     )
-    try:
-        from vfx_harness.evidence.checks import layer_evidence
+    if render_rel:
+        try:
+            from vfx_harness.evidence.checks import layer_evidence
 
-        evidence.extend(
-            layer_evidence(shot.folder, str(layer.id), frame=m.frame, ref=m.ref, render=render_rel, stage=stage)
-        )
-    except Exception as exc:
-        log(f"! image evidence unavailable: {str(exc)[:90]}", 1)
+            evidence.extend(
+                layer_evidence(shot.folder, str(layer.id), frame=m.frame, ref=m.ref, render=render_rel, stage=stage)
+            )
+        except Exception as exc:
+            log(f"! image evidence unavailable: {str(exc)[:90]}", 1)
     try:
         from vfx_harness.evidence.scene_checks import functional_evidence
         from vfx_harness.evidence.scene_checks import layer_evidence as scene_layer_evidence
 
         evidence.extend(scene_layer_evidence(shot.folder, str(layer.id), frame=m.frame, session=session))
-        evidence.extend(functional_evidence(shot.folder, str(layer.id), session=session))
+        if render_rel:
+            evidence.extend(functional_evidence(shot.folder, str(layer.id), session=session))
     except Exception as exc:
         log(f"! live-scene evidence unavailable: {str(exc)[:90]}", 1)
     evidence.extend(_worklist_evidence(shot.folder, str(layer.id), active_unit))
@@ -3334,27 +3403,76 @@ def _try_revalidate(
         return None
 
     sealed = {int(row["frame"]): row for row in outcome.get("canonical") or []}
+    raster_required = _unit_requires_raster(shot, active_unit)
+    try:
+        from vfx_harness.evidence.scene_checks import load_rows as _load_contract_rows
+
+        contract_frames = {
+            str(row.get("id")): int(row.get("frame"))
+            for row in _load_contract_rows(shot.folder)
+            if isinstance(row, dict)
+            and row.get("id")
+            and row.get("frame") is not None
+        }
+    except (OSError, ValueError, TypeError):
+        contract_frames = {}
     canonical = []
     frame_results = []
     judges = list(layer.judges)
     for frame, ref in judges:
         m_i = m if len(judges) == 1 else layer.milestone_at(frame, ref, plan_strips(shot))
-        render_rel = _stash_render(session, shot, m_i, f"revalidate_f{frame}")
-        evidence = _render_evidence(shot, layer, m_i, render_rel, session)
-        authoritative = [row for row in evidence if row.get("authoritative")]
-        prior = sealed.get(int(frame)) or {}
-        reproduction = _image_reproduction(shot.folder / str(prior.get("render", "")), shot.folder / render_rel)
-        passed = bool(authoritative and all(row.get("pass") for row in authoritative) and reproduction.get("match"))
-        verdict = {
-            "scores": {},
-            "mean": float((outcome.get("best") or {}).get("mean") or 4.0),
-            "pass": passed,
-            "issues": [],
-            "evidence": evidence,
-            "decided_by": "deterministic_revalidation",
-            "reproduction": reproduction,
-            "render": render_rel,
-        }
+        if raster_required:
+            render_rel = _stash_render(session, shot, m_i, f"revalidate_f{frame}")
+            evidence = _render_evidence(shot, layer, m_i, render_rel, session)
+            authoritative = [row for row in evidence if row.get("authoritative")]
+            prior = sealed.get(int(frame)) or {}
+            reproduction = _image_reproduction(
+                shot.folder / str(prior.get("render", "")),
+                shot.folder / render_rel,
+            )
+            passed = bool(
+                authoritative
+                and all(row.get("pass") for row in authoritative)
+                and reproduction.get("match")
+            )
+            verdict = {
+                "scores": {},
+                "mean": float((outcome.get("best") or {}).get("mean") or 4.0),
+                "pass": passed,
+                "issues": [],
+                "evidence": evidence,
+                "decided_by": "deterministic_revalidation",
+                "reproduction": reproduction,
+                "render": render_rel,
+            }
+        else:
+            render_rel = ""
+            evidence = _render_evidence(
+                shot, layer, m_i, None, session, active_unit=active_unit
+            )
+            verdict = _executable_unit_verdict(
+                active_unit,
+                int(frame),
+                [(str(axis), str(axis)) for axis in getattr(layer, "owns", ())],
+                evidence,
+                contract_frames=contract_frames,
+            ) or _lookless_without_executable_verdict(
+                active_unit,
+                int(frame),
+                [(str(axis), str(axis)) for axis in getattr(layer, "owns", ())],
+            )
+            passed = bool(verdict.get("pass"))
+            reproduction = {
+                "required": False,
+                "reason": "executable_only_scene_evidence",
+            }
+            verdict = {
+                **verdict,
+                "decided_by": "deterministic_executable_revalidation",
+                "reproduction": reproduction,
+                "render": render_rel,
+            }
+            authoritative = [row for row in evidence if row.get("authoritative")]
         canonical.append(((frame, ref), verdict))
         frame_results.append(
             {
@@ -3367,8 +3485,9 @@ def _try_revalidate(
         )
     if not all(row[1]["pass"] for row in canonical):
         bad = [str(frame) for (frame, _ref), verdict in canonical if not verdict["pass"]]
+        changed = "evidence or canonical pixels" if raster_required else "executable evidence"
         log(
-            f"REVALIDATE miss: evidence or canonical pixels changed at f{', f'.join(bad)}; "
+            f"REVALIDATE miss: {changed} changed at f{', f'.join(bad)}; "
             "falling back to the full builder",
             1,
         )
@@ -3389,7 +3508,7 @@ def _try_revalidate(
                 "frame": frame,
                 "mean": verdict["mean"],
                 "pass": True,
-                "decided_by": "deterministic_revalidation",
+                "decided_by": verdict.get("decided_by", "deterministic_revalidation"),
                 "evidence": verdict["evidence"],
                 "reproduction": verdict["reproduction"],
             }
@@ -3415,7 +3534,8 @@ def _try_revalidate(
         },
     )
     log("\n" + run_summary(json.loads(rec_path.read_text(encoding="utf-8"))))
-    log("REVALIDATE PASS: authoritative evidence and sealed pixels are unchanged; builder and critic sessions skipped")
+    proof = "authoritative evidence and sealed pixels" if raster_required else "executable evidence"
+    log(f"REVALIDATE PASS: {proof} unchanged; builder and critic sessions skipped")
     return ledger
 
 
@@ -3856,6 +3976,13 @@ async def build_unit(
             )
 
         live_rounds = _live_round_budget(rounds, comparison_state)
+        raster_required = _unit_requires_raster(shot, active_unit)
+        if not raster_required:
+            log(
+                "executable-only unit: evaluating typed scene/interface evidence "
+                "without raster or visual critic",
+                1,
+            )
         if comparison_state.get("cannot_express"):
             payload = comparison_state["cannot_express"]
             log(
@@ -3866,9 +3993,12 @@ async def build_unit(
             )
         rnd = 0
         for rnd in range(1, live_rounds + 1):
-            log(f"── round {rnd}/{rounds} — rendering + critiquing frame {m.frame} ──")
+            if raster_required:
+                log(f"── round {rnd}/{rounds} — rendering + critiquing frame {m.frame} ──")
+            else:
+                log(f"── round {rnd}/{rounds} — executable evidence at frame {m.frame} ──")
             t_round = time.monotonic()
-            render_rel = _stash_render(session, shot, m, f"r{rnd}")
+            render_rel = _stash_render(session, shot, m, f"r{rnd}") if raster_required else ""
             snap = session.snapshot(f"{m.id}_r{rnd}")  # {blend, journal_index}
             # Resume point: the SDK restores the CONVERSATION, the snapshot+journal
             # restores the SCENE. Both are needed or a resumed layer reasons about a
@@ -3924,9 +4054,10 @@ async def build_unit(
             # 4.0 during finalize (the scene graph and pixels may differ independently).
             if _round_rank(verdict) > _round_rank(best.get("verdict")):
                 best = {"mean": verdict["mean"], "round": rnd, "render": render_rel, "verdict": verdict, "snap": snap}
-                best_path = run_artifacts.renders_dir(shot.folder) / f"{m.id}_best.png"
-                best_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(shot.folder / render_rel, best_path)
+                if render_rel:
+                    best_path = run_artifacts.renders_dir(shot.folder) / f"{m.id}_best.png"
+                    best_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(shot.folder / render_rel, best_path)
             if verdict["pass"]:
                 passed = True
                 break
@@ -3953,7 +4084,7 @@ async def build_unit(
             # decides when mutation is legal.
             phase["scene_contracts_passed"] = False
             phase["judgment_unresolved"] = False
-            if plateaued and layer is not None and not reviewed:
+            if raster_required and plateaued and layer is not None and not reviewed:
                 reviewed = True
                 log(f"plateau ({verdict['mean']} ≤ prev) — escalating to APPROACH REVIEW")
                 with costlog.scoped(
@@ -4004,7 +4135,13 @@ async def build_unit(
                     1,
                 )
                 break
-        log(f"best round: r{best['round']} mean {best['mean']} → renders/{m.id}_best.png")
+        if best.get("render"):
+            log(f"best round: r{best['round']} mean {best['mean']} → renders/{m.id}_best.png")
+        else:
+            log(
+                f"best round: r{best['round']} executable mean {best['mean']} "
+                "(no raster owed)"
+            )
 
         # finalize from the BEST round's scene, not the last one — a regressed revision
         # must not be what gets written into build/<m>.py (cost build8 the layer).
@@ -4083,6 +4220,7 @@ async def build_unit(
             "look_capabilities": list(
                 getattr(active_unit, "look_capabilities", ()) or ()
             ),
+            "raster_required": raster_required,
             "image_stage": (
                 "post_grade"
                 if any(
@@ -4098,7 +4236,14 @@ async def build_unit(
                 shot,
                 mode="finalize",
                 script_rel=script_rel,
-                prompt=finalize_prompt(shot, m, priors=priors, script_rel=script_rel, journal_rel=journal_rel),
+                prompt=finalize_prompt(
+                    shot,
+                    m,
+                    priors=priors,
+                    script_rel=script_rel,
+                    journal_rel=journal_rel,
+                    raster_required=raster_required,
+                ),
                 verbose=verbose,
                 probe_ctx=probe_ctx,
             )
@@ -4254,6 +4399,7 @@ async def build_unit(
                             script_rel,
                             holding=holding,
                             rejected_repairs=rejected_repairs,
+                            raster_required=raster_required,
                         ),
                         verbose=verbose,
                         probe_ctx=probe_ctx,
@@ -5444,6 +5590,13 @@ async def _verify_script(
     # Render serially (one Blender session), then score CONCURRENTLY — the critic calls
     # are independent judgements of already-written PNGs, and multi-frame judging tripled
     # the pass count on server_to_hansa (8 -> 18).
+    raster_required = _unit_requires_raster(shot, active_unit)
+    if not raster_required:
+        log(
+            "canonical replay owes only executable scene/interface evidence — "
+            "skipping raster and visual critic",
+            1,
+        )
     shots_ = []
     for frame, ref in judges:
         if len(judges) == 1:
@@ -5461,11 +5614,25 @@ async def _verify_script(
                 if unit_tag
                 else layer.milestone_at(frame, ref, plan_strips(shot))
             )
-        render_rel = _stash_render(session, shot, m_i, f"canonical_f{frame}" if len(judges) > 1 else "canonical")
+        render_rel = (
+            _stash_render(
+                session,
+                shot,
+                m_i,
+                f"canonical_f{frame}" if len(judges) > 1 else "canonical",
+            )
+            if raster_required
+            else ""
+        )
         shots_.append((frame, ref, m_i, render_rel))
 
     canonical_motion_evidence = None
-    if shot.frontmatter.get("type") == "motion" and shot.frames > 1 and _layer_needs_motion(layer):
+    if (
+        raster_required
+        and shot.frontmatter.get("type") == "motion"
+        and shot.frames > 1
+        and _layer_needs_motion(layer)
+    ):
         try:
             canonical_motion_evidence = _stash_motion_strip(
                 session,
@@ -5549,7 +5716,10 @@ async def _verify_script(
             layer=layer,
         )
 
-    if len(shots_) == 1:
+    if not raster_required:
+        for i, (_f, _r, m_i, rr) in enumerate(shots_):
+            await _score(i, m_i, rr)
+    elif len(shots_) == 1:
         await _score(0, shots_[0][2], shots_[0][3])
     else:
         async with anyio.create_task_group() as tg:
