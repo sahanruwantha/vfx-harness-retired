@@ -696,6 +696,16 @@ def build_plan_tools(
     ) / "measure_ref_cache.json"
     gate_calls = 0
     prior_gate_signature: str | None = None
+    materialization_write_lock = anyio.Lock()
+    materialization_revision_token: str | None = None
+    if candidate_materialization is not None:
+        candidate_path = Path(candidate_materialization)
+        if candidate_path.is_file():
+            from vfx_harness.orchestration.jit_materialization import (
+                materialization_candidate_revision,
+            )
+
+            materialization_revision_token = materialization_candidate_revision(candidate_path)
 
     @tool(
         "publish_unit_plan",
@@ -1575,6 +1585,7 @@ def build_plan_tools(
         },
     )
     async def stage_materialization_unit_tool(args):
+        nonlocal materialization_revision_token
         candidate = Path(candidate_materialization) if candidate_materialization else None
         if candidate is None:
             return _text(
@@ -1582,20 +1593,24 @@ def build_plan_tools(
                 is_error=True,
             )
         from vfx_harness.orchestration.jit_materialization import (
+            materialization_candidate_revision,
             stage_materialization_unit,
         )
 
         try:
-            await anyio.to_thread.run_sync(
-                lambda: stage_materialization_unit(
-                    candidate,
-                    unit=args.get("unit"),
-                    scene_contracts=args.get("scene_contracts") or [],
-                    requirement_bindings=args.get("requirement_bindings") or [],
-                    layer_updates=args.get("layer_updates"),
+            async with materialization_write_lock:
+                await anyio.to_thread.run_sync(
+                    lambda: stage_materialization_unit(
+                        candidate,
+                        unit=args.get("unit"),
+                        scene_contracts=args.get("scene_contracts") or [],
+                        requirement_bindings=args.get("requirement_bindings") or [],
+                        layer_updates=args.get("layer_updates"),
+                        expected_revision=materialization_revision_token,
+                    )
                 )
-            )
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
+                materialization_revision_token = materialization_candidate_revision(candidate)
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             return _text(f"unit staging refused: {exc}", is_error=True)
         return _text(
@@ -1621,7 +1636,12 @@ def build_plan_tools(
                 is_error=True,
             )
         try:
+            from vfx_harness.orchestration.jit_materialization import (
+                materialization_candidate_revision,
+            )
+
             payload = json.loads(candidate.read_text(encoding="utf-8"))
+            revision = materialization_candidate_revision(candidate)
             units = [
                 str(row.get("id"))
                 for row in ((payload.get("layer") or {}).get("stages") or [])
@@ -1636,6 +1656,8 @@ def build_plan_tools(
             "unit_count": len(units),
             "scene_contract_count": len(contracts),
             "requirement_binding_count": len(requirements),
+            "revision": revision,
+            "session_revision_matches": revision == materialization_revision_token,
         }))
 
     @tool(
@@ -1733,6 +1755,7 @@ def build_plan_tools(
         },
     )
     async def patch_materialization(args):
+        nonlocal materialization_revision_token
         candidate = Path(candidate_materialization) if candidate_materialization else None
         if candidate is None:
             return _text(
@@ -1753,6 +1776,7 @@ def build_plan_tools(
             return _text(f"value must be JSON-encoded: {exc}", is_error=True)
         from vfx_harness.orchestration.jit_materialization import (
             apply_materialization_patches,
+            materialization_candidate_revision,
             selected_view_artifact,
         )
         from vfx_harness.orchestration.plan_authority import artifact_path, resolve_current
@@ -1768,17 +1792,20 @@ def build_plan_tools(
                 bundle.content_hash,
                 overlay_root=overlay_root,
             ) or artifact_path(shot_folder, "requirements.json")
-            findings = await anyio.to_thread.run_sync(
-                lambda: apply_materialization_patches(
-                    bundle.root,
-                    candidate,
-                    patches,
-                    expected_bundle_hash=bundle.content_hash,
-                    base_layers_path=base_layers,
-                    resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
-                    base_requirements_path=base_requirements,
+            async with materialization_write_lock:
+                findings = await anyio.to_thread.run_sync(
+                    lambda: apply_materialization_patches(
+                        bundle.root,
+                        candidate,
+                        patches,
+                        expected_bundle_hash=bundle.content_hash,
+                        base_layers_path=base_layers,
+                        resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
+                        base_requirements_path=base_requirements,
+                        expected_revision=materialization_revision_token,
+                    )
                 )
-            )
+                materialization_revision_token = materialization_candidate_revision(candidate)
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             return _text(str(exc), is_error=True)
         if not findings:

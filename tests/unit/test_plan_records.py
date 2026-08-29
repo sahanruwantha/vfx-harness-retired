@@ -413,7 +413,9 @@ def test_materialization_patch_batch_is_atomic_and_supports_append(
         expected_bundle_hash="0" * 64,
     ) == []
     assert json.loads(candidate.read_text(encoding="utf-8")) == expected
-    assert validations == [candidate]
+    assert len(validations) == 1
+    assert validations[0] != candidate
+    assert not validations[0].exists()
 
     before = candidate.read_bytes()
     with pytest.raises(ValueError, match=r"absent|does not exist|out of range"):
@@ -476,6 +478,113 @@ def test_materialization_candidate_is_seeded_and_staged_one_unit_at_a_time(
             unit=unit,
             scene_contracts=[],
             requirement_bindings=[],
+        )
+    assert target.read_bytes() == before
+
+
+def test_materialization_candidate_compare_and_swap_serializes_overlapping_writers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One observed revision can authorize only one overlapping candidate write."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+
+    import vfx_harness.orchestration.jit_materialization as materialization
+    from vfx_harness.orchestration.jit_materialization import (
+        MaterializationRevisionConflict,
+        apply_materialization_patches,
+        materialization_candidate_revision,
+    )
+
+    candidate = tmp_path / "candidate.json"
+    _write(candidate, {"product": "clay", "motion": "linear"})
+    revision = materialization_candidate_revision(candidate)
+    entered_write = Event()
+    release_write = Event()
+    calls_lock = Lock()
+    write_calls = 0
+    real_atomic_write = materialization.atomic_write
+
+    def slow_first_write(path, content):
+        nonlocal write_calls
+        with calls_lock:
+            write_calls += 1
+            is_first = write_calls == 1
+        if is_first:
+            entered_write.set()
+            assert release_write.wait(timeout=5)
+        real_atomic_write(path, content)
+
+    monkeypatch.setattr(materialization, "atomic_write", slow_first_write)
+    monkeypatch.setattr(materialization, "inspect_materialization", lambda *a, **k: ([], None))
+
+    def patch(pointer: str, value: str) -> list[str]:
+        return apply_materialization_patches(
+            tmp_path,
+            candidate,
+            ((pointer, value),),
+            expected_bundle_hash="0" * 64,
+            expected_revision=revision,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(patch, "/product", "metal")
+        assert entered_write.wait(timeout=5)
+        second = pool.submit(patch, "/motion", "bezier")
+        assert not second.done()
+        release_write.set()
+        assert first.result(timeout=5) == []
+        with pytest.raises(MaterializationRevisionConflict, match="revision changed"):
+            second.result(timeout=5)
+
+    assert json.loads(candidate.read_text(encoding="utf-8")) == {
+        "product": "metal",
+        "motion": "linear",
+    }
+
+
+def test_patch_cannot_insert_or_pad_a_staged_unit(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.orchestration.jit_materialization import (
+        apply_materialization_patches,
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "patch-stage-boundary")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "patch-stage-boundary.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    before = target.read_bytes()
+    with pytest.raises(ValueError, match="add each unit through stage_materialization_unit"):
+        apply_materialization_patches(
+            bundle.root,
+            target,
+            (("/layer/stages/-", full["layer"]["stages"][0]),),
+            expected_bundle_hash=bundle.content_hash,
+        )
+    assert target.read_bytes() == before
+
+    stage_materialization_unit(
+        target,
+        unit=full["layer"]["stages"][0],
+        scene_contracts=full["scene_contracts"],
+        requirement_bindings=full["requirement_bindings"],
+    )
+    before = target.read_bytes()
+    with pytest.raises(ValueError, match=r"atomicity refused before candidate write.*padding"):
+        apply_materialization_patches(
+            bundle.root,
+            target,
+            (("/layer/stages/0/family", "mesh"),),
+            expected_bundle_hash=bundle.content_hash,
         )
     assert target.read_bytes() == before
 
@@ -546,7 +655,7 @@ def test_materialization_refuses_mixed_unit_before_it_enters_staged_scratch(
     ]
     before = target.read_bytes()
 
-    with pytest.raises(ValueError, match=r"atomicity refused before staging.*mixed_clusters"):
+    with pytest.raises(ValueError, match=r"atomicity refused before candidate write.*mixed_clusters"):
         stage_materialization_unit(
             target,
             unit=unit,
@@ -891,7 +1000,7 @@ def test_control_producer_cannot_own_camera_projection_repair(tmp_path: Path) ->
         bundle_hash=bundle.content_hash,
     )
     before = staged.read_bytes()
-    with pytest.raises(ValueError, match="point-projection ownership refused before staging"):
+    with pytest.raises(ValueError, match="point-projection ownership refused before candidate write"):
         stage_materialization_unit(
             staged,
             unit=unit,
@@ -1059,7 +1168,7 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
     camera_without_interface = json.loads(json.dumps(camera))
     camera_without_interface.pop("consumes")
     before = staged.read_bytes()
-    with pytest.raises(ValueError, match="point-projection interface refused before staging"):
+    with pytest.raises(ValueError, match="point-projection interface refused before candidate write"):
         stage_materialization_unit(
             staged,
             unit=camera_without_interface,

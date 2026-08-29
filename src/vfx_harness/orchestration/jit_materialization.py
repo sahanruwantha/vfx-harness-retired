@@ -9,10 +9,13 @@ global bundle; it never mutates that bundle.
 
 from __future__ import annotations
 
+import fcntl
 import fnmatch
 import hashlib
 import json
 import tempfile
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +23,7 @@ from typing import Any
 from vfx_harness.domain.json_pointer import encode as json_ptr
 from vfx_harness.domain.json_pointer import format_finding
 from vfx_harness.domain.json_pointer import set_at as set_pointer
+from vfx_harness.domain.json_pointer import split as split_pointer
 from vfx_harness.domain.plan_records import load_active_structured_decisions
 from vfx_harness.evidence.scene_checks import (
     PROJECTED_ORIGIN_KINDS,
@@ -51,6 +55,53 @@ def _document(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain an object")
     return value
+
+
+class MaterializationRevisionConflict(ValueError):
+    """The candidate changed after the caller observed it."""
+
+
+def materialization_candidate_revision(path: str | Path) -> str:
+    """Return the byte revision used by candidate compare-and-swap writes."""
+    return _sha256(Path(path))
+
+
+@contextmanager
+def _materialization_candidate_lock(path: Path) -> Iterator[None]:
+    """Serialize candidate read/validate/write across sessions and processes."""
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _mutate_materialization_candidate(
+    path: Path,
+    mutate: Callable[[dict[str, Any]], None],
+    *,
+    expected_revision: str | None,
+) -> tuple[dict[str, Any], str]:
+    """Run one locked compare-and-swap candidate mutation."""
+    with _materialization_candidate_lock(path):
+        raw = path.read_bytes()
+        actual_revision = hashlib.sha256(raw).hexdigest()
+        if expected_revision is not None and expected_revision != actual_revision:
+            raise MaterializationRevisionConflict(
+                "materialization candidate revision changed: expected "
+                f"{expected_revision}, found {actual_revision}; inspect status and restart "
+                "the materialization session from the current candidate"
+            )
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError(f"{path} must contain an object")
+        mutate(payload)
+        encoded = (json.dumps(payload, indent=1) + "\n").encode("utf-8")
+        atomic_write(path, encoded.decode("utf-8"))
+        return payload, hashlib.sha256(encoded).hexdigest()
 
 
 def _rows(document: dict[str, Any], key: str, where: str) -> list[dict[str, Any]]:
@@ -984,28 +1035,104 @@ def seed_materialization_candidate(
     return target
 
 
-def stage_materialization_unit(
-    materialization_path: str | Path,
-    *,
-    unit: dict[str, Any],
-    scene_contracts: list[dict[str, Any]],
-    requirement_bindings: list[dict[str, Any]],
-    layer_updates: dict[str, Any] | None = None,
-) -> Path:
-    """Append one bounded unit ticket to an unpublished materialization candidate.
-
-    This is deliberately not a publication or a partial validation success. It performs
-    local schema checks and uniqueness checks, writes atomically, and leaves complete
-    cross-unit closure to ``inspect_materialization``/the explicit finalize tool.
-    """
+def _validate_local_staged_units(payload: dict[str, Any]) -> None:
+    """Enforce unit-local publication predicates on an in-memory candidate."""
+    from vfx_harness.domain.atomicity import atomicity_gaps
     from vfx_harness.domain.work_units import (
         PROJECTED_ORIGIN_REPAIR_RULE,
         WorkUnit,
         point_projection_interface_gaps,
     )
 
-    path = Path(materialization_path)
-    payload = _document(path)
+    if payload.get("schema") != MATERIALIZATION_SCHEMA:
+        raise ValueError("candidate has unsupported materialization schema")
+    stages = _rows(payload.get("layer") or {}, "stages", "candidate.layer")
+    contracts = _rows(payload, "scene_contracts", "candidate")
+    bindings = _rows(payload, "requirement_bindings", "candidate")
+    parsed_units = [
+        WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)
+    ]
+    unit_ids = [unit.id for unit in parsed_units]
+    if len(unit_ids) != len(set(unit_ids)):
+        raise ValueError("staged unit ids must be unique before candidate write")
+    contract_ids = [str(row.get("id") or "") for row in contracts]
+    if any(not identifier for identifier in contract_ids) or len(contract_ids) != len(
+        set(contract_ids)
+    ):
+        raise ValueError(
+            "staged scene contract ids must be non-empty and unique before candidate write"
+        )
+    for row in contracts:
+        if error := validate_row(row):
+            raise ValueError(f"scene contract {row.get('id', '<missing>')}: {error}")
+    requirement_ids = [str(row.get("requirement_id") or "") for row in bindings]
+    if any(not identifier for identifier in requirement_ids) or len(requirement_ids) != len(
+        set(requirement_ids)
+    ):
+        raise ValueError(
+            "staged requirement ids must be non-empty and unique before candidate write"
+        )
+    units_by_id = {item.id: item for item in parsed_units}
+    contracts_by_id = {str(row.get("id")): row for row in contracts}
+    for staged_unit in parsed_units:
+        for claim in staged_unit.evaluation.claims:
+            if not claim.required:
+                continue
+            owner = units_by_id.get(claim.repair_owner)
+            for binding in claim.evidence:
+                row = contracts_by_id.get(binding.id)
+                if (
+                    binding.kind == "scene_contract"
+                    and row is not None
+                    and str(row.get("kind") or "") in PROJECTED_ORIGIN_KINDS
+                    and owner is not None
+                    and "camera" not in owner.provides
+                ):
+                    raise ValueError(
+                        "point-projection ownership refused before candidate write: "
+                        f"unit {staged_unit.id} claim {claim.id} names repair_owner "
+                        f"{owner.id}, which does not provide camera. "
+                        + PROJECTED_ORIGIN_REPAIR_RULE
+                    )
+    interface_gaps = point_projection_interface_gaps(parsed_units, contracts)
+    if interface_gaps:
+        gap = interface_gaps[0]
+        if gap.reason == "owner_mutation":
+            detail = f"camera owner mutates observed selector {gap.selector!r}"
+        else:
+            detail = (
+                f"selector {gap.selector!r} is produced by {list(gap.producer_ids)} "
+                "without a compatible consumed interface"
+            )
+        raise ValueError(
+            "point-projection interface refused before candidate write: "
+            f"unit {gap.unit_id} contract {gap.contract_id}: {detail}. "
+            + PROJECTED_ORIGIN_REPAIR_RULE
+        )
+    gaps = atomicity_gaps(
+        parsed_units,
+        contracts,
+        layer_id=str((payload.get("layer") or {}).get("id") or ""),
+        raw_stages=stages,
+    )
+    if gaps:
+        detail = "; ".join(
+            f"unit {gap.unit_id} {gap.code}: {gap.detail}" for gap in gaps
+        )
+        raise ValueError("unit atomicity refused before candidate write: " + detail)
+
+
+def _stage_materialization_payload(
+    payload: dict[str, Any],
+    *,
+    unit: dict[str, Any],
+    scene_contracts: list[dict[str, Any]],
+    requirement_bindings: list[dict[str, Any]],
+    layer_updates: dict[str, Any] | None,
+) -> None:
+    """Apply one stage operation and validate it before the transaction writes."""
+    from vfx_harness.domain.work_units import WorkUnit
+
     if payload.get("schema") != MATERIALIZATION_SCHEMA:
         raise ValueError("candidate has unsupported materialization schema")
     if not isinstance(unit, dict):
@@ -1068,69 +1195,34 @@ def stage_materialization_unit(
         ):
             raise ValueError("layer_updates.dressable must be a list of non-empty strings")
         payload["layer"]["dressable"] = dressable
-    # Atomicity belongs at the unit boundary. Waiting until finalization accepts an
-    # oversized unit into scratch and then asks the model to perform cross-unit JSON
-    # surgery — exactly the monolithic repair this staged protocol exists to remove.
-    from vfx_harness.domain.atomicity import atomicity_gaps
-
-    current_units = [
-        WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)
-    ]
-    all_contracts = [*_rows(payload, "scene_contracts", "candidate"), *contracts]
-    proposed_units = [*current_units, parsed]
-    units_by_id = {item.id: item for item in proposed_units}
-    contracts_by_id = {str(row.get("id")): row for row in all_contracts}
-    for staged_unit in proposed_units:
-        for claim in staged_unit.evaluation.claims:
-            if not claim.required:
-                continue
-            owner = units_by_id.get(claim.repair_owner)
-            for binding in claim.evidence:
-                row = contracts_by_id.get(binding.id)
-                if (
-                    binding.kind == "scene_contract"
-                    and row is not None
-                    and str(row.get("kind") or "") in PROJECTED_ORIGIN_KINDS
-                    and owner is not None
-                    and "camera" not in owner.provides
-                ):
-                    raise ValueError(
-                        "point-projection ownership refused before staging: "
-                        f"unit {staged_unit.id} claim {claim.id} names repair_owner "
-                        f"{owner.id}, which does not provide camera. "
-                        + PROJECTED_ORIGIN_REPAIR_RULE
-                    )
-    interface_gaps = point_projection_interface_gaps(proposed_units, all_contracts)
-    if interface_gaps:
-        gap = interface_gaps[0]
-        if gap.reason == "owner_mutation":
-            detail = f"camera owner mutates observed selector {gap.selector!r}"
-        else:
-            detail = (
-                f"selector {gap.selector!r} is produced by {list(gap.producer_ids)} "
-                "without a compatible consumed interface"
-            )
-        raise ValueError(
-            "point-projection interface refused before staging: "
-            f"unit {gap.unit_id} contract {gap.contract_id}: {detail}. "
-            + PROJECTED_ORIGIN_REPAIR_RULE
-        )
-    gaps = atomicity_gaps(
-        proposed_units,
-        all_contracts,
-        layer_id=str((payload.get("layer") or {}).get("id") or ""),
-        raw_stages=[*stages, unit],
-    )
-    if gaps:
-        detail = "; ".join(
-            f"unit {gap.unit_id} {gap.code}: {gap.detail}" for gap in gaps
-        )
-        raise ValueError("unit atomicity refused before staging: " + detail)
-
     stages.append(unit)
     payload["scene_contracts"].extend(contracts)
     payload["requirement_bindings"].extend(bindings)
-    atomic_write(path, json.dumps(payload, indent=1) + "\n")
+    _validate_local_staged_units(payload)
+
+
+def stage_materialization_unit(
+    materialization_path: str | Path,
+    *,
+    unit: dict[str, Any],
+    scene_contracts: list[dict[str, Any]],
+    requirement_bindings: list[dict[str, Any]],
+    layer_updates: dict[str, Any] | None = None,
+    expected_revision: str | None = None,
+) -> Path:
+    """Append one bounded unit through the serialized candidate transaction."""
+    path = Path(materialization_path)
+    _mutate_materialization_candidate(
+        path,
+        lambda payload: _stage_materialization_payload(
+            payload,
+            unit=unit,
+            scene_contracts=scene_contracts,
+            requirement_bindings=requirement_bindings,
+            layer_updates=layer_updates,
+        ),
+        expected_revision=expected_revision,
+    )
     return path
 
 
@@ -1144,6 +1236,7 @@ def apply_materialization_patch(
     base_layers_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
+    expected_revision: str | None = None,
 ) -> list[str]:
     """Set one JSON pointer on the candidate file and return remaining findings."""
     return apply_materialization_patches(
@@ -1154,6 +1247,7 @@ def apply_materialization_patch(
         base_layers_path=base_layers_path,
         resolutions_path=resolutions_path,
         base_requirements_path=base_requirements_path,
+        expected_revision=expected_revision,
     )
 
 
@@ -1166,6 +1260,7 @@ def apply_materialization_patches(
     base_layers_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
+    expected_revision: str | None = None,
 ) -> list[str]:
     """Atomically set several JSON pointers and validate the resulting candidate once.
 
@@ -1176,17 +1271,60 @@ def apply_materialization_patches(
     if not patches:
         raise ValueError("materialization patch transaction must contain at least one patch")
     path = Path(materialization_path)
-    payload = _document(path)
-    for pointer, value in patches:
-        set_pointer(payload, pointer, value)
-    atomic_write(path, json.dumps(payload, indent=1) + "\n")
-    findings, _materialized = inspect_materialization(
-        global_root,
+    parsed_pointers: list[list[str]] = []
+    for pointer, _value in patches:
+        tokens = split_pointer(pointer)
+        if tokens == ["layer"] or (
+            tokens[:2] == ["layer", "stages"]
+            and (len(tokens) <= 3 or tokens[2] == "-")
+        ):
+            raise ValueError(
+                "patch_materialization cannot add, replace, or reorder staged units; "
+                "add each unit through stage_materialization_unit and patch only fields "
+                "inside an existing staged unit"
+            )
+        parsed_pointers.append(tokens)
+
+    findings: list[str] = []
+
+    def mutate(payload: dict[str, Any]) -> None:
+        nonlocal findings
+        for (pointer, value), _tokens in zip(patches, parsed_pointers, strict=True):
+            set_pointer(payload, pointer, value)
+        if any(
+            tokens[:2] == ["layer", "stages"]
+            or tokens[:1] == ["scene_contracts"]
+            or tokens[:1] == ["requirement_bindings"]
+            for tokens in parsed_pointers
+        ):
+            _validate_local_staged_units(payload)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".materialization.json",
+            prefix=".candidate-validate-",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            handle.write(json.dumps(payload, indent=1) + "\n")
+            proposed_path = Path(handle.name)
+        try:
+            findings, _materialized = inspect_materialization(
+                global_root,
+                proposed_path,
+                expected_bundle_hash=expected_bundle_hash,
+                base_layers_path=base_layers_path,
+                resolutions_path=resolutions_path,
+                base_requirements_path=base_requirements_path,
+            )
+        finally:
+            proposed_path.unlink(missing_ok=True)
+
+    _mutate_materialization_candidate(
         path,
-        expected_bundle_hash=expected_bundle_hash,
-        base_layers_path=base_layers_path,
-        resolutions_path=resolutions_path,
-        base_requirements_path=base_requirements_path,
+        mutate,
+        expected_revision=expected_revision,
     )
     return findings
 
