@@ -94,7 +94,7 @@ candidate write semantics do not change.
   unchanged. That terminal cause is independent of the witness card and exposed a
   separate typed unit-retirement gap; it is not counted as Layer 2 completion.
 
-Implementation commit: pending.
+Implementation commit: `05c86f3` (`fix: teach unresolved write-family witnesses`).
 
 ## Release and rollback
 
