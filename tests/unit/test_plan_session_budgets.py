@@ -105,6 +105,41 @@ def test_global_phase_registers_only_escalation_and_gate_tools(tmp_path) -> None
     assert {name.split("__")[-1] for name in names} == {"ask_supervisor", "run_gate"}
 
 
+def test_unit_planner_registers_fixed_publish_sink_only_when_target_is_bound(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.agents.plan_tools import build_plan_tools
+
+    target = tmp_path / "plans" / "units" / "camera.md"
+    _server, names = build_plan_tools(
+        tmp_path,
+        enabled_tools=frozenset({"publish_unit_plan"}),
+        unit_plan_target=target,
+    )
+    assert {name.split("__")[-1] for name in names} == {"publish_unit_plan"}
+
+    _server, absent = build_plan_tools(
+        tmp_path,
+        enabled_tools=frozenset({"publish_unit_plan"}),
+    )
+    assert absent == []
+
+
+@pytest.mark.parametrize("relative", ["plans/units/camera.md", "plans/motion/aim.md"])
+def test_fixed_unit_plan_sink_publishes_only_under_active_shot(
+    tmp_path: Path, relative: str
+) -> None:
+    from vfx_harness.agents.plan_tools import _publish_unit_plan_content
+
+    content = "# Bounded unit plan\n\n" + ("one atomic execution ticket\n" * 10)
+    target, lines = _publish_unit_plan_content(tmp_path, tmp_path / relative, content)
+
+    assert target.read_text(encoding="utf-8") == content
+    assert lines == content.count("\n") + 1
+    with pytest.raises(ValueError, match="active shot"):
+        _publish_unit_plan_content(tmp_path, tmp_path.parent / "escape.md", content)
+
+
 def test_spike_refuses_adopted_decision_and_falsification_hypotheses(tmp_path) -> None:
     from vfx_harness.agents.plan_tools import _spike_ineligibility
 

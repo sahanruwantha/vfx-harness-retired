@@ -418,6 +418,8 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   direct-predecessor interfaces (exported roles, controls, capabilities, sealed ids, and
   only the typed digest-bound publish interfaces named by `consumes`) and bounded
   outcome/amendment/gap feedback, never dependency evaluator internals, selected catalogs, or scripts.
+  Its plan publishes through a harness-bound content sink with no path argument; generic
+  `Write` is not part of the JIT unit-planner surface (HIR-0091).
   Finalizer journals start after reset/dependency replay and end
   at the selected checkpoint. Layer materialization has no raw `Read` surface: kickoff compiles
   only the exact global layer row, owned requirements, active structured decisions, compact

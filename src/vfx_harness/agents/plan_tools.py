@@ -64,6 +64,33 @@ _CALIBRATION_CLOSED = (
 )
 
 
+def _publish_unit_plan_content(
+    shot_folder: str | Path,
+    target_path: str | Path,
+    content: str,
+) -> tuple[Path, int]:
+    """Atomically publish content to the one harness-selected unit-plan target."""
+    root = Path(shot_folder).resolve()
+    target = Path(target_path).resolve()
+    try:
+        relative = target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("target is not under the active shot") from exc
+    if relative.parts[:1] != ("plans",):
+        raise ValueError("target is not under the shot plans directory")
+    if len(content.strip()) < 200:
+        raise ValueError("unit plan must contain at least 200 non-whitespace characters")
+    lines = content.count("\n") + 1
+    if lines > 160:
+        raise ValueError(
+            f"unit plan has {lines} lines; maximum is 160 — keep evidence in "
+            "machine contracts and publish only the execution index"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(target, content.rstrip() + "\n")
+    return target, lines
+
+
 class _CheckBatchBudget:
     """Two exploratory singles, then at most an initial batch plus one repair batch.
 
@@ -621,6 +648,7 @@ def build_plan_tools(
     enabled_tools: frozenset[str] | None = None,
     candidate_materialization: str | Path | None = None,
     overlay_root: str | Path | None = None,
+    unit_plan_target: str | Path | None = None,
 ):
     shot_folder = Path(shot_folder)
     work = Path(tempfile.mkdtemp(prefix="planlab-"))  # raw ffmpeg output
@@ -667,6 +695,37 @@ def build_plan_tools(
     ) / "measure_ref_cache.json"
     gate_calls = 0
     prior_gate_signature: str | None = None
+
+    @tool(
+        "publish_unit_plan",
+        "Publish the complete bounded work-unit plan to the exact target selected by "
+        "the harness. This tool intentionally accepts no path: output location is "
+        "authority, not a model decision. The content must be at least 200 characters "
+        "and no more than 160 lines.",
+        {
+            "type": "object",
+            "properties": {"content": {"type": "string", "minLength": 200}},
+            "required": ["content"],
+            "additionalProperties": False,
+        },
+    )
+    async def publish_unit_plan(args):
+        if unit_plan_target is None:
+            return _text(
+                "publish_unit_plan is only available during JIT unit planning",
+                is_error=True,
+            )
+        try:
+            content = str(args.get("content") or "")
+            target, lines = _publish_unit_plan_content(
+                shot_folder, unit_plan_target, content
+            )
+        except (OSError, ValueError) as exc:
+            return _text(f"unit plan publication refused: {exc}", is_error=True)
+        return _text(
+            f"UNIT PLAN PUBLISHED to {target.relative_to(shot_folder).as_posix()} "
+            f"({lines} lines)"
+        )
 
     @tool(
         "probe_video",
@@ -1589,6 +1648,8 @@ def build_plan_tools(
     video = sorted((shot_folder / "refs").glob("*.mp4")) if (shot_folder / "refs").is_dir() else []
     tools = [measure_ref, measure_check, measure_checks, spike, ask_supervisor,
              evidence_vocabulary, gate_preview, escalate_vocabulary_gap]
+    if unit_plan_target is not None:
+        tools.append(publish_unit_plan)
     if candidate_materialization is not None:
         tools.append(patch_materialization)
     if include_gate:

@@ -1198,17 +1198,31 @@ async def generate_layer_plan(
         shot.folder,
         blender=blender,
         lab_dir=lab_dir,
-        enabled_tools=frozenset({"measure_ref", "spike", "ask_supervisor", "gate_preview"}),
+        enabled_tools=frozenset({
+            "measure_ref",
+            "spike",
+            "ask_supervisor",
+            "gate_preview",
+            "publish_unit_plan",
+        }),
+        unit_plan_target=target,
     )
     rserver, rnames = build_recipe_tools()
-    unit_plan_tools = _phase_tools(pnames, "measure_ref", "spike", "ask_supervisor", "gate_preview")
+    unit_plan_tools = _phase_tools(
+        pnames,
+        "measure_ref",
+        "spike",
+        "ask_supervisor",
+        "gate_preview",
+        "publish_unit_plan",
+    )
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Write", *unit_plan_tools, *rnames],
-        disallowed_tools=["Bash", "Edit"],
+        allowed_tools=[*unit_plan_tools, *rnames],
+        disallowed_tools=["Bash", "Edit", "Write"],
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,
         setting_sources=[],

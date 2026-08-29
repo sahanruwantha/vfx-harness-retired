@@ -204,8 +204,8 @@ unit {unit_id}: {unit_title}.
 The global dependency map and machine contracts already exist. Earlier layer outcomes are
 sealed facts, and approved amendments are explicit changes to the specification. The kickoff
 is the complete compiled authority card for this unit; there is no raw Read surface. Do not
-audit broad files or copy transcripts into the plan. Then write
-exactly `{target}`. Do not edit the global plan or any
+audit broad files or copy transcripts into the plan. Publish the finished content through
+`publish_unit_plan`; the harness fixes its only target to `{target}`. Do not edit the global plan or any
 machine contract in this mode. If those artifacts conflict, stop and report the conflict;
 the correct repair is an approved amendment or global re-plan, not a hidden local override.
 
@@ -222,7 +222,7 @@ claims ARE the stop clause: name those exact ids as builder-owed
 as critic-only judge comparison. Do not ask a layer to repair controls owned
 by another layer.
 
-After writing `{target}`, call `gate_preview` once: it applies the exact terminal
+After publishing `{target}`, call `gate_preview` once: it applies the exact terminal
 deterministic gate to the staged consumer view. A finding fixed here costs one edit; the
 same finding after this session ends costs a retracted plan and a fresh generation. A
 finding you cannot fix from this plan (another layer's authority, a missing
@@ -244,7 +244,7 @@ def layer_user_prompt(
     return (
         f"Plan only Layer {layer.id} — {layer.title} — unit {unit.id}: {unit.title} "
         f"for shot '{shot.id}'. "
-        f"Write exactly `{target}`.\n\n"
+        f"Publish through `publish_unit_plan`; its fixed target is `{target}`.\n\n"
         f"This is the complete compiled unit authority. Do not read the brief, layer/contract "
         f"catalogs, scripts, amendments, decisions, or prior plans. "
         f"{_refs_block(shot)}\n\n"
