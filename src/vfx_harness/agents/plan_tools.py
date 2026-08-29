@@ -1727,6 +1727,7 @@ def build_plan_tools(
                 is_error=True,
             )
         from vfx_harness.orchestration.jit_materialization import (
+            attest_materialization_finalization,
             inspect_materialization,
             selected_view_artifact,
         )
@@ -1756,7 +1757,17 @@ def build_plan_tools(
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             return _text(str(exc), is_error=True)
         if not findings:
-            return _text(f"VALIDATION PASSED for {candidate.name}.")
+            try:
+                attestation = attest_materialization_finalization(
+                    candidate, bundle_hash=bundle.content_hash
+                )
+            except OSError as exc:
+                return _text(f"finalization attestation failed: {exc}", is_error=True)
+            return _text(
+                f"FINALIZATION ATTESTED for {candidate.name} at the current revision "
+                f"({attestation.name}). The outer transaction may publish even if this "
+                "call consumes the final model turn."
+            )
         return _text(
             "VALIDATION FAILED. Remaining findings:\n"
             + "\n".join(f"- {item}" for item in findings),

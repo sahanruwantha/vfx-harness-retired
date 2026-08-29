@@ -685,10 +685,17 @@ global authority, create unit state, write prose, or write another file."""
         max_turns=max_turns,
     )
     try:
+        from vfx_harness.orchestration.jit_materialization import (
+            materialization_finalization_attested,
+        )
+
         await run_session(
             _attempt,
-            succeeded=lambda: target.is_file() and not _validate_target(),
+            succeeded=lambda: materialization_finalization_attested(
+                target, bundle_hash=bundle.content_hash
+            ),
             label=f"materialize layer {layer.id}",
+            accept_max_turns_if_succeeded=True,
         )
     except Exception as exc:
         log(f"! materialize session died: {str(exc)[:200]}")

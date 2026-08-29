@@ -113,14 +113,17 @@ async def run_session(
     label: str = "session",
     attempts: int = 4,
     base_delay: float = _BASE_DELAY,
+    accept_max_turns_if_succeeded: bool = False,
 ) -> None:
     """Run `attempt_fn` until `succeeded()` is true, backing off on transient failures.
 
     `attempt_fn` runs one session and returns whatever text it collected (assistant output),
     which is where the real error message lives. `succeeded` is the caller's post-condition
     — an exception-free run that produced nothing is a FAILURE here, which is precisely the
-    case that cost two rounds. Turn exhaustion fails closed even when that post-condition
-    already holds: a written candidate is not a select (HIR-0027).
+    case that cost two rounds. Turn exhaustion fails closed even when a generic
+    post-condition holds: a written candidate is not a select (HIR-0027). One caller may
+    opt into accepting exhaustion only when its post-condition is an explicit,
+    revision-bound terminal attestation rather than candidate existence (HIR-0108).
     """
     last = ""
     for n in range(1, attempts + 1):
@@ -135,6 +138,12 @@ async def run_session(
         # document — terminal_cause process_error, not max_turns_exhausted.
         blob = f"{err}\n{said}"
         if _MAX_TURNS.search(blob):
+            if accept_max_turns_if_succeeded and succeeded():
+                log(
+                    f"{label}: final model turn carried a valid terminal attestation; "
+                    "accepting the attested revision"
+                )
+                return
             last = (err or said or "produced no output and raised nothing").strip()[:300]
             raise AgentSessionFailure(
                 f"{label} exhausted its model turn budget: {last}",

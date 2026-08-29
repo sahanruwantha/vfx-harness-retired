@@ -355,4 +355,5 @@ def test_materializer_denies_generic_write_and_requires_valid_staged_candidate()
     assert 'disallowed_tools=[*MATERIALIZATION_DENIED_TOOLS, "Write"]' in source
     assert "stage_materialization_unit" in source
     assert "unstage_materialization_unit" in source
-    assert "succeeded=lambda: target.is_file() and not _validate_target()" in source
+    assert "materialization_finalization_attested" in source
+    assert "accept_max_turns_if_succeeded=True" in source

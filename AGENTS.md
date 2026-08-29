@@ -259,7 +259,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `--discard-accepted` retires accepted orphans and wipes state only when the replan
   base is unusable — it is not the door on remat (HIR-0052). Task and Agent are not remat repair
   instruments. An exhausted materialization session does not publish: max-turns is a failed
-  transaction, not a select (HIR-0027). Structured decision adoption is last-write-wins for
+  transaction, not a select (HIR-0027). The sole exception is an exact current revision
+  that a successful `finalize_materialization` call has bound to the selected bundle in a
+  typed terminal attestation; candidate existence or patch validation alone never
+  qualifies (HIR-0108). Structured decision adoption is last-write-wins for
   the selected bundle only: a `values.contract` row keyed to another generation is inert, a
   later `superseded` or `falsified` row for the same id on this bundle retires it, and
   materialization copies the compiled binding set rather than every ledger line (HIR-0028).

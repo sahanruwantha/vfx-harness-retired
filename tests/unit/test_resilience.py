@@ -56,6 +56,28 @@ def test_max_turns_does_not_publish_just_because_a_candidate_exists() -> None:
     assert attempts == 1
 
 
+def test_max_turns_accepts_an_explicit_terminal_attestation_only_when_opted_in() -> None:
+    attempts = 0
+
+    async def finalized_then_exhausted() -> str:
+        nonlocal attempts
+        attempts += 1
+        return "FINALIZATION ATTESTED\nsubtype=error_max_turns"
+
+    async def exercise() -> None:
+        await run_session(
+            finalized_then_exhausted,
+            succeeded=lambda: True,
+            label="materialize layer 2",
+            attempts=4,
+            base_delay=0.001,
+            accept_max_turns_if_succeeded=True,
+        )
+
+    anyio.run(exercise)
+    assert attempts == 1
+
+
 def test_sdk_result_subtype_reaches_the_classifier() -> None:
     """The SDK reports max-turn termination only as ResultMessage.subtype — never as an
     assistant text block — so the collected signal must carry it explicitly or a real

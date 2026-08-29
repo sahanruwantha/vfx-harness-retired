@@ -648,6 +648,30 @@ def test_materialization_candidate_compare_and_swap_serializes_overlapping_write
     }
 
 
+def test_materialization_finalization_attestation_is_revision_bound(tmp_path: Path) -> None:
+    from vfx_harness.orchestration.jit_materialization import (
+        attest_materialization_finalization,
+        materialization_finalization_attested,
+    )
+
+    candidate = tmp_path / "candidate.json"
+    _write(candidate, {"schema": "candidate", "value": 1})
+    bundle_hash = "a" * 64
+
+    attest_materialization_finalization(candidate, bundle_hash=bundle_hash)
+
+    assert materialization_finalization_attested(
+        candidate, bundle_hash=bundle_hash
+    )
+    assert not materialization_finalization_attested(
+        candidate, bundle_hash="b" * 64
+    )
+    _write(candidate, {"schema": "candidate", "value": 2})
+    assert not materialization_finalization_attested(
+        candidate, bundle_hash=bundle_hash
+    )
+
+
 def test_patch_cannot_insert_or_pad_a_staged_unit(
     tmp_path: Path,
 ) -> None:

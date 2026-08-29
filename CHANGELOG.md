@@ -168,6 +168,11 @@ live in the linked Harness Improvement Records.
   Same-generation retries retain unresolved work, while superseded layer-only and sibling
   lists are inert; worklist JSON is identity-checked and published atomically
   ([HIR-0107](docs/improvements/HIR-0107-builder-worklist-is-unit-digest-bound.md)).
+- Successful materialization finalization now writes a bundle- and candidate-revision
+  attestation. A model session exhausting on that exact final tool call may publish the
+  attested revision; generic candidate existence, patch validation, and every other
+  max-turn path remain failed transactions
+  ([HIR-0108](docs/improvements/HIR-0108-finalization-attests-the-last-model-turn.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

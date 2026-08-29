@@ -70,9 +70,63 @@ class UnstagedMaterializationUnit:
     removed_requirement_ids: tuple[str, ...]
 
 
+FINALIZATION_SCHEMA = "vfx-harness.materialization-finalization/v1"
+
+
 def materialization_candidate_revision(path: str | Path) -> str:
     """Return the byte revision used by candidate compare-and-swap writes."""
     return _sha256(Path(path))
+
+
+def materialization_finalization_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    return candidate.with_name(candidate.name + ".finalization.json")
+
+
+def attest_materialization_finalization(
+    path: str | Path,
+    *,
+    bundle_hash: str,
+) -> Path:
+    """Bind an explicit successful finalize call to the exact candidate revision."""
+    candidate = Path(path)
+    attestation = materialization_finalization_path(candidate)
+    atomic_write(
+        attestation,
+        json.dumps(
+            {
+                "schema": FINALIZATION_SCHEMA,
+                "bundle_hash": str(bundle_hash),
+                "candidate_revision": materialization_candidate_revision(candidate),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+    return attestation
+
+
+def materialization_finalization_attested(
+    path: str | Path,
+    *,
+    bundle_hash: str,
+) -> bool:
+    """True only for the current bytes explicitly accepted by finalization."""
+    candidate = Path(path)
+    attestation = materialization_finalization_path(candidate)
+    if not candidate.is_file() or not attestation.is_file():
+        return False
+    try:
+        payload = json.loads(attestation.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        payload.get("schema") == FINALIZATION_SCHEMA
+        and payload.get("bundle_hash") == str(bundle_hash)
+        and payload.get("candidate_revision")
+        == materialization_candidate_revision(candidate)
+    )
 
 
 @contextmanager
