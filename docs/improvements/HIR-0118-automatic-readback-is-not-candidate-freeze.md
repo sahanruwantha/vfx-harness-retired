@@ -101,7 +101,8 @@ transition, not a prompt-only substitute for enforcement.
   finding `hf-117eeea1918a7055124e`; that downstream failure does not reuse or obscure
   the producing proof for this mutation-boundary mechanism.
 
-Implementation commit: pending.
+Implementation commit: `a40f7f4` (`fix: keep executable-only candidates mutable until
+handoff`).
 
 ## Release and rollback
 
