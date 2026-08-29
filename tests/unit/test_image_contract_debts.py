@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 
 from vfx_harness.domain.image_debts import (
+    IMAGE_PROPERTY_VOCABULARY_RULE,
     UNPAID_IMAGE_DEBT,
     UNPAID_IMAGE_DEBT_AUTHORITY,
     UNSATISFIABLE_PAIR_AUTHORITY,
@@ -12,7 +13,9 @@ from vfx_harness.domain.image_debts import (
     conflict_authority,
     freeze_refusal,
     image_contract_debt_cards,
+    image_property_vocabulary_gaps,
     normalize_evidence_id,
+    payable_image_property_kinds,
     reject_proposed_image_check,
     unpaid_image_contract_debts,
 )
@@ -263,3 +266,40 @@ def test_property_mismatch_enumerates_compatible_metrics() -> None:
     assert message is not None
     assert "Compatible metrics: frame_black_pct, frame_mean" in message
     assert "region_mean" not in message.split("Compatible metrics:", 1)[1]
+
+
+def test_unpayable_image_property_is_a_publication_gap() -> None:
+    unit = _look_unit(
+        cid="rim-glow-f1",
+        frame=1,
+        axis="rim",
+        property_kind="rim_light_emission_glow",
+    )
+
+    gaps = image_property_vocabulary_gaps(
+        [unit], {"frame_halation", "region_mean"}
+    )
+
+    assert len(gaps) == 1
+    assert gaps[0].unit_id == "form"
+    assert gaps[0].claim_id == "claim.look"
+    assert gaps[0].contract_ids == ("rim-glow-f1",)
+    assert IMAGE_PROPERTY_VOCABULARY_RULE.startswith(
+        "an image-domain claim property must be payable"
+    )
+
+
+def test_image_property_vocabulary_is_registry_derived_and_schema_enumerated() -> None:
+    from vfx_harness.domain.work_units import work_unit_authoring_schema
+
+    payable = payable_image_property_kinds({"frame_halation", "region_mean"})
+    assert payable == {
+        "frame_delta",
+        "render_region_stat",
+        "frame_halation",
+        "region_mean",
+    }
+    schema = work_unit_authoring_schema(image_property_kinds=payable)
+    claim = schema["properties"]["evaluation"]["properties"]["claims"]["items"]
+    image_property = claim["allOf"][0]["then"]["properties"]["property"]
+    assert image_property["enum"] == sorted(payable)

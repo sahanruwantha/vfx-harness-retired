@@ -1565,6 +1565,26 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             )
         if signal_provider_ids:
             earlier_image_signal_available = True
+        from vfx_harness.domain.image_debts import (
+            IMAGE_PROPERTY_VOCABULARY_RULE,
+            image_property_vocabulary_gaps,
+            payable_image_property_kinds,
+        )
+        from vfx_harness.evidence.checks import METRICS
+
+        payable_properties = sorted(payable_image_property_kinds(METRICS))
+        for gap in image_property_vocabulary_gaps(typed_stages, METRICS):
+            out.append(
+                Finding(
+                    "image-property-vocabulary",
+                    True,
+                    f"layer {lid} unit {gap.unit_id} claim {gap.claim_id}",
+                    f"required image-contract debt {', '.join(gap.contract_ids)} uses "
+                    f"unpayable property {gap.property!r}",
+                    f"accepted image properties: {payable_properties}. "
+                    + IMAGE_PROPERTY_VOCABULARY_RULE,
+                )
+            )
         # Camera availability is typed authority. Role names such as camera.target are
         # semantic selectors, not capabilities, and cannot bootstrap projected evidence.
         camera_units = {

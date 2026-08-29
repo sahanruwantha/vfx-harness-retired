@@ -1308,7 +1308,9 @@ def validate_unit_dag(units: tuple[WorkUnit, ...], where: str) -> None:
         visit(uid)
 
 
-def work_unit_authoring_schema() -> dict[str, Any]:
+def work_unit_authoring_schema(
+    *, image_property_kinds: Iterable[str] | None = None
+) -> dict[str, Any]:
     """Closed JSON schema exposed by the materialization unit-ticket tool.
 
     This is an authoring instrument, not a second parser. ``WorkUnit.parse`` remains
@@ -1379,6 +1381,28 @@ def work_unit_authoring_schema() -> dict[str, Any]:
         ],
         "additionalProperties": False,
     }
+    if image_property_kinds is not None:
+        payable = sorted({str(value) for value in image_property_kinds})
+        claim["allOf"] = [
+            {
+                "if": {
+                    "properties": {"asserts": {"const": "image"}},
+                    "required": ["asserts"],
+                },
+                "then": {
+                    "properties": {
+                        "property": {
+                            "type": "string",
+                            "enum": payable,
+                            "description": (
+                                "Executable image property. Put free-form appearance "
+                                "language in proposition."
+                            ),
+                        }
+                    }
+                },
+            }
+        ]
     composition = {
         "type": "object",
         "description": (

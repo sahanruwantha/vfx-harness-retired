@@ -32,6 +32,13 @@ IMAGE_PROPERTY_PREFIXES: dict[str, str] = {
     "render_region_stat": "region_",
 }
 
+IMAGE_PROPERTY_VOCABULARY_RULE = (
+    "an image-domain claim property must be payable by the canonical image-metric "
+    "registry before the unit is published. Use frame_delta for any candidate-only "
+    "frame scalar, render_region_stat for a region scalar, or one exact registered "
+    "metric id. Free-form appearance labels belong in the proposition, not property"
+)
+
 UNPAID_IMAGE_DEBT = "unpaid_image_debt"
 UNSATISFIABLE_IN_SCOPE = "unsatisfiable_in_scope"
 
@@ -74,6 +81,16 @@ class ImageContractDebt:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ImagePropertyVocabularyGap:
+    """One required image claim whose property has no executable payer."""
+
+    unit_id: str
+    claim_id: str
+    property: str
+    contract_ids: tuple[str, ...]
+
+
 def normalize_evidence_id(raw: Any) -> str:
     """Bare claim id. ``check:`` is a critic citation tag, not part of the id."""
     text = str(raw or "").strip()
@@ -98,6 +115,42 @@ def metrics_certifying_property(property_kind: str, registry: Iterable[str]) -> 
     if prefix is None:
         return frozenset(name for name in names if name == property_kind)
     return frozenset(name for name in names if name.startswith(prefix))
+
+
+def payable_image_property_kinds(registry: Iterable[str]) -> frozenset[str]:
+    """Closed authoring vocabulary derived from the canonical metric registry."""
+    return frozenset({*IMAGE_PROPERTY_PREFIXES, *(str(name) for name in registry)})
+
+
+def image_property_vocabulary_gaps(
+    units: Iterable[Any], registry: Iterable[str]
+) -> tuple[ImagePropertyVocabularyGap, ...]:
+    """Required image debts that no registered metric can possibly pay."""
+    names = tuple(str(name) for name in registry)
+    gaps: list[ImagePropertyVocabularyGap] = []
+    for unit in units:
+        for claim in getattr(getattr(unit, "evaluation", None), "claims", ()) or ():
+            if not getattr(claim, "required", False) or getattr(claim, "asserts", None) != "image":
+                continue
+            contract_ids = tuple(
+                normalize_evidence_id(getattr(binding, "id", ""))
+                for binding in getattr(claim, "evidence", ()) or ()
+                if str(getattr(binding, "kind", "") or "") == "image_contract"
+            )
+            if not contract_ids:
+                continue
+            property_kind = str(getattr(claim, "property", "") or "")
+            if metrics_certifying_property(property_kind, names):
+                continue
+            gaps.append(
+                ImagePropertyVocabularyGap(
+                    unit_id=str(getattr(unit, "id", "") or ""),
+                    claim_id=str(getattr(claim, "id", "") or ""),
+                    property=property_kind,
+                    contract_ids=contract_ids,
+                )
+            )
+    return tuple(gaps)
 
 
 def metric_matches_property(metric: str, property_kind: str) -> bool:

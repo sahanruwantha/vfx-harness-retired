@@ -771,6 +771,29 @@ def validate_materialization(
     from vfx_harness.evidence.scene_checks import KIND_DOMAINS, SURFACE_PROJECTED_KINDS
 
     if layer is not None:
+        from vfx_harness.domain.image_debts import (
+            IMAGE_PROPERTY_VOCABULARY_RULE,
+            image_property_vocabulary_gaps,
+            payable_image_property_kinds,
+        )
+        from vfx_harness.evidence.checks import METRICS
+
+        unit_index_by_id = {unit.id: index for index, unit in enumerate(layer.stages)}
+        payable_properties = sorted(payable_image_property_kinds(METRICS))
+        for gap in image_property_vocabulary_gaps(layer.stages, METRICS):
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    "evaluation",
+                    "claims",
+                ),
+                f"unit {gap.unit_id} required image claim {gap.claim_id} uses "
+                f"unpayable property {gap.property!r} for {list(gap.contract_ids)}. "
+                f"Accepted image properties: {payable_properties}. "
+                + IMAGE_PROPERTY_VOCABULARY_RULE,
+            )
         for unit_index, unit in enumerate(layer.stages):
             # Every mutated role needs a required claim answering for it — the gate's
             # claim-closure rule, enforced HERE so the write-hook reports it in-session.
@@ -1209,6 +1232,25 @@ def _validate_local_staged_units(payload: dict[str, Any]) -> None:
     parsed_units = [
         WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)
     ]
+    from vfx_harness.domain.image_debts import (
+        IMAGE_PROPERTY_VOCABULARY_RULE,
+        image_property_vocabulary_gaps,
+    )
+    from vfx_harness.evidence.checks import METRICS
+
+    image_property_gaps = image_property_vocabulary_gaps(parsed_units, METRICS)
+    if image_property_gaps:
+        detail = "; ".join(
+            f"unit {gap.unit_id} claim {gap.claim_id} property {gap.property!r} "
+            f"for {list(gap.contract_ids)}"
+            for gap in image_property_gaps
+        )
+        raise ValueError(
+            "image property vocabulary refused before candidate write: "
+            + detail
+            + ". "
+            + IMAGE_PROPERTY_VOCABULARY_RULE
+        )
     unit_ids = [unit.id for unit in parsed_units]
     if len(unit_ids) != len(set(unit_ids)):
         raise ValueError("staged unit ids must be unique before candidate write")

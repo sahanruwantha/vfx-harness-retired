@@ -482,6 +482,47 @@ def test_materialization_candidate_is_seeded_and_staged_one_unit_at_a_time(
     assert target.read_bytes() == before
 
 
+def test_unit_staging_refuses_unpayable_image_property_before_write(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "image-property-staging")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "incremental.json"
+    seed_materialization_candidate(
+        bundle.root,
+        target,
+        layer_id="2",
+        bundle_hash=bundle.content_hash,
+    )
+    unit = full["layer"]["stages"][0]
+    unit["evaluation"]["claims"][0].update(
+        {
+            "property": "rim_light_emission_glow",
+            "asserts": "image",
+            "evidence": [{"kind": "image_contract", "id": "rim-glow-f240"}],
+        }
+    )
+    before = target.read_bytes()
+
+    with pytest.raises(ValueError, match="image property vocabulary refused"):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=full["scene_contracts"],
+            requirement_bindings=full["requirement_bindings"],
+        )
+
+    assert target.read_bytes() == before
+
+
 def test_unstage_materialization_unit_prunes_only_unbound_candidate_rows(
     tmp_path: Path,
 ) -> None:
@@ -1419,6 +1460,63 @@ def test_materialization_rejects_image_debt_before_optical_signal(tmp_path: Path
     assert "No same-layer unit currently derives a signal family" in text
     assert "object_property(property=data.energy)" in text
     assert IMAGE_SIGNAL_DEPENDENCY_RULE in text
+
+
+def test_materialization_rejects_unpayable_image_property(tmp_path: Path) -> None:
+    """HIR-0111: free-form image labels cannot become build-time debts."""
+    from vfx_harness.domain.image_debts import IMAGE_PROPERTY_VOCABULARY_RULE
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "image-property-vocabulary")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    claim = document["layer"]["stages"][0]["evaluation"]["claims"][0]
+    claim.update(
+        {
+            "property": "rim_light_emission_glow",
+            "asserts": "image",
+            "evidence": [{"kind": "image_contract", "id": "rim-glow-f240"}],
+        }
+    )
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "/layer/stages/0/evaluation/claims:" in text
+    assert "rim_light_emission_glow" in text
+    assert "frame_halation" in text
+    assert IMAGE_PROPERTY_VOCABULARY_RULE in text
+
+
+def test_plan_gate_mirrors_unpayable_image_property(tmp_path: Path) -> None:
+    """A selected legacy view cannot bypass the materialization write boundary."""
+    from vfx_harness.evaluation.plan_gate import _check_evidence_coherence
+
+    _candidate(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    claim = document["layers"][0]["stages"][0]["evaluation"]["claims"][0]
+    claim.update(
+        {
+            "property": "rim_light_emission_glow",
+            "asserts": "image",
+            "evidence": [{"kind": "image_contract", "id": "rim-glow-f240"}],
+        }
+    )
+    _write(tmp_path / "layers.json", document)
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    vocabulary = [row for row in findings if row.check == "image-property-vocabulary"]
+    assert len(vocabulary) == 1
+    assert vocabulary[0].blocking is True
+    assert "rim_light_emission_glow" in vocabulary[0].what
+    assert "frame_halation" in vocabulary[0].fix
 
 
 def test_materialization_reports_independent_findings_with_pointers(tmp_path: Path) -> None:

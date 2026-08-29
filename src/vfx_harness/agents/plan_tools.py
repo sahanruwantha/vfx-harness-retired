@@ -43,7 +43,9 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from vfx_harness.blender.session import resolve_blender
 from vfx_harness.blender.tools import _b64, _load, _metrics_line, _stats
+from vfx_harness.domain.image_debts import payable_image_property_kinds
 from vfx_harness.domain.work_units import work_unit_authoring_schema
+from vfx_harness.evidence.checks import METRICS
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.provenance import atomic_write
@@ -1566,7 +1568,9 @@ def build_plan_tools(
         {
             "type": "object",
             "properties": {
-                "unit": work_unit_authoring_schema(),
+                "unit": work_unit_authoring_schema(
+                    image_property_kinds=payable_image_property_kinds(METRICS)
+                ),
                 "scene_contracts": {"type": "array", "items": {"type": "object"}},
                 "requirement_bindings": {
                     "type": "array",
