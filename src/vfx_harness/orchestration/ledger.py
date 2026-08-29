@@ -79,6 +79,7 @@ def load_axes(shot: Shot) -> list[tuple[str, str]]:
 class JitLayerSpec:
     depends_on_layers: tuple[str, ...]
     required_outcomes: tuple[tuple[str, str], ...]
+    provides: tuple[tuple[str, tuple[str, ...]], ...]
     reserved_roles: tuple[str, ...]
     owned_requirements: tuple[str, ...]
 
@@ -243,6 +244,37 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                 raise ValueError(
                     f"{where}.jit.promises is superseded; use ownership-only owned_requirements"
                 )
+            from vfx_harness.domain.work_units import GLOBAL_SCENE_CAPABILITIES
+
+            raw_provides = raw_jit.get("provides", {})
+            if not isinstance(raw_provides, dict):
+                raise ValueError(
+                    f"{where}.jit.provides must map capabilities to role selectors"
+                )
+            unknown_provides = sorted(set(map(str, raw_provides)) - GLOBAL_SCENE_CAPABILITIES)
+            if unknown_provides:
+                raise ValueError(
+                    f"{where}.jit.provides names unknown global scene capabilities: "
+                    + ", ".join(unknown_provides)
+                )
+            provides_rows: list[tuple[str, tuple[str, ...]]] = []
+            for capability, raw_roles in raw_provides.items():
+                roles = (
+                    tuple(str(item).strip() for item in raw_roles)
+                    if isinstance(raw_roles, list)
+                    else ()
+                )
+                if not roles or any(not role for role in roles) or len(set(roles)) != len(roles):
+                    raise ValueError(
+                        f"{where}.jit.provides.{capability} must contain unique non-empty roles"
+                    )
+                if any(role not in reserved_roles for role in roles):
+                    raise ValueError(
+                        f"{where}.jit.provides.{capability} roles must appear verbatim in "
+                        "jit.reserved_roles"
+                    )
+                provides_rows.append((str(capability), roles))
+            provides = tuple(provides_rows)
             raw_owned = raw_jit.get("owned_requirements")
             if not isinstance(raw_owned, list) or not raw_owned:
                 raise ValueError(f"{where}.jit.owned_requirements must be a non-empty list")
@@ -256,6 +288,7 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
             jit = JitLayerSpec(
                 dependencies,
                 tuple(outcomes),
+                provides,
                 reserved_roles,
                 owned_requirements,
             )

@@ -26,6 +26,7 @@ from vfx_harness.domain.plan_records import (
     DECISION_STRENGTHS,
     brief_clause_spans,
 )
+from vfx_harness.domain.work_units import GLOBAL_SCENE_CAPABILITIES
 
 MAPPING_SCHEMA = "vfx-harness.ownership-mapping/v1"
 EVIDENCE_DOMAINS = {"scene", "image", "temporal", "projected_composition", "human"}
@@ -96,6 +97,7 @@ def validate_mapping(
         errors.append("layers must be a non-empty list")
         layers = []
     reserved_seen: list[tuple[str, str]] = []
+    capability_closure: dict[str, set[str]] = {}
     refs_dir = Path(refs_dir)
     for index, layer in enumerate(layers):
         where = f"layers[{index}]"
@@ -171,6 +173,54 @@ def validate_mapping(
                             f"{prior_layer}'s {prior_role!r}"
                         )
                 reserved_seen.append((role, lid))
+        provides = layer.get("provides")
+        if not isinstance(provides, dict):
+            errors.append(
+                f"{where}.provides must map capabilities to reserved role selectors "
+                f"drawn from {sorted(GLOBAL_SCENE_CAPABILITIES)} (use {{}} when none)"
+            )
+            provided = set()
+        else:
+            provided = {str(item) for item in provides}
+            unknown = sorted(provided - GLOBAL_SCENE_CAPABILITIES)
+            if unknown:
+                errors.append(
+                    f"{where}.provides names unknown global scene capabilities: "
+                    + ", ".join(unknown)
+                )
+            for capability, selectors in provides.items():
+                if (
+                    not isinstance(selectors, list)
+                    or not selectors
+                    or any(not str(selector).strip() for selector in selectors)
+                ):
+                    errors.append(
+                        f"{where}.provides.{capability} must be a non-empty list of "
+                        "reserved role selectors"
+                    )
+                    continue
+                undeclared = sorted(
+                    str(selector)
+                    for selector in selectors
+                    if str(selector) not in {str(role) for role in roles or []}
+                )
+                if undeclared:
+                    errors.append(
+                        f"{where}.provides.{capability} names roles not present verbatim "
+                        "in reserved_roles: " + ", ".join(undeclared)
+                    )
+        dependency_capabilities = {
+            capability
+            for dependency in (depends if isinstance(depends, list) else [])
+            for capability in capability_closure.get(str(dependency), set())
+        }
+        capability_closure[lid] = provided | dependency_capabilities
+        if "camera" not in capability_closure[lid]:
+            errors.append(
+                f"{where} is judged before a camera capability is available; declare "
+                "provides: {\"camera\": [\"<reserved role>\"]} on this layer or "
+                "depend on an earlier layer whose capability closure provides it"
+            )
 
     resolutions = mapping.get("resolutions")
     if not isinstance(resolutions, dict):
@@ -310,6 +360,10 @@ def expand_mapping(
             "jit": {
                 "depends_on_layers": [str(d) for d in layer.get("depends_on", [])],
                 "required_outcomes": [],
+                "provides": {
+                    str(capability): [str(role) for role in roles]
+                    for capability, roles in layer.get("provides", {}).items()
+                },
                 "reserved_roles": [str(r) for r in layer["reserved_roles"]],
                 "owned_requirements": owned[lid],
             },

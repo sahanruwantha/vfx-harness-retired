@@ -876,6 +876,45 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
     unit_first = isinstance(layers_document, dict) and layers_document.get("schema") == 5
     materialized_ids, pinned_overlays = _materialized_view(folder) if unit_first else (set(), set())
     if unit_first:
+        capability_closure: dict[str, set[str]] = {}
+        for index, layer in enumerate(layers):
+            lid = str(layer.get("id") or "?")
+            jit = layer.get("jit") or {}
+            raw_provides = jit.get("provides")
+            if not isinstance(raw_provides, dict):
+                out.append(
+                    Finding(
+                        "global-capability",
+                        True,
+                        f"layers.json.layers[{index}].jit.provides",
+                        "global layer omits its typed scene-capability declaration",
+                        "declare a map binding `camera` to reserved roles on its producing "
+                        "layer and {} on dependent layers; do not let a materialized unit invent "
+                        "global camera ownership",
+                    )
+                )
+                provided: set[str] = set()
+            else:
+                provided = {str(item) for item in raw_provides}
+            inherited = {
+                capability
+                for dependency in jit.get("depends_on_layers") or []
+                for capability in capability_closure.get(str(dependency), set())
+            }
+            capability_closure[lid] = provided | inherited
+            if "camera" not in capability_closure[lid]:
+                out.append(
+                    Finding(
+                        "global-capability",
+                        True,
+                        f"layer {lid}",
+                        "judge visibility is due before a camera capability is available",
+                        "move the camera-owning layer before this layer, declare "
+                        "`jit.provides: {\"camera\": [\"<reserved role>\"]}` there, "
+                        "and depend on it; the "
+                        "materializer may not repair a global ownership/DAG omission",
+                    )
+                )
         ready = [
             str(layer.get("id") or "?")
             for layer in layers

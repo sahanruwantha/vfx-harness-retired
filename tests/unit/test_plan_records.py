@@ -126,6 +126,7 @@ def _add_deferred_layer(root: Path) -> None:
         "jit": {
             "depends_on_layers": ["1"],
             "required_outcomes": [{"kind": "scene_contract", "id": "final-lock"}],
+            "provides": {},
             "reserved_roles": ["polish.*"],
             "owned_requirements": ["R-final-lock"],
         },
@@ -436,7 +437,9 @@ def test_unit_first_global_bundle_is_clean_for_heterogeneous_roots(
             "execution": "jit_deferred", "stages": [],
             "jit": {
                 "depends_on_layers": [], "required_outcomes": [],
-                "reserved_roles": [reserved_role], "owned_requirements": ["R1"],
+                "provides": {"camera": ["camera.*"]},
+                "reserved_roles": list(dict.fromkeys([reserved_role, "camera.*"])),
+                "owned_requirements": ["R1"],
             },
         }],
     })
@@ -481,6 +484,60 @@ def test_jit_materialization_rejects_candidate_sensitive_image_contracts(tmp_pat
     _write(payload, document)
 
     with pytest.raises(ValueError, match="candidate-sensitive image checks"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+def test_materialized_unit_cannot_invent_global_camera_capability(tmp_path: Path) -> None:
+    """A geometry layer cannot satisfy camera bootstrap with an authored label."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "camera-capability-scope")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["layer"]["stages"][0]["provides"] = ["camera"]
+    _write(payload, document)
+
+    with pytest.raises(ValueError, match=r"did not reserve it in jit\.provides"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+def test_materialization_must_fulfill_global_camera_capability(tmp_path: Path) -> None:
+    """The reverse edge is also closed: a global promise needs a producing unit."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["provides"] = {"camera": ["polish.*"]}
+    _write(tmp_path / "layers.json", layers)
+    layout = run_artifacts.create(tmp_path, "camera-capability-fulfillment")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+
+    with pytest.raises(ValueError, match=r"does not fulfill globally declared.*camera"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+def test_camera_unit_must_mutate_the_globally_bound_interface_role(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["reserved_roles"].append("camera.*")
+    layers["layers"][1]["jit"]["provides"] = {"camera": ["camera.*"]}
+    _write(tmp_path / "layers.json", layers)
+    layout = run_artifacts.create(tmp_path, "camera-interface-role")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["layer"]["stages"][0]["provides"] = ["camera"]
+    _write(payload, document)
+
+    with pytest.raises(ValueError, match="without mutating any globally reserved camera"):
         validate_materialization(
             bundle.root, payload, expected_bundle_hash=bundle.content_hash
         )

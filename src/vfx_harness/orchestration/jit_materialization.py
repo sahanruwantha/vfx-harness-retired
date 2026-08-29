@@ -229,9 +229,46 @@ def validate_materialization(
             )
 
     jit = global_row.get("jit") or {}
+    raw_global_capabilities = jit.get("provides") or {}
+    global_capabilities = (
+        {
+            str(capability): tuple(str(role) for role in roles)
+            for capability, roles in raw_global_capabilities.items()
+        }
+        if isinstance(raw_global_capabilities, dict)
+        else {}
+    )
     reserved = tuple(map(str, jit.get("reserved_roles") or []))
     if layer is not None:
+        unit_capabilities = {
+            capability for unit in layer.stages for capability in unit.provides
+        }
+        missing_capabilities = sorted(set(global_capabilities) - unit_capabilities)
+        if missing_capabilities:
+            note(
+                json_ptr("layer", "stages"),
+                "materialized layer does not fulfill globally declared scene "
+                "capabilities: " + ", ".join(missing_capabilities),
+            )
         for unit_index, unit in enumerate(layer.stages):
+            if "camera" in unit.provides:
+                camera_roles = global_capabilities.get("camera", ())
+                if not camera_roles:
+                    note(
+                        json_ptr("layer", "stages", unit_index, "provides"),
+                        f"unit {unit.id} declares camera capability, but global layer "
+                        f"{layer_id} did not reserve it in jit.provides; camera ownership "
+                        "must be decided in the sparse global DAG",
+                    )
+                elif not any(
+                    _matches_reserved(role, camera_roles) for role in unit.mutates.roles
+                ):
+                    note(
+                        json_ptr("layer", "stages", unit_index, "provides"),
+                        f"unit {unit.id} declares camera capability without mutating any "
+                        "globally reserved camera interface role: "
+                        + ", ".join(camera_roles),
+                    )
             escaped = sorted(
                 role for role in unit.mutates.roles if not _matches_reserved(role, reserved)
             )

@@ -161,6 +161,9 @@ def test_materialization_refuses_volume_vis_and_keeps_camera_vis(tmp_path: Path)
 
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["provides"] = {"camera": ["polish.*"]}
+    _write_plan(tmp_path / "layers.json", layers)
     layout = run_artifacts.create(tmp_path, "vis-owner")
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = _jit_payload(tmp_path, bundle.content_hash)

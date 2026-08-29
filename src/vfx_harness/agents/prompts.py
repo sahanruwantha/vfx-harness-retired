@@ -34,7 +34,8 @@ declares the layer DAG:
    "primary_judge": <frame>, "judge": [{"frame": <frame>, "ref": "refs/<file>"}],
    "owns": ["<axis_key>"], "evidence_domains": ["scene"|"image"|"temporal"|
      "projected_composition"|"human"],
-   "depends_on": [], "reserved_roles": ["<namespace>.*"]}],
+   "depends_on": [], "provides": {"camera": ["camera.*"]},
+   "reserved_roles": ["<namespace>.*"]}],
  "axes": [{"key": "<snake_case>", "desc": "<routing test>"}],
  "resolutions": {
    "R1": {"kind": "decision", "statement": "<the settled fact>",
@@ -46,6 +47,11 @@ declares the layer DAG:
 Rules, all enforced mechanically:
 - Layer ids are contiguous strings in build order; `depends_on` names earlier layers
   only; reserved namespaces must not overlap; `owns` references declared axes.
+- `provides` maps global scene capabilities, currently only `camera`, to role selectors
+  repeated verbatim in that layer's `reserved_roles`. Every layer's own/dependency
+  closure must contain camera because materialization owes visibility at each judge
+  frame. Put the camera-owning layer before geometry that must be framed; use `{}` only
+  after depending on the camera provider.
 - A clause settled by durable user or brief authority resolves as a decision; preserve
   explicitly approved values verbatim instead of re-deriving them. Every other clause
   resolves `deferred_owner` to exactly one layer. Ownership is coverage, not design:

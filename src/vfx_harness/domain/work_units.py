@@ -822,6 +822,10 @@ class EvaluationPolicy:
 # role, and the role the approved camera decision keys against — was invisible, and a
 # dependent could not be projected through a camera that demonstrably existed.
 UNIT_PROVIDES = {"camera", "geometry"}
+# Capabilities whose availability changes what a later layer may legally plan. Geometry
+# is exported through typed successor interfaces; the active camera is shot-wide
+# bootstrap state and therefore belongs in the sparse global DAG.
+GLOBAL_SCENE_CAPABILITIES = {"camera"}
 
 # Authored cluster labels. Publication derives write-clusters; these fields are
 # HIR-0017 padding and are unrepresentable on a WorkUnit (HIR-0083).

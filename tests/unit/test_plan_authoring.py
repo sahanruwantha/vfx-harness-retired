@@ -101,7 +101,8 @@ def _product_mapping(registry) -> dict:
             "charter": "authored brief", "primary_judge": 1,
             "judge": [{"frame": 1, "ref": "refs/f001.png"}],
             "owns": ["object_presentation"], "evidence_domains": ["scene", "image"],
-            "depends_on": [], "reserved_roles": ["hero.*"],
+            "depends_on": [], "provides": {"camera": ["camera.*"]},
+            "reserved_roles": ["camera.*", "hero.*"],
         }],
         "axes": [{"key": "object_presentation", "desc": "centred, reflected, clean"}],
         "resolutions": resolutions,
@@ -124,12 +125,14 @@ def _motion_mapping(registry) -> dict:
              "charter": "authored brief", "primary_judge": 24,
              "judge": [{"frame": 24, "ref": "refs/f024.png"}],
              "owns": ["camera_motion"], "evidence_domains": ["scene", "temporal"],
-             "depends_on": [], "reserved_roles": ["camera.*"]},
+             "depends_on": [], "provides": {"camera": ["camera.*"]},
+             "reserved_roles": ["camera.*"]},
             {"id": "2", "title": "Dressing settle", "script": "build/02_dressing.py",
              "charter": "camera reveal outcome", "primary_judge": 48,
              "judge": [{"frame": 48, "ref": "refs/f048.png"}],
              "owns": ["dressing_settle"], "evidence_domains": ["scene", "temporal"],
-             "depends_on": ["1"], "reserved_roles": ["dressing.*"]},
+             "depends_on": ["1"], "provides": {},
+             "reserved_roles": ["dressing.*"]},
         ],
         "axes": [
             {"key": "camera_motion", "desc": "continuous motivated dolly"},
@@ -187,6 +190,49 @@ def test_owned_requirements_are_derived_not_authored(tmp_path: Path) -> None:
     layers = json.loads((shot / "layers.json").read_text(encoding="utf-8"))
     for row in layers["layers"]:
         assert row["jit"]["owned_requirements"] == expected[row["id"]]
+    assert layers["layers"][0]["jit"]["provides"] == {"camera": ["camera.*"]}
+    assert layers["layers"][1]["jit"]["provides"] == {}
+
+
+def test_global_camera_capability_must_precede_every_judged_layer(tmp_path: Path) -> None:
+    shot = _shot(tmp_path, MOTION_BRIEF, ["f024.png", "f048.png"])
+    registry = clause_registry(shot / "brief.md")
+    mapping = _motion_mapping(registry)
+    mapping["layers"][0]["provides"] = {}
+    mapping["layers"][1]["provides"] = {"camera": ["dressing.*"]}
+
+    errors = validate_mapping(mapping, registry, shot / "refs")
+
+    assert any("layers[0] is judged before a camera capability" in error for error in errors)
+    assert not any("layers[1] is judged before a camera capability" in error for error in errors)
+
+
+def test_global_camera_capability_flows_through_dependency_closure(tmp_path: Path) -> None:
+    shot = _shot(tmp_path, MOTION_BRIEF, ["f024.png", "f048.png"])
+    registry = clause_registry(shot / "brief.md")
+    mapping = _motion_mapping(registry)
+
+    errors = validate_mapping(mapping, registry, shot / "refs")
+
+    assert not any("camera capability" in error for error in errors)
+
+
+def test_plan_gate_rejects_a_selected_global_view_without_camera_closure(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    shot = _shot(tmp_path, MOTION_BRIEF, ["f024.png", "f048.png"])
+    registry = clause_registry(shot / "brief.md")
+    expand_mapping(shot, _motion_mapping(registry))
+    layers = json.loads((shot / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][0]["jit"]["provides"] = {}
+    (shot / "layers.json").write_text(json.dumps(layers), encoding="utf-8")
+
+    result = plan_gate.run(shot, "plans/global.md", require_scene_checks=True)
+
+    failures = [finding for finding in result.blocking if finding.check == "global-capability"]
+    assert {finding.where for finding in failures} == {"layer 1", "layer 2"}
 
 
 def test_expansion_is_deterministic(tmp_path: Path) -> None:

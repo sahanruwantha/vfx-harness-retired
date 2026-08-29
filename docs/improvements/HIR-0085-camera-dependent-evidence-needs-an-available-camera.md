@@ -81,7 +81,8 @@ execute.
 
 ## Remaining limitations
 
-This mechanism prevents an impossible evidence DAG; it does not by itself decide whether
-the global planner should move camera ownership earlier or revise the judged layer. A
-separate lifecycle improvement may still be warranted so an unexpected no-camera state
-ends as a typed build failure rather than a renderer traceback.
+This mechanism prevents an impossible materialized evidence DAG. Run
+`20260829T041349Z-783b6c` then proved that materialized `provides` was self-certifiable;
+HIR-0086 moves camera capability and its role interface into global authority. A separate
+lifecycle improvement may still be warranted so an unexpected no-camera state ends as a
+typed build failure rather than a renderer traceback.

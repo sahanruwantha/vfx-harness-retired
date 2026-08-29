@@ -45,7 +45,10 @@ A published global bundle MUST contain exactly:
 
 1. **A dependency-ordered layer DAG** — Layer 1 `ready` with its executable unit plan(s),
    contracts, and claims; every later layer `jit_deferred` with upstream dependencies, required
-   upstream outcomes, reserved role namespaces, and owned requirements.
+   upstream outcomes, reserved role namespaces, role-bound global scene capabilities, and owned
+   requirements. A capability needed to judge the first unit (currently the active camera) is a
+   global interface because it changes which layer can legally be first; implementation remains
+   JIT.
 2. **An ownership-only requirements register.** The whole brief is read once; every substantive
    clause is registered with its citation and resolved to one of: a concrete Layer-1 or
    global-exception resolution, a typed decision, or a **deferred ownership** naming exactly one
