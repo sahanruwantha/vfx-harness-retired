@@ -25,6 +25,12 @@ from vfx_harness.domain.atomicity import (
     instrument_family_for_row,
     write_clusters,
 )
+from vfx_harness.domain.image_signal import (
+    IMAGE_SIGNAL_DEPENDENCY_RULE,
+    image_signal_dependency_gaps,
+    image_signal_provider_ids,
+    image_signal_witnesses,
+)
 from vfx_harness.domain.publish_interfaces import (
     REFERENCE_ONLY_EXPORTS_RULE,
     SCHEMA,
@@ -33,6 +39,7 @@ from vfx_harness.domain.publish_interfaces import (
 )
 from vfx_harness.domain.work_units import (
     CONSUME_INTERFACE_RULE,
+    EvidenceBinding,
     WorkUnit,
     ready_units,
     unit_requires_surface_visibility,
@@ -155,6 +162,25 @@ def _count_row(row_id: str, roles: list[str], *, kind: str = "object_count") -> 
     }
 
 
+def _with_image_debt(unit: WorkUnit, debt_id: str = "beauty") -> WorkUnit:
+    scene_claim = unit.evaluation.claims[0]
+    image_claim = replace(
+        scene_claim,
+        id=f"{unit.id}.image",
+        property="frame_delta",
+        asserts="image",
+        evidence=(EvidenceBinding("image_contract", debt_id, (1,)),),
+    )
+    return replace(
+        unit,
+        look_capabilities=("lighting",),
+        evaluation=replace(
+            unit.evaluation,
+            claims=(*unit.evaluation.claims, image_claim),
+        ),
+    )
+
+
 def test_kind_registry_covers_every_supported_scene_kind() -> None:
     assert set(KIND_INSTRUMENT_FAMILY) == set(SUPPORTED_KINDS)
 
@@ -164,6 +190,197 @@ def test_helper_registry_covers_every_injected_helper() -> None:
 
     names = {row["name"] for row in helper_inventory()}
     assert names == set(HELPER_INSTRUMENT_FAMILY)
+
+
+def test_image_debt_role_names_and_look_labels_do_not_invent_optical_signal() -> None:
+    blade = _with_image_debt(
+        _unit(
+            "blade_geometry",
+            roles=["iris.blade"],
+            contract_id="blade-count",
+            provides=["geometry"],
+        ),
+        "blade-beauty",
+    )
+    named_light = _with_image_debt(
+        _unit(
+            "rim_fixture",
+            roles=["iris.rim_light"],
+            contract_id="rim-count",
+        ),
+        "rim-beauty",
+    )
+    rows = [
+        _count_row("blade-count", ["iris.blade"]),
+        _count_row("rim-count", ["iris.rim_light"]),
+    ]
+
+    assert image_signal_provider_ids((blade, named_light), rows) == frozenset()
+    gaps = image_signal_dependency_gaps((blade, named_light), rows)
+    assert [(gap.unit_id, gap.contract_ids) for gap in gaps] == [
+        ("blade_geometry", ("blade-beauty",)),
+        ("rim_fixture", ("rim-beauty",)),
+    ]
+
+
+def test_image_debt_requires_signal_provider_in_dependency_closure() -> None:
+    light = _unit(
+        "key_fixture",
+        roles=["lighting.key"],
+        contract_id="key-energy",
+    )
+    blade = _with_image_debt(
+        _unit(
+            "blade_geometry",
+            roles=["iris.blade"],
+            contract_id="blade-count",
+            provides=["geometry"],
+        ),
+        "blade-beauty",
+    )
+    rows = [
+        _energy_row("key-energy", ["lighting.key"]),
+        _count_row("blade-count", ["iris.blade"]),
+    ]
+
+    gaps = image_signal_dependency_gaps((blade, light), rows)
+    assert len(gaps) == 1
+    assert gaps[0].available_provider_ids == ("key_fixture",)
+
+    ordered = replace(blade, depends_on=("key_fixture",))
+    assert image_signal_dependency_gaps((light, ordered), rows) == ()
+
+
+def test_image_debt_may_be_paid_by_own_shading_family_or_earlier_layer() -> None:
+    surface = _with_image_debt(
+        _unit(
+            "surface",
+            roles=["product.shell"],
+            contract_id="surface-material",
+        ),
+        "surface-beauty",
+    )
+    material_row = _count_row(
+        "surface-material", ["product.shell"], kind="material_assignment_fraction"
+    )
+
+    assert image_signal_provider_ids((surface,), (material_row,)) == frozenset({"surface"})
+    assert image_signal_dependency_gaps((surface,), (material_row,)) == ()
+
+    mesh_only = _with_image_debt(
+        _unit(
+            "product_mesh",
+            roles=["product.mesh"],
+            contract_id="mesh-count",
+            provides=["geometry"],
+        ),
+        "product-beauty",
+    )
+    assert image_signal_dependency_gaps(
+        (mesh_only,),
+        (_count_row("mesh-count", ["product.mesh"]),),
+        earlier_signal_available=True,
+    ) == ()
+
+
+def test_image_signal_witness_card_is_derived_from_atomicity_registry() -> None:
+    witnesses = image_signal_witnesses()
+
+    assert "object_property(property=data.energy)" in witnesses["light"]
+    assert "material_assignment_fraction" in witnesses["shading"]
+    assert "node_socket_value(graph=world)" in witnesses["volume"]
+    assert "compositor_enabled" in witnesses["compositor"]
+    assert "object_count" not in {item for values in witnesses.values() for item in values}
+
+
+def test_plan_gate_refuses_image_debt_before_derived_signal_provider(tmp_path: Path) -> None:
+    document = _layer_doc(temporal_id="blade-count")
+    blade = document["layers"][0]["stages"][0]
+    blade["provides"] = ["geometry"]
+    blade["look_capabilities"] = ["material"]
+    blade["evaluation"]["claims"][0].update(
+        {
+            "property": "frame_delta",
+            "asserts": "image",
+            "evidence": [
+                {
+                    "kind": "image_contract",
+                    "id": "blade-beauty",
+                    "moments": [1, 2],
+                }
+            ],
+        }
+    )
+    _write(tmp_path / "layers.json", document)
+    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    bootstrap = [finding for finding in findings if finding.check == "image-signal-bootstrap"]
+    assert len(bootstrap) == 1
+    assert "blade-beauty" in bootstrap[0].what
+    assert IMAGE_SIGNAL_DEPENDENCY_RULE in bootstrap[0].fix
+
+    light = json.loads(json.dumps(blade))
+    light.update(
+        {
+            "id": "key_fixture",
+            "title": "Key fixture",
+            "plan": "plans/01_camera/key_fixture.md",
+            "depends_on": [],
+            "provides": [],
+            "look_capabilities": [],
+        }
+    )
+    light["mutates"] = {
+        "mode": "scoped",
+        "roles": ["lighting.key"],
+        "controls": [],
+        "script_spans": ["build/units/01_camera/key_fixture.py"],
+    }
+    light["evaluation"]["temporal_evidence"] = "none"
+    light["evaluation"]["claims"] = [
+        {
+            "id": "key-energy-claim",
+            "proposition": "key light emits",
+            "axis": "camera_framing",
+            "property": "object_property",
+            "subject_roles": ["lighting.key"],
+            "subject_controls": [],
+            "moments": [1],
+            "kind": "atomic",
+            "required": True,
+            "authority": "executable_required",
+            "repair_owner": "key_fixture",
+            "asserts": "scene",
+            "evidence": [{"kind": "scene_contract", "id": "key-energy"}],
+        }
+    ]
+    blade["depends_on"] = ["key_fixture"]
+    document["layers"][0]["stages"] = [light, blade]
+    _write(tmp_path / "layers.json", document)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    **_energy_row("key-energy", ["lighting.key"]),
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "axis": "camera_framing",
+                }
+            ],
+        },
+    )
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    assert not any(
+        finding.check == "image-signal-bootstrap" for finding in findings
+    )
 
 
 @pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])

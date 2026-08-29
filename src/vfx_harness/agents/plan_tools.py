@@ -1738,6 +1738,12 @@ def build_plan_tools(
             base_layers = selected_view_artifact(
                 shot_folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
             ) or artifact_path(shot_folder, "layers.json")
+            base_scene_checks = selected_view_artifact(
+                shot_folder,
+                "scene_checks.json",
+                bundle.content_hash,
+                overlay_root=overlay_root,
+            ) or artifact_path(shot_folder, "scene_checks.json")
             base_requirements = selected_view_artifact(
                 shot_folder,
                 "requirements.json",
@@ -1750,6 +1756,7 @@ def build_plan_tools(
                     candidate,
                     expected_bundle_hash=bundle.content_hash,
                     base_layers_path=base_layers,
+                    base_scene_checks_path=base_scene_checks,
                     resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
                     base_requirements_path=base_requirements,
                 )
@@ -1848,6 +1855,12 @@ def build_plan_tools(
             base_layers = selected_view_artifact(
                 shot_folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
             ) or artifact_path(shot_folder, "layers.json")
+            base_scene_checks = selected_view_artifact(
+                shot_folder,
+                "scene_checks.json",
+                bundle.content_hash,
+                overlay_root=overlay_root,
+            ) or artifact_path(shot_folder, "scene_checks.json")
             base_requirements = selected_view_artifact(
                 shot_folder,
                 "requirements.json",
@@ -1862,6 +1875,7 @@ def build_plan_tools(
                         patches,
                         expected_bundle_hash=bundle.content_hash,
                         base_layers_path=base_layers,
+                        base_scene_checks_path=base_scene_checks,
                         resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
                         base_requirements_path=base_requirements,
                         expected_revision=materialization_revision_token,

@@ -1404,6 +1404,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
 
     motion_units = 0
     earlier_camera_available = False
+    earlier_image_signal_available = False
     for layer in layers:
         if not isinstance(layer, dict):
             continue
@@ -1529,6 +1530,41 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     "or reassign evidence. " + ATOMICITY_RULE,
                 )
             )
+        from vfx_harness.domain.image_signal import (
+            IMAGE_SIGNAL_DEPENDENCY_RULE,
+            image_signal_dependency_gaps,
+            image_signal_provider_ids,
+            image_signal_witness_guidance,
+        )
+
+        signal_provider_ids = image_signal_provider_ids(typed_stages, scene_rows)
+        for gap in image_signal_dependency_gaps(
+            typed_stages,
+            scene_rows,
+            earlier_signal_available=earlier_image_signal_available,
+        ):
+            available = (
+                " Same-layer signal provider(s) exist but are outside the dependency "
+                f"closure: {', '.join(gap.available_provider_ids)}."
+                if gap.available_provider_ids
+                else " No same-layer unit currently derives a signal family."
+            )
+            out.append(
+                Finding(
+                    "image-signal-bootstrap",
+                    True,
+                    f"layer {lid} unit {gap.unit_id}",
+                    "required image-contract debt is due before optical signal is "
+                    f"available: {', '.join(gap.contract_ids)}."
+                    + available,
+                    "Registered write-kind witnesses: "
+                    + image_signal_witness_guidance()
+                    + ". "
+                    + IMAGE_SIGNAL_DEPENDENCY_RULE,
+                )
+            )
+        if signal_provider_ids:
+            earlier_image_signal_available = True
         # Camera availability is typed authority. Role names such as camera.target are
         # semantic selectors, not capabilities, and cannot bootstrap projected evidence.
         camera_units = {

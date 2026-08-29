@@ -285,7 +285,13 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   enumerates the registered metrics that can certify the owed property rather
   than making the builder guess;
   readers of falsification `contract_ids` strip that prefix
-  (HIR-0048). Scene contracts may measure other frames; bind
+  (HIR-0048). A unit that owes required image-contract debt publishes only when
+  its own derived write cluster, a same-layer dependency closure, or an earlier
+  materialized layer contains a pixel-affecting `light`, `shading`, `volume`, or
+  `compositor` family. Look labels, role names, object counts, geometry, camera,
+  controls, and keyframes cannot self-certify optical signal; the materialization
+  and plan gates fail `image-signal-bootstrap` and enumerate registry-derived
+  write-kind witnesses (HIR-0110). Scene contracts may measure other frames; bind
   those ids through `composition_context.contract_ids` without adding the extra
   frames to the judge lists. Claim-closure counts those ids as bound producers.
   A dependency root has no sealed outcomes to directory-Read (HIR-0029).

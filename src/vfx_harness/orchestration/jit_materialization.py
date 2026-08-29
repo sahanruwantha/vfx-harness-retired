@@ -236,6 +236,7 @@ def validate_materialization(
     *,
     expected_bundle_hash: str,
     base_layers_path: str | Path | None = None,
+    base_scene_checks_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
 ) -> MaterializedLayer:
@@ -467,6 +468,31 @@ def validate_materialization(
     for cross_row_finding in validate_row_set(scene_rows):
         note(json_ptr("scene_contracts"), f"scene contract {cross_row_finding}")
 
+    # HIR-0110: candidate-sensitive image debt may be due only after the cumulative
+    # dependency closure has a typed way to affect optical signal.  Read earlier-layer
+    # rows from the same selected consumer view as base layers; do not infer capability
+    # from look labels, role names, or warm Blender state.
+    base_scene_path = (
+        Path(base_scene_checks_path)
+        if base_scene_checks_path is not None
+        else root / "scene_checks.json"
+    )
+    try:
+        base_scene_rows = _rows(
+            _document(base_scene_path), "contracts", "scene_checks.json"
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        note(
+            json_ptr("scene_contracts"),
+            f"cannot resolve earlier-layer optical-signal authority: {exc}",
+        )
+        base_scene_rows = []
+    combined_scene_rows = [
+        row
+        for row in base_scene_rows
+        if str(row.get("owner_layer") or "") != layer_id
+    ] + list(scene_rows)
+
     # HIR-0057: a geometry unit implicitly protects every active visibility row on
     # this layer. If a selected role is created only by a future sibling, the unit can
     # never seal: its protected evidence is due before its producer exists.
@@ -570,6 +596,56 @@ def validate_materialization(
                 f"unit {gap.unit_id}: {gap.detail}{extra} Legal next actions: "
                 "split the unit, consume a typed assembly interface, bind dressing, "
                 "or reassign evidence. " + ATOMICITY_RULE,
+            )
+
+        from vfx_harness.domain.image_signal import (
+            IMAGE_SIGNAL_DEPENDENCY_RULE,
+            image_signal_dependency_gaps,
+            image_signal_provider_ids,
+            image_signal_witness_guidance,
+        )
+
+        target_index = next(
+            (
+                index
+                for index, row in enumerate(combined_layers)
+                if str(row.get("id") or "") == layer_id
+            ),
+            0,
+        )
+        earlier_signal_available = any(
+            str(row.get("execution") or "") == "ready"
+            and str(row.get("id") or "") in parsed
+            and image_signal_provider_ids(
+                parsed[str(row.get("id"))].stages, combined_scene_rows
+            )
+            for row in combined_layers[:target_index]
+        )
+        for gap in image_signal_dependency_gaps(
+            layer.stages,
+            combined_scene_rows,
+            earlier_signal_available=earlier_signal_available,
+        ):
+            available = (
+                " Same-layer signal provider(s) exist but are outside the dependency "
+                f"closure: {list(gap.available_provider_ids)}."
+                if gap.available_provider_ids
+                else " No same-layer unit currently derives a signal family."
+            )
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    "depends_on",
+                ),
+                f"unit {gap.unit_id} owes image-contract debt "
+                f"{list(gap.contract_ids)} before optical signal is available."
+                + available
+                + " Registered write-kind witnesses: "
+                + image_signal_witness_guidance()
+                + ". "
+                + IMAGE_SIGNAL_DEPENDENCY_RULE,
             )
     # A binding that declares its moments must include the bound contract's own frame:
     # declaring moments [150] for a frame-72 contract authors evidence that can never
@@ -1060,6 +1136,7 @@ def inspect_materialization(
     *,
     expected_bundle_hash: str,
     base_layers_path: str | Path | None = None,
+    base_scene_checks_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
 ) -> tuple[list[str], MaterializedLayer | None]:
@@ -1070,6 +1147,7 @@ def inspect_materialization(
             materialization_path,
             expected_bundle_hash=expected_bundle_hash,
             base_layers_path=base_layers_path,
+            base_scene_checks_path=base_scene_checks_path,
             resolutions_path=resolutions_path,
             base_requirements_path=base_requirements_path,
         )
@@ -1423,6 +1501,7 @@ def apply_materialization_patch(
     *,
     expected_bundle_hash: str,
     base_layers_path: str | Path | None = None,
+    base_scene_checks_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
     expected_revision: str | None = None,
@@ -1434,6 +1513,7 @@ def apply_materialization_patch(
         ((pointer, value),),
         expected_bundle_hash=expected_bundle_hash,
         base_layers_path=base_layers_path,
+        base_scene_checks_path=base_scene_checks_path,
         resolutions_path=resolutions_path,
         base_requirements_path=base_requirements_path,
         expected_revision=expected_revision,
@@ -1447,6 +1527,7 @@ def apply_materialization_patches(
     *,
     expected_bundle_hash: str,
     base_layers_path: str | Path | None = None,
+    base_scene_checks_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
     expected_revision: str | None = None,
@@ -1504,6 +1585,7 @@ def apply_materialization_patches(
                 proposed_path,
                 expected_bundle_hash=expected_bundle_hash,
                 base_layers_path=base_layers_path,
+                base_scene_checks_path=base_scene_checks_path,
                 resolutions_path=resolutions_path,
                 base_requirements_path=base_requirements_path,
             )
@@ -1732,6 +1814,7 @@ def _composed_documents(
         materialization_path,
         expected_bundle_hash=bundle.content_hash,
         base_layers_path=base_layers,
+        base_scene_checks_path=base_scene,
         resolutions_path=shot / "state" / "plan-resolutions.jsonl",
         base_requirements_path=base_requirements,
     )

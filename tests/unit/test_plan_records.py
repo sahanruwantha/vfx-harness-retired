@@ -1380,6 +1380,47 @@ def test_materialization_rejects_look_without_image_domain(tmp_path: Path) -> No
     assert LOOK_REQUIRES_IMAGE_DOMAIN_RULE in text
 
 
+def test_materialization_rejects_image_debt_before_optical_signal(tmp_path: Path) -> None:
+    """HIR-0110: a mesh-only beauty owner cannot publish ahead of illumination."""
+    from vfx_harness.domain.image_signal import IMAGE_SIGNAL_DEPENDENCY_RULE
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "image-signal-bootstrap")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    unit = document["layer"]["stages"][0]
+    unit["provides"] = ["geometry"]
+    unit["look_capabilities"] = ["material"]
+    unit["evaluation"]["claims"][0].update(
+        {
+            "property": "frame_delta",
+            "asserts": "image",
+            "evidence": [
+                {
+                    "kind": "image_contract",
+                    "id": "polish-beauty",
+                    "moments": [239, 240],
+                }
+            ],
+        }
+    )
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "/layer/stages/0/depends_on:" in text
+    assert "polish-beauty" in text
+    assert "No same-layer unit currently derives a signal family" in text
+    assert "object_property(property=data.energy)" in text
+    assert IMAGE_SIGNAL_DEPENDENCY_RULE in text
+
+
 def test_materialization_reports_independent_findings_with_pointers(tmp_path: Path) -> None:
     """l1-remat3 walked one field-precise error per full-document rewrite. Two independent
     defects must land in one write, each addressed by a JSON pointer, and a pointer patch

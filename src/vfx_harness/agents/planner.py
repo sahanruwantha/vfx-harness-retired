@@ -511,6 +511,12 @@ async def _materialize_deferred_layer(
             base_layers = selected_view_artifact(
                 shot.folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
             ) or artifact_path(shot.folder, "layers.json")
+            base_scene_checks = selected_view_artifact(
+                shot.folder,
+                "scene_checks.json",
+                bundle.content_hash,
+                overlay_root=overlay_root,
+            ) or artifact_path(shot.folder, "scene_checks.json")
             base_requirements = selected_view_artifact(
                 shot.folder,
                 "requirements.json",
@@ -522,6 +528,7 @@ async def _materialize_deferred_layer(
                 target,
                 expected_bundle_hash=bundle.content_hash,
                 base_layers_path=base_layers,
+                base_scene_checks_path=base_scene_checks,
                 resolutions_path=shot.folder / "state" / "plan-resolutions.jsonl",
                 base_requirements_path=base_requirements,
             )
