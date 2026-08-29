@@ -68,6 +68,10 @@ live in the linked Harness Improvement Records.
   intermediate structural pass; terminal handoff is that candidate's freeze boundary,
   while image-bound units retain the immutable compare-before-more-mutation lock
   ([HIR-0118](docs/improvements/HIR-0118-automatic-readback-is-not-candidate-freeze.md)).
+  Accepted unit priors and composed layer artifacts now derive one stable topological
+  order from `depends_on`, so retries cannot replay a consumer before its producer merely
+  because `stages[]` stores them in another order
+  ([HIR-0119](docs/improvements/HIR-0119-replay-order-is-derived-from-the-unit-dag.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

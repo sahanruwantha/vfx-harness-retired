@@ -88,6 +88,9 @@ Complexity must scale by adding bounded, dependency-ordered work units, not by e
 or agent sessions. Every unit must be checkpointed, locally validated, repairable, and proven
 through cumulative empty-scene replay. Runtime context, cost, and uncertainty must scale with
 the active work unit, not with the total scene, plan length, or accumulated run history.
+The authored `stages[]` array is not execution order: replay accepted priors and compose layer
+artifacts in the stable topological order derived from exact `depends_on` edges, with authored
+position only as the tie-break among independent ready units (HIR-0119).
 
 ## Repository boundaries
 

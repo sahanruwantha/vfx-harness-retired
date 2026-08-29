@@ -42,6 +42,7 @@ from vfx_harness.domain.work_units import (
     CONSUME_INTERFACE_RULE,
     EvidenceBinding,
     WorkUnit,
+    dependency_ordered_units,
     ready_units,
     unit_requires_surface_visibility,
 )
@@ -124,6 +125,25 @@ def _unit(
     if consumes is not None:
         row["consumes"] = consumes
     return WorkUnit.parse(row, f"unit.{uid}")
+
+
+def test_dependency_order_is_derived_for_replay_and_stable_for_independent_units() -> None:
+    producer = _unit("producer", roles=["part.producer"], contract_id="producer-exists")
+    consumer = _unit(
+        "consumer",
+        roles=["part.consumer"],
+        contract_id="consumer-exists",
+        depends_on=["producer"],
+    )
+    independent = _unit(
+        "independent", roles=["part.independent"], contract_id="independent-exists"
+    )
+
+    # The authored array legally puts the consumer first.  Its edge, not proximity,
+    # determines replay.  Independent roots keep their authored relative order.
+    ordered = dependency_ordered_units((consumer, independent, producer))
+
+    assert [unit.id for unit in ordered] == ["independent", "producer", "consumer"]
 
 
 def _instance_publish(role: str, contract_id: str, iid: str = "iris.blade.instance_interface") -> list[dict]:

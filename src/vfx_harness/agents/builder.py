@@ -4814,6 +4814,7 @@ async def build_layer(
             f"run `vfx plan {shot.folder} --layer {layer.id}` to materialize and gate it first"
         )
     from vfx_harness.domain.contracts import active_for, load_document
+    from vfx_harness.domain.work_units import dependency_ordered_units
     from vfx_harness.observability.provenance import atomic_write
     from vfx_harness.orchestration.layer_plans import work_unit_plan_path, write_layer_outcome
     from vfx_harness.orchestration.revalidation import digest
@@ -4835,7 +4836,8 @@ async def build_layer(
             )
         return spans[0]
 
-    artifacts = [artifact_for(unit) for unit in layer.stages]
+    ordered_units = dependency_ordered_units(layer.stages)
+    artifacts = [artifact_for(unit) for unit in ordered_units]
     if len(layer.stages) > 1:
         if len(set(artifacts)) != len(artifacts):
             raise ValueError(f"layer {layer.id} work units must own distinct script artifacts")
@@ -4859,7 +4861,7 @@ async def build_layer(
             shot.folder / artifact_for(next(unit for unit in layer.stages if unit.id == uid))
         ).is_file()
     }
-    unit_artifacts = [artifact_for(unit) for unit in layer.stages if unit.id in passed_units]
+    unit_artifacts = [artifact_for(unit) for unit in ordered_units if unit.id in passed_units]
 
     # The layer-level scope remains a boundary statement; each unit adds a narrower
     # claim/property manifest and its own plan below.
@@ -5149,7 +5151,14 @@ async def build_layer(
         )
         transition(shot.folder, str(layer.id), unit.id, "passed", reason="all required unit claims passed")
         passed_units.add(unit.id)
-        unit_artifacts.append(artifact_for(unit))
+        # Reconstruct rather than append: after an interrupted run, a newly completed
+        # independent unit may sort before an already passed sibling.  Stable replay is
+        # DAG order plus authored-order tie-break, never accident-of-attempt order.
+        unit_artifacts = [
+            artifact_for(candidate)
+            for candidate in ordered_units
+            if candidate.id in passed_units
+        ]
 
     if len(layer.stages) == 1 and unit_artifacts[0] == layer.script:
         return Ledger(shot)
@@ -5160,7 +5169,7 @@ async def build_layer(
             artifact_for(unit),
             (shot.folder / artifact_for(unit)).read_text(encoding="utf-8"),
         )
-        for unit in layer.stages
+        for unit in ordered_units
     ]
     atomic_write(shot.folder / layer.script, _compose_unit_artifact_source(parts))
     log(f"published composed layer artifact → {layer.script}")

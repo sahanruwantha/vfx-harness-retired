@@ -1611,6 +1611,53 @@ def ready_units(
     )
 
 
+def dependency_ordered_units(units: Sequence[WorkUnit]) -> tuple[WorkUnit, ...]:
+    """Return one deterministic topological order for a work-unit DAG.
+
+    ``stages`` is a collection of authored units, not replay order.  A materializer may
+    legally place a consumer before its producer in that array because ``depends_on`` is
+    the authority.  Runtime replay and composed publication must therefore derive order
+    from the DAG.  Authored position is only the stable tie-break for simultaneously
+    ready independent units (HIR-0119).
+    """
+    ordered_input = tuple(units)
+    by_id = {unit.id: unit for unit in ordered_input}
+    if len(by_id) != len(ordered_input):
+        raise ValueError("work-unit dependency order requires unique unit ids")
+    position = {unit.id: index for index, unit in enumerate(ordered_input)}
+    missing = {
+        dependency
+        for unit in ordered_input
+        for dependency in unit.depends_on
+        if dependency not in by_id
+    }
+    if missing:
+        raise ValueError(
+            "work-unit dependency order names missing producer(s): "
+            + ", ".join(sorted(missing))
+        )
+
+    remaining = {unit.id: set(unit.depends_on) for unit in ordered_input}
+    result: list[WorkUnit] = []
+    while remaining:
+        ready = sorted(
+            (uid for uid, dependencies in remaining.items() if not dependencies),
+            key=position.__getitem__,
+        )
+        if not ready:
+            involved = sorted(remaining, key=position.__getitem__)
+            raise ValueError(
+                "work-unit dependency graph is cyclic: " + ", ".join(involved)
+            )
+        for uid in ready:
+            result.append(by_id[uid])
+            remaining.pop(uid)
+        ready_set = set(ready)
+        for dependencies in remaining.values():
+            dependencies.difference_update(ready_set)
+    return tuple(result)
+
+
 def read_document(path: str | Path) -> list[dict]:
     path = Path(path)
     try:
