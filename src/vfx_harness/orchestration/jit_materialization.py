@@ -439,6 +439,22 @@ def validate_materialization(
     all_contracts.update({
         str(row.get("id")): ("image_contract", row) for row in image_rows if row.get("id")
     })
+    # HIR-0122: JIT materialization deliberately publishes no candidate-sensitive
+    # image rows. Required image bindings on the typed work-unit claims are the
+    # authoritative build-time debt catalog until propose_checks can measure a live
+    # candidate. Requirement closure must therefore resolve those ids from the same
+    # compiler used by builder payment rather than treating the intentionally-empty
+    # image_contracts array as absence.
+    image_debt_ids: set[str] = set()
+    if layer is not None:
+        from vfx_harness.domain.image_debts import image_contract_debt_cards
+
+        image_debt_ids = {
+            debt.id
+            for unit in layer.stages
+            for debt in image_contract_debt_cards(unit)
+        }
+    requirement_contract_ids = set(all_contracts) | image_debt_ids
     for index, row in enumerate(scene_rows):
         error = validate_row(row)
         if error:
@@ -1003,7 +1019,7 @@ def validate_materialization(
                     f"requirement {requirement_id} contains duplicate contract ids",
                 )
                 continue
-            missing = sorted(set(contract_ids) - set(all_contracts))
+            missing = sorted(set(contract_ids) - requirement_contract_ids)
             if missing:
                 note(
                     json_ptr("requirement_bindings", index, "contract_ids"),

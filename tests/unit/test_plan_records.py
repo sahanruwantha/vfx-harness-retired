@@ -1462,6 +1462,129 @@ def test_materialization_rejects_image_debt_before_optical_signal(tmp_path: Path
     assert IMAGE_SIGNAL_DEPENDENCY_RULE in text
 
 
+def test_materialization_requirement_binding_accepts_required_image_debt(
+    tmp_path: Path,
+) -> None:
+    """HIR-0122: empty image_contracts is intentional, not missing requirement evidence."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "image-debt-requirement")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    unit = document["layer"]["stages"][0]
+    unit["mutates"]["controls"] = []
+    unit["mutates"]["control_roles"] = {}
+    unit["look_capabilities"] = ["material"]
+    unit["evaluation"]["temporal_evidence"] = "none"
+    unit["evaluation"]["claims"] = [
+        {
+            "id": "polish-material",
+            "proposition": "The polished surface has its authored material.",
+            "axis": "final_lock",
+            "property": "material_assignment_fraction",
+            "subject_roles": ["polish.comp"],
+            "subject_controls": [],
+            "moments": [239],
+            "kind": "atomic",
+            "required": True,
+            "authority": "executable_required",
+            "repair_owner": "polish",
+            "asserts": "scene",
+            "evidence": [{"kind": "scene_contract", "id": "polish-material"}],
+        },
+        {
+            "id": "polish-beauty",
+            "proposition": "The final polish remains stable across the ending hold.",
+            "axis": "final_lock",
+            "property": "frame_delta",
+            "subject_roles": ["polish.comp"],
+            "subject_controls": [],
+            "moments": [239, 240],
+            "kind": "atomic",
+            "required": True,
+            "authority": "executable_required",
+            "repair_owner": "polish",
+            "asserts": "image",
+            "evidence": [
+                {
+                    "kind": "image_contract",
+                    "id": "polish-beauty-f239-f240",
+                    "moments": [239, 240],
+                }
+            ],
+        },
+    ]
+    document["scene_contracts"] = [
+        {
+            "id": "polish-material",
+            "kind": "material_assignment_fraction",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.comp"],
+            "material_roles": ["polish.material"],
+            "op": "min",
+            "lo": 1,
+        },
+        *_vis_rows("2", (239, 240)),
+    ]
+    document["image_contracts"] = []
+    document["requirement_bindings"] = [
+        {
+            "requirement_id": "R-final-lock",
+            "contract_ids": ["polish-beauty-f239-f240"],
+        }
+    ]
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert not findings
+    assert materialized is not None
+    assert materialized.image_contracts == ()
+
+
+def test_materialization_requirement_binding_rejects_optional_image_reference(
+    tmp_path: Path,
+) -> None:
+    """Only required image claims compile debts that can close owned requirements."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "optional-image-reference")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    claim = document["layer"]["stages"][0]["evaluation"]["claims"][0]
+    claim.update(
+        {
+            "required": False,
+            "asserts": "image",
+            "evidence": [
+                {"kind": "image_contract", "id": "optional-look", "moments": [239, 240]}
+            ],
+        }
+    )
+    document["requirement_bindings"] = [
+        {"requirement_id": "R-final-lock", "contract_ids": ["optional-look"]}
+    ]
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized is None
+    assert any(
+        "requirement R-final-lock names absent contracts: optional-look" in finding
+        for finding in findings
+    )
+
+
 def test_materialization_rejects_unpayable_image_property(tmp_path: Path) -> None:
     """HIR-0111: free-form image labels cannot become build-time debts."""
     from vfx_harness.domain.image_debts import IMAGE_PROPERTY_VOCABULARY_RULE
