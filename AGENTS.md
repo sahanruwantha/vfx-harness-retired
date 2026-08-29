@@ -130,6 +130,8 @@ effect.
 
 - Query, don't recall: agents act on authoritative state read through tools, never on memory of
   the scene, the plan, or a prior run.
+- Camera availability comes only from typed `provides: ["camera"]` authority; role names,
+  including `camera.target`, never imply a capability (HIR-0098).
 - `inspect_scene(render/lights)` exposes the world/compositor identity, EEVEE volumetric and
   view-layer pass state, and light shape/distance settings; do not smuggle those reads through an
   idempotent `run_bpy` assignment (HIR-0055).

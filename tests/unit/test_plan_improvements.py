@@ -692,6 +692,7 @@ def test_atomic_camera_and_blockout_closes_empty_scene_composition_bootstrap(tmp
     doc = _layer_doc(temporal_id="trend")
     move = doc["layers"][0]["stages"][0]
     move["mutates"]["roles"] = ["camera", "hero"]
+    move["provides"] = ["camera"]
     move["evaluation"]["composition_context"] = {
         "frames": [1, 2],
         "contract_ids": ["bbox-1", "bbox-2"],
@@ -716,6 +717,35 @@ def test_atomic_camera_and_blockout_closes_empty_scene_composition_bootstrap(tmp
         finding.check in {"composition-coverage", "composition-bootstrap"}
         for finding in findings
     )
+
+
+def test_camera_named_target_does_not_bootstrap_projected_evidence(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="bbox-1")
+    target = doc["layers"][0]["stages"][0]
+    target["mutates"]["roles"] = ["camera.target"]
+    target["provides"] = []
+    target["evaluation"]["claims"][0]["evidence"] = [
+        {"kind": "scene_contract", "id": "bbox-1"}
+    ]
+    _write(tmp_path / "layers.json", doc)
+    _write(tmp_path / "scene_checks.json", {
+        "schema": 2,
+        "contracts": [{
+            "id": "bbox-1",
+            "kind": "bbox_width",
+            "frame": 1,
+            "roles": ["camera.target"],
+            "op": "min",
+            "lo": 0.1,
+        }],
+    })
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    bootstrap = [f for f in findings if f.check == "composition-bootstrap"]
+    assert bootstrap and bootstrap[0].blocking
+    assert "before any declared camera" in bootstrap[0].what
 
 
 def test_visible_fraction_cannot_be_due_before_a_camera_dependency(tmp_path: Path) -> None:

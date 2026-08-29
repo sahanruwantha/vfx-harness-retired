@@ -1510,20 +1510,12 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     "or reassign evidence. " + ATOMICITY_RULE,
                 )
             )
-        # Typed authority first: a unit DECLARES what it provides to dependents. The
-        # substring scan below is the legacy path for units that declare nothing, and it
-        # is why `cam_rig` — the harness's own default camera-rig role, and the role the
-        # approved camera decision keys against — was invisible to this rule while the
-        # unit owning it had already passed.
-        declared = {
+        # Camera availability is typed authority. Role names such as camera.target are
+        # semantic selectors, not capabilities, and cannot bootstrap projected evidence.
+        camera_units = {
             uid
             for uid, unit in stages.items()
             if "camera" in (unit.get("provides") or [])
-        }
-        camera_units = declared or {
-            uid
-            for uid, unit in stages.items()
-            if any("camera" in str(role).lower() for role in (unit.get("mutates") or {}).get("roles") or [])
         }
 
         def _camera_available_to(
