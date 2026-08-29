@@ -74,6 +74,8 @@ is fresh and `frame=` selects a different moment.
   run `20260829T192957Z-f915e1` replayed from empty and passed all seven claimed frames
   at 5.0.
 
+Implementation commit: `1696759` (`fix: refresh scene inspection evaluation`).
+
 ## Release and rollback
 
 No schema or persisted-state change. Rollback restores order-dependent tool answers and
