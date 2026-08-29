@@ -22,6 +22,7 @@ from vfx_harness.domain.atomicity import (
     KIND_INSTRUMENT_FAMILY,
     UNRESOLVED_FAMILY_RULE,
     atomicity_gaps,
+    instrument_family_for_row,
     write_clusters,
 )
 from vfx_harness.domain.publish_interfaces import (
@@ -163,6 +164,49 @@ def test_helper_registry_covers_every_injected_helper() -> None:
 
     names = {row["name"] for row in helper_inventory()}
     assert names == set(HELPER_INSTRUMENT_FAMILY)
+
+
+@pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])
+def test_fixed_transform_control_is_one_placement_cluster(role: str) -> None:
+    """A fixed Empty/control is placement work, not mesh plus keyframe work."""
+    unit = _unit(
+        "fixed_target",
+        roles=[role],
+        contract_id="target-x",
+        extra_contracts=["target-static"],
+        controls=["target.hold"],
+    )
+    rows = [
+        {
+            **_count_row("target-x", [role], kind="object_property"),
+            "property": "location.0",
+            "op": "band",
+            "lo": -0.1,
+            "hi": 0.1,
+        },
+        {
+            **_count_row("target-static", [role], kind="animation_count"),
+            "op": "max",
+            "hi": 0,
+        },
+    ]
+
+    assert instrument_family_for_row(rows[0]) == "control"
+    assert instrument_family_for_row(rows[1]) is None
+    assert [cluster.label() for cluster in write_clusters(unit, rows)] == [
+        f"{role}/control_host/control"
+    ]
+    assert not atomicity_gaps([unit], rows, layer_id="1")
+
+
+def test_positive_animation_count_remains_keyframe_work() -> None:
+    row = {
+        **_count_row("animated", ["motion.control"], kind="animation_count"),
+        "op": "min",
+        "lo": 1,
+    }
+
+    assert instrument_family_for_row(row) == "keyframe"
 
 
 def test_mixed_light_and_volume_namespaces_are_two_clusters() -> None:

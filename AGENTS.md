@@ -279,7 +279,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   A work unit publishes one derived write-cluster (role-namespace × host class ×
   instrument family); authored family strings are padding and do not satisfy the
   gate. Instrument family comes from typed mutation targets and write-kind evidence;
-  unresolved families fail closed. Dressing, vis observation/protection, and bounded
+  object-level transforms are control state, and a zero-animation bound is observation,
+  not keyframe authority (HIR-0095). Unresolved families fail closed. Dressing, vis
+  observation/protection, and bounded
   coordination are typed exceptions. Consumed interfaces are read-only inputs — they
   do not grant mutation of producer export roles and cannot hide a mixed cluster.
   Required claims share one repair_owner (HIR-0083). Each unit publishes typed

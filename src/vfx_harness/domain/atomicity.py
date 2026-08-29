@@ -185,7 +185,22 @@ def instrument_family_for_row(row: Mapping[str, Any]) -> str | None:
             return "camera"
         if prop.startswith("data."):
             return "control"
-        return "mesh"
+        # Object transforms and custom numeric properties are control-host state.
+        # They do not imply polygon creation merely because the selected object may
+        # eventually carry geometry. In particular, a fixed Empty target must publish
+        # as a placement control rather than an asset source.
+        return "control"
+    if kind == "animation_count":
+        # Proving that no animation exists is an observation, not authorization to
+        # author keyframes. Treating a zero upper bound as keyframe work forces a fixed
+        # placement producer into a false mixed control/keyframe cluster.
+        op = str(row.get("op") or "")
+        if op == "eq" and row.get("value") == 0:
+            return None
+        if op in {"max", "band"}:
+            hi = row.get("hi")
+            if isinstance(hi, (int, float)) and not isinstance(hi, bool) and hi <= 0:
+                return None
     return KIND_INSTRUMENT_FAMILY[kind]
 
 
