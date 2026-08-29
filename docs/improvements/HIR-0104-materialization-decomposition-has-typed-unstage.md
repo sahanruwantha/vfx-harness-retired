@@ -1,7 +1,7 @@
 ---
 id: HIR-0104
 title: Materialization decomposition has typed unit retirement
-status: proposed
+status: accepted
 introduced_in: unreleased
 date: 2026-08-29
 failure_class: unpublished_materialization_unit_cannot_be_retired
@@ -78,8 +78,23 @@ the removal is refused, and candidate bytes remain identical. Tool registration 
 materializer policy fixtures prove that the typed operation is available without
 reopening generic writes.
 
-Producing-run evidence and broad regression results will be added after the mechanism
-is exercised by the Layer 2 rematerialization path that exposed the defect.
+- Materialization and tool-policy suites: `100 passed in 5.48s`.
+- Full repository suite: `552 passed in 41.73s`.
+- `.venv/bin/ruff check src tests`: `All checks passed!`.
+- `.venv/bin/vfx --help`: exit 0.
+- Producing run `20260829T101336Z-ac6aa6` staged
+  `iris_blade_geometry`, then received a later control-scope rejection at 405.4
+  seconds. At 441.1 seconds it invoked `unstage_materialization_unit`; the transaction
+  removed that exact unit and its four now-unbound contracts, reported zero surviving
+  units/contracts/bindings, and advanced to a revision-matched clean candidate. The
+  model then restaged a legal mesh-only unit. Typed retirement converted the previously
+  terminal decomposition into a continuing transaction in 35.7 seconds.
+- That producing run later reached a validation-passing candidate twice and then
+  exhausted after repairing terminal gate findings. HIR-0027 left selected authority
+  unchanged. Its repeated numeric JSON-pointer guesses are a separate feedback defect;
+  they do not invalidate the retirement transaction's exercised behavior.
+
+Implementation commit: `51388aa` (`fix: add typed materialization unit retirement`).
 
 ## Release and rollback
 
