@@ -30,7 +30,12 @@ from vfx_harness.domain.publish_interfaces import (
     compile_unit_publish_interfaces,
     parse_publish_interface,
 )
-from vfx_harness.domain.work_units import CONSUME_INTERFACE_RULE, WorkUnit, ready_units
+from vfx_harness.domain.work_units import (
+    CONSUME_INTERFACE_RULE,
+    WorkUnit,
+    ready_units,
+    unit_requires_surface_visibility,
+)
 from vfx_harness.evaluation.plan_gate import _check_evidence_coherence
 from vfx_harness.evidence.scene_checks import SUPPORTED_KINDS
 from vfx_harness.orchestration.unit_state import (
@@ -592,6 +597,20 @@ def test_ready_query_refreshes_state_after_producer_passes(
         eligible_passed={producer_id},
     )
     assert [unit.id for unit in ready] == [successor_id]
+
+
+@pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])
+def test_control_only_unit_has_no_rendered_visibility_debt(role: str) -> None:
+    control = _unit("control_point", roles=[role], contract_id="point-placement")
+    geometry = _unit(
+        "rendered_subject",
+        roles=[role],
+        contract_id="subject-shape",
+        provides=["geometry"],
+    )
+
+    assert unit_requires_surface_visibility(control) is False
+    assert unit_requires_surface_visibility(geometry) is True
 
 
 def test_authored_interface_change_invalidates_producer_digest() -> None:

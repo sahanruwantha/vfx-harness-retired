@@ -1105,6 +1105,35 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
         # invisible to projection-only bbox rows, and no rule fired because
         # composition-coverage is scoped to camera-owning layers.
         for lid in sorted(materialized_ids):
+            layer_row = next(
+                (
+                    row
+                    for row in layers
+                    if isinstance(row, dict) and str(row.get("id")) == lid
+                ),
+                {},
+            )
+            stages = [
+                row for row in layer_row.get("stages") or [] if isinstance(row, dict)
+            ]
+            surface_visibility_due = any(
+                "geometry" in (unit.get("provides") or [])
+                or bool((unit.get("mutates") or {}).get("dresses"))
+                or bool(unit.get("look_capabilities"))
+                or any(
+                    claim.get("required") and claim.get("asserts") == "image"
+                    for claim in (unit.get("evaluation") or {}).get("claims") or []
+                    if isinstance(claim, dict)
+                )
+                or any(
+                    consume.get("kind") in {"asset_source", "instance_source"}
+                    for consume in unit.get("consumes") or []
+                    if isinstance(consume, dict)
+                )
+                for unit in stages
+            )
+            if not surface_visibility_due:
+                continue
             for frame in sorted(layer_frames.get(lid, set())):
                 if not any(
                     r.get("kind") == "visible_fraction" and r.get("frame") == frame
@@ -1309,8 +1338,9 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     """Check temporal, composition, and mutation ownership coverage across contracts."""
     from vfx_harness.domain.contracts import load_document
     from vfx_harness.evidence.scene_checks import (
-        BBOX_KINDS,
         CAMERA_REQUIRED_KINDS,
+        PROJECTED_CONTEXT_KINDS,
+        SURFACE_PROJECTED_KINDS,
         TEMPORAL_KINDS,
     )
 
@@ -1506,7 +1536,8 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         and any(
                             isinstance(binding, dict)
                             and binding.get("kind") == "scene_contract"
-                            and scene_by_id.get(str(binding.get("id")), {}).get("kind") in BBOX_KINDS
+                            and scene_by_id.get(str(binding.get("id")), {}).get("kind")
+                            in PROJECTED_CONTEXT_KINDS
                             and scene_by_id.get(str(binding.get("id")), {}).get("frame") == frame
                             for binding in claim.get("evidence") or []
                         )
@@ -1521,7 +1552,8 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     if (
                         contract_ids
                         and all(
-                            cid in scene_by_id and scene_by_id[cid].get("kind") in BBOX_KINDS
+                            cid in scene_by_id
+                            and scene_by_id[cid].get("kind") in PROJECTED_CONTEXT_KINDS
                             for cid in contract_ids
                         )
                         and any(scene_by_id[cid].get("frame") == frame for cid in contract_ids)
@@ -1546,7 +1578,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         if frame in source_frames and any(
                             str(row.get("id")) in source_contracts
                             and
-                            row.get("kind") in BBOX_KINDS
+                            row.get("kind") in PROJECTED_CONTEXT_KINDS
                             and row.get("frame") == frame
                             and str(row.get("activates_at") or "") == lid
                             for row in scene_rows
@@ -1661,6 +1693,52 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     if binding.get("kind") != "scene_contract":
                         continue
                     contract = scene_by_id.get(evidence_id) or {}
+                    if str(contract.get("kind") or "") in SURFACE_PROJECTED_KINDS:
+                        owner_id = str(claim.get("repair_owner") or uid)
+                        owner = stages.get(owner_id) or unit
+                        owner_mutates = owner.get("mutates") or {}
+                        roles = [str(value) for value in contract.get("roles") or []]
+                        owned_roles = [
+                            str(value) for value in owner_mutates.get("roles") or []
+                        ]
+                        dressed_roles = [
+                            str(value) for value in owner_mutates.get("dresses") or []
+                        ]
+
+                        def _matches(left: str, right: str) -> bool:
+                            return fnmatch.fnmatchcase(left, right) or fnmatch.fnmatchcase(
+                                right, left
+                            )
+
+                        mutates_measured_role = any(
+                            _matches(role, selector)
+                            for role in roles
+                            for selector in owned_roles
+                        )
+                        dresses_measured_role = any(
+                            _matches(role, selector)
+                            for role in roles
+                            for selector in dressed_roles
+                        )
+                        if (
+                            mutates_measured_role
+                            and "geometry" not in (owner.get("provides") or [])
+                            and not dresses_measured_role
+                        ):
+                            out.append(
+                                Finding(
+                                    "surface-evidence-owner",
+                                    True,
+                                    f"layer {lid} unit {uid} claim "
+                                    f"{claim.get('id', '?')} contract {evidence_id}",
+                                    f"surface metric {contract.get('kind')} targets "
+                                    f"mutated role(s) {roles}, but repair owner {owner_id} "
+                                    "does not provide geometry or dress those surfaces",
+                                    "use projected_origin_x/projected_origin_y for an "
+                                    "Empty/control point, or split a genuine geometry "
+                                    "provider; do not create proxy mesh to pay bbox/visibility",
+                                )
+                            )
                     # Two-sided measurement kinds observe the OTHER side of a relation:
                     # clearance obstacles and parallax far-groups are inherently other
                     # layers' roles (a persistent clearance contract exists precisely to

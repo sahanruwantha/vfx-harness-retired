@@ -654,6 +654,119 @@ def test_materialization_must_fulfill_global_camera_capability(tmp_path: Path) -
         )
 
 
+@pytest.mark.parametrize("kind", ["bbox_center_x", "visible_fraction"])
+def test_control_host_unit_cannot_bind_surface_metric_on_its_mutated_role(
+    tmp_path: Path, kind: str
+) -> None:
+    """Transform-only units cannot turn a control point into proxy mesh to pass."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, f"surface-control-{kind}")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    unit = document["layer"]["stages"][0]
+    contract = {
+        "id": "control-surface", "kind": kind, "owner_layer": "2",
+        "fault_owner": "2", "activates_at": "2", "lifecycle": "layer",
+        "axis": "final_lock", "roles": ["polish.comp"], "frame": 239,
+        "op": "min", "lo": 0.25,
+    }
+    unit["evaluation"]["claims"] = [{
+        "id": "control-placement", "proposition": "the control point is placed",
+        "axis": "final_lock", "property": kind,
+        "subject_roles": ["polish.comp"], "subject_controls": ["hold"],
+        "moments": [239, 240], "kind": "atomic", "required": True,
+        "authority": "executable_required", "repair_owner": "polish",
+        "asserts": "projected_composition",
+        "evidence": [{"kind": "scene_contract", "id": "control-surface"}],
+    }]
+    unit["evaluation"]["composition_context"] = {
+        "frames": [239, 240], "contract_ids": ["control-surface"],
+    }
+    document["scene_contracts"] = [contract]
+    document["requirement_bindings"] = [{
+        "requirement_id": "R-final-lock", "contract_ids": ["control-surface"],
+    }]
+    _write(payload, document)
+
+    with pytest.raises(ValueError, match=r"surface metric.*does not provide geometry"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+@pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])
+def test_control_host_unit_publishes_with_point_projection_and_no_visibility_proxy(
+    tmp_path: Path, role: str
+) -> None:
+    """Point placement is executable without inventing a rendered subject."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["reserved_roles"] = [role]
+    _write(tmp_path / "layers.json", layers)
+    layout = run_artifacts.create(tmp_path, f"point-control-{role.replace('.', '-')}")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    unit = document["layer"]["stages"][0]
+    unit["mutates"]["roles"] = [role]
+    unit["mutates"]["control_roles"] = {"hold": [role]}
+    unit["evaluation"]["temporal_evidence"] = "none"
+    unit["evaluation"]["claims"] = [{
+        "id": "control-placement",
+        "proposition": "the control point stays on the declared screen target",
+        "axis": "final_lock",
+        "property": "projected_origin",
+        "subject_roles": [role],
+        "subject_controls": ["hold"],
+        "moments": [239, 240],
+        "kind": "atomic",
+        "required": True,
+        "authority": "executable_required",
+        "repair_owner": "polish",
+        "asserts": "projected_composition",
+        "evidence": [
+            {"kind": "scene_contract", "id": "point-x-f239", "moments": [239]},
+            {"kind": "scene_contract", "id": "point-x-f240", "moments": [240]},
+        ],
+    }]
+    unit["evaluation"]["composition_context"] = {
+        "frames": [239, 240],
+        "contract_ids": ["point-x-f239", "point-x-f240"],
+    }
+    document["scene_contracts"] = [
+        {
+            "id": f"point-x-f{frame}",
+            "kind": "projected_origin_x",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": [role],
+            "frame": frame,
+            "op": "band",
+            "lo": 0.45,
+            "hi": 0.55,
+        }
+        for frame in (239, 240)
+    ]
+    document["requirement_bindings"] = [{
+        "requirement_id": "R-final-lock",
+        "contract_ids": ["point-x-f239", "point-x-f240"],
+    }]
+    _write(payload, document)
+
+    materialized = validate_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized.layer.stages[0].id == "polish"
+    assert all(row["kind"] != "visible_fraction" for row in materialized.scene_contracts)
+
+
 def test_camera_unit_must_mutate_the_globally_bound_interface_role(tmp_path: Path) -> None:
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)

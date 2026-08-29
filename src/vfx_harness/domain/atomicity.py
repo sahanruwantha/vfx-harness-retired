@@ -47,6 +47,8 @@ KIND_INSTRUMENT_FAMILY: dict[str, str | None] = {
     "bbox_center_y": None,
     "bbox_top_y": None,
     "bbox_bottom_y": None,
+    "projected_origin_x": None,
+    "projected_origin_y": None,
     "object_count": None,
     "mesh_vertex_count": "mesh",
     "smooth_fraction": "mesh",

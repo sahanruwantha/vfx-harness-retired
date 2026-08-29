@@ -1373,6 +1373,14 @@ def build_plan_tools(
                 "declaration, any closer surface counts)",
                 "op min lo≈0.2–0.5 for must-be-seen; op max hi<1 for not-yet-revealed",
             ],
+            "projected_origin_x": [
+                "roles/control_roles selecting exactly one object (Empty/control is legal)",
+                "op min/max/band in normalized camera coordinates; placement only, not visibility",
+            ],
+            "projected_origin_y": [
+                "roles/control_roles selecting exactly one object (Empty/control is legal)",
+                "op min/max/band in normalized top-left camera coordinates; placement only",
+            ],
             "node_link_count": [
                 "graph", "from_node_roles", "to_node_roles",
                 "from_socket/to_socket (optional)",
@@ -1392,7 +1400,9 @@ def build_plan_tools(
                 "fields": fields,
             }
         note = (
-            "Projected (bbox_*) targets must lie inside the normalized frame; "
+            "Projected bbox_* and projected_origin_* targets must lie inside the normalized frame; "
+            "bbox/visible_fraction require rendered surfaces, while projected_origin_* is "
+            "the point-placement instrument for Empty/control hosts. "
             "path_clearance_min fails closed on an empty obstacle selection — persistent "
             "lifecycle re-evaluates as geometry arrives, it does not make absence a PASS."
         )

@@ -982,6 +982,23 @@ def parse_look_capabilities(value: Any, where: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+def unit_requires_surface_visibility(unit: WorkUnit) -> bool:
+    """Whether a unit owns or consumes a rendered subject at its judge frames.
+
+    Camera rigs, lights, volumes, and Empty-style control hosts are scene interfaces,
+    not rendered subjects. Forcing visible_fraction on them makes a builder invent mesh
+    solely to pay evidence debt. Geometry, dressing, look work, and consumed asset/
+    instance sources do own rendered surfaces and keep the occlusion-true requirement.
+    """
+    return bool(
+        "geometry" in unit.provides
+        or unit.mutates.dresses
+        or unit.look_capabilities
+        or any(claim.required and claim.asserts == "image" for claim in unit.evaluation.claims)
+        or any(item.kind in {"asset_source", "instance_source"} for item in unit.consumes)
+    )
+
+
 @dataclass(frozen=True)
 class WorkUnit:
     id: str

@@ -254,6 +254,31 @@ def test_visible_fraction_is_registered_frame_scoped_and_compiles() -> None:
     assert validate_row({**row, "op": "max", "lo": None, "hi": 0.05}) is None
 
 
+def test_projected_origin_is_frame_scoped_point_evidence() -> None:
+    """Control/Empty placement has a projection metric that does not imply a surface."""
+    from vfx_harness.evidence.scene_checks import (
+        CAMERA_REQUIRED_KINDS,
+        FRAME_SCOPED_KINDS,
+        PROJECTED_ORIGIN_KINDS,
+    )
+
+    for kind in ("projected_origin_x", "projected_origin_y"):
+        assert kind in SUPPORTED_KINDS
+        assert kind in PROJECTED_ORIGIN_KINDS
+        assert kind in FRAME_SCOPED_KINDS
+        assert kind in CAMERA_REQUIRED_KINDS
+        assert KIND_DOMAINS[kind] == "projected_composition"
+        row = _row(
+            id=f"point-{kind}", kind=kind, roles=["camera.target"],
+            frame=175, op="band", lo=0.45, hi=0.55,
+        )
+        assert validate_row(row) is None
+        assert "frame" in (validate_row({**row, "frame": None}) or "")
+        script = _blender_probe([row], 175)
+        compile(script, "<probe>", "exec")
+        assert "requires exactly one selected object origin" in script
+
+
 def test_materialization_requires_visibility_at_every_judge_frame(tmp_path) -> None:
     """The hard half of the rule (the gate half is advisory for grandfathered views):
     a new materialization cannot publish a judge frame nobody proves shows anything."""

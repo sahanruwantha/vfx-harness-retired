@@ -28,6 +28,8 @@ OBJECT_KINDS = {
     "bbox_center_y",
     "bbox_top_y",
     "bbox_bottom_y",
+    "projected_origin_x",
+    "projected_origin_y",
     "object_count",
     "mesh_vertex_count",
     "smooth_fraction",
@@ -79,6 +81,8 @@ FRAME_SCOPED_KINDS = {
     "bbox_center_y",
     "bbox_top_y",
     "bbox_bottom_y",
+    "projected_origin_x",
+    "projected_origin_y",
     "mesh_vertex_count",
     "radial_inward_fraction",
     "object_property",
@@ -102,7 +106,10 @@ BBOX_KINDS = frozenset({
     "bbox_width", "bbox_height", "bbox_center_x",
     "bbox_center_y", "bbox_top_y", "bbox_bottom_y",
 })
-_PROJECTED_KINDS = BBOX_KINDS | {"visible_fraction"}
+PROJECTED_ORIGIN_KINDS = frozenset({"projected_origin_x", "projected_origin_y"})
+SURFACE_PROJECTED_KINDS = BBOX_KINDS | {"visible_fraction"}
+PROJECTED_CONTEXT_KINDS = BBOX_KINDS | PROJECTED_ORIGIN_KINDS
+_PROJECTED_KINDS = SURFACE_PROJECTED_KINDS | PROJECTED_ORIGIN_KINDS
 # These instruments cannot produce a reading without ``scene.camera``.  Keep the
 # capability beside the canonical metric registry so planning and execution do not
 # maintain divergent guesses about which evidence needs a camera.  Functional kinds
@@ -143,6 +150,14 @@ KIND_DEFINITIONS = {
     "bbox_center_y": "projected union vertical centre; 0=top, 1=bottom",
     "bbox_top_y": "top of projected union; normalized top-left coordinates",
     "bbox_bottom_y": "bottom of projected union; normalized top-left coordinates",
+    "projected_origin_x": (
+        "horizontal normalized camera projection of exactly one selected object's world "
+        "origin; accepts Empty/control hosts and proves placement, not rendered visibility"
+    ),
+    "projected_origin_y": (
+        "vertical normalized camera projection of exactly one selected object's world "
+        "origin; accepts Empty/control hosts and proves placement, not rendered visibility"
+    ),
     "object_count": "number of objects whose bvfx_role matches roles",
     "mesh_vertex_count": "evaluated mesh vertex total across matched object roles",
     "smooth_fraction": "fraction of matched mesh polygons using smooth shading",
@@ -1049,6 +1064,18 @@ for row in _rows:
                     f'at frame {{_FRAME}} ({{empty}} contributed no points)')
             x0,y0,x1,y1=rec['bbox']
             value={{'bbox_width':x1-x0,'bbox_height':y1-y0,'bbox_center_x':(x0+x1)/2,'bbox_center_y':(y0+y1)/2,'bbox_top_y':y0,'bbox_bottom_y':y1}}[kind]
+        elif kind in ('projected_origin_x','projected_origin_y'):
+            if not objects: raise ValueError(_missobj(row))
+            if len(objects)!=1:
+                raise ValueError(
+                    f'{{kind}} requires exactly one selected object origin; matched '
+                    f'{{len(objects)}} objects: '+', '.join(o.name for o in objects))
+            if _scene.camera is None: raise ValueError('scene has no camera at the declared frame')
+            point=objects[0].evaluated_get(_row_dg).matrix_world.translation.to_4d()
+            clip=_checks.camera_clip_matrix(_scene,_row_dg)@point
+            if clip.w<=0: raise ValueError('selected object origin is behind the active camera')
+            nx=clip.x/clip.w; ny=clip.y/clip.w
+            value=(nx+1.0)/2.0 if kind=='projected_origin_x' else (1.0-ny)/2.0
         elif kind=='visible_fraction':
             # Of EACH named role's ON-SCREEN surface samples, the fraction whose camera
             # ray reaches that role before anything else. A pooled union hid a failing

@@ -137,6 +137,10 @@ effect.
   producer must not force a read-only mutation probe or Blender-version guess (HIR-0061).
 - Framing, bbox, and visibility checks measure rendered subjects, not Light/Camera/Empty-style
   control hosts; use per-light render isolation for illumination contribution (HIR-0055).
+- Point placement for an Empty/control host uses `projected_origin_x/y`; bbox and
+  `visible_fraction` are surface evidence and a unit mutating their roles must provide geometry
+  or dress an existing rendered surface. Executable-only camera/control units with no rendered
+  subject owe no invented visibility proxy (HIR-0090).
 - Measure, don't estimate: if a decision depends on a quantity, expose an instrument that
   measures it; a judgment call where a measurement is possible is a patch.
 - Enumerate, don't imagine: where the option space is knowable — roles, controls, targets,

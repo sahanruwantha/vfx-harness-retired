@@ -534,7 +534,7 @@ def validate_materialization(
     # proves they exist, not that they chase; radial closure proves an aperture is shut,
     # not that it reads as machined metal. Run 20260823T154920Z shipped both.
     from vfx_harness.domain.work_units import STRUCTURAL_CLAIM_DOMAINS
-    from vfx_harness.evidence.scene_checks import KIND_DOMAINS
+    from vfx_harness.evidence.scene_checks import KIND_DOMAINS, SURFACE_PROJECTED_KINDS
 
     if layer is not None:
         for unit_index, unit in enumerate(layer.stages):
@@ -575,6 +575,38 @@ def validate_materialization(
                     if not bound or bound[0] != "scene_contract":
                         continue
                     vis_row = bound[1]
+                    if str(vis_row.get("kind") or "") in SURFACE_PROJECTED_KINDS:
+                        roles = [str(value) for value in vis_row.get("roles") or []]
+                        mutates_measured_role = any(
+                            fnmatch.fnmatchcase(role, selector)
+                            or fnmatch.fnmatchcase(selector, role)
+                            for role in roles
+                            for selector in owner.mutates.roles
+                        )
+                        dresses_measured_role = any(
+                            fnmatch.fnmatchcase(role, selector)
+                            or fnmatch.fnmatchcase(selector, role)
+                            for role in roles
+                            for selector in owner.mutates.dresses
+                        )
+                        if (
+                            mutates_measured_role
+                            and "geometry" not in owner.provides
+                            and not dresses_measured_role
+                        ):
+                            note(
+                                json_ptr(
+                                    "layer", "stages", unit_index, "evaluation", "claims"
+                                ),
+                                f"unit {unit.id} binds surface metric "
+                                f"{vis_row.get('kind')} {binding.id} on its mutated roles "
+                                f"{roles}, but repair_owner {owner.id} does not provide "
+                                "geometry or dress those roles. A control/Empty host has "
+                                "no rendered surface. Use projected_origin_x/"
+                                "projected_origin_y for a point interface, or split a "
+                                "genuine geometry provider; do not add proxy mesh only "
+                                "to satisfy bbox/visible_fraction.",
+                            )
                     if str(vis_row.get("kind") or "") != "visible_fraction":
                         continue
                     unrepaired = vis_roles_unrepairable_by(
@@ -811,13 +843,23 @@ def validate_materialization(
     # a solid proxy disc at both judge frames — projection-only bbox rows pass through
     # occluders and layer 2 carried no context rows at f72/f150 at all. Every judge
     # frame must carry occlusion-true visibility evidence for what the frame judges.
-    uncovered = sorted(
-        str(frame)
-        for frame in judge_frames
-        if not any(
-            row.get("kind") == "visible_fraction" and row.get("frame") == frame
-            for row in scene_rows
+    from vfx_harness.domain.work_units import unit_requires_surface_visibility
+
+    surface_visibility_due = bool(
+        layer is not None
+        and any(unit_requires_surface_visibility(unit) for unit in layer.stages)
+    )
+    uncovered = (
+        sorted(
+            str(frame)
+            for frame in judge_frames
+            if not any(
+                row.get("kind") == "visible_fraction" and row.get("frame") == frame
+                for row in scene_rows
+            )
         )
+        if surface_visibility_due
+        else []
     )
     if uncovered:
         note(
