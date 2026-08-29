@@ -426,6 +426,60 @@ def test_materialization_patch_batch_is_atomic_and_supports_append(
     assert candidate.read_bytes() == before
 
 
+def test_materialization_candidate_is_seeded_and_staged_one_unit_at_a_time(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "incremental-materialization")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "incremental.json"
+
+    seed_materialization_candidate(
+        bundle.root,
+        target,
+        layer_id="2",
+        bundle_hash=bundle.content_hash,
+    )
+    seeded = json.loads(target.read_text(encoding="utf-8"))
+    assert seeded["layer"]["execution"] == "ready"
+    assert "jit" not in seeded["layer"]
+    assert seeded["layer"]["stages"] == []
+    assert seeded["scene_contracts"] == []
+
+    unit = full["layer"]["stages"][0]
+    stage_materialization_unit(
+        target,
+        unit=unit,
+        scene_contracts=full["scene_contracts"],
+        requirement_bindings=full["requirement_bindings"],
+    )
+    staged = json.loads(target.read_text(encoding="utf-8"))
+    assert [row["id"] for row in staged["layer"]["stages"]] == ["polish"]
+    assert len(staged["scene_contracts"]) == len(full["scene_contracts"])
+
+    validate_materialization(
+        bundle.root,
+        target,
+        expected_bundle_hash=bundle.content_hash,
+    )
+    before = target.read_bytes()
+    with pytest.raises(ValueError, match="already staged"):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=[],
+            requirement_bindings=[],
+        )
+    assert target.read_bytes() == before
+
+
 def test_schema_five_global_publication_rejects_ready_preproduction(tmp_path: Path) -> None:
     from vfx_harness.evaluation.plan_gate import _check_contracts
 

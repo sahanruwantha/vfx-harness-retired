@@ -425,6 +425,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   only the exact global layer row, owned requirements, active structured decisions, compact
   required upstream outcomes, and semantic/dressable dependency interfaces; full registers and
   outcome reports stay outside model context. Context scales with the active delta (HIR-0054).
+  Its unpublished candidate is seeded deterministically and staged one bounded unit at a
+  time; generic `Write` is denied, and only a fully validated candidate may satisfy the
+  session postcondition (HIR-0092).
   Materialization kickoff compiles this layer's judge frames
   and extra-frame id-binding; two-sided `path_clearance_min` `roles` bind on the unit
   that mutates them (HIR-0029). Every unit judge frame must appear in a required

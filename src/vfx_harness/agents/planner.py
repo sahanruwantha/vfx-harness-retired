@@ -473,6 +473,7 @@ async def _materialize_deferred_layer(
     from vfx_harness.orchestration.jit_materialization import (
         MATERIALIZATION_SCHEMA,
         publish_materialization,
+        seed_materialization_candidate,
     )
     from vfx_harness.orchestration.plan_authority import resolve_current
 
@@ -480,8 +481,13 @@ async def _materialize_deferred_layer(
     layout = run_artifacts.ensure(shot.folder, command="plan-layer")
     target = layout.scratch / f"jit-layer-{layer.id}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
-    before = target.stat().st_mtime_ns if target.is_file() else -1
     rel_target = target.relative_to(shot.folder).as_posix()
+    seed_materialization_candidate(
+        bundle.root,
+        target,
+        layer_id=str(layer.id),
+        bundle_hash=bundle.content_hash,
+    )
 
     def _validate_target() -> list[str]:
         from vfx_harness.orchestration.jit_materialization import (
@@ -516,9 +522,13 @@ async def _materialize_deferred_layer(
         except OSError as exc:
             return [str(exc)]
     system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
-Write exactly `{rel_target}` as JSON with schema `{MATERIALIZATION_SCHEMA}`. It must contain
-`bundle_hash`, the complete replacement `layer` with execution `ready`, non-empty bounded stages,
-`scene_contracts`, empty `image_contracts`, `acceptance`, and `requirement_bindings`. Close every
+The harness has already seeded `{rel_target}` with schema `{MATERIALIZATION_SCHEMA}`, bundle
+identity, exact global layer structure, and empty collections. Do not generate or Write the whole
+document. Call `stage_materialization_unit` once per independently bounded unit, including only
+that unit, its scene contracts, and the owned requirement bindings it closes. After all units are
+staged, call `finalize_materialization`; repair its complete findings with
+`patch_materialization`, then finalize again. The completed candidate must contain non-empty
+bounded stages and close every
 globally owned requirement exactly once, either with one or more concrete contract ids or an
 explicit decision carrying `statement` and `decision_strength`. Preserve global layer structure
 exactly. Mutated roles must stay inside reserved namespaces. Every scene contract must be
@@ -567,12 +577,12 @@ counts the bound `image_contract` ids as producers; missing `checks.json` rows a
 `does not exist`. Those ids are builder-owed `propose_checks` payments (exact id, frame,
 property kind, axis); candidate freeze refuses while any remain unpaid without a typed
 `unpaid_image_debt` abstention. Every write
-of the output file runs the full materialization validator and returns every collectable
-finding as `{{json_pointer}}: {{message}}` in one report. When a finding names a pointer, call
+of the completed candidate is checked by `finalize_materialization`, which returns every
+collectable finding as `{{json_pointer}}: {{message}}` in one report. When a finding names a pointer, call
 `patch_materialization`; group independent repairs into its `patches` array so they commit
 atomically and trigger one re-validation. The tool returns remaining findings or VALIDATION
-PASSED. A full Write is for a missing document,
-not field-level repair. Call `evidence_vocabulary` BEFORE authoring contracts — it enumerates every
+PASSED. Generic Write is unavailable because schema wrappers, paths, and cross-unit assembly are
+harness work. Call `evidence_vocabulary` BEFORE authoring contracts — it enumerates every
 contract kind, its evidence domain, and required fields. When no kind can express a claim,
 call `escalate_vocabulary_gap` (typed durable record) and close the requirement with an
 explicit decision resolution referencing the gap id — never pad with a trivially-satisfiable
@@ -596,7 +606,8 @@ global authority, create unit state, write prose, or write another file."""
         measure_ref_paths=tuple(ref for _frame, ref in layer.judges),
         enabled_tools=frozenset({
             "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
-            "gate_preview", "escalate_vocabulary_gap", "patch_materialization",
+            "gate_preview", "escalate_vocabulary_gap", "stage_materialization_unit",
+            "finalize_materialization", "patch_materialization",
         }),
         candidate_materialization=target,
         overlay_root=overlay_root,
@@ -604,15 +615,16 @@ global authority, create unit state, write prose, or write another file."""
     rserver, rnames = build_recipe_tools()
     materialization_tools = _phase_tools(
         pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
-        "gate_preview", "escalate_vocabulary_gap", "patch_materialization",
+        "gate_preview", "escalate_vocabulary_gap", "stage_materialization_unit",
+        "finalize_materialization", "patch_materialization",
     )
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Write", *materialization_tools, *rnames],
-        disallowed_tools=list(MATERIALIZATION_DENIED_TOOLS),
+        allowed_tools=[*materialization_tools, *rnames],
+        disallowed_tools=[*MATERIALIZATION_DENIED_TOOLS, "Write"],
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,
         setting_sources=[],
@@ -657,7 +669,7 @@ global authority, create unit state, write prose, or write another file."""
     try:
         await run_session(
             _attempt,
-            succeeded=lambda: target.is_file() and target.stat().st_mtime_ns != before,
+            succeeded=lambda: target.is_file() and not _validate_target(),
             label=f"materialize layer {layer.id}",
         )
     except Exception as exc:

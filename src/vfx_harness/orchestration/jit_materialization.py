@@ -906,6 +906,130 @@ def inspect_materialization(
         return [line for line in str(exc).split("\n") if line], None
 
 
+def seed_materialization_candidate(
+    global_root: str | Path,
+    materialization_path: str | Path,
+    *,
+    layer_id: str,
+    bundle_hash: str,
+) -> Path:
+    """Create the deterministic wrapper for an incrementally staged layer design.
+
+    The model owns unit decomposition and evidence, but not schema wrappers, bundle
+    identity, global structural fields, or output paths. Seeding those facts lets the
+    materializer publish one bounded unit at a time instead of generating one monolithic
+    first-write document before the harness can observe any progress.
+    """
+    root = Path(global_root)
+    rows = _rows(_document(root / "layers.json"), "layers", "layers.json")
+    source = next((row for row in rows if str(row.get("id")) == str(layer_id)), None)
+    if source is None or source.get("execution") != "jit_deferred":
+        raise ValueError(f"layer {layer_id!r} is not selected jit_deferred authority")
+    layer = dict(source)
+    layer.pop("jit", None)
+    layer["execution"] = "ready"
+    layer["stages"] = []
+    payload = {
+        "schema": MATERIALIZATION_SCHEMA,
+        "bundle_hash": bundle_hash,
+        "layer": layer,
+        "scene_contracts": [],
+        "image_contracts": [],
+        "requirement_bindings": [],
+        "acceptance": [],
+    }
+    target = Path(materialization_path)
+    atomic_write(target, json.dumps(payload, indent=1) + "\n")
+    return target
+
+
+def stage_materialization_unit(
+    materialization_path: str | Path,
+    *,
+    unit: dict[str, Any],
+    scene_contracts: list[dict[str, Any]],
+    requirement_bindings: list[dict[str, Any]],
+    layer_updates: dict[str, Any] | None = None,
+) -> Path:
+    """Append one bounded unit ticket to an unpublished materialization candidate.
+
+    This is deliberately not a publication or a partial validation success. It performs
+    local schema checks and uniqueness checks, writes atomically, and leaves complete
+    cross-unit closure to ``inspect_materialization``/the explicit finalize tool.
+    """
+    from vfx_harness.domain.work_units import WorkUnit
+
+    path = Path(materialization_path)
+    payload = _document(path)
+    if payload.get("schema") != MATERIALIZATION_SCHEMA:
+        raise ValueError("candidate has unsupported materialization schema")
+    if not isinstance(unit, dict):
+        raise ValueError("unit must be an object")
+    parsed = WorkUnit.parse(unit, "staged unit")
+    contracts = list(scene_contracts)
+    bindings = list(requirement_bindings)
+    if any(not isinstance(row, dict) for row in contracts):
+        raise ValueError("scene_contracts must contain objects")
+    if any(not isinstance(row, dict) for row in bindings):
+        raise ValueError("requirement_bindings must contain objects")
+    for row in contracts:
+        if error := validate_row(row):
+            raise ValueError(
+                f"scene contract {row.get('id', '<missing>')}: {error}"
+            )
+    stages = _rows(payload.get("layer") or {}, "stages", "candidate.layer")
+    existing_units = {str(row.get("id")) for row in stages}
+    if parsed.id in existing_units:
+        raise ValueError(f"unit {parsed.id!r} is already staged")
+    existing_contracts = {
+        str(row.get("id")) for row in _rows(payload, "scene_contracts", "candidate")
+    }
+    incoming_contracts = [str(row.get("id") or "") for row in contracts]
+    if any(not item for item in incoming_contracts):
+        raise ValueError("every staged scene contract needs an id")
+    duplicate_contracts = sorted(
+        existing_contracts.intersection(incoming_contracts)
+        | {item for item in incoming_contracts if incoming_contracts.count(item) > 1}
+    )
+    if duplicate_contracts:
+        raise ValueError(
+            "staged scene contract ids are not unique: " + ", ".join(duplicate_contracts)
+        )
+    existing_requirements = {
+        str(row.get("requirement_id"))
+        for row in _rows(payload, "requirement_bindings", "candidate")
+    }
+    incoming_requirements = [str(row.get("requirement_id") or "") for row in bindings]
+    if any(not item for item in incoming_requirements):
+        raise ValueError("every staged requirement binding needs requirement_id")
+    duplicate_requirements = sorted(
+        existing_requirements.intersection(incoming_requirements)
+        | {item for item in incoming_requirements if incoming_requirements.count(item) > 1}
+    )
+    if duplicate_requirements:
+        raise ValueError(
+            "staged requirement ids are not unique: " + ", ".join(duplicate_requirements)
+        )
+    updates = layer_updates or {}
+    unknown_updates = sorted(set(updates) - {"dressable"})
+    if unknown_updates:
+        raise ValueError(
+            "layer_updates may contain only dressable; got " + ", ".join(unknown_updates)
+        )
+    if "dressable" in updates:
+        dressable = updates["dressable"]
+        if not isinstance(dressable, list) or any(
+            not isinstance(value, str) or not value.strip() for value in dressable
+        ):
+            raise ValueError("layer_updates.dressable must be a list of non-empty strings")
+        payload["layer"]["dressable"] = dressable
+    stages.append(unit)
+    payload["scene_contracts"].extend(contracts)
+    payload["requirement_bindings"].extend(bindings)
+    atomic_write(path, json.dumps(payload, indent=1) + "\n")
+    return path
+
+
 def apply_materialization_patch(
     global_root: str | Path,
     materialization_path: str | Path,

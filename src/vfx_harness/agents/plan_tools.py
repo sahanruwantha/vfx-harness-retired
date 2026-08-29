@@ -1537,6 +1537,118 @@ def build_plan_tools(
         return _text(body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""))
 
     @tool(
+        "stage_materialization_unit",
+        "Stage exactly one bounded work unit plus the scene contracts and requirement "
+        "bindings it owns into the harness-seeded candidate. There is no path argument. "
+        "Call once per unit so materialization progress is observable and context scales "
+        "with the unit, then call finalize_materialization. This is unpublished scratch "
+        "state; duplicate unit, contract, or requirement ids are refused.",
+        {
+            "type": "object",
+            "properties": {
+                "unit": {"type": "object"},
+                "scene_contracts": {"type": "array", "items": {"type": "object"}},
+                "requirement_bindings": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+                "layer_updates": {
+                    "type": "object",
+                    "properties": {
+                        "dressable": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["unit", "scene_contracts", "requirement_bindings"],
+            "additionalProperties": False,
+        },
+    )
+    async def stage_materialization_unit_tool(args):
+        candidate = Path(candidate_materialization) if candidate_materialization else None
+        if candidate is None:
+            return _text(
+                "stage_materialization_unit is only available during layer materialization",
+                is_error=True,
+            )
+        from vfx_harness.orchestration.jit_materialization import (
+            stage_materialization_unit,
+        )
+
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: stage_materialization_unit(
+                    candidate,
+                    unit=args.get("unit"),
+                    scene_contracts=args.get("scene_contracts") or [],
+                    requirement_bindings=args.get("requirement_bindings") or [],
+                    layer_updates=args.get("layer_updates"),
+                )
+            )
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return _text(f"unit staging refused: {exc}", is_error=True)
+        return _text(
+            f"STAGED unit {args['unit'].get('id', '<missing>')}: "
+            f"candidate now has {len(payload['layer']['stages'])} unit(s), "
+            f"{len(payload['scene_contracts'])} contract(s), and "
+            f"{len(payload['requirement_bindings'])} requirement binding(s). "
+            "Stage the next independent unit, or call finalize_materialization."
+        )
+
+    @tool(
+        "finalize_materialization",
+        "Validate the complete incrementally staged candidate against global authority "
+        "and the current consumer view. Call only after every unit and owned requirement "
+        "has been staged. Returns VALIDATION PASSED or all remaining JSON-pointer "
+        "findings; repair those with patch_materialization.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    async def finalize_materialization(args):
+        candidate = Path(candidate_materialization) if candidate_materialization else None
+        if candidate is None:
+            return _text(
+                "finalize_materialization is only available during layer materialization",
+                is_error=True,
+            )
+        from vfx_harness.orchestration.jit_materialization import (
+            inspect_materialization,
+            selected_view_artifact,
+        )
+        from vfx_harness.orchestration.plan_authority import artifact_path, resolve_current
+
+        try:
+            bundle = resolve_current(shot_folder)
+            base_layers = selected_view_artifact(
+                shot_folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
+            ) or artifact_path(shot_folder, "layers.json")
+            base_requirements = selected_view_artifact(
+                shot_folder,
+                "requirements.json",
+                bundle.content_hash,
+                overlay_root=overlay_root,
+            ) or artifact_path(shot_folder, "requirements.json")
+            findings, _materialized = await anyio.to_thread.run_sync(
+                lambda: inspect_materialization(
+                    bundle.root,
+                    candidate,
+                    expected_bundle_hash=bundle.content_hash,
+                    base_layers_path=base_layers,
+                    resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
+                    base_requirements_path=base_requirements,
+                )
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            return _text(str(exc), is_error=True)
+        if not findings:
+            return _text(f"VALIDATION PASSED for {candidate.name}.")
+        return _text(
+            "VALIDATION FAILED. Remaining findings:\n"
+            + "\n".join(f"- {item}" for item in findings),
+            is_error=True,
+        )
+
+    @tool(
         "patch_materialization",
         "Atomically set one or several RFC 6901 JSON Pointers on the candidate "
         "materialization file, then re-validate once. Group independent findings in "
@@ -1651,7 +1763,11 @@ def build_plan_tools(
     if unit_plan_target is not None:
         tools.append(publish_unit_plan)
     if candidate_materialization is not None:
-        tools.append(patch_materialization)
+        tools.extend([
+            stage_materialization_unit_tool,
+            finalize_materialization,
+            patch_materialization,
+        ])
     if include_gate:
         tools.append(run_gate)
     if video:

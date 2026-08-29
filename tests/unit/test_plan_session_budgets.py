@@ -320,3 +320,34 @@ def test_materialization_session_denies_glob_and_registers_patch(tmp_path: Path)
         enabled_tools=frozenset({"patch_materialization"}),
     )
     assert absent == []
+
+
+def test_materialization_registers_incremental_unit_staging_tools(tmp_path: Path) -> None:
+    from vfx_harness.agents.plan_tools import build_plan_tools
+
+    candidate = tmp_path / "jit-layer-1.json"
+    candidate.write_text("{}", encoding="utf-8")
+    _server, names = build_plan_tools(
+        tmp_path,
+        enabled_tools=frozenset({
+            "stage_materialization_unit",
+            "finalize_materialization",
+        }),
+        candidate_materialization=candidate,
+    )
+
+    assert {name.split("__")[-1] for name in names} == {
+        "stage_materialization_unit",
+        "finalize_materialization",
+    }
+
+
+def test_materializer_denies_generic_write_and_requires_valid_staged_candidate() -> None:
+    import inspect
+
+    from vfx_harness.agents import planner
+
+    source = inspect.getsource(planner._materialize_deferred_layer)
+    assert 'disallowed_tools=[*MATERIALIZATION_DENIED_TOOLS, "Write"]' in source
+    assert "stage_materialization_unit" in source
+    assert "succeeded=lambda: target.is_file() and not _validate_target()" in source
