@@ -827,9 +827,10 @@ def followup_after_scene_contracts_pass(state: dict) -> str:
             "until that comparison."
         )
     return (
-        "\nUNIT HANDOFF READY: every bound executable scene contract "
-        "passes and this unit binds no image contract. Use the required "
-        "diagnostics, then stop; no beauty comparison is required."
+        "\nCURRENT EXECUTABLE CONTRACTS PASS. This is read-back, not candidate freeze: "
+        "finish every authored ticket and observe its effect, then end the build session "
+        "to freeze the terminal candidate. A passing structural floor must not strand an "
+        "intermediate or temporary edit. No beauty comparison is required."
     )
 
 

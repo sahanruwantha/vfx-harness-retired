@@ -607,7 +607,15 @@ def builder_phase_guard(phase: dict[str, Any], script_rel: str | None) -> HookMa
         # of 2.atmosphere, 2026-08-26, ~6 denials per session against a delivered repair
         # prescription). Mutation stays open until the first in-session verdict, where
         # the round discipline takes over and retires the arm.
+        # An automatic scene probe is read-back, not candidate freeze.  A structural
+        # floor can become true after an intermediate edit (for example a temporary
+        # locator or the first part of a multi-part mesh).  Executable-only work stays
+        # in BUILDING until the model ends its mutation session; the harness then freezes
+        # and evaluates that terminal candidate.  Image-bound work is different: once
+        # its scene interfaces pass, mutation pauses so the exact current scene can pay
+        # and compare its immutable image evidence before another edit (HIR-0118).
         if (mode == "live" and phase.get("scene_contracts_passed")
+                and phase.get("image_evidence_required")
                 and not phase.get("judgment_unresolved")
                 and not phase.get("look_unsettled")
                 and tool.endswith("run_bpy")):
@@ -620,9 +628,8 @@ def builder_phase_guard(phase: dict[str, Any], script_rel: str | None) -> HookMa
                 )
             else:
                 reason = (
-                    "ACTIVE UNIT CONTRACTS ALREADY PASS. Further speculative mutation is "
-                    "blocked; this unit binds no unresolved image evidence. Finish required "
-                    "read-only diagnostics and hand off without another beauty comparison."
+                    "ACTIVE UNIT SCENE AND IMAGE CONTRACTS ALREADY PASS. Further speculative "
+                    "mutation is blocked; finish required read-only diagnostics and hand off."
                 )
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "permissionDecision": "deny",

@@ -391,7 +391,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
 - Reopen a fixed or interrupted unit only through the audited `vfx units retry` transition, with
   reason and evidence. A reopened unit whose executable rows already pass may mutate until the
   first in-session verdict — the convergence guard cannot treat a failed qualitative claim as
-  sealed work (HIR-0021). Promote a retained clean candidate through `vfx plan --promote-run`,
+  sealed work (HIR-0021). Automatic scene-contract read-back is likewise not candidate freeze:
+  an executable-only unit remains mutable until terminal handoff so an intermediate structural
+  floor cannot strand unfinished authored tickets; image-bound work still pauses mutation for
+  immutable comparison once its scene interfaces pass (HIR-0118). Promote a retained clean candidate through `vfx plan --promote-run`,
   never by editing an immutable bundle or re-paying to author the same plan.
 - `blocked` and `superseded` are lifecycle states, not scene or builder failures, and never
   permission to compensate later.

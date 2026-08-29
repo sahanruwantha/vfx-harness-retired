@@ -1657,9 +1657,18 @@ def main():
     _phase["mode"] = "repair"
     check("REPAIR_SCRIPT blocks full replacement", _phase_call("Write") == "deny")
     check("REPAIR_SCRIPT allows a local patch", _phase_call("Edit") is None)
-    _phase.update({"mode": "live", "scene_contracts_passed": True})
+    _phase.update({
+        "mode": "live",
+        "scene_contracts_passed": True,
+        "image_evidence_required": False,
+    })
     check(
-        "a passing live scene contract closes speculative mutation immediately",
+        "an executable-only structural pass does not freeze an intermediate candidate",
+        _phase_call("mcp__blender__run_bpy") is None,
+    )
+    _phase["image_evidence_required"] = True
+    check(
+        "an image-bound scene pass closes mutation until comparison",
         _phase_call("mcp__blender__run_bpy") == "deny",
     )
     _phase["look_unsettled"] = True
@@ -1675,7 +1684,11 @@ def main():
     # edits the retry reason prescribed — a deadlock between the guard's contract flags
     # and acceptance. The reopen arm keeps mutation legal until the first in-session
     # verdict retires it.
-    _phase.update({"scene_contracts_passed": True, "judgment_unresolved": True})
+    _phase.update({
+        "scene_contracts_passed": True,
+        "image_evidence_required": True,
+        "judgment_unresolved": True,
+    })
     check(
         "an operator-reopened failed judgment keeps live mutation legal",
         _phase_call("mcp__blender__run_bpy") is None,

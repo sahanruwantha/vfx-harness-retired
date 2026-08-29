@@ -64,6 +64,10 @@ live in the linked Harness Improvement Records.
   consumers across live chaining, candidate probes, revalidation, warm starts,
   canonical checks, ablation, and composed unit fan-in
   ([HIR-0117](docs/improvements/HIR-0117-artifact-replay-publishes-evaluated-state.md)).
+  Automatic scene-contract read-back no longer freezes an executable-only builder on an
+  intermediate structural pass; terminal handoff is that candidate's freeze boundary,
+  while image-bound units retain the immutable compare-before-more-mutation lock
+  ([HIR-0118](docs/improvements/HIR-0118-automatic-readback-is-not-candidate-freeze.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

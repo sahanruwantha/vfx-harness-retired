@@ -3701,7 +3701,9 @@ async def build_unit(
     # identical repeats. Filter before the builder prompt, critic prompt, and JSON schema.
     axes = _owned_axes(all_axes, layer)
     # Shared with both the Blender tool server and the PreToolUse phase guard. The tool
-    # flips scene_contracts_passed atomically; the next speculative mutation is denied.
+    # flips scene_contracts_passed atomically. Image-bound work then pauses mutation for
+    # an immutable comparison; executable-only work remains in BUILDING until the model's
+    # terminal handoff freezes its candidate (HIR-0118).
     #
     # Typed unit authority decides look scope. Only a unit that declares no capabilities
     # at all (legacy schema-4 layers) falls back to scanning axis identifiers, which
