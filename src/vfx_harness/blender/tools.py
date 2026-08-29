@@ -23,6 +23,7 @@ import anyio
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from PIL import Image
 
+from vfx_harness.domain.atomicity import LIVE_WRITE_FAMILY_RULE, script_write_family_evidence
 from vfx_harness.evidence.checks import METRICS
 from vfx_harness.evidence.compare_panels import crop_pixels, save_context_sheet, save_focus_sheet, validate_crop
 from vfx_harness.observability import run_artifacts
@@ -50,6 +51,52 @@ _MAX_W = 2048
 # height that is right for ONE frame doubles the payload.
 _SHEET_MAX_W = 3072
 _JPEG_Q = 85
+
+
+def _run_bpy_write_family_error(source: str, unit_scope: Mapping | None) -> str:
+    """Refuse a payload whose typed Blender calls exceed compiled unit authority."""
+    if not unit_scope:
+        return ""
+    clusters = [
+        row
+        for row in (unit_scope.get("write_clusters") or [])
+        if isinstance(row, Mapping) and row.get("instrument_family")
+    ]
+    if len(clusters) != 1:
+        labels = [
+            "/".join(
+                str(row.get(key) or "")
+                for key in ("role_namespace", "host_class", "instrument_family")
+            )
+            for row in clusters
+        ]
+        return (
+            "BLOCKED: active unit does not have exactly one derived write-cluster; "
+            f"found {labels or ['(none)']}. Rematerialize or split the unit before "
+            f"mutating Blender. {LIVE_WRITE_FAMILY_RULE}"
+        )
+    try:
+        evidence = script_write_family_evidence(source)
+    except SyntaxError as exc:
+        return f"BLOCKED: run_bpy payload is not valid Python at line {exc.lineno}: {exc.msg}"
+    planned = str(clusters[0]["instrument_family"])
+    allowed = {planned}
+    if planned == "camera":
+        allowed.add("keyframe")
+    mutates = unit_scope.get("mutates") or {}
+    if isinstance(mutates, Mapping) and mutates.get("dresses"):
+        allowed.add("shading")
+    illegal = [item for item in evidence if item.family not in allowed]
+    if not illegal:
+        return ""
+    observed = ", ".join(item.label() for item in evidence)
+    return (
+        "BLOCKED: run_bpy payload exceeds the active unit's derived write family "
+        f"{planned!r}; detected {observed}. Allowed families for this unit: "
+        + ", ".join(sorted(allowed))
+        + ". Split or rematerialize the work; semantic role tags cannot make mixed "
+        f"mutation legal. {LIVE_WRITE_FAMILY_RULE}"
+    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -1477,6 +1524,11 @@ def build_blender_tools(
         {"type": "object", "properties": {"script": {"type": "string"}}, "required": ["script"]},
     )
     async def run_bpy(args):
+        family_error = _run_bpy_write_family_error(
+            str(args.get("script") or ""), unit_scope
+        )
+        if family_error:
+            return _text(family_error, is_error=True)
         stop = _black_search_stop()
         if stop:
             return _text(stop, is_error=True)

@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from vfx_harness.domain.atomicity import residual_instrument_family
+from vfx_harness.domain.atomicity import residual_instrument_family, write_clusters
 from vfx_harness.domain.image_debts import image_contract_debt_cards
 from vfx_harness.domain.publish_interfaces import compile_unit_publish_interfaces
 from vfx_harness.domain.work_units import WorkUnit, bound_claim_contract_ids
@@ -146,6 +146,12 @@ def compile_unit_scope(
         )
     inventory = tuple(helpers) if helpers is not None else helper_inventory()
     image_debts = [card.as_dict() for card in image_contract_debt_cards(unit)]
+    clusters = write_clusters(unit, contracts)
+    publish_family = (
+        clusters[0].instrument_family
+        if len(clusters) == 1
+        else residual_instrument_family(unit)
+    )
     publish_interfaces = [
         interface.as_dict()
         for interface in compile_unit_publish_interfaces(
@@ -153,7 +159,7 @@ def compile_unit_scope(
             layer_id=str(layer_id),
             bound_contract_ids=bound_claim_contract_ids(unit),
             authored=authored_publishes,
-            instrument_family=residual_instrument_family(unit),
+            instrument_family=publish_family,
             unit_digest=unit_digest,
         )
     ]
@@ -174,6 +180,14 @@ def compile_unit_scope(
         },
         "provides": list(unit.provides),
         "look_capabilities": list(unit.look_capabilities),
+        "write_clusters": [
+            {
+                "role_namespace": cluster.role_namespace,
+                "host_class": cluster.host_class,
+                "instrument_family": cluster.instrument_family,
+            }
+            for cluster in clusters
+        ],
         "judge": {
             "primary": unit.evaluation.primary_judge,
             "frames": [

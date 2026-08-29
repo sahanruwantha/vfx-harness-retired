@@ -23,6 +23,7 @@ from vfx_harness.domain.atomicity import (
     UNRESOLVED_FAMILY_RULE,
     atomicity_gaps,
     instrument_family_for_row,
+    script_write_family_evidence,
     write_clusters,
 )
 from vfx_harness.domain.image_signal import (
@@ -190,6 +191,77 @@ def test_helper_registry_covers_every_injected_helper() -> None:
 
     names = {row["name"] for row in helper_inventory()}
     assert names == set(HELPER_INSTRUMENT_FAMILY)
+
+
+def test_geometry_provides_is_additive_to_bound_keyframe_work() -> None:
+    unit = _unit(
+        "animated_blade",
+        roles=["iris.blades"],
+        contract_id="blade-mesh",
+        extra_contracts=["blade-onset"],
+        provides=["geometry"],
+    )
+    rows = [
+        _count_row("blade-mesh", ["iris.blades"], kind="mesh_vertex_count"),
+        {
+            **_count_row("blade-onset", ["iris.blades"], kind="onset_order"),
+            "compare_roles": ["iris.blades"],
+            "frames": [1, 36],
+        },
+    ]
+
+    assert [cluster.label() for cluster in write_clusters(unit, rows)] == [
+        "iris.blades/control_host/keyframe",
+        "iris.blades/geometry/mesh",
+    ]
+    assert any(
+        gap.code == "mixed_clusters"
+        for gap in atomicity_gaps([unit], rows, layer_id="2")
+    )
+
+
+def test_camera_provider_absorbs_same_host_placement_and_motion() -> None:
+    unit = _unit(
+        "camera_path",
+        roles=["camera.rig"],
+        contract_id="camera-motion",
+        provides=["camera"],
+    )
+    rows = [{
+        **_count_row("camera-motion", ["camera.rig"], kind="keyframe_schedule"),
+        "samples": [
+            {"frame": 1, "values": {"location": [0, 0, 0]}},
+            {"frame": 36, "values": {"location": [1, 2, 3]}},
+        ],
+    }]
+
+    assert [cluster.label() for cluster in write_clusters(unit, rows)] == [
+        "camera.rig/camera/camera"
+    ]
+    assert not any(
+        gap.code == "mixed_clusters"
+        for gap in atomicity_gaps([unit], rows, layer_id="1")
+    )
+
+
+def test_run_bpy_family_evidence_is_typed_and_ignores_semantic_tags() -> None:
+    source = """
+mesh = bpy.data.meshes.new('blade')
+bm = bmesh.new()
+bm.to_mesh(mesh)
+mat = bpy.data.materials.new('metal')
+obj.data.materials.append(mat)
+obj.keyframe_insert(data_path='rotation_euler', frame=1)
+bvfx_role(obj, 'iris.blades', owner_layer='2')
+bvfx_control(obj, 'iris.blades.hinge', owner_layer='2')
+"""
+
+    evidence = script_write_family_evidence(source)
+    families = {item.family for item in evidence}
+
+    assert families == {"mesh", "shading", "keyframe"}
+    assert not any(item.operation in {"bvfx_role", "bvfx_control"} for item in evidence)
+    assert all(item.line > 0 for item in evidence)
 
 
 def test_image_debt_role_names_and_look_labels_do_not_invent_optical_signal() -> None:

@@ -7,6 +7,7 @@ cluster without a typed exception is refused by name. Precedent: HIR-0057.
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -141,6 +142,15 @@ COMPARISON_SELECTOR_RULE = (
 ONE_REPAIR_OWNER_RULE = (
     "required claims on one unit share one repair_owner, which is the same ownership "
     "model compiled into cannot_express_in_scope fault_owner_options."
+)
+
+LIVE_WRITE_FAMILY_RULE = (
+    "a run_bpy payload may exercise only the active unit's one derived instrument "
+    "family. High-confidence helper and Blender API calls are classified before "
+    "execution; role/control tagging is metadata, camera-host keyframes belong to the "
+    "camera family, and shading is additionally legal only for an explicitly declared "
+    "dresses surface. Split or rematerialize a mixed payload instead of tagging the "
+    "resulting objects into scope."
 )
 
 
@@ -340,12 +350,95 @@ def _families_for_namespace(
             selectors = _row_selectors(row)
             if any(plan_selector_declared(role, (selector,)) for selector in selectors):
                 families.add(family)
+    # A producer capability is mutation authority, not a fallback label. A geometry
+    # producer that also binds keyframe evidence performs mesh + keyframe work; allowing
+    # the evidence family to replace the provides family is exactly how a heterogeneous
+    # Layer 2 unit published as keyframe-only in run 20260829T145841Z-1efac6.
+    residual = _provides_residual_family(unit)
+    if residual == "camera" and families.issubset({"control", "keyframe"}):
+        # A camera provider owns the camera host's placement and motion as one typed
+        # camera interface. Splitting construction from its animated transform would
+        # invalidate a legal camera path while adding no independent successor surface.
+        families = {"camera"}
+    elif residual:
+        families.add(residual)
     if families:
         return families
     if len(_roles_in_namespace(unit, namespace)) > 1:
         return set()
-    residual = _provides_residual_family(unit)
-    return {residual or "control"}
+    return {"control"}
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptWriteFamilyEvidence:
+    """One high-confidence mutation-family witness in a run_bpy payload."""
+
+    family: str
+    operation: str
+    line: int
+
+    def label(self) -> str:
+        return f"{self.family}:{self.operation}@L{self.line}"
+
+
+def _ast_path(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _ast_path(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def _script_call_family(path: str) -> str | None:
+    """Classify only calls whose write semantics are unambiguous without Blender."""
+    leaf = path.rsplit(".", 1)[-1]
+    if path in HELPER_INSTRUMENT_FAMILY:
+        # Semantic tags describe scope; they do not mutate the host's production
+        # family and therefore cannot launder a mixed payload into compliance.
+        if path in {"bvfx_role", "bvfx_control"}:
+            return None
+        return HELPER_INSTRUMENT_FAMILY[path]
+    if leaf in {"keyframe_insert", "keyframe_delete", "driver_add", "driver_remove"}:
+        return "keyframe"
+    if (
+        path in {"bmesh.new", "bpy.data.meshes.new"}
+        or path.startswith(("bmesh.ops.", "bpy.ops.mesh."))
+        or leaf in {"from_pydata", "to_mesh"}
+    ):
+        return "mesh"
+    if path == "bpy.data.materials.new" or ".materials." in path:
+        return "shading"
+    if path == "bpy.data.lights.new":
+        return "light"
+    if path == "bpy.data.cameras.new":
+        return "camera"
+    return None
+
+
+def script_write_family_evidence(source: str) -> tuple[ScriptWriteFamilyEvidence, ...]:
+    """Derive auditable write-family witnesses from one run_bpy payload.
+
+    This is deliberately a closed, high-confidence classifier. Generic transforms and
+    ``bpy.data.objects.new`` are host-ambiguous, so they remain governed by semantic
+    role scope; typed helpers and family-specific data APIs cannot be misclassified.
+    """
+    tree = ast.parse(source, filename="<run_bpy>", mode="exec")
+    found: list[ScriptWriteFamilyEvidence] = []
+    seen: set[tuple[str, str, int]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        operation = _ast_path(node.func)
+        family = _script_call_family(operation)
+        if family is None:
+            continue
+        key = (family, operation, int(getattr(node, "lineno", 0)))
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(ScriptWriteFamilyEvidence(*key))
+    return tuple(sorted(found, key=lambda item: (item.line, item.family, item.operation)))
 
 
 def _unresolved_roles_for_namespace(

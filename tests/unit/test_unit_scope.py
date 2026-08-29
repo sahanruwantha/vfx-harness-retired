@@ -154,6 +154,31 @@ def test_unit_scope_keeps_exact_evaluator_fields_for_bound_contract() -> None:
     assert '"lo":0.35' in formatted
 
 
+def test_unit_scope_carries_the_exact_derived_write_cluster() -> None:
+    unit = _unit("material", roles=["lookdev.material"], contract_id="roughness")
+    contracts = [{
+        "id": "roughness",
+        "kind": "node_socket_value",
+        "material_roles": ["lookdev.material"],
+        "node_roles": ["lookdev.material.bsdf"],
+        "graph": "material",
+        "socket": "Roughness",
+        "op": "band",
+        "lo": 0.35,
+        "hi": 0.75,
+        "frame": 1,
+    }]
+
+    card = compile_unit_scope(unit=unit, layer_id="1", contracts=contracts)
+
+    assert card["write_clusters"] == [{
+        "role_namespace": "lookdev.material",
+        "host_class": "control_host",
+        "instrument_family": "shading",
+    }]
+    assert {row["kind"] for row in card["publish_interfaces"]} == {"material_slot"}
+
+
 def test_unit_scope_lists_owed_image_contract_debts() -> None:
     look = {
         "id": "claim.look",

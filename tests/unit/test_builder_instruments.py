@@ -15,7 +15,10 @@ from vfx_harness.agents.builder import (
 )
 from vfx_harness.application.preflight import empty_success, model_phase_failure
 from vfx_harness.blender.geom import motion_from_positions
-from vfx_harness.blender.tools import _run_bpy_instrument_hint
+from vfx_harness.blender.tools import (
+    _run_bpy_instrument_hint,
+    _run_bpy_write_family_error,
+)
 from vfx_harness.evidence.compare_panels import focus_signal
 
 
@@ -31,6 +34,91 @@ def test_frommesh_error_names_path_clearance_instrument() -> None:
 def test_unrelated_run_bpy_error_is_not_rewritten() -> None:
     error = "NameError: name 'foo' is not defined"
     assert _run_bpy_instrument_hint("print(1)", error) == error
+
+
+def test_run_bpy_refuses_family_specific_calls_outside_compiled_cluster() -> None:
+    card = {
+        "write_clusters": [{
+            "role_namespace": "iris.blades",
+            "host_class": "geometry",
+            "instrument_family": "mesh",
+        }],
+        "mutates": {"dresses": []},
+    }
+    mixed = """
+mesh = bpy.data.meshes.new('blade')
+obj.keyframe_insert(data_path='rotation_euler', frame=1)
+bvfx_role(obj, 'iris.blades', owner_layer='2')
+"""
+
+    message = _run_bpy_write_family_error(mixed, card)
+
+    assert "BLOCKED" in message
+    assert "mesh:bpy.data.meshes.new@L2" in message
+    assert "keyframe:obj.keyframe_insert@L3" in message
+    assert "semantic role tags cannot make mixed mutation legal" in message
+    assert _run_bpy_write_family_error(
+        "mesh = bpy.data.meshes.new('blade')\nbvfx_role(obj, 'iris.blades')", card
+    ) == ""
+
+
+def test_run_bpy_allows_typed_dressing_but_not_undeclared_mesh_work() -> None:
+    card = {
+        "write_clusters": [{
+            "role_namespace": "iris.rig",
+            "host_class": "control_host",
+            "instrument_family": "keyframe",
+        }],
+        "mutates": {"dresses": ["iris.blades"]},
+    }
+
+    assert _run_bpy_write_family_error(
+        "obj.keyframe_insert(data_path='rotation_euler')\n"
+        "mat = bpy.data.materials.new('metal')",
+        card,
+    ) == ""
+    assert "mesh" in _run_bpy_write_family_error("bmesh.new()", card)
+
+
+def test_run_bpy_treats_camera_host_keyframes_as_camera_work() -> None:
+    card = {
+        "write_clusters": [{
+            "role_namespace": "camera.rig",
+            "host_class": "camera",
+            "instrument_family": "camera",
+        }],
+        "mutates": {"dresses": []},
+    }
+    payload = (
+        "cam, target = bvfx_camera_rig(role='camera.rig')\n"
+        "cam.keyframe_insert(data_path='location', frame=1)"
+    )
+
+    assert _run_bpy_write_family_error(payload, card) == ""
+    assert "light" in _run_bpy_write_family_error("bpy.data.lights.new('bad','AREA')", card)
+
+
+def test_run_bpy_refuses_mutation_when_selected_unit_is_not_atomic() -> None:
+    card = {
+        "write_clusters": [
+            {
+                "role_namespace": "iris.blades",
+                "host_class": "geometry",
+                "instrument_family": "mesh",
+            },
+            {
+                "role_namespace": "iris.blades",
+                "host_class": "control_host",
+                "instrument_family": "keyframe",
+            },
+        ],
+        "mutates": {"dresses": []},
+    }
+
+    message = _run_bpy_write_family_error("bvfx_role(obj, 'iris.blades')", card)
+
+    assert "does not have exactly one derived write-cluster" in message
+    assert "Rematerialize or split" in message
 
 
 def test_typed_cannot_express_ends_live_critique_budget() -> None:
