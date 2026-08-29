@@ -343,8 +343,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   interface from the same producer is not authority. The selector is read-only and
   never enters camera mutation authority (HIR-0096, HIR-0099).
   The incremental unit staging tool exposes the closed WorkUnit authoring schema:
-  temporal enums, optional composition-context union, and exact typed publish/consume
-  fields are enumerated before generation rather than learned through parser retries
+  temporal enums, the active layer's exact owned claim-axis ids, optional
+  composition-context union, and exact typed publish/consume fields are enumerated
+  before generation rather than learned through parser retries
   (HIR-0097). Every staging or patch write uses one locked, revision-checked candidate
   transaction. Only `stage_materialization_unit` may add, replace, or reorder stage rows;
   field patches affecting units or their contracts run the same local staging gates before

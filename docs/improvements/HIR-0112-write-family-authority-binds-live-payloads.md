@@ -75,3 +75,5 @@ rematerializing or rebuilding Layer 1.
 This is a stricter publication and live-mutation boundary with no schema or digest bump. A
 rollback would again permit published family authority and executed family behavior to
 diverge, so it is unsafe.
+
+Implementation commit: `2619c56` (`Bind live payloads to write-family authority`).
