@@ -1,7 +1,7 @@
 ---
 id: HIR-0105
 title: JSON pointer rejection enumerates the live list
-status: proposed
+status: accepted
 introduced_in: unreleased
 date: 2026-08-29
 failure_class: candidate_patch_list_location_guessing
@@ -74,9 +74,22 @@ identified two-row miss reports range `0..1` and both `index:id` mappings; and `
 rejected without mutating the last row. Existing JSON-pointer and materialization patch
 fixtures remain passing.
 
-Producing-run evidence and broad regression results will be added after a Layer 2
-rematerialization exercises the new rejection card or completes without another pointer
-guess.
+- JSON-pointer, materialization, and tool-policy suites: `107 passed in 4.64s`.
+- Full repository suite: `554 passed in 43.12s`.
+- `.venv/bin/ruff check src tests`: `All checks passed!`.
+- `.venv/bin/vfx --help`: exit 0.
+- Producing run `20260829T105346Z-03ae9a` attempted
+  `/scene_contracts/6` against a live six-row candidate at 477.6 seconds. The rejection
+  named length 6, range `0..5`, all six `index:id` mappings, and `-` as the final-token
+  append action. The next patch at 495.2 seconds used `/scene_contracts/-`, passed the
+  pointer boundary, and reached structural validation. There was one rejected pointer
+  call—the same count as an isolated baseline miss—and 17.6 seconds to correction versus
+  12.1 and 11.1 seconds in the two prior guesses; the mechanism improved determinism and
+  row identity without demonstrating a latency reduction.
+- The same run completed Layer 2 materialization and unit-plan publication through a
+  clean deterministic gate in 21 materialization turns plus four unit-planning turns.
+
+Implementation commit: `e6ea0c4` (`fix: teach JSON pointer list locations`).
 
 ## Release and rollback
 
