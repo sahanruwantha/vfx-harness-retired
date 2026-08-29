@@ -1373,6 +1373,30 @@ def selected_view_artifact(
     return path
 
 
+def _consumer_base_artifact(
+    shot_folder: str | Path,
+    name: str,
+    bundle,
+    *,
+    overlay_root: str | Path | None = None,
+) -> Path:
+    """Resolve one materialization base from exactly the selected generation.
+
+    A live JIT pointer may still name the previous plan generation immediately after
+    global republication.  That view is superseded state, so the verified sparse bundle
+    is the base until this generation publishes a materialized replacement.  Remat and
+    ordinary materialization must share this rule; neither may turn the intentionally
+    absent superseded-view result into ``Path(None)``.
+    """
+    selected = selected_view_artifact(
+        shot_folder,
+        name,
+        bundle.content_hash,
+        overlay_root=overlay_root,
+    )
+    return selected if selected is not None else bundle.root / name
+
+
 def revert_materialization(
     shot_folder: str | Path, layer_id: str, *, select: bool = True
 ) -> Path | None:
@@ -1403,9 +1427,7 @@ def revert_materialization(
 
     view_docs = {
         name: json.loads(
-            Path(selected_view_artifact(shot, name, bundle.content_hash)).read_text(
-                encoding="utf-8"
-            )
+            _consumer_base_artifact(shot, name, bundle).read_text(encoding="utf-8")
         )
         for name in OVERLAY_ARTIFACTS
     }
@@ -1491,7 +1513,7 @@ def _composed_documents(
     — one composition, so the preview cannot diverge from what publication produces.
     Runs 20260825T015307Z and 034337Z each published on a preview that had shown the
     PRE-publication view: a false CLEAN, a retracted generation each."""
-    from vfx_harness.orchestration.plan_authority import artifact_path, resolve_current
+    from vfx_harness.orchestration.plan_authority import resolve_current
 
     shot = Path(shot).resolve()
     bundle = resolve_current(shot)
@@ -1501,21 +1523,21 @@ def _composed_documents(
     if layer_id not in global_layers:
         raise ValueError(f"JIT materialization names unknown layer {layer_id!r}")
     _require_upstream_outcomes(shot, global_layers[layer_id])
-    base_layers = selected_view_artifact(
-        shot, "layers.json", bundle.content_hash, overlay_root=overlay_root
-    ) or artifact_path(shot, "layers.json")
-    base_scene = selected_view_artifact(
-        shot, "scene_checks.json", bundle.content_hash, overlay_root=overlay_root
-    ) or artifact_path(shot, "scene_checks.json")
-    base_checks = selected_view_artifact(
-        shot, "checks.json", bundle.content_hash, overlay_root=overlay_root
-    ) or artifact_path(shot, "checks.json")
-    base_requirements = selected_view_artifact(
-        shot, "requirements.json", bundle.content_hash, overlay_root=overlay_root
-    ) or artifact_path(shot, "requirements.json")
-    base_acceptance = selected_view_artifact(
-        shot, "acceptance.json", bundle.content_hash, overlay_root=overlay_root
-    ) or artifact_path(shot, "acceptance.json")
+    base_layers = _consumer_base_artifact(
+        shot, "layers.json", bundle, overlay_root=overlay_root
+    )
+    base_scene = _consumer_base_artifact(
+        shot, "scene_checks.json", bundle, overlay_root=overlay_root
+    )
+    base_checks = _consumer_base_artifact(
+        shot, "checks.json", bundle, overlay_root=overlay_root
+    )
+    base_requirements = _consumer_base_artifact(
+        shot, "requirements.json", bundle, overlay_root=overlay_root
+    )
+    base_acceptance = _consumer_base_artifact(
+        shot, "acceptance.json", bundle, overlay_root=overlay_root
+    )
     materialized = validate_materialization(
         bundle.root,
         materialization_path,

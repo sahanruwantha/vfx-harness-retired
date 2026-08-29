@@ -2738,6 +2738,52 @@ def test_unselected_revert_leaves_live_pointer(tmp_path, monkeypatch) -> None:
     assert after["2"].execution == "ready"
 
 
+def test_unselected_revert_rebases_on_republished_bundle(tmp_path, monkeypatch) -> None:
+    """A live JIT view belongs to one immutable global generation.
+
+    After global republication it is superseded state, so remat must build its unpublished
+    design overlay from the newly selected sparse bundle and leave the old live pointer
+    untouched until a replacement publishes.  Run 20260829T082822Z-65c13c instead wrapped
+    the intentionally absent superseded-view artifact in Path(None).
+    """
+    from vfx_harness.orchestration.jit_materialization import revert_materialization
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    first_layout = run_artifacts.create(tmp_path, "first-generation")
+    first_bundle = publish_current(tmp_path, first_layout, outcome="clean_with_deferred")
+    _passed_layer_one_outcome(tmp_path)
+    publish_materialization(tmp_path, _jit_payload(tmp_path, first_bundle.content_hash))
+
+    pointer = tmp_path / "state" / "jit-layers" / "current.json"
+    before = pointer.read_bytes()
+    old_view = json.loads(before)
+    assert old_view["bundle_hash"] == first_bundle.content_hash
+    assert old_view["materialized_layers"] == ["1", "2"]
+
+    (tmp_path / "plans" / "global.md").write_text(
+        "# republished sparse authority\n", encoding="utf-8"
+    )
+    second_layout = run_artifacts.create(tmp_path, "second-generation")
+    second_bundle = publish_current(tmp_path, second_layout, outcome="clean_with_deferred")
+    assert second_bundle.content_hash != first_bundle.content_hash
+
+    overlay = revert_materialization(tmp_path, "2", select=False)
+
+    assert overlay is not None
+    assert pointer.read_bytes() == before
+    overlay_layers = load_layers_from_path(overlay / "layers.json")
+    assert overlay_layers["2"].execution == "jit_deferred"
+    assert overlay_layers["2"].stages == ()
+    overlay_register = json.loads((overlay / "requirements.json").read_text(encoding="utf-8"))
+    assert {
+        row["id"]: row["resolution"]["kind"]
+        for row in overlay_register["requirements"]
+        if row["id"] == "R-final-lock"
+    } == {"R-final-lock": "deferred_owner"}
+
+
 def test_unselected_revert_of_last_layer_does_not_unlink_pointer(
     tmp_path, monkeypatch
 ) -> None:

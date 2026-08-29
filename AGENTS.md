@@ -232,7 +232,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   schema, wrong bundle hash, and a non-object layer remain fatal. Historical plan bundles are
   not a repair instrument (HIR-0023). Rematerialization writes a reverted overlay as the design
   base and selects only when the replacement publishes; crash, truncation, or a broken pipe
-  leaves the previously selected view (HIR-0026). Rematerialization of a layer that already
+  leaves the previously selected view (HIR-0026). After global republication, a live JIT view
+  pinned to the prior bundle is superseded state: rematerialization derives its unpublished
+  design base from the currently selected sparse bundle and never carries prior-generation
+  rows forward by proximity (HIR-0101). Rematerialization of a layer that already
   has accepted units is `apply_replan`: matching digests stay, including `passed`;
   changed or downstream-invalidated units are superseded even if they had passed.
   `--discard-accepted` retires accepted orphans and wipes state only when the replan
