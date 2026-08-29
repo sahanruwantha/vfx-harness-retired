@@ -36,6 +36,7 @@ mutation is a harness defect, not a model limitation to paper over with a longer
 - Required visible_fraction is repaired by a camera or role mutator, not a volume-only unit
 - Multi-role visible_fraction is AND; a union cannot hide a named role below lo
 - Geometry units freeze-protect lifecycle-active vis on this layer, including sibling rows
+- Derived write-cluster publication (no authored family string), read-only consumed interfaces, and digest-bound publish/consume identity
 - Closed-loop mutation: every write has a matching observation
 - Earned qualitative judgment where executable evidence cannot decide
 

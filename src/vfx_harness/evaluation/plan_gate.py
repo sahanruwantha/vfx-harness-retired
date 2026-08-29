@@ -1311,6 +1311,63 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             for unit in layer.get("stages") or []
             if isinstance(unit, dict) and unit.get("id")
         }
+        # HIR-0057: HIR-0051's implicit geometry visibility protection must be
+        # satisfiable at this unit boundary. A later sibling cannot produce evidence
+        # which an earlier geometry unit must freeze-protect before sealing.
+        try:
+            from vfx_harness.domain.work_units import (
+                GEOMETRY_VIS_DEPENDENCY_RULE,
+                WorkUnit,
+                geometry_vis_dependency_gaps,
+            )
+
+            typed_stages = tuple(
+                WorkUnit.parse(unit, f"layer {lid}.stages[{index}]")
+                for index, unit in enumerate(layer.get("stages") or [])
+            )
+        except (TypeError, ValueError):
+            # Typed layer validation owns malformed units. Avoid duplicating its
+            # partial-shape findings here.
+            typed_stages = ()
+        for gap in geometry_vis_dependency_gaps(typed_stages, scene_rows, lid):
+            out.append(
+                Finding(
+                    "geometry-vis-dependency",
+                    True,
+                    f"layer {lid} unit {gap.unit_id}",
+                    f"provides geometry and therefore protects visible_fraction "
+                    f"{gap.contract_id}, but role {gap.role!r} is produced only by "
+                    f"non-dependency unit(s) {', '.join(gap.producer_ids)}",
+                    GEOMETRY_VIS_DEPENDENCY_RULE,
+                )
+            )
+        from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
+
+        raw_stages = tuple(
+            unit
+            for unit in layer.get("stages") or []
+            if isinstance(unit, dict)
+        )
+        for gap in atomicity_gaps(
+            typed_stages, scene_rows, layer_id=lid, raw_stages=raw_stages
+        ):
+            extra = ""
+            if gap.considered_exceptions:
+                extra = (
+                    " Exceptions considered and insufficient: "
+                    + ", ".join(gap.considered_exceptions)
+                    + "."
+                )
+            out.append(
+                Finding(
+                    "unit-atomicity",
+                    True,
+                    f"layer {lid} unit {gap.unit_id}",
+                    gap.detail + extra,
+                    "split the unit, consume a typed assembly interface, bind dressing, "
+                    "or reassign evidence. " + ATOMICITY_RULE,
+                )
+            )
         # Typed authority first: a unit DECLARES what it provides to dependents. The
         # substring scan below is the legacy path for units that declare nothing, and it
         # is why `cam_rig` — the harness's own default camera-rig role, and the role the
@@ -2472,7 +2529,13 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
         unit_passed = {
             uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
         }
-        ready = ready_units(next_layer.stages, unit_passed)
+        from vfx_harness.orchestration.unit_state import digest_matched_passed
+
+        ready = ready_units(
+            next_layer.stages,
+            unit_passed,
+            sealed_producers=digest_matched_passed(state, next_layer.stages),
+        )
         required = len(ready)
         if not ready:
             out.append(

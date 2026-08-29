@@ -11,6 +11,7 @@ import inspect
 
 import pytest
 
+from vfx_harness.blender.checks import visual_subject_error
 from vfx_harness.domain.semantic_roles import (
     format_object_miss,
     match_semantic,
@@ -80,7 +81,9 @@ def test_shared_role_names_object_equals_not_a_more_exact_role() -> None:
         ],
     )
     assert "matched 2 objects" in text
-    assert "pass object=" in text
+    assert "object='atmo_haze_domain'" in text
+    assert "OMIT role=" in text
+    assert "mutually exclusive" in text
     assert "pass an exact role" not in text
 
 
@@ -142,3 +145,13 @@ def test_reproduction_hint_addresses_role_not_display_name() -> None:
     )
     assert "role='cam.blockout_fg'" in hint
     assert "object='proxy'" not in hint
+
+
+def test_visual_checks_route_light_hosts_to_contribution_pass() -> None:
+    error = visual_subject_error("framing", "key_light", "LIGHT")
+
+    assert error is not None
+    assert "has no rendered bounding box" in error
+    assert "render_pass(light='key_light'" in error
+    assert visual_subject_error("motion", "key_light", "LIGHT") is None
+    assert visual_subject_error("framing", "hero", "MESH") is None

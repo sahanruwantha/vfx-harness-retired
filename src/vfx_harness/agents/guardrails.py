@@ -161,6 +161,72 @@ def _undefined_names(tree) -> set[str]:
     return called - bound - scope
 
 
+def _run_bpy_has_authored_mutation(tree) -> bool:
+    """Conservatively distinguish authored scene writes from improvised reads.
+
+    This is not permission inference: scope enforcement still happens after execution.
+    It only keeps scripts with no durable-write operation out of the mutation boundary,
+    journal, and one-repair convergence arm.
+    """
+    import ast
+
+    local_containers: set[str] = {"RESULT"}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = getattr(node, "value", None)
+        is_container = isinstance(value, (ast.Dict, ast.List, ast.Set)) or (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in {"dict", "list", "set"}
+        )
+        if not is_container:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        local_containers.update(t.id for t in targets if isinstance(t, ast.Name))
+
+    write_methods = {
+        "animation_data_clear", "animation_data_create", "clear", "driver_add",
+        "driver_remove", "from_pydata", "keyframe_delete", "keyframe_insert", "link", "new",
+        "remove", "to_mesh", "transform", "unlink", "update_tag",
+    }
+
+    def root_name(expr) -> str | None:
+        while isinstance(expr, (ast.Attribute, ast.Subscript)):
+            expr = expr.value
+        return expr.id if isinstance(expr, ast.Name) else None
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    return True
+                if isinstance(target, ast.Subscript) and root_name(target) not in local_containers:
+                    return True
+        elif isinstance(node, ast.Delete):
+            if any(isinstance(t, (ast.Attribute, ast.Subscript)) for t in node.targets):
+                return True
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id.startswith("bvfx_") or node.func.id in {"delattr", "setattr"}:
+                    return True
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr in write_methods:
+                    return True
+                # Any bpy.ops.* call is an imperative Blender operation even when the
+                # final method name is not in the stable write-method vocabulary.
+                if root_name(node.func) == "bpy" and isinstance(node.func.value, ast.Attribute):
+                    chain = []
+                    cur = node.func
+                    while isinstance(cur, ast.Attribute):
+                        chain.append(cur.attr)
+                        cur = cur.value
+                    if "ops" in chain:
+                        return True
+    return False
+
+
 def script_sanity() -> HookMatcher:
     """Parse every run_bpy payload before it executes: syntax, and bare `next(...)`.
 
@@ -232,6 +298,62 @@ def script_sanity() -> HookMatcher:
                     f"handle `x is None`, or call inspect_nodes(...) first to see which "
                     f"node types actually exist. For the usual targets the bvfx_* helpers "
                     f"already handle the miss."}}
+
+        filesystem_calls: list[tuple[int, str]] = []
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Call):
+                continue
+            if isinstance(node.func, _ast.Name) and node.func.id == "open":
+                filesystem_calls.append((node.lineno, "open"))
+                continue
+            if isinstance(node.func, _ast.Attribute):
+                attr = node.func.attr
+                owner = node.func.value
+                owner_name = owner.id if isinstance(owner, _ast.Name) else ""
+                if attr in {"write_text", "write_bytes", "save_render"}:
+                    filesystem_calls.append((node.lineno, attr))
+                    continue
+                if owner_name == "os" and attr in {"makedirs", "mkdir", "remove", "replace"}:
+                    filesystem_calls.append((node.lineno, f"os.{attr}"))
+                    continue
+                if owner_name == "shutil" and attr in {"copy", "copy2", "copyfile", "move"}:
+                    filesystem_calls.append((node.lineno, f"shutil.{attr}"))
+                    continue
+                if attr == "render" and any(
+                    kw.arg == "write_still"
+                    and isinstance(kw.value, _ast.Constant)
+                    and kw.value.value is True
+                    for kw in node.keywords
+                ):
+                    filesystem_calls.append((node.lineno, "render(write_still=True)"))
+        if filesystem_calls:
+            detail = ", ".join(f"{name}@L{line}" for line, name in filesystem_calls[:6])
+            bump("run_bpy_filesystem_blocked")
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "BLOCKED: run_bpy is a scene-mutation boundary, not a filesystem or "
+                    f"render-artifact writer ({detail}). Use render_frame/render_pass/"
+                    "verify_change for generated images; their outputs are routed into "
+                    "the active run. Use IMAGE EVIDENCE HANDLE values with propose_checks."
+                ),
+            }}
+
+        if not _run_bpy_has_authored_mutation(tree):
+            bump("run_bpy_read_only_blocked")
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "BLOCKED: this run_bpy payload has no authored scene mutation. "
+                    "Read-only scripts consume the mutation journal and the single "
+                    "image-repair turn. Use inspect_scene(section='objects' or 'cameras', "
+                    "frame=...), inspect_nodes, list_keyframes, contract_result, or "
+                    "check_scene. If that typed read cannot answer the question, abstain "
+                    "and name the missing instrument instead of probing through run_bpy."
+                ),
+            }}
 
         indexed = []
         ensured: dict[tuple[str, str], list[int]] = {}
@@ -493,7 +615,7 @@ def builder_phase_guard(phase: dict[str, Any], script_rel: str | None) -> HookMa
             if phase.get("image_evidence_required") and not phase.get("pixel_contracts_passed"):
                 reason = (
                     "AUTHORITATIVE SCENE CONTRACTS ALREADY PASS. Further speculative "
-                    "geometry mutation is blocked. Call one FULL-FRAME compare_frame now "
+                    "scene mutation is blocked. Call one FULL-FRAME compare_frame now "
                     "to evaluate this unit's explicitly bound image contracts."
                 )
             else:
@@ -581,6 +703,70 @@ def execution_authority_guard(shot_folder: str | Path,
     return HookMatcher(matcher=None, hooks=[_check])
 
 
+def bounded_unit_context_guard(
+    shot_folder: str | Path, phase: dict[str, Any]
+) -> HookMatcher:
+    """A declared unit consumes its compiled card, not monolithic raw authority.
+
+    The same contract data is already projected into kickoff and ``unit_scope``. Allowing
+    the live model to reload the full brief/layers/check catalogs made context cost scale
+    with the whole shot and exposed sibling work. This is an enforcement boundary, not a
+    prompt preference.
+    """
+    root = Path(shot_folder).resolve()
+
+    async def _check(inp, tool_use_id, ctx) -> dict:
+        if phase.get("mode", "live") != "live" or not phase.get("unit_id"):
+            return {}
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
+        if tool not in {"Read", "Grep", "Glob", "LSP"}:
+            return {}
+        args = (inp.get("tool_input") if isinstance(inp, dict) else getattr(inp, "tool_input", {})) or {}
+        raw = args.get({"Read": "file_path", "Grep": "path", "Glob": "path", "LSP": "path"}[tool])
+        candidate = Path(str(raw or ".")).expanduser()
+        candidate = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+        protected = {root / "brief.md"}
+        for name in (
+            "global.md",
+            "layers.json",
+            "acceptance.json",
+            "critic_axes.json",
+            "checks.json",
+            "scene_checks.json",
+            "requirements.json",
+            "obligations.json",
+            "assumptions.json",
+        ):
+            protected.add(selected_artifact_path(root, name).resolve())
+        direct = candidate in protected
+        broad = tool == "Grep" and any(
+            path == candidate or candidate in path.parents for path in protected
+        )
+        if tool == "Glob" and candidate == root:
+            pattern = str(args.get("pattern") or "")
+            broad = pattern.startswith("**") or pattern.split("/", 1)[0] in {
+                "plans", "state", "brief.md", "*.json"
+            }
+        if not direct and not broad:
+            return {}
+        bump("bounded_context_blocked")
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "This is a declared work unit: full brief and raw plan catalogs are not "
+                "active-unit context. Their relevant fields are already compiled into the "
+                "UNIT SCOPE CARD and embedded unit-plan excerpt. Call unit_scope for the "
+                "exact roles, controls, claims, contracts, judge frames, and helpers; read "
+                "only the named reference image or a narrowly named artifact."
+            ),
+        }}
+
+    return HookMatcher(matcher=None, hooks=[_check])
+
+
 def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = None,
                   script_rel: str | None = None,
                   phase: dict[str, Any] | None = None) -> dict:
@@ -593,6 +779,7 @@ def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = No
                        selected_plan_read_guard(shot_folder), api_guardrails(),
                        script_sanity(), web_allowlist(),
                        execution_authority_guard(shot_folder, active_phase),
+                       bounded_unit_context_guard(shot_folder, active_phase),
                        builder_phase_guard(active_phase, script_rel)],
         "PostToolUse": [metrics_feedback(
             shot_folder, ref_rel,

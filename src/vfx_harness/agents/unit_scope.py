@@ -10,15 +10,19 @@ and the helper inventory parsed from ``blender/worker.py`` without importing ``b
 from __future__ import annotations
 
 import ast
+import json
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.atomicity import residual_instrument_family
 from vfx_harness.domain.image_debts import image_contract_debt_cards
-from vfx_harness.domain.work_units import WorkUnit
+from vfx_harness.domain.publish_interfaces import compile_unit_publish_interfaces
+from vfx_harness.domain.work_units import WorkUnit, bound_claim_contract_ids
 
 SCHEMA = "vfx-harness.unit-scope/v1"
+INTERFACE_SCHEMA = "vfx-harness.unit-interface/v1"
 _WORKER = Path(__file__).resolve().parents[1] / "blender" / "worker.py"
 
 
@@ -63,7 +67,8 @@ def _signature(name: str, fn: ast.FunctionDef) -> str:
             parts.append(f"{arg.arg}={ast.unparse(default)}")
     if args.kwarg is not None:
         parts.append(f"**{args.kwarg.arg}")
-    return f"{name}({', '.join(parts)})"
+    returns = f" -> {ast.unparse(fn.returns)}" if fn.returns is not None else ""
+    return f"{name}({', '.join(parts)}){returns}"
 
 
 def _summary(fn: ast.FunctionDef) -> str:
@@ -109,16 +114,28 @@ def helper_inventory() -> tuple[dict[str, str], ...]:
 
 
 def _contract_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    frames = row.get("frames")
-    out: dict[str, Any] = {
-        "id": str(row.get("id") or ""),
-        "kind": row.get("kind"),
-        "roles": list(row.get("roles") or []),
-        "frame": row.get("frame"),
-    }
-    if isinstance(frames, list):
-        out["frames"] = list(frames)
-    return out
+    # This is already the exact, active-unit closure. Keep every evaluator field so
+    # the builder sees socket, graph, node/material selectors, paths, and bounds rather
+    # than rediscovering them through failed tags. Boundedness comes from selecting only
+    # bound ids, not from amputating the selected contracts.
+    return dict(row)
+
+
+def _transitive_predecessor_ids(unit: WorkUnit, units: Sequence[WorkUnit]) -> tuple[str, ...]:
+    by_id = {item.id: item for item in units}
+    found: list[str] = []
+    pending = list(unit.depends_on)
+    seen: set[str] = set()
+    while pending:
+        dep = pending.pop()
+        if dep in seen:
+            continue
+        seen.add(dep)
+        found.append(dep)
+        producer = by_id.get(dep)
+        if producer is not None:
+            pending.extend(producer.depends_on)
+    return tuple(sorted(found))
 
 
 def compile_unit_scope(
@@ -127,6 +144,8 @@ def compile_unit_scope(
     layer_id: str,
     contracts: Sequence[Mapping[str, Any]],
     helpers: Sequence[Mapping[str, str]] | None = None,
+    authored_publishes: Any = None,
+    unit_digest: str = "",
 ) -> dict[str, Any]:
     """Project the active unit onto a queryable card. Sibling units are not inputs."""
     by_id = {
@@ -144,6 +163,17 @@ def compile_unit_scope(
         )
     inventory = tuple(helpers) if helpers is not None else helper_inventory()
     image_debts = [card.as_dict() for card in image_contract_debt_cards(unit)]
+    publish_interfaces = [
+        interface.as_dict()
+        for interface in compile_unit_publish_interfaces(
+            unit,
+            layer_id=str(layer_id),
+            bound_contract_ids=bound_claim_contract_ids(unit),
+            authored=authored_publishes,
+            instrument_family=residual_instrument_family(unit),
+            unit_digest=unit_digest,
+        )
+    ]
     return {
         "schema": SCHEMA,
         "unit_id": unit.id,
@@ -153,6 +183,9 @@ def compile_unit_scope(
             "mode": unit.mutates.mode,
             "roles": list(unit.mutates.roles),
             "controls": list(unit.mutates.controls),
+            "control_roles": {
+                control: list(roles) for control, roles in unit.mutates.control_roles
+            },
             "dresses": list(unit.mutates.dresses),
             "script_spans": list(unit.mutates.script_spans),
         },
@@ -170,6 +203,12 @@ def compile_unit_scope(
                 "authority": claim.authority,
                 "required": claim.required,
                 "proposition": claim.proposition,
+                "axis": claim.axis,
+                "property": claim.property,
+                "asserts": claim.asserts,
+                "repair_owner": claim.repair_owner,
+                "subject_roles": list(claim.subject_roles),
+                "subject_controls": list(claim.subject_controls),
                 "moments": list(claim.moments),
                 "evidence": [
                     {"kind": binding.kind, "id": binding.id} for binding in claim.evidence
@@ -179,25 +218,149 @@ def compile_unit_scope(
         ],
         "contracts": [_contract_row(by_id[cid]) for cid in bound],
         "image_debts": image_debts,
+        "publish_interfaces": publish_interfaces,
+        "producer_unit_digest": str(unit_digest or ""),
+        "consumes": [
+            {
+                "producer": item.producer,
+                "interface_id": item.interface_id,
+                "kind": item.kind,
+            }
+            for item in unit.consumes
+        ],
         "helpers": [dict(row) for row in inventory],
     }
 
 
-def compile_unit_scope_for_shot(shot, unit: WorkUnit, layer_id: str) -> dict[str, Any]:
+def compile_predecessor_interface(
+    card: Mapping[str, Any],
+    *,
+    producer_digest: str = "",
+    durable_hash: str = "",
+    durable_status: str = "passed",
+) -> dict[str, Any]:
+    """Project a passed dependency onto the interface its consumers may need."""
+    mutates = card.get("mutates") or {}
+    claims = card.get("claims") or []
+    contracts = card.get("contracts") or []
+    image_debts = card.get("image_debts") or []
+    published = [
+        dict(row)
+        for row in (card.get("publish_interfaces") or [])
+        if isinstance(row, Mapping)
+    ]
+    stale = durable_status != "passed" or (
+        bool(durable_hash)
+        and bool(producer_digest)
+        and durable_hash != producer_digest
+    )
+    return {
+        "schema": INTERFACE_SCHEMA,
+        "unit_id": str(card.get("unit_id") or ""),
+        "title": str(card.get("title") or ""),
+        "dependency_status": "passed",
+        "provides": list(card.get("provides") or []),
+        "semantic_roles": list(mutates.get("roles") or []),
+        "dressed_surfaces": list(mutates.get("dresses") or []),
+        "controls": list(mutates.get("controls") or []),
+        "look_capabilities": list(card.get("look_capabilities") or []),
+        "sealed_claim_ids": [
+            str(row.get("id"))
+            for row in claims
+            if isinstance(row, Mapping) and row.get("required") and row.get("id")
+        ],
+        "scene_contract_ids": [
+            str(row.get("id"))
+            for row in contracts
+            if isinstance(row, Mapping) and row.get("id")
+        ],
+        "image_contract_ids": [
+            str(row.get("id"))
+            for row in image_debts
+            if isinstance(row, Mapping) and row.get("id")
+        ],
+        "publish_interfaces": [] if stale else published,
+        "producer_unit_digest": str(producer_digest or ""),
+    }
+
+
+def compile_scope_with_predecessors(
+    *,
+    unit: WorkUnit,
+    layer_id: str,
+    contracts: Sequence[Mapping[str, Any]],
+    units: Sequence[WorkUnit] = (),
+    durable_state: Mapping[str, Any] | None = None,
+    helpers: Sequence[Mapping[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Active-unit card plus digest-matched predecessor publish interfaces."""
+    from vfx_harness.orchestration.unit_state import unit_digest as digest_of
+
+    producer_digest = digest_of(unit)
+    card = compile_unit_scope(
+        unit=unit,
+        layer_id=str(layer_id),
+        contracts=contracts,
+        helpers=helpers,
+        unit_digest=producer_digest,
+    )
+    by_id = {item.id: item for item in units}
+    durable_rows = (durable_state or {}).get("units") or {}
+    predecessors: list[dict[str, Any]] = []
+    for uid in _transitive_predecessor_ids(unit, units):
+        producer = by_id.get(uid)
+        if producer is None:
+            continue
+        row = durable_rows.get(uid) or {}
+        pred_digest = digest_of(producer)
+        predecessors.append(
+            compile_predecessor_interface(
+                compile_unit_scope(
+                    unit=producer,
+                    layer_id=str(layer_id),
+                    contracts=contracts,
+                    helpers=(),
+                    unit_digest=pred_digest,
+                ),
+                producer_digest=pred_digest,
+                durable_hash=str(row.get("unit_hash") or ""),
+                durable_status=str(row.get("status") or ""),
+            )
+        )
+    card["predecessor_interfaces"] = predecessors
+    card["predecessor_publish_interfaces"] = [
+        dict(row)
+        for pred in predecessors
+        for row in (pred.get("publish_interfaces") or [])
+        if isinstance(row, Mapping)
+    ]
+    return card
+
+
+def compile_unit_scope_for_shot(
+    shot,
+    unit: WorkUnit,
+    layer_id: str,
+    *,
+    units: Sequence[WorkUnit] = (),
+    durable_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     from vfx_harness.evidence.scene_checks import load_rows
 
-    return compile_unit_scope(
-        unit=unit, layer_id=str(layer_id), contracts=load_rows(shot.folder)
+    return compile_scope_with_predecessors(
+        unit=unit,
+        layer_id=str(layer_id),
+        contracts=load_rows(shot.folder),
+        units=units,
+        durable_state=durable_state,
     )
 
 
 def _format_bound_contract(row: Mapping[str, Any]) -> str:
-    if row.get("frame") is not None:
-        frame = str(row["frame"])
-    else:
-        frame = ",".join(str(item) for item in row.get("frames") or []) or "—"
-    roles = ",".join(row.get("roles") or []) or "—"
-    return f"  - `{row['id']}` kind={row.get('kind')} roles={roles} frame={frame}"
+    # These rows are already the exact active-unit closure. Preserve every evaluator
+    # selector/bound in kickoff so graph, socket, data_path, and node-role details do not
+    # require a failed implementation before the model discovers them through unit_scope.
+    return "  - " + json.dumps(dict(row), sort_keys=True, separators=(",", ":"))
 
 
 def format_unit_scope_card(card: Mapping[str, Any]) -> str:
@@ -228,11 +391,39 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         for row in (card.get("helpers") or [])
         if isinstance(row, Mapping) and row.get("signature")
     )
+    fault_owners = "\n".join(
+        f"  - `{row.get('id')}` roles={','.join(row.get('roles') or []) or 'none'} "
+        f"controls={','.join(row.get('controls') or []) or 'none'}"
+        for row in (card.get("fault_owner_options") or [])
+        if isinstance(row, Mapping) and row.get("id")
+    ) or "  - (none; the defect is local or requires plan authority)"
+    interfaces = "\n".join(
+        f"  - `{row.get('id')}` kind={row.get('kind')} exports="
+        + json.dumps(row.get("exports") or {}, sort_keys=True, separators=(",", ":"))
+        for row in (card.get("publish_interfaces") or [])
+        if isinstance(row, Mapping) and row.get("id")
+    ) or "  - (none)"
+    consumes = "\n".join(
+        f"  - producer=`{row.get('producer')}` interface=`{row.get('interface_id')}` "
+        f"kind={row.get('kind')}"
+        for row in (card.get("consumes") or [])
+        if isinstance(row, Mapping) and row.get("interface_id")
+    ) or "  - (none)"
+    predecessors = "\n".join(
+        f"  - `{row.get('id')}` kind={row.get('kind')} producer="
+        f"{(row.get('producer') or {}).get('unit_id', '')} digest="
+        f"{(row.get('producer') or {}).get('unit_digest', '') or card.get('producer_unit_digest') or ''} "
+        f"exports="
+        + json.dumps(row.get("exports") or {}, sort_keys=True, separators=(",", ":"))
+        for row in (card.get("predecessor_publish_interfaces") or [])
+        if isinstance(row, Mapping) and row.get("id")
+    ) or "  - (none)"
     return (
         f"UNIT SCOPE CARD — compiled from the active work unit "
         f"`{card.get('unit_id')}` on layer {card.get('layer_id')}. "
         f"Query `unit_scope` for this JSON. Do not inspect.getsource helpers, "
         f"and do not guess a sibling unit's roles.\n"
+        f"producer_unit_digest: {card.get('producer_unit_digest') or 'none'}\n"
         f"mutates.roles: {', '.join(mutates.get('roles') or []) or 'none'}\n"
         f"mutates.controls: {', '.join(mutates.get('controls') or []) or 'none'}\n"
         f"mutates.dresses: {', '.join(mutates.get('dresses') or []) or 'none'}\n"
@@ -242,5 +433,11 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         f"bound scene contracts:\n{contracts}\n"
         f"owed image-contract debts (propose_checks, exact id/frame/property/axis):\n"
         f"{debts}\n"
+        f"typed publish interfaces (role/control/contract-id exports only):\n"
+        f"{interfaces}\n"
+        f"declared consumes:\n{consumes}\n"
+        f"predecessor publish interfaces (digest-matched, no producer scripts):\n"
+        f"{predecessors}\n"
+        f"legal upstream fault owners for cannot_express_in_scope:\n{fault_owners}\n"
         f"run_bpy helpers (injected):\n{helpers}"
     )

@@ -204,6 +204,28 @@ def test_requested_exit_keeps_the_exception_detail(
     assert "cam_spine" in status["detail"]
 
 
+def test_requested_exit_keeps_typed_terminal_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot = tmp_path / "model-failure"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "direct-model-failure")
+
+    with pytest.raises(run_artifacts.RequestedExit), run_artifacts.invocation(
+        shot, "build"
+    ) as layout:
+        raise run_artifacts.RequestedExit(
+            3,
+            "BUILD TRUNCATED — provider returned HTTP 429",
+            terminal_cause="model_session_failure",
+        )
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["exit_code"] == 3
+    assert status["terminal_cause"] == "model_session_failure"
+
+
 def test_reader_refuses_shot_root_legacy_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

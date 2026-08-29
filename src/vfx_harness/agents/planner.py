@@ -245,6 +245,11 @@ _TWO_SIDED_CONTRACT_BINDING = (
     "repaired by a unit that provides camera or mutates/dresses every named role "
     "on that row — not by any unit that can see a plan-declared selector. "
     "A volume-only unit cannot bind mesh vis as required repair.\n"
+    "Each unit is one derived write-cluster (role-namespace × host class × instrument "
+    "family). Do not author family/mutation_family/coherent_family fields. Dressing, "
+    "visibility observation, bounded coordination, and consumed assembly interfaces "
+    "are typed exceptions. Required claims share one repair_owner. Publish interfaces "
+    "export only roles, controls, or sealed contract ids.\n"
 )
 
 
@@ -260,7 +265,7 @@ def _frame_authority_block(global_row: dict) -> str:
 
 
 def _sealed_outcomes_block(shot_folder: Path, layer, global_row: dict) -> str:
-    """Enumerate named upstream outcomes. A directory Read is a guess (HIR-0029)."""
+    """Compile only dependency status and explicitly required evidence (HIR-0054)."""
     jit_row = global_row.get("jit") if isinstance(global_row.get("jit"), dict) else {}
     depends: list[str] = []
     required: list[dict[str, str]] = []
@@ -280,40 +285,141 @@ def _sealed_outcomes_block(shot_folder: Path, layer, global_row: dict) -> str:
     if not depends and not required:
         return (
             "Sealed upstream outcomes: none. This layer is a dependency root "
-            "(empty depends_on_layers and required_outcomes). Do not Read "
-            "plans/outcomes as a directory; leftover files from a discarded "
-            "materialization are not this design's authority.\n"
+            "(empty depends_on_layers and required_outcomes).\n"
         )
-    files: list[str] = []
+    required_ids = {row["id"] for row in required}
+    outcomes: list[dict] = []
     for dep in depends:
         try:
             name = f"{int(dep):02d}.json"
         except (TypeError, ValueError):
             continue
-        rel = f"plans/outcomes/{name}"
-        if (shot_folder / rel).is_file():
-            files.append(rel)
+        path = shot_folder / "plans" / "outcomes" / name
+        if not path.is_file():
+            outcomes.append({"layer": dep, "status": "missing"})
+            continue
+        value = json.loads(path.read_text(encoding="utf-8"))
+        matched: list[dict] = []
+
+        def collect(node, sink=matched) -> None:
+            if isinstance(node, dict):
+                if str(node.get("id") or "") in required_ids:
+                    sink.append({
+                        key: node.get(key)
+                        for key in (
+                            "id", "kind", "value", "target", "pass", "error",
+                            "note", "source", "owner_layer", "fault_owner",
+                        )
+                        if node.get(key) not in (None, "")
+                    })
+                for child in node.values():
+                    collect(child)
+            elif isinstance(node, list):
+                for child in node:
+                    collect(child)
+
+        collect(value)
+        unique = {json.dumps(row, sort_keys=True): row for row in matched}
+        outcomes.append({
+            "layer": dep,
+            "status": value.get("status"),
+            "script": value.get("script"),
+            "required_evidence": list(unique.values()),
+        })
     card = {
         "depends_on_layers": depends,
         "required_outcomes": required,
-        "readable_files": files,
+        "outcomes": outcomes,
     }
     return (
-        "Sealed upstream outcomes this layer may read (named files, not a directory "
-        "listing). Leftover files from a discarded materialization of another layer "
-        f"are not this design's authority:\n{json.dumps(card, indent=1)}\n"
+        "Compiled sealed upstream outcome card (this is the complete dependency input; "
+        "do not read outcome files):\n"
+        f"{json.dumps(card, indent=1)}\n"
+    )
+
+
+def _owned_requirements_block(bundle_root: Path, global_row: dict) -> str:
+    owned = {
+        str(value)
+        for value in ((global_row.get("jit") or {}).get("owned_requirements") or [])
+    }
+    if not owned:
+        return "Compiled requirements owned by this layer: none.\n"
+    document = json.loads((bundle_root / "requirements.json").read_text(encoding="utf-8"))
+    rows = [
+        row
+        for row in document.get("requirements") or []
+        if isinstance(row, dict) and str(row.get("id") or "") in owned
+    ]
+    return (
+        "Compiled requirements owned by this layer (complete; do not read the global "
+        f"requirements register):\n{json.dumps(rows, indent=1)}\n"
+    )
+
+
+def _upstream_interfaces_block(
+    shot_folder: Path,
+    global_row: dict,
+    bundle_hash: str,
+    *,
+    overlay_root: str | Path | None = None,
+) -> str:
+    """Compile dependency grants without exposing all selected layer claims."""
+    from vfx_harness.orchestration.jit_materialization import selected_view_artifact
+
+    dependencies = {
+        str(value)
+        for value in ((global_row.get("jit") or {}).get("depends_on_layers") or [])
+    }
+    if not dependencies:
+        return "Compiled upstream semantic interfaces: none (dependency root).\n"
+    path = selected_view_artifact(
+        shot_folder, "layers.json", bundle_hash, overlay_root=overlay_root
+    )
+    if path is None:
+        from vfx_harness.orchestration.plan_authority import resolve_current
+
+        path = resolve_current(shot_folder).root / "layers.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    interfaces: list[dict] = []
+    for row in document.get("layers") or []:
+        if not isinstance(row, dict) or str(row.get("id") or "") not in dependencies:
+            continue
+        interfaces.append({
+            "id": str(row.get("id")),
+            "title": row.get("title"),
+            "dressable": list(row.get("dressable") or []),
+            "units": [
+                {
+                    "id": unit.get("id"),
+                    "provides": list(unit.get("provides") or []),
+                    "roles": list((unit.get("mutates") or {}).get("roles") or []),
+                    "dressable": list(unit.get("dressable") or []),
+                }
+                for unit in row.get("stages") or []
+                if isinstance(unit, dict)
+            ],
+        })
+    return (
+        "Compiled upstream semantic interfaces and owner-granted dressable selectors "
+        f"(complete; do not read the layer catalog):\n{json.dumps(interfaces, indent=1)}\n"
     )
 
 
 def _materialization_kickoff(
-    shot_folder: Path, layer, bundle, rel_target: str, replacing: str | None = None
+    shot_folder: Path,
+    layer,
+    bundle,
+    rel_target: str,
+    replacing: str | None = None,
+    *,
+    overlay_root: str | Path | None = None,
 ) -> str:
     """The session must copy its global layer row exactly and close owned requirements,
     so the kickoff carries the row verbatim and the READABLE paths that hold the rest.
     Run 20260823T125746Z-9cd0b8 got only the bundle hash: it probed six plausible bundle
     locations, was denied by the path scope, reconstructed the row from prose, and
     failed structural validation on every field."""
-    bundle_rel = bundle.root.relative_to(shot_folder).as_posix()
     rows = json.loads((bundle.root / "layers.json").read_text(encoding="utf-8"))
     global_row = next(
         row for row in rows.get("layers", []) if str(row.get("id")) == str(layer.id)
@@ -333,14 +439,15 @@ def _materialization_kickoff(
         f"{replacement}"
         f"Materialize deferred layer {layer.id} ({layer.title}).\n"
         f"Selected bundle hash: {bundle.content_hash}\n"
-        f"Selected bundle root (readable): {bundle_rel}/ — its `layers.json`, "
-        f"`requirements.json`, and `global.md` are the authority you must satisfy.\n"
+        f"This kickoff is the complete compiled authority card. Do not read the brief, "
+        f"global registers, layer catalogs, decision ledger, or prior materializations.\n"
         f"Your exact global layer row — copy the structural fields verbatim into the "
         f"replacement layer:\n{json.dumps(global_row, indent=1)}\n"
+        f"{_owned_requirements_block(bundle.root, global_row)}"
+        f"{_upstream_interfaces_block(shot_folder, global_row, bundle.content_hash, overlay_root=overlay_root)}"
         f"{_frame_authority_block(global_row)}"
         f"{_TWO_SIDED_CONTRACT_BINDING}"
         f"{_binding_decisions_block(shot_folder, layer, bundle.content_hash)}"
-        f"Durable decision ledger (readable): state/plan-resolutions.jsonl\n"
         f"{_sealed_outcomes_block(shot_folder, layer, global_row)}"
         f"Document shape (generic minimal-valid example — replace every placeholder, "
         f"add stages/contracts/claims as the layer needs):\n{_MATERIALIZATION_EXAMPLE}\n"
@@ -472,7 +579,14 @@ contract (vacuous shapes are rejected at validation). After VALIDATION PASSED, c
 `gate_preview` once: it applies the exact terminal gate to the resulting consumer view, and
 a finding fixed here costs one patch instead of a retracted generation. Do not edit
 global authority, create unit state, write prose, or write another file."""
-    kickoff = _materialization_kickoff(shot.folder, layer, bundle, rel_target, replacing)
+    kickoff = _materialization_kickoff(
+        shot.folder,
+        layer,
+        bundle,
+        rel_target,
+        replacing,
+        overlay_root=overlay_root,
+    )
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}-materialize"
     pserver, pnames = build_plan_tools(
         shot.folder,
@@ -496,7 +610,7 @@ global authority, create unit state, write prose, or write another file."""
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Read", "Write", *materialization_tools, *rnames],
+        allowed_tools=["Write", *materialization_tools, *rnames],
         disallowed_tools=list(MATERIALIZATION_DENIED_TOOLS),
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,
@@ -506,14 +620,6 @@ global authority, create unit state, write prose, or write another file."""
         hooks=_with_target_feedback(
             planner_hooks(
                 shot.folder,
-                readable_files=(
-                    shot.folder / "brief.md",
-                    # The adoption contract the validator enforces reads this exact
-                    # ledger; the session must be able to read the same file it must
-                    # copy from.
-                    shot.folder / "state" / "plan-resolutions.jsonl",
-                ),
-                readable_roots=(bundle.root, shot.folder / "plans" / "outcomes"),
                 writable_files=(target,),
                 strict_reads=True,
                 completion_gate=False,
@@ -1002,12 +1108,8 @@ async def generate_layer_plan(
         layers = load_layers(shot)
         layer = layers[str(layer_id)]
     from vfx_harness.domain.work_units import ready_units
-
-    # Same semantics as the build path: create fresh state, seed a legally-emptied set
-    # after first materialization, return current when nothing changed, and fail closed
-    # on any real DAG divergence. Run 20260823T152609Z materialized layer 1 successfully
-    # and then died here on bare validate_current against post-replan empty state.
     from vfx_harness.orchestration.plan_authority import active_plan_hash
+    from vfx_harness.orchestration.unit_state import digest_matched_passed
     from vfx_harness.orchestration.unit_state import initialize as initialize_unit_state
 
     layers_hash = active_plan_hash(shot.folder)
@@ -1017,7 +1119,9 @@ async def generate_layer_plan(
     passed = {
         uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
     }
-    ready = ready_units(layer.stages, passed)
+    ready = ready_units(
+        layer.stages, passed, sealed_producers=digest_matched_passed(state, layer.stages)
+    )
     if unit_id is not None:
         selected = next((unit for unit in layer.stages if unit.id == unit_id), None)
         if selected is None:
@@ -1065,7 +1169,28 @@ async def generate_layer_plan(
         unit_title=selected.title,
         target=rel_target,
     )
-    kickoff = layer_user_prompt(shot, layer, selected, rel_target, feedback)
+    from vfx_harness.agents.unit_scope import compile_scope_with_predecessors
+    from vfx_harness.evidence.scene_checks import load_rows
+
+    contract_rows = load_rows(shot.folder)
+    unit_card = compile_scope_with_predecessors(
+        unit=selected,
+        layer_id=str(layer.id),
+        contracts=contract_rows,
+        units=layer.stages,
+        durable_state=state,
+        helpers=(),
+    )
+    predecessor_cards = list(unit_card.get("predecessor_interfaces") or [])
+    kickoff = layer_user_prompt(
+        shot,
+        layer,
+        selected,
+        rel_target,
+        feedback,
+        unit_card=unit_card,
+        predecessor_cards=predecessor_cards,
+    )
     layout = run_artifacts.ensure(shot.folder, command="plan-layer")
     lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}"
     pserver, pnames = build_plan_tools(
@@ -1076,38 +1201,12 @@ async def generate_layer_plan(
     )
     rserver, rnames = build_recipe_tools()
     unit_plan_tools = _phase_tools(pnames, "measure_ref", "spike", "ask_supervisor", "gate_preview")
-    from vfx_harness.orchestration.plan_authority import resolve_current
-
-    bundle = resolve_current(shot.folder)
-    declared_reads = tuple(
-        path
-        for path in (
-            shot.folder / "brief.md",
-            shot.folder / "plan_amendments.jsonl",
-            shot.folder / "state" / "plan-resolutions.jsonl",
-            target,
-        )
-        if path.is_file() or path == target
-    )
-    # The kickoff names the OVERLAID authority files (selected_artifact_path resolves
-    # layers/scene_checks/checks into state/jit-layers/views/…) and this layer's build
-    # scripts as required reading; run 20260824T235113Z-2d6b35's unit planner was denied
-    # both and planned from the kickoff excerpt alone. A session must be allowed to read
-    # what its own kickoff instructs it to read.
-    readable_roots = (
-        bundle.root,
-        shot.folder / "state" / "jit-layers",
-        shot.folder / "build",
-        # a dependency's published, gate-attested plan is the interface a dependent
-        # unit plans against (run 20260825T…: blockout_proxies was denied camera_rig.md)
-        shot.folder / "plans" / "units",
-    )
     options = ClaudeAgentOptions(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),
         mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=["Read", "Write", *unit_plan_tools, *rnames],
+        allowed_tools=["Write", *unit_plan_tools, *rnames],
         disallowed_tools=["Bash", "Edit"],
         permission_mode="bypassPermissions",
         max_buffer_size=32 * 1024 * 1024,
@@ -1116,8 +1215,6 @@ async def generate_layer_plan(
         effort="high",
         hooks=planner_hooks(
             shot.folder,
-            readable_files=declared_reads,
-            readable_roots=readable_roots,
             writable_files=(target,),
             strict_reads=True,
             completion_gate=False,

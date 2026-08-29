@@ -72,6 +72,140 @@ def test_journal_without_limit_is_unchanged(worker, tmp_path: Path) -> None:
     assert "Truncated" not in path.read_text(encoding="utf-8")
 
 
+def test_journal_start_excludes_inherited_dependency_replay(worker, tmp_path: Path) -> None:
+    worker._JOURNAL.clear()
+    worker._JOURNAL.extend(["reset", "prior_material", "active_light", "active_bloom"])
+
+    path = tmp_path / "unit-journal.py"
+    info = worker.h_journal({"path": str(path), "start": 2, "limit": 4})
+
+    text = path.read_text(encoding="utf-8")
+    assert info["calls"] == 2
+    assert info["dropped_before"] == 2
+    assert "active_light" in text and "active_bloom" in text
+    assert "prior_material" not in text and "reset" not in text
+    assert "Excluded 2 inherited" in text
+
+
+def test_failed_transactional_run_restores_scene_and_never_journals(
+    worker, tmp_path: Path, monkeypatch
+) -> None:
+    """A Python exception after an authored write must not retain a partial scene."""
+    worker._JOURNAL.clear()
+    worker.ARTIFACTS = str(tmp_path)
+    worker.bpy.marker = "accepted"
+    saved: dict[str, str] = {}
+
+    def save_as_mainfile(*, filepath, **_kwargs):
+        saved["marker"] = worker.bpy.marker
+        Path(filepath).write_text("rollback", encoding="utf-8")
+
+    def open_mainfile(*, filepath):
+        assert Path(filepath).is_file()
+        worker.bpy.marker = saved["marker"]
+
+    worker.bpy.ops = types.SimpleNamespace(
+        wm=types.SimpleNamespace(
+            save_as_mainfile=save_as_mainfile,
+            open_mainfile=open_mainfile,
+        )
+    )
+    monkeypatch.setattr(
+        worker,
+        "_scene_stats",
+        lambda: {"objects": 0, "mesh_objects": 0, "verts": 0, "tris": 0},
+    )
+    mathutils = types.ModuleType("mathutils")
+    mathutils.Vector = tuple
+    monkeypatch.setitem(sys.modules, "mathutils", mathutils)
+
+    with pytest.raises(RuntimeError, match="injected failure"):
+        worker.h_run(
+            {
+                "code": "bpy.marker = 'partial'\nraise RuntimeError('injected failure')",
+                "transactional": True,
+            }
+        )
+
+    assert worker.bpy.marker == "accepted"
+    assert worker._JOURNAL == []
+    assert not (tmp_path / "run_bpy_rollback.blend").exists()
+
+
+def test_blender5_helpers_encode_closed_loop_light_and_vector_blur(worker) -> None:
+    import inspect
+
+    vector_source = inspect.getsource(worker._bvfx_vector_blur)
+    assert "CompositorNodeVecBlur" in vector_source
+    assert '("Samples", samples)' in vector_source
+    assert '("Depth", "Depth")' in vector_source
+    assert "NodeGroupOutput" in vector_source
+    assert "use_pass_vector = True" in vector_source
+    assert "_bvfx_role(vector_blur, role" in vector_source
+
+    light_source = inspect.getsource(worker._bvfx_light)
+    assert "obj.data.type = str(light_type).upper()" in light_source
+    assert "data = bpy.data.lights[data_name]" in light_source
+    assert light_source.index("obj.data.type") < light_source.index(
+        "data = bpy.data.lights[data_name]"
+    )
+    assert "spot_size requires light_type='SPOT'" in light_source
+
+
+def test_volume_helpers_tag_every_semantic_host_at_creation(worker) -> None:
+    import inspect
+
+    bounded = inspect.getsource(worker._bvfx_volume)
+    for statement in (
+        "_bvfx_role(dom, role, owner_layer)",
+        "_bvfx_role(m, material_role, owner_layer)",
+        "_bvfx_role(vol, node_role, owner_layer)",
+        "_bvfx_control(vol, control, owner_layer)",
+        "dom.scale = (size[0], size[1], size[2])",
+        "bpy.context.view_layer.update()",
+    ):
+        assert statement in bounded
+
+    world = inspect.getsource(worker._bvfx_volumetric_world)
+    for statement in (
+        "_bvfx_role(w, role, owner_layer)",
+        "_bvfx_role(vol, node_role, owner_layer)",
+        "_bvfx_control(vol, control, owner_layer)",
+    ):
+        assert statement in world
+
+
+def test_interp_traverses_object_role_and_data_block_curves(worker) -> None:
+    import inspect
+
+    source = inspect.getsource(worker._bvfx_interp)
+    assert 'obj.get("bvfx_role")' in source
+    assert "getattr(item, \"data\", None)" in source
+    assert "for item in expanded" in source
+
+
+def test_render_handler_restores_common_scene_settings(worker) -> None:
+    """Workbench and draft observations must not mutate the next authored call."""
+    import inspect
+
+    source = inspect.getsource(worker.h_render)
+    for field in (
+        '"engine": sc.render.engine',
+        '"resolution_percentage": sc.render.resolution_percentage',
+        '"filepath": sc.render.filepath',
+        '"frame": sc.frame_current',
+        '"shading_type": sc.display.shading.type',
+        '"file_format": image_settings.file_format',
+        '"taa_render_samples"',
+    ):
+        assert field in source
+    assert 'sc.render.engine = original["engine"]' in source
+    assert 'sc.frame_set(original["frame"])' in source
+    assert source.index("bpy.ops.render.render") < source.index(
+        'sc.render.engine = original["engine"]'
+    )
+
+
 def test_session_passes_the_selected_index_through(monkeypatch) -> None:
     from vfx_harness.blender.session import BlenderSession
 
@@ -84,9 +218,10 @@ def test_session_passes_the_selected_index_through(monkeypatch) -> None:
     monkeypatch.setattr(BlenderSession, "call", fake_call, raising=False)
     session = BlenderSession.__new__(BlenderSession)
 
-    result = session.journal(path="/tmp/j.py", limit=7)
+    result = session.journal(path="/tmp/j.py", start=3, limit=7)
 
     assert captured["op"] == "journal"
+    assert captured["start"] == 3
     assert captured["limit"] == 7
     assert result["dropped"] == 3
 

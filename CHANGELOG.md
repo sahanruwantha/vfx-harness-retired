@@ -94,6 +94,15 @@ live in the linked Harness Improvement Records.
   `apply_replan`: matching digests stay; `--discard-accepted` is not the
   door on remat
   ([HIR-0052](docs/improvements/HIR-0052-remat-with-accepted-units-is-apply-replan.md)).
+  A work unit must publish one derived write-cluster; authored family fields cannot
+  satisfy the gate. Consumed interfaces are read-only and cannot hide mixed clusters;
+  unresolved write families fail closed
+  ([HIR-0083](docs/improvements/HIR-0083-work-unit-atomicity-is-a-derived-publication-predicate.md)).
+  Successor cards carry typed publish interfaces whose values are roles, controls,
+  or sealed contract ids. Authored `publishes`/`consumes` participate in producer
+  identity; readiness requires a declared interface id/kind match against a
+  digest-matched producer
+  ([HIR-0084](docs/improvements/HIR-0084-successor-interfaces-are-typed-references-bound-to-producer-digests.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

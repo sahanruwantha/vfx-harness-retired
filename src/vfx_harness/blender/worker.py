@@ -13,6 +13,7 @@ import os
 import sys
 import time
 import traceback
+from typing import Any
 
 import bpy
 
@@ -64,7 +65,7 @@ def _scene_stats() -> dict:
 # Performant, house-look primitives so the build agent never hand-rolls slow
 # per-object loops. Available in every run_bpy script (like `bpy`).
 
-def _bvfx_emission(name, color=(1, 1, 1), strength=1.0, **_):
+def _bvfx_emission(name, color=(1, 1, 1), strength=1.0, **_) -> "bpy.types.Material":
     m = bpy.data.materials.new(name); m.use_nodes = True
     nt = m.node_tree; nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputMaterial")
@@ -76,7 +77,8 @@ def _bvfx_emission(name, color=(1, 1, 1), strength=1.0, **_):
 
 
 def _bvfx_scatter_emissive(count, area=200.0, z_range=(0.0, 6.0), color=(1.0, 0.7, 0.35),
-                           strength=3.0, seed=0, dot=0.6, name="scatter", **_):
+                           strength=3.0, seed=0, dot=0.6, name="scatter",
+                           **_) -> "bpy.types.Object":
     """A carpet of `count` emissive points as ONE vertex-instanced object (fast for
     thousands). Returns the instancer. Use this instead of a per-light loop."""
     import random as _r
@@ -100,7 +102,9 @@ def _bvfx_scatter_emissive(count, area=200.0, z_range=(0.0, 6.0), color=(1.0, 0.
 
 
 def _bvfx_volumetric_world(color=(0.02, 0.05, 0.03), bg_strength=0.3,
-                           vol_color=(0.05, 0.3, 0.1), density=0.006, **_):
+                           vol_color=(0.05, 0.3, 0.1), density=0.006, role=None,
+                           node_role=None, control=None, owner_layer=None,
+                           **_) -> "bpy.types.World":
     """Near-black tinted sky + volume-scatter haze (the billowing-glow look).
 
     WARNING: once a world Volume is linked, a SUN contributes essentially nothing — it is
@@ -121,11 +125,18 @@ def _bvfx_volumetric_world(color=(0.02, 0.05, 0.03), bg_strength=0.3,
     vol.inputs["Color"].default_value = (*vol_color, 1.0)
     vol.inputs["Density"].default_value = density
     nt.links.new(vol.outputs[0], out.inputs["Volume"])
+    if role:
+        _bvfx_role(w, role, owner_layer)
+    if node_role:
+        _bvfx_role(vol, node_role, owner_layer)
+    if control:
+        _bvfx_control(vol, control, owner_layer)
     return w
 
 
 def _bvfx_glare_bloom(threshold=0.6, size=0.75, strength=0.7, gtype="Bloom",
-                      role="compositor.glare.baseline", owner_layer=None, **_):
+                      role="compositor.glare.baseline", owner_layer=None,
+                      **_) -> "bpy.types.Node":
     """EEVEE-Next has no bloom toggle — add a compositor Glare so emission blooms.
     Blender 5.x: the compositor is a NODE GROUP on scene.compositing_node_group whose
     output is a Group Output node, and the Glare node's settings are INPUT SOCKETS
@@ -153,10 +164,148 @@ def _bvfx_glare_bloom(threshold=0.6, size=0.75, strength=0.7, gtype="Bloom",
     return glare
 
 
+def _bvfx_vector_blur(samples=16, shutter=0.5, role="lookdev.motion_blur_node",
+                      control=None, owner_layer=None, **_) -> "bpy.types.Node":
+    """Create and wire Blender 5.x's unified-compositor Vector Blur atomically.
+
+    Blender 5.x exposes Samples/Shutter as input sockets, uses a Group Output rather
+    than ``CompositorNodeComposite``, and only exposes Vector after the view-layer pass
+    is enabled and the Render Layers node is refreshed.  Keep those coupled facts in
+    one helper so a builder never has to discover them through partial scene edits.
+    """
+    sc = bpy.context.scene
+    sc.render.engine = _eevee_engine()
+    view_layer = sc.view_layers[0]
+    view_layer.use_pass_vector = True
+    view_layer.use_pass_z = True
+
+    ng = sc.compositing_node_group
+    if ng is None:
+        ng = bpy.data.node_groups.new("bvfx_compositor", "CompositorNodeTree")
+        sc.compositing_node_group = ng
+    sc.render.use_compositing = True
+
+    output_socket = next(
+        (
+            item
+            for item in ng.interface.items_tree
+            if getattr(item, "item_type", "SOCKET") == "SOCKET"
+            and getattr(item, "in_out", None) == "OUTPUT"
+            and item.name == "Image"
+        ),
+        None,
+    )
+    if output_socket is None:
+        ng.interface.new_socket("Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+
+    nodes = ng.nodes
+    links = ng.links
+    render_layers = next((node for node in nodes if node.type == "R_LAYERS"), None)
+    # Pass sockets are materialized when the node is created.  An older node created
+    # before enabling Vector must be refreshed or it will still expose only Image/Alpha/Z.
+    if render_layers is not None and render_layers.outputs.get("Vector") is None:
+        location = tuple(render_layers.location)
+        nodes.remove(render_layers)
+        render_layers = nodes.new("CompositorNodeRLayers")
+        render_layers.location = location
+    elif render_layers is None:
+        render_layers = nodes.new("CompositorNodeRLayers")
+
+    group_output = next((node for node in nodes if node.type == "GROUP_OUTPUT"), None)
+    if group_output is None:
+        group_output = nodes.new("NodeGroupOutput")
+    vector_blur = next((node for node in nodes if node.type == "VECBLUR"), None)
+    if vector_blur is None:
+        vector_blur = nodes.new("CompositorNodeVecBlur")
+        vector_blur.name = "BVFX Vector Blur"
+
+    for socket_name, value in (("Samples", samples), ("Shutter", shutter)):
+        socket = vector_blur.inputs.get(socket_name)
+        if socket is None:
+            available = ", ".join(input_socket.name for input_socket in vector_blur.inputs)
+            raise ValueError(
+                f"bvfx_vector_blur: {socket_name!r} input is unavailable; inputs: {available}"
+            )
+        socket.default_value = value
+
+    for source_name, target_name in (
+        ("Image", "Image"),
+        ("Vector", "Speed"),
+        ("Depth", "Depth"),
+    ):
+        source = render_layers.outputs.get(source_name)
+        target = vector_blur.inputs.get(target_name)
+        if source is None or target is None:
+            raise ValueError(
+                "bvfx_vector_blur: missing required socket "
+                f"Render Layers.{source_name} -> Vector Blur.{target_name}"
+            )
+        links.new(source, target)
+    image_output = group_output.inputs.get("Image") or group_output.inputs[0]
+    links.new(vector_blur.outputs["Image"], image_output)
+
+    _bvfx_role(vector_blur, role, owner_layer)
+    if control:
+        _bvfx_control(vector_blur, control, owner_layer)
+    return vector_blur
+
+
+def _bvfx_light(name, light_type="POINT", location=(0.0, 0.0, 0.0), energy=None,
+                color=None, role=None, control=None, owner_layer=None, aim_target=None,
+                size=None, spot_size=None, spot_blend=None, **_) -> "bpy.types.Object":
+    """Create or reconfigure one semantic light without stale RNA-subtype handles.
+
+    Changing ``Light.type`` in Blender can leave the existing Python reference typed as
+    the old PointLight/AreaLight subclass.  Re-fetch the data-block before touching
+    type-specific properties so POINT -> SPOT/AREA conversions are one closed-loop edit.
+    """
+    obj = bpy.data.objects.get(name)
+    created = obj is None
+    if created:
+        if not role:
+            raise ValueError("bvfx_light: role is required when creating a persistent light")
+        data = bpy.data.lights.new(name + "_data", type=str(light_type).upper())
+        obj = bpy.data.objects.new(name, data)
+        bpy.context.scene.collection.objects.link(obj)
+    elif obj.type != "LIGHT":
+        raise ValueError(f"bvfx_light: existing object {name!r} is {obj.type}, not LIGHT")
+
+    data_name = obj.data.name
+    obj.data.type = str(light_type).upper()
+    # Important: discard the pre-conversion RNA wrapper and resolve the new subtype.
+    data = bpy.data.lights[data_name]
+    if energy is not None:
+        data.energy = float(energy)
+    if color is not None:
+        data.color = tuple(float(value) for value in color)
+    obj.location = tuple(float(value) for value in location)
+    if size is not None and hasattr(data, "size"):
+        data.size = float(size)
+    if spot_size is not None:
+        if data.type != "SPOT":
+            raise ValueError("bvfx_light: spot_size requires light_type='SPOT'")
+        data.spot_size = float(spot_size)
+    if spot_blend is not None:
+        if data.type != "SPOT":
+            raise ValueError("bvfx_light: spot_blend requires light_type='SPOT'")
+        data.spot_blend = float(spot_blend)
+    if aim_target is not None:
+        _bvfx_aim(obj, target=aim_target)
+
+    effective_role = role or str(obj.get("bvfx_role") or "")
+    if effective_role:
+        _bvfx_role(obj, effective_role, owner_layer)
+    if control:
+        _bvfx_control(obj, control, owner_layer)
+    return obj
+
+
 def _bvfx_volume(name="volume", center=(0, 0, 150), size=(400, 160, 240), density=None,
                  optical_depth=0.4, color=(0.05, 0.3, 0.1), emission_strength=0.0,
                  noise_scale=2.4, noise_detail=9.0, noise_roughness=0.72,
-                 contrast=(0.42, 0.72), stretch=(1.0, 1.0, 1.0), edge_falloff=True, **_):
+                 contrast=(0.42, 0.72), stretch=(1.0, 1.0, 1.0), edge_falloff=True,
+                 role=None, material_role=None, node_role=None, control=None,
+                 owner_layer=None, **_) -> "bpy.types.Object":
     """A BOUNDED volumetric domain — clouds, nebula, fog, sandstorm, god-rays. THE
     primitive for atmosphere (do not hand-roll a cloud material/backdrop). Structured
     via noise so it reads as WISPS, not milk/smooth-glow, and density FADES TO 0 at the
@@ -176,7 +325,9 @@ def _bvfx_volume(name="volume", center=(0, 0, 150), size=(400, 160, 240), densit
     bpy.ops.mesh.primitive_cube_add(size=1, location=center)
     dom = bpy.context.object
     dom.name = name
-    dom.scale = (size[0] / 2, size[1] / 2, size[2] / 2)
+    # primitive_cube_add(size=1) creates a unit-width mesh. Object scale is therefore
+    # the requested full dimension, not its half-extent.
+    dom.scale = (size[0], size[1], size[2])
     dom.display_type = "WIRE"
     m = bpy.data.materials.new(name + "_vol"); m.use_nodes = True
     nt = m.node_tree; nt.nodes.clear()
@@ -244,11 +395,23 @@ def _bvfx_volume(name="volume", center=(0, 0, 150), size=(400, 160, 240), densit
     nt.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
     nt.links.new(vol.outputs[0], out.inputs["Volume"])
     dom.data.materials.append(m)
+    if role:
+        _bvfx_role(dom, role, owner_layer)
+    if material_role:
+        _bvfx_role(m, material_role, owner_layer)
+    if node_role:
+        _bvfx_role(vol, node_role, owner_layer)
+    if control:
+        _bvfx_control(vol, control, owner_layer)
+    # Flush scale and graph changes before the helper returns so the next observation
+    # sees truthful dimensions and tagged hosts without needing an undocumented update.
+    bpy.context.view_layer.update()
     return dom
 
 
 def _bvfx_emissive_windows(obj, window_color=(0.12, 1.0, 0.38), strength=8.0,
-                           density=7.0, aspect=2.0, mortar=0.22, body_glow=0.06, **_):
+                           density=7.0, aspect=2.0, mortar=0.22, body_glow=0.06,
+                           **_) -> "bpy.types.Material":
     """A glowing circuit-board facade: lit window cells on a DARK grid, as emission (NOT
     one uniform emission material, which washes out all detail). Uses an explicit
     coordinate-modulo grid (mesh-independent — TexBrick sampled all-mortar on real GLBs).
@@ -350,7 +513,8 @@ def _warn_if_textured(obj):
 
 
 def _bvfx_emissive_from_texture(obj, threshold=0.55, soft=0.10, strength=6.0,
-                                tint=(1.0, 1.0, 1.0), body_glow=0.0, **_):
+                                tint=(1.0, 1.0, 1.0), body_glow=0.0,
+                                **_) -> "list[str]":
     """Make the BRIGHT cells of an asset's OWN base-colour texture emit, keeping the
     texture, the normal map and every bit of baked detail.
 
@@ -429,7 +593,7 @@ def _bvfx_emissive_from_texture(obj, threshold=0.55, soft=0.10, strength=6.0,
     return touched
 
 
-def _bvfx_import_asset(name):
+def _bvfx_import_asset(name) -> "list[str]":
     """Import a committed, normalized asset (assets/<name>/model.glb) into the live scene
     and return the new object names. Use this in build scripts — the `import_asset` TOOL
     is not in scope inside run_bpy / a build script, but this helper is."""
@@ -453,7 +617,7 @@ def _bvfx_import_asset(name):
     return new
 
 
-def _bvfx_aim(obj, target=(0.0, 0.0, 0.0), up="Y"):
+def _bvfx_aim(obj, target=(0.0, 0.0, 0.0), up="Y") -> "bpy.types.Object":
     """Point obj (e.g. a camera) at `target`. Accepts tuples OR Vectors safely — avoids
     the `unary -: tuple` footgun of hand-rolled aim math."""
     import mathutils
@@ -467,7 +631,7 @@ def _bvfx_aim(obj, target=(0.0, 0.0, 0.0), up="Y"):
     return obj
 
 
-def _bvfx_fcurves(target):
+def _bvfx_fcurves(target) -> "list[bpy.types.FCurve]":
     """EVERY f-curve keyed on `target` — object, material, world, node group, scene, or a
     raw animation_data.
 
@@ -491,29 +655,49 @@ def _bvfx_fcurves(target):
             for cb in strip.channelbags for fc in cb.fcurves]
 
 
-def _bvfx_interp(target, mode="LINEAR", const=("hide_render", "hide_viewport")):
-    """Force interpolation on everything keyed on `target`; visibility goes CONSTANT so a
-    swap is a hard cut, never a half-hidden in-between frame.
+def _bvfx_interp(target, mode="LINEAR", const=("hide_render", "hide_viewport")) -> "int":
+    """Force interpolation on everything keyed on `target` and its data-block; visibility
+    goes CONSTANT so a swap is a hard cut, never a half-hidden in-between frame. A string
+    resolves first as an object name and then as an exact semantic role.
 
     Returns the number of curves touched — 0 means you keyed something other than what you
     think you did, which is the failure this exists to make visible. Bezier overshoot on a
     fast ramp is what makes a delta layer non-idempotent, and can drive a one-frame value
     negative between keys that are both positive.
     """
+    if isinstance(target, str):
+        named = bpy.data.objects.get(target)
+        targets = [named] if named is not None else [
+            obj for obj in bpy.context.scene.objects
+            if str(obj.get("bvfx_role") or "") == target
+        ]
+    else:
+        targets = [target]
+    expanded = []
+    seen = set()
+    for item in targets:
+        for candidate in (item, getattr(item, "data", None)):
+            if candidate is None or id(candidate) in seen:
+                continue
+            seen.add(id(candidate))
+            expanded.append(candidate)
+
     n = 0
-    for fc in _bvfx_fcurves(target):
-        m = "CONSTANT" if any(c in fc.data_path for c in const) else mode
-        for kp in fc.keyframe_points:
-            kp.interpolation = m
-            if m == "BEZIER":
-                kp.handle_left_type = kp.handle_right_type = "AUTO_CLAMPED"
-        fc.update()
-        n += 1
+    for item in expanded:
+        for fc in _bvfx_fcurves(item):
+            m = "CONSTANT" if any(c in fc.data_path for c in const) else mode
+            for kp in fc.keyframe_points:
+                kp.interpolation = m
+                if m == "BEZIER":
+                    kp.handle_left_type = kp.handle_right_type = "AUTO_CLAMPED"
+            fc.update()
+            n += 1
     return n
 
 
 def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0),
-                     spine=(), ladder=(), display=4.0, role=None, owner_layer=None):
+                     spine=(), ladder=(), display=4.0, role=None,
+                     owner_layer=None) -> "tuple[bpy.types.Object, bpy.types.Object]":
     """The two-object camera: an EMPTY owns location+pitch, the camera child owns ROLL on
     its own local Z. On a bare camera `rotation_euler[2]` is world YAW and swings the
     subject out of frame; under the rig the view axis IS local Z, so the frame rotates
@@ -575,7 +759,7 @@ def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0)
     return rig, cam
 
 
-def _bvfx_role(obj, role, owner_layer=None):
+def _bvfx_role(obj, role, owner_layer=None) -> Any:
     """Attach a stable semantic contract role to any Blender custom-property host.
 
     Object names remain useful labels, but they are not an API: Blender suffixes names
@@ -611,11 +795,21 @@ def _bvfx_role(obj, role, owner_layer=None):
     return obj
 
 
-def _bvfx_control(target, role, owner_layer=None):
-    """Tag a shader/compositor node as a stable downstream control interface."""
-    _bvfx_role(target, role, owner_layer)
-    target["bvfx_control"] = str(role)
-    return target
+def _bvfx_control(target, role, owner_layer=None) -> Any:
+    """Tag a host as a control without replacing its existing semantic role."""
+    if isinstance(target, str):
+        target = bpy.data.objects.get(target)
+    if target is None:
+        raise ValueError("bvfx_control: target does not exist")
+    import checks
+    from semantic_tags import tag_control
+
+    return tag_control(
+        target,
+        role,
+        owner_layer,
+        validate=checks.validate_role_token,
+    )
 
 
 _HELPERS = {
@@ -628,6 +822,8 @@ _HELPERS = {
     "bvfx_volumetric_world": _bvfx_volumetric_world,
     "bvfx_volume": _bvfx_volume,
     "bvfx_glare_bloom": _bvfx_glare_bloom,
+    "bvfx_vector_blur": _bvfx_vector_blur,
+    "bvfx_light": _bvfx_light,
     "bvfx_fcurves": _bvfx_fcurves,
     "bvfx_interp": _bvfx_interp,
     "bvfx_camera_rig": _bvfx_camera_rig,
@@ -758,19 +954,32 @@ def h_journal(a: dict) -> dict:
     # checkpoint. Dumping the FULL journal after restoring an earlier checkpoint writes
     # calls the scene no longer contains — run 20260823T154920Z restored round 1 and
     # published round 2's rejected key light and tunnel taper into the unit script.
+    start = max(0, int(a.get("start", 0)))
     limit = a.get("limit")
-    entries = _JOURNAL if limit is None else _JOURNAL[: int(limit)]
-    dropped = len(_JOURNAL) - len(entries)
+    stop = len(_JOURNAL) if limit is None else min(len(_JOURNAL), int(limit))
+    stop = max(start, stop)
+    entries = _JOURNAL[start:stop]
+    dropped_before = min(start, len(_JOURNAL))
+    dropped = len(_JOURNAL) - stop
     body = "\n\n# ---- next accepted run_bpy call ----\n".join(entries)
     path = a.get("path")
     if path:
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write(f"# JOURNAL — {len(entries)} accepted run_bpy calls, in order.\n"
+            fh.write(f"# JOURNAL — {len(entries)} active-unit run_bpy calls, in order.\n"
+                     + (f"# Excluded {dropped_before} inherited setup/prior call(s).\n"
+                        if dropped_before else "")
                      + (f"# Truncated to the selected checkpoint: {dropped} later call(s) "
                         f"from discarded rounds excluded.\n" if dropped else "")
                      + "# Superseded tweaks and probes included: PRUNE, do not paste.\n\n"
                      + body + "\n")
-    return {"calls": len(entries), "chars": len(body), "path": path, "dropped": dropped}
+    return {
+        "calls": len(entries),
+        "chars": len(body),
+        "path": path,
+        "start": start,
+        "dropped_before": dropped_before,
+        "dropped": dropped,
+    }
 
 
 def h_run(a: dict) -> dict:
@@ -787,16 +996,40 @@ def h_run(a: dict) -> dict:
     before = _scene_stats()
     buf = io.StringIO()
     t0 = time.monotonic()
+    rollback_path = None
+    if a.get("transactional"):
+        rollback_path = os.path.join(ARTIFACTS, "run_bpy_rollback.blend")
+        # Blender background mode cannot use bpy.ops.ed.undo (its poll fails without an
+        # editor context).  A same-worker copy is the deterministic transaction boundary.
+        bpy.ops.wm.save_as_mainfile(
+            filepath=rollback_path,
+            compress=False,
+            copy=True,
+        )
     with contextlib.redirect_stdout(buf):
         try:
             exec(a["code"], ns)
         except Exception as e:
+            if rollback_path:
+                try:
+                    bpy.ops.wm.open_mainfile(filepath=rollback_path)
+                except Exception as restore_error:
+                    raise RuntimeError(
+                        "run_bpy mutation failed and rollback also failed: "
+                        f"{type(restore_error).__name__}: {restore_error}"
+                    ) from e
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(rollback_path)
             better = _hinted(e)
             if better is None:
                 raise
             # `from None` keeps the traceback tail on OUR line: the enriched message is
             # the last thing printed, which is also the part the log now preserves.
             raise better.with_traceback(e.__traceback__) from None
+    if rollback_path:
+        with contextlib.suppress(OSError):
+            os.unlink(rollback_path)
     elapsed = time.monotonic() - t0
     # Only successful code is journalled: the builder currently re-authors the whole
     # layer from memory at finalize (~28KB of live calls -> a 23KB script), which is
@@ -825,19 +1058,18 @@ def h_inspect(a: dict) -> dict:
     section = a.get("section", "all")
     role_filter = str(a.get("role") or "").strip() or None
     sc = bpy.context.scene
+    if a.get("frame") is not None:
+        sc.frame_set(int(a["frame"]))
     out: list[str] = []
     if section in ("all", "render"):
-        r = sc.render
-        out.append(
-            f"render: engine={r.engine} res={r.resolution_x}x{r.resolution_y}"
-            f"@{r.resolution_percentage}% frames={sc.frame_start}-{sc.frame_end}"
-            f" fps={r.fps} motion_blur={r.use_motion_blur} camera={sc.camera.name if sc.camera else None}"
-        )
-        st = _scene_stats()
-        out.append(f"scene: objects={st['objects']} mesh={st['mesh_objects']} "
-                   f"verts={st['verts']} tris={st['tris']}")
-    if section in ("all", "world") and sc.world:
-        out.append(f"world: {sc.world.name} use_nodes={sc.world.use_nodes}")
+        from scene_report import render_status_lines
+
+        out.extend(render_status_lines(sc, _scene_stats()))
+    if section in ("all", "world"):
+        if sc.world:
+            out.append(f"world: {sc.world.name} use_nodes={sc.world.use_nodes}")
+        elif section == "world":
+            out.append("world: (none)")
     if section in ("all", "objects"):
         out.append("objects:")
         shown = 0
@@ -848,23 +1080,56 @@ def h_inspect(a: dict) -> dict:
             shown += 1
             owner = str(o.get("bvfx_owner_layer") or "-")
             loc = tuple(round(v, 2) for v in o.location)
+            world_loc = tuple(round(v, 2) for v in o.matrix_world.translation)
+            dims = tuple(round(v, 2) for v in o.dimensions)
             mods = ",".join(m.type for m in o.modifiers) or "-"
             psys = ",".join(p.name for p in getattr(o, "particle_systems", [])) or "-"
             out.append(
                 f"  {o.name} [{o.type}] role={role or '-'} owner={owner} "
-                f"loc={loc} mods={mods} psys={psys}"
+                f"loc={loc} world_loc={world_loc} dims={dims} "
+                f"hide_render={bool(o.hide_render)} mods={mods} psys={psys}"
             )
         if role_filter and shown == 0:
             raise ValueError(
                 checks.format_object_miss(inventory=checks.object_inventory(), role=role_filter)
             )
     if section in ("all", "materials"):
-        out.append("materials: " + (", ".join(m.name for m in bpy.data.materials) or "-"))
+        from scene_report import material_status_lines
+
+        out.extend(material_status_lines(sc, bpy.data.materials))
+    if section in ("all", "lights"):
+        from scene_report import light_status_line
+
+        out.append("lights:")
+        lights = [o for o in sc.objects if o.type == "LIGHT"]
+        for o in lights:
+            out.append(light_status_line(o))
+        if not lights:
+            out.append("  (none)")
+    if section in ("all", "cameras"):
+        from mathutils import Vector
+
+        out.append("cameras:")
+        cameras = [o for o in sc.objects if o.type == "CAMERA"]
+        for o in cameras:
+            world = o.matrix_world
+            forward = (world.to_quaternion() @ Vector((0.0, 0.0, -1.0))).normalized()
+            out.append(
+                f"  {o.name} role={o.get('bvfx_role') or '-'!s} "
+                f"owner={o.get('bvfx_owner_layer') or '-'!s} "
+                f"world_loc={tuple(round(float(v), 4) for v in world.translation)} "
+                f"forward={tuple(round(float(v), 6) for v in forward)} "
+                f"lens={round(float(o.data.lens), 4)} "
+                f"sensor_width={round(float(o.data.sensor_width), 4)} "
+                f"active={o == sc.camera}"
+            )
+        if not cameras:
+            out.append("  (none)")
     return {"text": "\n".join(out)}
 
 
 def h_nodes(a: dict) -> dict:
-    """Dump a node tree as text — nodes (type + unlinked socket values) + links.
+    """Dump a node tree as text — nodes, socket values/names, and links.
     target: 'compositor' (the 5.x scene.compositing_node_group — NOT scene.node_tree,
     which is gone), 'world', a material name, or an object name (its active material)."""
     target = a.get("target", "world")
@@ -888,21 +1153,96 @@ def h_nodes(a: dict) -> dict:
     if nt is None:
         return {"text": f"no node tree for {target!r} "
                         "(use 'compositor' / 'world' / <material> / <object>)"}
-    lines = [f"nodes for {title}:"]
-    for n in nt.nodes:
-        vals = []
-        for i in n.inputs:
-            if not i.is_linked and hasattr(i, "default_value"):
-                v = i.default_value
-                with contextlib.suppress(Exception):
-                    v = tuple(round(x, 3) for x in v) if hasattr(v, "__len__") else round(v, 3)
-                vals.append(f"{i.name}={v}")
-        lines.append(f"  [{n.type}] {n.name}" + (" | " + ", ".join(vals[:6]) if vals else ""))
-    lines.append("links:")
-    for lk in nt.links:
-        lines.append(f"  {lk.from_node.name}.{lk.from_socket.name} → "
-                     f"{lk.to_node.name}.{lk.to_socket.name}")
-    return {"text": "\n".join(lines)}
+    from node_report import format_node_tree
+
+    return {"text": format_node_tree(nt, title)}
+
+
+def h_black_context(a: dict) -> dict:
+    """Scene facts that disambiguate a nearly black beauty render."""
+    from black_frame_report import format_black_frame_context
+
+    sc = bpy.context.scene
+    frame = int(a.get("frame", sc.frame_current))
+    sc.frame_set(frame)
+    world = sc.world
+    volume_rows = []
+    background_strength = None
+    nt = world.node_tree if (world and world.use_nodes) else None
+    if nt is not None:
+        for node in nt.nodes:
+            if node.type == "BACKGROUND":
+                socket = node.inputs.get("Strength")
+                if socket is not None and not socket.is_linked:
+                    background_strength = float(socket.default_value)
+            if node.type not in {"VOLUME_SCATTER", "PRINCIPLED_VOLUME", "VOLUME_PRINCIPLED"}:
+                continue
+            socket = node.inputs.get("Density")
+            if socket is None:
+                continue
+            volume_rows.append(
+                {
+                    "name": node.name,
+                    "role": str(node.get("bvfx_role") or ""),
+                    "linked": bool(socket.is_linked),
+                    "density": None if socket.is_linked else float(socket.default_value),
+                }
+            )
+    camera = sc.camera
+    camera_location = camera.matrix_world.translation if camera is not None else None
+    subjects = []
+    for obj in sc.objects:
+        role = str(obj.get("bvfx_role") or "")
+        if obj.type != "MESH" or not role:
+            continue
+        distance = (
+            float((obj.matrix_world.translation - camera_location).length)
+            if camera_location is not None
+            else 0.0
+        )
+        subjects.append(
+            {"name": obj.name, "role": role, "camera_distance": distance}
+        )
+    lights = []
+    for obj in sc.objects:
+        if obj.type != "LIGHT":
+            continue
+        distance = (
+            float((obj.matrix_world.translation - camera_location).length)
+            if camera_location is not None
+            else 0.0
+        )
+        lights.append(
+            {
+                "name": obj.name,
+                "role": str(obj.get("bvfx_role") or ""),
+                "energy": float(obj.data.energy),
+                "camera_distance": distance,
+            }
+        )
+    camera_clip_end = float(camera.data.clip_end) if camera is not None else None
+    eevee = getattr(sc, "eevee", None)
+    volumetric_start = getattr(eevee, "volumetric_start", None)
+    volumetric_end = getattr(eevee, "volumetric_end", None)
+    return {
+        "text": format_black_frame_context(
+            frame=frame,
+            camera_clip_end=camera_clip_end,
+            volume_rows=volume_rows,
+            background_strength=background_strength,
+            lights=lights,
+            volumetric_start=volumetric_start,
+            volumetric_end=volumetric_end,
+            subjects=subjects,
+        ),
+        "camera_clip_end": camera_clip_end,
+        "volume_rows": volume_rows,
+        "background_strength": background_strength,
+        "lights": lights,
+        "volumetric_start": volumetric_start,
+        "volumetric_end": volumetric_end,
+        "subjects": subjects,
+    }
 
 
 def _action_fcurves(obj, action):
@@ -1012,6 +1352,17 @@ def _scene_warnings() -> list:
 
 def h_render(a: dict) -> dict:
     sc = bpy.context.scene
+    image_settings = sc.render.image_settings
+    original = {
+        "engine": sc.render.engine,
+        "resolution_percentage": sc.render.resolution_percentage,
+        "filepath": sc.render.filepath,
+        "frame": sc.frame_current,
+        "shading_type": sc.display.shading.type,
+        "file_format": image_settings.file_format,
+        "media_type": getattr(image_settings, "media_type", None),
+        "taa_render_samples": getattr(getattr(sc, "eevee", None), "taa_render_samples", None),
+    }
     frame = int(a["frame"])
     mode = a.get("mode", "eevee")
     scale = float(a.get("scale", 0.5))
@@ -1037,6 +1388,9 @@ def h_render(a: dict) -> dict:
     extended = not (pass_name == "beauty" and shade == "beauty"
                     and light is None and crop is None and res_pct is None)
 
+    # Evaluate animated settings at the requested frame before a diagnostic snapshots or
+    # overrides them. Otherwise frame_set below would overwrite a normalized light energy.
+    sc.frame_set(frame)
     undo, caption, did = [], "", {}
     if extended:
         import render_ext  # same directory as this worker
@@ -1046,7 +1400,6 @@ def h_render(a: dict) -> dict:
     else:
         sc.render.resolution_percentage = max(1, min(100, int(scale * 100)))
 
-    sc.frame_set(frame)
     tag = mode if not extended else f"{mode}_{shade if shade != 'beauty' else pass_name}"
     tag = tag.replace(":", "-")
     path = os.path.join(ARTIFACTS, f"{tag}_f{frame:04d}.png")
@@ -1057,14 +1410,31 @@ def h_render(a: dict) -> dict:
     # a working optical zoom look like a broken one.
     used = [sc.render.resolution_x, sc.render.resolution_y,
             sc.render.resolution_percentage]
+    warnings = []
     try:
         bpy.ops.render.render(write_still=True)
+        warnings = _scene_warnings()
     finally:
         if extended:
             import render_ext
             render_ext.restore(undo)
+        # render_frame/render_pass/compare_frame are observations. Restore every
+        # setting the common path touches, including Workbench engine and frame.
+        sc.render.engine = original["engine"]
+        sc.render.resolution_percentage = original["resolution_percentage"]
+        sc.render.filepath = original["filepath"]
+        sc.display.shading.type = original["shading_type"]
+        if original["media_type"] is not None and hasattr(image_settings, "media_type"):
+            with contextlib.suppress(Exception):
+                image_settings.media_type = original["media_type"]
+        with contextlib.suppress(Exception):
+            image_settings.file_format = original["file_format"]
+        if original["taa_render_samples"] is not None:
+            with contextlib.suppress(AttributeError):
+                sc.eevee.taa_render_samples = original["taa_render_samples"]
+        sc.frame_set(original["frame"])
     out = {"image_path": path, "frame": frame, "mode": mode,
-           "warnings": _scene_warnings(),
+           "warnings": warnings,
            "resolution": used}
     if extended:
         out.update({"pass": pass_name, "shade": shade, "light": light,
@@ -1120,6 +1490,7 @@ HANDLERS = {
     "run": h_run,
     "inspect": h_inspect,
     "nodes": h_nodes,
+    "black_context": h_black_context,
     "keyframes": h_keyframes,
     "render": h_render,
     "snapshot": h_snapshot,

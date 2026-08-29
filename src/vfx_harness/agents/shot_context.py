@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vfx_harness.agents.unit_scope import compile_unit_scope, format_unit_scope_card, helper_inventory
+from vfx_harness.agents.unit_scope import compile_scope_with_predecessors, format_unit_scope_card, helper_inventory
 from vfx_harness.domain.brief import Shot
 from vfx_harness.orchestration.escalate import answers_block, open_block
 from vfx_harness.orchestration.layer_plans import work_unit_plan_path
@@ -33,6 +33,7 @@ def write_layer_context(
     fingerprints: dict[int, str] | None = None,
     *,
     unit=None,
+    layer_units=None,
 ) -> Path:
     """Write shots/<id>/CLAUDE.md for this layer. Returns the path."""
     fingerprints = fingerprints or {}
@@ -93,17 +94,27 @@ def write_layer_context(
     )
     try:
         from vfx_harness.evidence.scene_checks import load_rows
+        from vfx_harness.orchestration.unit_state import load as load_unit_state
 
         contracts = load_rows(shot.folder)
     except (OSError, ValueError):
         contracts = []
+        load_unit_state = None  # type: ignore[assignment]
     try:
+        durable_state: dict = {}
+        if load_unit_state is not None:
+            try:
+                durable_state = load_unit_state(shot.folder, str(layer.id))
+            except (OSError, ValueError):
+                durable_state = {}
         scope_card = format_unit_scope_card(
-            compile_unit_scope(
+            compile_scope_with_predecessors(
                 unit=unit,
                 layer_id=str(layer.id),
                 contracts=contracts,
                 helpers=helper_inventory(),
+                units=tuple(layer_units or getattr(layer, "stages", ()) or (unit,)),
+                durable_state=durable_state,
             )
         )
     except ValueError as exc:

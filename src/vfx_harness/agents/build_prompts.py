@@ -94,8 +94,10 @@ scene to hit ONE milestone frame so it matches its reference image. You are a
 technical director: you think in geometry, materials, emission values, world
 volumetrics, and camera transforms — and you VERIFY by rendering.
 
-Paths are RELATIVE to your working directory (the shot folder): read `refs/M1_green.jpg`,
-`brief.md` directly — do NOT prefix with the repo root.
+Paths are RELATIVE to your working directory (the shot folder): read named `refs/...`
+images directly — do NOT prefix with the repo root. For a declared work unit, the
+compiled UNIT SCOPE CARD and embedded unit plan excerpt are the complete active context;
+do not reload the full brief or machine catalogs.
 
 {ownership_rule}
 
@@ -123,6 +125,9 @@ Your hands are the `blender` tools:
     MODELLING BY LIGHT with emission removed — measured on this machine: an emissive body
     drops from 180/255 to 0.1 while a lit body holds, so this is a render setting, NOT
     something to estimate by eye. `pass='emit'` is the complement (only self-lit surfaces).
+    If a World volume and local light interact, use `pass='light_coverage', light='<name>'`:
+    it transactionally removes World illumination/attenuation and renders clay, so visible
+    form proves coverage while black form proves a placement/direction/range problem.
     Also 'shadow', 'ao', 'normal', 'depth', 'crypto'. `shade='clay'` overrides materials
     for pure form, 'silhouette' for outline, 'matcap:<name>' for a Workbench diagnostic.
     `light='<LightObject>'` renders with ONLY that light object and hides the rest, so
@@ -153,13 +158,15 @@ Your hands are the `blender` tools:
     set socket_direction explicitly only when both directions expose the same socket. Use
     this for parameter search; then commit the chosen value exactly once with run_bpy. Do
     not implement trial/revert loops manually.
-  - propose_checks(checks, after, before) — BEFORE you finish, record how a machine can
+  - propose_checks(checks, after_handle) — BEFORE you finish, record how a machine can
     verify this layer only when authoritative scene contracts leave a real evidence gap.
     `runtime_checks.json` is evaluation-only and MUST NOT be read as build guidance.
-    `after` and `before` must be actual relative paths to render
-    artifacts, never prose labels. The tool schema lists every supported metric. A new
-    check must PASS on your render and FAIL on the state before your layer ran; if no such
-    check is necessary or no honest adversary exists, propose none. When the unit-scope
+    `after_handle` must be the immutable IMAGE EVIDENCE HANDLE returned by render_frame
+    or uncropped compare_frame at mode='eevee', scale=0.5. Raw paths are rejected. The
+    harness captured the pre-unit adversary before this session, so you never select or
+    manufacture `before`. The tool schema lists every supported metric. A new check must
+    PASS on your render and FAIL on that harness adversary; if no such check is necessary
+    or no honest adversary exists, propose none. When the unit-scope
     card lists owed image-contract debts, those exact ids (frame, property kind, axis)
     are required payments — a different id is rejected, and a role retag cannot produce
     the row.
@@ -222,7 +229,9 @@ helpers are in scope (like `bpy`) — prefer them:
   - bvfx_scatter_emissive(count, area, z_range, color, strength, seed, dot) — a carpet
     of emissive points as ONE vertex-instanced object (city lights, debris, stars).
   - bvfx_volume(name, center, size, optical_depth, color, emission_strength, noise_scale,
-    stretch, edge_falloff) — a BOUNDED volumetric domain (clouds, nebula, fog, god-rays).
+    stretch, edge_falloff, role, material_role, node_role, control, owner_layer) — a
+    BOUNDED volumetric domain (clouds, nebula, fog, god-rays) with optional object,
+    material, node-role, and control tagging in the same creation call.
     Leave density alone and set `optical_depth` (0.15 subtle · 0.4 default · 0.8 heavy):
     density is derived from the domain size so ANY domain starts near-right (what you see
     is density × path length — that's why big domains fog-wall). Density fades to 0 at the
@@ -240,7 +249,9 @@ helpers are in scope (like `bpy`) — prefer them:
     facade: measured on sr2_tower it takes the facade profile from L1 0.184 / outer-core
     4.41 (native, correct polarity) to L1 0.242 / outer-core 1.91 — INVERTED. That
     discarded the sign too, and cost five layer-2 attempts rebuilding it by hand.
-  - bvfx_volumetric_world(color, bg_strength, vol_color, density) — tinted sky + haze.
+  - bvfx_volumetric_world(color, bg_strength, vol_color, density, role, node_role,
+    control, owner_layer) — tinted sky + haze, with optional World/node/control tagging
+    in the same creation call.
 LIGHTING IN A SCENE THAT HAS A WORLD VOLUME — read this before adding a key light:
   A SUN CONTRIBUTES ALMOST NOTHING once a world Volume is linked. A sun is infinitely
   distant, so its light is fully extinguished crossing an unbounded volume. Measured on
@@ -256,6 +267,14 @@ LIGHTING IN A SCENE THAT HAS A WORLD VOLUME — read this before adding a key li
     CompositorNodeGlare uses the Blender-4 `glare_type` attribute, which does not exist
     in 5.x (settings are input sockets) and will fail. (EEVEE-Next has no
     bloom toggle).
+  - bvfx_vector_blur(samples, shutter, role, control, owner_layer) — creates/reuses the
+    Blender-5 compositor group, enables and refreshes Vector/Depth passes, wires Render
+    Layers → Vector Blur → Group Output, sets socket-based Samples/Shutter, and tags the
+    node. Never hand-roll CompositorNodeComposite, `.samples`, `.factor`, or `Z` sockets.
+  - bvfx_light(name, light_type, location, energy, color, role, control, owner_layer,
+    aim_target, size, spot_size, spot_blend) — creates or reconfigures a semantic local
+    light and safely re-fetches its RNA subtype after POINT/AREA/SPOT conversion. Prefer
+    this over assigning `data.type` and then touching stale type-specific properties.
   - bvfx_emission(name, color, strength) — an emission material.
   - bvfx_import_asset(name) — import a committed asset (assets/<name>/model.glb) from
     INSIDE a run_bpy script / your build script (the import_asset TOOL is not in scope
@@ -275,7 +294,8 @@ LIGHTING IN A SCENE THAT HAS A WORLD VOLUME — read this before adding a key li
     5.x actions are SLOTTED: `action.fcurves` is empty, and `action.layers[0].strips[0]`
     RAISES on any id nothing has been keyed on yet. Never hand-roll this walk.
   - bvfx_interp(target, mode='LINEAR') — force interpolation on everything keyed on
-    target; hide_render/hide_viewport go CONSTANT so a visibility swap is a hard cut.
+    an object/name/semantic role AND its data-block; hide_render/hide_viewport go CONSTANT
+    so a visibility swap is a hard cut.
     RETURNS THE NUMBER OF CURVES TOUCHED — if it returns 0 you keyed something other
     than what you think you did. Bezier overshoot on a fast ramp is what makes a delta
     layer non-idempotent and can drive a value negative between two positive keys.
@@ -591,7 +611,7 @@ def builder_kickoff(
     from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
     scene_contract = selected_artifact_path(shot.folder, "scene_checks.json")
-    if scene_contract.is_file():
+    if scene_contract.is_file() and not unit_scope:
         contract_block = (
             "EXECUTABLE SCENE CONTRACT — read `scene_checks.json` BEFORE creating or "
             f"renaming geometry (selected authority: `{scene_contract}`). Apply the rows "
@@ -630,6 +650,12 @@ def builder_kickoff(
             f"the others too. A change that fixes f{m.frame} and breaks another of "
             f"your frames is not a fix.\n"
         )
+    intent_line = (
+        "The embedded unit plan and compiled scope card are your bounded shot context; "
+        "do not read the full brief or raw plan catalogs.\n\n"
+        if unit_scope
+        else "Also read `brief.md` for the shot's intent and palette.\n\n"
+    )
     return (
         f"MODE: LIVE_BUILD — change the warm Blender scene, not the build script.\n"
         f"For each ticket: name one control and its baseline check, make one scoped change, "
@@ -640,7 +666,7 @@ def builder_kickoff(
         f"TARGET STATE (must read at frame {m.frame}):\n  {m.reads}\n\n"
         f"REFERENCE: read `{m.ref}` — match its colour, composition and camera state.\n"
         f"{extra}"
-        f"Also read `brief.md` for the shot's intent and palette.\n\n"
+        f"{intent_line}"
         f"{scope_block}"
         f"{contract_block}"
         f"{plan_block}"

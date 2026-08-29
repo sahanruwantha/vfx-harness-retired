@@ -43,6 +43,7 @@ a phrase a reader has to interpret.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -508,18 +509,7 @@ def load_image_contract_payment_rows(shot_folder: str | Path) -> list[dict]:
                 rows.append(row)
     except (OSError, ValueError, json.JSONDecodeError):
         pass
-    runtime = root / "runtime_checks.json"
-    if runtime.is_file():
-        try:
-            loaded = json.loads(runtime.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            loaded = []
-        if isinstance(loaded, list):
-            rows.extend(
-                row
-                for row in loaded
-                if isinstance(row, dict) and row.get("origin") == "builder" and row.get("id")
-            )
+    rows.extend(valid_runtime_image_payment_rows(root))
     return rows
 
 
@@ -571,19 +561,11 @@ def layer_evidence(
                 "error": str(exc)[:160],
             }
         ]
-    runtime = root / "runtime_checks.json"
-    if runtime.is_file():
-        try:
-            loaded = json.loads(runtime.read_text(encoding="utf-8"))
-            runtime_rows = [
-                row
-                for row in loaded
-                if isinstance(row, dict)
-                and row.get("origin") == "builder"
-                and str(row.get("layer", "")) == str(layer_id)
-            ]
-        except (OSError, json.JSONDecodeError):
-            runtime_rows = []
+    runtime_rows = [
+        row
+        for row in valid_runtime_image_payment_rows(root)
+        if str(row.get("layer", "")) == str(layer_id)
+    ]
     rows = [*planner_rows, *runtime_rows]
 
     out = []
@@ -715,6 +697,31 @@ def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
             f"DOES NOT HOLD — this layer's own render reads {v.ref_value:.4g} against "
             f"{check.target()}. The check does not describe what was built"
         )
+    try:
+        v.floor = noise_floor(check, after)
+    except Exception:
+        v.floor = 0.0
+    # A generated threshold must have room for replay/resampling movement. Merely
+    # choosing lo just below today's scalar makes one current plate pass but is not a
+    # durable decision boundary (the motivating f150 row cleared lo=48 by only 1.28).
+    decision_margin = max(2 * v.floor, 0.05 * max(abs(float(v.ref_value)), 1.0))
+    if check.op == ">=":
+        clearance = float(v.ref_value) - float(check.lo)
+    elif check.op == "<=":
+        clearance = float(check.hi) - float(v.ref_value)
+    else:
+        clearance = min(
+            float(v.ref_value) - float(check.lo),
+            float(check.hi) - float(v.ref_value),
+        )
+    if clearance < decision_margin:
+        v.ok = False
+        v.reasons.append(
+            f"FRAGILE THRESHOLD — candidate clearance {clearance:.4g} is below the "
+            f"measured decision margin {decision_margin:.4g} (max of 2× resampling "
+            "noise and 5% of the measured value). Do not shave a one-shot threshold "
+            "against the current render; choose a stable property or build more margin"
+        )
     if before is not None and Path(before).is_file():
         try:
             prior = evaluate(check, before)
@@ -728,6 +735,14 @@ def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
                     f"NOT NECESSARY — the state BEFORE this layer ran already reads "
                     f"{prior:.4g} and passes. A check that holds both before and after "
                     f"proves nothing about this layer; it belongs to an earlier one"
+                )
+            gap = abs(float(v.ref_value) - float(prior))
+            if gap < decision_margin:
+                v.ok = False
+                v.reasons.append(
+                    f"INDISCRIMINATE — candidate/adversary separation {gap:.4g} is below "
+                    f"the decision margin {decision_margin:.4g}; this check is too close "
+                    "to survive deterministic replay"
                 )
     return v
 
@@ -757,25 +772,134 @@ def revalidate_layer(shot_folder: Path, layer_id: str, render_for: Callable[[Che
         if d.get("origin") != "builder" or str(d.get("layer")) != str(layer_id):
             keep.append(d)
             continue
+        provenance_error = runtime_image_payment_error(shot_folder, d)
+        if provenance_error:
+            dropped.append((str(d.get("id") or "?"), provenance_error))
+            continue
         c = Check.from_dict({**d, "lo": d.get("lo", float("-inf")), "hi": d.get("hi", float("inf"))})
         img = render_for(c)
         if img is None:
             dropped.append((c.id, "no shipped render for its frame"))
             continue
         try:
-            v = evaluate(c, img)
+            adversary_rel = ((d.get("payment") or {}).get("adversary") or {}).get("path")
+            adversary = (
+                Path(shot_folder) / str(adversary_rel) if adversary_rel else None
+            )
+            verdict = verify_necessity(c, Path(img), adversary)
+            v = verdict.ref_value
         except Exception as e:
             dropped.append((c.id, f"unevaluable: {str(e)[:60]}"))
             continue
-        if c.holds(v):
+        if verdict.ok and isinstance(v, (int, float)):
             d.setdefault("proof", {})["ref"] = round(v, 4)
             d["proof"]["on"] = str(Path(img).relative_to(Path(shot_folder)))
             keep.append(d)
         else:
-            dropped.append((c.id, f"reads {v:.4g} against {c.target()} on the final render"))
+            reason = verdict.reasons[0] if verdict.reasons else (
+                f"reads {v:.4g} against {c.target()} on the final render"
+            )
+            dropped.append((c.id, reason))
     if dropped:
         spec.write_text(json.dumps(keep, indent=1) + "\n", encoding="utf-8")
     return {
         "kept": sum(1 for d in keep if d.get("origin") == "builder" and str(d.get("layer")) == str(layer_id)),
         "dropped": dropped,
     }
+IMAGE_PAYMENT_SCHEMA = "vfx-harness.image-payment/v2"
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def runtime_image_payment_error(shot_folder: str | Path, row: dict) -> str | None:
+    """Return why a builder image-payment row lacks immutable run provenance.
+
+    Runtime rows are durable evidence, so existence at an arbitrary shot path is not
+    identity.  Both plates must be immutable render artifacts owned by one structured
+    run, hash-pinned, frame/settings aligned, and tied to the same pre-unit parent chain.
+    Legacy rows are deliberately rejected rather than guessed into the new authority
+    model (ADR-0002 strict migration).
+    """
+    root = Path(shot_folder).resolve()
+    payment = row.get("payment")
+    if not isinstance(payment, dict) or payment.get("schema") != IMAGE_PAYMENT_SCHEMA:
+        return f"missing payment schema {IMAGE_PAYMENT_SCHEMA}"
+    run_id = str(payment.get("run_id") or "")
+    if not run_id or run_id in {".", ".."} or "/" in run_id or "\\" in run_id:
+        return "payment.run_id is invalid"
+    run_root = (root / "runs" / run_id).resolve()
+    if not (run_root / "manifest.json").is_file():
+        return f"payment run {run_id!r} has no manifest"
+    try:
+        manifest = json.loads((run_root / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return f"payment run {run_id!r} has an unreadable manifest"
+    if str(manifest.get("run_id") or "") != run_id:
+        return f"payment run manifest names {manifest.get('run_id')!r}, not {run_id!r}"
+
+    records: dict[str, tuple[dict, Path]] = {}
+    for role in ("candidate", "adversary"):
+        record = payment.get(role)
+        if not isinstance(record, dict):
+            return f"payment.{role} is required"
+        rel = str(record.get("path") or "")
+        if not rel:
+            return f"payment.{role}.path is required"
+        path = (root / rel).resolve()
+        evidence_root = run_root.joinpath("evidence", "renders").resolve()
+        if path != evidence_root and evidence_root not in path.parents:
+            return f"payment.{role}.path is not owned by run {run_id} evidence/renders"
+        if not path.is_file():
+            return f"payment.{role}.path does not exist"
+        expected = str(record.get("sha256") or "")
+        if len(expected) != 64 or _file_sha256(path) != expected:
+            return f"payment.{role}.sha256 does not match its artifact"
+        try:
+            record_frame = int(record.get("frame"))
+            row_frame = int(row.get("frame"))
+        except (TypeError, ValueError):
+            return f"payment.{role}.frame and row.frame must be integers"
+        if record_frame != row_frame:
+            return f"payment.{role}.frame {record_frame} != row.frame {row_frame}"
+        records[role] = (record, path)
+
+    candidate = records["candidate"][0]
+    adversary = records["adversary"][0]
+    for key in ("mode", "scale", "resolution"):
+        if candidate.get(key) != adversary.get(key):
+            return f"candidate/adversary {key} settings differ"
+    parent_hash = str(payment.get("parent_chain_hash") or "")
+    if len(parent_hash) != 64 or any(ch not in "0123456789abcdef" for ch in parent_hash):
+        return "payment.parent_chain_hash must be a lowercase SHA-256"
+    if str(adversary.get("parent_chain_hash") or "") != parent_hash:
+        return "adversary is not bound to payment.parent_chain_hash"
+    unit_hash = str(payment.get("unit_hash") or "")
+    if len(unit_hash) != 64 or any(ch not in "0123456789abcdef" for ch in unit_hash):
+        return "payment.unit_hash must be a lowercase SHA-256"
+    if not str(payment.get("unit_id") or ""):
+        return "payment.unit_id is required"
+    return None
+
+
+def valid_runtime_image_payment_rows(shot_folder: str | Path) -> list[dict]:
+    """Load only provenance-complete builder rows; legacy rows pay no debts."""
+    root = Path(shot_folder)
+    runtime = root / "runtime_checks.json"
+    if not runtime.is_file():
+        return []
+    try:
+        loaded = json.loads(runtime.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(loaded, list):
+        return []
+    return [
+        row
+        for row in loaded
+        if isinstance(row, dict)
+        and row.get("origin") == "builder"
+        and row.get("id")
+        and runtime_image_payment_error(root, row) is None
+    ]

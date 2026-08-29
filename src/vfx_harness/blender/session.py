@@ -228,9 +228,9 @@ class BlenderSession:
     def ping(self) -> dict:
         return self.call("ping")
 
-    def run(self, code: str, *, journal: bool = True) -> dict:
+    def run(self, code: str, *, journal: bool = True, transactional: bool = False) -> dict:
         """Execute Blender Python; read-only probes can opt out of the replay journal."""
-        return self.call("run", code=code, journal=journal)
+        return self.call("run", code=code, journal=journal, transactional=transactional)
 
     def inspect(self, section: str = "all") -> str:
         return self.call("inspect", section=section)["text"]
@@ -267,13 +267,18 @@ class BlenderSession:
         return self.call("snapshot", tag=tag, dir=str(self.snapshots))
 
     def journal(
-        self, path: str | None = None, clear: bool = False, limit: int | None = None
+        self,
+        path: str | None = None,
+        clear: bool = False,
+        limit: int | None = None,
+        start: int = 0,
     ) -> dict:
         """Dump/clear the accepted-run_bpy transcript (see worker.h_journal).
 
-        `limit` truncates to a snapshot's `journal_index` so a finalizer reading this
-        transcript sees exactly the calls behind the restored checkpoint."""
-        return self.call("journal", path=path, clear=clear, limit=limit)
+        `start` excludes inherited reset/prior replay; `limit` truncates to a snapshot's
+        `journal_index`. The finalizer therefore sees only the active unit calls behind
+        the restored checkpoint."""
+        return self.call("journal", path=path, clear=clear, limit=limit, start=start)
 
     def replay(self, start: int = 0) -> dict:
         """Re-exec journalled run_bpy calls from `start` (use after restore)."""

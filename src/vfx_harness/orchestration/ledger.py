@@ -509,12 +509,15 @@ class Ledger:
                 "rounds": list(slot.get("rounds") or []),
                 "best": slot.get("best"),
                 "script_sha": slot.get("script_sha"),
+                "unit_hash": slot.get("unit_hash"),
+                "artifact_unit_hash": slot.get("artifact_unit_hash"),
             })
         # ``rounds`` is current-attempt state.  Historical rounds have their own durable
         # records above; retaining them here made attempt 5's report look like seven new
         # rounds and contaminated convergence analysis with unrelated runs.
         slot.update(frame=m.frame, ref=m.ref, status="in_progress",
                     script=script, rounds=[], reviews=[], ablation={}, resume=None,
+                    artifact_unit_hash=None,
                     run_id=RUN_ID, attempt=previous_attempt + 1,
                     started=_now())
         self.save()
@@ -598,6 +601,7 @@ class Ledger:
         d = self.script_digest(m)
         if d:
             slot["script_sha"] = d
+            slot["artifact_unit_hash"] = slot.get("unit_hash")
         if best is not None:
             slot["best"] = {"round": best.get("round"), "mean": best.get("mean"),
                             "render": best.get("render")}

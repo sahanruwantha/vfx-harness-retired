@@ -6,11 +6,13 @@ import shutil
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from vfx_harness.agents.builder import _executable_unit_verdict, _scope_unit_evidence
-from vfx_harness.blender.tools import _pixel_contract_gate
+from vfx_harness.blender.tools import _image_evidence_ids_at_frame, _pixel_contract_gate
 from vfx_harness.domain.work_units import Claim, ProtectionSpec, WorkUnit, read_document
 from vfx_harness.evaluation.plan_gate import _check_hierarchical_plans
+from vfx_harness.evidence.checks import IMAGE_PAYMENT_SCHEMA
 from vfx_harness.evidence.claim_evidence import validate_claim_closure
 from vfx_harness.observability.provenance import check as provenance_check
 from vfx_harness.observability.provenance import stamp as provenance_stamp
@@ -42,6 +44,43 @@ def _claim(uid: str, *, cid: str | None = None, frame: int = 40) -> dict:
         "repair_owner": uid,
         "asserts": "scene",
         "evidence": [{"kind": "scene_contract", "id": f"contract.{uid}"}],
+    }
+
+
+def _provenance_payment(root, row: dict) -> dict:
+    """Attach the strict runtime image-payment envelope used by claim-closure tests."""
+    run_id = "20260827T000000Z-fixture"
+    renders = root / "runs" / run_id / "evidence" / "renders"
+    renders.mkdir(parents=True, exist_ok=True)
+    manifest = root / "runs" / run_id / "manifest.json"
+    manifest.write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+    frame = int(row["frame"])
+    candidate = renders / f"candidate-f{frame}.png"
+    adversary = renders / f"adversary-f{frame}.png"
+    candidate.write_bytes(b"candidate")
+    adversary.write_bytes(b"adversary")
+    parent_hash = hashlib.sha256(b"parent").hexdigest()
+    settings = {"frame": frame, "mode": "eevee", "scale": 0.5, "resolution": [64, 36, 100]}
+    return {
+        **row,
+        "payment": {
+            "schema": IMAGE_PAYMENT_SCHEMA,
+            "run_id": run_id,
+            "unit_id": "form",
+            "unit_hash": hashlib.sha256(b"unit").hexdigest(),
+            "parent_chain_hash": parent_hash,
+            "candidate": {
+                **settings,
+                "path": candidate.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            },
+            "adversary": {
+                **settings,
+                "path": adversary.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(adversary.read_bytes()).hexdigest(),
+                "parent_chain_hash": parent_hash,
+            },
+        },
     }
 
 
@@ -149,6 +188,63 @@ def test_executable_unit_without_image_bindings_has_no_generic_brightness_gate(t
 
     assert passed is True
     assert rows == []
+
+
+def test_live_image_gate_consumes_exact_builder_payments_without_false_reopen(
+    tmp_path, monkeypatch
+):
+    render = tmp_path / "candidate.png"
+    Image.new("RGB", (8, 8), (20, 20, 20)).save(render)
+
+    monkeypatch.setattr(
+        "vfx_harness.evidence.checks.layer_evidence",
+        lambda *args, **kwargs: [
+            {
+                "id": "look-f72",
+                "metric": "region_mean",
+                "value": 6.0,
+                "target": ">= 2",
+                "pass": True,
+                "origin": "builder",
+                "authoritative": False,
+            }
+        ],
+    )
+
+    passed, rows = _pixel_contract_gate(
+        tmp_path,
+        "2",
+        frame=72,
+        ref="refs/f72.png",
+        render=render,
+        evidence_ids={"look-f72"},
+    )
+    missing, missing_rows = _pixel_contract_gate(
+        tmp_path,
+        "2",
+        frame=72,
+        ref="refs/f72.png",
+        render=render,
+        evidence_ids={"look-f72", "other-f72"},
+    )
+
+    assert passed is True
+    assert [row["id"] for row in rows] == ["look-f72"]
+    assert missing is False
+    assert any(row["id"] == "other-f72" and not row["pass"] for row in missing_rows)
+
+
+def test_live_image_gate_scopes_cross_frame_debts_to_current_plate():
+    state = {
+        "image_debts": [
+            {"id": "look-f72", "frame": 72},
+            {"id": "look-f150", "frame": 150},
+        ],
+        "active_image_evidence_ids": {"look-f72", "look-f150"},
+    }
+
+    assert _image_evidence_ids_at_frame(state, 72) == {"look-f72"}
+    assert _image_evidence_ids_at_frame(state, 150) == {"look-f150"}
 
 
 def test_schema4_rejects_legacy_arrays(tmp_path):
@@ -468,14 +564,14 @@ def test_claim_closure_consumes_matching_runtime_image_row(tmp_path):
     (tmp_path / "runtime_checks.json").write_text(
         json.dumps(
             [
-                {
-                    "id": "form-look-f40",
-                    "origin": "builder",
-                    "axis": "form",
-                    "frame": 40,
-                    "metric": "region_mean",
-                    "layer": "1",
-                }
+                    _provenance_payment(tmp_path, {
+                        "id": "form-look-f40",
+                        "origin": "builder",
+                        "axis": "form",
+                        "frame": 40,
+                        "metric": "region_mean",
+                        "layer": "1",
+                    })
             ]
         ),
         encoding="utf-8",
@@ -526,14 +622,14 @@ def test_claim_closure_rejects_runtime_image_row_wrong_frame(tmp_path):
     (tmp_path / "runtime_checks.json").write_text(
         json.dumps(
             [
-                {
-                    "id": "form-look-f40",
-                    "origin": "builder",
-                    "axis": "form",
-                    "frame": 150,
-                    "metric": "region_mean",
-                    "layer": "1",
-                }
+                    _provenance_payment(tmp_path, {
+                        "id": "form-look-f40",
+                        "origin": "builder",
+                        "axis": "form",
+                        "frame": 150,
+                        "metric": "region_mean",
+                        "layer": "1",
+                    })
             ]
         ),
         encoding="utf-8",
@@ -578,14 +674,14 @@ def test_claim_closure_rejects_runtime_image_row_wrong_axis(tmp_path):
     (tmp_path / "runtime_checks.json").write_text(
         json.dumps(
             [
-                {
-                    "id": "form-look-f40",
-                    "origin": "builder",
-                    "axis": "other",
-                    "frame": 40,
-                    "metric": "region_mean",
-                    "layer": "1",
-                }
+                    _provenance_payment(tmp_path, {
+                        "id": "form-look-f40",
+                        "origin": "builder",
+                        "axis": "other",
+                        "frame": 40,
+                        "metric": "region_mean",
+                        "layer": "1",
+                    })
             ]
         ),
         encoding="utf-8",

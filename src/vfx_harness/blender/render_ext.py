@@ -51,6 +51,11 @@ _CAPTIONS = {
     "normal": "NORMAL pass — surface orientation. Texture and grade are out of scope.",
     "depth": "DEPTH pass — camera distance. Near is light, far is dark (or the reverse).",
     "crypto": "CRYPTOMATTE — object IDs. Use this to confirm isolation, not look.",
+    "light_coverage": (
+        "LIGHT COVERAGE — clay surfaces lit by the selected local light with World "
+        "surface and volume contributions disabled. Visible form proves placement/coverage; "
+        "black form isolates a light placement, direction, range, or occlusion failure."
+    ),
     "clay": "CLAY shade — mid-grey override. Form only; materials are disabled.",
     "silhouette": "SILHOUETTE shade — white on black. Read the outline, ignore interior.",
 }
@@ -64,7 +69,12 @@ def caption_for(pass_name: str, shade: str, light: str | None, crop: list | None
     Never optional. A visual channel added with no text to read it by measured WORSE
     than not adding the channel at all, so a mode without a caption is a regression.
     """
-    key = shade if shade and shade != "beauty" and not shade.startswith("matcap:") else pass_name
+    key = (
+        "light_coverage"
+        if pass_name == "light_coverage"
+        else shade if shade and shade != "beauty" and not shade.startswith("matcap:")
+        else pass_name
+    )
     if shade.startswith("matcap:"):
         text = (f"MATCAP {shade.split(':', 1)[1]} — a Workbench diagnostic. "
                 f"Look at the surface treatment the matcap is designed to reveal.")
@@ -74,7 +84,19 @@ def caption_for(pass_name: str, shade: str, light: str | None, crop: list | None
     if light:
         # State what was actually done, not what was requested. This used to claim a
         # light-group isolation that EEVEE never performed.
-        if hidden:
+        if pass_name == "light_coverage":
+            if hidden:
+                extra.append(
+                    f"lit by {', '.join(kept or [light])} ALONE — "
+                    f"{len(hidden)} other light(s) hidden; World illumination/volume "
+                    "and emissive material response are suppressed"
+                )
+            else:
+                extra.append(
+                    f"lit by {', '.join(kept or [light])}, the only light object; "
+                    "World illumination/volume and emissive material response are suppressed"
+                )
+        elif hidden:
             extra.append(f"lit by {', '.join(kept or [light])} ALONE — "
                          f"{len(hidden)} other light(s) hidden from the render "
                          f"({', '.join(hidden)}); emissive materials and the world "
@@ -146,6 +168,9 @@ def _apply_shade(sc, shade: str) -> list:
             em = nt.nodes.new("ShaderNodeEmission")
             em.inputs["Color"].default_value = (1, 1, 1, 1)
             em.inputs["Strength"].default_value = 1.0
+            weight = next((socket for socket in em.inputs if socket.name == "Weight"), None)
+            if weight is not None:
+                weight.default_value = 1.0
             nt.links.new(em.outputs[0], out.inputs["Surface"])
             black = bpy.data.worlds.new("_bvfx_silhouette_bg")
             black.use_nodes = True
@@ -157,6 +182,9 @@ def _apply_shade(sc, shade: str) -> list:
         else:
             d = nt.nodes.new("ShaderNodeBsdfDiffuse")
             d.inputs["Color"].default_value = (0.18, 0.18, 0.18, 1)
+            weight = next((socket for socket in d.inputs if socket.name == "Weight"), None)
+            if weight is not None:
+                weight.default_value = 1.0
             nt.links.new(d.outputs[0], out.inputs["Surface"])
         vl.material_override = mat
 
@@ -203,6 +231,33 @@ def _apply_shade(sc, shade: str) -> list:
                      f"matcap:<name>")
 
 
+def _apply_light_coverage_world(sc) -> list:
+    """Replace World state transactionally for an unambiguous local-light diagnostic.
+
+    A World volume can extinguish both the beauty and diffuse-direct pass. That answers
+    the combined scene but not whether a local light covers the subject. The diagnostic
+    deliberately removes both World illumination and attenuation while clay removes
+    emission/material confounds; restore returns the exact original World datablock.
+    """
+    import bpy
+
+    previous = sc.world
+    world = bpy.data.worlds.new("_bvfx_light_coverage_world")
+    world.use_nodes = True
+    background = next((node for node in world.node_tree.nodes if node.type == "BACKGROUND"), None)
+    if background is not None:
+        background.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+        background.inputs["Strength"].default_value = 0.0
+    sc.world = world
+
+    def _undo_world():
+        sc.world = previous
+        if world.users == 0:
+            bpy.data.worlds.remove(world)
+
+    return [_undo_world]
+
+
 def isolate_lights(sc, light: str) -> tuple[list, list, list]:
     """Render with ONLY the named light object(s) contributing. Returns
     (undo thunks, kept names, hidden names).
@@ -241,6 +296,54 @@ def isolate_lights(sc, light: str) -> tuple[list, list, list]:
         hidden.append(obj.name)
         undo.append(lambda o=obj, p=prev: setattr(o, "hide_render", p))
     return undo, kept, hidden
+
+
+def normalize_local_light_energy(sc, kept: list[str], minimum: float = 100_000_000.0) -> tuple[list, dict]:
+    """Make a coverage render test geometry rather than contract-scale intensity.
+
+    The value is diagnostic and transactionally restored. It is deliberately a floor,
+    not a multiplier: the same preset must reveal a cone at both 30 W and 30 kW without
+    turning already stronger lights down. SUN is excluded because this diagnostic is for
+    finite local lights and World-volume interaction.
+    """
+    undo, changed = [], {}
+    by_name = {obj.name: obj for obj in sc.objects if obj.type == "LIGHT"}
+
+    def _curves(data):
+        animation = getattr(data, "animation_data", None)
+        action = getattr(animation, "action", None) if animation is not None else None
+        if action is None:
+            return []
+        legacy = getattr(action, "fcurves", None)
+        if legacy and len(legacy):
+            return list(legacy)
+        return [
+            curve
+            for layer in action.layers
+            for strip in layer.strips
+            for channelbag in strip.channelbags
+            for curve in channelbag.fcurves
+        ]
+    for name in kept:
+        obj = by_name.get(name)
+        if obj is None or obj.data.type == "SUN":
+            continue
+        previous = float(obj.data.energy)
+        probe = max(abs(previous), float(minimum))
+        energy_curves = [curve for curve in _curves(obj.data) if curve.data_path == "energy"]
+        curve_mutes = [(curve, bool(curve.mute)) for curve in energy_curves]
+        for curve, _ in curve_mutes:
+            curve.mute = True
+        obj.data.energy = probe
+        changed[name] = {"original": previous, "probe": probe}
+
+        def _undo_energy(data=obj.data, value=previous, mutes=curve_mutes):
+            for curve, muted in mutes:
+                curve.mute = muted
+            data.energy = value
+
+        undo.append(_undo_energy)
+    return undo, changed
 
 
 def _apply_crop(sc, crop, res_pct, scale) -> list:
@@ -339,14 +442,38 @@ def configure(sc, *, pass_name="beauty", light=None, shade="beauty",
               crop=None, res_pct=None, scale=0.5) -> tuple[list, str, dict]:
     """Apply Phase 2 knobs. Returns (undo thunks, caption, what was actually done)."""
     undo: list = []
-    undo += _apply_shade(sc, shade or "beauty")
+    light_coverage = pass_name == "light_coverage"
+    effective_shade = "clay" if light_coverage else (shade or "beauty")
+    effective_pass = "beauty" if light_coverage else (pass_name or "beauty")
+    undo += _apply_shade(sc, effective_shade)
+    if light_coverage:
+        undo += _apply_light_coverage_world(sc)
     light_undo, kept, hidden = isolate_lights(sc, light)
     undo += light_undo
+    normalized = {}
+    if light_coverage:
+        energy_undo, normalized = normalize_local_light_energy(sc, kept)
+        undo += energy_undo
     undo += _apply_crop(sc, crop, res_pct, scale)
-    undo += _route_pass(sc, pass_name or "beauty")
-    cap = caption_for(pass_name or "beauty", shade or "beauty", light, crop, res_pct,
+    undo += _route_pass(sc, effective_pass)
+    cap = caption_for(pass_name or "beauty", effective_shade, light, crop, res_pct,
                       kept=kept, hidden=hidden)
-    return undo, cap, {"lights_kept": kept, "lights_hidden": hidden}
+    if normalized:
+        values = ", ".join(
+            f"{name} {row['original']:g}→{row['probe']:g}"
+            for name, row in normalized.items()
+        )
+        cap += (
+            f" Diagnostic energy normalized ({values}) and restored after render; "
+            "this tests geometric coverage, not contract intensity."
+        )
+    return undo, cap, {
+        "lights_kept": kept,
+        "lights_hidden": hidden,
+        "world_suppressed": light_coverage,
+        "effective_shade": effective_shade,
+        "normalized_light_energy": normalized,
+    }
 
 
 def restore(undos: list) -> None:

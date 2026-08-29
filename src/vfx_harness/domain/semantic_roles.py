@@ -81,7 +81,9 @@ def format_object_ambiguous(*, role: str, hits: Sequence[Mapping[str, str]]) -> 
     listed = ", ".join(f"{row['name']!r} role={row['role']!r}" for row in hits)
     return (
         f"role {role!r} matched {len(hits)} objects ({listed}); "
-        "a single-subject check needs exactly one host — pass object= with one of those names. "
+        "a single-subject check needs exactly one host — call it again with "
+        f"object={hits[0]['name']!r} and OMIT role= entirely (role= and object= are "
+        "mutually exclusive). "
         "An exact role string is already what you passed; sharing a role is not a selector miss"
     )
 

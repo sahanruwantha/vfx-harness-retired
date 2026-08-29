@@ -55,12 +55,21 @@ operation.
 - Resume a truncated builder session only when its ledger resume record names an existing
   checkpoint and journal; otherwise start a new run from the fault-owning layer. Never copy an
   old render, snapshot, or script into a run and call it a resume.
+  A failed-artifact warm start is likewise legal only when the ledger pins that artifact to the
+  exact current `WorkUnit` digest; same-id superseded and legacy unpinned scripts replay from clean
+  priors instead (HIR-0059).
 - Authority editing: `brief.md` and `refs/` change authored intent only; plans and contracts
   change only through planning, amendment, or an explicit reviewed repair; `build/` and
   `shot.json` are the accepted deterministic chain and ledger; `state/` is durable cross-run
   state; `runs/` is generated audit evidence — never hand-edit a run to make it pass.
 - Run output never becomes authority by proximity. Promotion from evidence into a contract,
   plan, HIR, or ADR is an explicit decision (ADR-0002).
+- Builder image payments use `vfx-harness.image-payment/v2`: the harness captures the
+  pre-unit adversary from the exact prior-script chain, render tools issue immutable
+  current-run handles, and `propose_checks` accepts a handle rather than a path. Candidate
+  and adversary live under one structured run's `evidence/renders/` with matching
+  frame/settings and verified SHA-256, unit digest, and parent-chain digest. Legacy rows
+  and shot-root renders pay no debt (ADR-0008, HIR-0053).
 - Generated writes go through `observability/run_artifacts.py`: JSON published atomically,
   JSONL only for event streams, resumable accepted state in `checkpoints/`, disposables in
   `scratch/`, cross-run state under `state/` — never under a prior run.
@@ -121,12 +130,23 @@ effect.
 
 - Query, don't recall: agents act on authoritative state read through tools, never on memory of
   the scene, the plan, or a prior run.
+- `inspect_scene(render/lights)` exposes the world/compositor identity, EEVEE volumetric and
+  view-layer pass state, and light shape/distance settings; do not smuggle those reads through an
+  idempotent `run_bpy` assignment (HIR-0055).
+- Node-graph introspection enumerates both input values and output socket names; an unlinked
+  producer must not force a read-only mutation probe or Blender-version guess (HIR-0061).
+- Framing, bbox, and visibility checks measure rendered subjects, not Light/Camera/Empty-style
+  control hosts; use per-light render isolation for illumination contribution (HIR-0055).
 - Measure, don't estimate: if a decision depends on a quantity, expose an instrument that
   measures it; a judgment call where a measurement is possible is a patch.
 - Enumerate, don't imagine: where the option space is knowable — roles, controls, targets,
   frames — present validated choices instead of free-form generation.
 - Close the loop: every mutating tool has a matching observation, so an agent sees what its
   action actually did before its next decision.
+- Animation read and mutation instruments traverse the same host closure: object, object
+  data-block, or every object resolved by an exact semantic role. A curve reported as
+  `data.P` by `list_keyframes` must be reachable by `bvfx_interp` without Python-host
+  rediscovery (HIR-0074).
 - Abstention is always legal: every decision point accepts "insufficient evidence", fails closed,
   and escalates. A forced pick among unsupported options is a harness defect.
 - Rejections teach: tool failures and validation rejections name the violated contract, expected
@@ -149,7 +169,10 @@ freeze refuses while unpaid without typed abstention, a keyframe_schedule path
 miss that names object and data-block fcurve paths instead of INAPPLICABLE, a
 required `visible_fraction` claim repaired only by a camera or role-mutator,
 per-role vis AND so a union cannot hide a subject, geometry units that
-freeze-protect active-layer vis, and
+freeze-protect active-layer vis, a plan gate that rejects geometry units whose protected
+same-layer vis producer is outside their dependency closure, a derived write-cluster
+gate that names mixed mutation families, typed digest-bound successor publish
+interfaces, and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -216,8 +239,13 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   producers even while `checks.json` is empty; missing image rows are
   build-time debts, not `does not exist` (HIR-0047). Those ids compile to a
   payment card (id, frame, property, axis); `propose_checks` must match all
-  four fields; candidate freeze refuses while any remain unpaid without a
+  four fields and binds each multi-frame batch row to its own immutable candidate
+  handle (the batch handle is only a same-frame shorthand); candidate freeze refuses while any remain unpaid without a
   typed `unpaid_image_debt` abstention; ids are bare, never `check:`;
+  a `frame_delta` image debt is paid by a `frame_*` scalar that passes only on
+  the candidate and fails the harness-captured pre-unit adversary; rejection
+  enumerates the registered metrics that can certify the owed property rather
+  than making the builder guess;
   readers of falsification `contract_ids` strip that prefix
   (HIR-0048). Scene contracts may measure other frames; bind
   those ids through `composition_context.contract_ids` without adding the extra
@@ -231,7 +259,21 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   a volume-only unit cannot bind mesh vis as required repair. Multi-role vis is
   logical AND across named roles. A unit that `provides: ["geometry"]`
   freeze-protects lifecycle-active vis on this layer, including sibling-owned
-  rows (HIR-0051).
+  rows (HIR-0051). If a protected vis role is produced by another same-layer unit,
+  that producer must be in the geometry unit's transitive dependency closure; a future
+  producer is an unsealable DAG and publication fails closed (HIR-0057).
+  A work unit publishes one derived write-cluster (role-namespace × host class ×
+  instrument family); authored family strings are padding and do not satisfy the
+  gate. Instrument family comes from typed mutation targets and write-kind evidence;
+  unresolved families fail closed. Dressing, vis observation/protection, and bounded
+  coordination are typed exceptions. Consumed interfaces are read-only inputs — they
+  do not grant mutation of producer export roles and cannot hide a mixed cluster.
+  Required claims share one repair_owner (HIR-0083). Each unit publishes typed
+  successor interfaces whose export values are roles, controls, or sealed contract
+  ids. Authored `publishes` and `consumes` participate in `unit_digest`; a successor
+  is ready only when it declares the producer interface id/kind and that producer is
+  digest-matched. The live builder card carries those interfaces, the producer digest,
+  and predecessor publish interfaces (HIR-0084).
   Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
   `log_message` journals only when bound (HIR-0038).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is
@@ -325,7 +367,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `image_contract` ids as bound producers while `checks.json` is still empty
   (HIR-0047). A matching `runtime_checks.json` row is consumed as payment;
   unpaid debts are not scene-selector misses or critic handoff; readers of
-  falsification `contract_ids` strip a `check:` prefix (HIR-0048).
+  falsification `contract_ids` strip a `check:` prefix (HIR-0048). A runtime row counts
+  only with a valid v2 payment envelope; the harness, never the model, selects its
+  pre-unit adversary. Generated thresholds clear the measured replay margin, and
+  candidate probing evaluates the same image rows before publication (HIR-0053). Live
+  comparison gates close over only the bound ids due at that frame and report valid builder
+  payments as bound checks, never as autonomous acceptance authority (HIR-0060).
 - Interaction claims declare a coordination owner and the exact shared controls it may balance;
   atomic claims stay protected, and anything broader enters transactional replanning.
 - Warm-scene success proves nothing durable. The deterministic script and its empty-scene replay
@@ -338,15 +385,32 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
 - Mutate only declared roles, controls, and script spans. Semantic tagging uses the universal
   `bvfx_role`/`bvfx_control` properties on any host type; never invent type-specific variants.
   A role is one dotted token (`[A-Za-z0-9._-]+`); commas are not membership — tag once or split
-  hosts (HIR-0022). Builder scene tools (`inspect_scene`, `check_scene`, `list_keyframes`)
+  hosts (HIR-0022). `bvfx_control` adds an independent control tag and never overwrites an
+  existing semantic role; an untagged node may receive role=control for node-role lookup
+  compatibility (HIR-0063). Builder scene tools (`inspect_scene`, `check_scene`, `list_keyframes`)
   address `role`; a miss names the requested selector and the names and roles that exist
   (HIR-0018). A shared role on several hosts is not an inexact selector: `check_scene`
   names `object=` as the next action, and `list_keyframes` lists every host
   including data-block curves (`data.energy` on a Light) (HIR-0041, HIR-0050).
   Kickoff, `CLAUDE.md`, and the `unit_scope` tool share one compiled card for the
   active unit: mutation roles/controls/dresses/spans, bound contracts, claims, judge frames,
-  and the `run_bpy` helper inventory. Query that card; do not `inspect.getsource` or guess a
-  sibling unit (HIR-0025). Materialization kickoff compiles this layer's judge frames
+  the `run_bpy` helper inventory, including parameter and return contracts compiled from
+  the worker source, authored publish interfaces, the producer digest, declared consumes,
+  and digest-matched predecessor publish interfaces. The kickoff keeps every evaluator field on the exact
+  active-unit contract closure; unit boundedness never means hiding graph/socket/path selectors.
+  Query that card; do not `inspect.getsource`, guess a helper result shape, or guess a
+  sibling unit (HIR-0025, HIR-0079). A declared live unit may not reload the full brief or raw plan
+  catalogs; relevant authority is the compiled card and embedded unit plan. JIT unit planning
+  likewise has no raw `Read` surface: it receives the exact active-unit card plus compact passed
+  predecessor interfaces (exported roles, controls, capabilities, sealed ids, and typed
+  digest-bound publish interfaces) and bounded
+  outcome/amendment/gap feedback, never dependency evaluator internals, selected catalogs, or scripts.
+  Finalizer journals start after reset/dependency replay and end
+  at the selected checkpoint. Layer materialization has no raw `Read` surface: kickoff compiles
+  only the exact global layer row, owned requirements, active structured decisions, compact
+  required upstream outcomes, and semantic/dressable dependency interfaces; full registers and
+  outcome reports stay outside model context. Context scales with the active delta (HIR-0054).
+  Materialization kickoff compiles this layer's judge frames
   and extra-frame id-binding; two-sided `path_clearance_min` `roles` bind on the unit
   that mutates them (HIR-0029). Every unit judge frame must appear in a required
   claim's moments; an uncovered frame is a contract_gap, not a critic look vote
@@ -357,8 +421,13 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   counts those `image_contract` ids as debts, not missing bindings
   (HIR-0047). Freeze refuses while an owed look id has neither a coherent
   `propose_checks` row nor `unpaid_image_debt` abstention; canonical repair
-  cannot author evaluation contracts (HIR-0048). `find_recipe` ranks against the active unit's mutation
-  roles and abstains naming the query and the roles present; a lighting hit is not
+  cannot author evaluation contracts (HIR-0048, HIR-0081). `find_recipe` ranks against the active unit's mutation
+  roles and abstains naming the query and the roles present; fuzzy discovery returns compact
+  ranked summaries, an exact recipe name returns a compact prose/code section index,
+  `<name>#<section>` loads one fragment, and only explicit `<name>#full` loads the whole
+  body. One session may load at most three distinct recipe bodies within a cumulative
+  character budget; rereads and incremental full-recipe reconstruction fail closed so
+  cookbook context cannot scale with turn count (HIR-0062, HIR-0067, HIR-0078). A lighting hit is not
   permission on a camera unit (HIR-0033). `run_bpy` errors that reinvent
   `path_clearance_min` or `BVHTree.FromMesh` name the bound instrument (HIR-0034).
   Live `render_frame` / `verify_change` default to Workbench `solid` when the
@@ -367,12 +436,89 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   EEVEE `look_render`; solid is geometry, not the critic plate (HIR-0042). Live
   `run_bpy` stays open when a look-owning unit binds no image contract; 0/0
   image rows are not critic handoff (HIR-0044). An
+  authored `run_bpy`/import call is a scene transaction: snapshot immediately before
+  mutation, journal only on success, and restore before surfacing any exception. A failed
+  call may retain no partial edit in the live scene (HIR-0068). Recurring Blender-5
+  light conversion and Vector Blur construction use the typed `bvfx_light` and
+  `bvfx_vector_blur` helpers; coupled API ordering is not free-form model work. Material
+  inspection names object-slot consumers directly (HIR-0070). Volume helpers atomically
+  tag their object/material/node/control hosts and return after dimensional readback is
+  current; `size` is the requested full domain size. World-density mutation guards require
+  graph provenance and must not classify a material-volume Density socket as World state
+  merely because the socket label matches (HIR-0072). An
   unknown authored change blocks candidate freeze until it is classified, reverted,
   or added through a plan amendment.
+- Read-only questions use read-only instruments: `contract_result` for an exact active
+  bound row, `inspect_scene` for render/color/compositor/light state, `inspect_nodes` for
+  sockets, and `render_pass(light=...)` for isolated contribution. Do not recreate those
+  probes or write render/filesystem artifacts in `run_bpy`. `verify_change` requires a
+  successful intervening mutation; a rejected edit is not a visible no-op (HIR-0055).
+  Node inspection preserves meaningful small nonzero socket values in compact
+  significant-digit form; it must never render a calibrated `1e-05` as `0.0` and
+  induce a destructive rediscovery loop (HIR-0065).
+  Render tools are read-only scene transactions: solid/wire/draft/EEVEE and diagnostic
+  passes restore engine, frame, resolution, output path/format, Workbench shading, and
+  sample count before the next authored call. A diagnostic render may not silently set
+  the execution engine for a later mutation (HIR-0071).
+  Local-light coverage under a World volume is measured with the transactional
+  `render_pass(pass='light_coverage', light=...)` preset: it suppresses World surface and
+  volume, overrides surfaces with clay, isolates the named light, transactionally normalizes
+  and curve-mutes diagnostic energy, and restores all state. Coverage is geometry, not the
+  unit's contract-scale wattage. Do not diagnose placement by mutating light visibility or
+  unlinking atmosphere (HIR-0073).
+  A nearly black EEVEE plate automatically carries a typed cause card for active
+  World-volume density, background strength, camera span, canonical EEVEE volumetric
+  start/end, semantic-subject distances, and light distance. Extinction uses the effective
+  sampled volume span, not camera `clip_end`; subjects beyond `volumetric_end` are named as
+  renderer depth coverage, never recast as a density target. When
+  unbounded optical scale is high it names a logarithmic `probe_control` density
+  sweep and blocks free-form mutation until that measurement runs; after a sweep,
+  direct World-density commits are limited to measured values. A density ceiling is
+  not a calibrated target. Completed role+frame measurements retire stale probe guards;
+  density equality accounts for Blender float32 socket read-back rather than treating
+  representation noise as a new unmeasured value;
+  a sweep whose entire range remains black closes that causal branch and routes to a
+  different measured variable instead of repeating. `probe_control` refuses a closed
+  role+frame density sweep when every requested value is already in the measurement
+  registry; replaying an experiment is not new evidence. After that closure, three distinct
+  near-black local-light placements spanning at least a 4x camera-distance range close the
+  placement branch; further render, probe, and mutation calls fail closed into typed
+  `cannot_express_in_scope`, rather than spending the unit budget on more coordinates
+  (HIR-0066, HIR-0069, HIR-0082).
+  A live `cannot_express_in_scope` sets the remaining visual critique/revision budget to zero
+  after the current response, fences every pixel-producing tool, then finalizes the accepted
+  journal solely to publish the typed finding. It is not permission to launch another critic
+  or repair session (HIR-0077).
+  Model work is validated at every phase boundary, not only kickoff. A nominal SDK success
+  with zero new tool calls and zero incremental cost is a transport/auth/spend failure and
+  truncates before critique, finalization, replay, or repair; cumulative cost from an earlier
+  response is not evidence that the current phase did work. Provider `is_error` and HTTP
+  error status outrank a contradictory success subtype even after productive work; preserve
+  those fields through collectors and never feed that terminal response into judgment
+  (HIR-0080). Structured termination preserves the cause: provider/zero-work failures are
+  `model_session_failure`, turn exhaustion is `max_turns_exhausted`, and the configured
+  model-dollar ceiling is `model_budget_exhausted`; exit 3 is not sufficient diagnosis.
+  Optional context-usage telemetry is bypassed after authoritative provider error facts;
+  observability may not delay terminal propagation (HIR-0080).
+  A scoped unit may not write free-form renderer policy through `run_bpy` (`eevee`, `cycles`,
+  `render`, color/display settings). Use transactional render diagnostics; renderer-policy
+  authority requires a typed plan control, and infeasibility under canonical settings routes
+  to `cannot_express_in_scope` (HIR-0076).
+  Candidate `probe_candidate` applies the same scoped new-object role validation as
+  canonical verification before returning evidence; an undeclared helper/role is a probe
+  failure, never a green repair read-back (HIR-0058).
 - Protection wildcards resolve to an explicit sorted contract-id closure at freeze; evaluation,
   repair, resume, and revalidation use that recorded closure, never a re-evaluated wildcard.
   A unit that `provides: ["geometry"]` also freeze-protects lifecycle-active
   `visible_fraction` rows on this layer, including sibling-owned vis (HIR-0051).
+  Publication rejects a geometry unit when one of those roles is produced only by a
+  same-layer unit outside its dependency closure (HIR-0057).
+  Publication also refuses a unit whose derived write-clusters are heterogeneous
+  without a typed exception; the finding names the clusters. A successor consumes
+  digest-matched publish interfaces from the compiled card, not producer scripts.
+  Consumed exports are read-only; `depends_on` without `consumes` is not interface
+  compatibility. Authored interface identity participates in the producer digest
+  (HIR-0083, HIR-0084).
 - Appearance on another layer's geometry is owner-granted authority: the owner declares
   `dressable` selectors, the dresser declares `dresses`, validation closes over both, and
   dressing is material assignment only — moving, deleting, or remeshing a dressed object breaks
@@ -386,11 +532,22 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   consume the next attempt (HIR-0031). Canonical repair binds that tool on the candidate
   server — it is not a blender MCP ToolSearch (HIR-0043). A `keyframe_schedule` path
   miss names requested aliases vs present fcurve paths and stays in repair; it is
-  not INAPPLICABLE and not `cannot_express_in_scope` by default (HIR-0050).
+  not INAPPLICABLE and not `cannot_express_in_scope` by default (HIR-0050). Once active
+  exact schedule rows pass, diagnostics may not mute their curves or override their paths
+  without legal same-transaction rekeying; direct `keyframe_point.co` edits are the same
+  protected mutation, including curves returned by `bvfx_fcurves`. Use a transactional observation; if normalized
+  evidence proves the hard schedule cannot produce the required image signal, record
+  `cannot_express_in_scope` instead. Numeric control sweeps always include the restored
+  live value (HIR-0075).
 - Faults route to their semantic owner. A downstream layer never compensates for a broken
   upstream interface, geometry, material, animation, or other sealed responsibility. A repair
   that cannot express the fix inside its authorized scope stops with a typed plan defect; it
-  does not broaden its permissions.
+  does not broaden its permissions. `cannot_express_in_scope` names any proven upstream owner only
+  through the compiled `fault_owner_options`; the finding's invalidation closure starts from the
+  active unit and those validated owner units. Accepted checkpoints remain authoritative until
+  `vfx units replan --falsification` consumes that finding atomically. A unit that consumes an
+  earlier unit's scene or pixels declares the producer in `depends_on`; serialization order is not
+  dependency authority (HIR-0056).
 - Conversation summaries and transcripts are never execution authority. Durable memory is
   checkpoints, manifests, and sealed outcomes on disk.
 

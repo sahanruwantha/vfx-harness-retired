@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from vfx_harness.domain.work_units import (
     UNIT_STATES,
@@ -23,14 +24,14 @@ from vfx_harness.domain.work_units import (
 from vfx_harness.observability.provenance import atomic_write
 
 SCHEMA = 1
-# Bump whenever WorkUnit gains or loses a field: `unit_digest` hashes the whole record,
-# so a schema change makes every stored digest incomparable rather than wrong.
-# Bump WHENEVER the WorkUnit dataclass shape changes — unit_digest hashes asdict(unit),
-# so any field addition changes every stored digest, and validate_current only knows to
-# route cross-shape comparison through the replan closure when the schema numbers
-# differ. 3: EvidenceBinding gained optional per-moment bindings (8ab8f5d shipped the
-# field without the bump and bricked every layer's durable state until the replan).
-# The golden-digest test pins this pairing; changing the shape without bumping fails it.
+# Bump whenever WorkUnit gains or loses a field that is always present in `unit_digest`:
+# the hash covers asdict(unit) except empty publishes/consumes, which are omitted so
+# schema-4 durable hashes stay comparable. Non-empty interface rows participate
+# (HIR-0084). Bump WHENEVER a new always-present field lands in that payload —
+# validate_current only knows to route cross-shape comparison through the replan
+# closure when the schema numbers differ. 3: EvidenceBinding gained optional
+# per-moment bindings (8ab8f5d shipped the field without the bump and bricked every
+# layer's durable state until the replan). The golden-digest test pins this pairing.
 # 4: MutationScope gained `dresses` (ADR-0007 appearance-assignment authority).
 DIGEST_SCHEMA = 4
 STATE_DIR = "state/work-units"
@@ -83,8 +84,47 @@ def load(folder: str | Path, layer_id: str) -> dict:
 
 
 def unit_digest(unit: WorkUnit) -> str:
-    payload = json.dumps(asdict(unit), sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    """Identity hash of a WorkUnit.
+
+    Empty ``publishes`` / ``consumes`` are omitted so schema-4 durable hashes stay
+    comparable for units that never declared interfaces. Non-empty values participate,
+    so changing an interface id, kind, or export invalidates the producer and its
+    ``apply_replan`` closure (HIR-0084). Adding a field that is always present in
+    this payload still requires a DIGEST_SCHEMA bump.
+    """
+    payload = asdict(unit)
+    if not payload.get("publishes"):
+        payload.pop("publishes", None)
+    if not payload.get("consumes"):
+        payload.pop("consumes", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def digest_matched_passed(
+    state: Mapping[str, Any] | dict,
+    units: tuple[WorkUnit, ...],
+) -> set[str]:
+    """Passed units whose stored digest matches the current WorkUnit.
+
+    Cross-schema stored hashes are not comparable; those rows stay in the passed
+    set because apply_replan is the invalidation closure (HIR-0084).
+    """
+    rows = (state or {}).get("units") or {}
+    passed = {
+        uid for uid, row in rows.items()
+        if isinstance(row, dict) and row.get("status") == "passed"
+    }
+    if not state or int(state.get("digest_schema", 1)) != DIGEST_SCHEMA:
+        return passed
+    by_id = {unit.id: unit for unit in units}
+    sealed: set[str] = set()
+    for uid in passed:
+        unit = by_id.get(uid)
+        row = rows.get(uid) or {}
+        if unit is not None and row.get("unit_hash") == unit_digest(unit):
+            sealed.add(uid)
+    return sealed
 
 
 def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) -> None:
@@ -459,6 +499,7 @@ def record_hypothesis_falsification(
     decisions: list[dict],
     conflict: dict,
     evidence: list[str],
+    affected_seed_ids: set[str] | tuple[str, ...] | list[str] | None = None,
 ) -> dict:
     """Seal a plan finding and stop the unit without granting it mutation authority.
 
@@ -481,7 +522,16 @@ def record_hypothesis_falsification(
     before = slot.get("status")
     if "hypothesis_falsified" not in _TRANSITIONS.get(before, set()):
         raise ValueError(f"cannot falsify plan hypothesis for {unit.id} from state {before}")
-    affected = sorted(_downstream({unit.id}, units))
+    known_ids = {candidate.id for candidate in units}
+    seeds = {str(uid) for uid in (affected_seed_ids or {unit.id}) if str(uid)}
+    seeds.add(unit.id)
+    unknown_seeds = sorted(seeds - known_ids)
+    if unknown_seeds:
+        raise ValueError(
+            "hypothesis falsification names unknown affected seed units: "
+            + ", ".join(unknown_seeds)
+        )
+    affected = sorted(_downstream(seeds, units))
     now = _now()
     payload = {
         "schema": HYPOTHESIS_FALSIFICATION_SCHEMA,
@@ -532,7 +582,12 @@ def record_hypothesis_falsification(
             continue
         dependent = value["units"][affected_unit]
         dependent_before = dependent.get("status")
-        if dependent_before in {"passed", "superseded"}:
+        if dependent_before == "passed":
+            # A typed upstream fault-owner finding must not silently revoke accepted
+            # authority. Preserve the checkpoint until vfx units replan consumes this
+            # immutable finding and publishes the complete invalidation transaction.
+            continue
+        if dependent_before == "superseded":
             raise ValueError(
                 f"cannot record falsification while downstream unit {affected_unit} is "
                 f"{dependent_before}; invalidate its accepted checkpoint first"

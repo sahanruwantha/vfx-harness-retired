@@ -473,6 +473,34 @@ def subject_bbox(name: str, frame: int) -> dict:
 _OBJECT_CHECK_KINDS = frozenset(
     {"visibility", "framing", "motion", "mesh", "scale", "bbox", "subject_bbox"}
 )
+_VISUAL_CHECK_KINDS = frozenset({"visibility", "framing", "bbox", "subject_bbox"})
+_NON_VISUAL_OBJECT_TYPES = frozenset(
+    {"CAMERA", "LIGHT", "EMPTY", "ARMATURE", "LATTICE", "SPEAKER", "LIGHT_PROBE"}
+)
+
+
+def visual_subject_error(kind: str, name: str, object_type: str) -> str | None:
+    """Reject control hosts that do not occupy rendered subject pixels."""
+    if kind not in _VISUAL_CHECK_KINDS or object_type not in _NON_VISUAL_OBJECT_TYPES:
+        return None
+    if object_type == "LIGHT":
+        return (
+            f"check_scene(kind={kind!r}) measures a visible SUBJECT, but {name!r} is a "
+            "Light control host and has no rendered bounding box. Use "
+            f"render_pass(light={name!r}, pass='beauty') to measure its contribution, "
+            "or frame the mesh/curve it illuminates."
+        )
+    if object_type == "CAMERA":
+        return (
+            f"check_scene(kind={kind!r}) measures a visible SUBJECT, but {name!r} is the "
+            "active camera. Pass object= for the mesh/curve being framed and omit role=; "
+            "inspect_scene(section='objects') lists names."
+        )
+    return (
+        f"check_scene(kind={kind!r}) measures a visible SUBJECT, but {name!r} is a "
+        f"non-renderable {object_type} control host. Frame the rendered mesh/curve/volume "
+        "it controls instead."
+    )
 
 
 def dispatch(kind: str, args: dict) -> dict:
@@ -480,7 +508,11 @@ def dispatch(kind: str, args: dict) -> dict:
     if k in _OBJECT_CHECK_KINDS:
         role = str(args.get("role") or "").strip() or None
         name = str(args.get("object") or "").strip() or None
-        args = {**args, "object": resolve_object(role=role, name=name).name}
+        resolved = resolve_object(role=role, name=name)
+        subject_error = visual_subject_error(k, resolved.name, resolved.type)
+        if subject_error:
+            raise ValueError(subject_error)
+        args = {**args, "object": resolved.name}
     if k == "visibility":
         return check_visibility(args["object"], int(args["frame"]), int(args.get("samples", 27)))
     if k == "framing":

@@ -182,8 +182,8 @@ def recipe_index(verified_only: bool = False, *, context: str | None = None,
     if not recs:
         return ""
     lines = [f"  - {r['name']} — {r['when']}" for r in recs if r["when"]]
-    return ("RECIPE COOKBOOK — vetted techniques. Call find_recipe(<name>) to pull the "
-            f"full snippet + gotchas BEFORE hand-rolling any of these ({len(lines)}):\n"
+    return ("RECIPE COOKBOOK — vetted techniques. Call find_recipe(<name>) for a "
+            f"section index, then pull only <name>#<section> BEFORE hand-rolling any of these ({len(lines)}):\n"
             + "\n".join(lines))
 
 
@@ -206,27 +206,142 @@ def log_recipe_use(shot_folder, names: list[str]) -> None:
                              "recipes": sorted(set(names))}) + "\n")
 
 
+def recipe_search_response(query: str, hits: Sequence[dict]) -> tuple[str, list[str]]:
+    """Return summaries, a compact exact-name index, or one requested section.
+
+    Tool results are replayed into every later model call. A fuzzy query whose top hit
+    happened to be the 10KB Blender API recipe used to inject that whole body even when
+    the caller was merely discovering whether a motion-blur recipe existed.
+    """
+    if not hits:
+        return "", []
+    raw_base, separator, raw_selector = query.lower().partition("#")
+    normalized = "-".join(re.findall(r"[a-z0-9]+", raw_base))
+    selector = "-".join(re.findall(r"[a-z0-9]+", raw_selector)) if separator else ""
+    exact = next((hit for hit in hits if str(hit["name"]).lower() == normalized), None)
+    if exact is not None:
+        sections = recipe_sections(str(exact["body"]))
+        if selector == "full":
+            text = f"### {exact['name']}#full  (when: {exact['when']})\n{exact['body']}"
+            used = [str(exact["name"])]
+        elif selector:
+            section = next((row for row in sections if row["id"] == selector), None)
+            if section is None:
+                available = ", ".join(row["id"] for row in sections)
+                return (
+                    f"unknown recipe section {selector!r} for {exact['name']}; "
+                    f"available: {available}, full",
+                    [],
+                )
+            text = (
+                f"### {exact['name']}#{section['id']}  (when: {exact['when']})\n"
+                f"{section['body']}"
+            )
+            used = [str(exact["name"])]
+        else:
+            lines = "\n".join(
+                f"  · {row['id']} ({len(row['body'])} chars) — {row['title']}"
+                for row in sections
+            )
+            text = (
+                f"### {exact['name']}  (when: {exact['when']})\n"
+                f"Recipe body: {len(exact['body'])} chars. Load only the section you need "
+                f"with find_recipe({exact['name']!r} + '#<section>'):\n{lines}\n"
+                f"Use {exact['name']}#full only when several indexed sections are jointly required."
+            )
+            used = []
+        rest = [hit for hit in hits if hit is not exact]
+        if rest:
+            more = "\n".join(f"  · {hit['name']} — {hit['when']}" for hit in rest)
+            text += (
+                f"\n\n---\nAlso matched ({len(rest)}); query by exact name for its section index:\n"
+                f"{more}"
+            )
+        return text, used
+    lines = "\n".join(f"  · {hit['name']} — {hit['when']}" for hit in hits)
+    return (
+        "Ranked recipe matches (summaries only). Query one exact recipe name to load its "
+        f"compact section index:\n{lines}",
+        [],
+    )
+
+
+def recipe_sections(body: str) -> list[dict[str, str]]:
+    """Stable prose/code sections for bounded recipe retrieval."""
+    parts = [part.strip() for part in re.split(r"(```[\s\S]*?```)", body) if part.strip()]
+    sections: list[dict[str, str]] = []
+    prose_index = code_index = 0
+    for part in parts:
+        is_code = part.startswith("```") and part.endswith("```")
+        if is_code:
+            code_index += 1
+            section_id = f"snippet-{code_index}"
+            content = part[3:-3].strip()
+            lines = [line.strip("# ") for line in content.splitlines() if line.strip()]
+            title = next((line for line in lines if not re.fullmatch(r"[a-z0-9_+-]+", line.lower())), "code")
+        else:
+            prose_index += 1
+            section_id = f"notes-{prose_index}"
+            lines = [line.strip("# ") for line in part.splitlines() if line.strip()]
+            title = lines[0] if lines else "notes"
+        sections.append(
+            {
+                "id": section_id,
+                "title": re.sub(r"\s+", " ", title)[:120],
+                "body": part,
+            }
+        )
+    return sections or [{"id": "notes-1", "title": "recipe", "body": body}]
+
+
+class RecipeContextBudget:
+    """Bound body fragments injected into one model session.
+
+    Indexes and fuzzy summaries remain available for discovery. Body retrieval is the
+    expensive, replayed context, so repeated sections and a fourth body are refused.
+    """
+
+    def __init__(self, max_bodies: int = 3, max_chars: int = 12_000):
+        self.max_bodies = int(max_bodies)
+        self.max_chars = int(max_chars)
+        self.loaded: dict[str, int] = {}
+
+    def admit(self, key: str, chars: int) -> str:
+        if key in self.loaded:
+            return (
+                f"RECIPE CONTEXT REFUSED: {key} is already loaded in this session. "
+                "Use the existing fragment; rereading it adds no authority."
+            )
+        if len(self.loaded) >= self.max_bodies or sum(self.loaded.values()) + chars > self.max_chars:
+            present = ", ".join(self.loaded) or "(none)"
+            return (
+                "RECIPE CONTEXT BUDGET EXHAUSTED: loaded body fragments "
+                f"{present}. Act with the typed tools and measurements already available; "
+                "if a specific missing fact blocks progress, name that missing instrument "
+                "instead of reconstructing more cookbook entries."
+            )
+        self.loaded[key] = int(chars)
+        return ""
+
+
 def build_recipe_tools(on_use=None, mutation_roles: Sequence[str] | None = None):
     """An MCP server exposing find_recipe to the build agent."""
     roles = tuple(mutation_roles) if mutation_roles is not None else None
+    context_budget = RecipeContextBudget()
 
     @tool(
         "find_recipe",
         "Search the vetted Blender recipe cookbook for a technique — volumetrics, "
         "materials, compositor, instancing, grade. Returns matching snippets + gotchas "
-        "to ADAPT into your run_bpy. Call this BEFORE hand-rolling any hard effect. "
+        "to ADAPT into your run_bpy. Fuzzy queries return summaries; an exact name "
+        "returns a compact section index; use name#section for one body fragment and "
+        "name#full only when multiple sections are jointly necessary. Call this BEFORE "
+        "hand-rolling any hard effect. "
         "Recipes that mutate roles this unit does not own are refused (abstain), not ranked.",
         {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     )
     async def find_recipe(args):
         hits = search_recipes(args["query"], mutation_roles=roles)
-        if on_use and hits:
-            try:
-                on_use([h["name"] for h in hits])
-            except Exception:
-                # telemetry drives promote/prune; losing it silently means the cookbook
-                # can never learn which recipes earn their place
-                print("! recipe-use telemetry failed", flush=True)
         if not hits:
             blocked = out_of_scope_hits(args["query"], roles or ()) if roles is not None else []
             if blocked:
@@ -243,18 +358,22 @@ def build_recipe_tools(on_use=None, mutation_roles: Sequence[str] | None = None)
             return {"content": [{"type": "text",
                     "text": "no matching recipe — improvise; a good solution may be harvested "
                             "into the cookbook if this milestone passes."}]}
-        # The TOP hit in full, the rest as one-liners. Returning every body meant one query
-        # could put ~17KB of cookbook into the conversation, and a tool result is replayed
-        # on every subsequent model call — the draft pass alone made 13 of these calls.
-        # Summaries-only would be cheaper still but costs a second round-trip in the common
-        # case where one recipe is obviously right, so: the likely answer stays immediately
-        # usable and the alternatives are named and fetchable by name.
-        top, rest = hits[0], hits[1:]
-        text = f"### {top['name']}  (when: {top['when']})\n{top['body']}"
-        if rest:
-            more = "\n".join(f"  · {h['name']} — {h['when']}" for h in rest)
-            text += (f"\n\n---\nAlso matched ({len(rest)}); query by name for the body:\n"
-                     f"{more}")
+        text, used = recipe_search_response(str(args["query"]), hits)
+        if used:
+            base, separator, selector = str(args["query"]).lower().partition("#")
+            key = "-".join(re.findall(r"[a-z0-9]+", base))
+            if separator:
+                key += "#" + "-".join(re.findall(r"[a-z0-9]+", selector))
+            refused = context_budget.admit(key, len(text))
+            if refused:
+                return {"content": [{"type": "text", "text": refused}]}
+        if on_use and used:
+            try:
+                on_use(used)
+            except Exception:
+                # telemetry drives promote/prune; losing it silently means the cookbook
+                # can never learn which recipes earn their place
+                print("! recipe-use telemetry failed", flush=True)
         return {"content": [{"type": "text", "text": text}]}
 
     server = create_sdk_mcp_server(name="recipes", version="0.1.0", tools=[find_recipe])

@@ -311,6 +311,71 @@ def validate_materialization(
             )
     for cross_row_finding in validate_row_set(scene_rows):
         note(json_ptr("scene_contracts"), f"scene contract {cross_row_finding}")
+
+    # HIR-0057: a geometry unit implicitly protects every active visibility row on
+    # this layer. If a selected role is created only by a future sibling, the unit can
+    # never seal: its protected evidence is due before its producer exists.
+    if layer is not None:
+        from vfx_harness.domain.work_units import (
+            GEOMETRY_VIS_DEPENDENCY_RULE,
+            geometry_vis_dependency_gaps,
+        )
+
+        unit_index_by_id = {unit.id: index for index, unit in enumerate(layer.stages)}
+        for gap in geometry_vis_dependency_gaps(layer.stages, scene_rows, layer_id):
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    "provides",
+                ),
+                f"geometry unit {gap.unit_id} protects visible_fraction "
+                f"{gap.contract_id}, but role {gap.role!r} is produced only by "
+                f"non-dependency unit(s) {list(gap.producer_ids)}. "
+                + GEOMETRY_VIS_DEPENDENCY_RULE,
+            )
+
+        from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
+
+        raw_stages = tuple(
+            row
+            for row in (layer_row.get("stages") or [])
+            if isinstance(row, dict)
+        )
+        for gap in atomicity_gaps(
+            layer.stages, scene_rows, layer_id=layer_id, raw_stages=raw_stages
+        ):
+            pointer_field = {
+                "padding": "id",
+                "mixed_clusters": "mutates",
+                "missing_interface": "id",
+                "authored_exports": "publishes",
+                "unknown_kind": "evaluation",
+                "repair_owners": "evaluation",
+                "consumed_mutation": "mutates",
+                "unresolved_family": "mutates",
+                "missing_consumption": "consumes",
+                "incompatible_interface": "consumes",
+            }.get(gap.code, "mutates")
+            extra = ""
+            if gap.considered_exceptions:
+                extra = (
+                    " Exceptions considered and insufficient: "
+                    + ", ".join(gap.considered_exceptions)
+                    + "."
+                )
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    pointer_field,
+                ),
+                f"unit {gap.unit_id}: {gap.detail}{extra} Legal next actions: "
+                "split the unit, consume a typed assembly interface, bind dressing, "
+                "or reassign evidence. " + ATOMICITY_RULE,
+            )
     # A binding that declares its moments must include the bound contract's own frame:
     # declaring moments [150] for a frame-72 contract authors evidence that can never
     # be produced when it is due.

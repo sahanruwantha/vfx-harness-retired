@@ -56,7 +56,7 @@ from vfx_harness.agents.build_prompts import (
 )
 from vfx_harness.agents.guardrails import builder_hooks, distiller_hooks
 from vfx_harness.agents.shot_context import clear_layer_context, write_layer_context
-from vfx_harness.application.preflight import empty_success, warn_if_broken
+from vfx_harness.application.preflight import model_phase_failure, warn_if_broken
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.evidence.claim_evidence import Observation, append_gap_record, reconcile_observations
 from vfx_harness.evidence.compare_panels import save_focus_sheet, validate_crop
@@ -187,6 +187,18 @@ _TRUNCATED = {"error_max_turns", "error_max_budget_usd"}
 
 class BuildTruncated(RuntimeError):
     """The builder ran out of budget mid-build — no verdict is meaningful."""
+
+    def __init__(self, message: str, *, terminal_cause: str = "build_truncated"):
+        self.terminal_cause = terminal_cause
+        super().__init__(message)
+
+
+def _budget_terminal_cause(subtype: str) -> str:
+    return (
+        "max_turns_exhausted"
+        if subtype == "error_max_turns"
+        else "model_budget_exhausted"
+    )
 
 
 class BuildUnpassed(RuntimeError):
@@ -420,6 +432,7 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
 
     def _probe() -> dict:
         from vfx_harness.blender.session import BlenderSession
+        from vfx_harness.evidence.checks import layer_evidence as image_layer_evidence
         from vfx_harness.evidence.scene_checks import layer_evidence as scene_layer_evidence
 
         probe_dir = Path(probe_ctx["scratch_dir"])
@@ -432,7 +445,16 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
             verify.run(_preamble(shot), journal=False)
             for prior in probe_ctx["prior_paths"]:
                 verify.run(Path(prior).read_text(encoding="utf-8"), journal=False)
+            before_objects = _scene_object_manifest(verify)
             verify.run((shot.folder / script_rel).read_text(encoding="utf-8"), journal=False)
+            scope_errors = _candidate_scope_errors(
+                str(probe_ctx.get("scope_mode") or ""),
+                tuple(str(role) for role in (probe_ctx.get("roles") or [])),
+                before_objects,
+                _scene_object_manifest(verify),
+            )
+            if scope_errors:
+                raise ValueError("scoped artifact violation: " + "; ".join(scope_errors[:6]))
             try:
                 rig_contract = verify.check(kind="rig_contract")
             except Exception as exc:
@@ -443,6 +465,15 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
             for frame, ref in probe_ctx["judges"]:
                 rows = scene_layer_evidence(
                     shot.folder, str(probe_ctx["layer_id"]), frame=int(frame), session=verify
+                )
+                image_render = verify.render(frame=int(frame), mode="eevee", scale=0.5)
+                image_rows = image_layer_evidence(
+                    shot.folder,
+                    str(probe_ctx["layer_id"]),
+                    frame=int(frame),
+                    ref=str(ref),
+                    render=image_render,
+                    stage=str(probe_ctx.get("image_stage") or "pre_grade"),
                 )
                 transforms = verify.run(
                     "import bpy, json, math, fnmatch\n"
@@ -483,8 +514,9 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                             for key in ("id", "kind", "value", "target", "pass", "error", "note")
                             if row.get(key) not in (None, "")
                         }
-                        for row in rows
+                        for row in [*rows, *image_rows]
                     ],
+                    "image_contract_render": image_render,
                 }
                 if "draft" in preview_modes:
                     try:
@@ -612,6 +644,7 @@ async def _run_script_agent(
     async with ClaudeSDKClient(
         options=_script_options(shot, mode=mode, script_rel=script_rel, probe_ctx=probe_ctx)
     ) as agent:
+        tools_before = sum(TOOL_USE.values())
         await agent.query(prompt)
         info = await _drain_once(agent, verbose)
         if info["subtype"] == "error_max_turns":
@@ -620,12 +653,40 @@ async def _run_script_agent(
                 "continuing once to finish the in-progress artifact operation",
                 1,
             )
+            continuation_tools_before = sum(TOOL_USE.values())
+            continuation_prior_cost = float(info.get("cost") or 0.0)
             await agent.query(
                 f"MODE remains {mode.upper()}_SCRIPT. Continue from the exact file state "
                 "you just left. Do not discover more files or broaden the repair. Finish "
                 f"the smallest necessary operation on `{script_rel}`, summarize it, and stop."
             )
             info = await _drain_once(agent, verbose)
+            continuation_why = model_phase_failure(
+                info,
+                sum(TOOL_USE.values()) - continuation_tools_before,
+                prior_cost=continuation_prior_cost,
+            )
+            if continuation_why:
+                transcript.event(
+                    "empty_success",
+                    phase=f"{mode}_continuation",
+                    why=continuation_why,
+                    **info,
+                )
+                raise BuildTruncated(
+                    f"{mode} continuation: {continuation_why}",
+                    terminal_cause="model_session_failure",
+                )
+        why = model_phase_failure(
+            info,
+            sum(TOOL_USE.values()) - tools_before,
+            prior_cost=0.0,
+        )
+        if why:
+            transcript.event("empty_success", phase=mode, why=why, **info)
+            raise BuildTruncated(
+                f"{mode} phase: {why}", terminal_cause="model_session_failure"
+            )
         return info
 
 
@@ -1077,7 +1138,15 @@ async def _drain_once(client: ClaudeSDKClient, verbose: bool) -> dict:
     mid-scene is indistinguishable from one that finished — BR layer G was critiqued,
     scored and recorded 'failed' while half-built. Always look at the subtype.
     """
-    info = {"subtype": "unknown", "turns": 0, "cost": 0.0, "session_id": None, "tokens": {}}
+    info = {
+        "subtype": "unknown",
+        "turns": 0,
+        "cost": 0.0,
+        "session_id": None,
+        "tokens": {},
+        "is_error": False,
+        "api_error_status": None,
+    }
     async for message in client.receive_response():
         if verbose:
             log_message(message)
@@ -1108,6 +1177,10 @@ async def _drain_once(client: ClaudeSDKClient, verbose: bool) -> dict:
                 "turns": getattr(message, "num_turns", 0) or 0,
                 # total_cost_usd is cumulative for the session and Optional on error paths
                 "cost": getattr(message, "total_cost_usd", None) or 0.0,
+                # Provider truth outranks the SDK subtype. A monthly spend limit was
+                # observed as subtype=success, is_error=true, api_error_status=429.
+                "is_error": bool(getattr(message, "is_error", False)),
+                "api_error_status": getattr(message, "api_error_status", None),
                 "tokens": {
                     k: (u.get(k) or 0)
                     for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
@@ -1131,6 +1204,8 @@ async def _drain(client: ClaudeSDKClient, verbose: bool, *, continues: int = MAX
         if info["subtype"] != "error_max_turns":
             break
         log(f"⏸ builder hit the turn cap ({info['turns']} turns, ${info['cost']:.2f}) — continuing {i + 1}/{continues}")
+        continuation_tools_before = sum(TOOL_USE.values())
+        continuation_prior_cost = float(info.get("cost") or 0.0)
         await client.query(
             f"You have hit a turn checkpoint: {info['turns']} turns and "
             f"${info['cost']:.2f} spent on this layer so far, out of a ${MAX_BUDGET_USD:.0f} "
@@ -1139,8 +1214,29 @@ async def _drain(client: ClaudeSDKClient, verbose: bool, *, continues: int = MAX
             f"work in progress and prefer landing the layer over further refinement."
         )
         info = await _drain_once(client, verbose)
+        continuation_why = model_phase_failure(
+            info,
+            sum(TOOL_USE.values()) - continuation_tools_before,
+            prior_cost=continuation_prior_cost,
+        )
+        if continuation_why:
+            transcript.event(
+                "empty_success",
+                phase="turn_continuation",
+                why=continuation_why,
+                **info,
+            )
+            raise BuildTruncated(
+                f"builder continuation: {continuation_why}",
+                terminal_cause="model_session_failure",
+            )
     if info["subtype"] == "error_max_turns":
         log(f"! builder still truncated after {continues} continuations ({info['turns']} turns, ${info['cost']:.2f})")
+    # Context usage is optional telemetry. The SDK control request can itself wait 60s
+    # after a provider result already says HTTP 429/is_error. Return the authoritative
+    # terminal facts immediately; the caller will publish the typed phase failure.
+    if bool(info.get("is_error")) or info.get("api_error_status") not in (None, "", 0):
+        return info
     try:
         usage = await client.get_context_usage()
         compact = {
@@ -1907,9 +2003,34 @@ async def _critique(
                     # The critic loop does NOT call log_message, which is where costlog was
                     # hooked — so record at the source while the scoped role is active.
                     costlog.record(message)
+                    if isinstance(message, ResultMessage):
+                        phase_failure = model_phase_failure(
+                            {
+                                "subtype": getattr(message, "subtype", "unknown"),
+                                "turns": getattr(message, "num_turns", 0) or 0,
+                                "cost": getattr(message, "total_cost_usd", None) or 0.0,
+                                "is_error": bool(getattr(message, "is_error", False)),
+                                "api_error_status": getattr(
+                                    message, "api_error_status", None
+                                ),
+                            },
+                            0,
+                        )
+                        if phase_failure:
+                            transcript.event(
+                                "model_phase_failure",
+                                phase=review_mode,
+                                why=phase_failure,
+                            )
+                            raise BuildTruncated(
+                                f"critic {review_mode}: {phase_failure}",
+                                terminal_cause="model_session_failure",
+                            )
             if acc.get("structured") or acc.get("text", "").strip():
                 break
             log(f"critic returned nothing (attempt {attempt}/3) — retrying", 1)
+        except BuildTruncated:
+            raise
         except Exception as e:
             if attempt == 3:
                 raise
@@ -3128,6 +3249,18 @@ def _scope_added_object_errors(
     return errors
 
 
+def _candidate_scope_errors(
+    scope_mode: str,
+    allowed_roles: tuple[str, ...],
+    before: dict[str, str],
+    after: dict[str, str],
+) -> list[str]:
+    """Apply canonical object-scope authority to every candidate probe (HIR-0058)."""
+    if scope_mode != "scoped":
+        return []
+    return _scope_added_object_errors(before, after, allowed_roles)
+
+
 def _try_revalidate(
     shot: Shot,
     m: Milestone,
@@ -3290,10 +3423,26 @@ def _live_reopen_reason(events) -> str:
     return ""
 
 
-def _retry_warm_start(previous_status: str, script_path: Path) -> bool:
-    """Whether a fresh retry should replay its last artifact into the warm scene."""
+def _live_round_budget(rounds: int, comparison_state: dict) -> int:
+    """A typed in-scope abstention ends model-guided visual search immediately."""
+    return 0 if comparison_state.get("cannot_express") else int(rounds)
+
+
+def _retry_warm_start(
+    previous_status: str,
+    script_path: Path,
+    *,
+    previous_artifact_unit_hash: str,
+    current_unit_hash: str,
+) -> bool:
+    """Whether a retry artifact belongs to the exact current unit authority."""
     retryable = {"failed", "judge_conflict", "contract_gap", "truncated", "in_progress"}
-    return previous_status in retryable and script_path.is_file()
+    return (
+        previous_status in retryable
+        and script_path.is_file()
+        and bool(previous_artifact_unit_hash)
+        and previous_artifact_unit_hash == current_unit_hash
+    )
 
 
 async def build_unit(
@@ -3312,6 +3461,7 @@ async def build_unit(
     publish_layer: bool = True,
     report_layer=None,
     resume_ok: bool = False,
+    layer_units=None,
 ) -> Ledger:
     """The build+critic engine for ONE unit of work. Iteration is judged at m.frame vs
     m.ref; the canonical check covers every frame `layer` claims (see _verify_script)."""
@@ -3319,8 +3469,19 @@ async def build_unit(
     previous_slot = dict(ledger._slot(m))
     previous_status = str(previous_slot.get("status") or "")
     retry_script = shot.folder / script_rel
-    warm_start_candidate = _retry_warm_start(previous_status, retry_script)
+    from vfx_harness.orchestration.unit_state import unit_digest
+
+    current_unit_hash = unit_digest(active_unit) if active_unit is not None else ""
+    warm_start_candidate = _retry_warm_start(
+        previous_status,
+        retry_script,
+        previous_artifact_unit_hash=str(
+            previous_slot.get("artifact_unit_hash") or ""
+        ),
+        current_unit_hash=current_unit_hash,
+    )
     ledger._slot(m)["script"] = script_rel
+    ledger._slot(m)["unit_hash"] = current_unit_hash
     ledger.begin(m)
     t_layer = time.monotonic()
 
@@ -3380,6 +3541,31 @@ async def build_unit(
         if active_unit is not None
         else []
     )
+    from vfx_harness.orchestration.unit_state import unit_digest
+
+    fault_owner_options: list[dict] = []
+    if active_unit is not None:
+        units_by_id = {candidate.id: candidate for candidate in layer.stages}
+        ancestors: set[str] = set()
+        frontier = list(active_unit.depends_on)
+        while frontier:
+            candidate_id = frontier.pop()
+            if candidate_id in ancestors:
+                continue
+            ancestors.add(candidate_id)
+            candidate = units_by_id.get(candidate_id)
+            if candidate is not None:
+                frontier.extend(candidate.depends_on)
+        for candidate in layer.stages:
+            if candidate.id not in ancestors:
+                continue
+            fault_owner_options.append({
+                "id": candidate.id,
+                "title": candidate.title,
+                "roles": list(candidate.mutates.roles),
+                "controls": list(candidate.mutates.controls),
+            })
+
     phase = {
         "mode": "live",
         "round": 1,
@@ -3391,16 +3577,34 @@ async def build_unit(
         "image_evidence_required": image_evidence_required,
         "image_debts": image_debts,
         "unpaid_image_debts": list(image_debts),
+        "unit_id": str(getattr(active_unit, "id", "") or ""),
+        "unit_hash": unit_digest(active_unit) if active_unit is not None else "",
+        "fault_owner_options": fault_owner_options,
     }
     comparison_state = phase
     scope_baseline: set[str] = set()
     unit_scope_card = None
     if active_unit is not None:
         from vfx_harness.agents.unit_scope import compile_unit_scope_for_shot
+        from vfx_harness.orchestration.unit_state import load as load_unit_state_for_scope
 
+        layer_units = tuple(layer_units or getattr(layer, "stages", ()) or ())
+        if len(layer_units) <= 1:
+            layer_units = tuple(layer_units or ((active_unit,) if active_unit is not None else ()))
+        try:
+            durable_state = load_unit_state_for_scope(
+                shot.folder, str(getattr(layer, "id", m.id))
+            )
+        except ValueError:
+            durable_state = {}
         unit_scope_card = compile_unit_scope_for_shot(
-            shot, active_unit, str(getattr(layer, "id", m.id))
+            shot,
+            active_unit,
+            str(getattr(layer, "id", m.id)),
+            units=layer_units,
+            durable_state=durable_state,
         )
+        unit_scope_card["fault_owner_options"] = fault_owner_options
     bserver, bnames = build_blender_tools(
         session,
         assets_dir=shot.folder / "assets",
@@ -3436,6 +3640,14 @@ async def build_unit(
     session.run(_preamble(shot))
     resume = ledger.get_resume(m) if resume_ok else None
     if resume:
+        # Establish the exact dependency-chain adversary before restoring the active
+        # unit checkpoint. Image-payment authority must never use the resumed candidate
+        # as its own "before" state.
+        priors = _run_prior_paths(session, prior_paths)
+        from vfx_harness.blender.tools import capture_image_adversaries
+
+        capture_image_adversaries(session, shot.folder, comparison_state, prior_paths)
+        unit_journal_start = int(session.journal().get("calls", 0))
         log(
             f"↻ resuming layer {m.id} from round {resume['round']}: restoring scene "
             f"+ replaying journal[{resume['journal_index']}:]"
@@ -3446,9 +3658,12 @@ async def build_unit(
             log(f"  replayed {n} journalled call(s) — scene matches the session", 1)
         except BlenderError as e:
             log(f"  ! replay failed ({str(e)[:60]}) — continuing from the checkpoint", 1)
-        priors = [Path(p).name for p in prior_paths]
     else:
         priors = _run_prior_paths(session, prior_paths)
+        from vfx_harness.blender.tools import capture_image_adversaries
+
+        capture_image_adversaries(session, shot.folder, comparison_state, prior_paths)
+        unit_journal_start = int(session.journal().get("calls", 0))
 
     if layer is not None and int(layer.id) > 1:
         from vfx_harness.evidence.scene_checks import prior_interface_evidence
@@ -3604,12 +3819,14 @@ async def build_unit(
         # A layer that spent nothing and touched no tool did not build anything, whatever
         # the result subtype claims. Caught here rather than after the critic, because the
         # next thing this function does is pay a vision model to look at an empty scene.
-        _why = empty_success(info, sum(TOOL_USE.values()) - _tools_before)
+        _why = model_phase_failure(info, sum(TOOL_USE.values()) - _tools_before)
         if _why:
             log(f"✗ build DID NOTHING: {_why}")
             transcript.event("empty_success", why=_why, **info)
             ledger.mark(m, "failed", best=None)
-            raise BuildTruncated(f"layer {m.id}: {_why}")
+            raise BuildTruncated(
+                f"layer {m.id}: {_why}", terminal_cause="model_session_failure"
+            )
         if info["subtype"] in _TRUNCATED:
             # Scoring a half-built scene produces a "failed" that says nothing about the
             # look, buys a misleading ledger entry, and pays the critic to judge it.
@@ -3620,10 +3837,21 @@ async def build_unit(
             ledger.mark(m, "truncated", best=None)
             raise BuildTruncated(
                 f"layer {m.id}: {info['subtype']} after {info['turns']} turns "
-                f"(${info['cost']:.2f}); raise MAX_BUDGET_USD or split the layer"
+                f"(${info['cost']:.2f}); raise MAX_BUDGET_USD or split the layer",
+                terminal_cause=_budget_terminal_cause(info["subtype"]),
             )
 
-        for rnd in range(1, rounds + 1):
+        live_rounds = _live_round_budget(rounds, comparison_state)
+        if comparison_state.get("cannot_express"):
+            payload = comparison_state["cannot_express"]
+            log(
+                "cannot_express_in_scope recorded during live build — skipping visual "
+                "critique and revision rounds: "
+                + ", ".join(payload.get("contract_ids") or []),
+                1,
+            )
+        rnd = 0
+        for rnd in range(1, live_rounds + 1):
             log(f"── round {rnd}/{rounds} — rendering + critiquing frame {m.frame} ──")
             t_round = time.monotonic()
             render_rel = _stash_render(session, shot, m, f"r{rnd}")
@@ -3731,13 +3959,37 @@ async def build_unit(
                 if not out["text"]:
                     break  # review unavailable: old behaviour
                 ledger.record_review(m, rnd, out)
+                _revision_tools_before = sum(TOOL_USE.values())
+                _revision_prior_cost = float(last_info.get("cost") or 0.0)
                 await builder.query(revision_from_review(layer, out))
             elif plateaued:
                 log(f"plateau again after review ({verdict['mean']}) — stopping revisions")
                 break
             else:
+                _revision_tools_before = sum(TOOL_USE.values())
+                _revision_prior_cost = float(last_info.get("cost") or 0.0)
                 await builder.query(revision_prompt(m, verdict, render_rel))
             last_info = await _drain(builder, verbose)
+            _why = model_phase_failure(
+                last_info,
+                sum(TOOL_USE.values()) - _revision_tools_before,
+                prior_cost=_revision_prior_cost,
+            )
+            if _why:
+                transcript.event("empty_success", phase="live_revision", why=_why, **last_info)
+                raise BuildTruncated(
+                    f"layer {m.id} live revision: {_why}",
+                    terminal_cause="model_session_failure",
+                )
+            if comparison_state.get("cannot_express"):
+                payload = comparison_state["cannot_express"]
+                log(
+                    "cannot_express_in_scope recorded during live revision — stopping "
+                    "remaining critique rounds: "
+                    + ", ".join(payload.get("contract_ids") or []),
+                    1,
+                )
+                break
         log(f"best round: r{best['round']} mean {best['mean']} → renders/{m.id}_best.png")
 
         # finalize from the BEST round's scene, not the last one — a regressed revision
@@ -3745,6 +3997,8 @@ async def build_unit(
         if best.get("snap") and best["round"] != rnd:
             log(f"restoring best round r{best['round']} scene state before finalize")
             session.restore(best["snap"]["blend"])
+            _restore_tools_before = sum(TOOL_USE.values())
+            _restore_prior_cost = float(last_info.get("cost") or 0.0)
             await builder.query(
                 f"NOTE: the scene has been RESTORED to your round-{best['round']} state "
                 f"(the best-scoring round, mean {best['mean']}) — your later revision "
@@ -3753,7 +4007,20 @@ async def build_unit(
                 f"LIVE_BUILD, and the harness will send a separate FINALIZE_SCRIPT "
                 f"request after it captures the journal."
             )
-            await _drain(builder, verbose)
+            last_info = await _drain(builder, verbose)
+            _why = model_phase_failure(
+                last_info,
+                sum(TOOL_USE.values()) - _restore_tools_before,
+                prior_cost=_restore_prior_cost,
+            )
+            if _why:
+                transcript.event(
+                    "empty_success", phase="restore_acknowledgement", why=_why, **last_info
+                )
+                raise BuildTruncated(
+                    f"layer {m.id} restore acknowledgement: {_why}",
+                    terminal_cause="model_session_failure",
+                )
 
         # Persist the deterministic recipe regardless — it's the artifact of record.
         journal_rel = None
@@ -3766,7 +4033,9 @@ async def build_unit(
             # ever accepted: the scene was just restored to the best round, so later
             # rounds' calls describe a world that no longer exists.
             info = session.journal(
-                path=str(journal), limit=(best.get("snap") or {}).get("journal_index")
+                path=str(journal),
+                start=unit_journal_start,
+                limit=(best.get("snap") or {}).get("journal_index"),
             )
             if info.get("calls"):
                 journal_rel = jrel
@@ -3793,9 +4062,20 @@ async def build_unit(
                 for frame, ref in (layer.judges if layer is not None else [(m.frame, m.ref)])
             ],
             "layer_id": str(getattr(layer, "id", m.id)),
+            "scope_mode": (
+                str(active_unit.mutates.mode) if active_unit is not None else ""
+            ),
             "roles": list(active_unit.mutates.roles) if active_unit is not None else [],
             "look_capabilities": list(
                 getattr(active_unit, "look_capabilities", ()) or ()
+            ),
+            "image_stage": (
+                "post_grade"
+                if any(
+                    "grade" in str(axis).lower()
+                    for axis in (getattr(layer, "owns", ()) or ())
+                )
+                else "pre_grade"
             ),
             "comparison_state": comparison_state,
         }
@@ -3818,7 +4098,8 @@ async def build_unit(
             ledger.mark(m, "truncated", best=best)
             raise BuildTruncated(
                 f"layer {m.id}: finalize hit {fin['subtype']} (${fin['cost']:.2f}); "
-                f"raise MAX_BUDGET_USD or split the layer"
+                f"raise MAX_BUDGET_USD or split the layer",
+                terminal_cause=_budget_terminal_cause(fin["subtype"]),
             )
 
         # Confirm the written script REPRODUCES the unit from an empty scene. This is a
@@ -4303,7 +4584,13 @@ async def build_layer(
     from vfx_harness.observability.provenance import atomic_write
     from vfx_harness.orchestration.layer_plans import work_unit_plan_path, write_layer_outcome
     from vfx_harness.orchestration.revalidation import digest
-    from vfx_harness.orchestration.unit_state import block_dependents, freeze_checkpoint, initialize, transition
+    from vfx_harness.orchestration.unit_state import (
+        block_dependents,
+        digest_matched_passed,
+        freeze_checkpoint,
+        initialize,
+        transition,
+    )
     from vfx_harness.orchestration.unit_state import load as load_unit_state
 
     def artifact_for(unit) -> str:
@@ -4387,7 +4674,11 @@ async def build_layer(
         )
     strips = plan_strips(shot)
     while len(passed_units) < len(layer.stages):
-        ready = ready_units(layer.stages, passed_units)
+        ready = ready_units(
+            layer.stages,
+            passed_units,
+            sealed_producers=digest_matched_passed(state, layer.stages) & passed_units,
+        )
         pending = [unit for unit in ready if unit.id not in passed_units]
         if not pending:
             raise RuntimeError(
@@ -4462,7 +4753,9 @@ async def build_layer(
                 fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
             except Exception as exc:
                 log(f"! no measured fingerprints in the unit contract: {str(exc)[:60]}", 1)
-            context_path = write_layer_context(shot, unit_layer, load_axes(shot), fps, unit=unit)
+            context_path = write_layer_context(
+                shot, unit_layer, load_axes(shot), fps, unit=unit, layer_units=layer.stages
+            )
             log(f"unit context → {context_path.relative_to(shot.folder)} (loaded every request)", 1)
             ledger = await build_unit(
                 shot,
@@ -4481,6 +4774,7 @@ async def build_layer(
                     unit_layer if len(layer.stages) == 1 else replace(unit_layer, id=f"{layer.id}.{unit.id}")
                 ),
                 resume_ok=resume_ok,
+                layer_units=layer.stages,
             )
         except Exception:
             transition(shot.folder, str(layer.id), unit.id, "failed", reason="unit build raised")
@@ -4891,6 +5185,7 @@ def _record_unsatisfiable_pair_falsification(shot: Shot, layer, unit, milestone,
             "controls": list(unit.mutates.controls),
         },
         evidence=[str(script_rel)],
+        affected_seed_ids={unit.id, *declared.get("fault_owner_units", [])},
     )
 
 
@@ -5405,7 +5700,11 @@ def main() -> None:
         # traceback on top would bury both under a stack nobody needs.
         except BuildTruncated as e:
             log(f"BUILD TRUNCATED — {e}")
-            raise run_artifacts.RequestedExit(3, f"BUILD TRUNCATED — {e}") from None
+            raise run_artifacts.RequestedExit(
+                3,
+                f"BUILD TRUNCATED — {e}",
+                terminal_cause=e.terminal_cause,
+            ) from None
         except BuildUnpassed as e:
             log(f"BUILD UNPASSED — {e}")
             raise run_artifacts.RequestedExit(7, f"INCOMPLETE CHAIN — {e}") from None

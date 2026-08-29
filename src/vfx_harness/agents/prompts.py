@@ -7,6 +7,7 @@ and executable evidence move to the smallest dependency-ready production boundar
 from __future__ import annotations
 
 import hashlib
+import json
 
 PLANNER_SYSTEM = """\
 You publish sparse global authority for an automated VFX build. This is not a
@@ -195,9 +196,9 @@ JUST-IN-TIME WORK-UNIT MODE — plan exactly Layer {layer_id}: {layer_title},
 unit {unit_id}: {unit_title}.
 
 The global dependency map and machine contracts already exist. Earlier layer outcomes are
-sealed facts, and approved amendments are explicit changes to the specification. Read only
-the exact files named by the kickoff; the kickoff already carries a compact prior-outcome
-summary. Do not audit broad log directories or copy transcripts into the plan. Then write
+sealed facts, and approved amendments are explicit changes to the specification. The kickoff
+is the complete compiled authority card for this unit; there is no raw Read surface. Do not
+audit broad files or copy transcripts into the plan. Then write
 exactly `{target}`. Do not edit the global plan or any
 machine contract in this mode. If those artifacts conflict, stop and report the conflict;
 the correct repair is an approved amendment or global re-plan, not a hidden local override.
@@ -223,27 +224,29 @@ materialization) is not yours — finish and report it.
 """
 
 
-def layer_user_prompt(shot, layer, unit, target: str, feedback: str) -> str:
+def layer_user_prompt(
+    shot,
+    layer,
+    unit,
+    target: str,
+    feedback: str,
+    *,
+    unit_card: dict,
+    predecessor_cards: list[dict],
+) -> str:
     """Kickoff for a just-in-time plan that consumes prior measured outcomes."""
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
-
-    authority = [
-        selected_artifact_path(shot.folder, name)
-        for name in ("global.md", "layers.json", "critic_axes.json", "checks.json", "scene_checks.json")
-    ]
     return (
         f"Plan only Layer {layer.id} — {layer.title} — unit {unit.id}: {unit.title} "
         f"for shot '{shot.id}'. "
         f"Write exactly `{target}`.\n\n"
-        f"Read `brief.md`, these exact verified authority files "
-        f"{[str(path) for path in authority]}, `plan_amendments.jsonl`, and only the build "
-        f"scripts for this layer and its declared predecessors. Do not scan logs. "
+        f"This is the complete compiled unit authority. Do not read the brief, layer/contract "
+        f"catalogs, scripts, amendments, decisions, or prior plans. "
         f"{_refs_block(shot)}\n\n"
         f"Layer contract: judges={list(layer.judges)}, owns={list(layer.owns)}, "
-        f"script=`{layer.script}`. Unit dependencies={list(unit.depends_on)}, "
-        f"mutation roles={list(unit.mutates.roles)}, controls={list(unit.mutates.controls)}, "
-        f"artifact spans={list(unit.mutates.script_spans)}, "
-        f"temporal evidence={unit.evaluation.temporal_evidence}, "
-        f"claims={[claim.id for claim in unit.evaluation.claims]}.\n\n"
+        f"script=`{layer.script}`.\n"
+        f"Active unit card (exact):\n{json.dumps(unit_card, indent=1)}\n\n"
+        f"Passed predecessor interfaces (compiled exports, sealed ids, and typed "
+        f"publish_interfaces only; no producer scripts or catalogs):\n"
+        f"{json.dumps(predecessor_cards, indent=1)}\n\n"
         f"{feedback or 'No prior outcome/amendment feedback.'}"
     )

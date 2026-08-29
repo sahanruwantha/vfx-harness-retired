@@ -10,11 +10,13 @@ from __future__ import annotations
 import base64
 import contextlib
 import fnmatch
+import hashlib
 import io
 import json
 import math
 import re
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 
 import anyio
@@ -48,6 +50,101 @@ _MAX_W = 2048
 # height that is right for ONE frame doubles the payload.
 _SHEET_MAX_W = 3072
 _JPEG_Q = 85
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _parent_chain_hash(prior_paths: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in prior_paths:
+        resolved = Path(path).resolve()
+        digest.update(resolved.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(resolved.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _capture_image_artifact(
+    *,
+    shot_dir: Path,
+    source: str | Path,
+    frame: int,
+    mode: str,
+    scale: float,
+    resolution: list[int] | tuple[int, ...] | None,
+    role: str,
+    unit_id: str,
+    parent_chain_hash: str,
+) -> dict:
+    """Copy one plate to immutable run evidence and return a non-path agent handle."""
+    src = Path(source)
+    sha = _sha256_file(src)
+    layout = run_artifacts.ensure(shot_dir, command="build")
+    safe_unit = re.sub(r"[^A-Za-z0-9_.-]+", "_", unit_id or "unit")[:60]
+    safe_role = re.sub(r"[^A-Za-z0-9_.-]+", "_", role)[:40]
+    dest = run_artifacts.renders_dir(shot_dir) / (
+        f"{safe_unit}_{safe_role}_f{int(frame):04d}_{sha[:16]}.png"
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.is_file():
+        shutil.copyfile(src, dest)
+    handle = f"image:{safe_role}:f{int(frame)}:{sha[:16]}"
+    return {
+        "handle": handle,
+        "path": dest.relative_to(shot_dir).as_posix(),
+        "sha256": sha,
+        "run_id": layout.run_id,
+        "frame": int(frame),
+        "mode": str(mode),
+        "scale": float(scale),
+        "resolution": list(resolution or []),
+        "role": role,
+        "unit_id": unit_id,
+        "parent_chain_hash": parent_chain_hash,
+    }
+
+
+def _payment_eligible_candidate(rendered: dict) -> bool:
+    """Whether a live render can share the fixed v2 adversary settings."""
+    return str(rendered.get("mode")) == "eevee" and float(rendered.get("scale", 0.0)) == 0.5
+
+
+def capture_image_adversaries(
+    session: BlenderSession,
+    shot_dir: str | Path,
+    comparison_state: dict,
+    prior_paths: list[Path],
+) -> dict[int, dict]:
+    """Render the pre-unit chain once; the model never chooses its own adversary."""
+    debts = list(comparison_state.get("image_debts") or [])
+    if not debts:
+        comparison_state["image_adversaries"] = {}
+        return {}
+    root = Path(shot_dir)
+    parent_hash = _parent_chain_hash(prior_paths)
+    comparison_state["parent_chain_hash"] = parent_hash
+    records: dict[int, dict] = {}
+    registry = comparison_state.setdefault("image_artifacts", {})
+    for frame in sorted({int(row["frame"]) for row in debts}):
+        rendered = session.call("render", frame=frame, mode="eevee", scale=0.5)
+        record = _capture_image_artifact(
+            shot_dir=root,
+            source=rendered["image_path"],
+            frame=frame,
+            mode="eevee",
+            scale=0.5,
+            resolution=rendered.get("resolution"),
+            role="pre_unit_adversary",
+            unit_id=str(comparison_state.get("unit_id") or "unit"),
+            parent_chain_hash=parent_hash,
+        )
+        records[frame] = record
+        registry[record["handle"]] = record
+    comparison_state["image_adversaries"] = records
+    return records
 
 
 def _text(s: str, is_error: bool = False) -> dict:
@@ -163,7 +260,11 @@ def _stats(im: Image.Image, *, feedback_groups=None) -> str:
     if clipped > 12:
         line += "  ⚠ highlights BLOWN — lower emission/light strength or exposure"
     if black > 85:
-        line += "  ⚠ frame almost entirely black — add light/emission or open exposure"
+        line += (
+            "  ⚠ frame almost entirely black — on draft/EEVEE use the typed scene "
+            "cause card before changing energy, density, or exposure; on solid/wire "
+            "inspect framing and visibility because Workbench does not test lighting"
+        )
     return line
 
 
@@ -586,10 +687,9 @@ def _pixel_contract_gate(
     rows = layer_evidence(shot_dir, layer_id, frame=frame, ref=ref, render=render)
     if evidence_ids is not None:
         rows = [row for row in rows if str(row.get("id")) in evidence_ids]
-    authoritative = [row for row in rows if row.get("authoritative")]
-    if authoritative:
-        return all(row.get("pass") for row in authoritative), authoritative
-    if evidence_ids:
+    if evidence_ids is not None:
+        observed = {str(row.get("id")) for row in rows}
+        missing_ids = sorted(set(evidence_ids) - observed)
         missing = [
             {
                 "id": evidence_id,
@@ -600,9 +700,13 @@ def _pixel_contract_gate(
                 "origin": "harness",
                 "authoritative": True,
             }
-            for evidence_id in sorted(evidence_ids)
+            for evidence_id in missing_ids
         ]
-        return False, missing
+        selected = [*rows, *missing]
+        return bool(selected) and not missing and all(row.get("pass") for row in rows), selected
+    authoritative = [row for row in rows if row.get("authoritative")]
+    if authoritative:
+        return all(row.get("pass") for row in authoritative), authoritative
     image = Image.open(render).convert("L")
     mean = sum(image.getdata()) / max(1, image.width * image.height)
     row = {
@@ -615,6 +719,21 @@ def _pixel_contract_gate(
         "authoritative": True,
     }
     return bool(row["pass"]), [row]
+
+
+def _image_evidence_ids_at_frame(state: Mapping[str, object], frame: int) -> set[str] | None:
+    """Exact image bindings owed at one plate, not the unit's cross-frame union."""
+    debts = state.get("image_debts") or []
+    if debts:
+        return {
+            str(row.get("id"))
+            for row in debts
+            if isinstance(row, Mapping)
+            and row.get("id")
+            and int(row.get("frame", -1)) == int(frame)
+        }
+    ids = state.get("active_image_evidence_ids")
+    return set(ids) if ids is not None else None
 
 
 def _unpaid_image_debt_note(state: dict) -> str:
@@ -700,6 +819,14 @@ CANNOT_EXPRESS_SCHEMA = {
             "type": "string",
             "description": "why no in-scope edit can pass, with the measured floor if any",
         },
+        "fault_owner_units": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "optional upstream unit ids whose sealed outcome causes the measured floor; "
+                "choose only from unit_scope.fault_owner_options"
+            ),
+        },
     },
     "required": ["contract_ids", "reason"],
 }
@@ -711,7 +838,9 @@ CANNOT_EXPRESS_DESCRIPTION = (
     "Use it when interpolation, a child object, extra mutation, or an unpaid "
     "image-contract debt cannot legally pass — not for a fix you have not measured. "
     "Name the bare contract ids (no check: prefix). Distinct from ask_supervisor, "
-    "which does not block."
+    "which does not block. When executable evidence pins the floor to a sealed upstream "
+    "unit, include its id from unit_scope.fault_owner_options so replan invalidates the "
+    "semantic owner rather than only retrying this unit."
 )
 
 
@@ -739,12 +868,28 @@ def record_cannot_express(comparison_state: dict | None, args: dict) -> dict:
             "cannot_express_in_scope is not bound in this session",
             is_error=True,
         )
+    requested_owners = sorted({str(item).strip() for item in args.get("fault_owner_units") or [] if str(item).strip()})
+    options = {
+        str(row.get("id")): row
+        for row in comparison_state.get("fault_owner_options") or []
+        if isinstance(row, dict) and row.get("id")
+    }
+    unknown_owners = sorted(set(requested_owners) - set(options))
+    if unknown_owners:
+        return _text(
+            "unknown fault_owner_units "
+            + ", ".join(unknown_owners)
+            + "; legal upstream options: "
+            + (", ".join(sorted(options)) or "(none)"),
+            is_error=True,
+        )
     debts = debts_from_dicts(comparison_state.get("image_debts"))
     classification = classify_cannot_express(ids, debts)
     comparison_state["cannot_express"] = {
         "contract_ids": ids,
         "reason": reason,
         "classification": classification,
+        "fault_owner_units": requested_owners,
     }
     return _text(
         "Recorded cannot_express_in_scope for "
@@ -894,6 +1039,260 @@ def _run_bpy_instrument_hint(script: str, error: str) -> str:
     return error + extra if extra and extra.strip() not in error else error
 
 
+def _pending_black_frame_probe(comparison_state: dict) -> dict | None:
+    """Return a genuinely unpaid black-frame probe, retiring stale guard state."""
+    required = comparison_state.get("black_frame_required_probe")
+    if not isinstance(required, dict):
+        return None
+    role = str(required.get("role") or "")
+    frame = int(required.get("frame") or 0)
+    density = float(required.get("density") or 0.0)
+    measured = (comparison_state.get("world_density_probes") or {}).get(
+        f"{role}@{frame}", []
+    )
+    from vfx_harness.blender.black_frame_report import same_density
+
+    if any(same_density(value, density) for value in measured):
+        comparison_state.pop("black_frame_required_probe", None)
+        return None
+    return required
+
+
+def _schedule_override_without_keying(script: str, protected_paths: set[str]) -> set[str]:
+    """Return protected animated paths a payload tries to override as a live probe."""
+    import ast
+
+    try:
+        tree = ast.parse(script)
+    except SyntaxError:
+        return set()
+    terminals = {path.rsplit(".", 1)[-1] for path in protected_paths}
+    keyed: set[str] = set()
+    uses_fcurve_inventory = False
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "bvfx_fcurves"
+        ):
+            uses_fcurve_inventory = True
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "keyframe_insert":
+            continue
+        value = None
+        if node.args:
+            with contextlib.suppress(ValueError, TypeError):
+                value = ast.literal_eval(node.args[0])
+        for keyword in node.keywords:
+            if keyword.arg == "data_path":
+                with contextlib.suppress(ValueError, TypeError):
+                    value = ast.literal_eval(keyword.value)
+        if isinstance(value, str):
+            keyed.add(value.rsplit(".", 1)[-1])
+
+    violated = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            # Editing a BezTriple coordinate changes the authored schedule just as
+            # surely as assigning the driven property.  The common diagnostic bypass
+            # is `for kp in bvfx_fcurves(...): kp.co[1] = ...`; conservatively protect
+            # every active scheduled path when a payload combines the fcurve inventory
+            # helper with a coordinate write.  Direct `keyframe_points[..].co[..]`
+            # writes are identifiable without the helper and receive the same guard.
+            attrs = {
+                child.attr
+                for child in ast.walk(target)
+                if isinstance(child, ast.Attribute)
+            }
+            if "co" in attrs and (
+                uses_fcurve_inventory or "keyframe_points" in attrs
+            ):
+                violated.update(protected_paths)
+            if not isinstance(target, ast.Attribute):
+                continue
+            if target.attr in terminals and target.attr not in keyed:
+                violated.update(
+                    path
+                    for path in protected_paths
+                    if path.rsplit(".", 1)[-1] == target.attr
+                )
+            if target.attr == "mute":
+                with contextlib.suppress(ValueError, TypeError):
+                    if ast.literal_eval(node.value) is True:
+                        violated.update(protected_paths)
+    return violated
+
+
+def _closed_density_repeat_message(
+    comparison_state: dict, *, role: str, frame: int, values: list[float]
+) -> str:
+    """Refuse an exact repeat after the density causal branch has closed."""
+    from vfx_harness.blender.black_frame_report import same_density
+
+    probe_key = f"{role}@{int(frame)}"
+    measured = (comparison_state.get("world_density_probes") or {}).get(probe_key, [])
+    diagnosis = (comparison_state.get("world_density_probe_diagnoses") or {}).get(
+        probe_key, ""
+    )
+    if not (
+        str(diagnosis).startswith("DENSITY HYPOTHESIS CLOSED")
+        and measured
+        and all(any(same_density(value, prior) for prior in measured) for value in values)
+    ):
+        return ""
+    return (
+        f"{diagnosis}\nBLOCKED: every requested Density value for {role!r} at "
+        f"f{int(frame)} was already measured. This causal branch is closed; do not "
+        "repeat the sweep. Test a different authorized variable or call "
+        "cannot_express_in_scope when no such variable remains."
+    )
+
+
+def _candidate_for_proposed_check(
+    check: dict, default_handle: str | None, registry: dict
+) -> tuple[str, dict | None, str]:
+    """Resolve one check's frame-local immutable candidate handle."""
+    handle = str(check.get("after_handle") or default_handle or "")
+    if not handle:
+        return "", None, "after_handle is required on the check or at batch level"
+    record = registry.get(handle)
+    if not isinstance(record, dict) or record.get("role") != "live_candidate":
+        available = sorted(
+            key
+            for key, value in registry.items()
+            if isinstance(value, dict) and value.get("role") == "live_candidate"
+        )[-6:]
+        hint = ", ".join(available) or "none — call render_frame first"
+        return handle, None, f"unknown current-run candidate handle {handle!r}; recent handles: {hint}"
+    return handle, record, ""
+
+
+def _render_setting_writes(script: str) -> set[str]:
+    """Return free-form writes to harness-owned renderer configuration.
+
+    Scoped units own semantic roles and controls, not the render harness. Diagnostics
+    go through transactional render tools. This follows the common
+    ``sc = bpy.context.scene; ee = sc.eevee`` alias form as well as direct chains.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(script)
+    except SyntaxError:
+        return set()
+    namespaces = {
+        "eevee", "cycles", "render", "view_settings", "display_settings",
+        "sequencer_colorspace_settings",
+    }
+    setting_aliases: set[str] = set()
+
+    def attrs(node: ast.AST) -> list[str]:
+        out = []
+        while isinstance(node, ast.Attribute):
+            out.append(node.attr)
+            node = node.value
+        return list(reversed(out))
+
+    def root_name(node: ast.AST) -> str | None:
+        while isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        return node.id if isinstance(node, ast.Name) else None
+
+    def is_setting_expr(node: ast.AST) -> bool:
+        return bool(namespaces.intersection(attrs(node))) or root_name(node) in setting_aliases
+
+    assignments = sorted(
+        (node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign))),
+        key=lambda node: getattr(node, "lineno", 0),
+    )
+    for node in assignments:
+        if not is_setting_expr(node.value):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        setting_aliases.update(target.id for target in targets if isinstance(target, ast.Name))
+
+    writes: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, (ast.Attribute, ast.Subscript)) and is_setting_expr(target):
+                    chain = attrs(target)
+                    writes.add(".".join(chain[-2:]) or "render_setting")
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "setattr"
+            and len(node.args) >= 2
+            and is_setting_expr(node.args[0])
+        ):
+            try:
+                name = str(ast.literal_eval(node.args[1]))
+            except (TypeError, ValueError):
+                name = "<dynamic>"
+            writes.add(name)
+    return writes
+
+
+def _scoped_renderer_write_error(
+    script: str, mutation_roles: tuple[str, ...] | None
+) -> str:
+    """Fail closed before a scoped unit changes harness-owned render policy."""
+    if not mutation_roles:
+        return ""
+    writes = _render_setting_writes(script)
+    if not writes:
+        return ""
+    return (
+        "BLOCKED: scoped units do not own free-form renderer configuration writes ("
+        + ", ".join(sorted(writes))
+        + "). Render engine, sampling, thresholds, ray tracing, and color management "
+        "belong to the harness unless a typed plan control grants them. Use "
+        "render_frame/render_pass for transactional diagnostics; if the declared roles "
+        "cannot pass under canonical settings, call cannot_express_in_scope."
+    )
+
+
+def _black_search_stop_message(comparison_state: dict) -> str:
+    """Name the only legal transition after bounded black-frame search closes."""
+    stopped = comparison_state.get("black_frame_search_exhausted")
+    if not isinstance(stopped, dict):
+        return ""
+    ids = [str(item) for item in stopped.get("contract_ids") or []]
+    invocation = (
+        "cannot_express_in_scope(contract_ids="
+        + repr(ids)
+        + ", reason=<the measured density + placement floor>)"
+    )
+    return (
+        "BLOCKED: the bounded black-frame causal search is exhausted at "
+        f"f{int(stopped.get('frame') or 0)} for {stopped.get('role')!r}. "
+        + str(stopped.get("reason") or "")
+        + " No further render, probe, or scene mutation is legal in this branch. Call "
+        + invocation
+        + "."
+    )
+
+
+def _probe_values_with_original(values: list[float], original: float) -> list[float]:
+    """Include the restored live value without exceeding the public eight-value cap."""
+    from vfx_harness.blender.black_frame_report import same_density
+
+    out = list(values)
+    if any(same_density(value, original) for value in out):
+        return out
+    if len(out) == 8:
+        nearest = min(range(len(out)), key=lambda index: abs(out[index] - original))
+        out[nearest] = original
+    else:
+        out.append(original)
+    return sorted(set(out))
+
+
 def build_blender_tools(
     session: BlenderSession,
     assets_dir: str | Path | None = None,
@@ -929,6 +1328,134 @@ def build_blender_tools(
     async def _call(cmd, **args):
         return await anyio.to_thread.run_sync(lambda: session.call(cmd, **args))
 
+    async def _black_frame_note(rendered: dict) -> str:
+        """Return typed scene causes only for a nearly black look render."""
+        if str(rendered.get("mode")) not in {"draft", "eevee"}:
+            return ""
+        from vfx_harness.evidence.metrics import look_vector
+
+        metrics = look_vector(_load(rendered["image_path"]))
+        if float(metrics.get("black_pct", 0.0)) <= 85.0:
+            return ""
+        try:
+            context = await _call("black_context", frame=int(rendered["frame"]))
+        except BlenderError as exc:
+            return f"\n⚠ black-frame scene diagnosis unavailable: {str(exc)[:100]}"
+        frame = int(rendered["frame"])
+        clip_end = context.get("camera_clip_end")
+        from vfx_harness.blender.black_frame_report import effective_volume_span
+
+        sampled_span = effective_volume_span(
+            clip_end,
+            context.get("volumetric_start"),
+            context.get("volumetric_end"),
+        )
+        high_rows = [
+            row
+            for row in context.get("volume_rows") or []
+            if not row.get("linked")
+            and row.get("density") is not None
+            and sampled_span is not None
+            and float(row["density"]) * float(sampled_span) >= 1.0
+            and str(row.get("role") or "").strip()
+        ]
+        if high_rows:
+            row = max(high_rows, key=lambda item: float(item["density"]))
+            role = str(row["role"])
+            density = float(row["density"])
+            probed = comparison_state.setdefault("world_density_probes", {}).get(
+                f"{role}@{frame}", []
+            )
+            from vfx_harness.blender.black_frame_report import same_density
+
+            already_measured = any(same_density(value, density) for value in probed)
+            if not already_measured:
+                comparison_state["black_frame_required_probe"] = {
+                    "role": role,
+                    "frame": frame,
+                    "density": density,
+                }
+        text = str(context.get("text") or "").strip()
+        if high_rows and already_measured:
+            # The worker cause card cannot see session probe history. Retire a stale
+            # prescription explicitly; concurrent frame renders must not resurrect it.
+            text = "\n".join(
+                line for line in text.splitlines() if "NEXT MEASUREMENT:" not in line
+            )
+            _pending_black_frame_probe(comparison_state)
+            probe_key = f"{role}@{frame}"
+            diagnosis = str(
+                (comparison_state.get("world_density_probe_diagnoses") or {}).get(
+                    probe_key, ""
+                )
+            ).strip()
+            text += "\n  " + (
+                diagnosis
+                if diagnosis
+                else "DENSITY ALREADY MEASURED at this frame; repeating the same "
+                "sweep is not a legal next step. Test a different causal variable."
+            )
+            if diagnosis.startswith("DENSITY HYPOTHESIS CLOSED"):
+                from vfx_harness.blender.black_frame_report import (
+                    summarize_black_placement_search,
+                )
+
+                for light in context.get("lights") or []:
+                    light_role = str(light.get("role") or "").strip()
+                    distance = light.get("camera_distance")
+                    if not light_role or distance is None:
+                        continue
+                    search_key = f"{light_role}@{frame}"
+                    trials = comparison_state.setdefault(
+                        "black_placement_trials", {}
+                    ).setdefault(search_key, [])
+                    trials.append({
+                        "camera_distance": distance,
+                        "mean": metrics.get("exposure_mean", 0.0),
+                        "black_pct": metrics.get("black_pct", 0.0),
+                    })
+                    closure = summarize_black_placement_search(trials)
+                    if closure and comparison_state.get("scene_contracts_passed"):
+                        contract_ids = [
+                            str(card.get("id"))
+                            for card in comparison_state.get("image_debts") or []
+                            if int(card.get("frame") or -1) == frame and card.get("id")
+                        ]
+                        comparison_state["black_frame_search_exhausted"] = {
+                            "frame": frame,
+                            "role": light_role,
+                            "contract_ids": contract_ids,
+                            "reason": closure,
+                        }
+                        text += "\n  " + closure
+        return "\n" + text if text else ""
+
+    def _black_search_stop() -> str:
+        return _black_search_stop_message(comparison_state)
+
+    def _register_candidate(rendered: dict) -> str | None:
+        if not shot_dir or not comparison_state.get("image_debts"):
+            return None
+        # A runtime payment must be directly comparable with the harness-captured
+        # adversary.  Do not mint opaque handles for diagnostic previews: they
+        # cannot pass the v2 provenance/settings check and advertising them teaches
+        # the builder a dead-end action.
+        if not _payment_eligible_candidate(rendered):
+            return None
+        record = _capture_image_artifact(
+            shot_dir=shot_dir,
+            source=rendered["image_path"],
+            frame=int(rendered["frame"]),
+            mode=str(rendered["mode"]),
+            scale=float(rendered.get("scale", 0.5)),
+            resolution=rendered.get("resolution"),
+            role="live_candidate",
+            unit_id=str(comparison_state.get("unit_id") or "unit"),
+            parent_chain_hash=str(comparison_state.get("parent_chain_hash") or ""),
+        )
+        comparison_state.setdefault("image_artifacts", {})[record["handle"]] = record
+        return str(record["handle"])
+
     @tool(
         "run_bpy",
         "Execute Python (with `bpy` in scope) against the live scene — the hands. "
@@ -939,6 +1466,8 @@ def build_blender_tools(
         "object, fast for 1000s); bvfx_volume(center,size,density,color,...) for a "
         "bounded volumetric domain (clouds/nebula/fog); bvfx_volumetric_world(...) for "
         "a tinted haze sky; bvfx_glare_bloom(...) for EEVEE-Next bloom; "
+        "bvfx_vector_blur(...) for a wired Blender-5 compositor node; "
+        "bvfx_light(...) for type-safe POINT/AREA/SPOT creation or conversion; "
         "bvfx_emission(name,color,strength). To DEBUG a material/world, use inspect_nodes "
         "instead of rendering repeatedly to guess. Tag every contract-facing datablock "
         "with bvfx_role(target,'material.floor.worn',owner_layer='2') — one dotted "
@@ -948,13 +1477,101 @@ def build_blender_tools(
         {"type": "object", "properties": {"script": {"type": "string"}}, "required": ["script"]},
     )
     async def run_bpy(args):
+        stop = _black_search_stop()
+        if stop:
+            return _text(stop, is_error=True)
+        required_probe = _pending_black_frame_probe(comparison_state)
+        if isinstance(required_probe, dict):
+            role = str(required_probe.get("role") or "")
+            frame = int(required_probe.get("frame") or 0)
+            density = float(required_probe.get("density") or 0.0)
+            return _text(
+                "BLOCKED: the last look render was nearly black with an unmeasured "
+                f"World density {density:g} on {role!r} at f{frame}. Call the "
+                "cause-card probe_control density sweep before another free-form "
+                "scene mutation; a ceiling is not a target.",
+                is_error=True,
+            )
+        if comparison_state.get("scene_contracts_passed") and shot_dir:
+            from vfx_harness.evidence.scene_checks import load_rows
+
+            active_ids = comparison_state.get("active_evidence_ids")
+            schedule_rows = [
+                row
+                for row in load_rows(shot_dir)
+                if row.get("kind") == "keyframe_schedule"
+                and (active_ids is None or str(row.get("id")) in active_ids)
+            ]
+            protected_paths = {
+                str(path)
+                for row in schedule_rows
+                for sample in row.get("samples") or []
+                for path in (sample.get("values") or {})
+            }
+            violations = _schedule_override_without_keying(
+                str(args.get("script") or ""), protected_paths
+            )
+            if violations:
+                ids = [
+                    str(row.get("id"))
+                    for row in schedule_rows
+                    if any(
+                        str(path) in violations
+                        for sample in row.get("samples") or []
+                        for path in (sample.get("values") or {})
+                    )
+                ]
+                return _text(
+                    "BLOCKED: required exact schedule(s) already pass: "
+                    + ", ".join(ids)
+                    + ". This payload would disable or override protected animated path(s) "
+                    + ", ".join(sorted(violations))
+                    + " without keying a legal schedule. Do not use authored state as a "
+                    "diagnostic. Use render_pass(pass='light_coverage', light=...) for "
+                    "normalized read-only coverage; if coverage is visible but the "
+                    "contract-scale beauty remains black after the density branch is "
+                    "closed, call cannot_express_in_scope and name the schedule conflict.",
+                    is_error=True,
+                )
+        renderer_error = _scoped_renderer_write_error(
+            str(args.get("script") or ""), mutation_roles
+        )
+        if renderer_error:
+            return _text(renderer_error, is_error=True)
+        from vfx_harness.blender.black_frame_report import (
+            authored_density_values,
+            same_density,
+        )
+
+        proposed_densities = authored_density_values(str(args.get("script") or ""))
+        if proposed_densities:
+            tested = {
+                float(value)
+                for values in (comparison_state.get("world_density_probes") or {}).values()
+                for value in values
+            }
+            unmeasured = [
+                value
+                for value in proposed_densities
+                if tested
+                and not any(same_density(value, prior) for prior in tested)
+            ]
+            if unmeasured:
+                return _text(
+                    "BLOCKED: World Density value(s) "
+                    + ", ".join(f"{value:g}" for value in unmeasured)
+                    + " were not measured by probe_control. Commit a tested value "
+                    + "or include the new candidate in a density sweep first.",
+                    is_error=True,
+                )
         try:
-            r = await _call("run", code=args["script"])
+            r = await _call("run", code=args["script"], transactional=True)
         except BlenderError as e:
             return _text(_run_bpy_instrument_hint(str(args.get("script") or ""), str(e)), is_error=True)
         # A successful script may have changed pixels even when this layer has no scene
         # completion contract. Never carry an earlier comparison verdict across it.
         comparison_state["pixel_contracts_passed"] = False
+        comparison_state["mutation_serial"] = int(comparison_state.get("mutation_serial", 0)) + 1
         out = r.get("stdout", "")
         res = r.get("result")
         el, oa, va = r.get("elapsed_s"), r.get("objects_added"), r.get("verts_added")
@@ -991,6 +1608,7 @@ def build_blender_tools(
                     "result"
                 ) or {}
                 offenders = _scope_offenders(manifest, mutation_roles, scope_baseline)
+                comparison_state["scope_offenders"] = list(offenders)
                 if offenders:
                     log(f"scope: {len(offenders)} object(s) outside declared roles", 1)
                     warn += (
@@ -1103,6 +1721,16 @@ def build_blender_tools(
                 contract_note = (
                     f"\n⚠ automatic scene-contract probe unavailable: {type(exc).__name__}: {str(exc)[:100]}"
                 )
+        if comparison_state.get("scope_offenders"):
+            # A candidate with an unowned object is not converged even if its numeric
+            # rows happen to pass. Keep the corrective mutation window open; canonical
+            # replay will reject this exact state.
+            comparison_state["scene_contracts_passed"] = False
+            comparison_state["pixel_contracts_passed"] = False
+            contract_note += (
+                "\nSCOPE CLEANUP REQUIRED: convergence remains open until every newly "
+                "created object is deleted or assigned a declared semantic role."
+            )
         return _text(body + meta + warn + contract_note)
 
     @tool(
@@ -1124,16 +1752,22 @@ def build_blender_tools(
     @tool(
         "inspect_scene",
         "Read the scene as text (Tier-1, free, no render): objects+transforms+modifiers"
-        "+particle systems, materials, world, and render settings. Each object line "
-        "includes role= and owner=. Pass role= to filter by semantic bvfx_role "
+        "+particle systems, materials with object-slot consumers, world, lights, color "
+        "management, compositor, and "
+        "render settings. section='lights' reports energy/color/visibility/location so "
+        "light setup never needs a read-only run_bpy probe; section='cameras' reports "
+        "evaluated world pose, forward vector, lens, and sensor. Each object line includes "
+        "local/evaluated world location, dimensions, visibility, role, and owner. Pass "
+        "frame= for evaluated transforms and role= to filter by semantic bvfx_role "
         "(fnmatch). Use this to verify structure before spending a render.",
         {
             "type": "object",
             "properties": {
                 "section": {
                     "type": "string",
-                    "enum": ["all", "objects", "materials", "world", "render"],
+                    "enum": ["all", "objects", "materials", "world", "render", "lights", "cameras"],
                 },
+                "frame": {"type": "integer", "description": "optional evaluation frame"},
                 "role": {
                     "type": "string",
                     "description": "optional bvfx_role selector (fnmatch); miss names present roles and names",
@@ -1147,6 +1781,7 @@ def build_blender_tools(
             r = await _call(
                 "inspect",
                 section=args.get("section", "all"),
+                **({"frame": int(args["frame"])} if args.get("frame") is not None else {}),
                 **({"role": args["role"]} if args.get("role") else {}),
             )
         except BlenderError as e:
@@ -1155,8 +1790,8 @@ def build_blender_tools(
 
     @tool(
         "inspect_nodes",
-        "Dump a NODE GRAPH as text — every node's type, its unlinked input socket "
-        "values, and the links. target = 'compositor' (the bloom/glare graph — 5.x has "
+        "Dump a NODE GRAPH as text — every node's type, unlinked input values, all "
+        "output socket names, and links. target = 'compositor' (the bloom/glare graph — 5.x has "
         "NO scene.node_tree, it's scene.compositing_node_group), 'world', a material "
         "name, or an object name (its active material). Use this to DEBUG shaders/"
         "compositor directly instead of rendering over and over to guess.",
@@ -1217,6 +1852,9 @@ def build_blender_tools(
         },
     )
     async def render_frame(args):
+        stop = _black_search_stop()
+        if stop:
+            return _text(stop, is_error=True)
         mode = preview_render_mode(
             feedback_policy["look_actions"], args.get("mode"), look_default="eevee"
         )
@@ -1226,12 +1864,20 @@ def build_blender_tools(
             )
         except BlenderError as e:
             return _text(str(e), is_error=True)
+        # h_render does not echo scale because its pixel resolution is the executable
+        # setting. Preserve the caller value for provenance equality with the harness-
+        # captured pre-unit adversary.
+        r["scale"] = float(args.get("scale", 0.4))
+        handle = _register_candidate(r)
         cap = f"frame {r['frame']} ({r['mode']})" + _warn_suffix(r)
+        if handle:
+            cap += f"\nIMAGE EVIDENCE HANDLE: {handle}"
         if not feedback_policy["look_actions"] and not args.get("mode"):
             cap += (
                 " · Workbench default for an executable-only unit "
                 "(pass mode='eevee' for beauty; lighting is not this unit's scope)"
             )
+        cap += await _black_frame_note(r)
         return _image(r["image_path"], cap, feedback_groups=feedback_policy["groups"])
 
     @tool(
@@ -1240,6 +1886,9 @@ def build_blender_tools(
         "thing you are actually being judged on. `pass` isolates a render pass — use "
         "'diffuse_direct' to see MODELLING BY LIGHT with emission removed (a render "
         "setting, not something to squint past), 'emit' to see only self-lit surfaces, "
+        "'light_coverage' with `light=` to render clay under that local light while "
+        "transactionally suppressing World lighting/volume (separates placement from "
+        "atmospheric extinction), "
         "'shadow'/'ao'/'normal'/'depth'/'crypto' for the rest. `shade` overrides "
         "materials: 'clay' for form, 'silhouette' for outline, 'matcap:<name>' for a "
         "Workbench diagnostic. `light='<LightObject>'` (comma list allowed) renders with "
@@ -1254,7 +1903,10 @@ def build_blender_tools(
                 "frame": {"type": "integer"},
                 "pass": {
                     "type": "string",
-                    "enum": ["beauty", "diffuse_direct", "emit", "shadow", "ao", "normal", "depth", "crypto"],
+                    "enum": [
+                        "beauty", "light_coverage", "diffuse_direct", "emit",
+                        "shadow", "ao", "normal", "depth", "crypto",
+                    ],
                 },
                 "shade": {"type": "string", "description": "beauty | clay | silhouette | matcap:<name>"},
                 "light": {
@@ -1273,6 +1925,9 @@ def build_blender_tools(
         },
     )
     async def render_pass(args):
+        stop = _black_search_stop()
+        if stop:
+            return _text(stop, is_error=True)
         crop = args.get("crop")
         bad_crop = crop is not None and (
             len(crop) != 4
@@ -1282,6 +1937,12 @@ def build_blender_tools(
         if bad_crop:
             return _text(
                 "crop must be [x0,y0,x1,y1] in 0..1 with x0<x1 and y0<y1 (origin TOP-LEFT; x right, y down)",
+                is_error=True,
+            )
+        if args.get("pass") == "light_coverage" and not str(args.get("light") or "").strip():
+            return _text(
+                "pass='light_coverage' requires light='<LightObject>' so the causal "
+                "isolation has one named subject",
                 is_error=True,
             )
         diagnostic_args = dict(args)
@@ -1309,9 +1970,13 @@ def build_blender_tools(
         # The caption is the point: a visual channel with no text measured WORSE than no
         # extra channel at all. It travels in the same text block as the readouts.
         cap = (
-            f"frame {r['frame']} · {r.get('caption', '')}" + f"\nsettings: pass={r.get('pass')} shade={r.get('shade')} "
+            f"frame {r['frame']} · {r.get('caption', '')}"
+            + f"\nsettings: pass={r.get('pass')} "
+            f"shade={r.get('effective_shade') or r.get('shade')} "
             f"light={r.get('light')} crop={r.get('crop')} res_pct={r.get('res_pct')}" + _warn_suffix(r)
         )
+        if r.get("pass") != "light_coverage":
+            cap += await _black_frame_note(r)
         return _image(r["image_path"], cap, feedback_groups=feedback_policy["groups"])
 
     @tool(
@@ -1378,6 +2043,80 @@ def build_blender_tools(
         return _text(_check_report(kind, r))
 
     @tool(
+        "contract_result",
+        "Evaluate one contract bound to the ACTIVE unit by exact id. Scene contracts "
+        "use the canonical evaluator (including multi-role visible_fraction logical AND) "
+        "and report per-role details. Image contracts require image_handle from an "
+        "eevee render at that frame. Use this instead of recreating contract math in "
+        "run_bpy or guessing from a beauty render.",
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "image_handle": {"type": "string"},
+            },
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+    )
+    async def contract_result(args):
+        if not shot_dir or not layer_id:
+            return _text("contract_result needs an active shot layer", is_error=True)
+        cid = str(args["id"])
+        scene_ids = set(comparison_state.get("active_evidence_ids") or [])
+        image_ids = set(comparison_state.get("active_image_evidence_ids") or [])
+        if cid not in scene_ids | image_ids:
+            present = sorted(scene_ids | image_ids)
+            return _text(
+                f"contract {cid!r} is not bound to this unit; bound ids: "
+                + (", ".join(present) if present else "none"),
+                is_error=True,
+            )
+        if cid in scene_ids:
+            try:
+                from vfx_harness.evidence.scene_checks import layer_evidence, load_rows
+
+                source = next(row for row in load_rows(shot_dir) if str(row.get("id")) == cid)
+                frames = source.get("frames") or [source.get("frame", comparison_state.get("frame", 1))]
+                rows: list[dict] = []
+                for frame in frames:
+                    measured = await anyio.to_thread.run_sync(
+                        lambda f=int(frame): layer_evidence(
+                            shot_dir, str(layer_id), frame=f, session=session
+                        )
+                    )
+                    rows.extend(row for row in measured if str(row.get("id")) == cid)
+            except (StopIteration, OSError, ValueError, BlenderError) as exc:
+                return _text(f"could not evaluate scene contract {cid}: {exc}", is_error=True)
+            return _text(json.dumps(rows, indent=2, sort_keys=True))
+
+        handle = str(args.get("image_handle") or "")
+        record = (comparison_state.get("image_artifacts") or {}).get(handle)
+        if not isinstance(record, dict) or record.get("role") != "live_candidate":
+            return _text(
+                f"image contract {cid!r} requires a current IMAGE EVIDENCE HANDLE; "
+                "call render_frame(mode='eevee', scale=0.5) at its owed frame",
+                is_error=True,
+            )
+        try:
+            from vfx_harness.evidence.checks import layer_evidence as image_layer_evidence
+            from vfx_harness.orchestration.ledger import load_layers
+
+            layer = load_layers(type("ShotRef", (), {"folder": shot_dir})())[str(layer_id)]
+            ref = dict(layer.judges).get(int(record["frame"]), "")
+            rows = image_layer_evidence(
+                shot_dir,
+                str(layer_id),
+                frame=int(record["frame"]),
+                ref=str(ref),
+                render=str(record["path"]),
+                stage=("post_grade" if any("grade" in axis.lower() for axis in layer.owns) else "pre_grade"),
+            )
+        except (OSError, ValueError, KeyError) as exc:
+            return _text(f"could not evaluate image contract {cid}: {exc}", is_error=True)
+        return _text(json.dumps([row for row in rows if str(row.get("id")) == cid], indent=2, sort_keys=True))
+
+    @tool(
         "diff_frames",
         "Subtract one render from another and SEE the difference. Give two image paths "
         "from earlier render calls. A near-black diff means nothing changed — which is the "
@@ -1415,7 +2154,7 @@ def build_blender_tools(
     # A usable no-op check cannot require the model to recover internal render paths from
     # image-only tool results. Keep the baseline in the tool process and re-render with the
     # exact same settings after the edit, so the diff answers one question and only one.
-    change_baselines: dict[str, tuple[Path, int, str, float]] = {}
+    change_baselines: dict[str, tuple[Path, int, str, float, int]] = {}
 
     @tool(
         "verify_change",
@@ -1440,6 +2179,9 @@ def build_blender_tools(
         },
     )
     async def verify_change(args):
+        stop = _black_search_stop()
+        if stop:
+            return _text(stop, is_error=True)
         label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(args["label"]).strip())[:60]
         if not label:
             return _text("label must contain at least one letter or number", is_error=True)
@@ -1460,7 +2202,13 @@ def build_blender_tools(
             root.mkdir(parents=True, exist_ok=True)
             dest = root / f"baseline_{label}_f{frame:04d}_{mode}.png"
             shutil.copyfile(src, dest)
-            change_baselines[label] = (dest, frame, mode, scale)
+            change_baselines[label] = (
+                dest,
+                frame,
+                mode,
+                scale,
+                int(comparison_state.get("mutation_serial", 0)),
+            )
             cap = (
                 f"change baseline '{label}' captured at f{frame} "
                 f"mode={mode} scale={scale:g}. Make ONE edit, then call "
@@ -1476,7 +2224,13 @@ def build_blender_tools(
         prior = change_baselines.get(label)
         if prior is None:
             return _text(f"no baseline named {label!r}; call action='baseline' first", is_error=True)
-        before, frame, mode, scale = prior
+        before, frame, mode, scale, baseline_serial = prior
+        if int(comparison_state.get("mutation_serial", 0)) == baseline_serial:
+            return _text(
+                f"no successful run_bpy edit occurred after baseline {label!r}; the "
+                "attempted edit was blocked or never sent, so there is no change to verify",
+                is_error=True,
+            )
         try:
             rendered = await _call("render", frame=frame, mode=mode, scale=scale)
         except BlenderError as e:
@@ -1539,6 +2293,9 @@ def build_blender_tools(
         },
     )
     async def compare_frame(args):
+        stop = _black_search_stop()
+        if stop:
+            return _text(stop, is_error=True)
         ref = args["reference"]
         ref_path = (shot_dir / ref) if (shot_dir and not Path(ref).is_absolute()) else Path(ref)
         if not ref_path.is_file():
@@ -1573,6 +2330,8 @@ def build_blender_tools(
             r = await _call("render", frame=int(args["frame"]), mode=mode, scale=scale)
         except BlenderError as e:
             return _text(str(e), is_error=True)
+        r["scale"] = scale
+        evidence_handle = _register_candidate(r) if crop is None else None
         gate_note = ""
         if (
             crop is None
@@ -1590,11 +2349,13 @@ def build_blender_tools(
                         frame=int(args["frame"]),
                         ref=str(ref),
                         render=r["image_path"],
-                        evidence_ids=comparison_state.get("active_image_evidence_ids"),
+                        evidence_ids=_image_evidence_ids_at_frame(
+                            comparison_state, int(args["frame"])
+                        ),
                     )
                 )
                 passed_rows = sum(bool(row.get("pass")) for row in gate_rows)
-                gate_note = f"\nAUTHORITATIVE IMAGE CONTRACTS: {passed_rows}/{len(gate_rows)} pass"
+                gate_note = f"\nBOUND IMAGE CHECKS: {passed_rows}/{len(gate_rows)} pass"
                 if gate_pass:
                     comparison_state["pixel_contracts_passed"] = True
                     if comparison_state.get("current_scene_contracts_present"):
@@ -1679,6 +2440,12 @@ def build_blender_tools(
             }
         if gate_note:
             out["content"][0]["text"] += gate_note
+        if crop is None:
+            out["content"][0]["text"] += await _black_frame_note(r)
+        if evidence_handle:
+            out["content"][0]["text"] += (
+                f"\nIMAGE EVIDENCE HANDLE: {evidence_handle}"
+            )
         return out
 
     @tool(
@@ -1697,6 +2464,9 @@ def build_blender_tools(
         },
     )
     async def render_frames(args):
+        stop = _black_search_stop()
+        if stop:
+            return _text(stop, is_error=True)
         mode = args.get("mode", "eevee")
         scale = float(args.get("scale", 0.35))
         blocks: list[dict] = []
@@ -1740,7 +2510,7 @@ def build_blender_tools(
             "RESULT = [n for n in bpy.data.objects.keys() if n not in before]\n"
         )
         try:
-            r = await _call("run", code=script)
+            r = await _call("run", code=script, transactional=True)
         except BlenderError as e:
             return _text(str(e), is_error=True)
         dims = json.loads(meta.read_text()).get("bbox_dims") if meta.is_file() else None
@@ -1774,11 +2544,27 @@ def build_blender_tools(
         },
     )
     async def probe_control(args):
+        stop = _black_search_stop()
+        if stop:
+            return _text(stop, is_error=True)
         if shot_dir is None:
             return _text("probe_control requires a shot directory", is_error=True)
         values = [float(v) for v in args.get("values") or []]
         if not 2 <= len(values) <= 8 or not all(math.isfinite(v) for v in values):
             return _text("values must contain 2-8 finite numbers", is_error=True)
+        if (
+            args.get("graph") == "world"
+            and str(args.get("socket") or "") == "Density"
+            and args.get("node_role")
+        ):
+            repeat = _closed_density_repeat_message(
+                comparison_state,
+                role=str(args["node_role"]),
+                frame=int(args["frame"]),
+                values=values,
+            )
+            if repeat:
+                return _text(repeat, is_error=True)
         crop = args.get("crop")
         try:
             crop = list(validate_crop(crop)) if crop is not None else None
@@ -1821,6 +2607,7 @@ def build_blender_tools(
             original = float((initial.get("result") or {})["before"])
         except Exception as exc:
             return _text(f"control resolution failed: {exc}", is_error=True)
+        values = _probe_values_with_original(values, original)
         rows = []
         best_path = None
         try:
@@ -1867,6 +2654,34 @@ def build_blender_tools(
             with contextlib.suppress(Exception):
                 await anyio.to_thread.run_sync(lambda: session.run(control_script(original), journal=False))
 
+        diagnosis = ""
+        if (
+            args.get("graph") == "world"
+            and str(args.get("socket") or "") == "Density"
+            and args.get("node_role")
+        ):
+            probe_key = f"{args['node_role']}@{int(args['frame'])}"
+            known = comparison_state.setdefault("world_density_probes", {}).setdefault(
+                probe_key, []
+            )
+            for value in values:
+                if value not in known:
+                    known.append(value)
+            required = comparison_state.get("black_frame_required_probe")
+            if (
+                isinstance(required, dict)
+                and str(required.get("role")) == str(args["node_role"])
+                and int(required.get("frame") or 0) == int(args["frame"])
+            ):
+                comparison_state.pop("black_frame_required_probe", None)
+            from vfx_harness.blender.black_frame_report import summarize_density_probe
+
+            diagnosis = summarize_density_probe(rows)
+            if diagnosis:
+                comparison_state.setdefault("world_density_probe_diagnoses", {})[
+                    probe_key
+                ] = diagnosis
+
         candidate = Image.open(best_path).convert("RGB")
         reference = Image.open(ref_path).convert("RGB")
         reference = crop_pixels(reference, crop) if crop else reference
@@ -1888,6 +2703,8 @@ def build_blender_tools(
             f"lowest pixel MAE: {min(rows, key=lambda r: r['mae'])['value']:g}; "
             "choose by owned contracts and the panel, then commit once with run_bpy"
         )
+        if diagnosis:
+            lines.append(diagnosis)
         return {
             "content": [
                 {"type": "text", "text": "\n".join(lines)},
@@ -1905,6 +2722,7 @@ def build_blender_tools(
         render_frames,
         render_pass,
         check_scene,
+        contract_result,
         diff_frames,
         verify_change,
         probe_control,
@@ -2073,6 +2891,9 @@ def build_blender_tools(
         scene.render.resolution_* on the live scene, where an exception between set and
         restore leaves the deliverable rendering at the wrong size.
         """
+        stop = _black_search_stop()
+        if stop:
+            return _text(stop, is_error=True)
         regions = args.get("regions") or {}
         if not regions:
             return _text("no regions given", is_error=True)
@@ -2146,11 +2967,15 @@ def build_blender_tools(
         "the only stage with the built scene. Runtime evidence is evaluation-only and is "
         "not execution authority; do not read runtime_checks.json. Propose only an "
         "evidence gap you actually discovered.\n"
-        "Each check must PASS on your render and FAIL on the state before your layer ran — "
-        "that is what proves your layer did the work, and it is why this cannot be gamed: "
-        "you do not choose the adversary, the previous layer's render is.\n"
-        "after and before are existing image artifact paths relative to the shot folder, "
-        "never descriptions or labels. Survivors are appended to the "
+        "Each check must PASS on your render and FAIL on the state before your unit ran. "
+        "The harness captures that adversary before the unit starts; you cannot select "
+        "or manufacture it.\n"
+        "after_handle is the IMAGE EVIDENCE HANDLE returned by render_frame or an "
+        "uncropped compare_frame at the owed frame. Raw paths are intentionally not "
+        "accepted. For a multi-frame batch, put after_handle on each check; a batch-level "
+        "after_handle is shorthand only when every check uses the same frame. Render at "
+        "mode='eevee', scale=0.5 so it is settings-identical to the "
+        "harness adversary. Survivors are appended to the "
         "runtime_checks.json evidence ledger; planner contracts remain immutable in "
         "checks.json. Propose few and real. When the active unit owes image-contract "
         "debts, each kept row must use an owed id with matching frame, property kind, "
@@ -2175,6 +3000,13 @@ def build_blender_tools(
                             "ref": {"type": "string"},
                             "regions": {
                                 "type": "object",
+                                "description": (
+                                    "Literal metric operands: every region_mean/min/p5/max/"
+                                    "sigma/lit_pct/green_excess/lit_variance check requires "
+                                    "exactly key 'r', e.g. {'r':[x0,y0,x1,y1]}; "
+                                    "region_ratio requires keys 'a' and 'b'. Labels such as "
+                                    "'target', 'region', or a subject name are not operands."
+                                ),
                                 "additionalProperties": {
                                     "type": "array",
                                     "minItems": 4,
@@ -2183,15 +3015,25 @@ def build_blender_tools(
                                 },
                             },
                             "note": {"type": "string"},
+                            "after_handle": {
+                                "type": "string",
+                                "description": (
+                                    "Frame-local current-run immutable candidate handle; "
+                                    "overrides the batch-level shorthand"
+                                ),
+                            },
                         },
                         "required": ["id", "metric", "op"],
                         "additionalProperties": False,
                     },
                 },
-                "after": {"type": "string", "description": "Existing candidate image path relative to shot"},
-                "before": {"type": "string", "description": "Existing pre-layer image path relative to shot"},
+                "after_handle": {
+                    "type": "string",
+                    "description": "Current-run immutable handle returned by render_frame/compare_frame",
+                },
             },
-            "required": ["checks", "after"],
+            "required": ["checks"],
+            "additionalProperties": False,
         },
     )
     async def propose_checks(args):
@@ -2202,26 +3044,17 @@ def build_blender_tools(
             unpaid_image_contract_debts,
         )
         from vfx_harness.domain.work_units import read_document
-        from vfx_harness.evidence.checks import Check, load_image_contract_payment_rows, verify_necessity
+        from vfx_harness.evidence.checks import (
+            IMAGE_PAYMENT_SCHEMA,
+            Check,
+            load_image_contract_payment_rows,
+            verify_necessity,
+        )
 
         if not shot_dir:
             return _text("propose_checks needs a shot dir", is_error=True)
         root = Path(shot_dir)
-        after = root / args["after"]
-        if not after.is_file():
-            available = sorted(
-                (p for base in (session.artifacts, run_artifacts.renders_dir(root))
-                 if base.is_dir() for p in base.glob("*.png")),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )[:6]
-            hint = ", ".join(p.relative_to(root).as_posix() for p in available) or "none"
-            return _text(
-                f"render path {args['after']!r} does not exist. Pass an existing image "
-                f"artifact path, not a description. Recent candidates: {hint}",
-                is_error=True,
-            )
-        before = (root / args["before"]) if args.get("before") else None
+        registry = comparison_state.get("image_artifacts") or {}
         # Every check must name the plate it is about, or the gate cannot re-run it. The
         # first version of this tool took `after`/`before` renders and never populated
         # `ref`, so four good builder checks landed in the runtime evidence ledger and all
@@ -2229,7 +3062,9 @@ def build_blender_tools(
         judge: dict[int, str] = {}
         first_ref = ""
         try:
-            for lay in read_document(root / "layers.json"):
+            from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+            for lay in read_document(selected_artifact_path(root, "layers.json")):
                 if str(lay.get("id")) != str(layer_id):
                     continue
                 js = lay.get("judge") or []
@@ -2237,7 +3072,10 @@ def build_blender_tools(
                 primary = lay.get("primary_judge")
                 first_ref = next((j.get("ref", "") for j in js if j.get("frame") == primary), "")
         except Exception as e:
-            return _text(f"could not read judge refs from layers.json: {str(e)[:100]}", is_error=True)
+            return _text(
+                f"could not read judge refs from selected layers.json: {str(e)[:100]}",
+                is_error=True,
+            )
         kept, lines = [], []
         debts = debts_from_dicts(comparison_state.get("image_debts"))
         unpaid = unpaid_image_contract_debts(
@@ -2245,11 +3083,64 @@ def build_blender_tools(
         ) if debts else ()
         for d in list(args.get("checks") or [])[:20]:
             cid = normalize_evidence_id(d.get("id", "?"))
-            debt_reject = reject_proposed_image_check(d, debts, unpaid=unpaid)
+            debt_reject = reject_proposed_image_check(
+                d,
+                debts,
+                unpaid=unpaid,
+                registry=METRICS,
+            )
             if debt_reject:
                 lines.append(f"  REJECTED {cid:10} {debt_reject}")
                 continue
             d = {**d, "id": cid}
+            after_handle, after_record, handle_error = _candidate_for_proposed_check(
+                d, args.get("after_handle"), registry
+            )
+            d.pop("after_handle", None)
+            if handle_error or not isinstance(after_record, dict):
+                lines.append(f"  REJECTED {cid:10} {handle_error}")
+                continue
+            after = root / str(after_record["path"])
+            if not after.is_file() or _sha256_file(after) != after_record.get("sha256"):
+                lines.append(
+                    f"  REJECTED {cid:10} candidate handle {after_handle!r} no longer "
+                    "matches its immutable artifact"
+                )
+                continue
+            try:
+                check_frame = int(d["frame"])
+            except (KeyError, TypeError, ValueError):
+                lines.append(f"  REJECTED {cid:10} frame is required for a runtime image payment")
+                continue
+            adversary_record = (comparison_state.get("image_adversaries") or {}).get(check_frame)
+            if not isinstance(adversary_record, dict):
+                lines.append(
+                    f"  REJECTED {cid:10} harness captured no pre-unit adversary at f{check_frame}"
+                )
+                continue
+            before = root / str(adversary_record["path"])
+            if not before.is_file() or _sha256_file(before) != adversary_record.get("sha256"):
+                lines.append(
+                    f"  REJECTED {cid:10} pre-unit adversary artifact is missing or changed"
+                )
+                continue
+            if int(after_record.get("frame", -1)) != check_frame:
+                lines.append(
+                    f"  REJECTED {cid:10} candidate handle is f{after_record.get('frame')}, "
+                    f"but this debt is f{check_frame}"
+                )
+                continue
+            settings = ("mode", "scale", "resolution")
+            mismatch = [
+                key for key in settings if after_record.get(key) != adversary_record.get(key)
+            ]
+            if mismatch:
+                lines.append(
+                    f"  REJECTED {cid:10} candidate/adversary settings differ in "
+                    + ", ".join(mismatch)
+                    + "; render_frame(mode='eevee', scale=0.5)"
+                )
+                continue
             try:
                 ref_rel = (
                     d.get("ref") or judge.get(int(d["frame"])) if d.get("frame") is not None else d.get("ref")
@@ -2284,7 +3175,29 @@ def build_blender_tools(
                         "proof": {
                             "ref": round(v.ref_value, 4),
                             "adversary": [round(x, 4) for x in v.bad_values[:1]],
-                            "on": args["after"],
+                            "on": after_record["path"],
+                        },
+                        "payment": {
+                            "schema": IMAGE_PAYMENT_SCHEMA,
+                            "run_id": after_record["run_id"],
+                            "unit_id": str(comparison_state.get("unit_id") or ""),
+                            "unit_hash": str(comparison_state.get("unit_hash") or ""),
+                            "parent_chain_hash": str(
+                                comparison_state.get("parent_chain_hash") or ""
+                            ),
+                            "candidate": {
+                                key: after_record[key]
+                                for key in (
+                                    "path", "sha256", "frame", "mode", "scale", "resolution"
+                                )
+                            },
+                            "adversary": {
+                                key: adversary_record[key]
+                                for key in (
+                                    "path", "sha256", "frame", "mode", "scale", "resolution",
+                                    "parent_chain_hash",
+                                )
+                            },
                         },
                         "origin": "builder",
                         # No prior layer means no adversary — the FIRST layer's checks
@@ -2302,9 +3215,16 @@ def build_blender_tools(
         if kept:
             spec = root / "runtime_checks.json"
             cur = json.loads(spec.read_text()) if spec.is_file() else []
-            have = {x.get("id") for x in cur}
-            cur += [k for k in kept if k.get("id") not in have]
-            spec.write_text(json.dumps(cur, indent=1) + "\n", encoding="utf-8")
+            replacement_keys = {(row.get("layer"), row.get("id")) for row in kept}
+            cur = [
+                row
+                for row in cur
+                if (row.get("layer"), row.get("id")) not in replacement_keys
+            ]
+            cur.extend(kept)
+            from vfx_harness.observability.provenance import atomic_write
+
+            atomic_write(spec, json.dumps(cur, indent=1) + "\n")
         _refresh_unpaid_image_debts(comparison_state, root)
         remaining = comparison_state.get("unpaid_image_debts") or []
         tail = ""

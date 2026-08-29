@@ -19,12 +19,18 @@ from vfx_harness.domain.image_debts import (
 from vfx_harness.domain.work_units import WorkUnit
 
 
-def _look_unit(*, cid: str = "form-look-f40", frame: int = 40, axis: str = "form") -> WorkUnit:
+def _look_unit(
+    *,
+    cid: str = "form-look-f40",
+    frame: int = 40,
+    axis: str = "form",
+    property_kind: str = "render_region_stat",
+) -> WorkUnit:
     look = {
         "id": "claim.look",
         "proposition": "the plate matches the owned look",
         "axis": axis,
-        "property": "render_region_stat",
+        "property": property_kind,
         "subject_roles": ["look.primary"],
         "subject_controls": [],
         "moments": [frame],
@@ -225,3 +231,35 @@ def test_new_region_metric_pays_render_region_stat_without_a_copied_list() -> No
 
     assert metric_matches_property("region_mean_r", "render_region_stat")
     assert not metric_matches_property("frame_mean", "render_region_stat")
+
+
+def test_frame_scalar_pays_frame_delta_proved_against_adversary() -> None:
+    from vfx_harness.domain.image_debts import metric_matches_property
+
+    assert metric_matches_property("frame_mean", "frame_delta")
+    assert metric_matches_property("frame_black_pct", "frame_delta")
+    assert not metric_matches_property("region_mean", "frame_delta")
+
+
+def test_property_mismatch_enumerates_compatible_metrics() -> None:
+    unit = _look_unit(
+        cid="atmoscale-f150",
+        frame=150,
+        axis="atmosphere",
+        property_kind="frame_delta",
+    )
+    cards = image_contract_debt_cards(unit)
+    message = reject_proposed_image_check(
+        {
+            "id": "atmoscale-f150",
+            "frame": 150,
+            "axis": "atmosphere",
+            "metric": "region_mean",
+        },
+        cards,
+        unpaid=cards,
+        registry={"frame_mean", "frame_black_pct", "region_mean"},
+    )
+    assert message is not None
+    assert "Compatible metrics: frame_black_pct, frame_mean" in message
+    assert "region_mean" not in message.split("Compatible metrics:", 1)[1]

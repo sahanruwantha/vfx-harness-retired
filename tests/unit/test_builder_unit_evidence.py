@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from vfx_harness.agents.builder import (
+    _candidate_scope_errors,
     _scope_added_object_errors,
     _unit_completion_evidence_ids,
     _unit_evidence_ids,
@@ -77,6 +78,21 @@ def test_scoped_artifact_accepts_only_dot_delimited_role_namespace_descendants()
     ]
 
 
+def test_candidate_probe_applies_scope_before_reporting_evidence() -> None:
+    before = {"upstream": "cam.blockout"}
+    after = {**before, "fabricated_detail": "lookdev.detail.tier_architectural"}
+
+    assert _candidate_scope_errors(
+        "scoped", ("lookdev.material.*",), before, after
+    ) == [
+        "new object 'fabricated_detail' has undeclared role "
+        "'lookdev.detail.tier_architectural'; allowed ['lookdev.material.*']"
+    ]
+    assert _candidate_scope_errors(
+        "unrestricted", ("lookdev.material.*",), before, after
+    ) == []
+
+
 def test_frame_scoped_bindings_are_due_at_their_own_frame() -> None:
     """Run 20260825 (detail_instancing): one claim judging [72, 150] bound vis-f72 AND
     vis-f150; each canonical frame faulted the OTHER frame's row as 'not produced'
@@ -141,12 +157,14 @@ def test_declared_binding_moments_outrank_frame_inference() -> None:
 
 
 def test_workunit_shape_changes_demand_a_digest_schema_bump() -> None:
-    """unit_digest hashes asdict(WorkUnit), so ANY field addition silently changes
-    every stored digest and bricks durable state unless DIGEST_SCHEMA is bumped with
+    """unit_digest hashes asdict(WorkUnit), so a field that is always present in the
+    payload silently changes every stored digest unless DIGEST_SCHEMA is bumped with
     it (8ab8f5d shipped optional binding moments without the bump; every layer's
-    retry refused until the replan). This golden pins the pairing: if this test
-    fails, the WorkUnit shape changed — bump DIGEST_SCHEMA in
-    orchestration/unit_state.py and update BOTH constants here together."""
+    retry refused until the replan). Empty publishes/consumes are omitted so schema-4
+    identity stays comparable; non-empty interface rows participate (HIR-0084).
+    If this test fails because a new always-present field landed in the payload,
+    bump DIGEST_SCHEMA in orchestration/unit_state.py and update BOTH constants
+    here together."""
     from vfx_harness.domain.work_units import WorkUnit
     from vfx_harness.orchestration.unit_state import DIGEST_SCHEMA, unit_digest
 

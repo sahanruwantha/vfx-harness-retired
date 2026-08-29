@@ -30,8 +30,8 @@ A **layer** owns a department or coherent axis set. A **work unit** is the small
 planning/build/repair transaction inside that layer. The planner chooses the number and shape
 of work units from the shot; the harness supplies only the generic schema and state machine.
 
-Create a new work unit when the semantic subject, control family, evidence mode, reference
-moment, dependency, repair owner, or regression risk changes. Each unit declares:
+Create a new work unit when the derived write-cluster, semantic subject, evidence mode,
+reference moment, dependency, repair owner, or regression risk changes. Each unit declares:
 
 - one concrete goal and its dependencies;
 - semantic roles/controls it may mutate;

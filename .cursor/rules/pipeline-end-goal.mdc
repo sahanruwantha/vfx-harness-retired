@@ -14,8 +14,9 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 
 - Keep a layer as a department/ownership boundary; let the planner create a dynamic number
   of internal work units from the shot, references, dependencies, control families, and risk.
-- Give every work unit one bounded goal, semantic mutation scope, dependencies, protected
-  contracts, evidence policy, completion clause, checkpoint, and repair owner.
+- Give every work unit one bounded goal, one derived write-cluster, semantic mutation scope,
+  dependencies, protected contracts, evidence policy, completion clause, checkpoint, repair
+  owner, and typed successor interfaces.
 - Plan each work unit just in time from sealed prior outcomes instead of using one giant plan.
 - Treat a wrong DAG/scope/owner as a versioned replan that preserves unaffected checkpoints,
   invalidates dependants, and marks replaced work superseded. A sibling rematerialization that
@@ -89,4 +90,11 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 - Let a builder silently rewrite its plan, broaden repair scope, or misclassify blocked work.
 - Add compatibility fallbacks that silently revive obsolete plans, schemas, selectors, or
   execution contracts; migrations are explicit and fail closed.
-- Call a mechanism general until it passes heterogeneous fixtures and injected-failure tests.
+- Let a successor become ready from producer unit ids without declaring the consumed
+  interface id and kind.
+- Let authored publish-interface identity sit outside `unit_digest` so `apply_replan`
+  preserves a changed producer.
+- Let a dependency strip producer export roles from write-clusters or grant mutation
+  of those roles.
+- Collapse an unresolved write family to residual `control` when one namespace has
+  mixed mutation targets.

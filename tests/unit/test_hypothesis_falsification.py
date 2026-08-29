@@ -75,6 +75,47 @@ def test_falsified_hypothesis_cannot_be_retried_under_same_authority(tmp_path: P
         transition(tmp_path, "1", "proxy", "retryable", reason="try again")
 
 
+def test_falsification_can_name_passed_upstream_fault_owner_for_replan(tmp_path: Path) -> None:
+    units = (
+        _unit("lighting"),
+        _unit("detail", depends_on=["lighting"]),
+        _unit("atmosphere", depends_on=["detail"]),
+    )
+    initialize(tmp_path, "1", units, plan_hash="a" * 64)
+    for status in ("planning", "building", "frozen", "evaluating", "passed"):
+        transition(tmp_path, "1", "lighting", status, reason="accepted upstream")
+    transition(tmp_path, "1", "detail", "planning", reason="ready")
+    transition(tmp_path, "1", "detail", "building", reason="started")
+
+    finding = record_hypothesis_falsification(
+        tmp_path,
+        "1",
+        units[1],
+        units,
+        bundle_hash="b" * 64,
+        unit_plan_hash="c" * 64,
+        candidate_hash="d" * 64,
+        settings_hash="e" * 64,
+        contract_ids=["silhouette-bloom"],
+        observations=[{"pass": False, "classification": "unsatisfiable_in_scope"}],
+        decisions=[],
+        conflict={
+            "kind": "contract",
+            "required_authority": "reopen the sealed lighting owner",
+            "roles": ["detail.hero"],
+            "controls": [],
+        },
+        evidence=["runs/run-1/evidence/f150.png"],
+        affected_seed_ids={"detail", "lighting"},
+    )
+
+    state = load(tmp_path, "1")
+    assert finding["affected"] == ["atmosphere", "detail", "lighting"]
+    assert state["units"]["lighting"]["status"] == "passed"
+    assert state["units"]["detail"]["status"] == "hypothesis_falsified"
+    assert state["units"]["atmosphere"]["status"] == "blocked"
+
+
 def test_falsifying_decisions_classify_by_declared_path_only() -> None:
     approved = SimpleNamespace(
         id="A2",

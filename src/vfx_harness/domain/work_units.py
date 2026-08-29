@@ -543,6 +543,90 @@ def geometry_vis_protection_ids(
     return tuple(sorted({str(item) for item in layer_active_vis_ids if str(item)}))
 
 
+GEOMETRY_VIS_DEPENDENCY_RULE = (
+    "a unit that provides geometry freeze-protects every lifecycle-active visible_fraction "
+    "row on its layer. If one of those roles is produced by another same-layer unit, that "
+    "producer must be in the geometry unit's dependency closure; a future producer makes "
+    "the earlier geometry unit impossible to seal. Remove geometry from the earlier unit, "
+    "use already-existing dressable geometry, or reorder/split the DAG."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryVisDependencyGap:
+    unit_id: str
+    contract_id: str
+    role: str
+    producer_ids: tuple[str, ...]
+
+
+def geometry_vis_dependency_gaps(
+    units: Sequence[WorkUnit],
+    rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+    layer_id: str | int,
+) -> tuple[GeometryVisDependencyGap, ...]:
+    """Find geometry units that would protect visibility owned by a future sibling.
+
+    HIR-0051 intentionally makes geometry preservation conservative. That protection
+    becomes an unsealable cycle when an active visibility row selects geometry which a
+    later same-layer unit is responsible for creating. Catch the cycle at authority
+    publication instead of making the builder discover it from a missing role.
+    """
+    unit_rows = tuple(units)
+    by_id = {unit.id: unit for unit in unit_rows}
+    row_by_id = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    active_ids = layer_active_visible_fraction_ids(row_by_id.values(), layer_id)
+
+    def dependency_closure(unit: WorkUnit) -> set[str]:
+        found: set[str] = set()
+        frontier = list(unit.depends_on)
+        while frontier:
+            current = frontier.pop()
+            if current in found:
+                continue
+            found.add(current)
+            dependency = by_id.get(current)
+            if dependency is not None:
+                frontier.extend(dependency.depends_on)
+        return found
+
+    gaps: list[GeometryVisDependencyGap] = []
+    for unit in unit_rows:
+        if "geometry" not in unit.provides:
+            continue
+        dependencies = dependency_closure(unit)
+        own_roles = (*unit.mutates.roles, *unit.mutates.dresses)
+        for contract_id in active_ids:
+            row = row_by_id[contract_id]
+            unresolved = vis_roles_unrepairable_by(
+                provides=(),
+                mutation_roles=own_roles,
+                vis_roles=row.get("roles") or (),
+            )
+            for role in unresolved:
+                producers = tuple(
+                    sorted(
+                        other.id
+                        for other in unit_rows
+                        if other.id != unit.id
+                        and plan_selector_declared(
+                            role, (*other.mutates.roles, *other.mutates.dresses)
+                        )
+                    )
+                )
+                if producers and not any(producer in dependencies for producer in producers):
+                    gaps.append(
+                        GeometryVisDependencyGap(
+                            unit.id, contract_id, role, producers
+                        )
+                    )
+    return tuple(gaps)
+
+
 # Judge lists are structural. Scene contracts may still measure other frames; the
 # legal binding is contract ids, not extra frames on the judge lists (HIR-0029).
 EXTRA_FRAME_BINDING_RULE = (
@@ -739,6 +823,120 @@ class EvaluationPolicy:
 # dependent could not be projected through a camera that demonstrably existed.
 UNIT_PROVIDES = {"camera", "geometry"}
 
+# Authored cluster labels. Publication derives write-clusters; these fields are
+# HIR-0017 padding and are unrepresentable on a WorkUnit (HIR-0083).
+ATOMICITY_PADDING_FIELDS = frozenset(
+    {"family", "mutation_family", "coherent_family", "primary_subject"}
+)
+
+CONSUME_INTERFACE_RULE = (
+    "a successor declares each consumed interface by producer unit id, interface id, "
+    "and kind. Ready-set and publication require that digest-matched producer to "
+    "publish that exact id and kind. depends_on without consumes is a status edge, "
+    "not interface compatibility (HIR-0084)."
+)
+CONSUMED_ROLE_MUTATION_RULE = (
+    "consumed publish interfaces are read-only inputs. Assembly mutates its own "
+    "instances, relationships, and controls; it may not list a producer export role "
+    "in mutates.roles. Adding a dependency cannot hide a mixed write-cluster or "
+    "grant mutation authority over an accepted producer (HIR-0083)."
+)
+
+
+@dataclass(frozen=True)
+class PublishSpec:
+    """Authored successor interface. Identity participates in unit_digest (HIR-0084)."""
+
+    id: str
+    kind: str
+    exports: tuple[tuple[str, str], ...]
+
+    def as_authoring_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "exports": dict(self.exports),
+        }
+
+
+@dataclass(frozen=True)
+class ConsumeSpec:
+    """Declared consumption of a producer interface (HIR-0084)."""
+
+    producer: str
+    interface_id: str
+    kind: str
+
+
+def _parse_publish_specs(
+    value: Any,
+    where: str,
+    *,
+    legal_tokens: Iterable[str],
+) -> tuple[PublishSpec, ...]:
+    if value in (None, []):
+        return ()
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{where} must be a non-empty list when declared")
+    from vfx_harness.domain.publish_interfaces import parse_publish_interface
+
+    specs: list[PublishSpec] = []
+    seen: set[str] = set()
+    for index, row in enumerate(value):
+        payload = dict(_mapping(row, f"{where}[{index}]"))
+        payload.pop("producer", None)
+        payload.pop("digest", None)
+        parsed = parse_publish_interface(
+            payload,
+            f"{where}[{index}]",
+            legal_tokens=legal_tokens,
+            layer_id="pending",
+            unit_id="pending",
+        )
+        if parsed.id in seen:
+            raise ValueError(f"{where}[{index}].id {parsed.id!r} is duplicated")
+        seen.add(parsed.id)
+        specs.append(PublishSpec(parsed.id, parsed.kind, tuple(sorted(parsed.exports))))
+    return tuple(specs)
+
+
+def _parse_consume_specs(
+    value: Any,
+    where: str,
+    *,
+    depends_on: Iterable[str],
+) -> tuple[ConsumeSpec, ...]:
+    if value in (None, []):
+        return ()
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{where} must be a non-empty list when declared")
+    from vfx_harness.domain.publish_interfaces import PUBLISH_INTERFACE_KINDS, UNKNOWN_KIND_RULE
+
+    deps = {str(item) for item in depends_on}
+    specs: list[ConsumeSpec] = []
+    seen: set[tuple[str, str, str]] = set()
+    for index, row in enumerate(value):
+        mapping = _mapping(row, f"{where}[{index}]")
+        extra = sorted(set(mapping) - {"producer", "interface_id", "kind"})
+        if extra:
+            raise ValueError(f"{where}[{index}] has unknown fields: {', '.join(extra)}")
+        producer = _id(mapping.get("producer"), f"{where}[{index}].producer")
+        if producer not in deps:
+            raise ValueError(
+                f"{where}[{index}].producer {producer!r} is not a declared dependency. "
+                + CONSUME_INTERFACE_RULE
+            )
+        interface_id = _id(mapping.get("interface_id"), f"{where}[{index}].interface_id")
+        kind = _text(mapping.get("kind"), f"{where}[{index}].kind")
+        if kind not in PUBLISH_INTERFACE_KINDS:
+            raise ValueError(f"{where}[{index}].kind {kind!r} is unknown. {UNKNOWN_KIND_RULE}")
+        key = (producer, interface_id, kind)
+        if key in seen:
+            raise ValueError(f"{where}[{index}] duplicates {interface_id!r} from {producer}")
+        seen.add(key)
+        specs.append(ConsumeSpec(producer, interface_id, kind))
+    return tuple(specs)
+
 
 def parse_provides(value: Any, where: str) -> tuple[str, ...]:
     names = _strings(value, where) if value else ()
@@ -792,24 +990,51 @@ class WorkUnit:
     completion: str
     look_capabilities: tuple[str, ...] = ()
     provides: tuple[str, ...] = ()
+    publishes: tuple[PublishSpec, ...] = ()
+    consumes: tuple[ConsumeSpec, ...] = ()
 
     @classmethod
     def parse(cls, value: Any, where: str) -> WorkUnit:
         row = _mapping(value, where)
         uid = _id(row.get("id"), f"{where}.id")
-        unit = cls(
+        depends_on = _strings(row.get("depends_on", []), f"{where}.depends_on")
+        mutates = MutationScope.parse(row.get("mutates"), f"{where}.mutates")
+        evaluation = EvaluationPolicy.parse(row.get("evaluation"), f"{where}.evaluation")
+        draft = cls(
             uid,
             _text(row.get("title", uid), f"{where}.title"),
             _relative_path(row.get("plan"), f"{where}.plan"),
-            _strings(row.get("depends_on", []), f"{where}.depends_on"),
-            MutationScope.parse(row.get("mutates"), f"{where}.mutates"),
+            depends_on,
+            mutates,
             ProtectionSpec.parse(row.get("protects"), f"{where}.protects"),
-            EvaluationPolicy.parse(row.get("evaluation"), f"{where}.evaluation"),
+            evaluation,
             _text(row.get("completion"), f"{where}.completion"),
             parse_look_capabilities(
                 row.get("look_capabilities", []), f"{where}.look_capabilities"
             ),
             parse_provides(row.get("provides", []), f"{where}.provides"),
+        )
+        legal = {
+            *draft.mutates.roles,
+            *draft.mutates.dresses,
+            *draft.mutates.controls,
+            *bound_claim_contract_ids(draft),
+        }
+        unit = cls(
+            draft.id,
+            draft.title,
+            draft.plan,
+            draft.depends_on,
+            draft.mutates,
+            draft.protects,
+            draft.evaluation,
+            draft.completion,
+            draft.look_capabilities,
+            draft.provides,
+            _parse_publish_specs(row.get("publishes"), f"{where}.publishes", legal_tokens=legal),
+            _parse_consume_specs(
+                row.get("consumes"), f"{where}.consumes", depends_on=draft.depends_on
+            ),
         )
         context = unit.evaluation.composition_context
         if context and context.source_unit and context.source_unit not in unit.depends_on:
@@ -850,9 +1075,88 @@ def validate_unit_dag(units: tuple[WorkUnit, ...], where: str) -> None:
         visit(uid)
 
 
-def ready_units(units: tuple[WorkUnit, ...], passed: set[str]) -> tuple[WorkUnit, ...]:
-    """Return pending units whose declared dependency closure is currently accepted."""
-    return tuple(unit for unit in units if unit.id not in passed and set(unit.depends_on) <= passed)
+def bound_claim_contract_ids(unit: WorkUnit) -> tuple[str, ...]:
+    """Claim and composition contract ids this unit is answerable for."""
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def add(cid: str) -> None:
+        token = str(cid)
+        if token and token not in seen:
+            seen.add(token)
+            ids.append(token)
+
+    for claim in unit.evaluation.claims:
+        for binding in claim.evidence:
+            if binding.kind in {"scene_contract", "image_contract"}:
+                add(binding.id)
+    context = unit.evaluation.composition_context
+    if context:
+        for cid in context.contract_ids:
+            add(cid)
+    return tuple(ids)
+
+
+def offered_interface_keys(unit: WorkUnit) -> tuple[tuple[str, str], ...]:
+    """Interface id/kind pairs this unit currently publishes.
+
+    Authored ``publishes`` is the exact set. When omitted, the derived
+    ``{unit.id}.publish`` row is the only offered interface.
+    """
+    if unit.publishes:
+        return tuple((spec.id, spec.kind) for spec in unit.publishes)
+    from vfx_harness.domain.publish_interfaces import derived_interface_key
+
+    derived = derived_interface_key(unit)
+    return (derived,) if derived is not None else ()
+
+
+def consumption_is_satisfied(
+    unit: WorkUnit,
+    units: Sequence[WorkUnit],
+    sealed_producers: set[str],
+) -> bool:
+    """True when every declared consume matches a sealed producer's offered interface."""
+    if not unit.depends_on:
+        return not unit.consumes
+    if not unit.consumes:
+        return False
+    by_id = {item.id: item for item in units}
+    covered = {item.producer for item in unit.consumes}
+    if set(unit.depends_on) - covered:
+        return False
+    for consume in unit.consumes:
+        if consume.producer not in sealed_producers:
+            return False
+        producer = by_id.get(consume.producer)
+        if producer is None:
+            return False
+        if (consume.interface_id, consume.kind) not in offered_interface_keys(producer):
+            return False
+    return True
+
+
+def ready_units(
+    units: tuple[WorkUnit, ...],
+    passed: set[str],
+    *,
+    sealed_producers: set[str] | None = None,
+) -> tuple[WorkUnit, ...]:
+    """Return pending units whose declared dependency closure is currently accepted.
+
+    ``sealed_producers`` is the digest-matched passed set. When omitted, readiness
+    is the declared ``depends_on`` subset of ``passed``. A successor is ready only
+    when every ``depends_on`` producer is sealed **and** each consumed interface
+    id/kind is actually offered by that producer (HIR-0084).
+    """
+    producers = passed if sealed_producers is None else sealed_producers
+    return tuple(
+        unit
+        for unit in units
+        if unit.id not in passed
+        and set(unit.depends_on) <= producers
+        and consumption_is_satisfied(unit, units, producers)
+    )
 
 
 def read_document(path: str | Path) -> list[dict]:

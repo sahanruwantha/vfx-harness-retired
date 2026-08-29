@@ -522,6 +522,20 @@ def main():
             len(_evidence) == 1 and _evidence[0]["pass"] and _evidence[0]["authoritative"],
             str(_evidence),
         )
+        _runtime_run = "20260827T000000Z-runtime-fixture"
+        _runtime_render_root = _evroot / "runs" / _runtime_run / "evidence" / "renders"
+        _runtime_render_root.mkdir(parents=True)
+        (_evroot / "runs" / _runtime_run / "manifest.json").write_text(
+            json.dumps({"run_id": _runtime_run}), encoding="utf-8"
+        )
+        _runtime_candidate = _runtime_render_root / "candidate-f1.png"
+        _runtime_adversary = _runtime_render_root / "adversary-f1.png"
+        shutil.copyfile(_live, _runtime_candidate)
+        _EvidenceImage.new("RGB", (32, 18), (0, 0, 0)).save(_runtime_adversary)
+        _runtime_parent_hash = hashlib.sha256(b"parent").hexdigest()
+        _runtime_settings = {
+            "frame": 1, "mode": "eevee", "scale": 0.5, "resolution": [32, 18, 100]
+        }
         (_evroot / "runtime_checks.json").write_text(
             json.dumps(
                 [
@@ -535,6 +549,24 @@ def main():
                         "op": ">=",
                         "lo": 35,
                         "origin": "builder",
+                        "payment": {
+                            "schema": "vfx-harness.image-payment/v2",
+                            "run_id": _runtime_run,
+                            "unit_id": "runtime-fixture",
+                            "unit_hash": hashlib.sha256(b"unit").hexdigest(),
+                            "parent_chain_hash": _runtime_parent_hash,
+                            "candidate": {
+                                **_runtime_settings,
+                                "path": _runtime_candidate.relative_to(_evroot).as_posix(),
+                                "sha256": hashlib.sha256(_runtime_candidate.read_bytes()).hexdigest(),
+                            },
+                            "adversary": {
+                                **_runtime_settings,
+                                "path": _runtime_adversary.relative_to(_evroot).as_posix(),
+                                "sha256": hashlib.sha256(_runtime_adversary.read_bytes()).hexdigest(),
+                                "parent_chain_hash": _runtime_parent_hash,
+                            },
+                        },
                     }
                 ]
             ),
@@ -1820,8 +1852,8 @@ def main():
     _lit = shot.folder / "renders/5_best.png"  # a lit render
     _dark = shot.folder / "renders/1_best.png"  # the layout state before lighting
 
-    # after 36.6 / before 32.3 — the band must sit BETWEEN them or it is not necessary.
-    _c = _NC("L5-necessity", "frame_mean", ">=", 35.0, float("inf"))
+    # after 36.6 / before 32.3 — the boundary must sit between them with replay margin.
+    _c = _NC("L5-necessity", "frame_mean", ">=", 34.0, float("inf"))
     _v = verify_necessity(_c, _lit, _dark)
     check(
         "a check that holds after and fails before is NECESSARY",
@@ -1911,6 +1943,36 @@ def main():
     (_sd / "renders").mkdir()
     _img = _sd / "renders" / "9@f1_canonical_f1.png"
     _I3.new("RGB", (128, 64), (200, 200, 200)).save(_img)
+    _run = "20260827T000000Z-revalidate-fixture"
+    _rr = _sd / "runs" / _run / "evidence" / "renders"
+    _rr.mkdir(parents=True)
+    (_sd / "runs" / _run / "manifest.json").write_text(
+        json.dumps({"run_id": _run}), encoding="utf-8"
+    )
+    _candidate = _rr / "candidate-f1.png"
+    _adversary = _rr / "adversary-f1.png"
+    shutil.copyfile(_img, _candidate)
+    _I3.new("RGB", (128, 64), (0, 0, 0)).save(_adversary)
+    _parent_hash = hashlib.sha256(b"parent").hexdigest()
+    _settings = {"frame": 1, "mode": "eevee", "scale": 0.5, "resolution": [128, 64, 100]}
+    _payment = {
+        "schema": "vfx-harness.image-payment/v2",
+        "run_id": _run,
+        "unit_id": "revalidate-fixture",
+        "unit_hash": hashlib.sha256(b"unit").hexdigest(),
+        "parent_chain_hash": _parent_hash,
+        "candidate": {
+            **_settings,
+            "path": _candidate.relative_to(_sd).as_posix(),
+            "sha256": hashlib.sha256(_candidate.read_bytes()).hexdigest(),
+        },
+        "adversary": {
+            **_settings,
+            "path": _adversary.relative_to(_sd).as_posix(),
+            "sha256": hashlib.sha256(_adversary.read_bytes()).hexdigest(),
+            "parent_chain_hash": _parent_hash,
+        },
+    }
     (_sd / "runtime_checks.json").write_text(
         json.dumps(
             [
@@ -1924,6 +1986,7 @@ def main():
                     "lo": 100,
                     "ref": "refs/x.jpg",
                     "proof": {"ref": 200},
+                    "payment": _payment,
                 },
                 {
                     "id": "stale",
@@ -1935,6 +1998,7 @@ def main():
                     "hi": 20,
                     "ref": "refs/x.jpg",
                     "proof": {"ref": 5},
+                    "payment": _payment,
                 },
             ]
         )
@@ -2175,9 +2239,18 @@ def main():
         return r.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
 
     check("bare next() is blocked before it runs", _blocked("n = next(n for n in nt.nodes if n.type=='EMISSION')"))
-    check("next(gen, None) is allowed", not _blocked("n = next((n for n in nt.nodes if n.type=='X'), None)"))
+    check(
+        "next(gen, None) is allowed",
+        not _blocked(
+            "n = next((n for n in nt.nodes if n.type=='X'), None)\n"
+            "bpy.context.scene.frame_end = 250"
+        ),
+    )
     check("bare next nested in another call is still caught", _blocked("print(len(next(g for g in gs if g)))"))
-    check("a variable named next is not a call", not _blocked("next = 5\nprint(next)"))
+    check(
+        "a variable named next is not a call",
+        not _blocked("next = 5\nbpy.context.scene.frame_end = next"),
+    )
     check("a syntax error never reaches Blender", _blocked("for i in range(3)\n    print(i)"))
     check("ordinary scripts pass untouched", not _blocked("import bpy\nbpy.ops.mesh.primitive_cube_add()"))
     check(
@@ -2222,9 +2295,17 @@ def main():
     # Under-reports on purpose — a false positive blocks legitimate work, which is worse
     # than a NameError the builder would see anyway.
     check("a helper from a previous run_bpy call is blocked", _blocked("m = build_window_nodes(mat, 8)"))
-    check("a helper defined in THIS call is fine", not _blocked("def f(a):\n    return a\nx = f(1)"))
+    check(
+        "a helper defined in THIS call is fine",
+        not _blocked("def f(a):\n    return a\nbpy.context.scene.frame_end = f(1)"),
+    )
     check("injected bvfx helpers are in scope", not _blocked("bvfx_emissive_windows(o, density=8)"))
-    check("dynamic binding disables the check rather than guessing", not _blocked("g = globals()\nmystery_fn(1)"))
+    check(
+        "dynamic binding disables the check rather than guessing",
+        not _blocked(
+            "g = globals()\nmystery_fn(1)\nbpy.context.scene.frame_end = 250"
+        ),
+    )
     import ast as _a2
     import glob as _g2
 
@@ -3040,9 +3121,64 @@ def main():
     _sp = _ilu.spec_from_file_location("_rext", "src/vfx_harness/blender/render_ext.py")
     _rext = _ilu.module_from_spec(_sp)
     _sp.loader.exec_module(_rext)
-    for _pass in ("beauty", "diffuse_direct", "emit", "shadow", "ao", "normal", "depth", "crypto"):
+    for _pass in ("beauty", "light_coverage", "diffuse_direct", "emit", "shadow", "ao", "normal", "depth", "crypto"):
         cap = _rext.caption_for(_pass, "beauty", None, None, None)
         check(f"caption for pass {_pass}", len(cap) > 30 and cap.strip() != "")
+    _coverage = _rext.caption_for("light_coverage", "clay", "key", None, None)
+    check(
+        "light coverage names both isolated causes",
+        "World" in _coverage
+        and "placement/coverage" in _coverage
+        and "still contribute" not in _coverage
+        and "identical" not in _coverage,
+    )
+
+    class _Curve:
+        data_path = "energy"
+        mute = False
+
+    class _Action:
+        def __init__(self):
+            self.fcurves = [_Curve()]
+
+    class _Animation:
+        def __init__(self):
+            self.action = _Action()
+
+    class _LightData:
+        def __init__(self):
+            self.type = "SPOT"
+            self.energy = 30.0
+            self.animation_data = _Animation()
+
+    class _Light:
+        def __init__(self):
+            self.name = "key"
+            self.type = "LIGHT"
+            self.data = _LightData()
+
+    class _CoverageScene:
+        def __init__(self):
+            self.objects = [_Light()]
+
+    _coverage_scene = _CoverageScene()
+    _coverage_light = _coverage_scene.objects[0]
+    _energy_undo, _normalized = _rext.normalize_local_light_energy(_coverage_scene, ["key"])
+    check("coverage normalizes weak local-light energy", _coverage_light.data.energy == 100_000_000.0)
+    check(
+        "coverage mutes animated energy during the render",
+        _coverage_light.data.animation_data.action.fcurves[0].mute,
+    )
+    check(
+        "coverage reports original and probe energy",
+        _normalized["key"] == {"original": 30.0, "probe": 100_000_000.0},
+    )
+    _rext.restore(_energy_undo)
+    check("coverage restores contract energy", _coverage_light.data.energy == 30.0)
+    check(
+        "coverage restores the energy curve",
+        not _coverage_light.data.animation_data.action.fcurves[0].mute,
+    )
     check(
         "the diffuse_direct caption says emission must be absent",
         "mission" in _rext.caption_for("diffuse_direct", "beauty", None, None, None),
@@ -3529,7 +3665,12 @@ def main():
     # missing must be reachable from the module that calls them.
     import vfx_harness.agents.builder as _ba
 
-    for _name in ("reset_tool_use", "tool_use_summary", "TOOL_USE", "empty_success"):
+    for _name in (
+        "reset_tool_use",
+        "tool_use_summary",
+        "TOOL_USE",
+        "model_phase_failure",
+    ):
         check(f"build_agent resolves {_name}", hasattr(_ba, _name))
 
     print("\n[a credential nothing reads is caught before it costs a layer]")
@@ -3641,9 +3782,41 @@ def main():
         _history_file.write_text(_history_before, encoding="utf-8")
     _retry_file = Path(tempfile.mkdtemp()) / "04_lighting.py"
     _retry_file.write_text("# prior measured artifact\n", encoding="utf-8")
-    check("failed artifacts warm-start a retry", _retry_warm_start("failed", _retry_file))
     check(
-        "passed artifacts use deterministic revalidation, not warm start", not _retry_warm_start("passed", _retry_file)
+        "failed artifacts warm-start a retry only on the same unit digest",
+        _retry_warm_start(
+            "failed",
+            _retry_file,
+            previous_artifact_unit_hash="same",
+            current_unit_hash="same",
+        ),
+    )
+    check(
+        "superseded artifacts cannot warm-start a changed unit",
+        not _retry_warm_start(
+            "failed",
+            _retry_file,
+            previous_artifact_unit_hash="old",
+            current_unit_hash="new",
+        ),
+    )
+    check(
+        "legacy artifacts without a pinned unit digest fail closed",
+        not _retry_warm_start(
+            "failed",
+            _retry_file,
+            previous_artifact_unit_hash="",
+            current_unit_hash="new",
+        ),
+    )
+    check(
+        "passed artifacts use deterministic revalidation, not warm start",
+        not _retry_warm_start(
+            "passed",
+            _retry_file,
+            previous_artifact_unit_hash="same",
+            current_unit_hash="same",
+        ),
     )
     check(
         "the kickoff actually carries it", "ATTEMPTED" in builder_kickoff(shot, layers["5"].as_milestone(), history=h5)
@@ -3715,7 +3888,10 @@ def main():
         tools_src.count("_warn_suffix(r)") >= 3,
         str(tools_src.count("_warn_suffix(r)")),
     )
-    check("the render result carries warnings", '"warnings": _scene_warnings()' in worker_src)
+    check(
+        "the render result carries target-frame warnings before settings restore",
+        "warnings = _scene_warnings()" in worker_src and '"warnings": warnings' in worker_src,
+    )
     check(
         "the builder prompt names the trap and the fix",
         all(s in prompts_src for s in ("SUN CONTRIBUTES ALMOST NOTHING", "AREA/POINT/SPOT")),

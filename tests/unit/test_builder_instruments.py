@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import anyio
 from PIL import Image
 
-from vfx_harness.agents.builder import _image_optical_signal
+from vfx_harness.agents.builder import (
+    BuildTruncated,
+    _budget_terminal_cause,
+    _image_optical_signal,
+    _live_round_budget,
+)
+from vfx_harness.application.preflight import empty_success, model_phase_failure
 from vfx_harness.blender.geom import motion_from_positions
 from vfx_harness.blender.tools import _run_bpy_instrument_hint
 from vfx_harness.evidence.compare_panels import focus_signal
@@ -24,6 +31,104 @@ def test_frommesh_error_names_path_clearance_instrument() -> None:
 def test_unrelated_run_bpy_error_is_not_rewritten() -> None:
     error = "NameError: name 'foo' is not defined"
     assert _run_bpy_instrument_hint("print(1)", error) == error
+
+
+def test_typed_cannot_express_ends_live_critique_budget() -> None:
+    assert _live_round_budget(2, {}) == 2
+    assert _live_round_budget(
+        2,
+        {"cannot_express": {"contract_ids": ["blacks-f072"], "reason": "measured floor"}},
+    ) == 0
+
+
+def test_empty_success_uses_incremental_cost_for_later_model_phases() -> None:
+    prior = 2.5419
+    stalled = {"subtype": "success", "turns": 1, "cost": prior}
+    assert "spent $0.00 in this phase" in empty_success(
+        stalled, 0, prior_cost=prior
+    )
+    assert empty_success(
+        {**stalled, "cost": prior + 0.01}, 0, prior_cost=prior
+    ) is None
+    assert empty_success(stalled, 1, prior_cost=prior) is None
+
+
+def test_provider_error_outranks_success_subtype_even_after_productive_work() -> None:
+    info = {
+        "subtype": "success",
+        "turns": 59,
+        "cost": 2.5418767,
+        "is_error": True,
+        "api_error_status": 429,
+    }
+    why = model_phase_failure(info, 57)
+    assert "HTTP 429" in why
+    assert "despite SDK subtype 'success'" in why
+
+
+def test_builder_truncation_keeps_typed_terminal_cause() -> None:
+    failure = BuildTruncated("provider failed", terminal_cause="model_session_failure")
+    assert failure.terminal_cause == "model_session_failure"
+    assert _budget_terminal_cause("error_max_turns") == "max_turns_exhausted"
+    assert _budget_terminal_cause("error_max_budget_usd") == "model_budget_exhausted"
+
+
+def test_builder_drain_preserves_provider_error_fields(monkeypatch) -> None:
+    from vfx_harness.agents import builder
+
+    class FakeResultMessage:
+        def __init__(self) -> None:
+            self.subtype = "success"
+            self.num_turns = 59
+            self.total_cost_usd = 2.5418767
+            self.session_id = "session"
+            self.usage = {}
+            self.is_error = True
+            self.api_error_status = 429
+
+    class FakeClient:
+        async def receive_response(self):
+            yield FakeResultMessage()
+
+    monkeypatch.setattr(builder, "ResultMessage", FakeResultMessage)
+    monkeypatch.setattr(builder.transcript, "message", lambda _message: None)
+    monkeypatch.setattr(builder.costlog, "record", lambda _message: None)
+    info = anyio.run(builder._drain_once, FakeClient(), False)
+    assert info["subtype"] == "success"
+    assert info["is_error"] is True
+    assert info["api_error_status"] == 429
+
+
+def test_provider_error_skips_optional_context_usage_telemetry(monkeypatch) -> None:
+    from vfx_harness.agents import builder
+
+    class FakeResultMessage:
+        def __init__(self) -> None:
+            self.subtype = "success"
+            self.num_turns = 1
+            self.total_cost_usd = 0.0
+            self.session_id = "session"
+            self.usage = {}
+            self.is_error = True
+            self.api_error_status = 429
+
+    class FakeClient:
+        context_requested = False
+
+        async def receive_response(self):
+            yield FakeResultMessage()
+
+        async def get_context_usage(self):
+            self.context_requested = True
+            raise AssertionError("terminal provider errors must bypass optional telemetry")
+
+    client = FakeClient()
+    monkeypatch.setattr(builder, "ResultMessage", FakeResultMessage)
+    monkeypatch.setattr(builder.transcript, "message", lambda _message: None)
+    monkeypatch.setattr(builder.costlog, "record", lambda _message: None)
+    info = anyio.run(builder._drain, client, False)
+    assert info["api_error_status"] == 429
+    assert client.context_requested is False
 
 
 def test_black_plate_has_no_optical_signal(tmp_path: Path) -> None:
@@ -135,6 +240,30 @@ def test_record_cannot_express_requires_ids_and_reason() -> None:
     assert not unpaid.get("is_error")
     assert debts["cannot_express"]["contract_ids"] == ["form-look-f40"]
     assert debts["cannot_express"]["classification"] == "unpaid_image_debt"
+
+    routed = {
+        "fault_owner_options": [{"id": "lighting_bloom"}],
+    }
+    accepted = record_cannot_express(
+        routed,
+        {
+            "contract_ids": ["form-look-f40"],
+            "reason": "isolated pass proves the sealed bloom plate is saturated",
+            "fault_owner_units": ["lighting_bloom"],
+        },
+    )
+    assert not accepted.get("is_error")
+    assert routed["cannot_express"]["fault_owner_units"] == ["lighting_bloom"]
+    rejected = record_cannot_express(
+        routed,
+        {
+            "contract_ids": ["form-look-f40"],
+            "reason": "measured floor",
+            "fault_owner_units": ["invented_unit"],
+        },
+    )
+    assert rejected.get("is_error")
+    assert "legal upstream options: lighting_bloom" in rejected["content"][0]["text"]
 
 
 def test_repair_candidate_server_binds_cannot_express(tmp_path) -> None:

@@ -86,7 +86,14 @@ def result_signal(message: object) -> str | None:
     if type(message).__name__ != "ResultMessage":
         return None
     subtype = getattr(message, "subtype", None)
-    return f"[session result: subtype={subtype}]" if subtype else None
+    is_error = bool(getattr(message, "is_error", False))
+    api_status = getattr(message, "api_error_status", None)
+    fields = [f"subtype={subtype}"] if subtype else []
+    if is_error:
+        fields.append("is_error=true")
+    if api_status not in (None, "", 0):
+        fields.append(f"api_error_status={api_status}")
+    return f"[session result: {' '.join(fields)}]" if fields else None
 
 
 def classify(text: str) -> str:

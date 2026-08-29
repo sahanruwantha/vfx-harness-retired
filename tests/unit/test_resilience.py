@@ -93,6 +93,17 @@ def test_sdk_result_subtype_reaches_the_classifier() -> None:
     assert attempts == 1
 
 
+def test_sdk_result_signal_keeps_provider_error_fields() -> None:
+    class ResultMessage:
+        subtype = "success"
+        is_error = True
+        api_error_status = 429
+
+    assert result_signal(ResultMessage()) == (
+        "[session result: subtype=success is_error=true api_error_status=429]"
+    )
+
+
 def test_max_turns_raised_as_sdk_process_error_is_classified() -> None:
     """Run 20260823T082044Z-22d8ab: the SDK raised AFTER yielding the result message, so
     the collected signal (with the subtype) was discarded and only the exception text was

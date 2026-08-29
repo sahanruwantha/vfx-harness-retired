@@ -103,6 +103,10 @@ def test_helper_inventory_is_worker_helpers_not_a_private_copy() -> None:
     by_name = {row["name"]: row for row in inventory}
     assert "role" in by_name["bvfx_camera_rig"]["signature"]
     assert "role" in by_name["bvfx_role"]["signature"]
+    assert by_name["bvfx_light"]["signature"].endswith("-> 'bpy.types.Object'")
+    assert by_name["bvfx_camera_rig"]["signature"].endswith(
+        "-> 'tuple[bpy.types.Object, bpy.types.Object]'"
+    )
 
 
 def test_unit_scope_card_is_the_active_unit_not_a_sibling() -> None:
@@ -119,6 +123,35 @@ def test_unit_scope_card_is_the_active_unit_not_a_sibling() -> None:
     assert "bvfx_role" in dumped
     assert "owed image-contract debts" in dumped
     assert "(none)" in dumped.split("owed image-contract debts")[1].split("run_bpy")[0]
+
+
+def test_unit_scope_keeps_exact_evaluator_fields_for_bound_contract() -> None:
+    unit = _unit("material", roles=["lookdev.material"], contract_id="roughness")
+    contracts = [{
+        "id": "roughness",
+        "kind": "node_socket_value",
+        "material_roles": ["lookdev.material"],
+        "node_roles": ["lookdev.material.bsdf"],
+        "node_types": ["ShaderNodeBsdfPrincipled"],
+        "socket": "Roughness",
+        "direction": "input",
+        "op": "band",
+        "lo": 0.35,
+        "hi": 0.75,
+        "frame": 1,
+    }]
+
+    card = compile_unit_scope(unit=unit, layer_id="1", contracts=contracts)
+    row = card["contracts"][0]
+
+    assert row["node_types"] == ["ShaderNodeBsdfPrincipled"]
+    assert row["socket"] == "Roughness"
+    assert row["direction"] == "input"
+    assert (row["lo"], row["hi"]) == (0.35, 0.75)
+    formatted = format_unit_scope_card(card)
+    assert '"node_roles":["lookdev.material.bsdf"]' in formatted
+    assert '"socket":"Roughness"' in formatted
+    assert '"lo":0.35' in formatted
 
 
 def test_unit_scope_lists_owed_image_contract_debts() -> None:

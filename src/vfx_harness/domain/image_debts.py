@@ -23,6 +23,12 @@ CHECK_PREFIX = "check:"
 # (evidence/checks.py). Domain cannot import that registry (PIL). Membership
 # is the prefix; the architecture test pins it to the live keys (ADR-0003).
 IMAGE_PROPERTY_PREFIXES: dict[str, str] = {
+    # Runtime payments are already proved against the pre-unit adversary by
+    # ``propose_checks``.  A scalar ``frame_*`` threshold that passes only after
+    # the unit therefore proves an observable frame delta; requiring a literal
+    # ``frame_delta`` metric made the debt impossible because the canonical image
+    # registry intentionally exposes scalar measurements, not pair-valued checks.
+    "frame_delta": "frame_",
     "render_region_stat": "region_",
 }
 
@@ -214,6 +220,7 @@ def reject_proposed_image_check(
     debts: Sequence[ImageContractDebt],
     *,
     unpaid: Sequence[ImageContractDebt] | None = None,
+    registry: Iterable[str] | None = None,
 ) -> str | None:
     """Rejection naming requested vs owed, or None if the proposal may proceed.
 
@@ -241,11 +248,18 @@ def reject_proposed_image_check(
             return None
     card = matching_id[0]
     reasons = payment_mismatches(proposed, card)
+    compatible = metrics_certifying_property(card.property, registry or ())
+    metric_hint = (
+        " Compatible metrics: " + ", ".join(sorted(compatible)) + "."
+        if compatible
+        else " No registered metric can certify this property; abstain as unpaid_image_debt."
+    )
     return (
         f"id {cid!r} does not pay the owed debt: requested frame="
         f"{proposed.get('frame')!r} axis={proposed.get('axis')!r} "
         f"metric={proposed.get('metric')!r}; owed frame={card.frame} "
         f"axis={card.axis!r} property={card.property!r} ({'; '.join(reasons)})."
+        + metric_hint
     )
 
 

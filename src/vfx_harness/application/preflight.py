@@ -154,7 +154,9 @@ def warn_if_broken() -> bool:
     return False
 
 
-def empty_success(info: dict, tool_calls: int) -> str | None:
+def empty_success(
+    info: dict, tool_calls: int, *, prior_cost: float = 0.0
+) -> str | None:
     """Did a 'successful' response actually do nothing? Returns why, or None.
 
     The observed shape, from a subscription over its spend limit: subtype `success`,
@@ -171,13 +173,37 @@ def empty_success(info: dict, tool_calls: int) -> str | None:
         return None                      # a real error path reports itself elsewhere
     if tool_calls > 0:
         return None
-    if (info.get("cost") or 0.0) > 0.0:
+    spent = max(0.0, float(info.get("cost") or 0.0) - float(prior_cost or 0.0))
+    if spent > 0.0:
         return None
     return (f"the session reported '{info.get('subtype')}' after "
-            f"{info.get('turns', 0)} turn(s) having spent $0.00 and called ZERO tools. "
+            f"{info.get('turns', 0)} turn(s) having spent $0.00 in this phase and "
+            f"called ZERO tools. "
             f"That is not a build — it is the shape an auth or spend-limit failure takes "
             f"(the limit message arrives as ordinary assistant text and the result still "
             f"says success). Run `python -m vfx_harness.application.preflight`.")
+
+
+def model_phase_failure(
+    info: dict, tool_calls: int, *, prior_cost: float = 0.0
+) -> str | None:
+    """Return a provider/zero-work failure hidden behind a success subtype.
+
+    Provider error facts outrank the SDK subtype even when useful work preceded the
+    terminal error: the phase did not reach its own completion boundary.
+    """
+    subtype = str(info.get("subtype") or "unknown")
+    api_status = info.get("api_error_status")
+    if subtype in {"success", "unknown", "None"} and (
+        bool(info.get("is_error")) or api_status not in (None, "", 0)
+    ):
+        suffix = f" (HTTP {api_status})" if api_status not in (None, "", 0) else ""
+        return (
+            f"the provider marked this terminal result as an error{suffix} despite "
+            f"SDK subtype '{subtype}'. The phase is incomplete and downstream judgment "
+            "must not consume it."
+        )
+    return empty_success(info, tool_calls, prior_cost=prior_cost)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -88,11 +88,11 @@ def test_target_validation_feedback_closes_the_warm_loop(tmp_path: Path) -> None
     assert other == {}
 
 
-def test_materialization_kickoff_carries_row_and_readable_paths(tmp_path: Path) -> None:
+def test_materialization_kickoff_carries_row_and_compiled_authority(tmp_path: Path) -> None:
     """Run 20260823T125746Z-9cd0b8: the kickoff named only the bundle hash, so the
     session probed six wrong bundle locations, was denied, reconstructed its layer row
     from prose, and failed structural validation on every field. The kickoff must carry
-    the exact row and the readable authority paths."""
+    the exact row and a bounded compiled authority card."""
     bundle_root = tmp_path / "runs" / "r1" / "checkpoints" / "plans" / "bundles" / "abc"
     bundle_root.mkdir(parents=True)
     row = {
@@ -111,11 +111,11 @@ def test_materialization_kickoff_carries_row_and_readable_paths(tmp_path: Path) 
         tmp_path, layer, bundle, "runs/r2/scratch/jit-layer-1.json"
     )
 
-    assert "runs/r1/checkpoints/plans/bundles/abc/" in kickoff
+    assert "complete compiled authority card" in kickoff
     assert '"script": "build/01_boot.py"' in kickoff
-    assert "state/plan-resolutions.jsonl" in kickoff
+    assert "state/plan-resolutions.jsonl" not in kickoff
     assert "This layer is a dependency root" in kickoff
-    assert "Do not Read plans/outcomes as a directory" in kickoff
+    assert "Compiled requirements owned by this layer: none" in kickoff
     assert "Binding structured decisions" in kickoff
     assert "are inert" in kickoff
     assert '"layer_judge_frames": [\n  1\n ]' in kickoff
@@ -139,6 +139,13 @@ def test_materialization_kickoff_lists_only_selected_bundle_decisions(tmp_path: 
     }
     (bundle_root / "layers.json").write_text(
         json.dumps({"schema": 5, "layers": [row]}), encoding="utf-8"
+    )
+    (bundle_root / "requirements.json").write_text(
+        json.dumps({
+            "schema": "vfx-harness.requirements/v1",
+            "requirements": [{"id": "R-look", "statement": "author the look"}],
+        }),
+        encoding="utf-8",
     )
     state = tmp_path / "state"
     state.mkdir()
@@ -177,7 +184,9 @@ def test_materialization_kickoff_lists_only_selected_bundle_decisions(tmp_path: 
         id="1", title="Bootstrap", jit=SimpleNamespace(reserved_roles=["cam_rig"])
     )
 
-    kickoff = planner._materialization_kickoff(tmp_path, layer, bundle, "out.json")
+    kickoff = planner._materialization_kickoff(
+        tmp_path, layer, bundle, "out.json", overlay_root=bundle_root
+    )
 
     assert '"id": "A-now"' in kickoff
     assert "selected-bundle spine" in kickoff
@@ -525,6 +534,13 @@ def test_materialization_kickoff_compiles_frame_authority_and_named_outcomes(
     (bundle_root / "layers.json").write_text(
         json.dumps({"schema": 5, "layers": [row]}), encoding="utf-8"
     )
+    (bundle_root / "requirements.json").write_text(
+        json.dumps({
+            "schema": "vfx-harness.requirements/v1",
+            "requirements": [{"id": "R-look", "statement": "author the look"}],
+        }),
+        encoding="utf-8",
+    )
     outcomes = tmp_path / "plans" / "outcomes"
     outcomes.mkdir(parents=True)
     (outcomes / "01.json").write_text('{"layer": "1", "status": "passed"}\n', encoding="utf-8")
@@ -539,13 +555,16 @@ def test_materialization_kickoff_compiles_frame_authority_and_named_outcomes(
         ),
     )
 
-    kickoff = planner._materialization_kickoff(tmp_path, layer, bundle, "out.json")
+    kickoff = planner._materialization_kickoff(
+        tmp_path, layer, bundle, "out.json", overlay_root=bundle_root
+    )
 
     assert '"layer_judge_frames": [\n  1,\n  240\n ]' in kickoff
     assert "Do not add those frames to" in kickoff
-    assert '"readable_files": [\n  "plans/outcomes/01.json"\n ]' in kickoff
-    assert "plans/outcomes/02.json" not in kickoff
-    assert "Do not Read plans/outcomes as a directory" not in kickoff
+    assert '"layer": "1"' in kickoff
+    assert '"status": "passed"' in kickoff
+    assert '"layer": "2"' not in kickoff
+    assert "readable_files" not in kickoff
 
 
 def test_materialize_deferred_layer_binds_a_transcript() -> None:
