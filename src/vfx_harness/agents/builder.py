@@ -2836,6 +2836,7 @@ def _composition_judge_unit(layer):
         id=f"{getattr(layer, 'id', 'layer')}._composition",
         look_capabilities=(),
         evaluation=SimpleNamespace(claims=claims),
+        worklist_units=stages,
         mutates=MutationScope(
             mode="scoped",
             roles=roles,
@@ -3090,6 +3091,13 @@ def _worklist_evidence(shot_folder: str | Path, layer_id: str, active_unit=None)
     """
     if active_unit is None:
         return []
+    constituent_units = tuple(getattr(active_unit, "worklist_units", ()) or ())
+    if constituent_units:
+        return [
+            row
+            for unit in constituent_units
+            for row in _worklist_evidence(shot_folder, layer_id, unit)
+        ]
     try:
         from vfx_harness.observability.worklists import load_unit_worklist
         from vfx_harness.orchestration.unit_state import unit_digest

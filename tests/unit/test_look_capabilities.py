@@ -213,6 +213,7 @@ def test_lookless_composition_fans_in_unit_claims() -> None:
     assert fan_in.look_capabilities == ()
     claim_ids = {claim.id for claim in fan_in.evaluation.claims}
     assert claim_ids == {"claim.cam_path", "claim.proxies"}
+    assert fan_in.worklist_units == (path, proxies)
     assert set(fan_in.mutates.roles) == set()
 
     axes = [("camera_continuity", "path"), ("camera_collision_clearance", "clear")]
