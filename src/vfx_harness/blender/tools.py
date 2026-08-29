@@ -2826,10 +2826,28 @@ def build_blender_tools(
         if not shot_dir:
             return {"content": [{"type": "text", "text": "no shot folder"}]}
         layer_part = str(layer_id or "layer")
-        wl = run_artifacts.shot_state_dir(shot_dir) / "worklists" / f"layer-{layer_part}.json"
-        wl.parent.mkdir(parents=True, exist_ok=True)
-        state = (json.loads(wl.read_text()) if wl.is_file()
-                 else {"items": [], "done": [], "notes": []})
+        active_unit_id = str(comparison_state.get("unit_id") or "")
+        active_unit_hash = str(comparison_state.get("unit_hash") or "")
+        if not active_unit_id or not active_unit_hash:
+            return _text(
+                "worklist requires the active unit id and digest; layer-only worklists "
+                "cannot authorize another unit generation",
+                is_error=True,
+            )
+        from vfx_harness.observability.worklists import (
+            load_unit_worklist,
+            write_unit_worklist,
+        )
+
+        try:
+            wl, state = load_unit_worklist(
+                shot_dir,
+                layer_id=layer_part,
+                unit_id=active_unit_id,
+                unit_hash=active_unit_hash,
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return _text(f"worklist refused: {exc}", is_error=True)
         if args.get("items"):
             # A new attempt may restate its tickets, but it cannot erase an unresolved
             # item discovered by the previous attempt.  Carry those forward until they
@@ -2841,7 +2859,7 @@ def build_blender_tools(
                 state["done"].append(d)
         if args.get("note"):
             state["notes"].append(args["note"])
-        wl.write_text(json.dumps(state, indent=2))
+        write_unit_worklist(wl, state)
         left = [i for i in state["items"] if i not in state["done"]]
         body = (
             "\n".join(f"  [x] {i}" for i in state["items"] if i in state["done"])

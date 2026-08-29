@@ -164,6 +164,10 @@ live in the linked Harness Improvement Records.
   cycle finding with the exact units, contracts, roles, and directed edges. Internal
   edge findings are suppressed while unrelated acyclic HIR-0057 gaps remain intact
   ([HIR-0106](docs/improvements/HIR-0106-mutual-geometry-vis-is-one-cycle-finding.md)).
+- Durable builder worklists are now bound to the exact layer, unit id, and unit digest.
+  Same-generation retries retain unresolved work, while superseded layer-only and sibling
+  lists are inert; worklist JSON is identity-checked and published atomically
+  ([HIR-0107](docs/improvements/HIR-0107-builder-worklist-is-unit-digest-bound.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

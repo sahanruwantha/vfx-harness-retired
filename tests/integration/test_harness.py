@@ -94,6 +94,7 @@ def main():
         plan_strips,
     )
     from vfx_harness.orchestration.script_map import find_lines, outline
+    from vfx_harness.orchestration.unit_state import unit_digest
 
     shot = load_shot("shots/barrel_roll")
     layers, axes, moments = load_layers(shot), load_axes(shot), load_milestones(shot)
@@ -448,11 +449,20 @@ def main():
     )
     with tempfile.TemporaryDirectory() as _workdir:
         _workroot = Path(_workdir)
-        (_workroot / "state" / "worklists").mkdir(parents=True)
-        (_workroot / "state" / "worklists" / "layer-2.json").write_text(
-            json.dumps({"items": ["built", "repair dead control"], "done": ["built"], "notes": []})
+        from vfx_harness.observability.worklists import (
+            load_unit_worklist,
+            write_unit_worklist,
         )
-        _work_evidence = _worklist_evidence(_workroot, "2")
+
+        _work_unit = next(iter(layers.values())).stages[0]
+        _work_hash = unit_digest(_work_unit)
+        _work_path, _work_state = load_unit_worklist(
+            _workroot, layer_id="2", unit_id=_work_unit.id, unit_hash=_work_hash
+        )
+        _work_state["items"] = ["built", "repair dead control"]
+        _work_state["done"] = ["built"]
+        write_unit_worklist(_work_path, _work_state)
+        _work_evidence = _worklist_evidence(_workroot, "2", _work_unit)
         _work_gated = _apply_evidence_gate({"pass": True, "issues": [], "scores": {"materials": 4}}, _work_evidence)
         check(
             "an unfinished durable worklist blocks critic handoff",

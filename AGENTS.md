@@ -58,6 +58,9 @@ operation.
   A failed-artifact warm start is likewise legal only when the ledger pins that artifact to the
   exact current `WorkUnit` digest; same-id superseded and legacy unpinned scripts replay from clean
   priors instead (HIR-0059).
+- Durable builder worklists are scoped by layer id, unit id, and exact unit digest.
+  Unresolved items survive retries of that generation only; layer-only legacy lists and
+  sibling or superseded unit lists are inert and cannot block the active unit (HIR-0107).
 - Authority editing: `brief.md` and `refs/` change authored intent only; plans and contracts
   change only through planning, amendment, or an explicit reviewed repair; `build/` and
   `shot.json` are the accepted deterministic chain and ledger; `state/` is durable cross-run

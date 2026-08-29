@@ -2589,7 +2589,7 @@ def _render_evidence(
         evidence.extend(functional_evidence(shot.folder, str(layer.id), session=session))
     except Exception as exc:
         log(f"! live-scene evidence unavailable: {str(exc)[:90]}", 1)
-    evidence.extend(_worklist_evidence(shot.folder, str(layer.id)))
+    evidence.extend(_worklist_evidence(shot.folder, str(layer.id), active_unit))
     extra = set()
     if active_unit is not None:
         try:
@@ -3079,7 +3079,7 @@ async def _judge_unit_or_layer(
     return verdict
 
 
-def _worklist_evidence(shot_folder: str | Path, layer_id: str) -> list[dict]:
+def _worklist_evidence(shot_folder: str | Path, layer_id: str, active_unit=None) -> list[dict]:
     """Turn builder-declared unfinished work into a deterministic handoff blocker.
 
     The worklist is durable agent state, not a visual opinion.  If the builder says a
@@ -3088,18 +3088,24 @@ def _worklist_evidence(shot_folder: str | Path, layer_id: str) -> list[dict]:
     repair round.  Missing/empty worklists remain non-authoritative so older shots do not
     acquire a new contract merely by being inspected.
     """
-    path = (run_artifacts.shot_state_dir(shot_folder)
-            / "worklists" / f"layer-{layer_id}.json")
-    if not path.is_file():
+    if active_unit is None:
         return []
     try:
-        state = json.loads(path.read_text(encoding="utf-8"))
+        from vfx_harness.observability.worklists import load_unit_worklist
+        from vfx_harness.orchestration.unit_state import unit_digest
+
+        _path, state = load_unit_worklist(
+            shot_folder,
+            layer_id=layer_id,
+            unit_id=str(active_unit.id),
+            unit_hash=unit_digest(active_unit),
+        )
         items = [str(item) for item in state.get("items", [])]
         done = {str(item) for item in state.get("done", [])}
     except (OSError, ValueError, TypeError, AttributeError) as exc:
         return [
             {
-                "id": f"L{layer_id}-builder-worklist-valid",
+                "id": f"L{layer_id}@{active_unit.id}-builder-worklist-valid",
                 "axis": "",
                 "metric": "builder_worklist",
                 "value": None,
@@ -3118,7 +3124,7 @@ def _worklist_evidence(shot_folder: str | Path, layer_id: str) -> list[dict]:
     left = [item for item in items if item not in done]
     return [
         {
-            "id": f"L{layer_id}-builder-worklist-complete",
+            "id": f"L{layer_id}@{active_unit.id}-builder-worklist-complete",
             "axis": "",
             "metric": "builder_worklist_open_items",
             "value": len(left),
