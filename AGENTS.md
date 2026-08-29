@@ -111,6 +111,10 @@ belongs under `shots/` or `artifacts/` and must not be imported as source.
 - Nothing self-certifies. A model verdict cannot replace authoritative executable evidence.
 - Parallelize evidence production; serialize authoritative scene mutation and integration.
 - Empty-scene replay is the source of truth for a published build artifact.
+- Every replayed artifact publishes freshly evaluated current-frame Blender state
+  before a successor script, interface check, or evidence reader runs. Candidate,
+  revalidation, warm-start, ablation, canonical, and composed constituent replay share
+  that barrier; composition is not raw script concatenation (HIR-0117).
 - Builders and repairs may mutate only declared semantic roles, controls, and script spans.
 - Fail closed on stale, ambiguous, incomplete, or schema-incompatible authority.
 - Core code must not contain shot names, display-name selectors, fixed shot frames, fixed layer

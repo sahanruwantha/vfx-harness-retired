@@ -3,7 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from vfx_harness.agents.builder import (
+    _ARTIFACT_EVALUATION_BARRIER,
     _candidate_scope_errors,
+    _compose_unit_artifact_source,
+    _run_artifact_script,
+    _run_prior_paths,
     _scope_added_object_errors,
     _scope_bound_evidence,
     _unit_completion_evidence_ids,
@@ -81,6 +85,58 @@ def test_candidate_probe_evidence_is_exactly_unit_and_frame_scoped() -> None:
     assert _scope_bound_evidence(rows, set(ids["1"])) == [rows[0], rows[2]]
     assert _scope_bound_evidence(rows, set()) == [rows[2]]
     assert _scope_bound_evidence(rows, None) == rows
+
+
+def test_artifact_replay_publishes_fresh_state_before_each_successor(tmp_path) -> None:
+    import inspect
+
+    from vfx_harness.agents import builder
+
+    class Session:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, code, *, journal=True):
+            self.calls.append((code, journal))
+            return {"result": "ok"}
+
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("FIRST = True\n", encoding="utf-8")
+    second.write_text("SECOND = True\n", encoding="utf-8")
+    session = Session()
+
+    assert _run_prior_paths(session, [first, second]) == ["first.py", "second.py"]
+    assert session.calls == [
+        ("FIRST = True\n", True),
+        (_ARTIFACT_EVALUATION_BARRIER, False),
+        ("SECOND = True\n", True),
+        (_ARTIFACT_EVALUATION_BARRIER, False),
+    ]
+
+    candidate = Session()
+    assert _run_artifact_script(candidate, first, journal=False) == {"result": "ok"}
+    assert candidate.calls == [
+        ("FIRST = True\n", False),
+        (_ARTIFACT_EVALUATION_BARRIER, False),
+    ]
+    assert "_run_artifact_script(verify, Path(prior), journal=False)" in inspect.getsource(
+        builder._build_probe_candidate_server
+    )
+    assert "_run_artifact_script(session, script_path)" in inspect.getsource(
+        builder._verify_script
+    )
+
+    composed = _compose_unit_artifact_source(
+        [
+            ("producer", "build/producer.py", "PRODUCER = True\n"),
+            ("consumer", "build/consumer.py", "CONSUMER = True\n"),
+        ]
+    )
+    first_barrier = composed.index(_ARTIFACT_EVALUATION_BARRIER.rstrip())
+    assert composed.index("PRODUCER = True") < first_barrier
+    assert first_barrier < composed.index("CONSUMER = True")
+    assert composed.count(_ARTIFACT_EVALUATION_BARRIER.rstrip()) == 2
 
 
 def test_scoped_artifact_rejects_persisted_untagged_and_undeclared_objects() -> None:

@@ -60,6 +60,10 @@ live in the linked Harness Improvement Records.
   call and reads evaluated object, camera, and light hosts, so omitting `frame=` cannot
   return a stale world transform
   ([HIR-0116](docs/improvements/HIR-0116-scene-inspection-is-fresh-by-default.md)).
+  Artifact replay now publishes evaluated current-frame state between producers and
+  consumers across live chaining, candidate probes, revalidation, warm starts,
+  canonical checks, ablation, and composed unit fan-in
+  ([HIR-0117](docs/improvements/HIR-0117-artifact-replay-publishes-evaluated-state.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

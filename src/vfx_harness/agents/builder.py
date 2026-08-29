@@ -294,6 +294,28 @@ class ChainBroken(RuntimeError):
     """A prior layer script no longer composes — the chain must be repaired first."""
 
 
+_ARTIFACT_EVALUATION_BARRIER = (
+    "import bpy\n"
+    "_vfx_scene=bpy.context.scene\n"
+    "_vfx_scene.frame_set(int(_vfx_scene.frame_current))\n"
+    "bpy.context.view_layer.update()\n"
+)
+
+
+def _run_artifact_script(
+    session: BlenderSession, path: Path, *, journal: bool = True
+) -> dict:
+    """Replay one artifact and publish its evaluated state to the next consumer.
+
+    A successful Python execution is not yet a Blender dependency-graph boundary.
+    Successors may legally consume producer world transforms immediately, so every
+    artifact replay ends with an unjournalled current-frame evaluation (HIR-0117).
+    """
+    result = session.run(path.read_text(encoding="utf-8"), journal=journal)
+    session.run(_ARTIFACT_EVALUATION_BARRIER, journal=False)
+    return result
+
+
 def _run_prior_paths(session: BlenderSession, paths: list[Path]) -> list[str]:
     """Replay the accepted chain. A failure here is NOT this layer's fault: layer scripts
     reference each other's objects by name (30_purple.py does D.objects['tower_dot']
@@ -303,7 +325,7 @@ def _run_prior_paths(session: BlenderSession, paths: list[Path]) -> list[str]:
     for p in paths:
         log(f"running prior layer script {p.name}")
         try:
-            session.run(p.read_text(encoding="utf-8"))
+            _run_artifact_script(session, p)
         except BlenderError as e:
             first = str(e).strip().splitlines()[0]
             raise ChainBroken(
@@ -446,9 +468,11 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
             verify.run(_RESET, journal=False)
             verify.run(_preamble(shot), journal=False)
             for prior in probe_ctx["prior_paths"]:
-                verify.run(Path(prior).read_text(encoding="utf-8"), journal=False)
+                _run_artifact_script(verify, Path(prior), journal=False)
             before_objects = _scene_object_manifest(verify)
-            verify.run((shot.folder / script_rel).read_text(encoding="utf-8"), journal=False)
+            _run_artifact_script(
+                verify, shot.folder / script_rel, journal=False
+            )
             scope_errors = _candidate_scope_errors(
                 str(probe_ctx.get("scope_mode") or ""),
                 tuple(str(role) for role in (probe_ctx.get("roles") or [])),
@@ -3421,7 +3445,7 @@ def _try_revalidate(
         session.run(_preamble(shot))
         _run_prior_paths(session, prior_paths)
         before_objects = _scene_object_manifest(session)
-        session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
+        _run_artifact_script(session, shot.folder / script_rel)
         # The unit whose script just replayed owns the scope being checked. Falling back
         # to "the only stage" silently SKIPPED scope entirely for every multi-unit
         # layer — a fast path that cannot verify scope must not be taken at all.
@@ -3869,7 +3893,7 @@ async def build_unit(
         # Replay it through the journal so finalisation still sees a complete L4 delta.
         # If it no longer executes, restore the clean prior chain and fall back loudly.
         try:
-            session.run(retry_script.read_text(encoding="utf-8"))
+            _run_artifact_script(session, retry_script)
             warm_started = True
             log(
                 f"retry warm start: replayed prior {previous_status} artifact {script_rel}; "
@@ -5128,11 +5152,15 @@ async def build_layer(
     if len(layer.stages) == 1 and unit_artifacts[0] == layer.script:
         return Ledger(shot)
 
-    composed = []
-    for unit in layer.stages:
-        rel = artifact_for(unit)
-        composed.append(f"# --- work unit {unit.id}: {rel} ---\n" + (shot.folder / rel).read_text(encoding="utf-8"))
-    atomic_write(shot.folder / layer.script, "\n\n".join(composed).rstrip() + "\n")
+    parts = [
+        (
+            str(unit.id),
+            artifact_for(unit),
+            (shot.folder / artifact_for(unit)).read_text(encoding="utf-8"),
+        )
+        for unit in layer.stages
+    ]
+    atomic_write(shot.folder / layer.script, _compose_unit_artifact_source(parts))
     log(f"published composed layer artifact → {layer.script}")
 
     ledger = Ledger(shot)
@@ -5195,6 +5223,19 @@ async def build_layer(
     return ledger
 
 
+def _compose_unit_artifact_source(parts: list[tuple[str, str, str]]) -> str:
+    """Compose unit scripts with the same evaluated-state publication as live replay."""
+    composed = []
+    for unit_id, rel, source in parts:
+        composed.append(
+            f"# --- work unit {unit_id}: {rel} ---\n"
+            f"{source.rstrip()}\n\n"
+            "# --- publish evaluated unit interface (HIR-0117) ---\n"
+            f"{_ARTIFACT_EVALUATION_BARRIER.rstrip()}"
+        )
+    return "\n\n".join(composed).rstrip() + "\n"
+
+
 def _ablation_frames(shot: Shot, layer) -> list[int]:
     """Choose frames where this layer can actually have an effect.
 
@@ -5232,7 +5273,7 @@ async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str, s
             # camera. That is not a skip — it is the strongest possible result: nothing
             # renders at all until this layer runs.
             if "no camera" in str(e).lower():
-                session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
+                _run_artifact_script(session, shot.folder / script_rel)
                 for frame in frames:
                     session.render(frame=frame, mode="eevee", scale=0.4)  # must now work
                 return {
@@ -5242,7 +5283,7 @@ async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str, s
                     "note": "scene cannot render at all without this layer (no camera) — it establishes the spine",
                 }
             raise
-        session.run((shot.folder / script_rel).read_text(encoding="utf-8"))
+        _run_artifact_script(session, shot.folder / script_rel)
         with_ = {frame: look_vector(session.render(frame=frame, mode="eevee", scale=0.4)) for frame in frames}
     except Exception as e:
         return {"ok": True, "note": f"ablation INCONCLUSIVE: {str(e)[:70]}"}
@@ -5594,7 +5635,7 @@ async def _verify_script(
         session.run(_preamble(shot))
         _run_prior_paths(session, prior_paths)  # deltas assume priors ran first
         before_objects = _scene_object_manifest(session)
-        session.run(script_path.read_text(encoding="utf-8"))
+        _run_artifact_script(session, script_path)
         if active_unit is not None and active_unit.mutates.mode == "scoped":
             scope_errors = _scope_added_object_errors(
                 before_objects,
