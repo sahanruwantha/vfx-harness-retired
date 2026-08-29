@@ -1,7 +1,7 @@
 ---
 id: HIR-0106
 title: Mutual geometry visibility is one cycle finding
-status: proposed
+status: accepted
 introduced_in: unreleased
 date: 2026-08-29
 failure_class: duplicated_visibility_gaps_hide_unsealable_cycle
@@ -82,8 +82,26 @@ fixtures prove that the component becomes one typed cycle finding, its internal
 edge-level findings are suppressed, and restoring a real dependency returns to the
 existing single acyclic HIR-0057 finding.
 
-Producing-run evidence and broad regression results will be added after the Layer 2
-rematerialization path exercises the cycle card.
+- Visibility, materialization, and plan-gate suites: `121 passed in 8.55s`.
+- Full repository suite: `555 passed in 41.85s`.
+- `.venv/bin/ruff check src tests`: `All checks passed!`.
+- `.venv/bin/vfx --help`: exit 0.
+- Producing run `20260829T114846Z-103e62` reached three mutually protecting
+  geometry providers. At 571.6 seconds the validator emitted one cycle finding naming
+  all three units, six protected contracts, five selected role groups, and every
+  directed producer edge. It explicitly refused reordering/lifecycle edits and named
+  reverse-order retirement plus one derived cluster as the recovery.
+- The materializer began retirement at 621.5 seconds, removed all five involved units
+  in legal reverse dependency order by 635.0 seconds, and restaged a single unified
+  `iris.mechanism.*` geometry cluster. The first retirement began 49.9 seconds after
+  the cycle finding, versus 309.4 seconds and five rejected field repairs before
+  retirement in the edge-level baseline.
+- That run finalized a valid replacement at its turn boundary; HIR-0108 subsequently
+  addressed the independent terminal-attestation defect. Follow-up run
+  `20260829T120557Z-a242df` published the dependency-satisfiable unified geometry
+  design and passed its first-unit plan gate.
+
+Implementation commit: `d494489` (`fix: report mutual geometry visibility cycles`).
 
 ## Release and rollback
 
