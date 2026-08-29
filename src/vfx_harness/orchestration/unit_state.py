@@ -697,6 +697,7 @@ def apply_replan(
     hard_constraint_approval: str | None = None,
     discard_accepted: bool = False,
     reopen: frozenset[str] | set[str] | tuple[str, ...] | None = None,
+    state_backed_base: bool = False,
 ) -> dict:
     """Atomically publish state effects and an audit record for a validated DAG amendment."""
     if not owner.strip() or not trigger.strip() or not evidence:
@@ -728,17 +729,54 @@ def apply_replan(
 
     old = {unit.id: unit for unit in old_units}
     new_ids = {unit.id for unit in new_units}
-    effects = replan_effects(old_units, new_units)
+    if deferred_base and state_backed_base:
+        if int(value.get("digest_schema", 1)) != DIGEST_SCHEMA:
+            raise ValueError(
+                "digest-bound replan base uses an incompatible work-unit digest schema"
+            )
+        stored_hashes: dict[str, str] = {}
+        for uid, row in value["units"].items():
+            digest = (row or {}).get("unit_hash")
+            if not isinstance(digest, str) or not digest:
+                raise ValueError(
+                    f"digest-bound replan base is missing unit_hash for {uid}"
+                )
+            stored_hashes[str(uid)] = digest
+        new_by_id = {unit.id: unit for unit in new_units}
+        added_ids = new_ids - state_unit_ids
+        removed_ids = state_unit_ids - new_ids
+        changed_ids = {
+            uid
+            for uid in state_unit_ids & new_ids
+            if stored_hashes[uid] != unit_digest(new_by_id[uid])
+        }
+        invalidated_ids = _downstream(added_ids | changed_ids, new_units)
+        effects = {
+            "added": sorted(added_ids),
+            "removed": sorted(removed_ids),
+            "changed": sorted(changed_ids),
+            "invalidated": sorted(invalidated_ids),
+            "preserved": sorted(state_unit_ids & new_ids - invalidated_ids),
+        }
+    else:
+        effects = replan_effects(old_units, new_units)
     added = set(effects["added"])
     removed = set(effects["removed"])
     changed = set(effects["changed"])
     reopen_ids = {str(uid) for uid in (reopen or ()) if str(uid)}
     invalidated = set(effects["invalidated"]) | (reopen_ids & new_ids)
-    preserved = set(old) & new_ids - invalidated
-    orphaned = state_unit_ids - set(old) - {unit.id for unit in new_units} if deferred_base else set()
+    preserved = set(effects["preserved"]) - invalidated
+    orphaned = (
+        set()
+        if state_backed_base
+        else state_unit_ids - set(old) - {unit.id for unit in new_units}
+        if deferred_base
+        else set()
+    )
     now = _now()
 
-    retiring = sorted(removed | (invalidated & set(old)) | orphaned)
+    old_identity_ids = state_unit_ids if deferred_base and state_backed_base else set(old)
+    retiring = sorted(removed | (invalidated & old_identity_ids) | orphaned)
     # A published DAG amendment is itself the recorded authority for the units it
     # removes or invalidates — but ORPHANS are invisible to the amendment diff (they
     # exist only in materialization-era state), so retiring an accepted orphan needs
@@ -775,7 +813,7 @@ def apply_replan(
                 "history": [
                     {
                         "at": now,
-                        "from": "superseded" if unit.id in old else None,
+                        "from": "superseded" if unit.id in old_identity_ids else None,
                         "to": "pending",
                         "reason": "transactional plan amendment",
                     }

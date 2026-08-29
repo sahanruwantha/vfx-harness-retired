@@ -142,6 +142,11 @@ live in the linked Harness Improvement Records.
   generation; the superseded view remains selected only until the validated
   replacement publishes
   ([HIR-0101](docs/improvements/HIR-0101-remat-rebases-on-selected-global-generation.md)).
+- Rematerialization moves accepted predecessor state through a digest-bound replan
+  even when global republication has made the old JIT view inert: matching
+  checkpoints stay, changed/new closure reopens, and removed accepted units are
+  superseded by the amendment rather than misclassified as orphans
+  ([HIR-0102](docs/improvements/HIR-0102-remat-replan-base-is-durable-unit-state.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

@@ -993,7 +993,11 @@ async def _rematerialize_layer(
     from vfx_harness.orchestration.plan_authority import (
         resolve_current,
     )
-    from vfx_harness.orchestration.unit_state import apply_replan, supersede_layer_units
+    from vfx_harness.orchestration.unit_state import (
+        apply_replan,
+        supersede_layer_units,
+        validate_current,
+    )
     from vfx_harness.orchestration.unit_state import load as load_unit_state
 
     owner, trigger, evidence, discard_accepted = authority
@@ -1023,6 +1027,25 @@ async def _rematerialize_layer(
         return active_plan_hash(shot.folder)
 
     old_units, old_plan_hash = layer.stages, _plan_hash()
+    state_backed_base = False
+    if state:
+        # Durable state is the accepted base identity. Global republication can make
+        # the prior JIT view inert before remat starts, and a sibling materialization
+        # can change the combined layers.json hash without changing this layer's DAG.
+        # Use the state hash in both cases. If the currently selected layer no longer
+        # matches those stored unit identities, apply_replan performs a digest-backed
+        # state diff instead of pretending the new sparse/ready row is the old DAG.
+        old_plan_hash = str(state.get("plan_hash") or old_plan_hash)
+        try:
+            validate_current(state, layer_id, old_units)
+        except ValueError:
+            old_units = ()
+            state_backed_base = True
+            log(
+                "selected layer no longer reconstructs the durable replan base; "
+                "using digest-bound work-unit state",
+                1,
+            )
     bundle = resolve_current(shot.folder)
     deferred = load_layers_from_path(bundle.root / "layers.json")[layer_id]
     log(
@@ -1064,6 +1087,7 @@ async def _rematerialize_layer(
                 trigger=trigger,
                 evidence=evidence,
                 discard_accepted=discard_accepted,
+                state_backed_base=state_backed_base,
             )
         except ValueError as exc:
             # The replan base can be unreconstructable — a prior partial transaction

@@ -238,6 +238,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   rows forward by proximity (HIR-0101). Rematerialization of a layer that already
   has accepted units is `apply_replan`: matching digests stay, including `passed`;
   changed or downstream-invalidated units are superseded even if they had passed.
+  Durable work-unit state is the remat transaction's old identity when global
+  republication or a sibling view change means the selected layer no longer reconstructs
+  that DAG. Current-schema stored unit digests drive the exact preserve/change/remove
+  diff; missing or cross-schema identity fails closed (HIR-0102).
   `--discard-accepted` retires accepted orphans and wipes state only when the replan
   base is unusable — it is not the door on remat (HIR-0052). Task and Agent are not remat repair
   instruments. An exhausted materialization session does not publish: max-turns is a failed

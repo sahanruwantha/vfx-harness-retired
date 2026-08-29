@@ -946,6 +946,50 @@ def test_checkpoint_and_replan_preserve_only_unaffected_units(tmp_path):
     assert state["replans"][-1] == record
 
 
+def test_digest_bound_state_replan_preserves_matches_without_old_view(tmp_path):
+    """Global republication can make the old materialized view inert before remat.
+
+    Current-schema durable unit hashes are still a closed old identity: matching units
+    remain accepted, changed/new closure reopens, and removed accepted units are retired
+    by the amendment rather than misclassified as unauthorised orphans.
+    """
+    rig = _unit("rig")
+    form = _unit("form", depends_on=["rig"])
+    obsolete = _unit("obsolete")
+    old = (rig, form, obsolete)
+    initialize(tmp_path, "4", old, plan_hash="plan-v1")
+    for unit in old:
+        _pass_unit(tmp_path, "4", unit)
+
+    changed_form = _unit("form", depends_on=["rig"], proposition_suffix="-changed")
+    finish = _unit("finish", depends_on=["form"])
+    new = (rig, changed_form, finish)
+    record = apply_replan(
+        tmp_path,
+        "4",
+        (),
+        new,
+        old_plan_hash="plan-v1",
+        new_plan_hash="plan-v2",
+        owner="planner",
+        trigger="selected global generation superseded the old JIT view",
+        evidence=["run:republished-plan"],
+        state_backed_base=True,
+    )
+
+    state = load(tmp_path, "4")
+    assert record["added"] == ["finish"]
+    assert record["removed"] == ["obsolete"]
+    assert record["changed"] == ["form"]
+    assert record["invalidated"] == ["finish", "form"]
+    assert record["preserved"] == ["rig"]
+    assert record.get("orphaned") is None
+    assert state["units"]["rig"]["status"] == "passed"
+    assert state["units"]["form"]["status"] == "pending"
+    assert state["units"]["finish"]["status"] == "pending"
+    assert {row["id"] for row in state["superseded"][-2:]} == {"form", "obsolete"}
+
+
 def test_failed_dependency_blocks_transitive_units_without_failing_them(tmp_path):
     units = (_unit("a"), _unit("b", depends_on=["a"]), _unit("c", depends_on=["b"]))
     initialize(tmp_path, "1", units, plan_hash="plan")

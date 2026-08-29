@@ -386,6 +386,57 @@ def test_rematerialize_preserves_accepted_units_whose_digests_match(
     assert "stay unless the replacement" in source
 
 
+def test_rematerialize_uses_digest_bound_state_after_global_republication(
+    tmp_path, monkeypatch
+) -> None:
+    """A new global bundle makes the prior JIT view inert before remat starts.
+
+    The selected layer can therefore already be deferred or can name the replacement
+    units while durable state still names the accepted predecessor DAG. The state hash
+    and stored unit digests are the exact old identity; treating the selected row/hash as
+    the replan base made run 20260829T083336Z-91fc7b publish then fail.
+    """
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.orchestration.unit_state import initialize, load
+
+    old_units = (_unit("old_camera"), _unit("old_proxies", depends_on=["old_camera"]))
+    new_units = (_unit("aim_target"), _unit("camera_rig", depends_on=["aim_target"]))
+    initialize(tmp_path, "2", old_units, plan_hash="durable-old-hash")
+    _mark_passed(tmp_path, "2", "old_camera", "old_proxies")
+    _patch_remat_design(monkeypatch, tmp_path, new_units=new_units)
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.plan_authority.active_plan_hash",
+        lambda folder, **kwargs: "selected-new-hash",
+    )
+    shot = SimpleNamespace(folder=tmp_path, id="shot")
+    layer = SimpleNamespace(id="2", execution="ready", stages=new_units)
+
+    async def invoke():
+        return await planner._rematerialize_layer(
+            shot,
+            layer,
+            ("operator", "global camera DAG changed", ["runs/plan/plan_gate.json"], False),
+            model="m",
+            blender="blender",
+            max_turns=4,
+        )
+
+    anyio.run(invoke)
+    state = load(tmp_path, "2")
+    assert state["plan_hash"] == "selected-new-hash"
+    assert set(state["units"]) == {"aim_target", "camera_rig"}
+    assert {row["status"] for row in state["units"].values()} == {"pending"}
+    record = state["replans"][-1]
+    assert record["old_plan_hash"] == "durable-old-hash"
+    assert record["removed"] == ["old_camera", "old_proxies"]
+    assert record["added"] == ["aim_target", "camera_rig"]
+    assert record.get("orphaned") is None
+    assert {row["id"] for row in state["superseded"][-2:]} == {
+        "old_camera",
+        "old_proxies",
+    }
+
+
 def test_rematerialize_unusable_base_does_not_wipe_accepted_units(
     tmp_path, monkeypatch
 ) -> None:
