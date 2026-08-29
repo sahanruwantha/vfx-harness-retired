@@ -970,6 +970,13 @@ LOOK_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "grade": ("exposure", "detail", "emitters", "halation", "color", "motion"),
 }
 
+PROJECTED_ORIGIN_REPAIR_RULE = (
+    "projected_origin_x/y is camera-alignment evidence: its required claim's "
+    "repair_owner provides camera. A fixed Empty/control producer proves world state "
+    "with scene evidence; the downstream camera owner depends on that producer and "
+    "owns projection through the camera. Do not fit the target after the camera."
+)
+
 
 def parse_look_capabilities(value: Any, where: str) -> tuple[str, ...]:
     names = _strings(value, where) if value else ()

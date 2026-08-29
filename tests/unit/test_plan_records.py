@@ -827,30 +827,26 @@ def test_control_host_unit_cannot_bind_surface_metric_on_its_mutated_role(
         )
 
 
-@pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])
-def test_control_host_unit_publishes_with_point_projection_and_no_visibility_proxy(
-    tmp_path: Path, role: str
-) -> None:
-    """Point placement is executable without inventing a rendered subject."""
+def test_control_producer_cannot_own_camera_projection_repair(tmp_path: Path) -> None:
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
-    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
-    layers["layers"][1]["jit"]["reserved_roles"] = [role]
-    _write(tmp_path / "layers.json", layers)
-    layout = run_artifacts.create(tmp_path, f"point-control-{role.replace('.', '-')}")
+    layout = run_artifacts.create(tmp_path, "point-projection-owner")
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = _jit_payload(tmp_path, bundle.content_hash)
     document = json.loads(payload.read_text(encoding="utf-8"))
     unit = document["layer"]["stages"][0]
-    unit["mutates"]["roles"] = [role]
-    unit["mutates"]["control_roles"] = {"hold": [role]}
     unit["evaluation"]["temporal_evidence"] = "none"
     unit["evaluation"]["claims"] = [{
-        "id": "control-placement",
-        "proposition": "the control point stays on the declared screen target",
+        "id": "self-fitted-point",
+        "proposition": "the control point is centered",
         "axis": "final_lock",
-        "property": "projected_origin",
-        "subject_roles": [role],
+        "property": "projected_origin_x",
+        "subject_roles": ["polish.comp"],
         "subject_controls": ["hold"],
         "moments": [239, 240],
         "kind": "atomic",
@@ -867,7 +863,150 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
         "frames": [239, 240],
         "contract_ids": ["point-x-f239", "point-x-f240"],
     }
-    document["scene_contracts"] = [
+    document["scene_contracts"] = [{
+        "id": f"point-x-f{frame}",
+        "kind": "projected_origin_x",
+        "owner_layer": "2",
+        "fault_owner": "2",
+        "activates_at": "2",
+        "lifecycle": "layer",
+        "axis": "final_lock",
+        "roles": ["polish.comp"],
+        "frame": frame,
+        "op": "band",
+        "lo": 0.45,
+        "hi": 0.55,
+    } for frame in (239, 240)]
+    document["requirement_bindings"] = [{
+        "requirement_id": "R-final-lock",
+        "contract_ids": ["point-x-f239", "point-x-f240"],
+    }]
+    _write(payload, document)
+
+    staged = tmp_path / "point-owner-staged.json"
+    seed_materialization_candidate(
+        bundle.root,
+        staged,
+        layer_id="2",
+        bundle_hash=bundle.content_hash,
+    )
+    before = staged.read_bytes()
+    with pytest.raises(ValueError, match="point-projection ownership refused before staging"):
+        stage_materialization_unit(
+            staged,
+            unit=unit,
+            scene_contracts=document["scene_contracts"],
+            requirement_bindings=document["requirement_bindings"],
+        )
+    assert staged.read_bytes() == before
+
+    with pytest.raises(ValueError, match=r"repair_owner polish does not provide camera"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+@pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])
+def test_control_host_unit_publishes_with_point_projection_and_no_visibility_proxy(
+    tmp_path: Path, role: str
+) -> None:
+    """A fixed control publishes first; its camera successor owns projection."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["reserved_roles"] = [role, "camera.rig"]
+    layers["layers"][1]["jit"]["provides"] = {"camera": ["camera.rig"]}
+    _write(tmp_path / "layers.json", layers)
+    layout = run_artifacts.create(tmp_path, f"point-control-{role.replace('.', '-')}")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    target = document["layer"]["stages"][0]
+    target["id"] = "target"
+    target["plan"] = "plans/units/target.md"
+    target["mutates"]["roles"] = [role]
+    target["mutates"]["control_roles"] = {"hold": [role]}
+    target["mutates"]["script_spans"] = ["build/units/02/target.py"]
+    target["evaluation"]["temporal_evidence"] = "none"
+    target["evaluation"]["claims"] = [{
+        "id": "control-fixed",
+        "proposition": "the fixed control point exists without rendered geometry",
+        "axis": "final_lock",
+        "property": "object_count",
+        "subject_roles": [role],
+        "subject_controls": ["hold"],
+        "moments": [239, 240],
+        "kind": "atomic",
+        "required": True,
+        "authority": "executable_required",
+        "repair_owner": "target",
+        "asserts": "scene",
+        "evidence": [{"kind": "scene_contract", "id": "target-count"}],
+    }]
+    target["evaluation"]["composition_context"] = {
+        "frames": [239, 240],
+        "contract_ids": ["target-count"],
+    }
+    camera = {
+        "id": "camera",
+        "title": "Camera alignment",
+        "plan": "plans/units/camera.md",
+        "depends_on": ["target"],
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["camera.rig"],
+            "controls": [],
+            "control_roles": {},
+            "script_spans": ["build/units/02/camera.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "look_capabilities": [],
+        "provides": ["camera"],
+        "evaluation": {
+            "primary_judge": 240,
+            "judge": document["layer"]["judge"],
+            "temporal_evidence": "none",
+            "claims": [{
+                "id": "camera-aligns-control",
+                "proposition": "the camera keeps the fixed control on the declared target",
+                "axis": "final_lock",
+                "property": "projected_origin",
+                "subject_roles": [role, "camera.rig"],
+                "subject_controls": [],
+                "moments": [239, 240],
+                "kind": "atomic",
+                "required": True,
+                "authority": "executable_required",
+                "repair_owner": "camera",
+                "asserts": "projected_composition",
+                "evidence": [
+                    {"kind": "scene_contract", "id": "point-x-f239", "moments": [239]},
+                    {"kind": "scene_contract", "id": "point-x-f240", "moments": [240]},
+                ],
+            }],
+            "composition_context": {
+                "frames": [239, 240],
+                "contract_ids": ["point-x-f239", "point-x-f240"],
+            },
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+    }
+    document["layer"]["stages"] = [target, camera]
+    document["scene_contracts"] = [{
+        "id": "target-count",
+        "kind": "object_count",
+        "owner_layer": "2",
+        "fault_owner": "2",
+        "activates_at": "2",
+        "lifecycle": "layer",
+        "axis": "final_lock",
+        "roles": [role],
+        "op": "eq",
+        "value": 1,
+    }, *[
         {
             "id": f"point-x-f{frame}",
             "kind": "projected_origin_x",
@@ -883,10 +1022,10 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
             "hi": 0.55,
         }
         for frame in (239, 240)
-    ]
+    ]]
     document["requirement_bindings"] = [{
         "requirement_id": "R-final-lock",
-        "contract_ids": ["point-x-f239", "point-x-f240"],
+        "contract_ids": ["target-count", "point-x-f239", "point-x-f240"],
     }]
     _write(payload, document)
 
@@ -894,7 +1033,7 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
         bundle.root, payload, expected_bundle_hash=bundle.content_hash
     )
 
-    assert materialized.layer.stages[0].id == "polish"
+    assert [unit.id for unit in materialized.layer.stages] == ["target", "camera"]
     assert all(row["kind"] != "visible_fraction" for row in materialized.scene_contracts)
 
 

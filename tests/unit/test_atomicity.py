@@ -922,6 +922,41 @@ def test_plan_gate_names_mixed_light_and_volume_clusters(tmp_path: Path) -> None
     assert "world.atmosphere_volume" in mixed[0].what
 
 
+def test_plan_gate_rejects_control_owned_point_projection(tmp_path: Path) -> None:
+    doc = _layer_doc()
+    unit = doc["layers"][0]["stages"][0]
+    unit["provides"] = []
+    claim = unit["evaluation"]["claims"][0]
+    claim["property"] = "projected_origin_x"
+    claim["asserts"] = "projected_composition"
+    claim["evidence"] = [{"kind": "scene_contract", "id": "target-x"}]
+    _write(tmp_path / "layers.json", doc)
+    _write(tmp_path / "scene_checks.json", {
+        "schema": 2,
+        "contracts": [{
+            "id": "target-x",
+            "kind": "projected_origin_x",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "1",
+            "lifecycle": "layer",
+            "axis": "camera_framing",
+            "roles": ["hero"],
+            "frame": 1,
+            "op": "band",
+            "lo": 0.45,
+            "hi": 0.55,
+        }],
+    })
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    point = [finding for finding in findings if finding.check == "point-projection-owner"]
+    assert point and point[0].blocking
+    assert "does not provide camera" in point[0].what
+
+
 def test_materialization_refuses_mixed_clusters_and_keeps_single_cluster(
     tmp_path: Path,
 ) -> None:

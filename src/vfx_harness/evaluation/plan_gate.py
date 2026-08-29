@@ -1337,9 +1337,11 @@ def _check_unit_dependencies(folder: Path) -> list[Finding]:
 def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     """Check temporal, composition, and mutation ownership coverage across contracts."""
     from vfx_harness.domain.contracts import load_document
+    from vfx_harness.domain.work_units import PROJECTED_ORIGIN_REPAIR_RULE
     from vfx_harness.evidence.scene_checks import (
         CAMERA_REQUIRED_KINDS,
         PROJECTED_CONTEXT_KINDS,
+        PROJECTED_ORIGIN_KINDS,
         SURFACE_PROJECTED_KINDS,
         TEMPORAL_KINDS,
     )
@@ -1693,6 +1695,21 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     if binding.get("kind") != "scene_contract":
                         continue
                     contract = scene_by_id.get(evidence_id) or {}
+                    if str(contract.get("kind") or "") in PROJECTED_ORIGIN_KINDS:
+                        owner_id = str(claim.get("repair_owner") or uid)
+                        owner = stages.get(owner_id) or unit
+                        if "camera" not in (owner.get("provides") or []):
+                            out.append(
+                                Finding(
+                                    "point-projection-owner",
+                                    True,
+                                    f"layer {lid} unit {uid} claim "
+                                    f"{claim.get('id', '?')} contract {evidence_id}",
+                                    f"point-projection metric {contract.get('kind')} is "
+                                    f"repaired by {owner_id}, which does not provide camera",
+                                    PROJECTED_ORIGIN_REPAIR_RULE,
+                                )
+                            )
                     if str(contract.get("kind") or "") in SURFACE_PROJECTED_KINDS:
                         owner_id = str(claim.get("repair_owner") or uid)
                         owner = stages.get(owner_id) or unit

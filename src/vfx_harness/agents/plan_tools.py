@@ -1435,11 +1435,13 @@ def build_plan_tools(
             ],
             "projected_origin_x": [
                 "roles/control_roles selecting exactly one object (Empty/control is legal)",
-                "op min/max/band in normalized camera coordinates; placement only, not visibility",
+                "op min/max/band in normalized camera coordinates; camera-alignment only, "
+                "not visibility; repair_owner must provide camera",
             ],
             "projected_origin_y": [
                 "roles/control_roles selecting exactly one object (Empty/control is legal)",
-                "op min/max/band in normalized top-left camera coordinates; placement only",
+                "op min/max/band in normalized top-left camera coordinates; camera-alignment "
+                "only; repair_owner must provide camera",
             ],
             "node_link_count": [
                 "graph", "from_node_roles", "to_node_roles",
@@ -1462,7 +1464,9 @@ def build_plan_tools(
         note = (
             "Projected bbox_* and projected_origin_* targets must lie inside the normalized frame; "
             "bbox/visible_fraction require rendered surfaces, while projected_origin_* is "
-            "the point-placement instrument for Empty/control hosts. "
+            "the camera-owner alignment instrument for Empty/control hosts. The control "
+            "producer proves fixed world state with scene evidence; the camera successor "
+            "owns projection. "
             "path_clearance_min fails closed on an empty obstacle selection — persistent "
             "lifecycle re-evaluates as geometry arrives, it does not make absence a PASS."
         )

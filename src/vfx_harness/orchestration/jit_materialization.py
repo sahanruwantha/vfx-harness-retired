@@ -21,7 +21,11 @@ from vfx_harness.domain.json_pointer import encode as json_ptr
 from vfx_harness.domain.json_pointer import format_finding
 from vfx_harness.domain.json_pointer import set_at as set_pointer
 from vfx_harness.domain.plan_records import load_active_structured_decisions
-from vfx_harness.evidence.scene_checks import validate_row, validate_row_set
+from vfx_harness.evidence.scene_checks import (
+    PROJECTED_ORIGIN_KINDS,
+    validate_row,
+    validate_row_set,
+)
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.orchestration.ledger import Layer, load_layers_from_path
 
@@ -425,6 +429,7 @@ def validate_materialization(
     if layer is not None:
         from vfx_harness.domain.work_units import (
             LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
+            PROJECTED_ORIGIN_REPAIR_RULE,
             UNIT_JUDGE_CLAIM_COVERAGE_RULE,
             VIS_REPAIR_OWNER_RULE,
             uncovered_unit_judge_frames,
@@ -575,6 +580,19 @@ def validate_materialization(
                     if not bound or bound[0] != "scene_contract":
                         continue
                     vis_row = bound[1]
+                    if (
+                        str(vis_row.get("kind") or "") in PROJECTED_ORIGIN_KINDS
+                        and "camera" not in owner.provides
+                    ):
+                        note(
+                            json_ptr(
+                                "layer", "stages", unit_index, "evaluation", "claims"
+                            ),
+                            f"unit {unit.id} binds point-projection metric "
+                            f"{vis_row.get('kind')} {binding.id}, but repair_owner "
+                            f"{owner.id} does not provide camera. "
+                            + PROJECTED_ORIGIN_REPAIR_RULE,
+                        )
                     if str(vis_row.get("kind") or "") in SURFACE_PROJECTED_KINDS:
                         roles = [str(value) for value in vis_row.get("roles") or []]
                         mutates_measured_role = any(
@@ -957,7 +975,10 @@ def stage_materialization_unit(
     local schema checks and uniqueness checks, writes atomically, and leaves complete
     cross-unit closure to ``inspect_materialization``/the explicit finalize tool.
     """
-    from vfx_harness.domain.work_units import WorkUnit
+    from vfx_harness.domain.work_units import (
+        PROJECTED_ORIGIN_REPAIR_RULE,
+        WorkUnit,
+    )
 
     path = Path(materialization_path)
     payload = _document(path)
@@ -1032,8 +1053,31 @@ def stage_materialization_unit(
         WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)
     ]
     all_contracts = [*_rows(payload, "scene_contracts", "candidate"), *contracts]
+    proposed_units = [*current_units, parsed]
+    units_by_id = {item.id: item for item in proposed_units}
+    contracts_by_id = {str(row.get("id")): row for row in all_contracts}
+    for staged_unit in proposed_units:
+        for claim in staged_unit.evaluation.claims:
+            if not claim.required:
+                continue
+            owner = units_by_id.get(claim.repair_owner)
+            for binding in claim.evidence:
+                row = contracts_by_id.get(binding.id)
+                if (
+                    binding.kind == "scene_contract"
+                    and row is not None
+                    and str(row.get("kind") or "") in PROJECTED_ORIGIN_KINDS
+                    and owner is not None
+                    and "camera" not in owner.provides
+                ):
+                    raise ValueError(
+                        "point-projection ownership refused before staging: "
+                        f"unit {staged_unit.id} claim {claim.id} names repair_owner "
+                        f"{owner.id}, which does not provide camera. "
+                        + PROJECTED_ORIGIN_REPAIR_RULE
+                    )
     gaps = atomicity_gaps(
-        [*current_units, parsed],
+        proposed_units,
         all_contracts,
         layer_id=str((payload.get("layer") or {}).get("id") or ""),
         raw_stages=[*stages, unit],

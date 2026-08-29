@@ -152,11 +152,13 @@ KIND_DEFINITIONS = {
     "bbox_bottom_y": "bottom of projected union; normalized top-left coordinates",
     "projected_origin_x": (
         "horizontal normalized camera projection of exactly one selected object's world "
-        "origin; accepts Empty/control hosts and proves placement, not rendered visibility"
+        "origin; accepts Empty/control hosts and proves camera alignment, not rendered "
+        "visibility; its repair owner is the camera provider"
     ),
     "projected_origin_y": (
         "vertical normalized camera projection of exactly one selected object's world "
-        "origin; accepts Empty/control hosts and proves placement, not rendered visibility"
+        "origin; accepts Empty/control hosts and proves camera alignment, not rendered "
+        "visibility; its repair owner is the camera provider"
     ),
     "object_count": "number of objects whose bvfx_role matches roles",
     "mesh_vertex_count": "evaluated mesh vertex total across matched object roles",
