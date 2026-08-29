@@ -99,6 +99,8 @@ unit canonical gate, or composed canonical gate. Its sole PNG is the builder's s
 declared matcap diagnostic. This distinguishes an optional model instrument from raster
 being required to earn the harness verdict.
 
+Implementation commit: `8b6b720` (`fix: evaluate executable units before raster`).
+
 ## Release and rollback
 
 No persisted schema changes. Rollback restores unconditional raster before executable
