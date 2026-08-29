@@ -1049,9 +1049,21 @@ def test_camera_observes_point_only_through_consumed_interface(
         "asserts": "scene",
         "evidence": [{"kind": "scene_contract", "id": "target-count"}],
     }]
+    target["publishes"] = [
+        {
+            "id": "target.point",
+            "kind": "placement_control",
+            "exports": {"role": role},
+        },
+        {
+            "id": "target.other",
+            "kind": "placement_control",
+            "exports": {"control": "target.hold"},
+        },
+    ]
     camera["consumes"] = [{
         "producer": "target",
-        "interface_id": "target.publish",
+        "interface_id": "target.point",
         "kind": "placement_control",
     }]
     doc["layers"][0]["stages"] = [target, camera]
@@ -1078,6 +1090,17 @@ def test_camera_observes_point_only_through_consumed_interface(
         and "target-x" in f.where
         for f in findings
     )
+
+    camera["consumes"] = [{
+        "producer": "target",
+        "interface_id": "target.other",
+        "kind": "placement_control",
+    }]
+    _write(tmp_path / "layers.json", doc)
+    findings, _ = _check_evidence_coherence(tmp_path)
+    wrong = [f for f in findings if f.check == "point-projection-interface"]
+    assert wrong and wrong[0].blocking
+    assert "consumes no compatible typed interface" in wrong[0].what
 
     camera.pop("consumes")
     _write(tmp_path / "layers.json", doc)

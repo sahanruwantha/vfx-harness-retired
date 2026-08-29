@@ -289,3 +289,40 @@ def exported_role_tokens_from_unit(unit: WorkUnit) -> frozenset[str]:
     if unit.mutates.dresses:
         return frozenset({unit.mutates.dresses[0]})
     return frozenset()
+
+
+def exported_selector_tokens_from_interface(
+    unit: WorkUnit,
+    *,
+    interface_id: str,
+    kind: str,
+    selector_type: str,
+) -> frozenset[str]:
+    """Selectors exported by one exact offered interface, never the producer union."""
+    if selector_type not in {"role", "control"}:
+        raise ValueError("selector_type must be role or control")
+    if unit.publishes:
+        spec = next(
+            (
+                item
+                for item in unit.publishes
+                if item.id == interface_id and item.kind == kind
+            ),
+            None,
+        )
+        if spec is None:
+            return frozenset()
+        return frozenset(
+            value
+            for key, value in spec.exports
+            if key == selector_type or key.endswith(f"_{selector_type}")
+        )
+    if derived_interface_key(unit) != (interface_id, kind):
+        return frozenset()
+    if selector_type == "role":
+        if unit.mutates.roles:
+            return frozenset({unit.mutates.roles[0]})
+        if unit.mutates.dresses:
+            return frozenset({unit.mutates.dresses[0]})
+        return frozenset()
+    return frozenset(unit.mutates.controls[:1])

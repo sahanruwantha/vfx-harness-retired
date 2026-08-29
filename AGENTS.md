@@ -294,8 +294,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   no interface. The live builder card carries only the exact consumed interfaces from
   direct predecessors, with producer digests (HIR-0084). A camera-owned
   `projected_origin_x/y` row may observe a same-layer target only through an exact
-  consumed producer interface; the selector is read-only and never enters camera
-  mutation authority (HIR-0096).
+  consumed producer interface that itself exports the measured selector; another
+  interface from the same producer is not authority. The selector is read-only and
+  never enters camera mutation authority (HIR-0096, HIR-0099).
   The incremental unit staging tool exposes the closed WorkUnit authoring schema:
   temporal enums, optional composition-context union, and exact typed publish/consume
   fields are enumerated before generation rather than learned through parser retries

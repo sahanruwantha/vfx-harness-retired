@@ -999,9 +999,7 @@ def point_projection_interface_gaps(
     exports it. Roles owned only by an accepted upstream layer remain legal through the
     layer dependency/protected-interface mechanism.
     """
-    from vfx_harness.domain.publish_interfaces import (
-        exported_role_tokens_from_unit,
-    )
+    from vfx_harness.domain.publish_interfaces import exported_selector_tokens_from_interface
     from vfx_harness.evidence.scene_checks import PROJECTED_ORIGIN_KINDS
 
     unit_rows = tuple(units)
@@ -1014,16 +1012,6 @@ def point_projection_interface_gaps(
 
     def _matches(selector: str, declarations: Iterable[str]) -> bool:
         return plan_selector_declared(selector, tuple(str(value) for value in declarations))
-
-    def _exported_controls(producer: WorkUnit) -> tuple[str, ...]:
-        if producer.publishes:
-            return tuple(
-                value
-                for spec in producer.publishes
-                for key, value in spec.exports
-                if key == "control" or key.endswith("_control")
-            )
-        return producer.mutates.controls[:1]
 
     gaps: list[PointProjectionInterfaceGap] = []
     seen: set[tuple[str, str, str, str]] = set()
@@ -1068,20 +1056,20 @@ def point_projection_interface_gaps(
                             continue
                         compatible: list[str] = []
                         for producer in producers:
-                            exported = (
-                                exported_role_tokens_from_unit(producer)
-                                if field == "roles"
-                                else _exported_controls(producer)
-                            )
-                            if not _matches(selector, exported):
-                                continue
-                            offered = set(offered_interface_keys(producer))
-                            if any(
-                                consume.producer == producer.id
-                                and (consume.interface_id, consume.kind) in offered
-                                for consume in owner.consumes
-                            ):
-                                compatible.append(producer.id)
+                            for consume in owner.consumes:
+                                if consume.producer != producer.id:
+                                    continue
+                                exported = exported_selector_tokens_from_interface(
+                                    producer,
+                                    interface_id=consume.interface_id,
+                                    kind=consume.kind,
+                                    selector_type=(
+                                        "role" if field == "roles" else "control"
+                                    ),
+                                )
+                                if _matches(selector, exported):
+                                    compatible.append(producer.id)
+                                    break
                         if compatible:
                             continue
                         producer_ids = tuple(sorted(producer.id for producer in producers))
