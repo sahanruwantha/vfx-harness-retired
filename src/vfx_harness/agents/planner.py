@@ -569,8 +569,9 @@ property kind, axis); candidate freeze refuses while any remain unpaid without a
 `unpaid_image_debt` abstention. Every write
 of the output file runs the full materialization validator and returns every collectable
 finding as `{{json_pointer}}: {{message}}` in one report. When a finding names a pointer, call
-`patch_materialization` with that pointer and a JSON-encoded value; the tool re-validates
-and returns remaining findings or VALIDATION PASSED. A full Write is for a missing document,
+`patch_materialization`; group independent repairs into its `patches` array so they commit
+atomically and trigger one re-validation. The tool returns remaining findings or VALIDATION
+PASSED. A full Write is for a missing document,
 not field-level repair. Call `evidence_vocabulary` BEFORE authoring contracts — it enumerates every
 contract kind, its evidence domain, and required fields. When no kind can express a claim,
 call `escalate_vocabulary_gap` (typed durable record) and close the requirement with an

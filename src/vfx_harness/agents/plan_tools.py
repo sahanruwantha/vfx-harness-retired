@@ -1469,10 +1469,11 @@ def build_plan_tools(
 
     @tool(
         "patch_materialization",
-        "Set one RFC 6901 JSON Pointer on the candidate materialization file, then "
-        "re-validate. Use this when a validation finding names a pointer. `value` is "
-        "JSON-encoded (string, number, object, array, true, false, or null). Cannot "
-        "replace the document root. Returns VALIDATION PASSED or the remaining findings.",
+        "Atomically set one or several RFC 6901 JSON Pointers on the candidate "
+        "materialization file, then re-validate once. Group independent findings in "
+        "`patches`; use `pointer` + `value` for one repair. Every value is JSON-encoded. "
+        "Cannot replace the document root. Returns VALIDATION PASSED or all remaining "
+        "findings; if any pointer is invalid, no patch is written.",
         {
             "type": "object",
             "properties": {
@@ -1484,8 +1485,28 @@ def build_plan_tools(
                     "type": "string",
                     "description": "JSON-encoded replacement at that pointer",
                 },
+                "patches": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pointer": {"type": "string"},
+                            "value": {
+                                "type": "string",
+                                "description": "JSON-encoded replacement value",
+                            },
+                        },
+                        "required": ["pointer", "value"],
+                        "additionalProperties": False,
+                    },
+                },
             },
-            "required": ["pointer", "value"],
+            "oneOf": [
+                {"required": ["pointer", "value"]},
+                {"required": ["patches"]},
+            ],
+            "additionalProperties": False,
         },
     )
     async def patch_materialization(args):
@@ -1495,16 +1516,20 @@ def build_plan_tools(
                 "patch_materialization is only available during layer materialization",
                 is_error=True,
             )
-        pointer = str(args.get("pointer") or "")
-        raw_value = args.get("value")
-        if not pointer:
-            return _text("pointer is required", is_error=True)
+        raw_patches = args.get("patches")
+        if raw_patches is None:
+            raw_patches = [{"pointer": args.get("pointer"), "value": args.get("value")}]
+        patches: list[tuple[str, object]] = []
         try:
-            value = json.loads(str(raw_value))
+            for index, row in enumerate(raw_patches):
+                pointer = str((row or {}).get("pointer") or "")
+                if not pointer:
+                    return _text(f"patches[{index}].pointer is required", is_error=True)
+                patches.append((pointer, json.loads(str((row or {}).get("value")))))
         except (TypeError, json.JSONDecodeError) as exc:
             return _text(f"value must be JSON-encoded: {exc}", is_error=True)
         from vfx_harness.orchestration.jit_materialization import (
-            apply_materialization_patch,
+            apply_materialization_patches,
             selected_view_artifact,
         )
         from vfx_harness.orchestration.plan_authority import artifact_path, resolve_current
@@ -1521,11 +1546,10 @@ def build_plan_tools(
                 overlay_root=overlay_root,
             ) or artifact_path(shot_folder, "requirements.json")
             findings = await anyio.to_thread.run_sync(
-                lambda: apply_materialization_patch(
+                lambda: apply_materialization_patches(
                     bundle.root,
                     candidate,
-                    pointer,
-                    value,
+                    patches,
                     expected_bundle_hash=bundle.content_hash,
                     base_layers_path=base_layers,
                     resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",

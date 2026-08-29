@@ -13,6 +13,7 @@ from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.jit_materialization import (
     apply_materialization_patch,
+    apply_materialization_patches,
     inspect_materialization,
     publish_materialization,
     validate_materialization,
@@ -369,6 +370,60 @@ def test_materialized_consumer_keeps_global_camera_capability_from_sparse_bundle
 
     findings, _ = _check_contracts(view)
     assert not [finding for finding in findings if finding.check == "global-capability"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "patches", "expected"),
+    [
+        (
+            {"product": {"material": "clay", "parts": ["body"]}},
+            (("/product/material", "metal"), ("/product/parts/-", "trim")),
+            {"product": {"material": "metal", "parts": ["body", "trim"]}},
+        ),
+        (
+            {"motion": {"curves": ["linear"], "timing": {"end": 24}}},
+            (("/motion/curves/0", "bezier"), ("/motion/timing/end", 48)),
+            {"motion": {"curves": ["bezier"], "timing": {"end": 48}}},
+        ),
+    ],
+)
+def test_materialization_patch_batch_is_atomic_and_supports_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+    patches: tuple[tuple[str, object], ...],
+    expected: dict,
+) -> None:
+    """Independent product and motion repairs cost one write and one validation."""
+    import vfx_harness.orchestration.jit_materialization as materialization
+
+    candidate = tmp_path / "candidate.json"
+    _write(candidate, payload)
+    validations: list[Path] = []
+
+    def inspect(*args, **kwargs):
+        validations.append(Path(args[1]))
+        return [], None
+
+    monkeypatch.setattr(materialization, "inspect_materialization", inspect)
+    assert apply_materialization_patches(
+        tmp_path,
+        candidate,
+        patches,
+        expected_bundle_hash="0" * 64,
+    ) == []
+    assert json.loads(candidate.read_text(encoding="utf-8")) == expected
+    assert validations == [candidate]
+
+    before = candidate.read_bytes()
+    with pytest.raises(ValueError, match=r"absent|does not exist|out of range"):
+        apply_materialization_patches(
+            tmp_path,
+            candidate,
+            (("/motion/missing", 1), ("/absent/child", 2)),
+            expected_bundle_hash="0" * 64,
+        )
+    assert candidate.read_bytes() == before
 
 
 def test_schema_five_global_publication_rejects_ready_preproduction(tmp_path: Path) -> None:

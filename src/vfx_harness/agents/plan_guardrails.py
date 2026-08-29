@@ -198,6 +198,8 @@ def target_validation_feedback(
             }}
         detail = "\n".join(f"- {item}" for item in errors)
         log(f"! write-time validation: {expected.name} has {len(errors)} error(s)", 1)
+        for item in errors:
+            log(f"  - {item}", 1)
         return {"hookSpecificOutput": {
             "hookEventName": "PostToolUse",
             "additionalContext": (

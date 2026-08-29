@@ -876,9 +876,39 @@ def apply_materialization_patch(
     base_requirements_path: str | Path | None = None,
 ) -> list[str]:
     """Set one JSON pointer on the candidate file and return remaining findings."""
+    return apply_materialization_patches(
+        global_root,
+        materialization_path,
+        ((pointer, value),),
+        expected_bundle_hash=expected_bundle_hash,
+        base_layers_path=base_layers_path,
+        resolutions_path=resolutions_path,
+        base_requirements_path=base_requirements_path,
+    )
+
+
+def apply_materialization_patches(
+    global_root: str | Path,
+    materialization_path: str | Path,
+    patches: tuple[tuple[str, Any], ...] | list[tuple[str, Any]],
+    *,
+    expected_bundle_hash: str,
+    base_layers_path: str | Path | None = None,
+    resolutions_path: str | Path | None = None,
+    base_requirements_path: str | Path | None = None,
+) -> list[str]:
+    """Atomically set several JSON pointers and validate the resulting candidate once.
+
+    All pointer operations happen on an in-memory document before the first write. A bad
+    pointer therefore leaves the candidate unchanged instead of publishing a partial
+    repair. The single-patch API delegates here so both paths have identical semantics.
+    """
+    if not patches:
+        raise ValueError("materialization patch transaction must contain at least one patch")
     path = Path(materialization_path)
     payload = _document(path)
-    set_pointer(payload, pointer, value)
+    for pointer, value in patches:
+        set_pointer(payload, pointer, value)
     atomic_write(path, json.dumps(payload, indent=1) + "\n")
     findings, _materialized = inspect_materialization(
         global_root,
