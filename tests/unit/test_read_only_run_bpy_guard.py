@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ast
 
-from vfx_harness.agents.guardrails import _run_bpy_has_authored_mutation
+from vfx_harness.agents.guardrails import (
+    _run_bpy_has_authored_mutation,
+    _run_bpy_unscoped_scene_property_write_lines,
+)
 from vfx_harness.blender.tools import (
     _black_search_stop_message,
     _closed_density_repeat_message,
@@ -50,6 +53,25 @@ def test_common_scene_writes_remain_legal_mutation_payloads() -> None:
 
 def test_local_result_accumulation_is_not_mistaken_for_scene_write() -> None:
     assert not _has_mutation("RESULT = {}\nRESULT['energy'] = 20\n")
+
+
+def test_scene_custom_property_cannot_launder_a_read_only_probe() -> None:
+    direct = ast.parse(
+        "bpy.context.scene['debug_probe'] = 1\n"
+        "RESULT = tuple(bpy.data.objects['hero'].bound_box)"
+    )
+    aliased = ast.parse(
+        "scene = bpy.context.scene\n"
+        "sc = scene\n"
+        "sc['debug_probe'] = sc.get('debug_probe', 0) + 1\n"
+        "RESULT = tuple(bpy.data.objects['hero'].bound_box)"
+    )
+
+    assert _run_bpy_unscoped_scene_property_write_lines(direct) == [1]
+    assert _run_bpy_unscoped_scene_property_write_lines(aliased) == [3]
+    assert not _run_bpy_has_authored_mutation(direct)
+    assert not _run_bpy_has_authored_mutation(aliased)
+    assert _has_mutation("obj['custom'] = 1\nRESULT = 1")
 
 
 def test_passing_schedule_rejects_live_override_but_allows_rekeying() -> None:

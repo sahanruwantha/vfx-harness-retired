@@ -1084,6 +1084,8 @@ def h_inspect(a: dict) -> dict:
         elif section == "world":
             out.append("world: (none)")
     if section in ("all", "objects"):
+        from mathutils import Vector
+
         out.append("objects:")
         shown = 0
         for o in sc.objects:
@@ -1098,11 +1100,25 @@ def h_inspect(a: dict) -> dict:
                 round(v, 2) for v in evaluated.matrix_world.translation
             )
             dims = tuple(round(v, 2) for v in evaluated.dimensions)
+            world_bbox_min = world_bbox_max = None
+            if evaluated.type in {"MESH", "CURVE", "SURFACE", "META", "FONT", "VOLUME"}:
+                corners = [evaluated.matrix_world @ Vector(corner) for corner in evaluated.bound_box]
+                if corners:
+                    world_bbox_min = tuple(
+                        round(min(float(point[index]) for point in corners), 4)
+                        for index in range(3)
+                    )
+                    world_bbox_max = tuple(
+                        round(max(float(point[index]) for point in corners), 4)
+                        for index in range(3)
+                    )
             mods = ",".join(m.type for m in o.modifiers) or "-"
             psys = ",".join(p.name for p in getattr(o, "particle_systems", [])) or "-"
             out.append(
                 f"  {o.name} [{o.type}] role={role or '-'} owner={owner} "
                 f"loc={loc} world_loc={world_loc} dims={dims} "
+                f"world_bbox_min={world_bbox_min or '-'} "
+                f"world_bbox_max={world_bbox_max or '-'} "
                 f"hide_render={bool(o.hide_render)} mods={mods} psys={psys}"
             )
         if role_filter and shown == 0:

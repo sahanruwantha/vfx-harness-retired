@@ -2277,6 +2277,18 @@ def main():
     check("a syntax error never reaches Blender", _blocked("for i in range(3)\n    print(i)"))
     check("ordinary scripts pass untouched", not _blocked("import bpy\nbpy.ops.mesh.primitive_cube_add()"))
     check(
+        "a global Scene custom property cannot launder a read-only probe",
+        _blocked(
+            "sc = bpy.context.scene\n"
+            "sc['debug_probe'] = sc.get('debug_probe', 0) + 1\n"
+            "RESULT = tuple(bpy.data.objects['hero'].bound_box)"
+        ),
+    )
+    check(
+        "an owned object custom property remains a legal mutation",
+        not _blocked("bpy.data.objects['hero']['control'] = 1\nRESULT = 1"),
+    )
+    check(
         "indexed bmesh faces are blocked without a prior lookup table",
         _blocked("import bmesh\nbm=bmesh.new()\nx=bm.faces[0]"),
     )

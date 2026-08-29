@@ -170,6 +170,8 @@ def _run_bpy_has_authored_mutation(tree) -> bool:
     """
     import ast
 
+    unscoped_scene_property_lines = set(_run_bpy_unscoped_scene_property_write_lines(tree))
+
     local_containers: set[str] = {"RESULT"}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -202,10 +204,21 @@ def _run_bpy_has_authored_mutation(tree) -> bool:
             for target in targets:
                 if isinstance(target, ast.Attribute):
                     return True
-                if isinstance(target, ast.Subscript) and root_name(target) not in local_containers:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and int(getattr(target, "lineno", 0)) not in unscoped_scene_property_lines
+                    and root_name(target) not in local_containers
+                ):
                     return True
         elif isinstance(node, ast.Delete):
-            if any(isinstance(t, (ast.Attribute, ast.Subscript)) for t in node.targets):
+            if any(
+                isinstance(target, ast.Attribute)
+                or (
+                    isinstance(target, ast.Subscript)
+                    and int(getattr(target, "lineno", 0)) not in unscoped_scene_property_lines
+                )
+                for target in node.targets
+            ):
                 return True
         elif isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
@@ -225,6 +238,70 @@ def _run_bpy_has_authored_mutation(tree) -> bool:
                     if "ops" in chain:
                         return True
     return False
+
+
+def _run_bpy_unscoped_scene_property_write_lines(tree) -> list[int]:
+    """Find custom-property writes on the global Scene datablock.
+
+    Scene custom properties have no semantic role or owner, so they cannot be a legal
+    scoped production mutation. Treating one as an authored write let a read-only probe
+    increment ``scene['debug_probe']`` solely to enter the mutation boundary.
+    """
+    import ast
+
+    def path(node) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            prefix = path(node.value)
+            return f"{prefix}.{node.attr}" if prefix else node.attr
+        return ""
+
+    aliases: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            is_scene = path(value) == "bpy.context.scene" or (
+                isinstance(value, ast.Name) and value.id in aliases
+            )
+            if not is_scene:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases.add(target.id)
+                    changed = True
+
+    def is_scene_property(target) -> bool:
+        if not isinstance(target, ast.Subscript):
+            return False
+        owner = target.value
+        return path(owner) == "bpy.context.scene" or (
+            isinstance(owner, ast.Name) and owner.id in aliases
+        )
+
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            lines.update(int(target.lineno) for target in targets if is_scene_property(target))
+        elif isinstance(node, ast.Delete):
+            lines.update(int(target.lineno) for target in node.targets if is_scene_property(target))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "__setitem__"
+        ):
+            owner = node.func.value
+            if path(owner) == "bpy.context.scene" or (
+                isinstance(owner, ast.Name) and owner.id in aliases
+            ):
+                lines.add(int(node.lineno))
+    return sorted(lines)
 
 
 def script_sanity() -> HookMatcher:
@@ -337,6 +414,23 @@ def script_sanity() -> HookMatcher:
                     f"render-artifact writer ({detail}). Use render_frame/render_pass/"
                     "verify_change for generated images; their outputs are routed into "
                     "the active run. Use IMAGE EVIDENCE HANDLE values with propose_checks."
+                ),
+            }}
+
+        scene_property_lines = _run_bpy_unscoped_scene_property_write_lines(tree)
+        if scene_property_lines:
+            bump("run_bpy_unscoped_scene_property_blocked")
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "BLOCKED: run_bpy writes custom properties on the global Scene at "
+                    f"line(s) {scene_property_lines}. Scene custom properties have no "
+                    "semantic role or owner and cannot authorize a scoped mutation. Use "
+                    "inspect_scene(section='objects') for evaluated world_bbox_min/"
+                    "world_bbox_max; use the other typed read tools for non-geometry "
+                    "state. If no typed read answers the question, abstain and name the "
+                    "missing instrument."
                 ),
             }}
 

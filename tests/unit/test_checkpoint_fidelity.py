@@ -233,6 +233,9 @@ def test_scene_inspection_refreshes_current_frame_and_evaluated_hosts(worker) ->
 
     source = inspect.getsource(worker.h_inspect)
     assert "sc, depsgraph = _refresh_inspection_scene(a.get(\"frame\"))" in source
+    assert "world_bbox_min" in source
+    assert "world_bbox_max" in source
+    assert "evaluated.matrix_world @ Vector(corner)" in source
     assert source.count("evaluated_get(depsgraph)") >= 3
 
 
