@@ -78,6 +78,7 @@ Validation results:
   4.7 seconds. The pre-fix run `20260829T124508Z-bf6edb` observed the same ordinary
   contract counts but injected the false worklist row at both frames and exited 9 in
   4.8 seconds.
+- Implementation commit: `f6c449f` (`fix: fan in composed unit worklists`).
 
 ## Release and rollback
 
