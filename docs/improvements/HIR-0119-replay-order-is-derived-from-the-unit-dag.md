@@ -94,7 +94,7 @@ artifact uses the same order, with HIR-0117's evaluated-state barrier between me
   59 turns, 1,007.8 seconds, and $3.26; most of that cost was independent roofline
   refinement, while order derivation itself completed before the first model turn.
 
-Implementation commit: pending.
+Implementation commit: `60cd275` (`fix: derive unit replay order from dependencies`).
 
 ## Release and rollback
 
