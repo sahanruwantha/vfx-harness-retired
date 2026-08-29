@@ -61,6 +61,15 @@ class MaterializationRevisionConflict(ValueError):
     """The candidate changed after the caller observed it."""
 
 
+@dataclass(frozen=True, slots=True)
+class UnstagedMaterializationUnit:
+    """One revision-checked removal from unpublished materialization scratch."""
+
+    unit_id: str
+    removed_contract_ids: tuple[str, ...]
+    removed_requirement_ids: tuple[str, ...]
+
+
 def materialization_candidate_revision(path: str | Path) -> str:
     """Return the byte revision used by candidate compare-and-swap writes."""
     return _sha256(Path(path))
@@ -1224,6 +1233,116 @@ def stage_materialization_unit(
         expected_revision=expected_revision,
     )
     return path
+
+
+def _unstage_materialization_payload(
+    payload: dict[str, Any],
+    *,
+    unit_id: str,
+) -> UnstagedMaterializationUnit:
+    """Remove one scratch unit and rows that no surviving unit can consume."""
+    from vfx_harness.domain.work_units import WorkUnit, bound_claim_contract_ids
+
+    if payload.get("schema") != MATERIALIZATION_SCHEMA:
+        raise ValueError("candidate has unsupported materialization schema")
+    stages = _rows(payload.get("layer") or {}, "stages", "candidate.layer")
+    parsed = [
+        WorkUnit.parse(row, f"staged unit[{index}]")
+        for index, row in enumerate(stages)
+    ]
+    target_index = next(
+        (index for index, unit in enumerate(parsed) if unit.id == unit_id), None
+    )
+    if target_index is None:
+        available = ", ".join(unit.id for unit in parsed) or "(none)"
+        raise ValueError(
+            f"cannot unstage unknown unit {unit_id!r}; staged unit ids: {available}"
+        )
+    dependants = sorted(
+        unit.id
+        for unit in parsed
+        if unit.id != unit_id
+        and (
+            unit_id in unit.depends_on
+            or any(consume.producer == unit_id for consume in unit.consumes)
+        )
+    )
+    if dependants:
+        raise ValueError(
+            f"cannot unstage unit {unit_id!r}; remaining unit(s) "
+            + ", ".join(dependants)
+            + " depend on or consume it. Unstage dependants first, or patch their exact "
+            "depends_on/consumes fields before retrying."
+        )
+
+    target = parsed[target_index]
+    surviving = tuple(unit for unit in parsed if unit.id != unit_id)
+    surviving_contract_ids = {
+        contract_id
+        for unit in surviving
+        for contract_id in bound_claim_contract_ids(unit)
+    }
+    removed_contract_ids = tuple(
+        contract_id
+        for contract_id in bound_claim_contract_ids(target)
+        if contract_id not in surviving_contract_ids
+    )
+    removed_contract_set = set(removed_contract_ids)
+
+    del stages[target_index]
+    contracts = _rows(payload, "scene_contracts", "candidate")
+    payload["scene_contracts"] = [
+        row
+        for row in contracts
+        if str(row.get("id") or "") not in removed_contract_set
+    ]
+
+    removed_requirement_ids: list[str] = []
+    retained_bindings: list[dict[str, Any]] = []
+    for row in _rows(payload, "requirement_bindings", "candidate"):
+        contract_ids = [
+            str(contract_id)
+            for contract_id in row.get("contract_ids") or []
+            if str(contract_id) not in removed_contract_set
+        ]
+        if row.get("contract_ids") is not None:
+            if not contract_ids:
+                removed_requirement_ids.append(str(row.get("requirement_id") or ""))
+                continue
+            row = {**row, "contract_ids": contract_ids}
+        retained_bindings.append(row)
+    payload["requirement_bindings"] = retained_bindings
+    _validate_local_staged_units(payload)
+    return UnstagedMaterializationUnit(
+        unit_id=unit_id,
+        removed_contract_ids=removed_contract_ids,
+        removed_requirement_ids=tuple(removed_requirement_ids),
+    )
+
+
+def unstage_materialization_unit(
+    materialization_path: str | Path,
+    *,
+    unit_id: str,
+    expected_revision: str | None = None,
+) -> UnstagedMaterializationUnit:
+    """Retire one unit from unpublished scratch through the candidate transaction."""
+    token = str(unit_id).strip()
+    if not token:
+        raise ValueError("unit_id is required")
+    result: UnstagedMaterializationUnit | None = None
+
+    def mutate(payload: dict[str, Any]) -> None:
+        nonlocal result
+        result = _unstage_materialization_payload(payload, unit_id=token)
+
+    _mutate_materialization_candidate(
+        Path(materialization_path),
+        mutate,
+        expected_revision=expected_revision,
+    )
+    assert result is not None
+    return result
 
 
 def apply_materialization_patch(

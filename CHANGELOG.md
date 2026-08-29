@@ -151,6 +151,11 @@ live in the linked Harness Improvement Records.
   the unresolved mutated roles, legal contract kinds and mutation selector fields;
   read-only comparison selectors no longer have to be rediscovered by staging retries
   ([HIR-0103](docs/improvements/HIR-0103-unresolved-write-family-names-legal-witnesses.md)).
+- Unpublished materialization scratch now has a typed, revision-checked unit-retirement
+  operation. It refuses surviving dependency or consume edges and prunes only contracts
+  and requirement bindings no surviving staged unit uses, without reopening whole-stage
+  patch authority
+  ([HIR-0104](docs/improvements/HIR-0104-materialization-decomposition-has-typed-unstage.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

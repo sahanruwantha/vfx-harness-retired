@@ -535,7 +535,9 @@ document or Read the seeded file; `materialization_status` supplies compact prog
 Call `stage_materialization_unit` for one independently bounded unit, then wait for its
 result before authoring the next unit. Never issue several staging calls in one assistant
 turn. Include only that unit, its scene contracts, and the owned requirement bindings it
-closes. After all units are
+closes. If a later cross-unit finding proves a staged decomposition wrong, call
+`unstage_materialization_unit` in reverse dependency order; never replace
+`/layer/stages` through `patch_materialization`. After all units are
 staged, call `finalize_materialization`; repair its complete findings with
 `patch_materialization`, then finalize again. The completed candidate must contain non-empty
 bounded stages and close every
@@ -621,6 +623,7 @@ global authority, create unit state, write prose, or write another file."""
         enabled_tools=frozenset({
             "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
             "gate_preview", "escalate_vocabulary_gap", "stage_materialization_unit",
+            "unstage_materialization_unit",
             "materialization_status", "finalize_materialization", "patch_materialization",
         }),
         candidate_materialization=target,
@@ -630,6 +633,7 @@ global authority, create unit state, write prose, or write another file."""
     materialization_tools = _phase_tools(
         pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
         "gate_preview", "escalate_vocabulary_gap", "stage_materialization_unit",
+        "unstage_materialization_unit",
         "materialization_status", "finalize_materialization", "patch_materialization",
     )
     options = ClaudeAgentOptions(

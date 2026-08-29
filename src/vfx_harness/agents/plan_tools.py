@@ -1622,6 +1622,57 @@ def build_plan_tools(
         )
 
     @tool(
+        "unstage_materialization_unit",
+        "Remove exactly one previously staged unit from unpublished materialization "
+        "scratch when later validation proves the decomposition wrong. The locked, "
+        "revision-checked transaction also removes contracts no surviving unit binds "
+        "and prunes requirement bindings that become empty. It refuses while a "
+        "surviving unit depends on or consumes the target; unstage in reverse dependency "
+        "order or patch those exact references first. This never changes selected "
+        "authority or durable work-unit state.",
+        {
+            "type": "object",
+            "properties": {"unit_id": {"type": "string", "minLength": 1}},
+            "required": ["unit_id"],
+            "additionalProperties": False,
+        },
+    )
+    async def unstage_materialization_unit_tool(args):
+        nonlocal materialization_revision_token
+        candidate = Path(candidate_materialization) if candidate_materialization else None
+        if candidate is None:
+            return _text(
+                "unstage_materialization_unit is only available during layer materialization",
+                is_error=True,
+            )
+        from vfx_harness.orchestration.jit_materialization import (
+            materialization_candidate_revision,
+            unstage_materialization_unit,
+        )
+
+        try:
+            async with materialization_write_lock:
+                result = await anyio.to_thread.run_sync(
+                    lambda: unstage_materialization_unit(
+                        candidate,
+                        unit_id=args.get("unit_id"),
+                        expected_revision=materialization_revision_token,
+                    )
+                )
+                materialization_revision_token = materialization_candidate_revision(candidate)
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return _text(f"unit unstaging refused: {exc}", is_error=True)
+        return _text(
+            f"UNSTAGED unit {result.unit_id}: removed contract ids "
+            f"{list(result.removed_contract_ids)} and empty requirement bindings "
+            f"{list(result.removed_requirement_ids)}; candidate now has "
+            f"{len(payload['layer']['stages'])} unit(s), "
+            f"{len(payload['scene_contracts'])} contract(s), and "
+            f"{len(payload['requirement_bindings'])} requirement binding(s)."
+        )
+
+    @tool(
         "materialization_status",
         "Return compact harness-owned progress for the seeded materialization candidate: "
         "staged unit ids and counts only. Use this instead of Read; raw candidate JSON is "
@@ -1834,6 +1885,7 @@ def build_plan_tools(
     if candidate_materialization is not None:
         tools.extend([
             stage_materialization_unit_tool,
+            unstage_materialization_unit_tool,
             materialization_status,
             finalize_materialization,
             patch_materialization,

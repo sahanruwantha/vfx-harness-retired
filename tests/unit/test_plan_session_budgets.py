@@ -331,6 +331,7 @@ def test_materialization_registers_incremental_unit_staging_tools(tmp_path: Path
         tmp_path,
         enabled_tools=frozenset({
             "stage_materialization_unit",
+            "unstage_materialization_unit",
             "materialization_status",
             "finalize_materialization",
         }),
@@ -339,6 +340,7 @@ def test_materialization_registers_incremental_unit_staging_tools(tmp_path: Path
 
     assert {name.split("__")[-1] for name in names} == {
         "stage_materialization_unit",
+        "unstage_materialization_unit",
         "materialization_status",
         "finalize_materialization",
     }
@@ -352,4 +354,5 @@ def test_materializer_denies_generic_write_and_requires_valid_staged_candidate()
     source = inspect.getsource(planner._materialize_deferred_layer)
     assert 'disallowed_tools=[*MATERIALIZATION_DENIED_TOOLS, "Write"]' in source
     assert "stage_materialization_unit" in source
+    assert "unstage_materialization_unit" in source
     assert "succeeded=lambda: target.is_file() and not _validate_target()" in source

@@ -482,6 +482,110 @@ def test_materialization_candidate_is_seeded_and_staged_one_unit_at_a_time(
     assert target.read_bytes() == before
 
 
+def test_unstage_materialization_unit_prunes_only_unbound_candidate_rows(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.orchestration.jit_materialization import (
+        materialization_candidate_revision,
+        seed_materialization_candidate,
+        stage_materialization_unit,
+        unstage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "unstage-materialization")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "unstage-materialization.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    stage_materialization_unit(
+        target,
+        unit=full["layer"]["stages"][0],
+        scene_contracts=full["scene_contracts"],
+        requirement_bindings=full["requirement_bindings"],
+    )
+    revision = materialization_candidate_revision(target)
+
+    result = unstage_materialization_unit(
+        target,
+        unit_id="polish",
+        expected_revision=revision,
+    )
+
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert result.unit_id == "polish"
+    assert set(result.removed_contract_ids) == {"polish-lock", "vis-f239", "vis-f240"}
+    assert result.removed_requirement_ids == ("R-final-lock",)
+    assert payload["layer"]["stages"] == []
+    assert payload["scene_contracts"] == []
+    assert payload["requirement_bindings"] == []
+    assert materialization_candidate_revision(target) != revision
+
+
+def test_unstage_materialization_unit_refuses_surviving_dependant(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+        unstage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "unstage-dependant")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "unstage-dependant.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    unit = full["layer"]["stages"][0]
+    stage_materialization_unit(
+        target,
+        unit=unit,
+        scene_contracts=full["scene_contracts"],
+        requirement_bindings=full["requirement_bindings"],
+    )
+    successor = json.loads(json.dumps(unit))
+    successor["id"] = "successor"
+    successor["plan"] = "plans/02_polish/successor.md"
+    successor["depends_on"] = ["polish"]
+    successor["mutates"]["roles"] = ["polish.successor"]
+    successor["mutates"]["controls"] = ["next_hold"]
+    successor["mutates"]["control_roles"] = {"next_hold": ["polish.successor"]}
+    successor["mutates"]["script_spans"] = ["build/units/02_polish/successor.py"]
+    claim = successor["evaluation"]["claims"][0]
+    claim["id"] = "successor-claim"
+    claim["repair_owner"] = "successor"
+    claim["subject_roles"] = ["polish.successor"]
+    claim["subject_controls"] = ["next_hold"]
+    claim["evidence"] = [{"kind": "scene_contract", "id": "successor-lock"}]
+    successor["evaluation"].pop("composition_context", None)
+    successor_contract = {
+        **full["scene_contracts"][0],
+        "id": "successor-lock",
+    }
+    stage_materialization_unit(
+        target,
+        unit=successor,
+        scene_contracts=[successor_contract],
+        requirement_bindings=[],
+    )
+    before = target.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match=r"remaining unit\(s\) successor depend on or consume it",
+    ):
+        unstage_materialization_unit(target, unit_id="polish")
+
+    assert target.read_bytes() == before
+
+
 def test_materialization_candidate_compare_and_swap_serializes_overlapping_writers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

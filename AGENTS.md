@@ -164,6 +164,10 @@ effect.
   already derived for siblings, its registry-backed write-kind witnesses, and the legal
   mutation selector fields. Comparison selectors such as `compare_roles` are read-only
   and never force the materializer to discover that rule by staging retries (HIR-0103).
+- An unpublished staged unit that becomes invalid after cross-unit validation is retired
+  only through the typed, revision-checked materialization transaction. Retirement names
+  one unit, refuses surviving dependants or consumers, and prunes only authority no
+  surviving unit binds; it never grants whole-array patch authority (HIR-0104).
 - A recurring guess is a missing tool. Build the instrument at the owning boundary and grant it
   to the roles that need it; do not tune prompts to guess better.
 
@@ -318,6 +322,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   transaction. Only `stage_materialization_unit` may add, replace, or reorder stage rows;
   field patches affecting units or their contracts run the same local staging gates before
   bytes change. Concurrent calls cannot overwrite a previously staged prefix (HIR-0100).
+  `unstage_materialization_unit` is the only retirement surface for unpublished scratch:
+  it removes one named unit under the same transaction, refuses surviving dependency or
+  consume edges, and prunes only rows no surviving unit binds (HIR-0104).
   Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
   `log_message` journals only when bound (HIR-0038).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is
