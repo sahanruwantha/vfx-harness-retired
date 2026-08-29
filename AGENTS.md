@@ -291,7 +291,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   freeze-protects lifecycle-active vis on this layer, including sibling-owned
   rows (HIR-0051). If a protected vis role is produced by another same-layer unit,
   that producer must be in the geometry unit's transitive dependency closure; a future
-  producer is an unsealable DAG and publication fails closed (HIR-0057).
+  producer is an unsealable DAG and publication fails closed (HIR-0057). Mutual
+  producer edges are reported as one strongly connected cycle with every involved unit,
+  contract, role, and edge; reordering or lifecycle edits cannot repair that cycle
+  (HIR-0106).
   Every scene-contract kind that projects or renders through the active camera must bind
   on a unit whose dependency closure (or an earlier materialized layer) provides a camera;
   otherwise publication fails `composition-bootstrap` (HIR-0085).

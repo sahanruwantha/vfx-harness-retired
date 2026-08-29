@@ -552,12 +552,32 @@ GEOMETRY_VIS_DEPENDENCY_RULE = (
 )
 
 
+GEOMETRY_VIS_CYCLE_RULE = (
+    "mutually protecting geometry units cannot be made sealable by reordering, "
+    "narrowing protects, or changing visibility lifecycle: every geometry provider "
+    "freezes every lifecycle-active visible_fraction row on its layer. Retire the "
+    "involved unpublished units in reverse dependency order, then either author all "
+    "judged surfaces in one geometry unit whose roles truthfully form one derived "
+    "write-cluster, or use already-existing owner-granted dressable geometry so only "
+    "one unit provides geometry. Do not remove a real geometry capability, weaken "
+    "visibility, or add cyclic depends_on edges."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class GeometryVisDependencyGap:
     unit_id: str
     contract_id: str
     role: str
     producer_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryVisDependencyCycle:
+    unit_ids: tuple[str, ...]
+    contract_ids: tuple[str, ...]
+    roles: tuple[str, ...]
+    edges: tuple[tuple[str, str], ...]
 
 
 def geometry_vis_dependency_gaps(
@@ -625,6 +645,82 @@ def geometry_vis_dependency_gaps(
                         )
                     )
     return tuple(gaps)
+
+
+def geometry_vis_dependency_cycles(
+    units: Sequence[WorkUnit],
+    rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+    layer_id: str | int,
+) -> tuple[GeometryVisDependencyCycle, ...]:
+    """Compile mutually unsealable geometry-protection gaps into cycle cards."""
+    gaps = geometry_vis_dependency_gaps(units, rows, layer_id)
+    graph: dict[str, set[str]] = {unit.id: set() for unit in units}
+    for gap in gaps:
+        graph.setdefault(gap.unit_id, set()).update(gap.producer_ids)
+
+    index = 0
+    indices: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    components: list[tuple[str, ...]] = []
+
+    def visit(node: str) -> None:
+        nonlocal index
+        indices[node] = index
+        lowlinks[node] = index
+        index += 1
+        stack.append(node)
+        on_stack.add(node)
+        for successor in sorted(graph.get(node, ())):
+            if successor not in indices:
+                visit(successor)
+                lowlinks[node] = min(lowlinks[node], lowlinks[successor])
+            elif successor in on_stack:
+                lowlinks[node] = min(lowlinks[node], indices[successor])
+        if lowlinks[node] != indices[node]:
+            return
+        component: list[str] = []
+        while stack:
+            member = stack.pop()
+            on_stack.remove(member)
+            component.append(member)
+            if member == node:
+                break
+        if len(component) > 1:
+            components.append(tuple(sorted(component)))
+
+    for unit_id in sorted(graph):
+        if unit_id not in indices:
+            visit(unit_id)
+
+    cycles: list[GeometryVisDependencyCycle] = []
+    for component in sorted(components):
+        members = set(component)
+        relevant = tuple(
+            gap
+            for gap in gaps
+            if gap.unit_id in members and any(pid in members for pid in gap.producer_ids)
+        )
+        edges = tuple(
+            sorted(
+                {
+                    (gap.unit_id, producer)
+                    for gap in relevant
+                    for producer in gap.producer_ids
+                    if producer in members
+                }
+            )
+        )
+        cycles.append(
+            GeometryVisDependencyCycle(
+                unit_ids=component,
+                contract_ids=tuple(sorted({gap.contract_id for gap in relevant})),
+                roles=tuple(sorted({gap.role for gap in relevant})),
+                edges=edges,
+            )
+        )
+    return tuple(cycles)
 
 
 # Judge lists are structural. Scene contracts may still measure other frames; the

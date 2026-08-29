@@ -1435,9 +1435,11 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         # which an earlier geometry unit must freeze-protect before sealing.
         try:
             from vfx_harness.domain.work_units import (
+                GEOMETRY_VIS_CYCLE_RULE,
                 GEOMETRY_VIS_DEPENDENCY_RULE,
                 PROJECTED_ORIGIN_REPAIR_RULE,
                 WorkUnit,
+                geometry_vis_dependency_cycles,
                 geometry_vis_dependency_gaps,
                 point_projection_interface_gaps,
             )
@@ -1450,7 +1452,24 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             # Typed layer validation owns malformed units. Avoid duplicating its
             # partial-shape findings here.
             typed_stages = ()
-        for gap in geometry_vis_dependency_gaps(typed_stages, scene_rows, lid):
+        vis_gaps = geometry_vis_dependency_gaps(typed_stages, scene_rows, lid)
+        vis_cycles = geometry_vis_dependency_cycles(typed_stages, scene_rows, lid)
+        cyclic_edges = {edge for cycle in vis_cycles for edge in cycle.edges}
+        for cycle in vis_cycles:
+            edge_text = ", ".join(f"{source}->{target}" for source, target in cycle.edges)
+            out.append(
+                Finding(
+                    "geometry-vis-cycle",
+                    True,
+                    f"layer {lid} units {', '.join(cycle.unit_ids)}",
+                    f"mutually protect contracts {', '.join(cycle.contract_ids)} on "
+                    f"roles {', '.join(cycle.roles)} through producer edges {edge_text}",
+                    GEOMETRY_VIS_CYCLE_RULE,
+                )
+            )
+        for gap in vis_gaps:
+            if any((gap.unit_id, producer) in cyclic_edges for producer in gap.producer_ids):
+                continue
             out.append(
                 Finding(
                     "geometry-vis-dependency",

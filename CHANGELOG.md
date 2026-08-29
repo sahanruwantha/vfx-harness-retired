@@ -160,6 +160,10 @@ live in the linked Harness Improvement Records.
   indexed stable row ids, and the exact append action. Negative indices are rejected
   instead of mutating from the end
   ([HIR-0105](docs/improvements/HIR-0105-json-pointer-rejection-enumerates-live-list.md)).
+- Mutual geometry/visibility producer gaps now compile into one strongly connected
+  cycle finding with the exact units, contracts, roles, and directed edges. Internal
+  edge findings are suppressed while unrelated acyclic HIR-0057 gaps remain intact
+  ([HIR-0106](docs/improvements/HIR-0106-mutual-geometry-vis-is-one-cycle-finding.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

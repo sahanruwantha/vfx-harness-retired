@@ -418,14 +418,30 @@ def validate_materialization(
     # never seal: its protected evidence is due before its producer exists.
     if layer is not None:
         from vfx_harness.domain.work_units import (
+            GEOMETRY_VIS_CYCLE_RULE,
             GEOMETRY_VIS_DEPENDENCY_RULE,
             PROJECTED_ORIGIN_REPAIR_RULE,
+            geometry_vis_dependency_cycles,
             geometry_vis_dependency_gaps,
             point_projection_interface_gaps,
         )
 
         unit_index_by_id = {unit.id: index for index, unit in enumerate(layer.stages)}
-        for gap in geometry_vis_dependency_gaps(layer.stages, scene_rows, layer_id):
+        vis_gaps = geometry_vis_dependency_gaps(layer.stages, scene_rows, layer_id)
+        vis_cycles = geometry_vis_dependency_cycles(layer.stages, scene_rows, layer_id)
+        cyclic_edges = {edge for cycle in vis_cycles for edge in cycle.edges}
+        for cycle in vis_cycles:
+            edge_text = ", ".join(f"{source}->{target}" for source, target in cycle.edges)
+            note(
+                json_ptr("layer", "stages"),
+                f"mutual geometry visibility cycle among units {list(cycle.unit_ids)}; "
+                f"protected contracts {list(cycle.contract_ids)} select roles "
+                f"{list(cycle.roles)}; producer edges are [{edge_text}]. "
+                + GEOMETRY_VIS_CYCLE_RULE,
+            )
+        for gap in vis_gaps:
+            if any((gap.unit_id, producer) in cyclic_edges for producer in gap.producer_ids):
+                continue
             note(
                 json_ptr(
                     "layer",
