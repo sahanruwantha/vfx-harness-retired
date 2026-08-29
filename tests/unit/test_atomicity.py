@@ -742,6 +742,34 @@ def test_same_namespace_partial_family_coverage_is_unresolved() -> None:
     assert any(gap.code == "unresolved_family" for gap in gaps)
 
 
+def test_unresolved_family_names_roles_and_registered_witnesses() -> None:
+    unit = _unit(
+        "stagger",
+        roles=["iris.blades.lead", "iris.blades.trail"],
+        contract_id="stagger-onset",
+        controls=["iris.unlock"],
+    )
+    rows = [
+        {
+            **_count_row("stagger-onset", ["iris.blades.lead"], kind="onset_order"),
+            "compare_roles": ["iris.blades.trail"],
+            "frames": [1, 36],
+        }
+    ]
+
+    gaps = atomicity_gaps([unit], rows, layer_id="2")
+    unresolved = [gap for gap in gaps if gap.code == "unresolved_family"]
+
+    assert len(unresolved) == 1
+    detail = unresolved[0].detail
+    assert "unresolved mutated role(s): iris.blades.trail" in detail
+    assert "instrument family 'keyframe'" in detail
+    assert "animation_count" in detail
+    assert "keyframe_schedule" in detail
+    assert "mutation selector field (roles, control_roles" in detail
+    assert "compare_roles are read-only observations" in detail
+
+
 def test_coordination_uses_exact_control_role_mapping_not_participant_names() -> None:
     unit = _unit(
         "balance",

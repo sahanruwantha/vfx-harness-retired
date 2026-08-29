@@ -147,6 +147,10 @@ live in the linked Harness Improvement Records.
   checkpoints stay, changed/new closure reopens, and removed accepted units are
   superseded by the amendment rather than misclassified as orphans
   ([HIR-0102](docs/improvements/HIR-0102-remat-replan-base-is-durable-unit-state.md)).
+- Unresolved derived write families now return a registry-backed witness card naming
+  the unresolved mutated roles, legal contract kinds and mutation selector fields;
+  read-only comparison selectors no longer have to be rediscovered by staging retries
+  ([HIR-0103](docs/improvements/HIR-0103-unresolved-write-family-names-legal-witnesses.md)).
 - The active work unit is compiled into one scope card — mutation surface, bound
   contracts, claims, judge frames, and `run_bpy` helper signatures — shared by
   kickoff, `CLAUDE.md`, and the `unit_scope` tool

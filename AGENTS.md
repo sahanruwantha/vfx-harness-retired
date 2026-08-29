@@ -160,6 +160,10 @@ effect.
 - Rejections teach: tool failures and validation rejections name the violated contract, expected
   versus found, and the legal next actions. A selector miss reports both sides — what was
   requested and what actually exists (HIR-0018).
+- An unresolved write-family rejection names the unresolved mutated roles, the family
+  already derived for siblings, its registry-backed write-kind witnesses, and the legal
+  mutation selector fields. Comparison selectors such as `compare_roles` are read-only
+  and never force the materializer to discover that rule by staging retries (HIR-0103).
 - A recurring guess is a missing tool. Build the instrument at the owning boundary and grant it
   to the roles that need it; do not tune prompts to guess better.
 

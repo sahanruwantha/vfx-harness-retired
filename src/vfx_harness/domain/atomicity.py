@@ -105,6 +105,16 @@ _CAMERA_PROPERTY_PREFIXES = (
     "data.ortho_scale",
 )
 
+WRITE_SELECTOR_FIELDS = (
+    "roles",
+    "control_roles",
+    "material_roles",
+    "node_roles",
+    "node_group_roles",
+    "from_node_roles",
+    "to_node_roles",
+)
+
 ATOMICITY_RULE = (
     "a work unit publishes one derived write-cluster (role-namespace × host class × "
     "instrument family). Distinct two-token mutation prefixes are distinct namespaces. "
@@ -121,6 +131,11 @@ UNRESOLVED_FAMILY_RULE = (
     "family is unpublished. Bind a write-kind contract to those roles, declare a unique "
     "provides capability for a single-role namespace, or split mixed hosts. Residual "
     "control is not a family."
+)
+
+COMPARISON_SELECTOR_RULE = (
+    "comparison selectors such as compare_roles are read-only observations and do not "
+    "witness mutation"
 )
 
 ONE_REPAIR_OWNER_RULE = (
@@ -229,17 +244,8 @@ def unknown_bound_kinds(
 
 
 def _row_selectors(row: Mapping[str, Any]) -> tuple[str, ...]:
-    keys = (
-        "roles",
-        "control_roles",
-        "material_roles",
-        "node_roles",
-        "node_group_roles",
-        "from_node_roles",
-        "to_node_roles",
-    )
     values: list[str] = []
-    for key in keys:
+    for key in WRITE_SELECTOR_FIELDS:
         for item in row.get(key) or ():
             if str(item):
                 values.append(str(item))
@@ -363,6 +369,46 @@ def _unresolved_roles_for_namespace(
         if not has_family:
             unresolved.append(role)
     return tuple(unresolved)
+
+
+def _registered_witness_kinds(family: str) -> tuple[str, ...]:
+    """Contract kinds that can publish ``family`` without graph-specific inference."""
+    return tuple(
+        sorted(
+            kind
+            for kind, registered_family in KIND_INSTRUMENT_FAMILY.items()
+            if registered_family == family
+        )
+    )
+
+
+def unresolved_family_guidance(
+    unit: WorkUnit,
+    namespace: str,
+    rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+) -> str:
+    """Typed next-action card for one unresolved mutation namespace."""
+    bound = bound_rows_for_unit(unit, rows)
+    unresolved_roles = _unresolved_roles_for_namespace(unit, namespace, bound)
+    families = tuple(sorted(_families_for_namespace(unit, namespace, bound)))
+    parts: list[str] = []
+    if unresolved_roles:
+        parts.append("unresolved mutated role(s): " + ", ".join(unresolved_roles))
+        parts.append(
+            "bind each unresolved role through a mutation selector field ("
+            + ", ".join(WRITE_SELECTOR_FIELDS)
+            + ")"
+        )
+    if len(families) == 1:
+        family = families[0]
+        witnesses = _registered_witness_kinds(family)
+        parts.append(f"namespace already derives instrument family {family!r}")
+        if witnesses:
+            parts.append(
+                f"registered {family} write-kind witnesses: " + ", ".join(witnesses)
+            )
+    parts.append(COMPARISON_SELECTOR_RULE)
+    return ". ".join(parts) + "."
 
 
 def _consumed_export_roles(unit: WorkUnit, units: Sequence[WorkUnit]) -> frozenset[str]:
@@ -535,6 +581,10 @@ def atomicity_gaps(
             )
         unresolved = unresolved_write_namespaces(unit, rows, units=units)
         if unresolved:
+            guidance = " ".join(
+                unresolved_family_guidance(unit, namespace, rows)
+                for namespace in unresolved
+            )
             gaps.append(
                 AtomicityGap(
                     unit.id,
@@ -542,7 +592,9 @@ def atomicity_gaps(
                     "write namespace(s) "
                     + ", ".join(unresolved)
                     + " have no typed instrument family. "
-                    + UNRESOLVED_FAMILY_RULE,
+                    + UNRESOLVED_FAMILY_RULE
+                    + " "
+                    + guidance,
                 )
             )
         clusters = write_clusters(unit, rows, units=units)
