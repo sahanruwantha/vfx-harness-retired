@@ -139,7 +139,9 @@ effect.
   including `camera.target`, never imply a capability (HIR-0098).
 - `inspect_scene(render/lights)` exposes the world/compositor identity, EEVEE volumetric and
   view-layer pass state, and light shape/distance settings; do not smuggle those reads through an
-  idempotent `run_bpy` assignment (HIR-0055).
+  idempotent `run_bpy` assignment (HIR-0055). Every `inspect_scene` call re-evaluates
+  the selected or current frame and reads evaluated object, camera, and light hosts;
+  omitting `frame=` never means accepting a stale depsgraph (HIR-0116).
 - Node-graph introspection enumerates both input values and output socket names; an unlinked
   producer must not force a read-only mutation probe or Blender-version guess (HIR-0061).
 - Framing, bbox, and visibility checks measure rendered subjects, not Light/Camera/Empty-style

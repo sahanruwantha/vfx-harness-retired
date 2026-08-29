@@ -206,6 +206,36 @@ def test_render_handler_restores_common_scene_settings(worker) -> None:
     )
 
 
+def test_scene_inspection_refreshes_current_frame_and_evaluated_hosts(worker) -> None:
+    """HIR-0116: omitting frame selects the current frame; it never skips evaluation."""
+    import inspect
+
+    events: list[tuple[str, int | None]] = []
+    depsgraph = object()
+    scene = types.SimpleNamespace(
+        frame_current=47,
+        frame_set=lambda frame: events.append(("frame_set", frame)),
+    )
+    view_layer = types.SimpleNamespace(
+        update=lambda: events.append(("view_layer_update", None))
+    )
+    worker.bpy.context = types.SimpleNamespace(
+        scene=scene,
+        view_layer=view_layer,
+        evaluated_depsgraph_get=lambda: depsgraph,
+    )
+
+    assert worker._refresh_inspection_scene() == (scene, depsgraph)
+    assert events == [("frame_set", 47), ("view_layer_update", None)]
+    events.clear()
+    assert worker._refresh_inspection_scene(12) == (scene, depsgraph)
+    assert events == [("frame_set", 12), ("view_layer_update", None)]
+
+    source = inspect.getsource(worker.h_inspect)
+    assert "sc, depsgraph = _refresh_inspection_scene(a.get(\"frame\"))" in source
+    assert source.count("evaluated_get(depsgraph)") >= 3
+
+
 def test_session_passes_the_selected_index_through(monkeypatch) -> None:
     from vfx_harness.blender.session import BlenderSession
 

@@ -1052,14 +1052,27 @@ def h_run(a: dict) -> dict:
             "scene": after}
 
 
+def _refresh_inspection_scene(frame=None):
+    """Return one freshly evaluated scene/depsgraph for typed inspection.
+
+    Blender may leave ``matrix_world`` at its pre-script value after a direct local
+    transform assignment until the dependency graph is evaluated. Re-setting even the
+    current frame is intentional: omitted ``frame=`` means "inspect now", not "accept
+    whatever evaluation another tool happened to trigger" (HIR-0116).
+    """
+    sc = bpy.context.scene
+    selected_frame = int(sc.frame_current if frame is None else frame)
+    sc.frame_set(selected_frame)
+    bpy.context.view_layer.update()
+    return sc, bpy.context.evaluated_depsgraph_get()
+
+
 def h_inspect(a: dict) -> dict:
     import checks
 
     section = a.get("section", "all")
     role_filter = str(a.get("role") or "").strip() or None
-    sc = bpy.context.scene
-    if a.get("frame") is not None:
-        sc.frame_set(int(a["frame"]))
+    sc, depsgraph = _refresh_inspection_scene(a.get("frame"))
     out: list[str] = []
     if section in ("all", "render"):
         from scene_report import render_status_lines
@@ -1078,10 +1091,13 @@ def h_inspect(a: dict) -> dict:
             if role_filter and not checks.match_semantic(role, [role_filter]):
                 continue
             shown += 1
+            evaluated = o.evaluated_get(depsgraph)
             owner = str(o.get("bvfx_owner_layer") or "-")
             loc = tuple(round(v, 2) for v in o.location)
-            world_loc = tuple(round(v, 2) for v in o.matrix_world.translation)
-            dims = tuple(round(v, 2) for v in o.dimensions)
+            world_loc = tuple(
+                round(v, 2) for v in evaluated.matrix_world.translation
+            )
+            dims = tuple(round(v, 2) for v in evaluated.dimensions)
             mods = ",".join(m.type for m in o.modifiers) or "-"
             psys = ",".join(p.name for p in getattr(o, "particle_systems", [])) or "-"
             out.append(
@@ -1103,7 +1119,7 @@ def h_inspect(a: dict) -> dict:
         out.append("lights:")
         lights = [o for o in sc.objects if o.type == "LIGHT"]
         for o in lights:
-            out.append(light_status_line(o))
+            out.append(light_status_line(o.evaluated_get(depsgraph)))
         if not lights:
             out.append("  (none)")
     if section in ("all", "cameras"):
@@ -1112,15 +1128,16 @@ def h_inspect(a: dict) -> dict:
         out.append("cameras:")
         cameras = [o for o in sc.objects if o.type == "CAMERA"]
         for o in cameras:
-            world = o.matrix_world
+            evaluated = o.evaluated_get(depsgraph)
+            world = evaluated.matrix_world
             forward = (world.to_quaternion() @ Vector((0.0, 0.0, -1.0))).normalized()
             out.append(
                 f"  {o.name} role={o.get('bvfx_role') or '-'!s} "
                 f"owner={o.get('bvfx_owner_layer') or '-'!s} "
                 f"world_loc={tuple(round(float(v), 4) for v in world.translation)} "
                 f"forward={tuple(round(float(v), 6) for v in forward)} "
-                f"lens={round(float(o.data.lens), 4)} "
-                f"sensor_width={round(float(o.data.sensor_width), 4)} "
+                f"lens={round(float(evaluated.data.lens), 4)} "
+                f"sensor_width={round(float(evaluated.data.sensor_width), 4)} "
                 f"active={o == sc.camera}"
             )
         if not cameras:

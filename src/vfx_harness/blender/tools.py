@@ -1808,9 +1808,10 @@ def build_blender_tools(
         "management, compositor, and "
         "render settings. section='lights' reports energy/color/visibility/location so "
         "light setup never needs a read-only run_bpy probe; section='cameras' reports "
-        "evaluated world pose, forward vector, lens, and sensor. Each object line includes "
+        "freshly evaluated world pose, forward vector, lens, and sensor. Every call "
+        "re-evaluates the current frame; pass frame= to select another frame. Each object line includes "
         "local/evaluated world location, dimensions, visibility, role, and owner. Pass "
-        "frame= for evaluated transforms and role= to filter by semantic bvfx_role "
+        "role= to filter by semantic bvfx_role "
         "(fnmatch). Use this to verify structure before spending a render.",
         {
             "type": "object",

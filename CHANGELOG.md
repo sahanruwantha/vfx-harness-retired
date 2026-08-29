@@ -56,6 +56,10 @@ live in the linked Harness Improvement Records.
   frame-bound evidence plus typed visibility protections, so sibling failures cannot
   authorize an out-of-scope script edit
   ([HIR-0115](docs/improvements/HIR-0115-candidate-readback-is-unit-scoped.md)).
+  Scene inspection now refreshes Blender's current frame and dependency graph on every
+  call and reads evaluated object, camera, and light hosts, so omitting `frame=` cannot
+  return a stale world transform
+  ([HIR-0116](docs/improvements/HIR-0116-scene-inspection-is-fresh-by-default.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan
