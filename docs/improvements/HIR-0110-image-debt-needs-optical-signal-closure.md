@@ -1,7 +1,7 @@
 ---
 id: HIR-0110
 title: Image debt needs optical-signal dependency closure
-status: proposed
+status: accepted
 introduced_in: unreleased
 date: 2026-08-29
 failure_class: image_debt_precedes_optical_signal
@@ -100,11 +100,49 @@ Focused fixtures cover:
 - registry-derived light, shading, World-volume, and compositor witness feedback;
 - materialization rejection with a JSON pointer and independent plan-gate rejection.
 
-Focused result before the production rerun: 6 tests passed. Atomicity, plan-record, and
-plan-improvement suites: 151 passed. Full repository and producing-run evidence are added
-after the mechanism is committed and exercised through the public CLI.
+Focused result: 6 tests passed. Atomicity, plan-record, and plan-improvement suites:
+151 passed. Full repository suite: 566 passed in 42.95 seconds.
+`.venv/bin/ruff check src tests` and `.venv/bin/vfx --help` passed. The repository's
+`pytest` launcher has a stale shebang pointing at a removed checkout, so verification used
+the same environment through `.venv/bin/python -m pytest`; no test semantics changed.
 
-Implementation commit: pending.
+The current selected view failed the new deterministic gate in 2.9 seconds with exactly
+two `image-signal-bootstrap` findings: `iris_blade_geometry` and
+`iris_rimlight_fixture`. The pre-fix producing build needed 849.5 seconds, 36 turns,
+$2.3965, and seven accepted mutations before the same absence appeared as two 100%-black
+frames. The gate therefore moved detection about 14 minutes earlier and before Blender or
+builder spend.
+
+Producing rematerialization run `20260829T134206Z-33c8f7` exercised the committed
+mechanism against bundle `1d3b117b…`. At 956.4 seconds, validation rejected
+`iris_rim_warning_lights`: its image debts preceded any signal provider, despite its light
+name and appearance labels. The finding enumerated the registered witnesses. The model's
+next attempted contract was `object_property(property=data.energy)`; HIR-0083 then exposed
+the resulting light+keyframe mix, so the candidate transaction unstaged that unit and
+published three independent units:
+
+- `iris_blade_mechanism`: geometry/keyframe mechanism with no image debt;
+- `iris_rim_chase_controller`: keyframe-only chase timing;
+- `iris_rim_light_emitters`: light-family provider owning both image debts.
+
+Validation passed at 1,155.7 seconds and finalization attested at 1,184.8 seconds. The
+outer apply-replan replaced stale durable ids, selected view
+`191752aa403bfd9ffa05df6f6c34876c9aeeeb6a371f45c3ef402805715fb620`
+with layer-plan hash `c17dfd041f7fd21ec13970553ad6d3958b75cb69ecef1770876f875912bfaa29`,
+and the first unit plan then passed its terminal gate. Layer 1 remained unchanged and
+passed.
+
+Materialization used 22 turns, 1,197.7 seconds, and $1.8962; first-unit planning used
+4 turns, 356.1 seconds, and $0.3674. The materialization transcript recorded 21 tool calls
+and seven typed rejections. Every rejection named the violated contract or legal next
+action; there were no outside-card reads or scene mutations. Tool names with identical
+empty inputs (`materialization_status`, `finalize_materialization`, `gate_preview`) were
+called only after candidate revision/state changed, not repeated against the same state.
+The largest remaining cost was one 778-second silent interval between initial vocabulary
+reads and first staging, a model-latency outlier rather than schema discovery or transport
+failure.
+
+Implementation commit: `45121b3` (`fix: require optical signal before image debt`).
 
 ## Release and rollback
 
