@@ -271,9 +271,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   Required claims share one repair_owner (HIR-0083). Each unit publishes typed
   successor interfaces whose export values are roles, controls, or sealed contract
   ids. Authored `publishes` and `consumes` participate in `unit_digest`; a successor
-  is ready only when it declares the producer interface id/kind and that producer is
-  digest-matched. The live builder card carries those interfaces, the producer digest,
-  and predecessor publish interfaces (HIR-0084).
+  that declares `consumes` is ready only when that exact producer interface id/kind is
+  digest-matched. A dependency with no `consumes` is a legal status-only edge and grants
+  no interface. The live builder card carries only the exact consumed interfaces from
+  direct predecessors, with producer digests (HIR-0084).
   Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
   `log_message` journals only when bound (HIR-0038).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is
@@ -396,14 +397,14 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   active unit: mutation roles/controls/dresses/spans, bound contracts, claims, judge frames,
   the `run_bpy` helper inventory, including parameter and return contracts compiled from
   the worker source, authored publish interfaces, the producer digest, declared consumes,
-  and digest-matched predecessor publish interfaces. The kickoff keeps every evaluator field on the exact
+  and exact consumed, digest-matched direct-predecessor publish interfaces. The kickoff keeps every evaluator field on the exact
   active-unit contract closure; unit boundedness never means hiding graph/socket/path selectors.
   Query that card; do not `inspect.getsource`, guess a helper result shape, or guess a
   sibling unit (HIR-0025, HIR-0079). A declared live unit may not reload the full brief or raw plan
   catalogs; relevant authority is the compiled card and embedded unit plan. JIT unit planning
   likewise has no raw `Read` surface: it receives the exact active-unit card plus compact passed
-  predecessor interfaces (exported roles, controls, capabilities, sealed ids, and typed
-  digest-bound publish interfaces) and bounded
+  direct-predecessor interfaces (exported roles, controls, capabilities, sealed ids, and
+  only the typed digest-bound publish interfaces named by `consumes`) and bounded
   outcome/amendment/gap feedback, never dependency evaluator internals, selected catalogs, or scripts.
   Finalizer journals start after reset/dependency replay and end
   at the selected checkpoint. Layer materialization has no raw `Read` surface: kickoff compiles
@@ -516,8 +517,8 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   Publication also refuses a unit whose derived write-clusters are heterogeneous
   without a typed exception; the finding names the clusters. A successor consumes
   digest-matched publish interfaces from the compiled card, not producer scripts.
-  Consumed exports are read-only; `depends_on` without `consumes` is not interface
-  compatibility. Authored interface identity participates in the producer digest
+  Consumed exports are read-only; `depends_on` without `consumes` is a status-only edge,
+  not interface compatibility, and grants no producer interface. Authored interface identity participates in the producer digest
   (HIR-0083, HIR-0084).
 - Appearance on another layer's geometry is owner-granted authority: the owner declares
   `dressable` selectors, the dresser declares `dresses`, validation closes over both, and

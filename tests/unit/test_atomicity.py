@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -455,6 +456,15 @@ def test_stale_producer_digest_omits_publish_interfaces() -> None:
         durable_status="passed",
     )
     assert stale["publish_interfaces"] == []
+    assert stale["dependency_status"] == "stale"
+    missing_hash = compile_predecessor_interface(
+        card,
+        producer_digest="producer-digest",
+        durable_hash="",
+        durable_status="passed",
+    )
+    assert missing_hash["publish_interfaces"] == []
+    assert missing_hash["dependency_status"] == "stale"
     superseded = compile_predecessor_interface(
         card,
         producer_digest="producer-digest",
@@ -520,18 +530,28 @@ def test_assembly_is_unready_until_producer_digest_and_interface_match(tmp_path:
     assert any(gap.code == "incompatible_interface" for gap in gaps)
     assert CONSUME_INTERFACE_RULE in " ".join(gap.detail for gap in gaps)
 
-    undeclared = _unit(
-        "iris_assembly",
-        roles=["iris.assembly"],
-        contract_id="assembly-count",
+    status_only = _unit(
+        "iris_finish_after_blade",
+        roles=["iris.finish"],
+        contract_id="finish-count",
         depends_on=["iris_blade_master"],
         provides=["geometry"],
     )
-    assert ready_units(
-        (blade, undeclared),
+    ready_status = ready_units(
+        (blade, status_only),
         {"iris_blade_master"},
         sealed_producers={"iris_blade_master"},
-    ) == ()
+    )
+    assert ready_status == (status_only,)
+    assert not [
+        gap
+        for gap in atomicity_gaps(
+            [blade, status_only],
+            [_count_row("finish-count", ["iris.finish"], kind="mesh_vertex_count")],
+            layer_id="3",
+        )
+        if gap.code == "missing_consumption"
+    ]
 
 
 def test_authored_interface_change_invalidates_producer_digest() -> None:
@@ -606,6 +626,83 @@ def test_same_namespace_light_and_volume_write_kinds_are_two_clusters() -> None:
     assert mixed
 
 
+def test_same_namespace_partial_family_coverage_is_unresolved() -> None:
+    unit = _unit(
+        "rig_mix",
+        roles=["world.rig.light", "world.rig.volume"],
+        contract_id="rig-energy",
+    )
+    rows = [_energy_row("rig-energy", ["world.rig.light"])]
+    labels = {cluster.label() for cluster in write_clusters(unit, rows)}
+    assert labels == {"world.rig/control_host/light"}
+    gaps = atomicity_gaps([unit], rows, layer_id="2")
+    assert any(gap.code == "unresolved_family" for gap in gaps)
+
+
+def test_coordination_uses_exact_control_role_mapping_not_participant_names() -> None:
+    unit = _unit(
+        "balance",
+        roles=["world.light.rig", "world.volume.fog", "asset.hero.mesh"],
+        contract_id="hero-mesh",
+        extra_contracts=["light-energy", "volume-density"],
+        controls=["light_level", "fog_density"],
+        provides=["geometry"],
+    )
+    unit = replace(
+        unit,
+        mutates=replace(
+            unit.mutates,
+            control_roles=(
+                ("fog_density", ("world.volume.fog",)),
+                ("light_level", ("world.light.rig",)),
+            ),
+        ),
+        evaluation=replace(
+            unit.evaluation,
+            claims=(
+                replace(
+                    unit.evaluation.claims[0],
+                    kind="interaction",
+                    coordination_owner="balance",
+                    participants=("lighting", "atmosphere"),
+                    controls=("light_level", "fog_density"),
+                ),
+            ),
+        ),
+    )
+    rows = [
+        _count_row("hero-mesh", ["asset.hero.mesh"], kind="mesh_vertex_count"),
+        _energy_row("light-energy", ["world.light.rig"]),
+        {
+            **_count_row("volume-density", ["world.volume.fog"], kind="node_socket_value"),
+            "graph": "world",
+            "socket": "Density",
+            "node_roles": ["world.volume.fog"],
+        },
+    ]
+    assert [cluster.label() for cluster in write_clusters(unit, rows)] == [
+        "asset.hero/geometry/mesh"
+    ]
+    assert not atomicity_gaps([unit], rows, layer_id="2")
+
+    unbounded = replace(
+        unit,
+        evaluation=replace(
+            unit.evaluation,
+            claims=(
+                replace(
+                    unit.evaluation.claims[0],
+                    participants=("world.light.rig", "world.volume.fog"),
+                    controls=("missing_control",),
+                ),
+            ),
+        ),
+    )
+    gaps = atomicity_gaps([unbounded], rows, layer_id="2")
+    assert any(gap.code == "invalid_coordination" for gap in gaps)
+    assert any(gap.code == "mixed_clusters" for gap in gaps)
+
+
 def test_builder_card_includes_authored_interfaces_digest_and_predecessors() -> None:
     blade = _unit(
         "iris_blade_master",
@@ -655,6 +752,56 @@ def test_builder_card_includes_authored_interfaces_digest_and_predecessors() -> 
     )
     assert live["producer_unit_digest"] == unit_digest(assembly)
     assert live["publish_interfaces"]
+
+
+def test_builder_card_exposes_only_exact_consumed_interfaces() -> None:
+    blade = _unit(
+        "iris_blade_master",
+        roles=["iris.blade_master"],
+        contract_id="blade-mesh",
+        provides=["geometry"],
+        publishes=[
+            *_instance_publish("iris.blade_master", "blade-mesh"),
+            {
+                "id": "iris.blade.asset_interface",
+                "kind": "asset_source",
+                "exports": {"role": "iris.blade_master"},
+            },
+        ],
+    )
+    assembly = _unit(
+        "iris_assembly",
+        roles=["iris.assembly"],
+        contract_id="assembly-count",
+        depends_on=["iris_blade_master"],
+        consumes=_consume("iris_blade_master", "iris.blade.instance_interface"),
+        provides=["geometry"],
+    )
+    rows = [
+        _count_row("blade-mesh", ["iris.blade_master"], kind="mesh_vertex_count"),
+        _count_row("assembly-count", ["iris.assembly"]),
+    ]
+    card = compile_scope_with_predecessors(
+        unit=assembly,
+        layer_id="3",
+        contracts=rows,
+        units=(blade, assembly),
+        durable_state={
+            "units": {
+                blade.id: {"status": "passed", "unit_hash": unit_digest(blade)},
+            }
+        },
+        helpers=(),
+    )
+    expected = [("iris.blade.instance_interface", "instance_source")]
+    assert [
+        (row["id"], row["kind"])
+        for row in card["predecessor_publish_interfaces"]
+    ] == expected
+    assert [
+        (row["id"], row["kind"])
+        for row in card["predecessor_interfaces"][0]["publish_interfaces"]
+    ] == expected
 
 
 def test_plan_gate_names_mixed_light_and_volume_clusters(tmp_path: Path) -> None:

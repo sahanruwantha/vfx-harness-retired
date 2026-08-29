@@ -22,6 +22,7 @@ from vfx_harness.domain.work_units import (
     WorkUnit,
     bound_claim_contract_ids,
     offered_interface_keys,
+    plan_selector_declared,
 )
 
 INSTRUMENT_FAMILIES = frozenset(
@@ -228,14 +229,54 @@ def _row_selectors(row: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(values)
 
 
-def _coordination_namespaces(unit: WorkUnit) -> frozenset[str]:
-    extra: set[str] = set()
-    for claim in unit.evaluation.claims:
-        if not claim.required or claim.kind != "interaction":
-            continue
-        extra.update(role_namespace(item) for item in claim.participants if item)
-        extra.update(role_namespace(item) for item in claim.controls if "." in item)
-    return frozenset(extra)
+def _coordination_claims_for(
+    unit: WorkUnit,
+    units: Sequence[WorkUnit],
+) -> tuple[Any, ...]:
+    """Interaction claims coordinated by ``unit`` across the candidate DAG.
+
+    ``participants`` are unit ids, never role selectors. The only legal bridge from
+    an interaction claim to mutation hosts is the coordination owner's exact
+    ``control_roles`` mapping.
+    """
+    return tuple(
+        claim
+        for owner in units
+        for claim in owner.evaluation.claims
+        if claim.required
+        and claim.kind == "interaction"
+        and claim.coordination_owner == unit.id
+    )
+
+
+def _coordination_control_errors(
+    unit: WorkUnit,
+    units: Sequence[WorkUnit],
+) -> tuple[str, ...]:
+    mapping = dict(unit.mutates.control_roles)
+    declared = set(unit.mutates.controls)
+    errors: list[str] = []
+    for claim in _coordination_claims_for(unit, units):
+        for control in claim.controls:
+            if control not in declared:
+                errors.append(f"{claim.id}:{control} is not mutable by {unit.id}")
+            elif control not in mapping:
+                errors.append(f"{claim.id}:{control} has no control_roles mapping")
+    return tuple(dict.fromkeys(errors))
+
+
+def _coordination_namespaces(
+    unit: WorkUnit,
+    units: Sequence[WorkUnit],
+) -> frozenset[str]:
+    if _coordination_control_errors(unit, units):
+        return frozenset()
+    mapping = dict(unit.mutates.control_roles)
+    namespaces: set[str] = set()
+    for claim in _coordination_claims_for(unit, units):
+        for control in claim.controls:
+            namespaces.update(role_namespace(role) for role in mapping.get(control, ()))
+    return frozenset(namespaces)
 
 
 def _provides_residual_family(unit: WorkUnit) -> str | None:
@@ -249,14 +290,13 @@ def _provides_residual_family(unit: WorkUnit) -> str | None:
     return None
 
 
-def _write_namespaces(unit: WorkUnit) -> tuple[str, ...]:
+def _write_namespaces(
+    unit: WorkUnit,
+    units: Sequence[WorkUnit],
+) -> tuple[str, ...]:
     namespaces = tuple(dict.fromkeys(role_namespace(role) for role in unit.mutates.roles))
-    coordination = _coordination_namespaces(unit)
-    if coordination:
-        remaining = tuple(ns for ns in namespaces if ns not in coordination)
-        if remaining:
-            return remaining
-    return namespaces
+    coordination = _coordination_namespaces(unit, units)
+    return tuple(namespace for namespace in namespaces if namespace not in coordination)
 
 
 def _roles_in_namespace(unit: WorkUnit, namespace: str) -> tuple[str, ...]:
@@ -269,22 +309,43 @@ def _families_for_namespace(
     bound: Sequence[Mapping[str, Any]],
 ) -> set[str]:
     families: set[str] = set()
-    for row in bound:
-        family = instrument_family_for_row(row)
-        if family is None:
-            continue
-        selectors = _row_selectors(row)
-        if not selectors:
-            continue
-        if not any(role_namespace(selector) == namespace for selector in selectors):
-            continue
-        families.add(family)
+    for role in _roles_in_namespace(unit, namespace):
+        for row in bound:
+            family = instrument_family_for_row(row)
+            if family is None:
+                continue
+            selectors = _row_selectors(row)
+            if any(plan_selector_declared(role, (selector,)) for selector in selectors):
+                families.add(family)
     if families:
         return families
     if len(_roles_in_namespace(unit, namespace)) > 1:
         return set()
     residual = _provides_residual_family(unit)
     return {residual or "control"}
+
+
+def _unresolved_roles_for_namespace(
+    unit: WorkUnit,
+    namespace: str,
+    bound: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    roles = _roles_in_namespace(unit, namespace)
+    if len(roles) <= 1:
+        return ()
+    unresolved: list[str] = []
+    for role in roles:
+        has_family = any(
+            instrument_family_for_row(row) is not None
+            and any(
+                plan_selector_declared(role, (selector,))
+                for selector in _row_selectors(row)
+            )
+            for row in bound
+        )
+        if not has_family:
+            unresolved.append(role)
+    return tuple(unresolved)
 
 
 def _consumed_export_roles(unit: WorkUnit, units: Sequence[WorkUnit]) -> frozenset[str]:
@@ -310,12 +371,15 @@ def _mutated_consumed_roles(unit: WorkUnit, exported: Iterable[str]) -> tuple[st
 def write_clusters(
     unit: WorkUnit,
     rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+    *,
+    units: Sequence[WorkUnit] = (),
 ) -> tuple[WriteCluster, ...]:
     """Derived write clusters after dressing, vis observation, and coordination exceptions."""
     bound = bound_rows_for_unit(unit, rows)
     clusters: list[WriteCluster] = []
     seen: set[tuple[str, str, str]] = set()
-    for namespace in _write_namespaces(unit):
+    candidate_units = tuple(units) or (unit,)
+    for namespace in _write_namespaces(unit, candidate_units):
         for family in sorted(_families_for_namespace(unit, namespace, bound)):
             host = host_class_for_family(family)
             key = (namespace, host, family)
@@ -329,12 +393,16 @@ def write_clusters(
 def unresolved_write_namespaces(
     unit: WorkUnit,
     rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+    *,
+    units: Sequence[WorkUnit] = (),
 ) -> tuple[str, ...]:
     bound = bound_rows_for_unit(unit, rows)
+    candidate_units = tuple(units) or (unit,)
     return tuple(
         namespace
-        for namespace in _write_namespaces(unit)
+        for namespace in _write_namespaces(unit, candidate_units)
         if not _families_for_namespace(unit, namespace, bound)
+        or _unresolved_roles_for_namespace(unit, namespace, bound)
     )
 
 
@@ -435,7 +503,20 @@ def atomicity_gaps(
                     + CONSUMED_ROLE_MUTATION_RULE,
                 )
             )
-        unresolved = unresolved_write_namespaces(unit, rows)
+        coordination_errors = _coordination_control_errors(unit, units)
+        if coordination_errors:
+            gaps.append(
+                AtomicityGap(
+                    unit.id,
+                    "invalid_coordination",
+                    "interaction controls are not bounded by the coordination owner's "
+                    "exact control_roles mapping: "
+                    + "; ".join(coordination_errors)
+                    + ". "
+                    + ATOMICITY_RULE,
+                )
+            )
+        unresolved = unresolved_write_namespaces(unit, rows, units=units)
         if unresolved:
             gaps.append(
                 AtomicityGap(
@@ -447,7 +528,7 @@ def atomicity_gaps(
                     + UNRESOLVED_FAMILY_RULE,
                 )
             )
-        clusters = write_clusters(unit, rows)
+        clusters = write_clusters(unit, rows, units=units)
         considered = []
         if unit.mutates.dresses:
             considered.append("dressing")
@@ -460,51 +541,26 @@ def atomicity_gaps(
             considered.append("coordination")
         if unit.consumes:
             considered.append("assembly")
-        if unit.depends_on:
-            if not unit.consumes:
-                gaps.append(
-                    AtomicityGap(
-                        unit.id,
-                        "missing_consumption",
-                        "depends_on "
-                        + ", ".join(unit.depends_on)
-                        + " without declared consumes. "
-                        + CONSUME_INTERFACE_RULE,
-                    )
-                )
-            else:
-                covered = {item.producer for item in unit.consumes}
-                missing_deps = sorted(set(unit.depends_on) - covered)
-                if missing_deps:
+        if unit.consumes:
+            by_id = {item.id: item for item in units}
+            for consume in unit.consumes:
+                producer = by_id.get(consume.producer)
+                if producer is None:
+                    continue
+                offered = offered_interface_keys(producer)
+                if (consume.interface_id, consume.kind) not in offered:
+                    labels = ", ".join(
+                        f"{interface_id}:{kind}" for interface_id, kind in offered
+                    ) or "(none)"
                     gaps.append(
                         AtomicityGap(
                             unit.id,
-                            "missing_consumption",
-                            "depends_on "
-                            + ", ".join(missing_deps)
-                            + " have no consumed interface. "
+                            "incompatible_interface",
+                            f"consumes {consume.interface_id}:{consume.kind} from "
+                            f"{consume.producer}, which offers {labels}. "
                             + CONSUME_INTERFACE_RULE,
                         )
                     )
-                by_id = {item.id: item for item in units}
-                for consume in unit.consumes:
-                    producer = by_id.get(consume.producer)
-                    if producer is None:
-                        continue
-                    offered = offered_interface_keys(producer)
-                    if (consume.interface_id, consume.kind) not in offered:
-                        labels = ", ".join(
-                            f"{interface_id}:{kind}" for interface_id, kind in offered
-                        ) or "(none)"
-                        gaps.append(
-                            AtomicityGap(
-                                unit.id,
-                                "incompatible_interface",
-                                f"consumes {consume.interface_id}:{consume.kind} from "
-                                f"{consume.producer}, which offers {labels}. "
-                                + CONSUME_INTERFACE_RULE,
-                            )
-                        )
         if len(clusters) > 1:
             labels = ", ".join(cluster.label() for cluster in clusters)
             gaps.append(

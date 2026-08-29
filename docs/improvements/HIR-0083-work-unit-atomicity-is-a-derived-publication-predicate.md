@@ -40,10 +40,13 @@ From each candidate `WorkUnit` and its bound contracts the harness derives write
 `(role_namespace × host_class × instrument_family)`. Role namespace is the first two dotted
 tokens of each `mutates.roles` selector. Host class follows the resolved instrument family,
 not a single unit-wide `provides` class. Instrument family is a closed map from bound
-write-kind evidence on that namespace. A namespace with multiple mutation roles and no
-write-kind family is unpublished (`unresolved_family`). Residual `control` is only for a
+write-kind evidence resolved per mutation role. A namespace with multiple mutation roles
+and any role lacking a write-kind family is unpublished (`unresolved_family`); one typed
+role cannot lend its family to an untyped sibling. Residual `control` is only for a
 single-role namespace. Unknown kinds fail closed. `dresses` does not create a write
-namespace. Image-domain and `visible_fraction` rows do not create a write family.
+namespace. Image-domain and `visible_fraction` rows do not create a write family. Bounded
+coordination resolves only the interaction owner's exact declared controls through that
+owner's `control_roles`; participant unit ids are never interpreted as role namespaces.
 Consumed interfaces are read-only: listing a producer export role in `mutates.roles` is
 `consumed_mutation`, and `depends_on` cannot strip a mixed cluster. Required claims share
 one `repair_owner`, the same ownership model compiled into `fault_owner_options` (HIR-0056).
@@ -66,10 +69,11 @@ clusters unrepresentable.
 named cluster, padding that cannot satisfy the gate, dressing and vis observation that
 still publish, assembly that mutates only its own roles while consuming `instance_source`,
 mutation of a producer export role (`consumed_mutation`), a fake dependency that cannot
-hide mixed clusters, same-namespace light+volume unresolved without write kinds and mixed
-with write kinds, and the same mixed charter refused at the plan gate and materialization
-write hook. HIR-0051/0057 vis fixtures remain the owning mechanisms for volume-owned mesh
-vis and unsatisfiable geometry-vis DAGs.
+hide mixed clusters, same-namespace light+volume unresolved with missing or partial write
+coverage and mixed with complete write kinds, exact control-mapped coordination that cannot
+be forged with participant strings, and the same mixed charter refused at the plan gate and
+materialization write hook. HIR-0051/0057 vis fixtures remain the owning mechanisms for
+volume-owned mesh vis and unsatisfiable geometry-vis DAGs.
 
 ## Release and rollback
 

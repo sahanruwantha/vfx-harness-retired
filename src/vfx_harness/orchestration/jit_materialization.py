@@ -354,6 +354,7 @@ def validate_materialization(
                 "unknown_kind": "evaluation",
                 "repair_owners": "evaluation",
                 "consumed_mutation": "mutates",
+                "invalid_coordination": "evaluation",
                 "unresolved_family": "mutates",
                 "missing_consumption": "consumes",
                 "incompatible_interface": "consumes",

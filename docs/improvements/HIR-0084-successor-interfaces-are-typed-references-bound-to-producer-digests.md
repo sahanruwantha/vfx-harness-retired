@@ -42,10 +42,12 @@ are omitted so schema-4 durable hashes stay comparable). Export values are valid
 against the producing unit's legal tokens. When omitted, the harness derives one
 interface from the first mutation role/control/dress selector and bound contract ids.
 Successors declare `consumes` `{producer, interface_id, kind}`. Predecessor cards and
-the live builder card include those interfaces only when the producer is `passed` and
-`unit_hash` equals the compiled producer digest. `ready_units` requires digest match
-**and** that each consumed id/kind is actually offered. Cross-schema stored hashes
-remain incomparable; `apply_replan` is the invalidation closure.
+the live builder card include only the exact consumed interfaces from direct predecessors,
+and only when the producer is `passed` and `unit_hash` equals the compiled producer digest.
+`ready_units` requires every dependency to be digest-matched and every declared consumed
+id/kind to be offered. A `depends_on` edge without `consumes` is legal ordering authority,
+not interface compatibility, and exposes no typed producer interface. Cross-schema stored
+hashes remain incomparable; `apply_replan` is the invalidation closure.
 
 ## Rejected patch-level alternatives
 
@@ -60,8 +62,9 @@ Letting successors Read producer scripts when a card is missing an origin.
 `test_stale_producer_digest_omits_publish_interfaces` and
 `test_assembly_is_unready_until_producer_digest_and_interface_match` pin digest-derived
 staleness and declared `instance_source` consumption. `test_builder_card_includes_authored_interfaces_digest_and_predecessors`
-pins the live card. Predecessor compilation adds `publish_interfaces` without catalogs or
-producer scripts.
+and `test_builder_card_exposes_only_exact_consumed_interfaces` pin the live card and its
+consume-filtered surface. Predecessor compilation adds no catalogs, transitive closure, or
+producer scripts. The status-only case pins that ordering does not force a fake interface.
 
 ## Release and rollback
 

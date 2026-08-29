@@ -121,23 +121,6 @@ def _contract_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return dict(row)
 
 
-def _transitive_predecessor_ids(unit: WorkUnit, units: Sequence[WorkUnit]) -> tuple[str, ...]:
-    by_id = {item.id: item for item in units}
-    found: list[str] = []
-    pending = list(unit.depends_on)
-    seen: set[str] = set()
-    while pending:
-        dep = pending.pop()
-        if dep in seen:
-            continue
-        seen.add(dep)
-        found.append(dep)
-        producer = by_id.get(dep)
-        if producer is not None:
-            pending.extend(producer.depends_on)
-    return tuple(sorted(found))
-
-
 def compile_unit_scope(
     *,
     unit: WorkUnit,
@@ -238,6 +221,7 @@ def compile_predecessor_interface(
     producer_digest: str = "",
     durable_hash: str = "",
     durable_status: str = "passed",
+    allowed_interface_keys: frozenset[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Project a passed dependency onto the interface its consumers may need."""
     mutates = card.get("mutates") or {}
@@ -248,17 +232,28 @@ def compile_predecessor_interface(
         dict(row)
         for row in (card.get("publish_interfaces") or [])
         if isinstance(row, Mapping)
+        and (
+            allowed_interface_keys is None
+            or (str(row.get("id") or ""), str(row.get("kind") or ""))
+            in allowed_interface_keys
+        )
     ]
-    stale = durable_status != "passed" or (
+    digest_bound = bool(durable_hash or producer_digest)
+    digest_matches = not digest_bound or (
         bool(durable_hash)
         and bool(producer_digest)
-        and durable_hash != producer_digest
+        and durable_hash == producer_digest
     )
+    stale = durable_status != "passed" or not digest_matches
     return {
         "schema": INTERFACE_SCHEMA,
         "unit_id": str(card.get("unit_id") or ""),
         "title": str(card.get("title") or ""),
-        "dependency_status": "passed",
+        "dependency_status": (
+            "passed"
+            if not stale
+            else ("stale" if durable_status == "passed" else (durable_status or "unavailable"))
+        ),
         "provides": list(card.get("provides") or []),
         "semantic_roles": list(mutates.get("roles") or []),
         "dressed_surfaces": list(mutates.get("dresses") or []),
@@ -305,9 +300,16 @@ def compile_scope_with_predecessors(
         unit_digest=producer_digest,
     )
     by_id = {item.id: item for item in units}
+    consumed_by_producer: dict[str, frozenset[tuple[str, str]]] = {}
+    for uid in unit.depends_on:
+        consumed_by_producer[uid] = frozenset(
+            (item.interface_id, item.kind)
+            for item in unit.consumes
+            if item.producer == uid
+        )
     durable_rows = (durable_state or {}).get("units") or {}
     predecessors: list[dict[str, Any]] = []
-    for uid in _transitive_predecessor_ids(unit, units):
+    for uid in unit.depends_on:
         producer = by_id.get(uid)
         if producer is None:
             continue
@@ -325,6 +327,7 @@ def compile_scope_with_predecessors(
                 producer_digest=pred_digest,
                 durable_hash=str(row.get("unit_hash") or ""),
                 durable_status=str(row.get("status") or ""),
+                allowed_interface_keys=consumed_by_producer[uid],
             )
         )
     card["predecessor_interfaces"] = predecessors

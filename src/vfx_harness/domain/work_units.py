@@ -832,8 +832,8 @@ ATOMICITY_PADDING_FIELDS = frozenset(
 CONSUME_INTERFACE_RULE = (
     "a successor declares each consumed interface by producer unit id, interface id, "
     "and kind. Ready-set and publication require that digest-matched producer to "
-    "publish that exact id and kind. depends_on without consumes is a status edge, "
-    "not interface compatibility (HIR-0084)."
+    "publish that exact id and kind. depends_on without consumes is a legal status "
+    "edge: it orders accepted work but grants no producer interface (HIR-0084)."
 )
 CONSUMED_ROLE_MUTATION_RULE = (
     "consumed publish interfaces are read-only inputs. Assembly mutates its own "
@@ -1117,14 +1117,9 @@ def consumption_is_satisfied(
     sealed_producers: set[str],
 ) -> bool:
     """True when every declared consume matches a sealed producer's offered interface."""
-    if not unit.depends_on:
-        return not unit.consumes
     if not unit.consumes:
-        return False
+        return True
     by_id = {item.id: item for item in units}
-    covered = {item.producer for item in unit.consumes}
-    if set(unit.depends_on) - covered:
-        return False
     for consume in unit.consumes:
         if consume.producer not in sealed_producers:
             return False

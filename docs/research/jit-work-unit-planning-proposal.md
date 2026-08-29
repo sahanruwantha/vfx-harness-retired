@@ -412,9 +412,10 @@ padding is unrepresentable.
 ### Independently valid asset publish (Proposal B)
 
 `iris_blade_master` must publish a valid mesh/pivot/instance interface without
-`iris_assembly` existing. The assembly unit must remain unready until it declares
-`consumes` for that interface id/kind, every required producer interface seals, and
-producer digests match durable state. Changing authored `publishes` must change the
+`iris_assembly` existing. An assembly that uses that source declares `consumes` for the
+interface id/kind and remains unready until it seals and the producer digest matches durable
+state. A genuine ordering-only `depends_on` remains legal without inventing a consumed
+interface and exposes no producer interface. Changing authored `publishes` must change the
 producer digest and invalidate the downstream closure.
 
 A changed blade unit digest must drop the prior interface from the successor card
