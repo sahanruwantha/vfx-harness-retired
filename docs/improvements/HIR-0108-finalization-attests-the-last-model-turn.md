@@ -1,7 +1,7 @@
 ---
 id: HIR-0108
 title: Finalization attests the last model turn
-status: proposed
+status: accepted
 introduced_in: unreleased
 date: 2026-08-29
 failure_class: successful_finalization_misclassified_as_turn_exhaustion
@@ -78,9 +78,24 @@ attested path. Materialization fixtures prove bundle mismatch or any candidate b
 change invalidates a finalization record. Planner policy fixtures prove the JIT session
 uses the attestation predicate rather than candidate existence.
 
-Producing-run evidence and broad regression results will be added after a
-materialization finishes on its last model turn or completes normally with the same
-attested post-condition.
+- Resilience, materialization, and planner-policy suites: `109 passed in 3.73s`.
+- Full repository suite: `559 passed in 42.42s`.
+- `.venv/bin/ruff check src tests`: `All checks passed!`.
+- `.venv/bin/vfx --help`: exit 0.
+- Producing run `20260829T120557Z-a242df` first reached a validation-passing
+  revision through `patch_materialization`, previewed the expected outer state-replan
+  residue, and ended without re-finalizing. The attestation predicate rejected that
+  otherwise-valid candidate and started bounded attempt 2; patch validation alone did
+  not publish.
+- Attempt 2 read the same revision (`6d8a1250...`), called
+  `finalize_materialization`, and received a typed current-revision attestation at
+  731.0 seconds. It then ended normally; the outer flow accepted the attestation,
+  published the three-unit Layer 2 view, applied the transactional unit-state replan,
+  and passed the first-unit plan gate. This proves both refusal before explicit
+  finalization and acceptance afterward. The max-turn acceptance branch remains
+  deterministically covered by the resilience fixture.
+
+Implementation commit: `dd7ef44` (`fix: attest terminal materialization revisions`).
 
 ## Release and rollback
 
