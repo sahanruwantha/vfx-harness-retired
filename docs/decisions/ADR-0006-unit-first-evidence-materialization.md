@@ -56,6 +56,12 @@ fail closed. Composed canonical replay evaluates the full claim fan-in. This kee
 cost and due context proportional to the active unit without weakening cumulative replay
 or allowing one role's visibility to hide another's (HIR-0132).
 
+The runtime view for one active unit retains the complete selected unit DAG. Unit-local
+judges, axes, script identity, and mutation authority may be projected, but sibling
+stages remain dependency and repair-owner authority. Otherwise a typed future visibility
+owner disappears from the projection and the conservative ambiguity rule falsely makes
+the current unit pay it (HIR-0135).
+
 ## Consequences
 
 Global planning can publish without acceptance fingerprints, executable stages, recipes, or

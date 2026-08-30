@@ -9,7 +9,11 @@ from pathlib import Path
 from tests.unit.test_plan_improvements import _layer_doc, _write
 from tests.unit.test_plan_records import _add_deferred_layer, _candidate, _jit_payload
 from tests.unit.test_plan_records import _write as _write_plan
-from vfx_harness.agents.builder import _executable_unit_verdict, _scope_unit_evidence
+from vfx_harness.agents.builder import (
+    _active_unit_layer_view,
+    _executable_unit_verdict,
+    _scope_unit_evidence,
+)
 from vfx_harness.agents.planner import _TWO_SIDED_CONTRACT_BINDING
 from vfx_harness.domain.work_units import (
     GEOMETRY_VIS_DEPENDENCY_RULE,
@@ -29,6 +33,7 @@ from vfx_harness.evidence.scene_checks import (
     _holds,
     visible_fraction_min,
 )
+from vfx_harness.orchestration.ledger import Layer
 from vfx_harness.orchestration.unit_state import freeze_checkpoint, initialize, load, transition
 
 
@@ -92,6 +97,73 @@ def _detail_unit(*, provides: list[str]) -> WorkUnit:
         },
         "unit.detail",
     )
+
+
+def test_active_unit_layer_view_keeps_full_dag_for_typed_vis_activation() -> None:
+    """A unit-local judge view must not erase sibling repair-owner authority (HIR-0135)."""
+
+    def unit(unit_id: str, contract_id: str, role: str, depends_on=()) -> WorkUnit:
+        template = _detail_unit(provides=["geometry"])
+        claim = replace(
+            template.evaluation.claims[0],
+            id=f"claim.{unit_id}",
+            repair_owner=unit_id,
+            subject_roles=(role,),
+            evidence=(EvidenceBinding("scene_contract", contract_id),),
+        )
+        return replace(
+            template,
+            id=unit_id,
+            title=unit_id,
+            depends_on=tuple(depends_on),
+            mutates=replace(
+                template.mutates,
+                roles=(role,),
+                script_spans=(f"build/units/2/{unit_id}.py",),
+            ),
+            evaluation=replace(template.evaluation, claims=(claim,)),
+        )
+
+    mass = unit("mass", "vis.mass", "building.mass")
+    roof = unit("roof", "vis.roof", "building.roof", ("mass",))
+    site = unit("site", "vis.site", "site.ground", ("mass", "roof"))
+    layer = Layer(
+        id="2",
+        script="build/02.py",
+        title="Form",
+        judges=((40, "refs/f040.png"),),
+        reads="full layer",
+        owns=("form",),
+        primary_judge=40,
+        stages=(mass, roof, site),
+    )
+    rows = [
+        {
+            "id": contract_id,
+            "kind": "visible_fraction",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "form",
+            "roles": [role],
+            "frame": 40,
+            "op": "min",
+            "lo": 0.2,
+        }
+        for contract_id, role in (
+            ("vis.mass", "building.mass"),
+            ("vis.roof", "building.roof"),
+            ("vis.site", "site.ground"),
+        )
+    ]
+
+    view = _active_unit_layer_view(layer, mass)
+
+    assert view.stages == (mass, roof, site)
+    assert geometry_vis_protection_ids_for_unit(
+        view.stages, mass, rows, "2", frame=40
+    ) == ("vis.mass",)
 
 
 def test_kickoff_copy_is_camera_or_mutator_not_any_unit() -> None:

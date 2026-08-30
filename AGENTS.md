@@ -346,7 +346,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   does not pretend the future surface exists. Unordered geometry is rejected with the
   one missing acyclic dependency; ambiguous/unbound vis remains conservatively
   layer-active and mutual ambiguity is reported as one cycle (HIR-0051, HIR-0057,
-  HIR-0106, HIR-0132).
+  HIR-0106, HIR-0132). A unit-local runtime view narrows judges and mutation through
+  `active_unit` but retains the parent layer's complete typed unit DAG; pruning sibling
+  stages would manufacture ambiguous ownership and falsely bill future visibility to
+  the active unit (HIR-0135).
   Every scene-contract kind that projects or renders through the active camera must bind
   on a unit whose dependency closure (or an earlier materialized layer) provides a camera;
   otherwise publication fails `composition-bootstrap` (HIR-0085).

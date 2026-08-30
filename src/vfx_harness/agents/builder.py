@@ -4959,6 +4959,39 @@ async def build_unit(
     return ledger
 
 
+def _unit_artifact_path(layer, unit) -> str:
+    spans = tuple(unit.mutates.script_spans)
+    if len(spans) != 1:
+        raise ValueError(
+            f"layer {layer.id} unit {unit.id} must own exactly one replayable script span; "
+            f"got {list(spans)}"
+        )
+    return spans[0]
+
+
+def _active_unit_layer_view(layer, unit):
+    """Compile unit-local judgment without discarding the parent unit DAG.
+
+    ``active_unit`` is the mutation and claim boundary.  ``layer.stages`` remains
+    dependency/repair-owner authority: pruning it to the active row makes later
+    typed visibility owners look unbound, which conservatively charges their rows
+    to the current geometry unit (HIR-0135).
+    """
+    unit_axes = tuple(dict.fromkeys(claim.axis for claim in unit.evaluation.claims))
+    unit_judges = tuple((point.frame, point.ref) for point in unit.evaluation.judges)
+    return replace(
+        layer,
+        script=_unit_artifact_path(layer, unit),
+        title=(layer.title if len(layer.stages) == 1 else f"{layer.title} · {unit.title}"),
+        judges=unit_judges,
+        reads=f"Work unit {unit.id}: "
+        + " ".join(claim.proposition for claim in unit.evaluation.claims),
+        owns=unit_axes,
+        primary_judge=unit.evaluation.primary_judge,
+        stages=layer.stages,
+    )
+
+
 async def build_layer(
     shot: Shot,
     layer,
@@ -4994,17 +5027,8 @@ async def build_layer(
     )
     from vfx_harness.orchestration.unit_state import load as load_unit_state
 
-    def artifact_for(unit) -> str:
-        spans = tuple(unit.mutates.script_spans)
-        if len(spans) != 1:
-            raise ValueError(
-                f"layer {layer.id} unit {unit.id} must own exactly one replayable script span; "
-                f"got {list(spans)}"
-            )
-        return spans[0]
-
     ordered_units = dependency_ordered_units(layer.stages)
-    artifacts = [artifact_for(unit) for unit in ordered_units]
+    artifacts = [_unit_artifact_path(layer, unit) for unit in ordered_units]
     if len(layer.stages) > 1:
         if len(set(artifacts)) != len(artifacts):
             raise ValueError(f"layer {layer.id} work units must own distinct script artifacts")
@@ -5025,10 +5049,17 @@ async def build_layer(
         for uid, row in (state.get("units") or {}).items()
         if row.get("status") == "passed"
         and (
-            shot.folder / artifact_for(next(unit for unit in layer.stages if unit.id == uid))
+            shot.folder
+            / _unit_artifact_path(
+                layer, next(unit for unit in layer.stages if unit.id == uid)
+            )
         ).is_file()
     }
-    unit_artifacts = [artifact_for(unit) for unit in ordered_units if unit.id in passed_units]
+    unit_artifacts = [
+        _unit_artifact_path(layer, unit)
+        for unit in ordered_units
+        if unit.id in passed_units
+    ]
 
     # The layer-level scope remains a boundary statement; each unit adds a narrower
     # claim/property manifest and its own plan below.
@@ -5118,18 +5149,8 @@ async def build_layer(
                 blender=Settings.from_environment().blender_bin,
             )
         unit_excerpt = _plan_layer_excerpt(shot, layer, unit)
-        unit_axes = tuple(dict.fromkeys(claim.axis for claim in unit.evaluation.claims))
-        unit_judges = tuple((point.frame, point.ref) for point in unit.evaluation.judges)
-        unit_layer = replace(
-            layer,
-            script=artifact_for(unit),
-            title=(layer.title if len(layer.stages) == 1 else f"{layer.title} · {unit.title}"),
-            judges=unit_judges,
-            reads=f"Work unit {unit.id}: " + " ".join(claim.proposition for claim in unit.evaluation.claims),
-            owns=unit_axes,
-            primary_judge=unit.evaluation.primary_judge,
-            stages=(unit,),
-        )
+        unit_layer = _active_unit_layer_view(layer, unit)
+        unit_judges = unit_layer.judges
         unit_ref = next(ref for frame, ref in unit_judges if frame == unit.evaluation.primary_judge)
         milestone = (
             layer.as_milestone(strips)
@@ -5163,7 +5184,7 @@ async def build_layer(
             ledger = await build_unit(
                 shot,
                 milestone,
-                artifact_for(unit),
+                _unit_artifact_path(layer, unit),
                 prior_layers + [shot.folder / rel for rel in unit_artifacts],
                 session,
                 rounds=rounds,
@@ -5276,7 +5297,7 @@ async def build_layer(
             selected_artifact_path(shot.folder, "scene_checks.json"), "contracts"
         )
         vis_ids = layer_active_visible_fraction_ids(scene_rows, layer.id)
-        artifact = shot.folder / artifact_for(unit)
+        artifact = shot.folder / _unit_artifact_path(layer, unit)
         slot = ledger._slot(milestone)
         best_render = shot.folder / str((slot.get("best") or {}).get("render") or "")
         frozen_state = freeze_checkpoint(
@@ -5322,7 +5343,7 @@ async def build_layer(
         # independent unit may sort before an already passed sibling.  Stable replay is
         # DAG order plus authored-order tie-break, never accident-of-attempt order.
         unit_artifacts = [
-            artifact_for(candidate)
+            _unit_artifact_path(layer, candidate)
             for candidate in ordered_units
             if candidate.id in passed_units
         ]
@@ -5333,8 +5354,8 @@ async def build_layer(
     parts = [
         (
             str(unit.id),
-            artifact_for(unit),
-            (shot.folder / artifact_for(unit)).read_text(encoding="utf-8"),
+            _unit_artifact_path(layer, unit),
+            (shot.folder / _unit_artifact_path(layer, unit)).read_text(encoding="utf-8"),
         )
         for unit in ordered_units
     ]
