@@ -1,0 +1,25 @@
+---
+description: Use relevant Claude Agent SDK capabilities as typed production mechanisms
+alwaysApply: true
+---
+
+# Claude Agent SDK leverage
+
+Treat the Claude Agent SDK as a production runtime, not merely prompt transport. Inspect the
+installed SDK before building custom orchestration and prefer its strongest applicable native
+mechanism when that improves control, observability, or agent performance.
+
+- Prefer native typed messages, tools, hooks, permissions and tool policy, MCP integration,
+  lifecycle, cancellation, resume, model configuration, and usage reporting over duplicate glue.
+- Preserve structured events, errors, termination reasons, usage, and results until their owning
+  boundary records them; do not flatten authority into prose prematurely.
+- Give roles bounded tools and compiled active-unit context. SDK capability does not imply broad
+  context, unrestricted mutation, or expanded authority.
+- Use hooks and tool policy for mechanical enforcement; prompts do not replace enforceable gates.
+- Resume only when checkpoint, journal, authority generation, and active-unit identity match.
+- Select model, effort, turns, tokens, and cost from role needs and measured uncertainty. Do not
+  maximize every setting. Parallelize evidence, but serialize authoritative mutation/publication.
+- Verify the installed SDK lacks a needed primitive before adding a workaround. Pin and test every
+  relied-on behavior; fail closed on incompatible schema, hook, tool, permission, or session changes.
+- Adopt features only for measured capability or control gains. SDK features never replace domain
+  contracts, replay, deterministic validation, or acceptance evidence.

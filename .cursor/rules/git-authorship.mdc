@@ -1,0 +1,12 @@
+---
+description: Preserve user Git authorship without Cursor or AI co-author attribution
+alwaysApply: true
+---
+
+# Git authorship
+
+- Use the repository or user's existing Git author identity.
+- Never add a `Co-authored-by` trailer for Cursor, Codex, Claude, an AI assistant, or an agent.
+- Never add equivalent AI authorship, generation, or attribution trailers to commits.
+- Never change local or global Git identity configuration to manufacture attribution.
+- Commit messages describe the change itself without promotional or generated-by wording.

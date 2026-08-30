@@ -111,6 +111,44 @@ Dependencies point inward toward `domain`; runtime code must never import offlin
 fixtures or generated artifacts. Preserve user changes in a dirty worktree. Generated data
 belongs under `shots/` or `artifacts/` and must not be imported as source.
 
+## Code hygiene
+
+Leave code cleaner at the point of change; do not create cleanup debt for a later pass.
+
+- Imports belong at module scope. Never import inside a loop. A function-local import is legal
+  only for an unavailable embedded-runtime dependency (`bpy`, `bmesh`, `mathutils`), optional
+  version compatibility, a deliberate package-facade lookup used by tests, or a proven circular
+  dependency that cannot be removed in the same change. Mark every production exception with
+  `# noqa: PLC0415` and a comment naming the reason. Do not suppress `PLC0415` for an entire
+  ordinary module.
+- Remove cycles structurally: extract shared contracts and parsers into dependency-free leaf
+  modules. Do not hide a cycle with repeated local imports, `importlib`, duplicated helpers, or
+  package `__init__` side effects. Import concrete leaf modules instead of large public facades
+  inside core domain code.
+- Use module-qualified access for collaborators that tests or runtime configuration replace
+  (`module.function(...)`, not a copied `from module import function` binding). Direct symbol
+  imports are appropriate only for stable values and non-replaceable pure helpers.
+- Keep one responsibility per module. New production modules stay below 900 lines; split by
+  cohesive behavior before crossing that limit. A package split preserves its public API through
+  explicit re-exports and must not turn `__init__.py` into a new dependency hub.
+- Delete unused imports, dead branches, commented-out code, obsolete compatibility paths, and
+  redundant helpers in the same change. Do not leave placeholder files or empty directories to
+  imply support that does not exist.
+- Catch only exceptions the boundary can handle. Never use a broad exception to turn invalid
+  authority, programming errors, or partial writes into apparent success. Error messages name
+  the violated contract, the observed value, and the legal next action.
+- Keep mutation and I/O at owning boundaries. Domain modules remain deterministic and free of
+  filesystem, network, Blender, SDK, global-state, and generated-artifact dependencies.
+- Tests live under `src/tests/` and mirror the production concern (`unit`, `contract`,
+  `architecture`, `integration`). Every structural rule that can regress gets an architecture
+  test or lint rule; prose alone is not enforcement.
+- Before handoff, run Ruff on the complete `src` tree, run the relevant tests, then run the full
+  suite for cross-package or import-order changes. Never report a failing or undiscovered suite
+  as clean, and never weaken a check merely to land the change.
+- Git commits use the repository or user's configured author identity only. Never add
+  `Co-authored-by` trailers or other authorship attribution for Cursor, Codex, Claude, an AI
+  assistant, or an agent, and never modify Git identity configuration to manufacture attribution.
+
 ## Non-negotiable invariants
 
 - Nothing self-certifies. A model verdict cannot replace authoritative executable evidence.
@@ -259,6 +297,33 @@ evidence, or extra mutation authority so a builder can "figure it out".
 The same standard binds coding agents on this repository: resolve unknowns by reading authority,
 running code, or adding a probe — never by assumption.
 
+## Claude Agent SDK leverage
+
+Treat the Claude Agent SDK as a production runtime, not merely a prompt transport. Before
+building custom orchestration, inspect the installed SDK and use the strongest applicable native
+mechanism when it improves control, observability, or agent capability.
+
+- Prefer SDK-native typed messages, tools, hooks, permission and tool policy, MCP integration,
+  session lifecycle, cancellation, resume, model configuration, and usage reporting over custom
+  glue that recreates the same contract.
+- Preserve structured SDK events, tool errors, termination reasons, usage, and results until the
+  owning boundary records them; do not flatten authoritative state into prose prematurely.
+- Give each role bounded tools and compiled active-unit context. SDK capability never grants an
+  agent repository-wide context, unrestricted mutation, or broader authority by default.
+- Use hooks and tool policy for deterministic enforcement. Prompt text is not a substitute for a
+  mechanical boundary the SDK can enforce.
+- Resume only when checkpoint, journal, authority generation, and active-unit identity still
+  match. A resumable SDK session does not by itself prove a valid harness resume.
+- Choose model, effort, turn, token, and cost budgets for the role and measured uncertainty; do
+  not maximize every setting indiscriminately. Parallelize independent evidence production while
+  authoritative scene mutation and publication remain serialized.
+- Before adding an SDK workaround, verify the installed SDK does not already provide the needed
+  primitive. Pin and test every SDK behavior the harness depends on, and fail closed when an
+  upgrade changes message schemas, hooks, tools, permissions, or session semantics.
+- Adopt an SDK feature only when it removes a measured bottleneck, closes a control gap, or
+  improves evidence-backed agent performance. It never replaces domain contracts, replay,
+  deterministic validation, or acceptance evidence.
+
 ## Fix policy: permanent mechanisms only
 
 Temporary fixes are forbidden. A change is a fix only when it removes the cause; anything that
@@ -277,6 +342,34 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   same change that lands the mechanism.
 - If the permanent fix exceeds the task's scope or authority, stop and escalate with evidence.
   An open, recorded defect is acceptable; a landed stopgap is not.
+
+## Root-cause resolution
+
+Every bug, bottleneck, quality gap, recurring pain point, or unexpected outcome is evidence of a
+system mechanism that permitted it. Trace and remove that mechanism at its owning boundary; never
+patch only the visible symptom or specialize the fix to the scene that exposed it.
+
+- Reproduce the failure and trace the complete causal chain: what happened, why it was allowed,
+  how the agent or runtime arrived there, what evidence or context was absent, and which boundary
+  should have prevented acceptance.
+- Classify the cause explicitly as an implementation defect, architecture bottleneck, reasoning
+  failure, prompt/context failure, plan or contract defect, missing instrument, tool-policy gap,
+  validation gap, or authority/provenance failure. Mixed causes name every contributing boundary.
+- Fix the earliest owning cause. Do not use downstream guards, silent retries, broader tolerances,
+  extra mutation authority, prompt reminders, or special cases to conceal an upstream failure.
+- Treat a reasoning failure first as a possible instrumentation problem: missing measurement,
+  unavailable legal choices, incomplete bounded context, or absent mutation read-back. Ask the
+  model to reason differently only when the remaining defect is genuinely judgmental.
+- Prompt changes are valid for judgment or communication failures. Mechanical defects require
+  types, contracts, tools, deterministic checks, state machines, or architectural changes.
+- Record how the system reached the failure, including the assumptions and prior design decisions
+  that made it representable. The explanation must identify a mechanism, not blame an agent.
+- Generalize across scenes. Never encode the exposing shot's name, objects, coordinates, frames,
+  layer count, vocabulary, or data layout. The original scene proves reproduction only.
+- Prove the mechanism on heterogeneous fixtures and at least one injected failure. A regression
+  test asserts the general invariant and fails without the fix; unrelated suites must still pass.
+- If the permanent scene-independent fix exceeds current scope, stop and escalate with evidence.
+  An explicit unresolved defect is preferable to a committed workaround.
 
 ## Planning and authority
 
@@ -886,16 +979,18 @@ record the outcome. Do not fix a harness defect with prompt wording alone when i
 - If evidence is missing, authority conflicts, or scope must widen, stop and escalate rather than
   silently guessing.
 
-Rules live in this file. A change that creates, amends, or retires a durable rule updates this
-file in the same change; ADRs and HIRs carry reasoning and validation, never the only copy of a
-rule. If this file and a record disagree, stop and reconcile — do not silently pick one.
+Rules live authoritatively in this file. `.cursor/rules/` contains concise delivery mirrors for
+Cursor and changes in the same commit whenever its mirrored rule changes. A change that creates,
+amends, or retires a durable rule updates this file in the same change; ADRs and HIRs carry
+reasoning and validation, never the only copy of a rule. If this file, a Cursor mirror, and a
+record disagree, stop and reconcile — do not silently pick one.
 
 ## Verification
 
 Run from the repository root:
 
 ```bash
-.venv/bin/ruff check src tests
+.venv/bin/ruff check src
 .venv/bin/python -m pytest -q
 .venv/bin/vfx --help
 ```

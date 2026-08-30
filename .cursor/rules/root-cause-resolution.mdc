@@ -1,0 +1,26 @@
+---
+description: Resolve bugs and quality gaps at their general owning cause
+alwaysApply: true
+---
+
+# Root-cause resolution
+
+Every bug, bottleneck, quality gap, recurring pain point, or unexpected outcome is evidence of a
+system mechanism that permitted it. Remove that mechanism at its owning boundary; never patch only
+the symptom or specialize a fix to the scene that exposed it.
+
+- Reproduce and trace the full causal chain: outcome, enabling condition, agent/runtime decision,
+  missing evidence or context, and the boundary that should have rejected it.
+- Classify the cause: implementation, architecture, reasoning, prompt/context, plan/contract,
+  instrument, tool policy, validation, or authority/provenance. Name all contributing boundaries.
+- Fix the earliest owning cause. Reject downstream guards, retries, tolerance changes, broadened
+  permissions, prompt reminders, and fixture-specific branches that only hide recurrence.
+- Investigate reasoning failures as missing measurements, choices, bounded context, or read-back
+  before changing prompts. Mechanical failures require mechanical enforcement.
+- Record how the system made the failure representable; identify mechanisms, not blame.
+- Never encode the exposing shot's names, objects, coordinates, frames, layer count, vocabulary,
+  or data layout. The exposing scene proves reproduction, not generality.
+- Prove the fix with heterogeneous fixtures, an injected failure, and a regression test asserting
+  the general invariant. Preserve unrelated behavior.
+- If a permanent scene-independent fix is out of scope, stop and escalate with evidence. Do not
+  commit a workaround.
