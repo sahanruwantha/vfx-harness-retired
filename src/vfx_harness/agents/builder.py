@@ -2802,6 +2802,61 @@ def _geometry_protected_evidence(
     return due, evidence
 
 
+def _geometry_forecast_blocking_evidence(
+    shot: Shot,
+    layer,
+    unit,
+    units,
+    session: BlenderSession,
+    *,
+    fallback_frame: int,
+) -> tuple[set[str], list[dict]]:
+    """Return only partial-union misses no successor geometry can repair."""
+    if unit is None or layer is None:
+        return set(), []
+    from vfx_harness.evidence.scene_checks import (
+        deferred_subject_composition_forecast_ids_for_unit,
+        irreversible_deferred_subject_forecast_failures,
+        load_rows,
+    )
+    from vfx_harness.evidence.scene_checks import (
+        layer_evidence as scene_layer_evidence,
+    )
+
+    rows = load_rows(shot.folder)
+    forecast_ids = set(
+        deferred_subject_composition_forecast_ids_for_unit(
+            rows, tuple(units or ()), unit, str(layer.id)
+        )
+    )
+    if not forecast_ids:
+        return set(), []
+    by_id = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("id")
+    }
+    scheduled: dict[int, set[str]] = {}
+    for contract_id in forecast_ids:
+        row = by_id[contract_id]
+        declared = row.get("frames")
+        if not isinstance(declared, (list, tuple)) or not declared:
+            declared = [row.get("frame", fallback_frame)]
+        for frame in declared:
+            scheduled.setdefault(int(frame), set()).add(contract_id)
+    measured: list[dict] = []
+    for frame, frame_ids in sorted(scheduled.items()):
+        measured.extend(
+            {**row, "evidence_frame": int(frame)}
+            for row in scene_layer_evidence(
+                shot.folder, str(layer.id), frame=frame, session=session
+            )
+            if str(row.get("id")) in frame_ids
+        )
+    blockers = list(irreversible_deferred_subject_forecast_failures(rows, measured))
+    return {str(row["id"]) for row in blockers}, blockers
+
+
 def _fault_owner_options_for_unit(shot: Shot | None, layer, active_unit) -> list[dict]:
     """Same-layer ancestors plus earlier-layer camera providers (HIR-0127)."""
     fault_owner_options: list[dict] = []
@@ -3100,6 +3155,19 @@ def _render_evidence(
             evidence.extend(protected_evidence)
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             extra = set()
+        try:
+            blocker_ids, blocker_evidence = _geometry_forecast_blocking_evidence(
+                shot,
+                layer,
+                active_unit,
+                getattr(layer, "stages", ()),
+                session,
+                fallback_frame=int(m.frame),
+            )
+            extra.update(blocker_ids)
+            evidence.extend(blocker_evidence)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            pass
     return _scope_unit_evidence(evidence, active_unit, int(m.frame), extra_ids=extra)
 
 

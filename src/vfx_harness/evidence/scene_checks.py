@@ -1661,6 +1661,73 @@ def deferred_subject_composition_forecast_ids_for_unit(
     return tuple(sorted(forecasts))
 
 
+def irreversible_deferred_subject_forecast_failures(
+    contract_rows: Sequence[Mapping[str, object]],
+    evidence_rows: Sequence[Mapping[str, object]],
+) -> tuple[dict, ...]:
+    """Forecast misses that adding successor geometry cannot repair.
+
+    Projected union width, height, and bottom are monotone nondecreasing as more
+    subject geometry arrives; union top is monotone nonincreasing.  Only violations
+    on the already-impossible side become blockers.  Other misses remain diagnostic
+    because a successor can still extend the union into the target.
+    """
+    by_id = {
+        str(row.get("id")): row
+        for row in contract_rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    out: list[dict] = []
+    for evidence in evidence_rows:
+        if not isinstance(evidence, Mapping) or evidence.get("pass"):
+            continue
+        cid = str(evidence.get("id") or "")
+        source = by_id.get(cid)
+        value = evidence.get("value")
+        if source is None or not isinstance(value, (int, float)):
+            continue
+        kind = str(source.get("kind") or "")
+        op = str(source.get("op") or "band")
+        increasing = kind in {"bbox_width", "bbox_height", "bbox_bottom_y"}
+        decreasing = kind == "bbox_top_y"
+        if not increasing and not decreasing:
+            continue
+        lower: float | None = None
+        upper: float | None = None
+        if op == "band":
+            lower = float(source["lo"])
+            upper = float(source["hi"])
+        elif op == "min":
+            lower = float(source["lo"])
+        elif op == "max":
+            upper = float(source["hi"])
+        elif op == "eq":
+            target = float(source["value"])
+            tolerance = float(source.get("tol") or 0)
+            lower, upper = target - tolerance, target + tolerance
+        irreversible = (
+            increasing and upper is not None and float(value) > upper
+        ) or (
+            decreasing and lower is not None and float(value) < lower
+        )
+        if not irreversible:
+            continue
+        direction = "increase" if increasing else "decrease"
+        out.append({
+            **dict(evidence),
+            "pass": False,
+            "source": "deferred_subject_forecast_blocker",
+            "diagnostic_only": False,
+            "acceptance_evidence": True,
+            "note": (
+                f"irreversible partial-subject union violation: {kind} can only "
+                f"{direction} as successor geometry is added; repair this producer "
+                "before freeze or call cannot_express_in_scope"
+            ),
+        })
+    return tuple(out)
+
+
 @dataclass(frozen=True, slots=True)
 class DeferredSubjectCompositionPaymentGap:
     contract_id: str

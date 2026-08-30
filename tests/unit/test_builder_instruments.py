@@ -793,3 +793,92 @@ def test_deferred_subject_forecast_note_is_explicitly_nonpayable() -> None:
     assert "cannot pay acceptance" in note
     assert "bbox-f176: bbox_height=0.07 target >= 0.85 (outside target)" in note
     assert _deferred_subject_forecast_note([]) == ""
+
+
+def test_irreversible_deferred_forecast_is_required_before_producer_freeze(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from tests.unit.test_vis_repair_authority import _detail_unit
+    from vfx_harness.agents.builder import (
+        _executable_unit_verdict,
+        _geometry_forecast_blocking_evidence,
+    )
+    from vfx_harness.evidence import scene_checks
+
+    mass = _detail_unit(provides=["geometry"])
+    mass = replace(
+        mass,
+        id="mass",
+        mutates=replace(mass.mutates, roles=("building.mass.tower",)),
+    )
+    roof = replace(
+        mass,
+        id="roof",
+        depends_on=("mass",),
+        mutates=replace(
+            mass.mutates,
+            roles=("building.roof.silhouette",),
+            script_spans=("build/units/02/roof.py",),
+        ),
+    )
+    rows = [{
+        "id": "bbox-f1",
+        "kind": "bbox_height",
+        "owner_layer": "1",
+        "fault_owner": "1",
+        "activates_at": "2",
+        "lifecycle": "persistent",
+        "axis": "camera_framing",
+        "roles": ["building"],
+        "frame": 1,
+        "op": "max",
+        "hi": 0.15,
+    }]
+    (tmp_path / "scene_checks.json").write_text(
+        json.dumps({"schema": 2, "contracts": rows}), encoding="utf-8"
+    )
+    shot = SimpleNamespace(folder=tmp_path)
+    layer = SimpleNamespace(id="2", stages=(mass, roof))
+
+    monkeypatch.setattr(
+        scene_checks,
+        "layer_evidence",
+        lambda *_args, **_kwargs: [{
+            "id": "bbox-f1",
+            "metric": "bbox_height",
+            "value": 0.38,
+            "target": "<= 0.15",
+            "pass": False,
+            "authoritative": True,
+        }],
+    )
+
+    ids, evidence = _geometry_forecast_blocking_evidence(
+        shot, layer, mass, layer.stages, object(), fallback_frame=39
+    )
+
+    assert ids == {"bbox-f1"}
+    assert evidence[0]["source"] == "deferred_subject_forecast_blocker"
+    assert evidence[0]["evidence_frame"] == 1
+    verdict = _executable_unit_verdict(
+        mass,
+        40,
+        [("form", "form")],
+        [
+            {"id": "contract.detail", "pass": True, "authoritative": True},
+            *evidence,
+        ],
+        extra_required_ids=ids,
+    )
+    assert verdict is not None and verdict["pass"] is False
+    assert "irreversible partial-subject union violation" in verdict["issues"][0]
+
+    payer_ids, payer_evidence = _geometry_forecast_blocking_evidence(
+        shot, layer, roof, layer.stages, object(), fallback_frame=39
+    )
+    assert payer_ids == set()
+    assert payer_evidence == []

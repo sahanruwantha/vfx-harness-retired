@@ -275,6 +275,61 @@ def test_deferred_subject_bbox_waits_for_complete_geometry_closure() -> None:
     assert deferred_subject_composition_payment_gaps([deferred], units, "2") == ()
 
 
+def test_only_irreversible_partial_union_forecast_misses_block_freeze() -> None:
+    from vfx_harness.evidence.scene_checks import (
+        irreversible_deferred_subject_forecast_failures,
+    )
+
+    contracts = [
+        _row(
+            id="height-max",
+            kind="bbox_height",
+            roles=["building"],
+            frame=1,
+            op="max",
+            hi=0.15,
+        ),
+        _row(
+            id="height-min",
+            kind="bbox_height",
+            roles=["building"],
+            frame=176,
+            op="min",
+            lo=0.85,
+        ),
+        _row(
+            id="top-min",
+            kind="bbox_top_y",
+            roles=["building"],
+            frame=39,
+            op="min",
+            lo=0.2,
+        ),
+        _row(
+            id="center-band",
+            kind="bbox_center_y",
+            roles=["building"],
+            frame=39,
+            op="band",
+            lo=0.4,
+            hi=0.6,
+        ),
+    ]
+    evidence = [
+        {"id": "height-max", "metric": "bbox_height", "value": 0.38, "pass": False},
+        {"id": "height-min", "metric": "bbox_height", "value": 0.07, "pass": False},
+        {"id": "top-min", "metric": "bbox_top_y", "value": 0.1, "pass": False},
+        {"id": "center-band", "metric": "bbox_center_y", "value": 0.2, "pass": False},
+    ]
+
+    blockers = irreversible_deferred_subject_forecast_failures(contracts, evidence)
+
+    assert {row["id"] for row in blockers} == {"height-max", "top-min"}
+    assert all(row["source"] == "deferred_subject_forecast_blocker" for row in blockers)
+    assert all(row["acceptance_evidence"] is True for row in blockers)
+    assert all("cannot_express_in_scope" in row["note"] for row in blockers)
+
+
 def test_builder_writable_custom_properties_cannot_certify() -> None:
     error = validate_row(
         _row(id="s", kind="object_property", roles=["cam_rig"], frame=1,

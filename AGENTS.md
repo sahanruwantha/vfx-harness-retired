@@ -385,7 +385,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   forecasts evaluated at their declared frames. Forecasts teach mutable partial producers
   but never enter required evidence, checkpoint protection, sealing, canonical payment,
   or revalidation authority; the dependency-complete producer alone pays the final union
-  (HIR-0134, HIR-0151).
+  (HIR-0134, HIR-0151). One directional exception fails closed before producer freeze:
+  projected union width/height/bottom cannot decrease as successor geometry arrives, and
+  union top cannot increase. A partial producer already beyond a bound on that
+  irreversible side must repair or call `cannot_express_in_scope`; repairable-side misses
+  remain diagnostic and bbox centres are never inferred monotonic (HIR-0152).
   More generally, any scene contract whose `activates_at` differs from its
   `owner_layer` is inactive at the authoring unit: it may bind through
   `composition_context.contract_ids`, never through that unit's claim evidence
