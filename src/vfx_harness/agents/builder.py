@@ -2519,7 +2519,9 @@ def _geometry_protected_vis_ids(shot: Shot, layer, unit, frame: int | None = Non
         geometry_vis_protection_ids_for_unit,
         plan_selector_declared,
     )
-    from vfx_harness.evidence.scene_checks import deferred_subject_composition_ids
+    from vfx_harness.evidence.scene_checks import (
+        deferred_subject_composition_ids_for_unit,
+    )
     from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
     if unit is None or "geometry" not in getattr(unit, "provides", ()):
@@ -2548,10 +2550,26 @@ def _geometry_protected_vis_ids(shot: Shot, layer, unit, frame: int | None = Non
         if str(item)
     }
     by_id = {str(row.get("id")): row for row in rows if isinstance(row, dict) and row.get("id")}
-    for cid in deferred_subject_composition_ids(rows, str(layer.id), frame):
-        roles = [str(item) for item in (by_id.get(cid) or {}).get("roles") or [] if str(item)]
-        if roles and any(plan_selector_declared(role, mutated) for role in roles):
-            protected.add(cid)
+    stages = tuple(getattr(layer, "stages", ()) or ())
+    if stages:
+        protected.update(
+            deferred_subject_composition_ids_for_unit(
+                rows, stages, unit, str(layer.id), frame
+            )
+        )
+    else:
+        # Backward diagnostic callers without a typed unit DAG keep the original exact
+        # selector behavior; production always supplies the selected layer stages.
+        from vfx_harness.evidence.scene_checks import deferred_subject_composition_ids
+
+        for cid in deferred_subject_composition_ids(rows, str(layer.id), frame):
+            roles = [
+                str(item)
+                for item in (by_id.get(cid) or {}).get("roles") or []
+                if str(item)
+            ]
+            if roles and any(plan_selector_declared(role, mutated) for role in roles):
+                protected.add(cid)
     return protected
 
 

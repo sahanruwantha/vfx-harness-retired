@@ -109,6 +109,10 @@ live in the linked Harness Improvement Records.
   through the same digest-backed `apply_replan` transaction as rematerialization, including
   deterministic recovery when publication completed before the state move
   ([HIR-0133](docs/improvements/HIR-0133-direct-materialization-reconciles-durable-state.md)).
+  Camera-owned deferred subject bbox no longer fails layer-start replay before geometry
+  exists; the dependency-complete overlapping geometry unit pays it, and publication
+  rejects a DAG with no such payer
+  ([HIR-0134](docs/improvements/HIR-0134-deferred-subject-bbox-starts-at-complete-geometry.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

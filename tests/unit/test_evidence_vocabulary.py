@@ -186,6 +186,85 @@ def test_projected_band_wider_than_half_the_frame_is_vacuous() -> None:
     assert deferred_subject_composition_ids([deferred], "2", 1) == ()
 
 
+def test_deferred_subject_bbox_waits_for_complete_geometry_closure() -> None:
+    """HIR-0134: pre-unit replay cannot evaluate a future parent role. The last
+    dependency-complete overlapping geometry unit pays it; unrelated geometry does not."""
+    from dataclasses import replace
+
+    from tests.unit.test_vis_repair_authority import _detail_unit
+    from vfx_harness.evidence.scene_checks import (
+        deferred_subject_composition_activation_ids,
+        deferred_subject_composition_ids_for_unit,
+        deferred_subject_composition_payment_gaps,
+        prior_interface_rows,
+    )
+
+    mass = _detail_unit(provides=["geometry"])
+    mass = replace(
+        mass,
+        id="mass",
+        mutates=replace(mass.mutates, roles=("building.mass.tower",)),
+    )
+    roof = replace(
+        mass,
+        id="roof",
+        depends_on=("mass",),
+        mutates=replace(
+            mass.mutates,
+            roles=("building.roof.silhouette",),
+            script_spans=("build/units/02/roof.py",),
+        ),
+    )
+    site = replace(
+        roof,
+        id="site",
+        depends_on=("mass", "roof"),
+        mutates=replace(
+            roof.mutates,
+            roles=("site.ground.island",),
+            script_spans=("build/units/02/site.py",),
+        ),
+    )
+    deferred = _row(
+        id="building-bbox",
+        kind="bbox_height",
+        roles=["building"],
+        frame=1,
+        op="max",
+        hi=0.2,
+        owner_layer="1",
+        fault_owner="1",
+        activates_at="2",
+        lifecycle="persistent",
+    )
+    units = (mass, roof, site)
+
+    assert deferred_subject_composition_activation_ids([deferred], "2") == (
+        "building-bbox",
+    )
+    assert prior_interface_rows([deferred], "2") == ()
+    assert {row["id"] for row in prior_interface_rows([deferred], "3")} == {
+        "building-bbox"
+    }
+    assert deferred_subject_composition_ids_for_unit(
+        [deferred], units, mass, "2"
+    ) == ()
+    assert deferred_subject_composition_ids_for_unit(
+        [deferred], units, roof, "2"
+    ) == ("building-bbox",)
+    assert deferred_subject_composition_ids_for_unit(
+        [deferred], units, site, "2"
+    ) == ()
+    unordered = (mass, replace(roof, depends_on=()), site)
+    [gap] = deferred_subject_composition_payment_gaps(
+        [deferred], unordered, "2"
+    )
+    assert gap.contract_id == "building-bbox"
+    assert gap.roles == ("building",)
+    assert gap.producer_ids == ("mass", "roof")
+    assert deferred_subject_composition_payment_gaps([deferred], units, "2") == ()
+
+
 def test_builder_writable_custom_properties_cannot_certify() -> None:
     error = validate_row(
         _row(id="s", kind="object_property", roles=["cam_rig"], frame=1,

@@ -1579,6 +1579,9 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                 geometry_vis_dependency_gaps,
                 point_projection_interface_gaps,
             )
+            from vfx_harness.evidence.scene_checks import (
+                deferred_subject_composition_payment_gaps,
+            )
 
             typed_stages = tuple(
                 WorkUnit.parse(unit, f"layer {lid}.stages[{index}]")
@@ -1588,6 +1591,22 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             # Typed layer validation owns malformed units. Avoid duplicating its
             # partial-shape findings here.
             typed_stages = ()
+        for gap in deferred_subject_composition_payment_gaps(
+            scene_rows, typed_stages, lid
+        ):
+            out.append(
+                Finding(
+                    "deferred-composition-payer",
+                    True,
+                    f"layer {lid} deferred contract {gap.contract_id}",
+                    f"roles {', '.join(gap.roles)} have overlapping geometry producers "
+                    f"{', '.join(gap.producer_ids) or '(none)'} but no unit dependency "
+                    "closure contains the complete subject",
+                    "order the truthful geometry write clusters so the first complete "
+                    "cumulative subject pays the camera-owned bbox; do not evaluate a "
+                    "future subject at layer-start preflight",
+                )
+            )
         vis_gaps = geometry_vis_dependency_gaps(typed_stages, scene_rows, lid)
         vis_cycles = geometry_vis_dependency_cycles(typed_stages, scene_rows, lid)
         cyclic_edges = {edge for cycle in vis_cycles for edge in cycle.edges}

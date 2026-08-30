@@ -356,7 +356,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   layer authors those bbox rows with `activates_at` on the earliest geometry layer,
   `lifecycle: persistent`, and `fault_owner` on the camera owner; the camera unit
   binds the ids through `composition_context` and does not seal them. Geometry units
-  that mutate the measured roles freeze-protect the active deferred rows.
+  that mutate the measured roles freeze-protect the active deferred rows. At the exact
+  activation layer, layer-start prior-interface replay excludes the not-yet-instantiated
+  subject. Parent selectors may span several truthful geometry write clusters; the first
+  unit whose dependency closure contains every overlapping producer pays all owner-frame
+  rows. Publication rejects a DAG with no such payer. Later layers protect the persistent
+  bbox on every overlapping geometry mutation (HIR-0134).
   More generally, any scene contract whose `activates_at` differs from its
   `owner_layer` is inactive at the authoring unit: it may bind through
   `composition_context.contract_ids`, never through that unit's claim evidence

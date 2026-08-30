@@ -107,3 +107,7 @@ Coupled camera pose (pitch vs one-sided height/distance) remains plan authoring,
 a new metric. World-space scale pins that stop geometry compensating are likewise
 plan-side. Look/image debt stays on the look-owning layer (HIR-0110). Consuming a
 Layer 2 finding still requires an explicit Layer 1 replan after the amended bundle.
+
+HIR-0134 closes the activation-boundary runtime gap: pre-unit prior-interface replay no
+longer evaluates the deferred bbox before its geometry exists, and a parent selector
+spanning several write clusters is paid by the first dependency-complete producer.

@@ -556,8 +556,22 @@ def validate_materialization(
             geometry_vis_dependency_gaps,
             point_projection_interface_gaps,
         )
+        from vfx_harness.evidence.scene_checks import (
+            deferred_subject_composition_payment_gaps,
+        )
 
         unit_index_by_id = {unit.id: index for index, unit in enumerate(layer.stages)}
+        for gap in deferred_subject_composition_payment_gaps(
+            combined_scene_rows, layer.stages, layer_id
+        ):
+            note(
+                json_ptr("layer", "stages"),
+                f"deferred subject composition {gap.contract_id} selects roles "
+                f"{list(gap.roles)} but no geometry unit has every overlapping producer "
+                f"{list(gap.producer_ids)} in its dependency closure. Order the truthful "
+                "write clusters so the first complete cumulative subject pays the "
+                "camera-owned bbox; do not evaluate the row before its subject exists.",
+            )
         vis_gaps = geometry_vis_dependency_gaps(layer.stages, scene_rows, layer_id)
         vis_cycles = geometry_vis_dependency_cycles(layer.stages, scene_rows, layer_id)
         cyclic_edges = {edge for cycle in vis_cycles for edge in cycle.edges}
