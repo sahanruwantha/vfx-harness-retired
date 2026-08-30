@@ -98,6 +98,12 @@ constraints so migration cannot silently grant automation more authority. Approv
 starts name the producing unit and exact runtime contracts that can falsify them. Only accepted
 executable evidence pinned to a checkpoint may create a confirmed outcome.
 
+An approved/planner start that resolves a requirement deferred to one layer remains
+mandatory composed-layer judgment debt. Its exact statement is judged independently on
+cumulative canonical replay at the layer's declared reference moments. Look-less form uses
+Workbench solid through the active camera; failure records replanning evidence and grants no
+synthetic cross-unit repair scope (HIR-0137).
+
 When passing requires a decision, dependency, ownership, mutation-scope, contract, or sealed-
 outcome change outside the active unit, the unit records `hypothesis_falsified` with immutable
 bundle/unit/candidate identities and stops. Transactional replanning consumes that record,

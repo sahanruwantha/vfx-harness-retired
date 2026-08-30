@@ -5,14 +5,19 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from tests.unit.test_plan_improvements import _layer_doc, _write
 from tests.unit.test_plan_records import _add_deferred_layer, _candidate, _jit_payload
 from tests.unit.test_plan_records import _write as _write_plan
 from vfx_harness.agents.builder import (
     _active_unit_layer_view,
+    _composition_judge_unit,
     _executable_unit_verdict,
+    _provisional_decisions_for_layer,
     _scope_unit_evidence,
+    _unit_raster_mode,
+    _unit_requires_raster,
 )
 from vfx_harness.agents.planner import _TWO_SIDED_CONTRACT_BINDING
 from vfx_harness.domain.work_units import (
@@ -164,6 +169,55 @@ def test_active_unit_layer_view_keeps_full_dag_for_typed_vis_activation() -> Non
     assert geometry_vis_protection_ids_for_unit(
         view.stages, mass, rows, "2", frame=40
     ) == ("vis.mass",)
+
+
+def test_provisional_owned_decision_compiles_lookless_composition_audit(tmp_path: Path) -> None:
+    base = [
+        {
+            "id": "R-holistic",
+            "resolution": {
+                "kind": "deferred_owner",
+                "owner_layer": "2",
+                "evidence_domains": ["image", "scene"],
+            },
+        }
+    ]
+    selected = [
+        {
+            "id": "R-holistic",
+            "resolution": {
+                "kind": "decision",
+                "decision": "The subject reads as the specific reference, not a generic proxy.",
+                "decision_strength": "approved_start",
+            },
+        }
+    ]
+    decisions = _provisional_decisions_for_layer(base, selected, "2")
+    unit = _detail_unit(provides=["geometry"])
+    layer = Layer(
+        id="2",
+        script="build/02.py",
+        title="Form",
+        judges=((40, "refs/f040.png"),),
+        reads="form",
+        owns=("form",),
+        primary_judge=40,
+        stages=(unit,),
+    )
+
+    audit = _composition_judge_unit(layer, decisions)
+
+    assert decisions[0]["evidence_domains"] == ("image", "scene")
+    assert audit.provisional_requirement_ids == ("R-holistic",)
+    qualitative = [
+        claim
+        for claim in audit.evaluation.claims
+        if claim.authority == "qualified_qualitative_required"
+    ]
+    assert len(qualitative) == 1
+    assert qualitative[0].proposition == selected[0]["resolution"]["decision"]
+    assert _unit_requires_raster(SimpleNamespace(folder=tmp_path), audit) is True
+    assert _unit_raster_mode(audit) == "solid"
 
 
 def test_kickoff_copy_is_camera_or_mutator_not_any_unit() -> None:

@@ -1611,7 +1611,7 @@ def _required_focus_requests(
 
 
 def _claim_context(
-    shot: Shot, m: Milestone, *, enabled: bool
+    shot: Shot, m: Milestone, *, enabled: bool, active_unit=None
 ) -> tuple[list[dict], dict[str, frozenset[str]], set[str]]:
     """Return only claims that are active at this exact judge moment.
 
@@ -1623,12 +1623,15 @@ def _claim_context(
     milestone_parts = str(m.id).split("@", 1)
     layer_id = milestone_parts[0]
     unit_id = milestone_parts[1] if len(milestone_parts) == 2 and not milestone_parts[1].startswith("f") else None
-    try:
-        layer = load_layers(shot)[layer_id]
-    except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
-        return [], {}, set()
+    if active_unit is not None:
+        units = (active_unit,)
+    else:
+        try:
+            units = load_layers(shot)[layer_id].stages
+        except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
+            return [], {}, set()
     claims, bindings, qualified = [], {}, set()
-    for unit in layer.stages:
+    for unit in units:
         if unit_id is not None and unit.id != unit_id:
             continue
         for claim in unit.evaluation.claims:
@@ -1955,6 +1958,7 @@ async def _critique(
     motion_evidence: tuple[str, list[int]] | None = None,
     allow_motion: bool | None = None,
     focus_frames: list[int] | tuple[int, ...] | set[int] | None = None,
+    active_unit=None,
 ) -> dict:
     motion_rel, motion_frames = motion_evidence or (None, None)
     wants_motion = _axes_need_motion(axes) if allow_motion is None else allow_motion
@@ -1966,7 +1970,7 @@ async def _critique(
             log(f"motion strip skipped: {str(e)[:80]}", 1)
     focus_references = _focus_references(shot, m, focus_frames)
     claim_manifest, claim_bindings, qualified_claims = _claim_context(
-        shot, m, enabled=scope is not None
+        shot, m, enabled=scope is not None, active_unit=active_unit
     )
     log(
         f"critic[{critic_model()}]: scoring {candidate_rel} vs {m.ref}"
@@ -2284,6 +2288,7 @@ async def _judge(
     allow_motion = critic_kw.pop("allow_motion", None)
     motion_frames_override = critic_kw.pop("motion_frames_override", None)
     focus_frames_override = critic_kw.pop("focus_frames_override", None)
+    active_unit = critic_kw.pop("active_unit", None)
     if (
         motion_evidence is None
         and shot.frontmatter.get("type") == "motion"
@@ -2349,6 +2354,7 @@ async def _judge(
         motion_evidence=motion_evidence,
         allow_motion=allow_motion,
         focus_frames=focus_frames_override,
+        active_unit=active_unit,
         **critic_kw,
     )
     requests = (
@@ -2387,6 +2393,7 @@ async def _judge(
                 motion_evidence=motion_evidence,
                 allow_motion=allow_motion,
                 focus_frames=focus_frames_override,
+                active_unit=active_unit,
                 **critic_kw,
             )
             focused["focus_requested"] = requests
@@ -2418,6 +2425,7 @@ async def _judge(
             motion_evidence=motion_evidence,
             allow_motion=allow_motion,
             focus_frames=focus_frames_override,
+            active_unit=active_unit,
             **critic_kw,
         )
         panel.append(v)
@@ -2455,10 +2463,18 @@ async def _judge(
     return out
 
 
-def _stash_render(session: BlenderSession, shot: Shot, m: Milestone, tag: str, scale: float = 0.5) -> str:
+def _stash_render(
+    session: BlenderSession,
+    shot: Shot,
+    m: Milestone,
+    tag: str,
+    scale: float = 0.5,
+    *,
+    mode: str = "eevee",
+) -> str:
     """Render the judge frame (eevee) and copy it into the shot for the critic.
     Returns the path relative to the shot folder."""
-    src = session.render(frame=m.frame, mode="eevee", scale=scale)
+    src = session.render(frame=m.frame, mode=mode, scale=scale)
     dest_dir = run_artifacts.renders_dir(shot.folder)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{m.id}_{tag}.png"
@@ -2753,6 +2769,13 @@ def _unit_requires_raster(shot: Shot, unit) -> bool:
         # A missing or malformed contract document will fail as executable evidence;
         # rasterizing cannot repair its authority.
         return False
+
+
+def _unit_raster_mode(unit) -> str:
+    """Use look-independent pixels when qualitative form is owed without look authority."""
+    if unit is not None and not tuple(getattr(unit, "look_capabilities", ()) or ()):
+        return "solid"
+    return "eevee"
 
 
 def _unit_completion_evidence_ids(unit) -> set[str] | None:
@@ -3094,7 +3117,58 @@ def _executable_unit_verdict(
     }
 
 
-def _composition_judge_unit(layer):
+def _provisional_decisions_for_layer(
+    base_requirements: list[dict], selected_requirements: list[dict], layer_id: str
+) -> tuple[dict, ...]:
+    """Provisional owned decisions that still owe build-time judgment."""
+    owned = {
+        str(row.get("id")): tuple((row.get("resolution") or {}).get("evidence_domains") or ())
+        for row in base_requirements
+        if isinstance(row, dict)
+        and (row.get("resolution") or {}).get("kind") == "deferred_owner"
+        and str((row.get("resolution") or {}).get("owner_layer") or "") == str(layer_id)
+    }
+    rows = []
+    for row in selected_requirements:
+        requirement_id = str(row.get("id") or "")
+        resolution = row.get("resolution") or {}
+        strength = str(resolution.get("decision_strength") or "")
+        if requirement_id not in owned or resolution.get("kind") != "decision":
+            continue
+        if strength not in {"approved_start", "planner_start"}:
+            continue
+        statement = str(resolution.get("decision") or resolution.get("statement") or "").strip()
+        if statement:
+            rows.append(
+                {
+                    "id": requirement_id,
+                    "statement": statement,
+                    "decision_strength": strength,
+                    "evidence_domains": owned[requirement_id],
+                }
+            )
+    return tuple(rows)
+
+
+def _load_provisional_decisions(shot: Shot, layer_id: str) -> tuple[dict, ...]:
+    from vfx_harness.orchestration.plan_authority import resolve_current, selected_artifact_path
+
+    def rows(path: Path) -> list[dict]:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        values = payload.get("requirements") if isinstance(payload, dict) else None
+        if not isinstance(values, list):
+            raise ValueError(f"{path} must contain requirements[]")
+        return values
+
+    bundle = resolve_current(shot.folder)
+    return _provisional_decisions_for_layer(
+        rows(bundle.root / "requirements.json"),
+        rows(selected_artifact_path(shot.folder, "requirements.json")),
+        str(layer_id),
+    )
+
+
+def _composition_judge_unit(layer, provisional_decisions=()):
     """Fan-in unit for composed canonical when every stage is executable-only.
 
     Multi-unit composition used to call ``_verify_script`` with ``active_unit=None``,
@@ -3105,15 +3179,19 @@ def _composition_judge_unit(layer):
     stages = tuple(getattr(layer, "stages", ()) or ())
     if not stages:
         return None
-    if any(tuple(getattr(unit, "look_capabilities", ()) or ()) for unit in stages):
+    provisional_decisions = tuple(provisional_decisions or ())
+    if (
+        any(tuple(getattr(unit, "look_capabilities", ()) or ()) for unit in stages)
+        and not provisional_decisions
+    ):
         return None
-    claims = tuple(
+    unit_claims = tuple(
         claim for unit in stages for claim in (unit.evaluation.claims or ())
     )
-    required = [claim for claim in claims if claim.required]
-    if not required:
+    required = [claim for claim in unit_claims if claim.required]
+    if not required and not provisional_decisions:
         return None
-    if any(claim.authority != "executable_required" for claim in required):
+    if any(claim.authority != "executable_required" for claim in required) and not provisional_decisions:
         return None
     from vfx_harness.domain.work_units import MutationScope
 
@@ -3123,10 +3201,50 @@ def _composition_judge_unit(layer):
     controls = tuple(
         dict.fromkeys(control for unit in stages for control in unit.mutates.controls)
     )
+    moments = tuple(int(frame) for frame, _ref in getattr(layer, "judges", ()) or ())
+    qualitative = []
+    for decision in provisional_decisions:
+        for axis in tuple(getattr(layer, "owns", ()) or ("reference_match",)):
+            binding_id = f"requirement:{decision['id']}:{axis}"
+            qualitative.append(
+                SimpleNamespace(
+                    id=binding_id,
+                    proposition=decision["statement"],
+                    axis=str(axis),
+                    property="reference_identity",
+                    subject_roles=roles,
+                    subject_controls=controls,
+                    moments=moments,
+                    kind="atomic",
+                    required=True,
+                    authority="qualified_qualitative_required",
+                    repair_owner=f"{getattr(layer, 'id', 'layer')}._composition",
+                    asserts="image",
+                    evidence=(SimpleNamespace(kind="qualification", id=binding_id),),
+                    binding_ids=(binding_id,),
+                )
+            )
+    claims = (*unit_claims, *qualitative)
     return SimpleNamespace(
         id=f"{getattr(layer, 'id', 'layer')}._composition",
-        look_capabilities=(),
-        evaluation=SimpleNamespace(claims=claims),
+        look_capabilities=tuple(
+            dict.fromkeys(
+                capability
+                for unit in stages
+                for capability in (getattr(unit, "look_capabilities", ()) or ())
+            )
+        ),
+        evaluation=SimpleNamespace(
+            claims=claims,
+            judges=tuple(
+                SimpleNamespace(frame=int(frame), ref=ref)
+                for frame, ref in getattr(layer, "judges", ()) or ()
+            ),
+            composition_context=None,
+        ),
+        provisional_requirement_ids=tuple(
+            str(decision["id"]) for decision in provisional_decisions
+        ),
         worklist_units=stages,
         mutates=MutationScope(
             mode="scoped",
@@ -3348,11 +3466,13 @@ async def _judge_unit_or_layer(
         inactive_ids=inactive_ids,
     )
     if verdict is None:
-        if active_unit is not None and not tuple(
-            getattr(active_unit, "look_capabilities", ()) or ()
+        if (
+            active_unit is not None
+            and not tuple(getattr(active_unit, "look_capabilities", ()) or ())
+            and not tuple(getattr(active_unit, "provisional_requirement_ids", ()) or ())
         ):
             return _lookless_without_executable_verdict(active_unit, int(m.frame), axes)
-        return await _judge(
+        judged = await _judge(
             shot,
             m,
             candidate_rel,
@@ -3361,8 +3481,49 @@ async def _judge_unit_or_layer(
             verbose,
             scope,
             evidence=evidence,
+            active_unit=active_unit,
             **kwargs,
         )
+        provisional = tuple(
+            getattr(active_unit, "provisional_requirement_ids", ()) or ()
+        )
+        if provisional and not judged.get("pass"):
+            observed = list(judged.get("observations") or ())
+            judged["issues"] = []
+            judged["contract_gap"] = True
+            judged["contract_gaps"] = [
+                {
+                    "state": "contract_gap",
+                    "observation": {
+                        "id": f"provisional-requirement-{requirement_id}",
+                        "observation": (
+                            "canonical reference judgment falsified provisional requirement "
+                            f"{requirement_id}"
+                        ),
+                        "action": (
+                            "replan the bounded producer units; composed judgment grants no "
+                            "cross-unit mutation authority"
+                        ),
+                        "axis": None,
+                        "property": "reference_identity",
+                        "moment": int(m.frame),
+                        "roles": list(getattr(active_unit.mutates, "roles", ()) or ()),
+                        "claim_id": f"requirement:{requirement_id}",
+                        "check_ids": [],
+                        "panel_ids": [],
+                    },
+                    "reason": (
+                        "an approved/planner start owned by this layer remains provisional "
+                        "until independent canonical reference judgment passes; critic "
+                        f"observations={observed[:3]}"
+                    ),
+                    "check_ids": [],
+                }
+                for requirement_id in provisional
+            ]
+            judged["decided_by"] = "provisional_requirement_contract_gap"
+            judged["judge_conflict"] = False
+        return judged
     status = "PASS ✅" if verdict["pass"] else "REVISE ✎"
     expected = len(
         ((_unit_evidence_ids(active_unit, int(m.frame)) or set()) | extra_required)
@@ -3658,7 +3819,13 @@ def _try_revalidate(
     for frame, ref in judges:
         m_i = m if len(judges) == 1 else layer.milestone_at(frame, ref, plan_strips(shot))
         if raster_required:
-            render_rel = _stash_render(session, shot, m_i, f"revalidate_f{frame}")
+            render_rel = _stash_render(
+                session,
+                shot,
+                m_i,
+                f"revalidate_f{frame}",
+                mode=_unit_raster_mode(active_unit),
+            )
             evidence = _render_evidence(shot, layer, m_i, render_rel, session)
             authoritative = [row for row in evidence if row.get("authoritative")]
             prior = sealed.get(int(frame)) or {}
@@ -4235,7 +4402,17 @@ async def build_unit(
             else:
                 log(f"── round {rnd}/{rounds} — executable evidence at frame {m.frame} ──")
             t_round = time.monotonic()
-            render_rel = _stash_render(session, shot, m, f"r{rnd}") if raster_required else ""
+            render_rel = (
+                _stash_render(
+                    session,
+                    shot,
+                    m,
+                    f"r{rnd}",
+                    mode=_unit_raster_mode(active_unit),
+                )
+                if raster_required
+                else ""
+            )
             snap = session.snapshot(f"{m.id}_r{rnd}")  # {blend, journal_index}
             # Resume point: the SDK restores the CONVERSATION, the snapshot+journal
             # restores the SCENE. Both are needed or a resumed layer reasons about a
@@ -5384,12 +5561,22 @@ async def build_layer(
     )
     axes = _owned_axes(await ensure_axes(shot, verbose), layer)
     canonical: list = []
-    composition_unit = _composition_judge_unit(layer)
+    provisional_decisions = _load_provisional_decisions(shot, str(layer.id))
+    composition_unit = _composition_judge_unit(layer, provisional_decisions)
     if composition_unit is not None:
-        log(
-            "composed canonical fans in look-less unit claims — no critic look vote",
-            1,
-        )
+        if provisional_decisions:
+            log(
+                "composed canonical owes independent reference judgment for provisional "
+                "requirement decision(s): "
+                + ", ".join(row["id"] for row in provisional_decisions)
+                + f" · render mode {_unit_raster_mode(composition_unit)}",
+                1,
+            )
+        else:
+            log(
+                "composed canonical fans in look-less unit claims — no critic look vote",
+                1,
+            )
     result = await _verify_script(
         shot,
         milestone,
@@ -5908,6 +6095,7 @@ async def _verify_script(
                 shot,
                 m_i,
                 f"canonical_f{frame}" if len(judges) > 1 else "canonical",
+                mode=_unit_raster_mode(active_unit),
             )
             if raster_required
             else ""

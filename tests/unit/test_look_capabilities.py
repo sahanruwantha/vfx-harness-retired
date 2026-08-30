@@ -390,10 +390,8 @@ def test_live_unit_render_is_guarded_by_typed_raster_need() -> None:
 
     source = inspect.getsource(builder.build_unit)
     assert "raster_required = _unit_requires_raster(shot, active_unit)" in source
-    assert (
-        "_stash_render(session, shot, m, f\"r{rnd}\") if raster_required else \"\""
-        in source
-    )
+    assert "if raster_required" in source
+    assert "mode=_unit_raster_mode(active_unit)" in source
     revalidate_source = inspect.getsource(builder._try_revalidate)
     assert "raster_required = _unit_requires_raster(shot, active_unit)" in revalidate_source
     assert "deterministic_executable_revalidation" in revalidate_source
