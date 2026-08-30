@@ -23,6 +23,10 @@ live in the linked Harness Improvement Records.
   binding unit does not mutate or dress, so a mutation-empty observer cannot look
   locally clean and then die on terminal-gate `role-selector-closure`
   ([HIR-0159](docs/improvements/HIR-0159-materialization-refuses-out-of-scope-role-selectors.md)).
+- Image-contract debt cannot publish until a mesh, volume, or compositor carrier
+  is in the unit's replay prefix; shading and lights are optical signal, not a
+  subject
+  ([HIR-0160](docs/improvements/HIR-0160-image-debt-requires-rendered-carrier.md)).
 - Durable layer memory now lives under shot-root `state/`; reading it cannot create an
   orphan direct run or displace the latest production-run pointer
   ([HIR-0155](docs/improvements/HIR-0155-layer-memory-does-not-create-runs.md)).

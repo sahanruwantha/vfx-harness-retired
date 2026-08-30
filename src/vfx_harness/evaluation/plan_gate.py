@@ -1541,6 +1541,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     motion_units = 0
     earlier_camera_available = False
     earlier_image_signal_available = False
+    earlier_image_subject_available = False
     for layer in layers:
         if not isinstance(layer, dict):
             continue
@@ -1687,9 +1688,12 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             )
         from vfx_harness.domain.image_signal import (
             IMAGE_SIGNAL_DEPENDENCY_RULE,
+            IMAGE_SUBJECT_DEPENDENCY_RULE,
             image_signal_dependency_gaps,
             image_signal_provider_ids,
             image_signal_witness_guidance,
+            image_subject_dependency_gaps,
+            image_subject_provider_ids,
         )
 
         signal_provider_ids = image_signal_provider_ids(typed_stages, scene_rows)
@@ -1720,6 +1724,31 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             )
         if signal_provider_ids:
             earlier_image_signal_available = True
+        subject_provider_ids = image_subject_provider_ids(typed_stages, scene_rows)
+        for gap in image_subject_dependency_gaps(
+            typed_stages,
+            scene_rows,
+            earlier_subject_available=earlier_image_subject_available,
+        ):
+            available = (
+                " Same-layer rendered-carrier unit(s) exist but are outside the "
+                f"dependency closure: {', '.join(gap.available_provider_ids)}."
+                if gap.available_provider_ids
+                else " No same-layer unit currently derives a mesh, volume, or compositor family."
+            )
+            out.append(
+                Finding(
+                    "image-subject-bootstrap",
+                    True,
+                    f"layer {lid} unit {gap.unit_id}",
+                    "required image-contract debt is due before a rendered carrier is "
+                    f"available: {', '.join(gap.contract_ids)}."
+                    + available,
+                    IMAGE_SUBJECT_DEPENDENCY_RULE,
+                )
+            )
+        if subject_provider_ids:
+            earlier_image_subject_available = True
         from vfx_harness.domain.image_debts import (
             IMAGE_PROPERTY_VOCABULARY_RULE,
             image_property_vocabulary_gaps,

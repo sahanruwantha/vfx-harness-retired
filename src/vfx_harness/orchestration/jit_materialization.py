@@ -695,9 +695,12 @@ def validate_materialization(
 
         from vfx_harness.domain.image_signal import (
             IMAGE_SIGNAL_DEPENDENCY_RULE,
+            IMAGE_SUBJECT_DEPENDENCY_RULE,
             image_signal_dependency_gaps,
             image_signal_provider_ids,
             image_signal_witness_guidance,
+            image_subject_dependency_gaps,
+            image_subject_provider_ids,
         )
 
         target_index = next(
@@ -712,6 +715,14 @@ def validate_materialization(
             str(row.get("execution") or "") == "ready"
             and str(row.get("id") or "") in parsed
             and image_signal_provider_ids(
+                parsed[str(row.get("id"))].stages, combined_scene_rows
+            )
+            for row in combined_layers[:target_index]
+        )
+        earlier_subject_available = any(
+            str(row.get("execution") or "") == "ready"
+            and str(row.get("id") or "") in parsed
+            and image_subject_provider_ids(
                 parsed[str(row.get("id"))].stages, combined_scene_rows
             )
             for row in combined_layers[:target_index]
@@ -741,6 +752,30 @@ def validate_materialization(
                 + image_signal_witness_guidance()
                 + ". "
                 + IMAGE_SIGNAL_DEPENDENCY_RULE,
+            )
+        for gap in image_subject_dependency_gaps(
+            layer.stages,
+            combined_scene_rows,
+            earlier_subject_available=earlier_subject_available,
+        ):
+            available = (
+                " Same-layer rendered-carrier unit(s) exist but are outside the "
+                f"dependency closure: {list(gap.available_provider_ids)}."
+                if gap.available_provider_ids
+                else " No same-layer unit currently derives a mesh, volume, or compositor family."
+            )
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    "depends_on",
+                ),
+                f"unit {gap.unit_id} owes image-contract debt "
+                f"{list(gap.contract_ids)} before a rendered carrier is available."
+                + available
+                + " "
+                + IMAGE_SUBJECT_DEPENDENCY_RULE,
             )
     # A binding that declares its moments must include the bound contract's own frame:
     # declaring moments [150] for a frame-72 contract authors evidence that can never

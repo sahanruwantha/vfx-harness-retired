@@ -248,7 +248,8 @@ prefix (HIR-0156), camera-host optics plus motion that stay one camera write-clu
 (HIR-0157), deferred bbox `activates_at` compiled from the selected DAG so a camera
 layer does not ask_supervisor for layer occupancy (HIR-0158), materialization
 validation that refuses required contract role selectors the binding unit does
-not mutate (HIR-0159), and
+not mutate (HIR-0159), image-contract debt that cannot publish before a mesh,
+volume, or compositor carrier is in the replay prefix (HIR-0160), and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -360,7 +361,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `compositor` family. Look labels, role names, object counts, geometry, camera,
   controls, and keyframes cannot self-certify optical signal; the materialization
   and plan gates fail `image-signal-bootstrap` and enumerate registry-derived
-  write-kind witnesses (HIR-0110). Scene contracts may measure other frames; bind
+  write-kind witnesses (HIR-0110). That optical-signal grant is not a rendered
+  carrier: image-contract debt also requires a `mesh`, `volume`, or `compositor`
+  family in the same replay prefix. A shading-only root on a camera-only scene
+  cannot pay beauty; the materialization and plan gates fail
+  `image-subject-bootstrap` and name same-layer carriers outside the dependency
+  closure (HIR-0160). Scene contracts may measure other frames; bind
   those ids through `composition_context.contract_ids` without adding the extra
   frames to the judge lists. Claim-closure counts those ids as bound producers.
   A dependency root has no sealed outcomes to directory-Read (HIR-0029).

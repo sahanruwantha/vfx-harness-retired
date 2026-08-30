@@ -28,9 +28,12 @@ from vfx_harness.domain.atomicity import (
 )
 from vfx_harness.domain.image_signal import (
     IMAGE_SIGNAL_DEPENDENCY_RULE,
+    IMAGE_SUBJECT_DEPENDENCY_RULE,
     image_signal_dependency_gaps,
     image_signal_provider_ids,
     image_signal_witnesses,
+    image_subject_dependency_gaps,
+    image_subject_provider_ids,
 )
 from vfx_harness.domain.publish_interfaces import (
     REFERENCE_ONLY_EXPORTS_RULE,
@@ -443,6 +446,44 @@ def test_image_debt_may_be_paid_by_own_shading_family_or_earlier_layer() -> None
     ) == ()
 
 
+def test_image_debt_requires_rendered_carrier_in_dependency_closure() -> None:
+    """HIR-0160: shading signal on a camera-only prefix cannot pay beauty."""
+    shade = _with_image_debt(
+        _unit(
+            "hero_shade",
+            roles=["hero.shade"],
+            contract_id="hero-material",
+        ),
+        "hero-beauty",
+    )
+    mass = _unit(
+        "hero_massing",
+        roles=["hero.tower"],
+        contract_id="hero-mesh",
+        provides=["geometry"],
+    )
+    rows = [
+        _count_row(
+            "hero-material", ["hero.shade"], kind="material_assignment_fraction"
+        ),
+        _count_row("hero-mesh", ["hero.tower"], kind="mesh_vertex_count"),
+    ]
+
+    assert image_subject_provider_ids((shade, mass), rows) == frozenset({"hero_massing"})
+    gaps = image_subject_dependency_gaps((shade, mass), rows)
+    assert len(gaps) == 1
+    assert gaps[0].unit_id == "hero_shade"
+    assert gaps[0].available_provider_ids == ("hero_massing",)
+
+    ordered = replace(shade, depends_on=("hero_massing",))
+    assert image_subject_dependency_gaps((mass, ordered), rows) == ()
+    assert image_subject_dependency_gaps(
+        (shade,),
+        (rows[0],),
+        earlier_subject_available=True,
+    ) == ()
+
+
 def test_image_signal_witness_card_is_derived_from_atomicity_registry() -> None:
     witnesses = image_signal_witnesses()
 
@@ -543,6 +584,59 @@ def test_plan_gate_refuses_image_debt_before_derived_signal_provider(tmp_path: P
     assert not any(
         finding.check == "image-signal-bootstrap" for finding in findings
     )
+
+
+def test_plan_gate_refuses_image_debt_before_rendered_carrier(tmp_path: Path) -> None:
+    """HIR-0160: a shading-only beauty owner cannot publish ahead of mesh."""
+    document = _layer_doc(temporal_id="surface-material")
+    shade = document["layers"][0]["stages"][0]
+    shade["look_capabilities"] = ["material"]
+    shade["mutates"]["roles"] = ["product.shell"]
+    shade["evaluation"]["claims"][0].update(
+        {
+            "property": "frame_delta",
+            "asserts": "image",
+            "subject_roles": ["product.shell"],
+            "evidence": [
+                {
+                    "kind": "image_contract",
+                    "id": "surface-beauty",
+                    "moments": [1, 2],
+                }
+            ],
+        }
+    )
+    _write(tmp_path / "layers.json", document)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    **_count_row(
+                        "surface-material",
+                        ["product.shell"],
+                        kind="material_assignment_fraction",
+                    ),
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "axis": "camera_framing",
+                    "material_roles": ["product.shell"],
+                    "lo": 1,
+                    "op": "min",
+                }
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    bootstrap = [finding for finding in findings if finding.check == "image-subject-bootstrap"]
+    assert len(bootstrap) == 1
+    assert "surface-beauty" in bootstrap[0].what
+    assert IMAGE_SUBJECT_DEPENDENCY_RULE in bootstrap[0].fix
 
 
 @pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])

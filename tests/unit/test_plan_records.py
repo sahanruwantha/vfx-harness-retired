@@ -1765,6 +1765,61 @@ def test_materialization_rejects_image_debt_before_optical_signal(tmp_path: Path
     assert IMAGE_SIGNAL_DEPENDENCY_RULE in text
 
 
+def test_materialization_rejects_image_debt_before_rendered_carrier(tmp_path: Path) -> None:
+    """HIR-0160: a shading-only beauty owner cannot publish ahead of mesh."""
+    from vfx_harness.domain.image_signal import IMAGE_SUBJECT_DEPENDENCY_RULE
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "image-subject-bootstrap")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    unit = document["layer"]["stages"][0]
+    unit["look_capabilities"] = ["material"]
+    unit["evaluation"]["claims"][0].update(
+        {
+            "property": "frame_delta",
+            "asserts": "image",
+            "evidence": [
+                {
+                    "kind": "image_contract",
+                    "id": "polish-beauty",
+                    "moments": [239, 240],
+                }
+            ],
+        }
+    )
+    document["scene_contracts"] = [
+        {
+            "id": "polish-lock",
+            "kind": "material_assignment_fraction",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.comp"],
+            "material_roles": ["polish.comp"],
+            "op": "min",
+            "lo": 1,
+        },
+        *_vis_rows("2", (239, 240)),
+    ]
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "/layer/stages/0/depends_on:" in text
+    assert "polish-beauty" in text
+    assert "before a rendered carrier is available" in text
+    assert IMAGE_SUBJECT_DEPENDENCY_RULE in text
+
+
 def test_materialization_requirement_binding_accepts_required_image_debt(
     tmp_path: Path,
 ) -> None:
@@ -1776,6 +1831,42 @@ def test_materialization_requirement_binding_accepts_required_image_debt(
     payload = _jit_payload(tmp_path, bundle.content_hash)
     document = json.loads(payload.read_text(encoding="utf-8"))
     unit = document["layer"]["stages"][0]
+    mass = json.loads(json.dumps(unit))
+    mass.update({
+        "id": "polish_mass",
+        "title": "Polish mass",
+        "plan": "plans/02_polish/polish_mass.md",
+        "depends_on": [],
+        "provides": ["geometry"],
+        "look_capabilities": [],
+    })
+    mass["mutates"] = {
+        "mode": "scoped",
+        "roles": ["polish.mass"],
+        "controls": [],
+        "control_roles": {},
+        "script_spans": ["build/units/02/polish_mass.py"],
+    }
+    mass["evaluation"]["temporal_evidence"] = "none"
+    mass["evaluation"]["claims"] = [{
+        "id": "polish-mass-mesh",
+        "proposition": "The polished mass has authored polygons.",
+        "axis": "final_lock",
+        "property": "mesh_vertex_count",
+        "subject_roles": ["polish.mass"],
+        "subject_controls": [],
+        "moments": [239, 240],
+        "kind": "atomic",
+        "required": True,
+        "authority": "executable_required",
+        "repair_owner": "polish_mass",
+        "asserts": "scene",
+        "evidence": [
+            {"kind": "scene_contract", "id": "polish-mass-mesh-239"},
+            {"kind": "scene_contract", "id": "polish-mass-mesh-240"},
+        ],
+    }]
+    unit["depends_on"] = ["polish_mass"]
     unit["mutates"]["controls"] = []
     unit["mutates"]["control_roles"] = {}
     unit["look_capabilities"] = ["material"]
@@ -1819,6 +1910,32 @@ def test_materialization_requirement_binding_accepts_required_image_debt(
         },
     ]
     document["scene_contracts"] = [
+            {
+                "id": "polish-mass-mesh-239",
+                "kind": "mesh_vertex_count",
+                "owner_layer": "2",
+                "fault_owner": "2",
+                "activates_at": "2",
+                "lifecycle": "layer",
+                "axis": "final_lock",
+                "roles": ["polish.mass"],
+                "frame": 239,
+                "op": "min",
+                "lo": 8,
+            },
+            {
+                "id": "polish-mass-mesh-240",
+                "kind": "mesh_vertex_count",
+                "owner_layer": "2",
+                "fault_owner": "2",
+                "activates_at": "2",
+                "lifecycle": "layer",
+                "axis": "final_lock",
+                "roles": ["polish.mass"],
+                "frame": 240,
+                "op": "min",
+                "lo": 8,
+            },
         {
             "id": "polish-material",
             "kind": "material_assignment_fraction",
@@ -1834,6 +1951,7 @@ def test_materialization_requirement_binding_accepts_required_image_debt(
         },
         *_vis_rows("2", (239, 240)),
     ]
+    document["layer"]["stages"] = [mass, unit]
     document["image_contracts"] = []
     document["requirement_bindings"] = [
         {
