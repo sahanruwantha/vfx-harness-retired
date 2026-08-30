@@ -805,6 +805,7 @@ def test_irreversible_deferred_forecast_is_required_before_producer_freeze(
     from tests.unit.test_vis_repair_authority import _detail_unit
     from vfx_harness.agents.builder import (
         _executable_unit_verdict,
+        _forecast_blocker_ids,
         _geometry_forecast_blocking_evidence,
     )
     from vfx_harness.evidence import scene_checks
@@ -862,6 +863,7 @@ def test_irreversible_deferred_forecast_is_required_before_producer_freeze(
     )
 
     assert ids == {"bbox-f1"}
+    assert _forecast_blocker_ids(evidence) == ids
     assert evidence[0]["source"] == "deferred_subject_forecast_blocker"
     assert evidence[0]["evidence_frame"] == 1
     verdict = _executable_unit_verdict(

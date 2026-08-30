@@ -3155,20 +3155,28 @@ def _render_evidence(
             evidence.extend(protected_evidence)
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             extra = set()
-        try:
-            blocker_ids, blocker_evidence = _geometry_forecast_blocking_evidence(
-                shot,
-                layer,
-                active_unit,
-                getattr(layer, "stages", ()),
-                session,
-                fallback_frame=int(m.frame),
-            )
-            extra.update(blocker_ids)
-            evidence.extend(blocker_evidence)
-        except (OSError, ValueError, KeyError, json.JSONDecodeError):
-            pass
+        blocker_ids, blocker_evidence = _geometry_forecast_blocking_evidence(
+            shot,
+            layer,
+            active_unit,
+            getattr(layer, "stages", ()),
+            session,
+            fallback_frame=int(m.frame),
+        )
+        extra.update(blocker_ids)
+        evidence.extend(blocker_evidence)
     return _scope_unit_evidence(evidence, active_unit, int(m.frame), extra_ids=extra)
+
+
+def _forecast_blocker_ids(evidence: list[dict]) -> set[str]:
+    """Required ids promoted from the separate deferred-forecast evidence channel."""
+    return {
+        str(row.get("id"))
+        for row in evidence
+        if row.get("id")
+        and row.get("source") == "deferred_subject_forecast_blocker"
+        and not row.get("pass")
+    }
 
 
 def _reproduction_hint(row: dict) -> str:
@@ -3875,6 +3883,7 @@ async def _judge_unit_or_layer(
             )
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             extra_required = set()
+    extra_required.update(_forecast_blocker_ids(evidence))
     inactive_ids: set[str] = set()
     bound_ids = set(_unit_evidence_ids(active_unit, int(m.frame)) or set())
     if active_unit is not None and layer is not None:
@@ -4265,6 +4274,7 @@ def _try_revalidate(
                         shot, str(layer.id), bound_ids, [int(frame)]
                     )
                     inactive_ids = bound_ids - due
+            extra_required.update(_forecast_blocker_ids(evidence))
             verdict = _executable_unit_verdict(
                 active_unit,
                 int(frame),

@@ -23,6 +23,13 @@ the already-proven unrepairable downstream failure.
 
 The run was interrupted before checkpoint freeze. Layer 3 was never opened.
 
+The first implementation exposed a second boundary in run
+`20260830T113327Z-6fb27d`: blocker evidence was produced and scoped, but the
+executable verdict independently rebuilt `extra_required_ids` from geometry-protected
+payment rows and reported `7/7 PASS`. Mass sealed before the operator interrupted the
+subsequent roof session. Evidence production without required-id consumption is another
+fail-open path.
+
 ## Root cause
 
 HIR-0151 separated observation from payment, but treated every partial-union miss as
@@ -55,7 +62,9 @@ producer has already made the final contract impossible.
 evidence and classifies only mathematically irreversible sides. The builder schedules
 the producer forecasts at their declared owner frames during live/canonical evidence,
 adds only those blocker ids to the unit's extra required set, and leaves every other
-forecast on HIR-0151's diagnostic channel.
+forecast on HIR-0151's diagnostic channel. Live judging, canonical replay, and
+deterministic revalidation all union blocker ids from the evidence stream into their
+required sets; blocker compilation errors propagate instead of being swallowed.
 
 ## Rejected alternatives
 
@@ -77,8 +86,8 @@ early producer receives the blocker at the contract's declared frame while the
 dependency-complete payer does not receive a forecast blocker.
 
 Validation on 2026-08-30: the focused evidence-vocabulary and builder-instrument
-suites passed 46 tests in 2.89 seconds. `.venv/bin/ruff check src tests` passed, the
-full repository suite passed 661 tests in 48.69 seconds, and `.venv/bin/vfx --help`
+suites passed 46 tests in 2.57 seconds. `.venv/bin/ruff check src tests` passed, the
+full repository suite passed 661 tests in 47.47 seconds, and `.venv/bin/vfx --help`
 exited successfully.
 
 ## Release and rollback

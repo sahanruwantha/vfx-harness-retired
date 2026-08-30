@@ -389,7 +389,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   projected union width/height/bottom cannot decrease as successor geometry arrives, and
   union top cannot increase. A partial producer already beyond a bound on that
   irreversible side must repair or call `cannot_express_in_scope`; repairable-side misses
-  remain diagnostic and bbox centres are never inferred monotonic (HIR-0152).
+  remain diagnostic and bbox centres are never inferred monotonic. Live judgment,
+  empty-scene canonical replay, and deterministic revalidation all consume those blocker
+  ids as required evidence; producing a blocker row without adding it to the verdict's
+  required set, or swallowing blocker compilation errors, is forbidden (HIR-0152).
   More generally, any scene contract whose `activates_at` differs from its
   `owner_layer` is inactive at the authoring unit: it may bind through
   `composition_context.contract_ids`, never through that unit's claim evidence
