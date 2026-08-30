@@ -19,6 +19,10 @@ live in the linked Harness Improvement Records.
   earliest geometry successor; `ask_supervisor` is not the occupancy instrument, and
   unanswered-question stops name `vfx escalate`
   ([HIR-0158](docs/improvements/HIR-0158-deferred-bbox-activation-is-dag-authority.md)).
+- Materialization validation refuses required scene-contract role selectors the
+  binding unit does not mutate or dress, so a mutation-empty observer cannot look
+  locally clean and then die on terminal-gate `role-selector-closure`
+  ([HIR-0159](docs/improvements/HIR-0159-materialization-refuses-out-of-scope-role-selectors.md)).
 - Durable layer memory now lives under shot-root `state/`; reading it cannot create an
   orphan direct run or displace the latest production-run pointer
   ([HIR-0155](docs/improvements/HIR-0155-layer-memory-does-not-create-runs.md)).

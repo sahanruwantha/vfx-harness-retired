@@ -3316,6 +3316,79 @@ def test_materialization_can_close_owned_requirement_with_typed_decision(tmp_pat
     assert materialized.requirement_decisions["R-final-lock"]["decision_strength"] == "approved_start"
 
 
+def test_materialization_refuses_required_bbox_outside_mutation_roles(tmp_path: Path) -> None:
+    """HIR-0159: validator-clean then gate role-selector-closure burned the last turn."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "observer-bbox")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    layer = data["layer"]
+    layer["stages"].append({
+        "id": "observer",
+        "title": "Composition observer",
+        "plan": "plans/02_polish/observer.md",
+        "depends_on": ["polish"],
+        "mutates": {
+            "mode": "scoped",
+            "roles": [],
+            "controls": [],
+            "script_spans": ["build/units/02/observer.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 240,
+            "judge": layer["judge"],
+            "temporal_evidence": "none",
+            "claims": [{
+                "id": "observer-bbox",
+                "proposition": "subject stays framed",
+                "axis": "final_lock",
+                "property": "bbox_height",
+                "subject_roles": ["polish.comp"],
+                "subject_controls": [],
+                "moments": [239, 240],
+                "kind": "atomic",
+                "required": True,
+                "authority": "executable_required",
+                "repair_owner": "observer",
+                "asserts": "projected_composition",
+                "evidence": [
+                    {"kind": "scene_contract", "id": "observer-bbox-f239"},
+                    {"kind": "scene_contract", "id": "observer-bbox-f240"},
+                ],
+            }],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+        "look_capabilities": [],
+    })
+    for frame in (239, 240):
+        data["scene_contracts"].append({
+            "id": f"observer-bbox-f{frame}",
+            "kind": "bbox_height",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.comp"],
+            "frame": frame,
+            "op": "band",
+            "lo": 0.3,
+            "hi": 0.5,
+        })
+    _write(payload, data)
+
+    with pytest.raises(ValueError, match="outside mutation authority"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
 def test_materialization_cannot_replace_requirement_with_meta_debt_statement(
     tmp_path: Path,
 ) -> None:

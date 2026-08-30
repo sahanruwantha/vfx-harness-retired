@@ -246,7 +246,9 @@ earlier-layer camera in cannot_express options, a plan-workspace path miss that
 enumerates staged relative reads so a verifier cannot invent another filesystem
 prefix (HIR-0156), camera-host optics plus motion that stay one camera write-cluster
 (HIR-0157), deferred bbox `activates_at` compiled from the selected DAG so a camera
-layer does not ask_supervisor for layer occupancy (HIR-0158), and
+layer does not ask_supervisor for layer occupancy (HIR-0158), materialization
+validation that refuses required contract role selectors the binding unit does
+not mutate (HIR-0159), and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -295,7 +297,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   calibration, research, reference fingerprints — belongs to the owning layer's materialization,
   which fails closed until every owned requirement resolves (ADR-0005, ADR-0006). Materialization
   validation reports every collectable finding in one write, each addressed by an RFC 6901 JSON
-  pointer; field repair is `patch_materialization` on the candidate file. Unreadable JSON, wrong
+  pointer; field repair is `patch_materialization` on the candidate file. Required scene-contract
+  role selectors must close against the binding unit's `mutates.roles`/`dresses` in that write —
+  a mutation-empty observer cannot look locally clean and then die on terminal-gate
+  `role-selector-closure` (HIR-0159). Unreadable JSON, wrong
   schema, wrong bundle hash, and a non-object layer remain fatal. Historical plan bundles are
   not a repair instrument (HIR-0023). Rematerialization writes a reverted overlay as the design
   base and selects only when the replacement publishes; crash, truncation, or a broken pipe

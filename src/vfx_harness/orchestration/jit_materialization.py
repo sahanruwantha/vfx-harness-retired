@@ -26,7 +26,9 @@ from vfx_harness.domain.json_pointer import set_at as set_pointer
 from vfx_harness.domain.json_pointer import split as split_pointer
 from vfx_harness.domain.plan_records import load_active_structured_decisions
 from vfx_harness.evidence.scene_checks import (
+    KIND_DOMAINS,
     PROJECTED_ORIGIN_KINDS,
+    SURFACE_PROJECTED_KINDS,
     validate_row,
     validate_row_set,
 )
@@ -44,6 +46,17 @@ OVERLAY_ARTIFACTS = (
     "requirements.json",
     "acceptance.json",
 )
+ROLE_SELECTOR_CLOSURE_RULE = (
+    "required evidence and repair authority must close together: bind the contract "
+    "on the unit that mutates or dresses those roles, or use typed control_roles/"
+    "compare_control_roles for bvfx_control ids. A mutation-empty observer cannot "
+    "pay bbox or other role selectors it does not own"
+)
+TWO_SIDED_MEASUREMENT_KINDS = frozenset({
+    "path_clearance_min",
+    "parallax_displacement_profile",
+    "onset_order",
+})
 
 
 def _sha256(path: Path) -> str:
@@ -849,8 +862,10 @@ def validate_materialization(
     # A metric may only close a claim it can actually support. Counting rim modules
     # proves they exist, not that they chase; radial closure proves an aperture is shut,
     # not that it reads as machined metal. Run 20260823T154920Z shipped both.
-    from vfx_harness.domain.work_units import STRUCTURAL_CLAIM_DOMAINS
-    from vfx_harness.evidence.scene_checks import KIND_DOMAINS, SURFACE_PROJECTED_KINDS
+    from vfx_harness.domain.work_units import (
+        STRUCTURAL_CLAIM_DOMAINS,
+        plan_selector_declared,
+    )
 
     if layer is not None:
         from vfx_harness.domain.image_debts import (
@@ -959,7 +974,45 @@ def validate_materialization(
                                 "genuine geometry provider; do not add proxy mesh only "
                                 "to satisfy bbox/visible_fraction.",
                             )
-                    if str(vis_row.get("kind") or "") != "visible_fraction":
+                    kind = str(vis_row.get("kind") or "")
+                    owner_layer = str(vis_row.get("owner_layer") or "")
+                    activates_at = str(vis_row.get("activates_at") or owner_layer)
+                    deferred_row = bool(
+                        owner_layer and activates_at and activates_at != owner_layer
+                    )
+                    observation_only = "camera" in owner.provides and (
+                        kind == "visible_fraction" or kind in PROJECTED_ORIGIN_KINDS
+                    )
+                    if not deferred_row:
+                        if observation_only:
+                            primary_keys: tuple[str, ...] = ()
+                        elif kind in TWO_SIDED_MEASUREMENT_KINDS:
+                            primary_keys = ("roles",)
+                        else:
+                            primary_keys = ("roles", "compare_roles")
+                        selected_roles = {
+                            str(value)
+                            for key in primary_keys
+                            for value in vis_row.get(key) or []
+                        }
+                        mutable_roles = [*unit.mutates.roles, *unit.mutates.dresses]
+                        undeclared_roles = sorted(
+                            selector
+                            for selector in selected_roles
+                            if not plan_selector_declared(selector, mutable_roles)
+                        )
+                        if undeclared_roles:
+                            note(
+                                json_ptr(
+                                    "layer", "stages", unit_index, "evaluation", "claims"
+                                ),
+                                f"unit {unit.id} contract {binding.id} selects roles "
+                                "outside mutation authority: "
+                                + ", ".join(undeclared_roles)
+                                + ". "
+                                + ROLE_SELECTOR_CLOSURE_RULE,
+                            )
+                    if kind != "visible_fraction":
                         continue
                     unrepaired = vis_roles_unrepairable_by(
                         provides=owner.provides,
