@@ -319,6 +319,26 @@ def compile_scope_with_predecessors(
         helpers=helpers,
         unit_digest=producer_digest,
     )
+    from vfx_harness.evidence.scene_checks import (
+        deferred_subject_composition_forecast_ids_for_unit,
+    )
+
+    contract_by_id = {
+        str(row.get("id")): row
+        for row in contracts
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    forecast_ids = deferred_subject_composition_forecast_ids_for_unit(
+        contracts, units, unit, layer_id
+    )
+    card["deferred_subject_forecasts"] = [
+        {
+            **_contract_row(contract_by_id[contract_id]),
+            "diagnostic_only": True,
+            "acceptance_evidence": False,
+        }
+        for contract_id in forecast_ids
+    ]
     by_id = {item.id: item for item in units}
     consumed_by_producer: dict[str, frozenset[tuple[str, str]]] = {}
     for uid in unit.depends_on:
@@ -403,6 +423,11 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         for row in (card.get("contracts") or [])
         if isinstance(row, Mapping)
     ) or "  - (none bound)"
+    forecasts = "\n".join(
+        _format_bound_contract(row)
+        for row in (card.get("deferred_subject_forecasts") or [])
+        if isinstance(row, Mapping)
+    ) or "  - (none)"
     debts = "\n".join(
         f"  - `{row['id']}` frame={row.get('frame')} property={row.get('property')} "
         f"axis={row.get('axis')}"
@@ -456,6 +481,8 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         f"judge frames: {frames or 'none'} (primary f{judge.get('primary')})\n"
         f"claims:\n{claims}\n"
         f"bound scene contracts:\n{contracts}\n"
+        "deferred subject forecasts (diagnostic only; the complete-subject payer "
+        f"alone can satisfy these rows):\n{forecasts}\n"
         f"owed image-contract debts (propose_checks, exact id/frame/property/axis):\n"
         f"{debts}\n"
         f"typed publish interfaces (role/control/contract-id exports only):\n"

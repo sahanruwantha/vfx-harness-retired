@@ -380,7 +380,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   subject. Parent selectors may span several truthful geometry write clusters; the first
   unit whose dependency closure contains every overlapping producer pays all owner-frame
   rows. Publication rejects a DAG with no such payer. Later layers protect the persistent
-  bbox on every overlapping geometry mutation (HIR-0134).
+  bbox on every overlapping geometry mutation. Before that activation-layer payer, each
+  overlapping geometry producer receives the exact deferred rows as diagnostic-only
+  forecasts evaluated at their declared frames. Forecasts teach mutable partial producers
+  but never enter required evidence, checkpoint protection, sealing, canonical payment,
+  or revalidation authority; the dependency-complete producer alone pays the final union
+  (HIR-0134, HIR-0151).
   More generally, any scene contract whose `activates_at` differs from its
   `owner_layer` is inactive at the authoring unit: it may bind through
   `composition_context.contract_ids`, never through that unit's claim evidence

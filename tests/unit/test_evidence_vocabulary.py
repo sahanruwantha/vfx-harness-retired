@@ -194,6 +194,7 @@ def test_deferred_subject_bbox_waits_for_complete_geometry_closure() -> None:
     from tests.unit.test_vis_repair_authority import _detail_unit
     from vfx_harness.evidence.scene_checks import (
         deferred_subject_composition_activation_ids,
+        deferred_subject_composition_forecast_ids_for_unit,
         deferred_subject_composition_ids_for_unit,
         deferred_subject_composition_payment_gaps,
         prior_interface_rows,
@@ -249,10 +250,19 @@ def test_deferred_subject_bbox_waits_for_complete_geometry_closure() -> None:
     assert deferred_subject_composition_ids_for_unit(
         [deferred], units, mass, "2"
     ) == ()
+    assert deferred_subject_composition_forecast_ids_for_unit(
+        [deferred], units, mass, "2"
+    ) == ("building-bbox",)
     assert deferred_subject_composition_ids_for_unit(
         [deferred], units, roof, "2"
     ) == ("building-bbox",)
+    assert deferred_subject_composition_forecast_ids_for_unit(
+        [deferred], units, roof, "2"
+    ) == ()
     assert deferred_subject_composition_ids_for_unit(
+        [deferred], units, site, "2"
+    ) == ()
+    assert deferred_subject_composition_forecast_ids_for_unit(
         [deferred], units, site, "2"
     ) == ()
     unordered = (mass, replace(roof, depends_on=()), site)

@@ -774,3 +774,22 @@ def test_deferred_bbox_is_measured_at_owner_frame_without_becoming_a_judge(
     assert {row["id"] for row in evidence} == due
     assert {row["evidence_frame"] for row in evidence} == {1, 114}
     assert layer.judges == ((39, "refs/f39.png"),)
+
+
+def test_deferred_subject_forecast_note_is_explicitly_nonpayable() -> None:
+    from vfx_harness.blender.tools import _deferred_subject_forecast_note
+
+    note = _deferred_subject_forecast_note([
+        {
+            "id": "bbox-f176",
+            "metric": "bbox_height",
+            "value": 0.07,
+            "target": ">= 0.85",
+            "pass": False,
+        }
+    ])
+
+    assert "DIAGNOSTIC ONLY" in note
+    assert "cannot pay acceptance" in note
+    assert "bbox-f176: bbox_height=0.07 target >= 0.85 (outside target)" in note
+    assert _deferred_subject_forecast_note([]) == ""

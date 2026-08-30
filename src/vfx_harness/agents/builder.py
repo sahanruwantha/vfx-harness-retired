@@ -4400,6 +4400,7 @@ async def build_unit(
     )
     _look_actions = bool(_feedback_groups)
     active_evidence_ids = _unit_scene_evidence_ids(active_unit)
+    diagnostic_evidence_ids: set[str] = set()
     if active_evidence_ids is not None and layer is not None:
         try:
             extra_vis = _geometry_protected_vis_ids(shot, layer, active_unit)
@@ -4411,6 +4412,20 @@ async def build_unit(
         with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
             active_evidence_ids = _scene_ids_active_at_declared_frames(
                 shot, str(layer.id), active_evidence_ids, frames
+            )
+        with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
+            from vfx_harness.evidence.scene_checks import (
+                deferred_subject_composition_forecast_ids_for_unit,
+                load_rows,
+            )
+
+            diagnostic_evidence_ids = set(
+                deferred_subject_composition_forecast_ids_for_unit(
+                    load_rows(shot.folder),
+                    tuple(layer_units or getattr(layer, "stages", ()) or ()),
+                    active_unit,
+                    str(layer.id),
+                )
             )
     active_image_evidence_ids = {
         binding.id
@@ -4443,6 +4458,7 @@ async def build_unit(
         "look_actions": _look_actions,
         "look_unsettled": look_unsettled,
         "active_evidence_ids": active_evidence_ids,
+        "diagnostic_evidence_ids": diagnostic_evidence_ids,
         "active_image_evidence_ids": active_image_evidence_ids,
         "image_evidence_required": image_evidence_required,
         "image_debts": image_debts,

@@ -9,6 +9,7 @@ import pytest
 
 from vfx_harness.agents.build_prompts import builder_kickoff
 from vfx_harness.agents.unit_scope import (
+    compile_scope_with_predecessors,
     compile_unit_scope,
     format_unit_scope_card,
     helper_inventory,
@@ -148,6 +149,65 @@ def test_geometry_scope_compiles_diagnostic_artist_view_without_acceptance() -> 
         "views": ["through_camera", "orbit", "front", "right", "back", "left", "top"],
         "acceptance_evidence": False,
     }]
+
+
+def test_early_geometry_producer_gets_nonpayable_deferred_bbox_forecast() -> None:
+    from dataclasses import replace
+
+    mass = _unit(
+        "building_mass",
+        roles=["building.mass.tower"],
+        contract_id="fg-exist",
+        provides=["geometry"],
+    )
+    roof = _unit(
+        "building_roof",
+        roles=["building.roof.silhouette"],
+        contract_id="cam-spine",
+        provides=["geometry"],
+    )
+    roof = replace(roof, depends_on=(mass.id,))
+    deferred = {
+        "id": "building-bbox-f176",
+        "kind": "bbox_height",
+        "roles": ["building"],
+        "frame": 176,
+        "owner_layer": "1",
+        "fault_owner": "1",
+        "activates_at": "2",
+        "lifecycle": "persistent",
+        "axis": "camera_path",
+        "op": "min",
+        "lo": 0.85,
+    }
+    contracts = [*_contracts(), deferred]
+
+    mass_card = compile_scope_with_predecessors(
+        unit=mass,
+        layer_id="2",
+        contracts=contracts,
+        units=(mass, roof),
+        helpers=(),
+    )
+    assert mass_card["deferred_subject_forecasts"] == [{
+        **deferred,
+        "diagnostic_only": True,
+        "acceptance_evidence": False,
+    }]
+    assert "building-bbox-f176" not in {
+        row["id"] for row in mass_card["contracts"]
+    }
+    formatted = format_unit_scope_card(mass_card)
+    assert "complete-subject payer alone can satisfy" in formatted
+
+    roof_card = compile_scope_with_predecessors(
+        unit=roof,
+        layer_id="2",
+        contracts=contracts,
+        units=(mass, roof),
+        helpers=(),
+    )
+    assert roof_card["deferred_subject_forecasts"] == []
 
 
 def test_unit_scope_keeps_exact_evaluator_fields_for_bound_contract() -> None:

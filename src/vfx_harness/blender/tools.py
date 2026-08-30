@@ -265,6 +265,23 @@ def _scene_completion_state(
     }
 
 
+def _deferred_subject_forecast_note(evidence: list[dict]) -> str:
+    """Teach partial producers without turning their readings into acceptance."""
+    if not evidence:
+        return ""
+    return (
+        "\nDEFERRED SUBJECT FORECASTS — DIAGNOSTIC ONLY; these partial-subject "
+        "readings cannot pay acceptance and the dependency-complete producer will "
+        "re-evaluate the final union:\n"
+        + "\n".join(
+            f"  {row.get('id', '?')}: {row.get('metric')}={row.get('value')} "
+            f"target {row.get('target')} "
+            f"({'within target' if row.get('pass') else 'outside target'})"
+            for row in evidence[:6]
+        )
+    )
+
+
 def _bound_static_frames(
     rows: list[dict], active_ids: set[str] | None, fallback_frame: int
 ) -> list[int]:
@@ -1741,10 +1758,20 @@ def build_blender_tools(
         if shot_dir and layer_id:
             try:
                 active_ids = comparison_state.get("active_evidence_ids")
+                diagnostic_ids = set(
+                    comparison_state.get("diagnostic_evidence_ids") or []
+                )
+                scheduled_ids = (
+                    None
+                    if active_ids is None
+                    else set(active_ids) | diagnostic_ids
+                )
                 from vfx_harness.evidence.scene_checks import layer_evidence, load_rows
 
                 frames = _bound_static_frames(
-                    load_rows(shot_dir), active_ids, int(comparison_state.get("frame", 1))
+                    load_rows(shot_dir),
+                    scheduled_ids,
+                    int(comparison_state.get("frame", 1)),
                 )
                 evidence = []
                 for evidence_frame in frames:
@@ -1755,23 +1782,49 @@ def build_blender_tools(
                             )
                         )
                     )
-                if active_ids is not None:
-                    evidence = [row for row in evidence if str(row.get("id")) in active_ids]
+                if scheduled_ids is not None:
+                    evidence = [
+                        row
+                        for row in evidence
+                        if str(row.get("id")) in scheduled_ids
+                    ]
                 evidence = list({str(row.get("id")): row for row in evidence}.values())
-                authoritative = [row for row in evidence if row.get("authoritative")]
+                diagnostic_evidence = [
+                    row
+                    for row in evidence
+                    if str(row.get("id")) in diagnostic_ids
+                ]
+                active_evidence = [
+                    row
+                    for row in evidence
+                    if str(row.get("id")) not in diagnostic_ids
+                ]
+                authoritative = [
+                    row for row in active_evidence if row.get("authoritative")
+                ]
                 if authoritative and all(row.get("pass") for row in authoritative):
                     from vfx_harness.evidence.scene_checks import functional_evidence
 
-                    evidence.extend(
+                    active_evidence.extend(
                         await anyio.to_thread.run_sync(
                             lambda: functional_evidence(shot_dir, str(layer_id), session=session)
                         )
                     )
                     if active_ids is not None:
-                        evidence = [row for row in evidence if str(row.get("id")) in active_ids]
-                    evidence = list({str(row.get("id")): row for row in evidence}.values())
-                    authoritative = [row for row in evidence if row.get("authoritative")]
-                state = _scene_completion_state(evidence, str(layer_id), active_ids)
+                        active_evidence = [
+                            row
+                            for row in active_evidence
+                            if str(row.get("id")) in active_ids
+                        ]
+                    active_evidence = list(
+                        {str(row.get("id")): row for row in active_evidence}.values()
+                    )
+                    authoritative = [
+                        row for row in active_evidence if row.get("authoritative")
+                    ]
+                state = _scene_completion_state(
+                    active_evidence, str(layer_id), active_ids
+                )
                 _refresh_unpaid_image_debts(comparison_state, shot_dir)
                 authoritative = state["authoritative"]
                 passed = [row for row in authoritative if row.get("pass")]
@@ -1829,6 +1882,9 @@ def build_blender_tools(
                                 " Live mutation remains open until the builder hands "
                                 "its scoped work off."
                             )
+                contract_note += _deferred_subject_forecast_note(
+                    diagnostic_evidence
+                )
             except Exception as exc:
                 contract_note = (
                     f"\n⚠ automatic scene-contract probe unavailable: {type(exc).__name__}: {str(exc)[:100]}"
@@ -2256,11 +2312,13 @@ def build_blender_tools(
 
     @tool(
         "contract_result",
-        "Evaluate one contract bound to the ACTIVE unit by exact id. Scene contracts "
+        "Evaluate one contract bound to the ACTIVE unit by exact id, or one compiled "
+        "deferred-subject forecast. Scene contracts "
         "use the canonical evaluator (including multi-role visible_fraction logical AND) "
         "and report per-role details. Image contracts require image_handle from an "
-        "eevee render at that frame. Use this instead of recreating contract math in "
-        "run_bpy or guessing from a beauty render.",
+        "eevee render at that frame. Forecast rows are marked diagnostic_only and cannot "
+        "pay acceptance. Use this instead of recreating contract math in run_bpy or "
+        "guessing from a beauty render.",
         {
             "type": "object",
             "properties": {
@@ -2276,15 +2334,17 @@ def build_blender_tools(
             return _text("contract_result needs an active shot layer", is_error=True)
         cid = str(args["id"])
         scene_ids = set(comparison_state.get("active_evidence_ids") or [])
+        diagnostic_ids = set(comparison_state.get("diagnostic_evidence_ids") or [])
         image_ids = set(comparison_state.get("active_image_evidence_ids") or [])
-        if cid not in scene_ids | image_ids:
-            present = sorted(scene_ids | image_ids)
+        if cid not in scene_ids | diagnostic_ids | image_ids:
+            present = sorted(scene_ids | diagnostic_ids | image_ids)
             return _text(
-                f"contract {cid!r} is not bound to this unit; bound ids: "
+                f"contract {cid!r} is neither bound nor a compiled forecast for this "
+                "unit; available ids: "
                 + (", ".join(present) if present else "none"),
                 is_error=True,
             )
-        if cid in scene_ids:
+        if cid in scene_ids | diagnostic_ids:
             try:
                 from vfx_harness.evidence.scene_checks import layer_evidence, load_rows
 
@@ -2300,6 +2360,15 @@ def build_blender_tools(
                     rows.extend(row for row in measured if str(row.get("id")) == cid)
             except (StopIteration, OSError, ValueError, BlenderError) as exc:
                 return _text(f"could not evaluate scene contract {cid}: {exc}", is_error=True)
+            if cid in diagnostic_ids:
+                rows = [
+                    {
+                        **row,
+                        "diagnostic_only": True,
+                        "acceptance_evidence": False,
+                    }
+                    for row in rows
+                ]
             return _text(json.dumps(rows, indent=2, sort_keys=True))
 
         handle = str(args.get("image_handle") or "")

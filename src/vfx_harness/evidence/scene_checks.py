@@ -1607,6 +1607,60 @@ def deferred_subject_composition_ids_for_unit(
     return tuple(sorted(payable))
 
 
+def deferred_subject_composition_forecast_ids_for_unit(
+    rows: Sequence[Mapping[str, object]],
+    units,
+    unit,
+    layer_id: str | int,
+    frame: int | None = None,
+) -> tuple[str, ...]:
+    """Activation-layer bbox rows an overlapping producer may inspect early.
+
+    HIR-0134 deliberately makes only the first dependency-complete producer pay a
+    deferred subject bbox.  Earlier producers still need the exact camera-owned rows
+    while their geometry is mutable, otherwise the payer discovers a bad aggregate
+    after those producers have frozen.  Forecasts are diagnostic only; callers must
+    not add these ids to required evidence or checkpoint protection.
+    """
+    if unit is None or "geometry" not in tuple(getattr(unit, "provides", ()) or ()):
+        return ()
+    unit_rows = tuple(units or ())
+    unit_id = str(getattr(unit, "id", ""))
+    payable = set(
+        deferred_subject_composition_ids_for_unit(
+            rows, unit_rows, unit, layer_id, frame
+        )
+    )
+    by_contract = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    forecasts: list[str] = []
+    for contract_id in deferred_subject_composition_activation_ids(
+        rows, layer_id, frame
+    ):
+        if contract_id in payable:
+            continue
+        roles = tuple(
+            str(role)
+            for role in (by_contract[contract_id].get("roles") or ())
+            if str(role)
+        )
+        if any(
+            _selector_overlap(role, mutation)
+            for role in roles
+            for candidate in unit_rows
+            if str(getattr(candidate, "id", "")) == unit_id
+            for mutation in (
+                *(getattr(getattr(candidate, "mutates", None), "roles", ()) or ()),
+                *(getattr(getattr(candidate, "mutates", None), "dresses", ()) or ()),
+            )
+        ):
+            forecasts.append(contract_id)
+    return tuple(sorted(forecasts))
+
+
 @dataclass(frozen=True, slots=True)
 class DeferredSubjectCompositionPaymentGap:
     contract_id: str
