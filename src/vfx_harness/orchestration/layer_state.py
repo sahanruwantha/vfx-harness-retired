@@ -27,7 +27,7 @@ _MAX_TRIED = 24          # keep the file small; it is re-read on every request
 
 
 def path_for(shot_folder: str | Path) -> Path:
-    return run_artifacts.ensure(shot_folder, command="layer-state").root / "state" / NAME
+    return run_artifacts.shot_state_dir(shot_folder) / NAME
 
 
 def load(shot_folder: str | Path) -> dict:

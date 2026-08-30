@@ -7,6 +7,9 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Durable layer memory now lives under shot-root `state/`; reading it cannot create an
+  orphan direct run or displace the latest production-run pointer
+  ([HIR-0155](docs/improvements/HIR-0155-layer-memory-does-not-create-runs.md)).
 - Rematerialization writes a reverted overlay as the design base and selects only
   when the replacement publishes: a crash, truncation, or broken pipe leaves the
   previously selected view. Materialization sessions also deny Task/Agent

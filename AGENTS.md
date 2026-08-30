@@ -77,7 +77,9 @@ operation.
   and shot-root renders pay no debt (ADR-0008, HIR-0053).
 - Generated writes go through `observability/run_artifacts.py`: JSON published atomically,
   JSONL only for event streams, resumable accepted state in `checkpoints/`, disposables in
-  `scratch/`, cross-run state under `state/` — never under a prior run.
+  `scratch/`, cross-run state under shot-root `state/` — never under a prior run. Read-only
+  cross-run state access, including `layer_state`, resolves through `shot_state_dir` and must
+  not call a run-producing helper or change `runs/latest.json` (HIR-0155).
 
 ## Pipeline north star
 
