@@ -2539,11 +2539,22 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
             out.add(candidate)
             pending.extend(unit_dependencies.get((layer_id, candidate), set()))
         return out
-    allowed_domains = {"scene", "image", "temporal", "projected_composition", "human"}
+
+    from vfx_harness.domain.work_units import (
+        EVIDENCE_DOMAINS,
+        REQUIREMENT_DOMAIN_COVERAGE_FIX,
+        layers_covering_evidence_domains,
+        parse_evidence_domains,
+        requirement_domain_coverage_what,
+        uncovered_evidence_domains,
+    )
+
+    layer_domains: dict[str, tuple[str, ...]] = {}
     for layer in layers:
         if not isinstance(layer, dict):
             continue
         domains = layer.get("evidence_domains")
+        lid = str(layer.get("id") or "")
         if not isinstance(domains, list) or not domains:
             findings.append(Finding(
                 "requirement-closure", True, f"layer {layer.get('id', '?')}",
@@ -2551,10 +2562,46 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                 "declare the typed evidence domains this layer requires; composition "
                 "coverage must not be inferred from axis-name keywords",
             ))
-        elif unknown_domains := sorted(set(map(str, domains)) - allowed_domains):
+        elif unknown_domains := sorted(set(map(str, domains)) - EVIDENCE_DOMAINS):
             findings.append(Finding(
                 "requirement-closure", True, f"layer {layer.get('id', '?')}",
                 "unknown evidence domains: " + ", ".join(unknown_domains),
+            ))
+        elif lid:
+            try:
+                layer_domains[lid] = parse_evidence_domains(
+                    domains, f"layer {lid}.evidence_domains"
+                )
+            except ValueError as exc:
+                findings.append(Finding(
+                    "requirement-closure", True, f"layer {lid}", str(exc),
+                ))
+    for requirement in requirements:
+        if requirement.resolution_kind != "deferred_owner":
+            continue
+        declared = requirement.evidence_domains
+        owner = str(requirement.owner_layer or "")
+        owner_cov = layer_domains.get(owner, ())
+        if not declared:
+            findings.append(Finding(
+                "requirement-domain-coverage",
+                True,
+                requirement.id,
+                f"deferred_owner {requirement.id} is missing evidence_domains",
+                f"declare a non-empty subset of {sorted(EVIDENCE_DOMAINS)}",
+            ))
+            continue
+        if uncovered_evidence_domains(declared, owner_cov):
+            covering = layers_covering_evidence_domains(declared, layer_domains)
+            findings.append(Finding(
+                "requirement-domain-coverage",
+                True,
+                requirement.id,
+                requirement_domain_coverage_what(
+                    requirement.id, declared, owner, owner_cov, covering
+                ),
+                REQUIREMENT_DOMAIN_COVERAGE_FIX,
+                layer=owner or None,
             ))
     for requirement in requirements:
         known = obligation_ids if requirement.resolution_kind == "obligation" else contract_ids

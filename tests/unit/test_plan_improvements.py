@@ -35,6 +35,8 @@ def test_global_plan_defers_all_world_model_work_to_jit() -> None:
         in flat
     )
     assert "Ownership is coverage, not design" in flat
+    assert "evidence_domains" in PLANNER_SYSTEM
+    assert "Coverage is AND" in flat
     assert "no reference measurement, image-check\ncalibration, recipe search" in PLANNER_SYSTEM
 
 

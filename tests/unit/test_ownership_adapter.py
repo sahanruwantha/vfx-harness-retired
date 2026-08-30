@@ -65,7 +65,11 @@ def _mapping(registry, *, silhouette_owner: str) -> dict:
             owner = "2"
         else:
             owner = "1"
-        resolutions[row["id"]] = {"kind": "deferred_owner", "owner_layer": owner}
+        resolutions[row["id"]] = {
+            "kind": "deferred_owner",
+            "owner_layer": owner,
+            "evidence_domains": ["scene"],
+        }
     return {
         "schema": "vfx-harness.ownership-mapping/v1",
         "layers": [

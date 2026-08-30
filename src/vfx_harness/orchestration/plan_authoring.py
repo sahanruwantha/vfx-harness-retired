@@ -26,10 +26,77 @@ from vfx_harness.domain.plan_records import (
     DECISION_STRENGTHS,
     brief_clause_spans,
 )
-from vfx_harness.domain.work_units import GLOBAL_SCENE_CAPABILITIES
+from vfx_harness.domain.work_units import (
+    EVIDENCE_DOMAINS,
+    GLOBAL_SCENE_CAPABILITIES,
+    REQUIREMENT_DOMAIN_COVERAGE_FIX,
+    layers_covering_evidence_domains,
+    parse_evidence_domains,
+    requirement_domain_coverage_what,
+    uncovered_evidence_domains,
+)
 
 MAPPING_SCHEMA = "vfx-harness.ownership-mapping/v1"
-EVIDENCE_DOMAINS = {"scene", "image", "temporal", "projected_composition", "human"}
+
+
+def ownership_mapping_authoring_schema() -> dict[str, Any]:
+    """Closed JSON schema for the planner's ``ownership_mapping.json`` ticket.
+
+    Authoritative validation remains ``validate_mapping`` plus ``load_requirements``.
+    The schema enumerates evidence-domain identity before generation (HIR-0124).
+    """
+    text = {"type": "string", "minLength": 1}
+    domain = {"type": "string", "enum": sorted(EVIDENCE_DOMAINS)}
+    domains = {
+        "type": "array",
+        "items": domain,
+        "minItems": 1,
+        "uniqueItems": True,
+        "description": (
+            "AND coverage: the owner layer's evidence_domains must include every "
+            "value declared here."
+        ),
+    }
+    deferred = {
+        "type": "object",
+        "properties": {
+            "kind": {"const": "deferred_owner"},
+            "owner_layer": text,
+            "evidence_domains": domains,
+        },
+        "required": ["kind", "owner_layer", "evidence_domains"],
+        "additionalProperties": False,
+    }
+    decision = {
+        "type": "object",
+        "properties": {
+            "kind": {"const": "decision"},
+            "statement": text,
+            "decision_strength": {
+                "type": "string",
+                "enum": sorted(DECISION_STRENGTHS),
+            },
+        },
+        "required": ["kind", "statement", "decision_strength"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "schema": {"const": MAPPING_SCHEMA},
+            "layers": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+            "axes": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+            "resolutions": {
+                "type": "object",
+                "additionalProperties": {
+                    "oneOf": [deferred, decision],
+                },
+            },
+            "blockers": {"type": "array", "items": text},
+        },
+        "required": ["schema", "layers", "axes", "resolutions", "blockers"],
+        "additionalProperties": False,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -98,6 +165,7 @@ def validate_mapping(
         layers = []
     reserved_seen: list[tuple[str, str]] = []
     capability_closure: dict[str, set[str]] = {}
+    layer_domains: dict[str, tuple[str, ...]] = {}
     refs_dir = Path(refs_dir)
     for index, layer in enumerate(layers):
         where = f"layers[{index}]"
@@ -150,6 +218,13 @@ def validate_mapping(
                 f"{where}.evidence_domains must be a non-empty subset of "
                 f"{sorted(EVIDENCE_DOMAINS)}"
             )
+        else:
+            try:
+                layer_domains[lid] = parse_evidence_domains(
+                    domains, f"{where}.evidence_domains"
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
         depends = layer.get("depends_on")
         if not isinstance(depends, list):
             errors.append(f"{where}.depends_on must be a list of earlier layer ids")
@@ -253,12 +328,32 @@ def validate_mapping(
                     f"{where}.decision_strength must be one of "
                     f"{sorted(DECISION_STRENGTHS)}"
                 )
+            if resolution.get("evidence_domains") is not None:
+                errors.append(f"{where} decision must omit evidence_domains")
         elif kind == "deferred_owner":
             owner = str(resolution.get("owner_layer") or "")
             if owner not in layer_ids:
                 errors.append(
                     f"{where}.owner_layer must name a declared layer "
                     f"({', '.join(layer_ids) or 'none declared'})"
+                )
+            try:
+                declared = parse_evidence_domains(
+                    resolution.get("evidence_domains"), f"{where}.evidence_domains"
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+                declared = ()
+            owner_cov = layer_domains.get(owner, ())
+            if declared and owner in layer_domains and uncovered_evidence_domains(
+                declared, owner_cov
+            ):
+                covering = layers_covering_evidence_domains(declared, layer_domains)
+                errors.append(
+                    requirement_domain_coverage_what(
+                        rid, declared, owner, owner_cov, covering
+                    )
+                    + f". {REQUIREMENT_DOMAIN_COVERAGE_FIX}"
                 )
         else:
             errors.append(
@@ -332,6 +427,10 @@ def expand_mapping(
                 "ids": [],
                 "owner_layer": owner,
                 "due": {"kind": "before_layer", "layer": owner},
+                "evidence_domains": list(parse_evidence_domains(
+                    resolution.get("evidence_domains"),
+                    f"resolutions[{row['id']}].evidence_domains",
+                )),
             }
         requirement_rows.append({**row, "resolution": resolved})
     _write("requirements.json", {

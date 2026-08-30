@@ -116,3 +116,5 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
   append or replace stage rows.
 - Let overlapping materialization stage or patch writes clobber a previously staged prefix.
 - Treat a zero-animation bound as keyframe write authority.
+- Infer deferred_owner evidence domains from brief keywords.
+- Leave a deferred_owner row's domains uncovered by its owner layer.

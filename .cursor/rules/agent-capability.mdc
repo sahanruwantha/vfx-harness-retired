@@ -44,6 +44,7 @@ mutation is a harness defect, not a model limitation to paper over with a longer
 - Point-projection consume matches the exporting interface
 - Locked revision-checked materialization candidate writes; patch cannot insert stage rows
 - Closed-loop mutation: every write has a matching observation
+- Deferred-owner domain AND-coverage against the owner layer's already-validated evidence_domains
 - Earned qualitative judgment where executable evidence cannot decide
 
 ## Not wanted

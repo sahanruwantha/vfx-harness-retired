@@ -209,7 +209,8 @@ interfaces, camera-dependent evidence that cannot publish before a camera provid
 role-bound global camera capability whose dependency closure reaches every judged layer,
 typed camera availability that role names cannot impersonate, a closed unit-ticket schema
 on the staging tool, projection consumption that matches the exporting interface, locked
-revision-checked materialization candidate writes, and
+revision-checked materialization candidate writes, deferred-owner domain AND-coverage
+against the owner layer's already-validated evidence_domains, and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -248,7 +249,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   (ADR-0004).
 - Global publication contains only: the dependency-ordered layer DAG, an ownership-only
   requirements register, durable shot-wide constraints, reserved interfaces, and genuine
-  blockers. Every layer materializes just in time; a dependency-root layer may materialize
+  blockers. A still-open `deferred_owner` row declares `evidence_domains` from the same
+  closed vocabulary as layer `evidence_domains` and `claim.asserts` (ADR-0003). Coverage
+  is AND: the owner layer must already declare every domain on the row. A rejection names
+  the requirement, its declared domains, the owner's domains, and every layer whose
+  domains could cover the row. Contract and obligation rows bind concrete ids and do not
+  carry this field (HIR-0124). Every layer materializes just in time; a dependency-root layer may materialize
   immediately after publication. Concrete evidence design — contract kinds, moments, thresholds,
   calibration, research, reference fingerprints — belongs to the owning layer's materialization,
   which fails closed until every owned requirement resolves (ADR-0005, ADR-0006). Materialization

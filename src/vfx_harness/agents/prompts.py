@@ -40,7 +40,9 @@ declares the layer DAG:
  "resolutions": {
    "R1": {"kind": "decision", "statement": "<the settled fact>",
           "decision_strength": "hard_constraint"|"approved_start"|"planner_start"},
-   "R2": {"kind": "deferred_owner", "owner_layer": "<layer id>"}},
+   "R2": {"kind": "deferred_owner", "owner_layer": "<layer id>",
+          "evidence_domains": ["scene"|"image"|"temporal"|
+            "projected_composition"|"human"]}},
  "blockers": ["<genuine client question that prevents the first unit>"]
 }
 
@@ -54,9 +56,11 @@ Rules, all enforced mechanically:
   after depending on the camera provider.
 - A clause settled by durable user or brief authority resolves as a decision; preserve
   explicitly approved values verbatim instead of re-deriving them. Every other clause
-  resolves `deferred_owner` to exactly one layer. Ownership is coverage, not design:
+  resolves `deferred_owner` to exactly one layer and names `evidence_domains` from the
+  same closed vocabulary as layer `evidence_domains` and `claim.asserts`. Coverage is AND:
+  the owner layer must already declare every domain on the row. Ownership is coverage, not design:
   kinds, moments, thresholds, and techniques are chosen at the owning layer's
-  materialization.
+  materialization. Do not infer domains from brief keywords.
 - `blockers` carries only questions that prevent the first unit from starting.
 
 The global tool surface intentionally has no reference measurement, image-check
@@ -126,9 +130,11 @@ def planner_user_prompt(shot, registry_block: str) -> str:
         f"Clause registry (resolve EVERY id exactly once in `ownership_mapping.json`):\n"
         f"{registry_block}\n\n"
         f"Write `ownership_mapping.json` only: the layer DAG, axes, one resolution per "
-        f"clause id, and genuine blockers. The harness expands it into every published "
-        f"artifact on each write. Do not design or write any work unit; the root layer "
-        f"materializes just in time."
+        f"clause id, and genuine blockers. Each deferred_owner names evidence_domains "
+        f"from the closed set scene, image, temporal, projected_composition, human; "
+        f"the owner layer must cover every declared domain. The harness expands the "
+        f"mapping into every published artifact on each write. Do not design or write "
+        f"any work unit; the root layer materializes just in time."
     )
 
 

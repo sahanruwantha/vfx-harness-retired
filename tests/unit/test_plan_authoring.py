@@ -78,6 +78,14 @@ A dolly move reveals a plaza, then dressing elements settle into place.
 """
 
 
+def _owned(layer: str, *domains: str) -> dict:
+    return {
+        "kind": "deferred_owner",
+        "owner_layer": layer,
+        "evidence_domains": list(domains) or ["scene"],
+    }
+
+
 def _shot(tmp_path: Path, brief: str, refs: list[str]) -> Path:
     (tmp_path / "brief.md").write_text(brief, encoding="utf-8")
     (tmp_path / "refs").mkdir()
@@ -88,7 +96,7 @@ def _shot(tmp_path: Path, brief: str, refs: list[str]) -> Path:
 
 def _product_mapping(registry) -> dict:
     rids = [row["id"] for row in registry]
-    resolutions = {rid: {"kind": "deferred_owner", "owner_layer": "1"} for rid in rids}
+    resolutions = {rid: _owned("1") for rid in rids}
     resolutions[rids[-1]] = {
         "kind": "decision",
         "statement": "One approval still at frame 1 is the delivery.",
@@ -117,7 +125,7 @@ def _motion_mapping(registry) -> dict:
     for rid in rids:
         text = by_text[rid].lower()
         owner = "2" if ("settle" in text or "48" in text) else "1"
-        resolutions[rid] = {"kind": "deferred_owner", "owner_layer": owner}
+        resolutions[rid] = _owned(owner)
     return {
         "schema": "vfx-harness.ownership-mapping/v1",
         "layers": [
@@ -319,3 +327,226 @@ def test_registry_prompt_block_carries_ids_lines_and_text(tmp_path: Path) -> Non
 
     assert "R1 [lines" in block
     assert "seamless studio sweep" in block
+
+
+READABLE_BRIEF = """---
+id: readable-fixture
+title: Readable subject
+type: motion
+frames: 24
+fps: 24
+resolution: [1920, 1080]
+engine: BLENDER_EEVEE_NEXT
+---
+
+# Readable subject
+
+## Intent
+
+A camera push frames the subject, then lighting keeps the subject readable.
+
+## Look
+
+- The key light is the illumination owner.
+
+## Beats
+
+| Beat | Frames | Required action |
+|---|---:|---|
+| B1 | 1 | The camera frames the subject. |
+| B2 | 24 | The subject stays readable under the key light. |
+
+## Deliverables
+
+- Approval stills at frames 1 and 24.
+"""
+
+
+def _readable_mapping(registry) -> dict:
+    rids = [row["id"] for row in registry]
+    by_text = {row["id"]: row["statement"] for row in registry}
+    resolutions = {}
+    for rid in rids:
+        text = by_text[rid].lower()
+        if "readable" in text:
+            resolutions[rid] = _owned("1", "scene")
+        elif "light" in text:
+            resolutions[rid] = _owned("2", "image")
+        else:
+            resolutions[rid] = _owned("1", "scene")
+    return {
+        "schema": "vfx-harness.ownership-mapping/v1",
+        "layers": [
+            {
+                "id": "1", "title": "Camera path", "script": "build/01_camera.py",
+                "charter": "authored brief", "primary_judge": 1,
+                "judge": [{"frame": 1, "ref": "refs/f001.png"},
+                          {"frame": 24, "ref": "refs/f024.png"}],
+                "owns": ["camera_path"],
+                "evidence_domains": ["scene", "projected_composition", "temporal"],
+                "depends_on": [], "provides": {"camera": ["camera.*"]},
+                "reserved_roles": ["camera.*"],
+            },
+            {
+                "id": "2", "title": "Key light", "script": "build/02_light.py",
+                "charter": "camera path outcome", "primary_judge": 24,
+                "judge": [{"frame": 24, "ref": "refs/f024.png"}],
+                "owns": ["subject_readability"],
+                "evidence_domains": ["image", "scene"],
+                "depends_on": ["1"], "provides": {},
+                "reserved_roles": ["light.*"],
+            },
+        ],
+        "axes": [
+            {"key": "camera_path", "desc": "push-in framing"},
+            {"key": "subject_readability", "desc": "subject stays readable"},
+        ],
+        "resolutions": resolutions,
+        "blockers": [],
+    }
+
+
+def _readable_clause(registry) -> str:
+    return next(
+        row["id"] for row in registry if "readable" in row["statement"].lower()
+    )
+
+
+def test_claim_domains_are_the_layer_evidence_domain_vocabulary() -> None:
+    from vfx_harness.domain.work_units import CLAIM_DOMAINS, EVIDENCE_DOMAINS
+
+    assert CLAIM_DOMAINS is EVIDENCE_DOMAINS
+    assert "human" in EVIDENCE_DOMAINS
+
+
+def test_ownership_mapping_schema_enumerates_deferred_owner_domains() -> None:
+    from jsonschema import Draft202012Validator
+
+    from vfx_harness.domain.work_units import EVIDENCE_DOMAINS
+    from vfx_harness.orchestration.plan_authoring import (
+        ownership_mapping_authoring_schema,
+    )
+
+    schema = ownership_mapping_authoring_schema()
+    deferred = schema["properties"]["resolutions"]["additionalProperties"]["oneOf"][0]
+    assert deferred["properties"]["evidence_domains"]["items"]["enum"] == sorted(
+        EVIDENCE_DOMAINS
+    )
+    assert "evidence_domains" in deferred["required"]
+
+    ticket = {
+        "kind": "deferred_owner",
+        "owner_layer": "1",
+        "evidence_domains": ["scene"],
+    }
+    assert list(Draft202012Validator(deferred).iter_errors(ticket)) == []
+
+    errors = list(
+        Draft202012Validator(deferred).iter_errors(
+            {"kind": "deferred_owner", "owner_layer": "1"}
+        )
+    )
+    assert errors
+    assert any("evidence_domains" in error.message for error in errors)
+
+
+def test_deferred_owner_missing_domains_enumerates_accepted_set(tmp_path: Path) -> None:
+    shot = _shot(tmp_path, PRODUCT_BRIEF, ["f001.png"])
+    registry = clause_registry(shot / "brief.md")
+    mapping = _product_mapping(registry)
+    first_rid = registry[0]["id"]
+    mapping["resolutions"][first_rid] = {"kind": "deferred_owner", "owner_layer": "1"}
+
+    errors = validate_mapping(mapping, registry, shot / "refs")
+    joined = "\n".join(errors)
+
+    assert first_rid in joined
+    assert "projected_composition" in joined
+    assert "human" in joined
+
+
+def test_image_domain_on_non_image_owner_names_covering_layer(tmp_path: Path) -> None:
+    shot = _shot(tmp_path, READABLE_BRIEF, ["f001.png", "f024.png"])
+    registry = clause_registry(shot / "brief.md")
+    mapping = _readable_mapping(registry)
+    rid = _readable_clause(registry)
+    mapping["resolutions"][rid] = _owned("1", "image")
+
+    errors = validate_mapping(mapping, registry, shot / "refs")
+    joined = "\n".join(errors)
+
+    assert rid in joined
+    assert "missing image" in joined
+    assert "Layers whose domains cover every declared domain: 2" in joined
+    assert "do not infer domains from brief keywords" in joined
+    with pytest.raises(ValueError, match="mapping is invalid"):
+        expand_mapping(shot, mapping)
+
+    mapping["resolutions"][rid] = _owned("2", "image")
+    assert validate_mapping(mapping, registry, shot / "refs") == []
+    expand_mapping(shot, mapping)
+    result = plan_gate.run(shot, "plans/global.md", require_scene_checks=True)
+    assert result.clean, [f.what for f in result.blocking]
+
+
+def test_and_coverage_forces_split_when_no_layer_declares_every_domain(
+    tmp_path: Path,
+) -> None:
+    shot = _shot(tmp_path, READABLE_BRIEF, ["f001.png", "f024.png"])
+    registry = clause_registry(shot / "brief.md")
+    mapping = _readable_mapping(registry)
+    rid = _readable_clause(registry)
+
+    mapping["resolutions"][rid] = _owned(
+        "1", "projected_composition", "temporal", "image"
+    )
+    errors = validate_mapping(mapping, registry, shot / "refs")
+    joined = "\n".join(errors)
+    assert rid in joined
+    assert "missing image" in joined
+    assert "Layers whose domains cover every declared domain: none" in joined
+
+    mapping["resolutions"][rid] = _owned("1", "projected_composition", "temporal")
+    assert validate_mapping(mapping, registry, shot / "refs") == []
+    expand_mapping(shot, mapping)
+    import json
+
+    register = json.loads((shot / "requirements.json").read_text(encoding="utf-8"))
+    row = next(item for item in register["requirements"] if item["id"] == rid)
+    assert row["resolution"]["evidence_domains"] == [
+        "projected_composition", "temporal"
+    ]
+    result = plan_gate.run(shot, "plans/global.md", require_scene_checks=True)
+    assert result.clean, [f.what for f in result.blocking]
+
+
+def test_plan_gate_teaches_requirement_domain_coverage_on_selected_authority(
+    tmp_path: Path,
+) -> None:
+    shot = _shot(tmp_path, READABLE_BRIEF, ["f001.png", "f024.png"])
+    registry = clause_registry(shot / "brief.md")
+    mapping = _readable_mapping(registry)
+    rid = _readable_clause(registry)
+    mapping["resolutions"][rid] = _owned("1", "projected_composition", "temporal")
+    expand_mapping(shot, mapping)
+    import json
+
+    register = json.loads((shot / "requirements.json").read_text(encoding="utf-8"))
+    for row in register["requirements"]:
+        if row["id"] == rid:
+            row["resolution"]["evidence_domains"] = [
+                "image", "projected_composition", "temporal"
+            ]
+    (shot / "requirements.json").write_text(
+        json.dumps(register, indent=1) + "\n", encoding="utf-8"
+    )
+
+    result = plan_gate.run(shot, "plans/global.md", require_scene_checks=True)
+    coverage = [
+        finding for finding in result.blocking
+        if finding.check == "requirement-domain-coverage" and finding.where == rid
+    ]
+    assert coverage, [f.what for f in result.blocking]
+    assert "missing image" in coverage[0].what
+    assert "Layers whose domains cover every declared domain: none" in coverage[0].what
+    assert coverage[0].layer == "1"

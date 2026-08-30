@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.work_units import parse_evidence_domains
+
 REQUIREMENTS_SCHEMA = "vfx-harness.requirements/v1"
 OBLIGATIONS_SCHEMA = "vfx-harness.obligations/v1"
 ASSUMPTIONS_SCHEMA = "vfx-harness.assumptions/v1"
@@ -177,6 +179,7 @@ class Requirement:
     decision: str | None = None
     owner_layer: str | None = None
     due: DueGate | None = None
+    evidence_domains: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +281,9 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
         decision = resolution.get("decision")
         owner_layer = None
         due = None
+        evidence_domains: tuple[str, ...] = ()
+        if kind != "deferred_owner" and resolution.get("evidence_domains") is not None:
+            raise ValueError(f"{where}.resolution.{kind} must omit evidence_domains")
         if kind == "decision":
             decision = _text(decision, f"{where}.resolution.decision")
             if ids:
@@ -293,10 +299,15 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
                 raise ValueError(
                     f"{where}.resolution.due must be before_layer for owner_layer {owner_layer}"
                 )
+            evidence_domains = parse_evidence_domains(
+                resolution.get("evidence_domains"), f"{where}.resolution.evidence_domains"
+            )
         elif decision is not None:
             raise ValueError(f"{where}.resolution.{kind} must omit decision")
-        out.append(Requirement(rid, _text(row.get("statement"), f"{where}.statement"), cited_hash,
-                               start, end, kind, ids, decision, owner_layer, due))
+        out.append(Requirement(
+            rid, _text(row.get("statement"), f"{where}.statement"), cited_hash,
+            start, end, kind, ids, decision, owner_layer, due, evidence_domains,
+        ))
     if not out:
         raise ValueError("requirements.json.requirements must not be empty")
     return tuple(out)

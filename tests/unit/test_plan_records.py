@@ -28,6 +28,16 @@ from vfx_harness.orchestration.plan_due import (
 )
 
 
+def _deferred_owner(layer: str, *domains: str) -> dict:
+    return {
+        "kind": "deferred_owner",
+        "ids": [],
+        "owner_layer": layer,
+        "due": {"kind": "before_layer", "layer": layer},
+        "evidence_domains": list(domains) or ["scene"],
+    }
+
+
 def _write(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value) + "\n", encoding="utf-8")
@@ -134,10 +144,7 @@ def _add_deferred_layer(root: Path) -> None:
     })
     _write(root / "layers.json", data)
     requirements = json.loads((root / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = {
-        "kind": "deferred_owner", "ids": [], "owner_layer": "2",
-        "due": {"kind": "before_layer", "layer": "2"},
-    }
+    requirements["requirements"][0]["resolution"] = _deferred_owner("2")
     _write(root / "requirements.json", requirements)
     _write(root / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -262,10 +269,7 @@ def test_deferred_root_materializes_without_fabricated_outcome(
     _write(tmp_path / "layers.json", document)
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = {
-        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
-        "due": {"kind": "before_layer", "layer": "1"},
-    }
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -332,10 +336,7 @@ def test_materialized_consumer_keeps_global_camera_capability_from_sparse_bundle
     _write(tmp_path / "layers.json", document)
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = {
-        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
-        "due": {"kind": "before_layer", "layer": "1"},
-    }
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -995,10 +996,7 @@ def test_unit_first_global_bundle_is_clean_for_heterogeneous_roots(
             "citation": {
                 "source": "brief.md", "sha256": digest, "line_start": 6, "line_end": 6,
             },
-            "resolution": {
-                "kind": "deferred_owner", "ids": [], "owner_layer": "1",
-                "due": {"kind": "before_layer", "layer": "1"},
-            },
+            "resolution": _deferred_owner("1", "image"),
         }],
     })
     _write(tmp_path / "obligations.json", {
@@ -2726,10 +2724,7 @@ def test_root_materialization_validates_with_deferred_dependents(
     _write(tmp_path / "layers.json", document)
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = {
-        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
-        "due": {"kind": "before_layer", "layer": "1"},
-    }
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -2831,10 +2826,7 @@ def test_owned_requirement_deferred_to_another_layer_fails_closed(
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = {
-        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
-        "due": {"kind": "before_layer", "layer": "1"},
-    }
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
     _write(tmp_path / "requirements.json", requirements)
     layout = run_artifacts.create(tmp_path, "foreign-owner")
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
@@ -2908,10 +2900,7 @@ def test_full_global_gate_emits_no_executable_findings_for_sparse_deferred_layer
     Image.new("RGB", (32, 32), "black").save(tmp_path / "refs" / "a.png")
     _add_deferred_layer(tmp_path)
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = {
-        "kind": "deferred_owner", "ids": [], "owner_layer": "2",
-        "due": {"kind": "before_layer", "layer": "2"},
-    }
+    requirements["requirements"][0]["resolution"] = _deferred_owner("2")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -3227,10 +3216,7 @@ def test_unselected_revert_of_last_layer_does_not_unlink_pointer(
     _write(tmp_path / "layers.json", document)
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = {
-        "kind": "deferred_owner", "ids": [], "owner_layer": "1",
-        "due": {"kind": "before_layer", "layer": "1"},
-    }
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],

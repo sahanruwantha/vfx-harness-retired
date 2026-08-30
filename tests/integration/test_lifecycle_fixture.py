@@ -81,6 +81,7 @@ def _deferred_root(root: Path) -> None:
     requirements["requirements"][0]["resolution"] = {
         "kind": "deferred_owner", "ids": [], "owner_layer": "1",
         "due": {"kind": "before_layer", "layer": "1"},
+        "evidence_domains": ["scene"],
     }
     digest = hashlib.sha256((root / "brief.md").read_bytes()).hexdigest()
     requirements["requirements"][0]["citation"] = {
@@ -93,6 +94,7 @@ def _deferred_root(root: Path) -> None:
         "resolution": {
             "kind": "deferred_owner", "ids": [], "owner_layer": "2",
             "due": {"kind": "before_layer", "layer": "2"},
+            "evidence_domains": ["scene"],
         },
     })
     _write(root / "requirements.json", requirements)

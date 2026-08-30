@@ -72,6 +72,10 @@ live in the linked Harness Improvement Records.
   order from `depends_on`, so retries cannot replay a consumer before its producer merely
   because `stages[]` stores them in another order
   ([HIR-0119](docs/improvements/HIR-0119-replay-order-is-derived-from-the-unit-dag.md)).
+  A deferred_owner requirement declares evidence domains from the same closed
+  vocabulary as layer `evidence_domains` and `claim.asserts`; the owner layer
+  must cover every declared domain, and a rejection names covering layers
+  ([HIR-0124](docs/improvements/HIR-0124-deferred-owner-domains-must-cover-owner-layer.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan
