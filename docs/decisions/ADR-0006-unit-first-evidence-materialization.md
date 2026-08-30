@@ -18,6 +18,12 @@ constituent unit passed, the exact qualified observation becomes hash-pinned rep
 evidence. Its cited semantic roles derive the affected producer closure; accepted checkpoints
 remain frozen until the typed finding is consumed transactionally (HIR-0139).
 
+An unpublished replacement preview evaluates one coherent transaction moment: candidate
+documents plus a preview-local projection of the durable unit state through the exact
+state-backed `apply_replan` mechanism. It never compares a post-publication DAG to
+pre-publication state, never suppresses hierarchy validation, and never mutates selected
+state before publication (HIR-0140).
+
 ## Context
 
 ADR-0005 removed whole-shot evidence design from global planning, but retained one exception:

@@ -2109,6 +2109,63 @@ def stage_candidate_view(
     (pointer_dir / "current.json").write_text(
         json.dumps(pointer, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    _project_candidate_unit_state(shot, view, materialized)
+
+
+def _project_candidate_unit_state(
+    shot: Path,
+    view: Path,
+    materialized: MaterializedLayer,
+) -> None:
+    """Apply the exact state-backed replan to preview-local durable state.
+
+    A replacement candidate necessarily names a different unit DAG before publication,
+    while the selected shot state must continue to name the accepted predecessor until
+    publication succeeds.  The terminal gate reads both surfaces.  Projecting through
+    ``apply_replan`` inside the isolated consumer view lets it validate the same digest
+    schema, preservation set, invalidation closure, and resulting unit identities that
+    the outer transaction will apply, without mutating selected authority.
+    """
+    from vfx_harness.orchestration.unit_state import apply_replan, load
+
+    layer_id = str(materialized.layer.id)
+    state = load(shot, layer_id)
+    if not state:
+        return
+    old_plan_hash = str(state.get("plan_hash") or "")
+    if not old_plan_hash:
+        raise ValueError(
+            f"layer {layer_id} candidate preview cannot project unit state without "
+            "the durable predecessor plan_hash"
+        )
+
+    source_dir = shot / "state" / "work-units"
+    preview_dir = view / "state" / "work-units"
+    if preview_dir.is_symlink():
+        preview_dir.unlink()
+        preview_dir.mkdir(parents=True)
+        for child in source_dir.iterdir():
+            (preview_dir / child.name).symlink_to(child)
+    else:
+        preview_dir.mkdir(parents=True, exist_ok=True)
+    source = source_dir / f"layer_{layer_id}.json"
+    target = preview_dir / source.name
+    if target.is_symlink() or target.exists():
+        target.unlink()
+    atomic_write(target, source.read_text(encoding="utf-8"))
+
+    apply_replan(
+        view,
+        layer_id,
+        (),
+        materialized.layer.stages,
+        old_plan_hash=old_plan_hash,
+        new_plan_hash=_sha256(view / "layers.json"),
+        owner="vfx-harness.candidate-preview",
+        trigger="project unpublished materialization through the transactional replan",
+        evidence=["scratch/candidate-materialization"],
+        state_backed_base=True,
+    )
 
 
 def publish_materialization(

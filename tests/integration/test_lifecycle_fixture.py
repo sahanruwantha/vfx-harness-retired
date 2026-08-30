@@ -20,7 +20,11 @@ import pytest
 from tests.unit.test_plan_records import _candidate, _declaring, _vis_rows, _write
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration.jit_materialization import publish_materialization
+from vfx_harness.orchestration.jit_materialization import (
+    publish_materialization,
+    revert_materialization,
+    stage_candidate_view,
+)
 from vfx_harness.orchestration.layer_plans import (
     read_work_unit_plan,
     stamp_work_unit_plan,
@@ -32,7 +36,13 @@ from vfx_harness.orchestration.plan_authority import (
     resolve_current,
     selected_artifact_path,
 )
-from vfx_harness.orchestration.unit_state import apply_replan, initialize, load, transition
+from vfx_harness.orchestration.unit_state import (
+    apply_replan,
+    initialize,
+    load,
+    transition,
+    validate_current,
+)
 
 
 def _deferred_root(root: Path) -> None:
@@ -236,8 +246,6 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     assert resolve_current(tmp_path).content_hash == bundle_a.content_hash
 
     # ── 2 · the candidate preview shows the POST-publication world before publishing ──
-    from vfx_harness.orchestration.jit_materialization import stage_candidate_view
-
     payload = _root_materialization(tmp_path, bundle_a.content_hash)
     preview = prepare_consumer_view(layout_a)
     stage_candidate_view(tmp_path, payload, preview)
@@ -311,6 +319,38 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     initialize(tmp_path, "1", stages, plan_hash=view_plan_hash)
     for status in ("planning", "building", "frozen", "evaluating", "passed"):
         transition(tmp_path, "1", "lock", status, reason="fixture build")
+
+    # ── 5b · replacement preview projects, but does not publish, the replan ──
+    replacement = json.loads(payload.read_text(encoding="utf-8"))
+    replacement_unit = replacement["layer"]["stages"][0]
+    replacement_unit["id"] = "lock_v2"
+    replacement_unit["title"] = "Replacement lock"
+    replacement_unit["plan"] = "plans/01_finish/lock_v2.md"
+    replacement_unit["mutates"]["script_spans"] = ["build/units/01/lock_v2.py"]
+    for claim in replacement_unit["evaluation"]["claims"]:
+        claim["repair_owner"] = "lock_v2"
+    _write(payload, replacement)
+    overlay = revert_materialization(tmp_path, "1", select=False)
+    assert overlay is not None
+    replacement_preview = prepare_consumer_view(layout_a)
+    stage_candidate_view(
+        tmp_path,
+        payload,
+        replacement_preview,
+        overlay_root=overlay,
+    )
+    replacement_result = plan_gate.run(replacement_preview)
+    assert not any(
+        finding.check == "hierarchy"
+        and "work-unit state IDs do not match" in finding.what
+        for finding in replacement_result.blocking
+    ), plan_gate.report(replacement_result)
+    preview_layers = load_layers_from_path(replacement_preview / "layers.json")
+    preview_state = load(replacement_preview, "1")
+    validate_current(preview_state, "1", preview_layers["1"].stages)
+    assert set(preview_state["units"]) == {"lock_v2"}
+    assert preview_state["units"]["lock_v2"]["status"] == "pending"
+    assert load(tmp_path, "1")["units"]["lock"]["status"] == "passed"
 
     # ── 6 · generation B supersedes A: stale view inert, sealed state retired with audit ──
     (tmp_path / "plans" / "global.md").write_text("# fixture plan, second generation\n", encoding="utf-8")

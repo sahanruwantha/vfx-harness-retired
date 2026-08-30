@@ -427,6 +427,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `unstage_materialization_unit` is the only retirement surface for unpublished scratch:
   it removes one named unit under the same transaction, refuses surviving dependency or
   consume edges, and prunes only rows no surviving unit binds (HIR-0104).
+  Terminal preview of a replacement stages both the candidate documents and a run-local
+  projection of that layer's durable unit state through the exact state-backed replan.
+  It must not compare the post-publication candidate DAG to pre-publication state, skip
+  hierarchy validation, reinitialize state, or mutate the selected predecessor before
+  publication. An unprojectable digest schema or replan closure fails closed (HIR-0140).
   Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
   `log_message` journals only when bound (HIR-0038).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is
