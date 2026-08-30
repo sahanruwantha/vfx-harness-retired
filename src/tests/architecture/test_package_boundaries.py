@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-PACKAGE = Path(__file__).resolve().parents[2] / "src" / "vfx_harness"
+PACKAGE = Path(__file__).resolve().parents[3] / "src" / "vfx_harness"
 REPOSITORY = PACKAGE.parents[1]
 MAX_SOURCE_LINES = 900
 # Permanent: Blender launches and AST-parses worker.py by path.

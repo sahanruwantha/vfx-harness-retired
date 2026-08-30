@@ -440,7 +440,7 @@ src/vfx_harness/knowledge/       verified agent cookbook and capability ledger
 src/vfx_harness/observability/   logs, transcripts, cost, and provenance
 docs/                            architecture, decisions, improvements, operations, research
 evals/                           tracked evaluation definitions and fixtures
-tests/                           unit, contract, architecture, and integration guarantees
+src/tests/                       unit, contract, architecture, and integration guarantees
 shots/                           local shot inputs and outputs (ignored)
 artifacts/                       generated evaluation and render evidence (ignored)
 ```

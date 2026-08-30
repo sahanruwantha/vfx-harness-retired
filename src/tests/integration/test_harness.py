@@ -20,7 +20,7 @@ from pathlib import Path
 
 import anyio
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
+ROOT_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT_DIR / "src"))
 FAILS: list[str] = []
 
@@ -3753,7 +3753,7 @@ def main():
     # path was dead. Nothing caught it: the telemetry's own tests import the functions
     # from vfx_harness.observability.log directly, and an unbound global does not fail at import time.
     #
-    # Detecting this now lives in ruff (F821), enforced by tests/integration/test_suite.py and CI,
+    # Detecting this now lives in ruff (F821), enforced by src/tests/integration/test_suite.py and CI,
     # rather than in the bespoke bytecode walker that used to be here. That walker was
     # reimplementing a mature linter, and it shipped with a false positive of its own: it
     # did not count an annotated assignment (`_ERRORS: list[str] = []`) as binding a name,

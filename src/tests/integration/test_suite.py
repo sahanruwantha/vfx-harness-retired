@@ -1,7 +1,7 @@
 """pytest entry points for the checks that must hold on every commit.
 
 `pyproject.toml` has configured pytest since the project started, and pytest collected
-ZERO tests and exited 0 — the real suite is `tests/integration/test_harness.py`, a print-based script
+ZERO tests and exited 0 — the real suite is `src/tests/integration/test_harness.py`, a print-based script
 with 261 assertions and no `test_*` functions for pytest to find. A CI job running `pytest`
 would therefore have gone green without executing a single check, which is worse than
 having no CI at all: it reports a guarantee it never verified.
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def _run(*argv: str) -> subprocess.CompletedProcess:

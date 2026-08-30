@@ -322,7 +322,7 @@ def test_checker_source_contains_no_shot_vocabulary() -> None:
     """The mechanism must reason only over roles, dependencies, moments, and
     boundaries. Fixtures may know shots; the checker may not."""
     source = (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / "src" / "vfx_harness" / "evaluation" / "ownership_feasibility.py"
     ).read_text(encoding="utf-8").lower()
     for word in ("iris", "fracture", "gantry", "foundry", "reactor", "blade",

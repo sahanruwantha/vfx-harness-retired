@@ -17,7 +17,7 @@ from vfx_harness.agents.unit_scope import (
 from vfx_harness.domain.work_units import WorkUnit
 from vfx_harness.orchestration.ledger import Milestone
 
-_WORKER = Path(__file__).resolve().parents[2] / "src" / "vfx_harness" / "blender" / "worker.py"
+_WORKER = Path(__file__).resolve().parents[3] / "src" / "vfx_harness" / "blender" / "worker.py"
 
 
 def _claim(uid: str, *, contract_id: str, frame: int = 1) -> dict:

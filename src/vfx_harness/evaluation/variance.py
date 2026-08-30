@@ -79,7 +79,7 @@ def layer_scope(shot: Shot, layer) -> str:
     Scoring the same frame on the unrestricted rubric measures a different thing — a
     layout layer judged on emission axes hits a floor it can never lift, which is the
     exact bug `owns` was introduced to fix. If `build_layer`'s block changes, this drifts;
-    tests/integration/test_harness.py carries a tripwire on the distinctive markers.
+    src/tests/integration/test_harness.py carries a tripwire on the distinctive markers.
     """
 
     excerpt = _plan_layer_excerpt(shot, layer)

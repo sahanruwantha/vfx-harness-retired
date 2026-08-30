@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-_WORKER = Path(__file__).resolve().parents[2] / "src" / "vfx_harness" / "blender" / "worker.py"
+_WORKER = Path(__file__).resolve().parents[3] / "src" / "vfx_harness" / "blender" / "worker.py"
 
 
 @pytest.fixture

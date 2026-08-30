@@ -34,7 +34,7 @@ def _clear(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_project_root_is_checkout_root_not_src_directory() -> None:
-    checkout = Path(__file__).resolve().parents[2]
+    checkout = Path(__file__).resolve().parents[3]
 
     assert checkout == PROJECT_ROOT
     assert (PROJECT_ROOT / "pyproject.toml").is_file()

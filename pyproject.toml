@@ -47,7 +47,7 @@ packages = ["src/vfx_harness"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
-testpaths = ["tests"]
+testpaths = ["src/tests"]
 
 [tool.ruff]
 # The de-facto convention already in the code: p90 is 87 columns, p99 is 93. 100 flags
@@ -98,4 +98,4 @@ ignore = [
 "src/vfx_harness/blender/worker.py" = ["PLC0415"]
 # Tests intentionally import after monkeypatching modules, environment, and optional
 # Blender shims. Production import hygiene is enforced independently above.
-"tests/**/*.py" = ["PLC0415"]
+"src/tests/**/*.py" = ["PLC0415"]
