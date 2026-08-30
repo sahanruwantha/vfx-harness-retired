@@ -40,6 +40,10 @@ live in the linked Harness Improvement Records.
   ([HIR-0035](docs/improvements/HIR-0035-curve-derivative-names-argmax.md)).
   Look-less live `render_frame` / `verify_change` default to Workbench solid
   ([HIR-0036](docs/improvements/HIR-0036-lookless-preview-defaults-to-workbench.md)).
+  Look-less `compare_frame` now uses the same typed Workbench-solid default for live
+  form/layout reference diagnostics, while EEVEE beauty debt remains signal-gated and
+  the rejection names the executable-only alternative
+  ([HIR-0131](docs/improvements/HIR-0131-lookless-reference-comparison-is-workbench.md)).
   Integer `SystemExit` `status.json` detail is the meaning, not the digit
   ([HIR-0037](docs/improvements/HIR-0037-status-detail-names-the-stop.md)).
   Materialization sessions bind a durable transcript

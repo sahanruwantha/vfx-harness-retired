@@ -51,6 +51,21 @@ def test_executable_only_preview_defaults_to_workbench() -> None:
     assert preview_render_mode(True, None, look_default="draft") == "draft"
 
 
+def test_lookless_reference_comparison_defaults_to_workbench() -> None:
+    """HIR-0131: form/layout needs a live reference diagnostic without inventing
+    illumination. The round lock still wins for crops and explicit EEVEE is honored."""
+    from vfx_harness.blender.tools import _comparison_mode_scale
+
+    assert _comparison_mode_scale({}, None, look_actions=False) == ("solid", 0.4)
+    assert _comparison_mode_scale({}, None, look_actions=True) == ("eevee", 0.4)
+    assert _comparison_mode_scale(
+        {"mode": "eevee"}, None, look_actions=False
+    ) == ("eevee", 0.4)
+    assert _comparison_mode_scale(
+        {}, ("solid", 0.5, None), look_actions=True
+    ) == ("solid", 0.5)
+
+
 def test_capabilities_are_validated_against_a_closed_vocabulary() -> None:
     assert parse_look_capabilities(["material", "detail"], "unit.look") == (
         "material",

@@ -164,6 +164,12 @@ effect.
   invented visibility proxy (HIR-0090, HIR-0094).
 - Measure, don't estimate: if a decision depends on a quantity, expose an instrument that
   measures it; a judgment call where a measurement is possible is a patch.
+- Look-less form/layout reference comparison defaults to a live Workbench-solid plate when
+  `compare_frame` omits `mode`; an explicit mode is honored. That diagnostic can guide geometry
+  through the sealed camera but never pays EEVEE beauty debt. An `image-signal-bootstrap`
+  rejection names the two legal paths: bind a typed optical-signal provider for genuine beauty,
+  or declare `look_capabilities: []` and bind executable scene/projected-composition claims;
+  otherwise escalate missing authority (HIR-0131).
 - Enumerate, don't imagine: where the option space is knowable — roles, controls, targets,
   frames — present validated choices instead of free-form generation.
 - Close the loop: every mutating tool has a matching observation, so an agent sees what its

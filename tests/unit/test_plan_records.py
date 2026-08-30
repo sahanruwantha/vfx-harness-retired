@@ -1755,6 +1755,8 @@ def test_materialization_rejects_image_debt_before_optical_signal(tmp_path: Path
     assert "polish-beauty" in text
     assert "No same-layer unit currently derives a signal family" in text
     assert "object_property(property=data.energy)" in text
+    assert "declare look_capabilities []" in text
+    assert "defaults to Workbench solid" in text
     assert IMAGE_SIGNAL_DEPENDENCY_RULE in text
 
 

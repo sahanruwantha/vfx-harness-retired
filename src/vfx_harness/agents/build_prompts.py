@@ -499,9 +499,9 @@ def builder_system(axes: list[tuple[str, str]], recipe_index: str = "", *, ticke
         if look_owned
         else "OWNERSHIP MODE — FORM/LAYOUT ONLY. Do not tune lighting, material albedo, "
         "emission, bloom, grade, or exposure to chase the finished reference. "
-        "compare_frame hides those unowned metrics. Use exactly one "
-        "render_pass(shade='matcap:check_normal+y') fixed form diagnostic, satisfy the "
-        "authoritative scene contracts, then hand off to the critic."
+        "compare_frame defaults to a Workbench-solid reference diagnostic and hides "
+        "unowned look metrics. Use that fixed form view, satisfy the authoritative scene "
+        "contracts, then make the terminal handoff; solid is not beauty evidence."
     )
     body = _CORE_TMPL.format(axes="\n".join(f"  - {k}: {desc}" for k, desc in axes), ownership_rule=ownership_rule)
     parts = [body, _SCREEN_COORDS, _ALWAYS_GUIDANCE, _ticket_guidance(ticket_context)]

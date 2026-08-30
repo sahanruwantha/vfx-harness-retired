@@ -683,9 +683,17 @@ def _comparison_lock_error(locks: dict, key: tuple, settings: tuple) -> str | No
     )
 
 
-def _comparison_mode_scale(args: dict, base_lock: tuple | None) -> tuple[str, float]:
-    """Resolve omitted values from the round lock instead of unrelated defaults."""
-    mode = args.get("mode", base_lock[0] if base_lock else "eevee")
+def _comparison_mode_scale(
+    args: dict, base_lock: tuple | None, *, look_actions: bool = True
+) -> tuple[str, float]:
+    """Resolve omitted values from the round lock and typed look authority.
+
+    A crop inherits the already-locked full-frame mode.  The first comparison uses
+    Workbench solid for a look-less unit and EEVEE for a look-owning unit, matching
+    the other live preview tools (HIR-0131).  An explicit mode remains authoritative.
+    """
+    default_mode = preview_render_mode(look_actions, None, look_default="eevee")
+    mode = args.get("mode", base_lock[0] if base_lock else default_mode)
     scale = float(args["scale"] if "scale" in args else (base_lock[1] if base_lock else 0.4))
     return mode, scale
 
@@ -2330,7 +2338,9 @@ def build_blender_tools(
         "optical high-resolution focus sheet. `views` controls aligned side_by_side, "
         "50/50 wipe, overlay, and difference views. Get a measured crop from "
         "check_scene(kind='bbox'); never replace full-frame context with a cherry-picked "
-        "zoom. The first call locks mode+scale for the entire critic round. Crop calls "
+        "zoom. With mode omitted, typed look ownership selects EEVEE for look work and "
+        "Workbench solid for look-less form/layout diagnostics; solid never pays beauty "
+        "image debt. The first call locks mode+scale for the entire critic round. Crop calls "
         "inherit that locked mode+scale when omitted; res_pct changes optical crop "
         "resolution only and is separately locked per crop.",
         {
@@ -2372,7 +2382,9 @@ def build_blender_tools(
         base_lock = comparison_locks.get((round_id, "base"))
         # Omitted crop settings INHERIT the round base instead of silently returning to
         # defaults and failing the lock established by a full-frame comparison.
-        mode, scale = _comparison_mode_scale(args, base_lock)
+        mode, scale = _comparison_mode_scale(
+            args, base_lock, look_actions=feedback_policy["look_actions"]
+        )
         crop = args.get("crop")
         if crop is not None:
             try:

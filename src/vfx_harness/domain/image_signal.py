@@ -28,9 +28,11 @@ IMAGE_SIGNAL_DEPENDENCY_RULE = (
     "write family (light, shading, volume, or compositor), depend transitively on a "
     "same-layer unit that does, or inherit one from an earlier materialized layer. "
     "look_capabilities, role names, object counts, geometry, cameras, controls, and "
-    "keyframes do not imply optical signal. Reorder or split the DAG and bind the "
-    "signal producer through typed write-kind evidence; do not leave beauty debt due "
-    "before the cumulative scene has an in-scope way to produce non-black pixels."
+    "keyframes do not imply optical signal. For genuine beauty evidence, reorder or split "
+    "the DAG and bind the signal producer through typed write-kind evidence. If the unit "
+    "owns only executable form/layout, declare look_capabilities [] and bind scene or "
+    "projected-composition claims; its live compare_frame diagnostic defaults to Workbench "
+    "solid but never pays beauty debt. Otherwise escalate the missing mutation authority."
 )
 
 

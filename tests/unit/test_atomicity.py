@@ -413,6 +413,8 @@ def test_plan_gate_refuses_image_debt_before_derived_signal_provider(tmp_path: P
     assert len(bootstrap) == 1
     assert "blade-beauty" in bootstrap[0].what
     assert IMAGE_SIGNAL_DEPENDENCY_RULE in bootstrap[0].fix
+    assert "declare look_capabilities []" in bootstrap[0].fix
+    assert "never pays beauty debt" in bootstrap[0].fix
 
     light = json.loads(json.dumps(blade))
     light.update(
