@@ -117,8 +117,9 @@ VACUOUS_NORMALIZED_BAND_SPAN = 0.5
 SUBJECT_COMPOSITION_RULE = (
     "a projected_composition owner covers each judge frame with bbox_* of a rendered "
     "subject, not projected_origin of a camera-only host. When that subject does not "
-    "exist yet, the camera layer authors the bbox with activates_at on the earliest "
-    "geometry layer, lifecycle persistent, and fault_owner on the camera owner layer; "
+    "exist yet, the camera layer authors the bbox with activates_at equal to the "
+    "compiled earliest_geometry_layer, lifecycle persistent, and fault_owner on the "
+    "camera owner layer; "
     "the camera unit binds the ids through composition_context and does not seal them"
 )
 # These instruments cannot produce a reading without ``scene.camera``.  Keep the

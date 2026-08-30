@@ -185,7 +185,7 @@ _MATERIALIZATION_EXAMPLE = """{
   "axis": "<an owned axis>", "op": "max", "hi": 0.01},
   {"id": "example-subject-bbox-later", "kind": "bbox_height",
    "owner_layer": "<this camera layer id>", "fault_owner": "<this camera layer id>",
-   "activates_at": "<earliest geometry layer id>", "lifecycle": "persistent",
+   "activates_at": "<compiled earliest_geometry_layer>", "lifecycle": "persistent",
    "axis": "<this camera layer axis>", "roles": ["<subject role that layer will create>"],
    "frame": 1, "op": "band", "lo": 0.35, "hi": 0.55}],
  "image_contracts": [],
@@ -265,9 +265,10 @@ _TWO_SIDED_CONTRACT_BINDING = (
     "bbox_* of a rendered subject, never projected_origin of a camera-only host "
     "(alignment, not framing). Vacuous normalized bands wider than half the frame are "
     "rejected. When the subject does not exist yet, author the bbox on this camera "
-    "layer with activates_at on the earliest geometry layer, lifecycle persistent, "
+    "layer with activates_at equal to the compiled earliest_geometry_layer, lifecycle persistent, "
     "fault_owner this camera layer; bind the ids through composition_context. Do not "
-    "seal those rows on the camera unit.\n"
+    "seal those rows on the camera unit. Do not ask_supervisor which selected layer "
+    "is earliest geometry occupancy.\n"
 )
 
 
@@ -439,6 +440,21 @@ def _upstream_interfaces_block(
     )
 
 
+def _deferred_subject_activation_block(global_layers: list, owner_layer_id: str) -> str:
+    from vfx_harness.domain.work_units import (
+        DEFERRED_SUBJECT_ACTIVATION_RULE,
+        compile_deferred_subject_activation,
+    )
+
+    card = compile_deferred_subject_activation(global_layers, owner_layer_id)
+    return (
+        "Deferred subject-composition activation compiled from the selected DAG "
+        "(do not ask_supervisor for layer occupancy):\n"
+        f"{json.dumps(card, indent=1)}\n"
+        f"{DEFERRED_SUBJECT_ACTIVATION_RULE}.\n"
+    )
+
+
 def _materialization_kickoff(
     shot_folder: Path,
     layer,
@@ -480,6 +496,7 @@ def _materialization_kickoff(
         f"{_upstream_interfaces_block(shot_folder, global_row, bundle.content_hash, overlay_root=overlay_root)}"
         f"{_frame_authority_block(global_row)}"
         f"{_unit_capability_authority_block(global_row)}"
+        f"{_deferred_subject_activation_block(rows.get('layers') or [], str(layer.id))}"
         f"{_TWO_SIDED_CONTRACT_BINDING}"
         f"{_binding_decisions_block(shot_folder, layer, bundle.content_hash)}"
         f"{_sealed_outcomes_block(shot_folder, layer, global_row)}"

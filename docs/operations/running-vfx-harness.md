@@ -139,9 +139,8 @@ metric ids and values returned by `measure_ref`.
 If planning raises client questions, inspect and answer them before the affected layer:
 
 ```bash
-.venv/bin/python -m vfx_harness.orchestration.escalate shots/<shot-id>
-.venv/bin/python -m vfx_harness.orchestration.escalate \
-  shots/<shot-id> --answer <id> "<decision>"
+.venv/bin/vfx escalate shots/<shot-id>
+.venv/bin/vfx escalate shots/<shot-id> --answer <id> "<decision>"
 ```
 
 ## 3. Run the production chain

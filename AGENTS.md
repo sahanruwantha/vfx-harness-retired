@@ -245,7 +245,8 @@ bbox of a rendered subject due when geometry exists, vacuous origin/bbox bands,
 earlier-layer camera in cannot_express options, a plan-workspace path miss that
 enumerates staged relative reads so a verifier cannot invent another filesystem
 prefix (HIR-0156), camera-host optics plus motion that stay one camera write-cluster
-(HIR-0157), and
+(HIR-0157), deferred bbox `activates_at` compiled from the selected DAG so a camera
+layer does not ask_supervisor for layer occupancy (HIR-0158), and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -380,8 +381,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   A projected_composition owner covers each judge frame with `bbox_*` of a rendered
   subject, not `projected_origin` of a camera-only host. A normalized `band` wider
   than half the frame is vacuous. When the subject does not exist yet, the camera
-  layer authors those bbox rows with `activates_at` on the earliest geometry layer,
-  `lifecycle: persistent`, and `fault_owner` on the camera owner; the camera unit
+  layer authors those bbox rows with `activates_at` equal to the compiled
+  `earliest_geometry_layer` from the selected DAG (HIR-0158), `lifecycle: persistent`,
+  and `fault_owner` on the camera owner; the camera unit
   binds the ids through `composition_context` and does not seal them. Geometry units
   that mutate the measured roles freeze-protect the active deferred rows. At the exact
   activation layer, layer-start prior-interface replay excludes the not-yet-instantiated
@@ -596,7 +598,8 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   A projected `band` whose width is greater than half the normalized frame is
   vacuous. `projected_origin` of a camera-only host is alignment, not subject
   composition coverage; coverage is `bbox_*` of a rendered subject, deferred to
-  the earliest geometry layer when that subject does not exist yet (HIR-0127).
+  the compiled `earliest_geometry_layer` when that subject does not exist yet
+  (HIR-0127, HIR-0158).
   A `curve_derivative_max` miss names the argmax adjacent-frame pair and compact
   over-`hi` segments; a scalar without its argmax is an estimate (HIR-0035).
   A `keyframe_schedule` path miss names the requested aliases (`P`, `data.P`)

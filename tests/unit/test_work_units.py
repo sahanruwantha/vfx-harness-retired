@@ -14,7 +14,9 @@ from vfx_harness.domain.work_units import (
     EvaluationPolicy,
     WorkUnit,
     compile_clustered_mutation_roles,
+    compile_deferred_subject_activation,
     compile_frame_authority,
+    deferred_subject_activation_gaps,
     layer_judge_frames,
     uncovered_unit_judge_frames,
     unearned_look_judge_frames,
@@ -346,3 +348,54 @@ def test_interaction_parser_reports_complete_coordination_shape() -> None:
     assert "participants needs at least two same-layer work-unit ids" in message
     assert "controls must bound interaction balancing" in message
     assert "not semantic roles or controls" in message
+
+
+def test_deferred_subject_activation_compiles_earliest_geometry_successor() -> None:
+    from vfx_harness.domain.work_units import DEFERRED_SUBJECT_BBOX_KINDS
+    from vfx_harness.evidence.scene_checks import BBOX_KINDS
+
+    assert DEFERRED_SUBJECT_BBOX_KINDS == BBOX_KINDS
+    layers = [
+        {
+            "id": "1",
+            "title": "Camera",
+            "jit": {
+                "depends_on_layers": [],
+                "provides": {"camera": ["camera.rig"]},
+                "reserved_roles": ["camera.rig"],
+            },
+        },
+        {
+            "id": "2",
+            "title": "Form",
+            "jit": {
+                "depends_on_layers": ["1"],
+                "provides": {},
+                "reserved_roles": ["subject.mass"],
+            },
+        },
+        {
+            "id": "3",
+            "title": "Lookdev",
+            "jit": {
+                "depends_on_layers": ["1", "2"],
+                "reserved_roles": ["lookdev.material"],
+            },
+        },
+    ]
+    card = compile_deferred_subject_activation(layers, "1")
+    assert card["owner_provides_camera"] is True
+    assert card["earliest_geometry_layer"] == "2"
+    assert [row["id"] for row in card["successors"]] == ["2", "3"]
+
+    wrong = {
+        "id": "bbox-later",
+        "kind": "bbox_height",
+        "owner_layer": "1",
+        "activates_at": "3",
+    }
+    gaps = deferred_subject_activation_gaps(card, [wrong])
+    assert len(gaps) == 1
+    assert gaps[0].found == "3"
+    assert gaps[0].expected == "2"
+    assert not deferred_subject_activation_gaps(card, [{**wrong, "activates_at": "2"}])

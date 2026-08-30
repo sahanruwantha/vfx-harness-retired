@@ -1302,7 +1302,9 @@ def build_plan_tools(
         "Does not block: state the assumption you will plan on and continue. A human "
         "answers before an AFFECTED layer starts. Name the affected layer ids and/or "
         "owned axes; use global_decision only when every layer truly depends on it. "
-        "Do NOT use it for anything measure_ref or a spike could answer.",
+        "Do NOT use it for anything measure_ref or a spike could answer. Do NOT use it "
+        "to ask which selected DAG layer is the earliest geometry successor; that id is "
+        "compiled as earliest_geometry_layer on the kickoff card.",
         {
             "type": "object",
             "properties": {

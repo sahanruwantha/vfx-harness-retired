@@ -121,6 +121,7 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 - Leave a deferred_owner row's domains uncovered by its owner layer.
 - Let a projected_origin band wider than half the frame, or projected_origin of a
   camera-only host, count as subject composition coverage.
+- Ask ask_supervisor which selected DAG layer is earliest geometry occupancy.
 - Let a camera unit seal inactive deferred subject bbox rows, or omit an earlier-layer
   camera provider from cannot_express fault_owner_options.
 - Let `#fragment` notation, a composed layer script, or an alternate basename be a unit's

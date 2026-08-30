@@ -513,6 +513,20 @@ def validate_materialization(
                 "(fault_owner may still name this layer); only rows this layer owns "
                 "may publish here",
             )
+    from vfx_harness.domain.work_units import (
+        DEFERRED_SUBJECT_ACTIVATION_RULE,
+        compile_deferred_subject_activation,
+        deferred_subject_activation_gaps,
+    )
+
+    activation_card = compile_deferred_subject_activation(global_layers, layer_id)
+    for gap in deferred_subject_activation_gaps(activation_card, scene_rows):
+        note(
+            json_ptr("scene_contracts", gap.index, "activates_at"),
+            f"scene contract {gap.contract_id} activates_at={gap.found!r}; compiled "
+            f"earliest_geometry_layer is {gap.expected!r}. "
+            + DEFERRED_SUBJECT_ACTIVATION_RULE,
+        )
     for index, row in enumerate(image_rows):
         if str(row.get("owner_layer") or "") != layer_id:
             note(

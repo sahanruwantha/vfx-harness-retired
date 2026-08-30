@@ -6853,7 +6853,7 @@ async def _run(
         for q in unanswered:
             log(f"   Q{q['id']}: {q['question']}", 1)
             log(f"        assuming: {q['assumption']}", 1)
-        log(f'   answer with: python -m vfx_harness.orchestration.escalate {folder} --answer <id> "..."')
+        log(f'   answer with: vfx escalate {folder} --answer <id> "..."')
         raise SystemExit(5)
     if unanswered:
         log(f"! building with {len(unanswered)} question(s) unanswered (--force)")

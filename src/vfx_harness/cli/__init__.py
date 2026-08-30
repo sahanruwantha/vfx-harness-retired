@@ -11,6 +11,7 @@ _COMMANDS = {
     "asset": "vfx_harness.agents.asset_builder:main",
     "build": "vfx_harness.agents.builder:main",
     "evals": "vfx_harness.evaluation.cli:main",
+    "escalate": "vfx_harness.orchestration.escalate:main",
     "inspect": "vfx_harness.application.inspect_run:main",
     "plan": "vfx_harness.agents.planner:main",
     "preflight": "vfx_harness.application.preflight:main",

@@ -15,6 +15,10 @@ live in the linked Harness Improvement Records.
   evidence publishes one `camera` write-cluster; the optics row no longer leaves
   temporal kinds as a sibling `control_host/keyframe` cluster
   ([HIR-0157](docs/improvements/HIR-0157-camera-optics-do-not-split-motion.md)).
+- Camera-layer deferred `bbox_*` `activates_at` is compiled from the selected DAG's
+  earliest geometry successor; `ask_supervisor` is not the occupancy instrument, and
+  unanswered-question stops name `vfx escalate`
+  ([HIR-0158](docs/improvements/HIR-0158-deferred-bbox-activation-is-dag-authority.md)).
 - Durable layer memory now lives under shot-root `state/`; reading it cannot create an
   orphan direct run or displace the latest production-run pointer
   ([HIR-0155](docs/improvements/HIR-0155-layer-memory-does-not-create-runs.md)).

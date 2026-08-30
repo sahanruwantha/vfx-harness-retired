@@ -122,9 +122,19 @@ def test_materialization_example_enumerates_deferred_subject_composition() -> No
 
     assert "example-subject-bbox-later" in _MATERIALIZATION_EXAMPLE
     assert '"lifecycle": "persistent"' in _MATERIALIZATION_EXAMPLE
-    assert "earliest geometry layer" in _MATERIALIZATION_EXAMPLE
+    assert "compiled earliest_geometry_layer" in _MATERIALIZATION_EXAMPLE
     assert "Subject composition" in _TWO_SIDED_CONTRACT_BINDING
     assert "projected_origin of a camera-only host" in _TWO_SIDED_CONTRACT_BINDING
+    assert "Do not ask_supervisor which selected layer" in _TWO_SIDED_CONTRACT_BINDING
+    from vfx_harness.evidence.scene_checks import SUBJECT_COMPOSITION_RULE
+
+    assert "compiled earliest_geometry_layer" in SUBJECT_COMPOSITION_RULE
+
+
+def test_public_cli_exposes_escalate() -> None:
+    from vfx_harness.cli import _COMMANDS
+
+    assert _COMMANDS["escalate"] == "vfx_harness.orchestration.escalate:main"
 
 
 def _write(path: Path, value: object) -> None:

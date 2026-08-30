@@ -13,8 +13,8 @@ wins?). Nothing in the loop could form that question, let alone ask it.
     questions.jsonl   append-only, one JSON object per question
     answers.md        human-written; answers are injected into every later layer context
 
-    python -m vfx_harness.orchestration.escalate shots/barrel_roll            # show open questions
-    python -m vfx_harness.orchestration.escalate shots/barrel_roll --answer 3 "2:1 — match the refs"
+    vfx escalate shots/<shot-id>            # show open questions
+    vfx escalate shots/<shot-id> --answer 3 "<decision>"
 """
 
 from __future__ import annotations

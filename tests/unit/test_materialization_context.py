@@ -99,6 +99,65 @@ def test_materialization_kickoff_compiles_layer_bounded_authority(tmp_path) -> N
     assert "state/plan-resolutions.jsonl" not in kickoff
 
 
+def test_camera_materialization_kickoff_compiles_earliest_geometry_layer(tmp_path) -> None:
+    bundle_root = tmp_path / "bundle"
+    camera = {
+        "id": "1",
+        "title": "Camera",
+        "script": "build/01.py",
+        "primary_judge": 1,
+        "judge": [{"frame": 1, "ref": "refs/a.png"}],
+        "owns": ["camera_path"],
+        "reads": "camera",
+        "execution": "jit_deferred",
+        "stages": [],
+        "jit": {
+            "depends_on_layers": [],
+            "provides": {"camera": ["camera.rig"]},
+            "reserved_roles": ["camera.rig"],
+            "owned_requirements": [],
+        },
+    }
+    form = {
+        "id": "2",
+        "title": "Form",
+        "script": "build/02.py",
+        "primary_judge": 1,
+        "judge": [{"frame": 1, "ref": "refs/a.png"}],
+        "owns": ["form"],
+        "reads": "form",
+        "execution": "jit_deferred",
+        "stages": [],
+        "jit": {
+            "depends_on_layers": ["1"],
+            "provides": {},
+            "reserved_roles": ["subject.mass"],
+            "owned_requirements": [],
+        },
+    }
+    _write(bundle_root / "layers.json", {"schema": 5, "layers": [camera, form]})
+    _write(bundle_root / "requirements.json", {
+        "schema": "vfx-harness.requirements/v1",
+        "requirements": [],
+    })
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "plan-resolutions.jsonl").write_text("", encoding="utf-8")
+    layer = SimpleNamespace(id="1", title="Camera", jit=SimpleNamespace(), judges=((1, "refs/a.png"),))
+    bundle = SimpleNamespace(root=bundle_root, content_hash="b" * 64)
+
+    kickoff = _materialization_kickoff(
+        tmp_path,
+        layer,
+        bundle,
+        "runs/current/scratch/jit-layer-1.json",
+        overlay_root=bundle_root,
+    )
+
+    assert '"earliest_geometry_layer": "2"' in kickoff
+    assert "do not ask_supervisor for layer occupancy" in kickoff
+    assert "Do not ask_supervisor which selected layer" in kickoff
+
+
 def test_unit_plan_kickoff_uses_compiled_cards_not_raw_catalogs(tmp_path) -> None:
     shot = SimpleNamespace(
         id="bounded-shot",
