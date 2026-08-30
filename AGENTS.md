@@ -543,6 +543,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   autonomously; an unqualified qualitative claim becomes executable evidence, is requalified, or
   routes to audited human adjudication — never silently optional. Changing the judge model,
   prompt, evidence layout, or claim semantics invalidates qualification.
+- A critic panel estimates score noise; bare pass votes do not refute a qualified actionable
+  observation because passing scorecards carry no blocking proposition. A nominal passing
+  majority with uncontradicted actionable dissent remains `REVISE` and preserves that exact
+  row. Executable contradiction or typed conflict/gap/protocol reconciliation may retire the
+  dissent; voting alone may not (HIR-0144).
 - Critics describe qualitative residuals and cite evidence. They never override a passing
   authoritative measurement of the same fact and never prescribe unverified implementations. No
   repair is justified by unsupported measurement prose.

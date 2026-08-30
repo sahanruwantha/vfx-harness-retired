@@ -98,6 +98,14 @@ those contract frames. Geometry-protected debts are measured on that schedule by
 read-back, empty-scene canonical replay, and deterministic revalidation, while layer and
 unit judge lists remain unchanged. Missing extra-frame evidence fails closure (HIR-0143).
 
+### Amendment: qualitative panel aggregation preserves earned dissent
+
+Panel voting estimates score noise; it is not stronger authority than a qualified typed
+observation. A passing scorecard carries no blocking proposition and therefore cannot by
+itself refute an actionable dissent. When a nominal passing majority contains such a row,
+the aggregate remains failing and retains the exact observation. Only executable
+contradiction or typed conflict/gap/protocol reconciliation can retire it (HIR-0144).
+
 ## Consequences
 
 Global planning can publish without acceptance fingerprints, executable stages, recipes, or

@@ -2288,6 +2288,78 @@ def _round_rank(verdict: dict | None) -> tuple[bool, float]:
     return bool(verdict.get("pass")), float(verdict.get("mean", -1.0))
 
 
+def _aggregate_critic_panel(panel: list[dict]) -> dict:
+    """Aggregate noisy scores without voting away an actionable observation.
+
+    A passing opinion contains no blocking observation by protocol, so it cannot refute
+    a dissenting judge's exact qualified observation.  Executable reconciliation may
+    contradict that observation before this boundary; an uncontradicted actionable row
+    remains a failure even when bare pass votes are the majority.
+    """
+    votes = [bool(item.get("pass")) for item in panel]
+    means = sorted(float(item.get("mean", 0.0)) for item in panel)
+    majority_pass = sum(votes) > len(votes) / 2
+    out = dict(panel[0])
+    out["pass"] = majority_pass
+    out["mean"] = means[len(means) // 2]
+    out["panel"] = [
+        {"mean": item.get("mean"), "pass": bool(item.get("pass"))}
+        for item in panel
+    ]
+    agreeing = [item for item in panel if bool(item.get("pass")) == majority_pass]
+    chosen = agreeing[0] if agreeing else panel[0]
+    for field, default in (
+        ("issues", []),
+        ("scores", {}),
+        ("observations", []),
+        ("observation_reconciliation", []),
+        ("contradicted_issues", []),
+        ("contract_gaps", []),
+        ("unverified_observations", []),
+        ("protocol_errors", []),
+    ):
+        out[field] = chosen.get(field, default)
+    out["contract_gap"] = bool(chosen.get("contract_gap"))
+    out["judge_conflict"] = bool(
+        not majority_pass
+        and agreeing
+        and all(item.get("judge_conflict") for item in agreeing)
+    )
+
+    actionable_dissent = [
+        item
+        for item in panel
+        if not item.get("pass")
+        and item.get("issues")
+        and not item.get("contract_gap")
+        and not item.get("judge_conflict")
+        and not item.get("protocol_errors")
+    ]
+    if majority_pass and actionable_dissent:
+        dissent = actionable_dissent[0]
+        out["pass"] = False
+        out["issues"] = list(dissent.get("issues") or [])
+        out["scores"] = dict(dissent.get("scores") or {})
+        out["observations"] = list(dissent.get("observations") or [])
+        out["observation_reconciliation"] = list(
+            dissent.get("observation_reconciliation") or []
+        )
+        out["contradicted_issues"] = list(dissent.get("contradicted_issues") or [])
+        out["contract_gaps"] = list(dissent.get("contract_gaps") or [])
+        out["contract_gap"] = bool(dissent.get("contract_gap"))
+        out["unverified_observations"] = list(
+            dissent.get("unverified_observations") or []
+        )
+        out["protocol_errors"] = list(dissent.get("protocol_errors") or [])
+        out["judge_conflict"] = False
+        out["decided_by"] = "actionable_panel_dissent"
+        out["actionable_dissent"] = {
+            "mean": dissent.get("mean"),
+            "issues": list(dissent.get("issues") or []),
+        }
+    return out
+
+
 async def _judge(
     shot: Shot,
     m: Milestone,
@@ -2459,30 +2531,19 @@ async def _judge(
             break  # unanimous; a third cannot change it
         if len(panel) == 3:
             break
+    out = _aggregate_critic_panel(panel)
     votes = [p["pass"] for p in panel]
-    means = sorted(p["mean"] for p in panel)
-    agreed = sum(votes) > len(votes) / 2
-    out = dict(panel[0])
-    out["pass"] = agreed
-    out["mean"] = means[len(means) // 2]  # median resists the outlier
-    out["panel"] = [{"mean": p["mean"], "pass": p["pass"]} for p in panel]
-    # Take the issues from a judge that agrees with the panel, so the builder is not
-    # handed fixes derived from the verdict that lost the vote.
-    for p in panel:
-        if p["pass"] == agreed:
-            out["issues"], out["scores"] = p.get("issues", []), p.get("scores", {})
-            out["contradicted_issues"] = p.get("contradicted_issues", [])
-            out["contract_gaps"] = p.get("contract_gaps", [])
-            out["contract_gap"] = bool(p.get("contract_gap"))
-            out["unverified_observations"] = p.get("unverified_observations", [])
-            out["protocol_errors"] = p.get("protocol_errors", [])
-            break
-    agreeing = [p for p in panel if p["pass"] == agreed]
-    out["judge_conflict"] = bool(not agreed and agreeing and all(p.get("judge_conflict") for p in agreeing))
+    majority_pass = sum(votes) > len(votes) / 2
+    actionable_dissent = bool(out.get("actionable_dissent"))
+    panel_result = (
+        "REVISE ✎ (actionable dissent preserved)"
+        if actionable_dissent
+        else "PASS ✅" if majority_pass else "REVISE ✎"
+    )
     log(
         f"panel of {len(panel)}: means {[p['mean'] for p in panel]} · "
         f"votes {['PASS' if v else 'REVISE' for v in votes]} → "
-        f"{'PASS ✅' if agreed else 'REVISE ✎'} (median {out['mean']})",
+        f"{panel_result} (median {out['mean']})",
         1,
     )
     return out

@@ -11,3 +11,7 @@ Runtime evidence follows bound contracts' declared frames, not the activation la
 list. Geometry-protected extra-frame rows remain required in live read-back, empty-scene
 canonical replay, and deterministic revalidation without becoming new judge moments
 (HIR-0143).
+
+A bare critic majority cannot erase an uncontradicted qualified actionable observation.
+Executable contradiction and typed conflict still reconcile it; otherwise the aggregate
+fails while preserving the exact dissent for bounded repair or replanning (HIR-0144).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from vfx_harness.agents.builder import (
+    _aggregate_critic_panel,
     _audit_panel_citations,
     _critic_schema,
     _filter_critic_issues,
@@ -79,3 +80,56 @@ def test_panel_audit_removes_unseen_panel_ids_from_observation():
     )
     assert verdict["observations"][0]["panel_ids"] == ["shown"]
     assert verdict["invalid_panel_citations"][0]["panel_ids"] == ["invented"]
+
+
+def test_bare_panel_majority_cannot_erase_actionable_dissent():
+    observation = _observation(kind="qualitative", check_ids=[])
+    dissent = _filter_critic_issues(
+        {
+            "pass": False,
+            "mean": 2.5,
+            "scores": {"form": 2, "site": 3},
+            "observations": [observation],
+        },
+        [],
+        claim_bindings={"layout.rib_floor_contact": frozenset()},
+        qualified_claims={"layout.rib_floor_contact"},
+    )
+    panel = [
+        dissent,
+        {"pass": True, "mean": 3.0, "scores": {"form": 3, "site": 3}},
+        {"pass": True, "mean": 3.0, "scores": {"form": 3, "site": 3}},
+    ]
+
+    verdict = _aggregate_critic_panel(panel)
+
+    assert verdict["pass"] is False
+    assert verdict["decided_by"] == "actionable_panel_dissent"
+    assert verdict["issues"] == [observation["action"]]
+    assert verdict["observation_reconciliation"][0]["state"] == "actionable"
+    assert verdict["panel"] == [
+        {"mean": 2.5, "pass": False},
+        {"mean": 3.0, "pass": True},
+        {"mean": 3.0, "pass": True},
+    ]
+
+
+def test_contradicted_dissent_does_not_block_panel_majority():
+    dissent = {
+        "pass": False,
+        "mean": 2.0,
+        "scores": {"form": 2},
+        "issues": [],
+        "judge_conflict": True,
+        "contradicted_issues": [{"issue": "already disproved"}],
+    }
+    verdict = _aggregate_critic_panel(
+        [
+            dissent,
+            {"pass": True, "mean": 3.0, "scores": {"form": 3}},
+            {"pass": True, "mean": 3.0, "scores": {"form": 3}},
+        ]
+    )
+
+    assert verdict["pass"] is True
+    assert "actionable_dissent" not in verdict
