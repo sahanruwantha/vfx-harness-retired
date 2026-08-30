@@ -776,19 +776,36 @@ def test_deferred_bbox_is_measured_at_owner_frame_without_becoming_a_judge(
     assert layer.judges == ((39, "refs/f39.png"),)
 
 
-def test_deferred_subject_forecast_note_is_explicitly_nonpayable() -> None:
+def test_deferred_subject_forecast_note_separates_blockers_from_diagnostics() -> None:
     from vfx_harness.blender.tools import _deferred_subject_forecast_note
 
-    note = _deferred_subject_forecast_note([
-        {
-            "id": "bbox-f176",
-            "metric": "bbox_height",
-            "value": 0.07,
-            "target": ">= 0.85",
-            "pass": False,
-        }
-    ])
+    contracts = [
+        {"id": "bbox-f1", "kind": "bbox_height", "op": "max", "hi": 0.15},
+        {"id": "bbox-f176", "kind": "bbox_height", "op": "min", "lo": 0.85},
+    ]
+    note = _deferred_subject_forecast_note(
+        [
+            {
+                "id": "bbox-f1",
+                "metric": "bbox_height",
+                "value": 0.38,
+                "target": "<= 0.15",
+                "pass": False,
+            },
+            {
+                "id": "bbox-f176",
+                "metric": "bbox_height",
+                "value": 0.07,
+                "target": ">= 0.85",
+                "pass": False,
+            },
+        ],
+        contracts,
+    )
 
+    assert "FORECAST BLOCKERS — REQUIRED BEFORE FREEZE" in note
+    assert "bbox-f1: bbox_height=0.38 target <= 0.15" in note
+    assert "repair this producer before freeze or call cannot_express_in_scope" in note
     assert "DIAGNOSTIC ONLY" in note
     assert "cannot pay acceptance" in note
     assert "bbox-f176: bbox_height=0.07 target >= 0.85 (outside target)" in note

@@ -393,6 +393,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   empty-scene canonical replay, and deterministic revalidation all consume those blocker
   ids as required evidence; producing a blocker row without adding it to the verdict's
   required set, or swallowing blocker compilation errors, is forbidden (HIR-0152).
+  Post-mutation readback and exact-id `contract_result` classify those same rows with
+  the same irreversible-union function used by verdicts. A blocker is labelled
+  `REQUIRED BEFORE FREEZE` immediately and names repair or
+  `cannot_express_in_scope`; only repairable-side misses may be described as
+  diagnostic-only (HIR-0153).
   More generally, any scene contract whose `activates_at` differs from its
   `owner_layer` is inactive at the authoring unit: it may bind through
   `composition_context.contract_ids`, never through that unit's claim evidence

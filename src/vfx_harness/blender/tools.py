@@ -265,21 +265,52 @@ def _scene_completion_state(
     }
 
 
-def _deferred_subject_forecast_note(evidence: list[dict]) -> str:
-    """Teach partial producers without turning their readings into acceptance."""
+def _deferred_subject_forecast_note(
+    evidence: list[dict], contract_rows: list[dict] | None = None
+) -> str:
+    """Teach partial producers which forecasts diagnose and which block freeze."""
     if not evidence:
         return ""
-    return (
-        "\nDEFERRED SUBJECT FORECASTS — DIAGNOSTIC ONLY; these partial-subject "
-        "readings cannot pay acceptance and the dependency-complete producer will "
-        "re-evaluate the final union:\n"
-        + "\n".join(
-            f"  {row.get('id', '?')}: {row.get('metric')}={row.get('value')} "
-            f"target {row.get('target')} "
-            f"({'within target' if row.get('pass') else 'outside target'})"
-            for row in evidence[:6]
+    from vfx_harness.evidence.scene_checks import (
+        irreversible_deferred_subject_forecast_failures,
+    )
+
+    blockers = list(
+        irreversible_deferred_subject_forecast_failures(
+            contract_rows or [], evidence
         )
     )
+    blocker_ids = {str(row.get("id")) for row in blockers}
+    diagnostics = [
+        row for row in evidence if str(row.get("id")) not in blocker_ids
+    ]
+
+    sections: list[str] = []
+    if blockers:
+        sections.append(
+            "\nDEFERRED SUBJECT FORECAST BLOCKERS — REQUIRED BEFORE FREEZE; these "
+            "partial-subject rows do not pay the owner contract, but monotonic union "
+            "geometry proves successors cannot repair them. Repair this producer now "
+            "or call cannot_express_in_scope:\n"
+            + "\n".join(
+                f"  {row.get('id', '?')}: {row.get('metric')}={row.get('value')} "
+                f"target {row.get('target')} — {row.get('note')}"
+                for row in blockers[:6]
+            )
+        )
+    if diagnostics:
+        sections.append(
+            "\nDEFERRED SUBJECT FORECASTS — DIAGNOSTIC ONLY; these partial-subject "
+            "readings cannot pay acceptance and the dependency-complete producer will "
+            "re-evaluate the final union:\n"
+            + "\n".join(
+                f"  {row.get('id', '?')}: {row.get('metric')}={row.get('value')} "
+                f"target {row.get('target')} "
+                f"({'within target' if row.get('pass') else 'outside target'})"
+                for row in diagnostics[:6]
+            )
+        )
+    return "".join(sections)
 
 
 def _bound_static_frames(
@@ -1768,8 +1799,9 @@ def build_blender_tools(
                 )
                 from vfx_harness.evidence.scene_checks import layer_evidence, load_rows
 
+                contract_rows = load_rows(shot_dir)
                 frames = _bound_static_frames(
-                    load_rows(shot_dir),
+                    contract_rows,
                     scheduled_ids,
                     int(comparison_state.get("frame", 1)),
                 )
@@ -1883,7 +1915,7 @@ def build_blender_tools(
                                 "its scoped work off."
                             )
                 contract_note += _deferred_subject_forecast_note(
-                    diagnostic_evidence
+                    diagnostic_evidence, contract_rows
                 )
             except Exception as exc:
                 contract_note = (
@@ -2316,8 +2348,9 @@ def build_blender_tools(
         "deferred-subject forecast. Scene contracts "
         "use the canonical evaluator (including multi-role visible_fraction logical AND) "
         "and report per-role details. Image contracts require image_handle from an "
-        "eevee render at that frame. Forecast rows are marked diagnostic_only and cannot "
-        "pay acceptance. Use this instead of recreating contract math in run_bpy or "
+        "eevee render at that frame. Forecast rows cannot pay the owner contract; an "
+        "irreversible partial-union miss is nevertheless a current-unit freeze blocker. "
+        "Use this instead of recreating contract math in run_bpy or "
         "guessing from a beauty render.",
         {
             "type": "object",
@@ -2361,8 +2394,19 @@ def build_blender_tools(
             except (StopIteration, OSError, ValueError, BlenderError) as exc:
                 return _text(f"could not evaluate scene contract {cid}: {exc}", is_error=True)
             if cid in diagnostic_ids:
+                from vfx_harness.evidence.scene_checks import (
+                    irreversible_deferred_subject_forecast_failures,
+                )
+
+                blockers = {
+                    str(row.get("id")): row
+                    for row in irreversible_deferred_subject_forecast_failures(
+                        [source], rows
+                    )
+                }
                 rows = [
-                    {
+                    blockers.get(str(row.get("id")))
+                    or {
                         **row,
                         "diagnostic_only": True,
                         "acceptance_evidence": False,
