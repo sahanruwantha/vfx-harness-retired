@@ -1782,9 +1782,11 @@ def build_plan_tools(
     @tool(
         "finalize_materialization",
         "Validate the complete incrementally staged candidate against global authority "
-        "and the current consumer view. Call only after every unit and owned requirement "
-        "has been staged. Returns VALIDATION PASSED or all remaining JSON-pointer "
-        "findings; repair those with patch_materialization.",
+        "and run the exact deterministic terminal gate against the post-publication "
+        "consumer view. Call after every unit and owned requirement has been staged, "
+        "and call it again after any patch. A clean result attests the exact candidate "
+        "revision for publication; otherwise it returns all local JSON-pointer or gate "
+        "findings for repair. This is the sole terminal materialization operation.",
         {"type": "object", "properties": {}, "additionalProperties": False},
     )
     async def finalize_materialization(args):
@@ -1795,11 +1797,16 @@ def build_plan_tools(
                 is_error=True,
             )
         from vfx_harness.orchestration.jit_materialization import (
-            attest_materialization_finalization,
+            finalize_materialization_candidate,
             inspect_materialization,
+            materialization_finalization_path,
             selected_view_artifact,
         )
-        from vfx_harness.orchestration.plan_authority import artifact_path, resolve_current
+        from vfx_harness.orchestration.plan_authority import (
+            artifact_path,
+            prepare_consumer_view,
+            resolve_current,
+        )
 
         try:
             bundle = resolve_current(shot_folder)
@@ -1833,15 +1840,34 @@ def build_plan_tools(
             return _text(str(exc), is_error=True)
         if not findings:
             try:
-                attestation = attest_materialization_finalization(
-                    candidate, bundle_hash=bundle.content_hash
+                from vfx_harness.evaluation import plan_gate
+
+                view = await anyio.to_thread.run_sync(
+                    lambda: prepare_consumer_view(layout)
                 )
-            except OSError as exc:
-                return _text(f"finalization attestation failed: {exc}", is_error=True)
+                result = await anyio.to_thread.run_sync(
+                    lambda: finalize_materialization_candidate(
+                        shot_folder,
+                        candidate,
+                        view,
+                        overlay_root=overlay_root,
+                    )
+                )
+            except (ValueError, OSError, json.JSONDecodeError) as exc:
+                return _text(f"terminal materialization gate failed: {exc}", is_error=True)
+            result.shot = shot_folder.name
+            if not result.clean:
+                body = plan_gate.report(result)
+                repair = plan_gate.feedback(result)
+                return _text(
+                    body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""),
+                    is_error=True,
+                )
+            attestation = materialization_finalization_path(candidate)
             return _text(
-                f"FINALIZATION ATTESTED for {candidate.name} at the current revision "
-                f"({attestation.name}). The outer transaction may publish even if this "
-                "call consumes the final model turn."
+                f"FINALIZATION ATTESTED AND TERMINAL GATE CLEAN for {candidate.name} "
+                f"at the current revision ({attestation.name}). The outer transaction "
+                "may publish even if this call consumes the final model turn."
             )
         return _text(
             "VALIDATION FAILED. Remaining findings:\n"

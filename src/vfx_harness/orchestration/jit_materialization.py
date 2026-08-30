@@ -2168,6 +2168,44 @@ def _project_candidate_unit_state(
     )
 
 
+def finalize_materialization_candidate(
+    shot_folder: str | Path,
+    materialization_path: str | Path,
+    consumer_view: str | Path,
+    *,
+    overlay_root: str | Path | None = None,
+):
+    """Run the terminal gate and attest only its exact clean candidate revision.
+
+    Local materialization validation, post-publication authority staging, projected
+    unit-state reconciliation, the deterministic plan gate, and final attestation are
+    one operation. Callers cannot observe CLEAN and then forget to attest the same
+    bytes after a patch invalidated an earlier attestation.
+    """
+    from vfx_harness.evaluation import plan_gate
+
+    shot = Path(shot_folder).resolve()
+    candidate = Path(materialization_path)
+    stage_candidate_view(
+        shot,
+        candidate,
+        consumer_view,
+        overlay_root=overlay_root,
+    )
+    result = plan_gate.run(Path(consumer_view), require_scene_checks=False)
+    if result.clean:
+        bundle, _materialized, _bases = _composed_documents(
+            shot,
+            candidate,
+            overlay_root=overlay_root,
+        )
+        attest_materialization_finalization(
+            candidate,
+            bundle_hash=bundle.content_hash,
+        )
+    return result
+
+
 def publish_materialization(
     shot_folder: str | Path,
     materialization_path: str | Path,

@@ -432,6 +432,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   It must not compare the post-publication candidate DAG to pre-publication state, skip
   hierarchy validation, reinitialize state, or mutate the selected predecessor before
   publication. An unprojectable digest schema or replan closure fails closed (HIR-0140).
+  Materialization exposes one terminal operation: `finalize_materialization` performs
+  collectable validation, stages that coherent preview, runs the exact deterministic gate,
+  and attests only its clean candidate revision. A materialization session does not expose
+  a separate terminal `gate_preview`; every subsequent patch invalidates attestation and
+  requires finalization again (HIR-0141).
   Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
   `log_message` journals only when bound (HIR-0038).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is

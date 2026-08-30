@@ -638,8 +638,10 @@ contract kind, its evidence domain, and required fields. When no kind can expres
 call `escalate_vocabulary_gap` (typed durable record) and close the requirement with an
 explicit decision resolution referencing the gap id — never pad with a trivially-satisfiable
 contract (vacuous shapes are rejected at validation). After VALIDATION PASSED, call
-`gate_preview` once: it applies the exact terminal gate to the resulting consumer view, and
-a finding fixed here costs one patch instead of a retracted generation. Do not edit
+`finalize_materialization` again: it applies the exact deterministic gate to the resulting
+consumer view and attests only that clean candidate revision. It is the sole terminal action;
+do not finish after `patch_materialization` says VALIDATION PASSED. A gate finding fixed here
+costs one patch instead of a retracted generation. Do not edit
 global authority, create unit state, write prose, or write another file."""
     kickoff = _materialization_kickoff(
         shot.folder,
@@ -657,7 +659,7 @@ global authority, create unit state, write prose, or write another file."""
         measure_ref_paths=tuple(ref for _frame, ref in layer.judges),
         enabled_tools=frozenset({
             "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
-            "gate_preview", "escalate_vocabulary_gap", "stage_materialization_unit",
+            "escalate_vocabulary_gap", "stage_materialization_unit",
             "unstage_materialization_unit",
             "materialization_status", "finalize_materialization", "patch_materialization",
         }),
@@ -667,7 +669,7 @@ global authority, create unit state, write prose, or write another file."""
     rserver, rnames = build_recipe_tools()
     materialization_tools = _phase_tools(
         pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
-        "gate_preview", "escalate_vocabulary_gap", "stage_materialization_unit",
+        "escalate_vocabulary_gap", "stage_materialization_unit",
         "unstage_materialization_unit",
         "materialization_status", "finalize_materialization", "patch_materialization",
     )

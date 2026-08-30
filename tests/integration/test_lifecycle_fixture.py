@@ -21,6 +21,8 @@ from tests.unit.test_plan_records import _candidate, _declaring, _vis_rows, _wri
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.jit_materialization import (
+    finalize_materialization_candidate,
+    materialization_finalization_attested,
     publish_materialization,
     revert_materialization,
     stage_candidate_view,
@@ -63,6 +65,7 @@ def _deferred_root(root: Path) -> None:
         "required_outcomes": [],
         "reserved_roles": ["comp"],
         "owned_requirements": ["R-final-lock"],
+        "provides": {"camera": ["comp"]},
     }
     # a later deferred layer reserves `set.*` — the namespace the root's persistent
     # clearance contract observes, exactly the shape a real multi-layer plan has
@@ -78,6 +81,7 @@ def _deferred_root(root: Path) -> None:
             "required_outcomes": [],
             "reserved_roles": ["set.*"],
             "owned_requirements": ["R-set-dressed"],
+            "provides": {},
         },
     })
     document["schema"] = 5
@@ -194,6 +198,7 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
                        }},
         "completion": "all_required_claims_and_protected_contracts_pass",
         "look_capabilities": [],
+        "provides": ["camera"],
     }]
     payload = root / "root-jit.json"
     _write(payload, {
@@ -350,6 +355,18 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     validate_current(preview_state, "1", preview_layers["1"].stages)
     assert set(preview_state["units"]) == {"lock_v2"}
     assert preview_state["units"]["lock_v2"]["status"] == "pending"
+    assert load(tmp_path, "1")["units"]["lock"]["status"] == "passed"
+    terminal_result = finalize_materialization_candidate(
+        tmp_path,
+        payload,
+        prepare_consumer_view(layout_a),
+        overlay_root=overlay,
+    )
+    assert terminal_result.clean, plan_gate.report(terminal_result)
+    assert materialization_finalization_attested(
+        payload,
+        bundle_hash=bundle_a.content_hash,
+    )
     assert load(tmp_path, "1")["units"]["lock"]["status"] == "passed"
 
     # ── 6 · generation B supersedes A: stale view inert, sealed state retired with audit ──

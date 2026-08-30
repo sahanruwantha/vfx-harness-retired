@@ -24,6 +24,12 @@ state-backed `apply_replan` mechanism. It never compares a post-publication DAG 
 pre-publication state, never suppresses hierarchy validation, and never mutates selected
 state before publication (HIR-0140).
 
+Materialization has one terminal operation. `finalize_materialization` performs collectable
+candidate validation, stages the exact post-publication view, runs the deterministic gate,
+and attests only the clean candidate revision. Materialization sessions do not expose a
+separate clean-looking `gate_preview`; any patch requires the same terminal operation again
+(HIR-0141).
+
 ## Context
 
 ADR-0005 removed whole-shot evidence design from global planning, but retained one exception:

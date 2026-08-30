@@ -367,3 +367,4 @@ def test_materializer_denies_generic_write_and_requires_valid_staged_candidate()
     assert "unstage_materialization_unit" in source
     assert "materialization_finalization_attested" in source
     assert "accept_max_turns_if_succeeded=True" in source
+    assert '"gate_preview"' not in source
