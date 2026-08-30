@@ -337,12 +337,16 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                 if missing_participants:
                     raise ValueError(
                         f"{where}.stages.{unit.id} claim {claim.id} has unknown participants: "
-                        f"{', '.join(missing_participants)}"
+                        f"{', '.join(missing_participants)}. Interaction participants are "
+                        "exact same-layer work-unit ids, not semantic roles or controls; "
+                        f"valid unit ids: {', '.join(sorted(unit_ids))}"
                     )
                 if claim.coordination_owner and claim.coordination_owner not in unit_ids:
                     raise ValueError(
                         f"{where}.stages.{unit.id} claim {claim.id} has unknown "
-                        f"coordination_owner {claim.coordination_owner!r}"
+                        f"coordination_owner {claim.coordination_owner!r}. It must be an "
+                        "exact same-layer work-unit id; valid unit ids: "
+                        f"{', '.join(sorted(unit_ids))}"
                     )
         judges = tuple((point.frame, point.ref) for point in points)
         raw_dressable = g.get("dressable", [])

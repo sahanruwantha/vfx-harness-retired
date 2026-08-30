@@ -235,3 +235,42 @@ def test_unit_ticket_schema_enumerates_active_layer_axes() -> None:
         and "iris_ingress_sequence" in error.message
         for error in errors
     )
+
+
+def test_unit_ticket_schema_encodes_complete_interaction_shape() -> None:
+    """HIR-0123: interaction fields are one conditional ticket, not parser guesses."""
+    schema = work_unit_authoring_schema()
+    ticket = _camera_ticket("product.camera_target")
+    claim = ticket["evaluation"]["claims"][0]
+    claim["kind"] = "interaction"
+
+    errors = list(Draft202012Validator(schema).iter_errors(ticket))
+    messages = "\n".join(error.message for error in errors)
+    assert "coordination_owner" in messages
+    assert "participants" in messages
+    assert "controls" in messages
+
+    claim["coordination_owner"] = "camera"
+    claim["participants"] = ["camera", "target"]
+    claim["controls"] = ["camera.balance"]
+    assert list(Draft202012Validator(schema).iter_errors(ticket)) == []
+
+    claim["kind"] = "atomic"
+    errors = list(Draft202012Validator(schema).iter_errors(ticket))
+    assert errors
+    assert any(list(error.absolute_path)[-2:] == ["claims", 0] for error in errors)
+
+
+def test_interaction_parser_reports_complete_coordination_shape() -> None:
+    ticket = _camera_ticket("product.camera_target")
+    claim = ticket["evaluation"]["claims"][0]
+    claim["kind"] = "interaction"
+
+    with pytest.raises(ValueError) as raised:
+        WorkUnit.parse(ticket, "ticket")
+
+    message = str(raised.value)
+    assert "coordination_owner must be a same-layer work-unit id" in message
+    assert "participants needs at least two same-layer work-unit ids" in message
+    assert "controls must bound interaction balancing" in message
+    assert "not semantic roles or controls" in message

@@ -301,5 +301,11 @@ def test_image_property_vocabulary_is_registry_derived_and_schema_enumerated() -
     }
     schema = work_unit_authoring_schema(image_property_kinds=payable)
     claim = schema["properties"]["evaluation"]["properties"]["claims"]["items"]
-    image_property = claim["allOf"][0]["then"]["properties"]["property"]
+    image_rule = next(
+        rule
+        for rule in claim["allOf"]
+        if rule.get("if", {}).get("properties", {}).get("asserts", {}).get("const")
+        == "image"
+    )
+    image_property = image_rule["then"]["properties"]["property"]
     assert image_property["enum"] == sorted(payable)

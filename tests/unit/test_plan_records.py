@@ -1585,6 +1585,36 @@ def test_materialization_requirement_binding_rejects_optional_image_reference(
     )
 
 
+def test_materialization_interaction_feedback_enumerates_unit_ids(tmp_path: Path) -> None:
+    """HIR-0123: role-like participants get the exact legal unit-id vocabulary."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "interaction-participants")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    claim = document["layer"]["stages"][0]["evaluation"]["claims"][0]
+    claim.update(
+        {
+            "kind": "interaction",
+            "coordination_owner": "polish",
+            "participants": ["polish", "facade.window_bay"],
+            "controls": ["hold"],
+        }
+    )
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "unknown participants: facade.window_bay" in text
+    assert "not semantic roles or controls" in text
+    assert "valid unit ids: polish" in text
+
+
 def test_materialization_rejects_unpayable_image_property(tmp_path: Path) -> None:
     """HIR-0111: free-form image labels cannot become build-time debts."""
     from vfx_harness.domain.image_debts import IMAGE_PROPERTY_VOCABULARY_RULE

@@ -284,13 +284,27 @@ class Claim:
         participants = _strings(row.get("participants", []), f"{where}.participants")
         controls = _strings(row.get("controls", []), f"{where}.controls")
         if kind == "interaction":
-            coordination_owner = _id(coordination_owner, f"{where}.coordination_owner")
+            incomplete: list[str] = []
+            if not isinstance(coordination_owner, str) or not coordination_owner.strip():
+                incomplete.append("coordination_owner must be a same-layer work-unit id")
             if len(participants) < 2:
-                raise ValueError(f"{where}.participants needs at least two units for an interaction claim")
+                incomplete.append(
+                    "participants needs at least two same-layer work-unit ids"
+                )
             if not controls:
-                raise ValueError(f"{where}.controls must bound interaction balancing")
+                incomplete.append("controls must bound interaction balancing")
+            if incomplete:
+                raise ValueError(
+                    f"{where} interaction claim requires the complete coordination shape: "
+                    + "; ".join(incomplete)
+                    + ". Participants are unit ids, not semantic roles or controls"
+                )
+            coordination_owner = _id(coordination_owner, f"{where}.coordination_owner")
         elif coordination_owner is not None or participants or controls:
-            raise ValueError(f"{where} atomic claims cannot declare interaction coordination fields")
+            raise ValueError(
+                f"{where} atomic claims cannot declare interaction coordination fields; "
+                "omit coordination_owner, participants, and controls"
+            )
 
         asserts = row.get("asserts")
         if asserts is not None and asserts not in CLAIM_DOMAINS:
@@ -1379,9 +1393,27 @@ def work_unit_authoring_schema(
             "asserts": {"type": "string", "enum": sorted(CLAIM_DOMAINS)},
             "evidence": {"type": "array", "items": evidence, "minItems": 1},
             "qualification": {"type": "object"},
-            "coordination_owner": text,
-            "participants": strings(),
-            "controls": strings(),
+            "coordination_owner": {
+                **text,
+                "description": (
+                    "Required only for interaction claims: exact same-layer work-unit id "
+                    "that owns bounded balancing."
+                ),
+            },
+            "participants": {
+                **strings(),
+                "description": (
+                    "Required only for interaction claims: at least two exact same-layer "
+                    "work-unit ids, never semantic roles or controls."
+                ),
+            },
+            "controls": {
+                **strings(),
+                "description": (
+                    "Required only for interaction claims: non-empty bounded control ids "
+                    "available to the coordination owner."
+                ),
+            },
         },
         "required": [
             "id", "proposition", "axis", "property", "subject_roles",
@@ -1390,9 +1422,33 @@ def work_unit_authoring_schema(
         ],
         "additionalProperties": False,
     }
+    claim["allOf"] = [
+        {
+            "if": {
+                "properties": {"kind": {"const": "interaction"}},
+                "required": ["kind"],
+            },
+            "then": {
+                "required": ["coordination_owner", "participants", "controls"],
+                "properties": {
+                    "participants": {"minItems": 2},
+                    "controls": {"minItems": 1},
+                },
+            },
+            "else": {
+                "not": {
+                    "anyOf": [
+                        {"required": ["coordination_owner"]},
+                        {"required": ["participants"]},
+                        {"required": ["controls"]},
+                    ]
+                }
+            },
+        }
+    ]
     if image_property_kinds is not None:
         payable = sorted({str(value) for value in image_property_kinds})
-        claim["allOf"] = [
+        claim["allOf"].append(
             {
                 "if": {
                     "properties": {"asserts": {"const": "image"}},
@@ -1411,7 +1467,7 @@ def work_unit_authoring_schema(
                     }
                 },
             }
-        ]
+        )
     composition = {
         "type": "object",
         "description": (
