@@ -1524,12 +1524,47 @@ def validate_unit_dag(units: tuple[WorkUnit, ...], where: str) -> None:
         visit(uid)
 
 
+def compile_clustered_mutation_roles(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Compile the staging-only one-namespace role shape into a WorkUnit row."""
+    unit = dict(value)
+    raw_mutates = unit.get("mutates")
+    if not isinstance(raw_mutates, Mapping):
+        raise ValueError("unit.mutates must be an object")
+    mutates = dict(raw_mutates)
+    if "roles" in mutates:
+        raise ValueError(
+            "unit.mutates.roles is not accepted by clustered staging; choose one "
+            "role_namespace and relative role_members"
+        )
+    namespace = str(mutates.pop("role_namespace", "") or "").strip()
+    members = mutates.pop("role_members", None)
+    if not isinstance(members, list):
+        raise ValueError("unit.mutates.role_members must be a list")
+    if members and not namespace:
+        raise ValueError("non-empty role_members requires one role_namespace")
+    if not members and namespace:
+        raise ValueError("role_namespace must be omitted when role_members is empty")
+    roles = [
+        namespace if str(member) == "$self" else f"{namespace}.{member!s}"
+        for member in members
+    ]
+    if any(role != namespace and not role.startswith(f"{namespace}.") for role in roles):
+        # Defense below the JSON schema for direct/non-SDK callers.
+        raise ValueError(
+            f"compiled mutation roles must stay in one namespace {namespace!r}: {roles}"
+        )
+    mutates["roles"] = roles
+    unit["mutates"] = mutates
+    return unit
+
+
 def work_unit_authoring_schema(
     *,
     image_property_kinds: Iterable[str] | None = None,
     axis_ids: Iterable[str] | None = None,
     layer_id: str | None = None,
     allowed_provides: Iterable[str] | None = None,
+    clustered_mutation_roles: bool = False,
 ) -> dict[str, Any]:
     """Closed JSON schema exposed by the materialization unit-ticket tool.
 
@@ -1755,6 +1790,54 @@ def work_unit_authoring_schema(
         else {str(value) for value in allowed_provides}
     )
 
+    mutation_properties = {
+        "mode": {"type": "string", "enum": ["scoped", "none"]},
+        "roles": strings(),
+        "controls": strings(),
+        "control_roles": {
+            "type": "object", "additionalProperties": strings(nonempty=True)
+        },
+        "dresses": strings(),
+        "script_spans": script_spans,
+    }
+    mutation_required = ["mode", "roles", "controls", "control_roles", "script_spans"]
+    mutation_all_of: list[dict[str, Any]] = []
+    if clustered_mutation_roles:
+        # The model chooses one derived two-token namespace, then only relative members.
+        # It cannot put building.mass and building.roof into one list because no field
+        # accepts a second absolute namespace (HIR-0150).
+        mutation_properties.pop("roles")
+        mutation_properties.update({
+            "role_namespace": {
+                "type": "string",
+                "pattern": r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$",
+                "description": (
+                    "The unit's one derived two-token write namespace, e.g. "
+                    "building.mass. Every role member is relative to this namespace."
+                ),
+            },
+            "role_members": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "pattern": r"^(?:\$self|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)$",
+                },
+                "uniqueItems": True,
+                "description": (
+                    "Relative role suffixes inside role_namespace; use $self for the "
+                    "namespace tag itself. Absolute roles are not accepted."
+                ),
+            },
+        })
+        mutation_required = [
+            "mode", "role_members", "controls", "control_roles", "script_spans"
+        ]
+        mutation_all_of = [{
+            "if": {"properties": {"role_members": {"minItems": 1}}},
+            "then": {"required": ["role_namespace"]},
+            "else": {"not": {"required": ["role_namespace"]}},
+        }]
+
     return {
         "type": "object",
         "properties": {
@@ -1766,19 +1849,9 @@ def work_unit_authoring_schema(
             "consumes": {"type": "array", "items": consume, "minItems": 1},
             "mutates": {
                 "type": "object",
-                "properties": {
-                    "mode": {"type": "string", "enum": ["scoped", "none"]},
-                    "roles": strings(),
-                    "controls": strings(),
-                    "control_roles": {
-                        "type": "object", "additionalProperties": strings(nonempty=True)
-                    },
-                    "dresses": strings(),
-                    "script_spans": script_spans,
-                },
-                "required": [
-                    "mode", "roles", "controls", "control_roles", "script_spans"
-                ],
+                "properties": mutation_properties,
+                "required": mutation_required,
+                **({"allOf": mutation_all_of} if mutation_all_of else {}),
                 "additionalProperties": False,
             },
             "protects": {

@@ -1648,6 +1648,10 @@ def build_plan_tools(
         "of none/keyframes/motion for temporal_evidence, and omit composition_context "
         "unless it has non-empty frames plus exactly one source_unit or contract_ids. "
         "Every claim.axis enumerates the active layer's exact owned axis ids. "
+        "Mutation roles are cluster-shaped: choose one two-token "
+        "mutates.role_namespace and list only relative role_members (`$self` means the "
+        "namespace tag). Absolute mutates.roles is not in the schema, so one unit cannot "
+        "mix write namespaces. "
         "script_spans contains exactly the identity-derived unit file enumerated by the "
         "schema under build/units/<layer>/; layer scripts and #fragments are invalid. "
         "After all units, call finalize_materialization. This is unpublished scratch "
@@ -1660,6 +1664,7 @@ def build_plan_tools(
                     axis_ids=materialization_axis_ids,
                     layer_id=materialization_layer_id,
                     allowed_provides=materialization_allowed_provides,
+                    clustered_mutation_roles=True,
                 ),
                 "scene_contracts": {"type": "array", "items": {"type": "object"}},
                 "requirement_bindings": {
@@ -1724,17 +1729,19 @@ def build_plan_tools(
                 "stage_materialization_unit is only available during layer materialization",
                 is_error=True,
             )
+        from vfx_harness.domain.work_units import compile_clustered_mutation_roles
         from vfx_harness.orchestration.jit_materialization import (
             materialization_candidate_revision,
             stage_materialization_unit,
         )
 
         try:
+            compiled_unit = compile_clustered_mutation_roles(args.get("unit") or {})
             async with materialization_write_lock:
                 await anyio.to_thread.run_sync(
                     lambda: stage_materialization_unit(
                         candidate,
-                        unit=args.get("unit"),
+                        unit=compiled_unit,
                         scene_contracts=args.get("scene_contracts") or [],
                         requirement_bindings=args.get("requirement_bindings") or [],
                         layer_updates=args.get("layer_updates"),
@@ -1747,7 +1754,7 @@ def build_plan_tools(
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             return _text(f"unit staging refused: {exc}", is_error=True)
         return _text(
-            f"STAGED unit {args['unit'].get('id', '<missing>')}: "
+            f"STAGED unit {compiled_unit.get('id', '<missing>')}: "
             f"candidate now has {len(payload['layer']['stages'])} unit(s), "
             f"{len(payload['scene_contracts'])} contract(s), and "
             f"{len(payload['requirement_bindings'])} requirement binding(s). "

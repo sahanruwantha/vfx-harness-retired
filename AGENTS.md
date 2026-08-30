@@ -432,7 +432,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `build/units/<layer>/<unit-id>.py` script span (HIR-0126), optional
   composition-context union, and exact typed publish/consume fields are enumerated
   before generation rather than learned through parser retries
-  (HIR-0097). An `interaction` claim requires the complete conditional coordination
+  (HIR-0097). Materialization mutation roles use a cluster-shaped authoring type: one
+  two-token `role_namespace` plus relative `role_members`, compiled to durable full
+  selectors before staging. Absolute `mutates.roles` is not accepted on that tool, so
+  one request cannot express two write namespaces; `$self` names the namespace tag
+  itself (HIR-0150). An `interaction` claim requires the complete conditional coordination
   shape — `coordination_owner`, at least two `participants`, and non-empty `controls` —
   while an `atomic` claim forbids all three. Owners and participants are exact
   same-layer work-unit ids, never semantic roles or controls; a miss enumerates the

@@ -13,6 +13,7 @@ from vfx_harness.domain.work_units import (
     UNIT_JUDGE_CLAIM_COVERAGE_RULE,
     EvaluationPolicy,
     WorkUnit,
+    compile_clustered_mutation_roles,
     compile_frame_authority,
     layer_judge_frames,
     uncovered_unit_judge_frames,
@@ -217,6 +218,60 @@ def test_unit_ticket_schema_exposes_exact_consumes_and_optional_context(role: st
         and "Additional properties are not allowed" in error.message
         and "'family'" in error.message
         for error in errors
+    )
+
+
+def test_materialization_ticket_encodes_one_mutation_namespace() -> None:
+    schema = work_unit_authoring_schema(clustered_mutation_roles=True)
+    ticket = _camera_ticket("product.camera_target")
+    ticket["mutates"].pop("roles")
+    ticket["mutates"].update({
+        "role_namespace": "building.mass",
+        "role_members": ["tower", "base"],
+    })
+
+    assert list(Draft202012Validator(schema).iter_errors(ticket)) == []
+    compiled = compile_clustered_mutation_roles(ticket)
+    assert compiled["mutates"]["roles"] == [
+        "building.mass.tower",
+        "building.mass.base",
+    ]
+    assert "role_namespace" not in compiled["mutates"]
+    assert "role_members" not in compiled["mutates"]
+
+    mixed = json.loads(json.dumps(ticket))
+    mixed["mutates"]["roles"] = [
+        "building.mass.tower", "building.roof.silhouette"
+    ]
+    errors = list(Draft202012Validator(schema).iter_errors(mixed))
+    assert any(
+        list(error.absolute_path)[:2] == ["mutates"]
+        and "Additional properties are not allowed" in error.message
+        for error in errors
+    )
+
+    wrong_namespace = json.loads(json.dumps(ticket))
+    wrong_namespace["mutates"]["role_namespace"] = "building.mass.extra"
+    assert list(Draft202012Validator(schema).iter_errors(wrong_namespace))
+
+
+def test_clustered_role_compiler_cannot_emit_a_second_absolute_namespace() -> None:
+    ticket = _camera_ticket("product.camera_target")
+    ticket["mutates"].pop("roles")
+    ticket["mutates"].update({
+        "role_namespace": "building.mass",
+        "role_members": ["tower", "roof.silhouette"],
+    })
+
+    compiled = compile_clustered_mutation_roles(ticket)
+
+    assert compiled["mutates"]["roles"] == [
+        "building.mass.tower",
+        "building.mass.roof.silhouette",
+    ]
+    assert all(
+        role == "building.mass" or role.startswith("building.mass.")
+        for role in compiled["mutates"]["roles"]
     )
 
 
