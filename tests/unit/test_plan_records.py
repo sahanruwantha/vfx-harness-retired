@@ -781,6 +781,81 @@ def test_unit_staging_refuses_unpayable_image_property_before_write(
     assert target.read_bytes() == before
 
 
+def test_unit_staging_refuses_same_layer_dressing_before_write(tmp_path: Path) -> None:
+    """HIR-0161: sibling geometry cannot be dressed; grant is later-layer only."""
+    from vfx_harness.domain.dressing import SAME_LAYER_DRESS_RULE
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "same-layer-dress-staging")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "same-layer-dress.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    unit = full["layer"]["stages"][0]
+    stage_materialization_unit(
+        target,
+        unit=unit,
+        scene_contracts=full["scene_contracts"],
+        requirement_bindings=full["requirement_bindings"],
+    )
+    shade = json.loads(json.dumps(unit))
+    shade["id"] = "shade"
+    shade["plan"] = "plans/02_polish/shade.md"
+    shade["depends_on"] = ["polish"]
+    shade["mutates"]["roles"] = ["polish.shade"]
+    shade["mutates"]["controls"] = []
+    shade["mutates"]["control_roles"] = {}
+    shade["mutates"]["dresses"] = ["polish.comp"]
+    shade["mutates"]["script_spans"] = ["build/units/02/shade.py"]
+    claim = shade["evaluation"]["claims"][0]
+    claim["id"] = "shade-claim"
+    claim["repair_owner"] = "shade"
+    claim["subject_roles"] = ["polish.shade", "polish.comp"]
+    claim["subject_controls"] = []
+    claim["property"] = "material_assignment_fraction"
+    claim["asserts"] = "scene"
+    claim["evidence"] = [{"kind": "scene_contract", "id": "shade-assigned"}]
+    shade["evaluation"].pop("composition_context", None)
+    shade_contract = {
+        "id": "shade-assigned",
+        "kind": "material_assignment_fraction",
+        "owner_layer": "2",
+        "fault_owner": "2",
+        "activates_at": "2",
+        "lifecycle": "layer",
+        "axis": "final_lock",
+        "roles": ["polish.comp"],
+        "material_roles": ["polish.shade"],
+        "op": "min",
+        "lo": 1,
+    }
+    before = target.read_bytes()
+
+    with pytest.raises(ValueError, match="same-layer dressing refused"):
+        stage_materialization_unit(
+            target,
+            unit=shade,
+            scene_contracts=[shade_contract],
+            requirement_bindings=[],
+        )
+
+    assert target.read_bytes() == before
+    with pytest.raises(ValueError, match=SAME_LAYER_DRESS_RULE[:48]):
+        stage_materialization_unit(
+            target,
+            unit=shade,
+            scene_contracts=[shade_contract],
+            requirement_bindings=[],
+        )
+
+
 @pytest.mark.parametrize(
     "invalid_path",
     [
@@ -1818,6 +1893,127 @@ def test_materialization_rejects_image_debt_before_rendered_carrier(tmp_path: Pa
     assert "polish-beauty" in text
     assert "before a rendered carrier is available" in text
     assert IMAGE_SUBJECT_DEPENDENCY_RULE in text
+
+
+def test_materialization_rejects_same_layer_dressing(tmp_path: Path) -> None:
+    """HIR-0161: this layer's dressable grant cannot authorize a sibling dresser."""
+    from vfx_harness.domain.dressing import SAME_LAYER_DRESS_RULE
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "same-layer-dress-validate")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    polish = document["layer"]["stages"][0]
+    mass = json.loads(json.dumps(polish))
+    mass.update(
+        {
+            "id": "polish_mass",
+            "title": "Polish mass",
+            "plan": "plans/02_polish/polish_mass.md",
+            "depends_on": [],
+            "provides": ["geometry"],
+            "look_capabilities": [],
+        }
+    )
+    mass["mutates"] = {
+        "mode": "scoped",
+        "roles": ["polish.mass"],
+        "controls": [],
+        "control_roles": {},
+        "script_spans": ["build/units/02/polish_mass.py"],
+    }
+    mass["evaluation"]["temporal_evidence"] = "none"
+    mass["evaluation"]["claims"] = [
+        {
+            "id": "polish-mass-mesh",
+            "proposition": "The polished mass has authored polygons.",
+            "axis": "final_lock",
+            "property": "mesh_vertex_count",
+            "subject_roles": ["polish.mass"],
+            "subject_controls": [],
+            "moments": [239, 240],
+            "kind": "atomic",
+            "required": True,
+            "authority": "executable_required",
+            "repair_owner": "polish_mass",
+            "asserts": "scene",
+            "evidence": [
+                {"kind": "scene_contract", "id": "polish-mass-mesh-239"},
+                {"kind": "scene_contract", "id": "polish-mass-mesh-240"},
+            ],
+        }
+    ]
+    polish["depends_on"] = ["polish_mass"]
+    polish["mutates"]["dresses"] = ["polish.mass"]
+    polish["mutates"]["controls"] = []
+    polish["mutates"]["control_roles"] = {}
+    document["layer"]["stages"] = [mass, polish]
+    document["layer"]["dressable"] = ["polish.mass"]
+    document["scene_contracts"] = [
+        {
+            "id": "polish-lock",
+            "kind": "material_assignment_fraction",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.mass"],
+            "material_roles": ["polish.comp"],
+            "op": "min",
+            "lo": 1,
+        },
+        {
+            "id": "polish-mass-mesh-239",
+            "kind": "mesh_vertex_count",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.mass"],
+            "frame": 239,
+            "op": "min",
+            "lo": 1,
+        },
+        {
+            "id": "polish-mass-mesh-240",
+            "kind": "mesh_vertex_count",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.mass"],
+            "frame": 240,
+            "op": "min",
+            "lo": 1,
+        },
+        *_vis_rows("2", (239, 240)),
+    ]
+    polish["evaluation"]["claims"][0].update(
+        {
+            "property": "material_assignment_fraction",
+            "asserts": "scene",
+            "subject_roles": ["polish.comp", "polish.mass"],
+            "subject_controls": [],
+            "evidence": [{"kind": "scene_contract", "id": "polish-lock"}],
+        }
+    )
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "/layer/stages/1/mutates/dresses:" in text
+    assert "same-layer mutation roles" in text
+    assert "polish.mass" in text
+    assert SAME_LAYER_DRESS_RULE in text
 
 
 def test_materialization_requirement_binding_accepts_required_image_debt(

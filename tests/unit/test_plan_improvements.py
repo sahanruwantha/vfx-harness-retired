@@ -979,6 +979,89 @@ def test_dressing_authority_is_granted_by_the_owner(tmp_path: Path) -> None:
     assert not any(f.check == "dressing-closure" for f in findings), [str(f) for f in findings]
 
 
+def test_same_layer_dressing_is_refused_even_when_this_layer_lists_dressable(
+    tmp_path: Path,
+) -> None:
+    """HIR-0161: layer_updates.dressable grants later layers, never a sibling dresser."""
+    from vfx_harness.domain.dressing import SAME_LAYER_DRESS_RULE
+
+    doc = _layer_doc()
+    form = _form_layer()
+    form["dressable"] = ["atrium.shell"]
+    shade = json.loads(json.dumps(form["stages"][0]))
+    shade["id"] = "shade"
+    shade["title"] = "Shade"
+    shade["plan"] = "plans/02_form/shade.md"
+    shade["depends_on"] = ["shell"]
+    shade["provides"] = []
+    shade["mutates"] = {
+        "mode": "scoped",
+        "roles": ["atrium.shade"],
+        "controls": [],
+        "dresses": ["atrium.shell"],
+        "script_spans": ["build/units/02/shade.py"],
+    }
+    shade["evaluation"]["claims"][0].update(
+        {
+            "id": "shade-claim",
+            "repair_owner": "shade",
+            "property": "material_assignment_fraction",
+            "subject_roles": ["atrium.shade", "atrium.shell"],
+            "evidence": [{"kind": "scene_contract", "id": "shade-assigned"}],
+        }
+    )
+    form["stages"].append(shade)
+    doc["layers"].append(form)
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "shell-count",
+                    "kind": "object_count",
+                    "owner_layer": "2",
+                    "fault_owner": "2",
+                    "activates_at": "2",
+                    "lifecycle": "layer",
+                    "axis": "form",
+                    "roles": ["atrium.shell"],
+                    "op": "min",
+                    "lo": 1,
+                },
+                {
+                    "id": "shade-assigned",
+                    "kind": "material_assignment_fraction",
+                    "owner_layer": "2",
+                    "fault_owner": "2",
+                    "activates_at": "2",
+                    "lifecycle": "layer",
+                    "axis": "form",
+                    "roles": ["atrium.shell"],
+                    "material_roles": ["atrium.shade"],
+                    "op": "min",
+                    "lo": 1,
+                },
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert any(
+        f.check == "same-layer-dress"
+        and f.blocking
+        and "atrium.shell" in f.what
+        and "shell" in f.what
+        and SAME_LAYER_DRESS_RULE in f.fix
+        for f in findings
+    ), [str(f) for f in findings]
+    assert not any(
+        f.check == "dressing-closure" and "atrium.shell" in f.what for f in findings
+    ), [str(f) for f in findings]
+
+
 def test_another_layers_stuck_state_does_not_block_this_layers_plan() -> None:
     """Run bwng97m5n: layer 1's amendment generated a clean unit plan and died on
     'layer 2 has no ready unit' — a state-progress finding the layer-2 transaction

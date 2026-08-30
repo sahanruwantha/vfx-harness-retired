@@ -7,6 +7,9 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Internal layout: oversized modules are subpackages under the existing layer
+  folders (`domain/work_units`, `agents/builder`, `blender/tools`, and so on).
+  Public imports, CLI entry points, and `python -m` commands are unchanged.
 - A denied plan-workspace Read enumerates the staged relative files and forbids
   prefixing another filesystem root; draft/verify/repair kickoffs compile that card
   instead of claiming there is no source video
@@ -27,6 +30,10 @@ live in the linked Harness Improvement Records.
   is in the unit's replay prefix; shading and lights are optical signal, not a
   subject
   ([HIR-0160](docs/improvements/HIR-0160-image-debt-requires-rendered-carrier.md)).
+- Same-layer `dresses` of a sibling mutation role fail at staging; this layer's
+  `dressable` grant is for later layers only, and the rejection no longer tells
+  the materializer to list those selectors on the owning layer's row
+  ([HIR-0161](docs/improvements/HIR-0161-same-layer-dressing-is-not-owner-granted.md)).
 - Durable layer memory now lives under shot-root `state/`; reading it cannot create an
   orphan direct run or displace the latest production-run pointer
   ([HIR-0155](docs/improvements/HIR-0155-layer-memory-does-not-create-runs.md)).

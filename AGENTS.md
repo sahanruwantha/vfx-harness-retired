@@ -249,7 +249,9 @@ prefix (HIR-0156), camera-host optics plus motion that stay one camera write-clu
 layer does not ask_supervisor for layer occupancy (HIR-0158), materialization
 validation that refuses required contract role selectors the binding unit does
 not mutate (HIR-0159), image-contract debt that cannot publish before a mesh,
-volume, or compositor carrier is in the replay prefix (HIR-0160), and
+volume, or compositor carrier is in the replay prefix (HIR-0160), same-layer
+mutation roles that cannot be dressed so a sibling look unit does not retry
+`layer_updates.dressable` until max-turns (HIR-0161), and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -826,7 +828,8 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
 - Appearance on another layer's geometry is owner-granted authority: the owner declares
   `dressable` selectors, the dresser declares `dresses`, validation closes over both, and
   dressing is material assignment only — moving, deleting, or remeshing a dressed object breaks
-  the owner's sealed contracts (ADR-0007).
+  the owner's sealed contracts (ADR-0007). A selector mutated by any unit on this layer
+  cannot be dressed here; this layer's `dressable` grants later layers only (HIR-0161).
 - Repair starts from the last accepted checkpoint with a machine-authored manifest: one bounded
   semantic edit per attempt, then re-evaluate failing AND protected evidence; accept only
   monotonic progress without regression, otherwise restore the snapshot. Truncation,

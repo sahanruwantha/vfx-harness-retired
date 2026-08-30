@@ -328,22 +328,49 @@ def validate_materialization(
     # Dressing closure (ADR-0007): a unit may declare appearance-assignment authority
     # only over selectors some OTHER layer explicitly marked dressable. Exact-string
     # match, not glob-vs-glob: the owner names the surface it exposes, the dresser
-    # names the same surface.
+    # names the same surface. Same-layer mutation roles are never dressable here
+    # (HIR-0161).
     if parsed is not None and layer is not None:
+        from vfx_harness.domain.dressing import (
+            DRESSING_CLOSURE_FIX,
+            SAME_LAYER_DRESS_RULE,
+            same_layer_dress_gaps,
+        )
+
         declared_dressable = {
             selector
             for other in parsed.values()
             if str(other.id) != str(layer_id)
             for selector in other.dressable
         }
+        same_layer = {
+            gap.unit_id: set(gap.selectors) for gap in same_layer_dress_gaps(layer.stages)
+        }
+        unit_index_by_id = {unit.id: index for index, unit in enumerate(layer.stages)}
+        for gap in same_layer_dress_gaps(layer.stages):
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    "mutates",
+                    "dresses",
+                ),
+                f"unit {gap.unit_id} dresses same-layer mutation roles "
+                f"{list(gap.selectors)} produced by {list(gap.producer_ids)}. "
+                + SAME_LAYER_DRESS_RULE,
+            )
         for unit_index, unit in enumerate(layer.stages):
-            undeclared_dresses = sorted(set(unit.mutates.dresses) - declared_dressable)
+            undeclared_dresses = sorted(
+                set(unit.mutates.dresses)
+                - declared_dressable
+                - same_layer.get(unit.id, set())
+            )
             if undeclared_dresses:
                 note(
                     json_ptr("layer", "stages", unit_index, "mutates", "dresses"),
                     f"unit {unit.id} dresses {', '.join(undeclared_dresses)} — no other "
-                    "layer declares these selectors dressable; the owning layer's row must "
-                    "list them under `dressable` before a dressing unit may claim them",
+                    "layer declares these selectors dressable. " + DRESSING_CLOSURE_FIX,
                 )
 
     # Look scope is typed authority, and silence is not a declaration: a unit that omits
@@ -1638,6 +1665,17 @@ def _validate_local_staged_units(
             "point-projection interface refused before candidate write: "
             f"unit {gap.unit_id} contract {gap.contract_id}: {detail}. "
             + PROJECTED_ORIGIN_REPAIR_RULE
+        )
+    from vfx_harness.domain.dressing import SAME_LAYER_DRESS_RULE, same_layer_dress_gaps
+
+    dress_gaps = same_layer_dress_gaps(parsed_units)
+    if dress_gaps:
+        gap = dress_gaps[0]
+        raise ValueError(
+            "same-layer dressing refused before candidate write: "
+            f"unit {gap.unit_id} dresses {list(gap.selectors)} mutated on this "
+            f"layer by {list(gap.producer_ids)}. "
+            + SAME_LAYER_DRESS_RULE
         )
     gaps = atomicity_gaps(
         parsed_units,

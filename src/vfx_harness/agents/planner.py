@@ -603,6 +603,9 @@ required evidence of a materialized producing claim.
 A unit that must ASSIGN materials to another layer's geometry declares `mutates.dresses`:
 selectors the OWNING layer's row lists under `dressable` (granted by the owner, never
 taken; assignment-only authority — geometry stays protected by the owner's contracts).
+Same-layer mutation roles cannot be dressed: drop those `dresses` and assign through this
+unit's own mutation or material_roles, or move look to a later layer. This layer's
+`dressable` / `layer_updates.dressable` grants downstream layers only (HIR-0161).
 A layer whose proxies later layers must dress declares those selectors under `dressable`
 on its layer row; dressed roles need required claims exactly like mutation roles. Choose unit structure, scene-truth
 contracts, reference fingerprints, and techniques now from authored references plus sealed

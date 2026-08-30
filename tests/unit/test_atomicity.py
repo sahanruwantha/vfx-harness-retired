@@ -484,6 +484,31 @@ def test_image_debt_requires_rendered_carrier_in_dependency_closure() -> None:
     ) == ()
 
 
+def test_same_layer_dress_gaps_name_sibling_producer() -> None:
+    """HIR-0161: dressing a same-layer mutation role is not ADR-0007 authority."""
+    from vfx_harness.domain.dressing import same_layer_dress_gaps
+
+    mass = _unit(
+        "hero_massing",
+        roles=["hero.tower"],
+        contract_id="hero-mesh",
+        provides=["geometry"],
+    )
+    shade = _unit(
+        "hero_shade",
+        roles=["hero.shade"],
+        dresses=["hero.tower"],
+        contract_id="hero-material",
+        depends_on=["hero_massing"],
+    )
+    gaps = same_layer_dress_gaps((mass, shade))
+    assert len(gaps) == 1
+    assert gaps[0].unit_id == "hero_shade"
+    assert gaps[0].selectors == ("hero.tower",)
+    assert gaps[0].producer_ids == ("hero_massing",)
+    assert same_layer_dress_gaps((mass,)) == ()
+
+
 def test_image_signal_witness_card_is_derived_from_atomicity_registry() -> None:
     witnesses = image_signal_witnesses()
 

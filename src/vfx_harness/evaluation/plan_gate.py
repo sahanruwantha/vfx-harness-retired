@@ -1914,6 +1914,30 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         "be evaluated through a camera owned only by a later unit or layer",
                     )
                 )
+        from vfx_harness.domain.dressing import (
+            DRESSING_CLOSURE_FIX,
+            SAME_LAYER_DRESS_RULE,
+            same_layer_dress_gaps,
+        )
+
+        typed_stages = [
+            row for row in (layer.get("stages") or []) if isinstance(row, dict)
+        ]
+        same_layer = {
+            gap.unit_id: set(gap.selectors) for gap in same_layer_dress_gaps(typed_stages)
+        }
+        for gap in same_layer_dress_gaps(typed_stages):
+            out.append(
+                Finding(
+                    "same-layer-dress",
+                    True,
+                    f"layer {lid} unit {gap.unit_id}",
+                    "dresses same-layer mutation roles "
+                    + ", ".join(gap.selectors)
+                    + f" produced by {', '.join(gap.producer_ids)}",
+                    SAME_LAYER_DRESS_RULE,
+                )
+            )
         for unit in layer.get("stages") or []:
             if not isinstance(unit, dict):
                 continue
@@ -1936,6 +1960,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                 str(value)
                 for value in mutates.get("dresses") or []
                 if str(value) not in declared_dressable_elsewhere
+                and str(value) not in same_layer.get(uid, set())
             )
             if undeclared_dresses:
                 out.append(
@@ -1945,8 +1970,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         f"layer {lid} unit {uid}",
                         "dresses selectors no other layer declares dressable: "
                         + ", ".join(undeclared_dresses),
-                        "the owning layer's row must list these under `dressable`; "
-                        "dressing is granted by the owner, never taken",
+                        DRESSING_CLOSURE_FIX,
                     )
                 )
             for claim in evaluation.get("claims") or []:
