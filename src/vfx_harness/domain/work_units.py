@@ -1026,6 +1026,33 @@ UNIT_PROVIDES = {"camera", "geometry"}
 # bootstrap state and therefore belongs in the sparse global DAG.
 GLOBAL_SCENE_CAPABILITIES = {"camera"}
 
+CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE = (
+    "a sparse layer that globally provides camera may stage camera/control units only; "
+    "it must not add a unit with provides:[\"geometry\"] to manufacture framing. "
+    "Author persistent bbox_* contracts over rendered-subject roles owned by the "
+    "earliest downstream form layer, keep owner_layer and fault_owner on the camera "
+    "layer, set activates_at to that form layer, and bind those ids through the camera "
+    "unit's composition_context"
+)
+
+
+def allowed_unit_provides(global_layer_row: Mapping[str, Any]) -> frozenset[str]:
+    """Compile unit capabilities from immutable sparse layer authority.
+
+    Camera availability changes the global DAG, so a camera-providing sparse layer is
+    the camera bootstrap boundary rather than a place to manufacture rendered subject
+    form. Other layers may provide local geometry but cannot invent global camera
+    authority (HIR-0086, HIR-0128).
+    """
+    jit = global_layer_row.get("jit")
+    raw_global = jit.get("provides") if isinstance(jit, Mapping) else {}
+    global_capabilities = {
+        str(value) for value in raw_global
+    } if isinstance(raw_global, Mapping) else set()
+    if "camera" in global_capabilities:
+        return frozenset({"camera"})
+    return frozenset(UNIT_PROVIDES - GLOBAL_SCENE_CAPABILITIES)
+
 # Authored cluster labels. Publication derives write-clusters; these fields are
 # HIR-0017 padding and are unrepresentable on a WorkUnit (HIR-0083).
 ATOMICITY_PADDING_FIELDS = frozenset(
@@ -1418,6 +1445,7 @@ def work_unit_authoring_schema(
     image_property_kinds: Iterable[str] | None = None,
     axis_ids: Iterable[str] | None = None,
     layer_id: str | None = None,
+    allowed_provides: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Closed JSON schema exposed by the materialization unit-ticket tool.
 
@@ -1637,6 +1665,12 @@ def work_unit_authoring_schema(
         "required": ["producer", "interface_id", "kind"],
         "additionalProperties": False,
     }
+    provides_vocabulary = sorted(
+        UNIT_PROVIDES
+        if allowed_provides is None
+        else {str(value) for value in allowed_provides}
+    )
+
     return {
         "type": "object",
         "properties": {
@@ -1684,7 +1718,11 @@ def work_unit_authoring_schema(
             },
             "provides": {
                 "type": "array",
-                "items": {"type": "string", "enum": sorted(UNIT_PROVIDES)},
+                "items": {
+                    "type": "string",
+                    "enum": provides_vocabulary,
+                    "description": CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
+                },
                 "uniqueItems": True,
             },
             "evaluation": {

@@ -282,6 +282,21 @@ def _frame_authority_block(global_row: dict) -> str:
     )
 
 
+def _unit_capability_authority_block(global_row: dict) -> str:
+    """Compile the layer-local capability vocabulary from sparse DAG authority."""
+    from vfx_harness.domain.work_units import (
+        CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
+        allowed_unit_provides,
+    )
+
+    allowed = sorted(allowed_unit_provides(global_row))
+    return (
+        "Unit capability authority compiled from this sparse global layer row "
+        f"(the stage_materialization_unit schema enforces it): {allowed}. "
+        f"{CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE}.\n"
+    )
+
+
 def _sealed_outcomes_block(shot_folder: Path, layer, global_row: dict) -> str:
     """Compile only dependency status and explicitly required evidence (HIR-0054)."""
     jit_row = global_row.get("jit") if isinstance(global_row.get("jit"), dict) else {}
@@ -464,6 +479,7 @@ def _materialization_kickoff(
         f"{_owned_requirements_block(bundle.root, global_row)}"
         f"{_upstream_interfaces_block(shot_folder, global_row, bundle.content_hash, overlay_root=overlay_root)}"
         f"{_frame_authority_block(global_row)}"
+        f"{_unit_capability_authority_block(global_row)}"
         f"{_TWO_SIDED_CONTRACT_BINDING}"
         f"{_binding_decisions_block(shot_folder, layer, bundle.content_hash)}"
         f"{_sealed_outcomes_block(shot_folder, layer, global_row)}"
@@ -578,9 +594,9 @@ The kickoff compiles this layer's judge frames and extra-frame binding rule. Uni
 evaluation.judge, claim.moments, and composition_context.frames stay inside that
 list. Scene contracts may measure other frames; bind those ids through
 composition_context.contract_ids without adding the extra frames to the judge lists.
-Each stage declares `provides`: the scene capabilities it makes available. Declare
-`camera` if the unit creates the camera a dependent's framing evidence projects through,
-and `geometry` if objects under its roles carry polygons — mesh metrics (smooth_fraction,
+Each stage declares `provides` from the exact layer-specific enum compiled into the
+staging tool. Declare `camera` only when sparse global authority grants it, and
+`geometry` only when that enum permits rendered form. Mesh metrics (smooth_fraction,
 mesh_vertex_count, radial_inward_fraction) may only target roles a geometry provider
 owns, because on an empty or a camera they read None forever.
 Cross-unit observation is explicit. When a camera claim binds `projected_origin_x/y`

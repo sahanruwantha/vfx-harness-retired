@@ -354,6 +354,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   as capability → reserved-role selectors, every judged layer's transitive closure must
   contain camera, and a materialized camera unit must mutate one of that layer's exact
   reserved camera-interface roles (HIR-0086, ADR-0005).
+  That sparse camera grant compiles the materialization's unit capability vocabulary:
+  a camera-providing layer may stage camera/control units but cannot add
+  `provides: ["geometry"]` to manufacture subject framing. It authors persistent
+  downstream rendered-subject `bbox_*` rows and binds them through
+  `composition_context`; non-camera form layers retain local geometry authority
+  (HIR-0128).
   A work unit publishes one derived write-cluster (role-namespace × host class ×
   instrument family); authored family strings are padding and do not satisfy the
   gate. A typed producer capability is additive mutation authority, not a fallback

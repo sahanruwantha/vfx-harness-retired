@@ -483,6 +483,92 @@ def test_materialization_candidate_is_seeded_and_staged_one_unit_at_a_time(
     assert target.read_bytes() == before
 
 
+@pytest.mark.parametrize("camera_role", ["product.view_rig", "motion.capture_host"])
+def test_camera_global_layer_refuses_geometry_proxy_before_candidate_write(
+    tmp_path: Path, camera_role: str
+) -> None:
+    """HIR-0128: typed camera authority cannot manufacture subject form."""
+    from vfx_harness.domain.work_units import (
+        CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
+        allowed_unit_provides,
+        work_unit_authoring_schema,
+    )
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    global_row = document["layers"][1]
+    global_row["jit"]["provides"] = {"camera": [camera_role]}
+    global_row["jit"]["reserved_roles"] = [camera_role, "polish.*"]
+    _write(tmp_path / "layers.json", document)
+    layout = run_artifacts.create(tmp_path, "camera-layer-geometry-proxy")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    unit = full["layer"]["stages"][0]
+    unit["provides"] = ["geometry"]
+    target = tmp_path / "camera-layer-staging.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    allowed = allowed_unit_provides(global_row)
+    assert allowed == frozenset({"camera"})
+    assert allowed_unit_provides({"jit": {"provides": {}}}) == frozenset({"geometry"})
+    schema = work_unit_authoring_schema(allowed_provides=allowed)
+    assert schema["properties"]["provides"]["items"]["enum"] == ["camera"]
+    assert "persistent bbox_*" in schema["properties"]["provides"]["items"]["description"]
+    before = target.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match=r"global capability boundary refused.*provides:\[\"geometry\"\].*composition_context",
+    ):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=full["scene_contracts"],
+            requirement_bindings=full["requirement_bindings"],
+            allowed_provides=allowed,
+        )
+
+    assert target.read_bytes() == before
+    assert "earliest downstream form layer" in CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE
+
+
+def test_materialization_finalization_rejects_camera_layer_geometry_proxy(
+    tmp_path: Path,
+) -> None:
+    """HIR-0128: final publication independently enforces sparse authority."""
+    from vfx_harness.domain.work_units import CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    document = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    global_row = document["layers"][1]
+    global_row["jit"]["provides"] = {"camera": ["view.rig"]}
+    global_row["jit"]["reserved_roles"] = ["view.rig", "polish.*"]
+    _write(tmp_path / "layers.json", document)
+    layout = run_artifacts.create(tmp_path, "camera-layer-geometry-finalization")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    materialized = json.loads(payload.read_text(encoding="utf-8"))
+    materialized["layer"]["stages"][0]["provides"] = ["geometry"]
+    _write(payload, materialized)
+
+    findings, accepted = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert accepted is None
+    text = "\n".join(findings)
+    assert "/layer/stages/0/provides:" in text
+    assert "outside sparse global authority: geometry" in text
+    assert CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE in text
+
+
 def test_unit_staging_refuses_unpayable_image_property_before_write(
     tmp_path: Path,
 ) -> None:

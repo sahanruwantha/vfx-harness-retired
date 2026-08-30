@@ -86,6 +86,10 @@ live in the linked Harness Improvement Records.
   freeze-protects matching deferred rows; and `cannot_express` may name an
   earlier-layer camera without treating it as a same-layer affected seed
   ([HIR-0127](docs/improvements/HIR-0127-subject-composition-is-due-when-geometry-exists.md)).
+  Sparse camera authority now compiles a camera-only unit capability vocabulary;
+  staging and finalization refuse proxy `geometry` before it can replace deferred
+  rendered-subject bbox evidence
+  ([HIR-0128](docs/improvements/HIR-0128-camera-capability-does-not-authorize-subject-form.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

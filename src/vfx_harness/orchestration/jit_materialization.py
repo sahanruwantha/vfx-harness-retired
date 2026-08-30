@@ -359,6 +359,12 @@ def validate_materialization(
     )
     reserved = tuple(map(str, jit.get("reserved_roles") or []))
     if layer is not None:
+        from vfx_harness.domain.work_units import (
+            CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
+            allowed_unit_provides,
+        )
+
+        allowed_capabilities = allowed_unit_provides(global_row)
         unit_capabilities = {
             capability for unit in layer.stages for capability in unit.provides
         }
@@ -370,6 +376,15 @@ def validate_materialization(
                 "capabilities: " + ", ".join(missing_capabilities),
             )
         for unit_index, unit in enumerate(layer.stages):
+            disallowed = sorted(set(unit.provides) - allowed_capabilities)
+            if disallowed:
+                note(
+                    json_ptr("layer", "stages", unit_index, "provides"),
+                    f"unit {unit.id} declares capabilities outside sparse global "
+                    f"authority: {', '.join(disallowed)}; allowed here: "
+                    f"{', '.join(sorted(allowed_capabilities)) or '(none)'}. "
+                    + CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
+                )
             if "camera" in unit.provides:
                 camera_roles = global_capabilities.get("camera", ())
                 if not camera_roles:
@@ -1231,7 +1246,11 @@ def seed_materialization_candidate(
     return target
 
 
-def _validate_local_staged_units(payload: dict[str, Any]) -> None:
+def _validate_local_staged_units(
+    payload: dict[str, Any],
+    *,
+    allowed_provides: frozenset[str] | None = None,
+) -> None:
     """Enforce unit-local publication predicates on an in-memory candidate."""
     from vfx_harness.domain.atomicity import atomicity_gaps
     from vfx_harness.domain.work_units import (
@@ -1249,6 +1268,18 @@ def _validate_local_staged_units(payload: dict[str, Any]) -> None:
     parsed_units = [
         WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)
     ]
+    if allowed_provides is not None:
+        from vfx_harness.domain.work_units import CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE
+
+        for unit in parsed_units:
+            disallowed = sorted(set(unit.provides) - allowed_provides)
+            if disallowed:
+                raise ValueError(
+                    "global capability boundary refused before candidate write: "
+                    f"unit {unit.id} declares {disallowed}; allowed here: "
+                    f"{sorted(allowed_provides)}. "
+                    + CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE
+                )
     layer_id = str((payload.get("layer") or {}).get("id") or "")
     for unit_index, unit in enumerate(parsed_units):
         validate_unit_script_path(layer_id, unit, f"staged unit[{unit_index}]")
@@ -1348,6 +1379,7 @@ def _stage_materialization_payload(
     scene_contracts: list[dict[str, Any]],
     requirement_bindings: list[dict[str, Any]],
     layer_updates: dict[str, Any] | None,
+    allowed_provides: frozenset[str] | None,
 ) -> None:
     """Apply one stage operation and validate it before the transaction writes."""
     from vfx_harness.domain.work_units import WorkUnit
@@ -1417,7 +1449,7 @@ def _stage_materialization_payload(
     stages.append(unit)
     payload["scene_contracts"].extend(contracts)
     payload["requirement_bindings"].extend(bindings)
-    _validate_local_staged_units(payload)
+    _validate_local_staged_units(payload, allowed_provides=allowed_provides)
 
 
 def stage_materialization_unit(
@@ -1427,6 +1459,7 @@ def stage_materialization_unit(
     scene_contracts: list[dict[str, Any]],
     requirement_bindings: list[dict[str, Any]],
     layer_updates: dict[str, Any] | None = None,
+    allowed_provides: frozenset[str] | None = None,
     expected_revision: str | None = None,
 ) -> Path:
     """Append one bounded unit through the serialized candidate transaction."""
@@ -1439,6 +1472,7 @@ def stage_materialization_unit(
             scene_contracts=scene_contracts,
             requirement_bindings=requirement_bindings,
             layer_updates=layer_updates,
+            allowed_provides=allowed_provides,
         ),
         expected_revision=expected_revision,
     )
@@ -1629,7 +1663,24 @@ def apply_materialization_patches(
             or tokens[:1] == ["requirement_bindings"]
             for tokens in parsed_pointers
         ):
-            _validate_local_staged_units(payload)
+            from vfx_harness.domain.work_units import allowed_unit_provides
+
+            layer_id = str((payload.get("layer") or {}).get("id") or "")
+            global_layers = _rows(
+                _document(Path(global_root) / "layers.json"), "layers", "layers.json"
+            )
+            global_row = next(
+                (row for row in global_layers if str(row.get("id") or "") == layer_id),
+                None,
+            )
+            if global_row is None:
+                raise ValueError(
+                    f"layer {layer_id!r} has no sparse global authority for candidate repair"
+                )
+            _validate_local_staged_units(
+                payload,
+                allowed_provides=allowed_unit_provides(global_row),
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w",

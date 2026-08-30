@@ -702,11 +702,17 @@ def build_plan_tools(
     materialization_revision_token: str | None = None
     materialization_axis_ids: tuple[str, ...] | None = None
     materialization_layer_id: str | None = None
+    materialization_allowed_provides: frozenset[str] | None = None
     if candidate_materialization is not None:
         candidate_path = Path(candidate_materialization)
         if candidate_path.is_file():
+            from vfx_harness.domain.work_units import allowed_unit_provides
             from vfx_harness.orchestration.jit_materialization import (
                 materialization_candidate_revision,
+            )
+            from vfx_harness.orchestration.plan_authority import (
+                PlanPublicationError,
+                resolve_current,
             )
 
             materialization_revision_token = materialization_candidate_revision(candidate_path)
@@ -720,10 +726,32 @@ def build_plan_tools(
                     for value in ((candidate_payload.get("layer") or {}).get("owns") or [])
                     if str(value)
                 )
-            except (OSError, ValueError, AttributeError, json.JSONDecodeError):
+                bundle = resolve_current(shot_folder)
+                if candidate_payload.get("bundle_hash") != bundle.content_hash:
+                    raise ValueError("materialization candidate is pinned to another bundle")
+                global_document = json.loads(
+                    (bundle.root / "layers.json").read_text(encoding="utf-8")
+                )
+                global_row = next(
+                    row
+                    for row in global_document.get("layers") or []
+                    if isinstance(row, dict)
+                    and str(row.get("id") or "") == materialization_layer_id
+                )
+                materialization_allowed_provides = allowed_unit_provides(global_row)
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+                AttributeError,
+                StopIteration,
+                PlanPublicationError,
+                json.JSONDecodeError,
+            ):
                 # The staging transaction reports malformed candidate authority. Keep
                 # an empty enum here so the tool cannot accept guessed claim axes first.
                 materialization_axis_ids = ()
+                materialization_allowed_provides = frozenset()
 
     @tool(
         "publish_unit_plan",
@@ -1604,6 +1632,7 @@ def build_plan_tools(
                     image_property_kinds=payable_image_property_kinds(METRICS),
                     axis_ids=materialization_axis_ids,
                     layer_id=materialization_layer_id,
+                    allowed_provides=materialization_allowed_provides,
                 ),
                 "scene_contracts": {"type": "array", "items": {"type": "object"}},
                 "requirement_bindings": {
@@ -1644,6 +1673,7 @@ def build_plan_tools(
                         scene_contracts=args.get("scene_contracts") or [],
                         requirement_bindings=args.get("requirement_bindings") or [],
                         layer_updates=args.get("layer_updates"),
+                        allowed_provides=materialization_allowed_provides,
                         expected_revision=materialization_revision_token,
                     )
                 )
