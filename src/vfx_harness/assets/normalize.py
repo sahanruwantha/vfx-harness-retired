@@ -22,9 +22,13 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+from PIL import Image
+
+from vfx_harness.application.facade import compare_profiles, facade_profile
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.observability.log import log
 
+from ..blender.session import BlenderSession
 from .adapter import get_backend
 from .images import get_image_backend
 
@@ -211,7 +215,6 @@ def _silhouette_profile(path: Path, rows: int = 24) -> list[float]:
     """Fraction of SUBJECT pixels per horizontal band, subject = anything materially
     darker or lighter than the corner background. Works across a dark shaded design plate
     and a grey clay preview, because it measures SHAPE, not colour."""
-    from PIL import Image
     im = Image.open(path).convert("L")
     w, h = im.size
     px = im.load()
@@ -274,7 +277,6 @@ def _facade_render(model: Path, out: Path, height: float, blender: str) -> str:
     Front-on and evenly lit, to match how an isolation plate is framed: a facade profile
     is only comparable between matched ANGLE and matched LIGHTING.
     """
-    from ..blender.session import BlenderSession
     s = BlenderSession(blender=blender, blend_file=None).start()
     try:
         s.run("import bpy\nbpy.ops.wm.read_factory_settings(use_empty=True)\n")
@@ -321,7 +323,6 @@ def facade_vs_plate(plate: Path, facade_png: Path) -> dict:
     Same rule as #37, one level up: A GATE MUST MEASURE THE PROPERTY THE ARTIFACT IS FOR.
     An asset is for its look, not its outline.
     """
-    from vfx_harness.application.facade import compare_profiles, facade_profile
     ref = facade_profile(plate)
     got = facade_profile(facade_png)
     if ref.get("warning") or got.get("warning"):
@@ -371,7 +372,6 @@ def _preview_render(model: Path, out: Path, height: float, blender: str) -> str:
 
     SHAPE ONLY — Workbench solid shading ignores materials entirely. Use _facade_render
     for the asset's look, and see the note there on what a clay-only preview cost."""
-    from ..blender.session import BlenderSession
     s = BlenderSession(blender=blender, blend_file=None).start()
     try:
         s.run("import bpy\nbpy.ops.wm.read_factory_settings(use_empty=True)\n")

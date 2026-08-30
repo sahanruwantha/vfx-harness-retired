@@ -10,7 +10,7 @@ from pathlib import Path
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.domain.unit_outcomes import load_hypothesis_falsification
 from vfx_harness.orchestration.ledger import load_layers, load_layers_from_path
-from vfx_harness.orchestration.plan_authority import resolve_current, resolve_published_bundle
+from vfx_harness.orchestration.plan_authority import active_plan_hash, resolve_current, resolve_published_bundle
 from vfx_harness.orchestration.unit_state import (
     apply_replan,
     invalidate_checkpoint,
@@ -149,7 +149,6 @@ def _replan(args: argparse.Namespace) -> int:
     # The target identity must be what build initialization will demand: the RESOLVED
     # view's layers.json, not the bundle's sparse document (they differ by design once
     # a layer materializes).
-    from vfx_harness.orchestration.plan_authority import active_plan_hash
 
     new_plan_hash = active_plan_hash(shot.folder, fallback_root=current.root)
     evidence = list(getattr(args, "evidence", None) or [])

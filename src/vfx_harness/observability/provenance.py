@@ -20,6 +20,8 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vfx_harness.domain.work_units import WorkUnit, read_document
+
 STAMP = "plan.provenance.json"
 
 # Everything the plan is a function of. A change to any of these invalidates it.
@@ -35,7 +37,6 @@ CORE_ARTIFACTS = (
 
 def _artifact_names(folder: Path) -> tuple[str, ...]:
     """Return the strict plan surface; legacy plan.md is intentionally ignored."""
-    from vfx_harness.domain.work_units import WorkUnit, read_document
 
     names = list(CORE_ARTIFACTS)
     try:

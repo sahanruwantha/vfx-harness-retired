@@ -1,0 +1,328 @@
+"""Authoritative Blender-state and cross-layer interface contracts.
+
+``scene_checks.json`` is a strict schema-2 document. Contracts address objects,
+materials, shader controls and compositor nodes by semantic custom properties, never by
+datablock names. Object selectors distinguish ``bvfx_role`` from ``bvfx_control`` so a
+planner cannot put control ids in a role field and publish an unresolvable contract. Their
+lifecycle decides which prior-layer guarantees remain active for the layer currently being
+built.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from vfx_harness.domain.contracts import active_for, load_document
+from vfx_harness.domain.evidence_kinds import PROJECTED_ORIGIN_KINDS as PROJECTED_ORIGIN_KINDS
+from vfx_harness.domain.work_units import plan_selector_declared
+from vfx_harness.evidence.scene_checks.kinds import BBOX_KINDS
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+
+def load_rows(shot_folder: str | Path) -> list[dict]:
+    return load_document(selected_artifact_path(shot_folder, "scene_checks.json"), "contracts")
+
+
+def deferred_subject_composition_ids(
+    rows: Sequence[Mapping[str, object]],
+    layer_id: str | int,
+    frame: int | None = None,
+) -> tuple[str, ...]:
+    """Camera-owned bbox rows that become testable on a later geometry layer (HIR-0127)."""
+
+    try:
+        current = int(layer_id)
+    except (TypeError, ValueError):
+        return ()
+    ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("kind") or "") not in BBOX_KINDS:
+            continue
+        cid = str(row.get("id") or "")
+        if not cid:
+            continue
+        try:
+            owner = int(row.get("owner_layer"))
+        except (TypeError, ValueError):
+            continue
+        if owner >= current:
+            continue
+        if not active_for(dict(row), layer_id, frame):
+            continue
+        ids.append(cid)
+    return tuple(sorted(ids))
+
+
+def deferred_subject_composition_activation_ids(
+    rows: Sequence[Mapping[str, object]],
+    layer_id: str | int,
+    frame: int | None = None,
+) -> tuple[str, ...]:
+    """Deferred bbox rows whose subject first becomes due on this layer (HIR-0134)."""
+    try:
+        current = int(layer_id)
+    except (TypeError, ValueError):
+        return ()
+    active = set(deferred_subject_composition_ids(rows, layer_id, frame))
+    return tuple(
+        sorted(
+            str(row.get("id"))
+            for row in rows
+            if isinstance(row, Mapping)
+            and str(row.get("id") or "") in active
+            and int(row.get("activates_at")) == current
+        )
+    )
+
+
+def _selector_overlap(left: str, right: str) -> bool:
+
+    return plan_selector_declared(left, (right,)) or plan_selector_declared(
+        right, (left,)
+    )
+
+
+def deferred_subject_composition_ids_for_unit(
+    rows: Sequence[Mapping[str, object]],
+    units,
+    unit,
+    layer_id: str | int,
+    frame: int | None = None,
+) -> tuple[str, ...]:
+    """Deferred bbox debt payable by this geometry unit (HIR-0134).
+
+    On the activation layer, a parent selector such as ``building`` may be produced by
+    several truthful write clusters. The first unit whose dependency closure contains
+    every overlapping producer pays the camera-owned row. On later layers the subject
+    already exists, so every overlapping geometry mutation protects the persistent row.
+    """
+    if unit is None or "geometry" not in tuple(getattr(unit, "provides", ()) or ()):
+        return ()
+    try:
+        current = int(layer_id)
+    except (TypeError, ValueError):
+        return ()
+    unit_rows = tuple(units or ())
+    by_id = {str(getattr(item, "id", "")): item for item in unit_rows}
+    closure = {str(getattr(unit, "id", ""))}
+    frontier = list(getattr(unit, "depends_on", ()) or ())
+    while frontier:
+        current_id = str(frontier.pop())
+        if current_id in closure:
+            continue
+        closure.add(current_id)
+        dependency = by_id.get(current_id)
+        if dependency is not None:
+            frontier.extend(getattr(dependency, "depends_on", ()) or ())
+
+    by_contract = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    payable: list[str] = []
+    for contract_id in deferred_subject_composition_ids(rows, layer_id, frame):
+        row = by_contract[contract_id]
+        roles = tuple(str(role) for role in (row.get("roles") or ()) if str(role))
+        if not roles:
+            continue
+        producers = {
+            str(getattr(candidate, "id", ""))
+            for candidate in unit_rows
+            if "geometry" in tuple(getattr(candidate, "provides", ()) or ())
+            and any(
+                _selector_overlap(role, mutation)
+                for role in roles
+                for mutation in (
+                    *(getattr(getattr(candidate, "mutates", None), "roles", ()) or ()),
+                    *(getattr(getattr(candidate, "mutates", None), "dresses", ()) or ()),
+                )
+            )
+        }
+        unit_id = str(getattr(unit, "id", ""))
+        overlaps = unit_id in producers
+        try:
+            activates_at = int(row.get("activates_at"))
+        except (TypeError, ValueError):
+            continue
+        if activates_at == current:
+            if overlaps and producers and producers.issubset(closure):
+                payable.append(contract_id)
+        elif activates_at < current and overlaps:
+            payable.append(contract_id)
+    return tuple(sorted(payable))
+
+
+def deferred_subject_composition_forecast_ids_for_unit(
+    rows: Sequence[Mapping[str, object]],
+    units,
+    unit,
+    layer_id: str | int,
+    frame: int | None = None,
+) -> tuple[str, ...]:
+    """Activation-layer bbox rows an overlapping producer may inspect early.
+
+    HIR-0134 deliberately makes only the first dependency-complete producer pay a
+    deferred subject bbox.  Earlier producers still need the exact camera-owned rows
+    while their geometry is mutable, otherwise the payer discovers a bad aggregate
+    after those producers have frozen.  Forecasts are diagnostic only; callers must
+    not add these ids to required evidence or checkpoint protection.
+    """
+    if unit is None or "geometry" not in tuple(getattr(unit, "provides", ()) or ()):
+        return ()
+    unit_rows = tuple(units or ())
+    unit_id = str(getattr(unit, "id", ""))
+    payable = set(
+        deferred_subject_composition_ids_for_unit(
+            rows, unit_rows, unit, layer_id, frame
+        )
+    )
+    by_contract = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    forecasts: list[str] = []
+    for contract_id in deferred_subject_composition_activation_ids(
+        rows, layer_id, frame
+    ):
+        if contract_id in payable:
+            continue
+        roles = tuple(
+            str(role)
+            for role in (by_contract[contract_id].get("roles") or ())
+            if str(role)
+        )
+        if any(
+            _selector_overlap(role, mutation)
+            for role in roles
+            for candidate in unit_rows
+            if str(getattr(candidate, "id", "")) == unit_id
+            for mutation in (
+                *(getattr(getattr(candidate, "mutates", None), "roles", ()) or ()),
+                *(getattr(getattr(candidate, "mutates", None), "dresses", ()) or ()),
+            )
+        ):
+            forecasts.append(contract_id)
+    return tuple(sorted(forecasts))
+
+
+def irreversible_deferred_subject_forecast_failures(
+    contract_rows: Sequence[Mapping[str, object]],
+    evidence_rows: Sequence[Mapping[str, object]],
+) -> tuple[dict, ...]:
+    """Forecast misses that adding successor geometry cannot repair.
+
+    Projected union width, height, and bottom are monotone nondecreasing as more
+    subject geometry arrives; union top is monotone nonincreasing.  Only violations
+    on the already-impossible side become blockers.  Other misses remain diagnostic
+    because a successor can still extend the union into the target.
+    """
+    by_id = {
+        str(row.get("id")): row
+        for row in contract_rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    out: list[dict] = []
+    for evidence in evidence_rows:
+        if not isinstance(evidence, Mapping) or evidence.get("pass"):
+            continue
+        cid = str(evidence.get("id") or "")
+        source = by_id.get(cid)
+        value = evidence.get("value")
+        if source is None or not isinstance(value, (int, float)):
+            continue
+        kind = str(source.get("kind") or "")
+        op = str(source.get("op") or "band")
+        increasing = kind in {"bbox_width", "bbox_height", "bbox_bottom_y"}
+        decreasing = kind == "bbox_top_y"
+        if not increasing and not decreasing:
+            continue
+        lower: float | None = None
+        upper: float | None = None
+        if op == "band":
+            lower = float(source["lo"])
+            upper = float(source["hi"])
+        elif op == "min":
+            lower = float(source["lo"])
+        elif op == "max":
+            upper = float(source["hi"])
+        elif op == "eq":
+            target = float(source["value"])
+            tolerance = float(source.get("tol") or 0)
+            lower, upper = target - tolerance, target + tolerance
+        irreversible = (
+            increasing and upper is not None and float(value) > upper
+        ) or (
+            decreasing and lower is not None and float(value) < lower
+        )
+        if not irreversible:
+            continue
+        direction = "increase" if increasing else "decrease"
+        out.append({
+            **dict(evidence),
+            "pass": False,
+            "source": "deferred_subject_forecast_blocker",
+            "diagnostic_only": False,
+            "acceptance_evidence": True,
+            "note": (
+                f"irreversible partial-subject union violation: {kind} can only "
+                f"{direction} as successor geometry is added; repair this producer "
+                "before freeze or call cannot_express_in_scope"
+            ),
+        })
+    return tuple(out)
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredSubjectCompositionPaymentGap:
+    contract_id: str
+    roles: tuple[str, ...]
+    producer_ids: tuple[str, ...]
+
+
+def deferred_subject_composition_payment_gaps(
+    rows: Sequence[Mapping[str, object]], units, layer_id: str | int
+) -> tuple[DeferredSubjectCompositionPaymentGap, ...]:
+    """Activation-layer bbox rows with no dependency-complete geometry payer."""
+    unit_rows = tuple(units or ())
+    by_contract = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    gaps: list[DeferredSubjectCompositionPaymentGap] = []
+    for contract_id in deferred_subject_composition_activation_ids(rows, layer_id):
+        if any(
+            contract_id
+            in deferred_subject_composition_ids_for_unit(
+                rows, unit_rows, unit, layer_id
+            )
+            for unit in unit_rows
+        ):
+            continue
+        row = by_contract[contract_id]
+        roles = tuple(str(role) for role in (row.get("roles") or ()) if str(role))
+        producers = tuple(
+            sorted(
+                str(getattr(unit, "id", ""))
+                for unit in unit_rows
+                if "geometry" in tuple(getattr(unit, "provides", ()) or ())
+                and any(
+                    _selector_overlap(role, mutation)
+                    for role in roles
+                    for mutation in (
+                        *(getattr(getattr(unit, "mutates", None), "roles", ()) or ()),
+                        *(getattr(getattr(unit, "mutates", None), "dresses", ()) or ()),
+                    )
+                )
+            )
+        )
+        gaps.append(
+            DeferredSubjectCompositionPaymentGap(contract_id, roles, producers)
+        )
+    return tuple(gaps)

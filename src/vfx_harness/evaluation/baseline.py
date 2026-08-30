@@ -24,6 +24,7 @@ baseline is where that identity finally gets used for something.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import subprocess
@@ -291,7 +292,6 @@ def summarise(rec: dict) -> str:
 
 
 def main(argv: list[str]) -> int:
-    import argparse
     ap = argparse.ArgumentParser(prog="vfx_harness.evaluation.cli freeze")
     ap.add_argument("folder", help="shot folder (contains brief.md + shot.json)")
     ap.add_argument("--label", default="", help="short tag, e.g. before-context-editing")

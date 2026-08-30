@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from vfx_harness.domain.plan_records import DECISION_STRENGTHS
@@ -183,9 +185,6 @@ class HypothesisFalsification:
 
 
 def load_hypothesis_falsification(path: str | Any) -> HypothesisFalsification:
-    import json
-    from pathlib import Path
-
     target = Path(path)
     try:
         value = json.loads(target.read_text(encoding="utf-8"))

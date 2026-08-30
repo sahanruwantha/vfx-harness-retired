@@ -11,6 +11,7 @@ what `docs/research/probes/spike_checks.py` drives.
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import sys
 
@@ -398,7 +399,6 @@ def check_passes(frame: int, scale: float = 0.25) -> dict:
     Residual (beauty − emit − diffuse_direct) is reported, not gated: a look that
     is mostly volume or glare will have a large residual on purpose.
     """
-    import math
 
     import bpy
 

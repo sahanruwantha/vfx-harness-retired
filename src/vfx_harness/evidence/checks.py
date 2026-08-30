@@ -45,13 +45,16 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from PIL import Image
 
+from vfx_harness.domain.contracts import active_for, load_document, validate_lifecycle
 from vfx_harness.evidence.metrics import _prep, look_vector
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 # Where in the pipeline a measurement is valid. Both independent reviewers of the current
 # plan flagged the same defect: absolute band means measured off GRADED reference JPEGs,
@@ -283,7 +286,6 @@ def noise_floor(check: Check, image: str | Path, scales=(0.5, 0.75, 1.0)) -> flo
     vals = []
     with Image.open(str(image)) as src:
         base = src.convert("RGB")
-        import tempfile
 
         for s in scales:
             d = Path(tempfile.mkdtemp()) / f"s{s}.png"
@@ -443,7 +445,6 @@ def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = N
 
 def load(path: Path) -> list[Check]:
     """Load strict planner image contracts; legacy list documents are rejected."""
-    from vfx_harness.domain.contracts import load_document, validate_lifecycle
 
     rows = load_document(path, "checks")
     errors = [
@@ -500,9 +501,6 @@ def load_image_contract_payment_rows(shot_folder: str | Path) -> list[dict]:
     root = Path(shot_folder)
     rows: list[dict] = []
     try:
-        from vfx_harness.domain.contracts import load_document
-        from vfx_harness.orchestration.plan_authority import selected_artifact_path
-
         planner_spec = selected_artifact_path(root, "checks.json")
         for row in load_document(planner_spec, "checks"):
             if isinstance(row, dict) and row.get("id"):
@@ -536,9 +534,6 @@ def layer_evidence(
         return []
     planner_rows, runtime_rows = [], []
     try:
-        from vfx_harness.domain.contracts import active_for, load_document
-        from vfx_harness.orchestration.plan_authority import selected_artifact_path
-
         planner_spec = selected_artifact_path(root, "checks.json")
         load(planner_spec)  # validates lifecycle and required focus metadata
         planner_rows = [
@@ -628,9 +623,6 @@ def acceptance_evidence(
         image = root / image
     if not image.is_file():
         return []
-    from vfx_harness.domain.contracts import load_document
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
-
     rows = load_document(selected_artifact_path(root, "checks.json"), "checks")
     out = []
     for row in rows:

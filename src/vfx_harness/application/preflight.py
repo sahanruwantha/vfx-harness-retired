@@ -29,10 +29,13 @@ restores the API key explicitly.
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import shutil
 
 from vfx_harness.infrastructure.config import credential_preference, load_environment
+from vfx_harness.observability.log import log
 
 # What the Agent SDK / Claude Code CLI actually reads, in the precedence measured above.
 _READ = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -142,7 +145,6 @@ def warn_if_broken() -> bool:
     false positive here must never be able to block a run, and the decoy list is a
     heuristic. It only has to be LOUD.
     """
-    from vfx_harness.observability.log import log
     d = check()
     if d["ok"]:
         return True
@@ -207,7 +209,6 @@ def model_phase_failure(
 
 
 def main(argv: list[str] | None = None) -> int:
-    import argparse
     load_environment()
     ap = argparse.ArgumentParser(prog="vfx_harness.application.preflight")
     ap.add_argument("--strict", action="store_true", help="exit 1 if anything is wrong")
@@ -215,7 +216,6 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     d = check()
     if a.json:
-        import json
         print(json.dumps(d, indent=2))
     else:
         print(report(d))

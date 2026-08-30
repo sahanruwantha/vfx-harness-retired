@@ -20,6 +20,8 @@ from vfx_harness.domain.atomicity import residual_instrument_family, write_clust
 from vfx_harness.domain.image_debts import image_contract_debt_cards
 from vfx_harness.domain.publish_interfaces import compile_unit_publish_interfaces
 from vfx_harness.domain.work_units import WorkUnit, bound_claim_contract_ids
+from vfx_harness.evidence.scene_checks import deferred_subject_composition_forecast_ids_for_unit, load_rows
+from vfx_harness.orchestration.unit_state import unit_digest as digest_of
 
 SCHEMA = "vfx-harness.unit-scope/v1"
 INTERFACE_SCHEMA = "vfx-harness.unit-interface/v1"
@@ -309,7 +311,6 @@ def compile_scope_with_predecessors(
     helpers: Sequence[Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Active-unit card plus digest-matched predecessor publish interfaces."""
-    from vfx_harness.orchestration.unit_state import unit_digest as digest_of
 
     producer_digest = digest_of(unit)
     card = compile_unit_scope(
@@ -318,9 +319,6 @@ def compile_scope_with_predecessors(
         contracts=contracts,
         helpers=helpers,
         unit_digest=producer_digest,
-    )
-    from vfx_harness.evidence.scene_checks import (
-        deferred_subject_composition_forecast_ids_for_unit,
     )
 
     contract_by_id = {
@@ -388,7 +386,6 @@ def compile_unit_scope_for_shot(
     units: Sequence[WorkUnit] = (),
     durable_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from vfx_harness.evidence.scene_checks import load_rows
 
     return compile_scope_with_predecessors(
         unit=unit,

@@ -9,16 +9,19 @@ Writes under `artifacts/evaluations/blank/`, never into the shot folder.
 
 from __future__ import annotations
 
+import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import anyio
 from PIL import Image
 
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability.log import log
 from vfx_harness.orchestration.ledger import Milestone, load_axes, load_layers
 
+from ..agents.builder import _critique
 from . import STORE
 from .variance import _NoSession, layer_scope
 
@@ -42,7 +45,6 @@ def language_prior(axis: dict) -> bool:
 
 async def measure(shot: Shot, *, layer_id: str | None = None,
                   ref_rel: str | None = None, verbose: bool = True) -> dict:
-    from ..agents.builder import _critique
 
     axes = load_axes(shot)
     scope = None
@@ -139,9 +141,7 @@ def save(rec: dict) -> Path:
 
 
 def main(argv: list[str]) -> int:
-    import argparse
 
-    import anyio
 
     ap = argparse.ArgumentParser(prog="vfx_harness.evaluation.cli blank")
     ap.add_argument("folder", help="shot folder")

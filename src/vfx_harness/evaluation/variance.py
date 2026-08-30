@@ -28,16 +28,29 @@ TWO HONEST LIMITS, both reported in the output rather than buried here:
 
 from __future__ import annotations
 
+import argparse
 import json
 import statistics
 from datetime import UTC, datetime
 from pathlib import Path
 
+import anyio
+
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability.log import log
 from vfx_harness.orchestration.ledger import Milestone, load_axes, load_layers
 
+from ..agents.builder import (
+    PASS_MEAN,
+    PASS_MIN,
+    _adjudicate_band,
+    _borderline,
+    _critique,
+    _plan_layer_excerpt,
+    critic_model,
+)
 from . import VARIANCE
+from .icc import icc_2_1
 
 # Below this many repeats, dispersion statistics are decoration. Three repeats can
 # report a spread but cannot distinguish "the judge is stable" from "we got lucky
@@ -68,7 +81,6 @@ def layer_scope(shot: Shot, layer) -> str:
     exact bug `owns` was introduced to fix. If `build_layer`'s block changes, this drifts;
     tests/integration/test_harness.py carries a tripwire on the distinctive markers.
     """
-    from ..agents.builder import _plan_layer_excerpt
 
     excerpt = _plan_layer_excerpt(shot, layer)
     done = "\n".join(ln for ln in excerpt.splitlines()
@@ -103,14 +115,12 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
                   frame: int = 0, reads: str = "", verbose: bool = True,
                   concurrency: int = 3) -> dict:
     """Score one existing render/reference pair `n` times through the real critic."""
-    import anyio
 
     # _ADJUDICATE_BAND (a flat 0.4) became _adjudicate_band(n_axes) when the band was
     # made granularity-aware, and this import was never updated — so the module that
     # exists to re-measure the band could not be imported at all. Report the band at the
     # axis count THIS sample was actually scored on; a single number would be the same
     # mistake the flat constant was.
-    from ..agents.builder import PASS_MEAN, PASS_MIN, _adjudicate_band, _borderline, _critique
 
     axes = load_axes(shot)
     scope = None
@@ -248,7 +258,6 @@ def _icc_from_axes(per_axis: dict) -> dict:
     model and prompt template are held FIXED within one run, so this reports repetition
     variance only — crossing model x template is a separate sweep.
     """
-    from .icc import icc_2_1
     rows = []
     keys = []
     for key, d in per_axis.items():
@@ -268,7 +277,6 @@ def _icc_from_axes(per_axis: dict) -> dict:
 
 
 def _critic_model() -> str:
-    from ..agents.builder import critic_model
 
     return critic_model()
 
@@ -438,9 +446,7 @@ def _default_pair(shot: Shot) -> tuple[str, str, str | None]:
 
 
 def main(argv: list[str]) -> int:
-    import argparse
 
-    import anyio
 
     ap = argparse.ArgumentParser(prog="vfx_harness.evaluation.cli variance")
     ap.add_argument("folder", help="shot folder")

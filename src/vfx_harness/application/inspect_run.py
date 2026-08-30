@@ -33,6 +33,7 @@ from pathlib import Path
 
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.observability import run_artifacts, transcript
+from vfx_harness.orchestration.unit_state import load as load_unit_state
 
 # The Phase 1/2 additions and what each is FOR, so a report about an unused tool says
 # what capability is going unused rather than just naming a symbol.
@@ -171,7 +172,6 @@ def collect(shot_folder: str | Path, *, history: bool = False,
     recs = layers(folder, run_id=run_id)
     shot = _load_json(folder / "shot.json")
     acc = (shot.get("acceptance") or {})
-    from vfx_harness.orchestration.unit_state import load as load_unit_state
 
     work_units = []
     for layer_id in sorted({str(rec.get("layer")) for rec in recs if rec.get("layer") is not None}):

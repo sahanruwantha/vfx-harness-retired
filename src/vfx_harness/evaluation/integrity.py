@@ -18,7 +18,9 @@ import json
 from pathlib import Path
 
 from vfx_harness.domain.brief import Shot
+from vfx_harness.observability.provenance import check as provenance_check
 from vfx_harness.orchestration.ledger import load_layers
+from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
 
 from .determinism import Result
 
@@ -122,13 +124,11 @@ def _problems(shot: Shot) -> tuple[list[str], list[str], dict]:
 
     # 5. plan artifacts still match the brief they were derived from -------------
     try:
-        from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
 
         if (shot.folder / POINTER).exists():
             resolve_current(shot.folder)
             prov = []
         else:
-            from vfx_harness.observability.provenance import check as provenance_check
 
             prov = provenance_check(shot.folder)
     except Exception as e:

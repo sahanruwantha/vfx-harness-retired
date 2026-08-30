@@ -35,20 +35,32 @@ Exit codes:  0 ok · 1 usage/IO error · 3 a deterministic check FAILED
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import sys
+import tempfile
+from collections import Counter
 from pathlib import Path
 
+from vfx_harness.blender.session import BlenderError, BlenderSession
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.evaluation import BASELINES, VARIANCE
 from vfx_harness.evaluation import baseline as _baseline
 from vfx_harness.evaluation import blank as _blank
 from vfx_harness.evaluation import compare as _compare
+from vfx_harness.evaluation import grounding as _grounding
+from vfx_harness.evaluation import plan_gate as _pg
 from vfx_harness.evaluation import variance as _variance
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.plan_authority import (
+    POINTER,
+    PlanPublicationError,
+    prepare_consumer_view,
+    resolve_current,
+)
 
-from .determinism import metric_scale_consistency, replay_equivalence
+from .determinism import Result, metric_scale_consistency, replay_equivalence
 from .integrity import artifact_integrity
 
 
@@ -64,7 +76,6 @@ def _cmd_checks(argv: list[str]) -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
-    from vfx_harness.blender.session import BlenderError, BlenderSession
     session = BlenderSession(blender=args.blender).start()
     try:
         res = session.check("self_test")
@@ -134,7 +145,6 @@ def _cmd_check(argv: list[str]) -> int:
     results.append(metric_scale_consistency(images, delivery=shot.resolution))
 
     if args.skip_replay:
-        from .determinism import Result
         results.append(Result("replay equivalence", ok=None,
                               detail="--skip-replay was passed"))
     else:
@@ -222,8 +232,6 @@ def _cmd_panels(argv: list[str]) -> int:
     earning its keep" is answered from data rather than taste, and stays re-answerable
     as runs accumulate.
     """
-    import glob
-    from collections import Counter
     pat = argv[0] if argv else "shots/*"
     rows = []
     for f in sorted(glob.glob(f"{pat}/shot.json")):
@@ -273,9 +281,7 @@ def _cmd_grounding(argv: list[str]) -> int:
     on barrel_roll (a target that is unreachable at any resolution) is exactly the kind of
     defect that is invisible in one shot and obvious across several.
     """
-    import glob
 
-    from vfx_harness.evaluation import grounding as _grounding
 
     ap = argparse.ArgumentParser(prog="vfx_harness.evaluation.cli grounding")
     ap.add_argument("folder", nargs="?", help="shot folder (default: every shot)")
@@ -304,9 +310,7 @@ def _cmd_plan(argv: list[str]) -> int:
     than against its own claims: fingerprints re-derive from their plates, citations
     resolve, `✓spiked` tickets cite a lab file, and layers/axes/moments agree.
     """
-    import glob
 
-    from vfx_harness.evaluation import plan_gate as _pg
 
     ap = argparse.ArgumentParser(prog="vfx_harness.evaluation.cli plan")
     ap.add_argument("folder", nargs="?", help="shot folder (default: every shot)")
@@ -323,17 +327,10 @@ def _cmd_plan(argv: list[str]) -> int:
     evaluation_roots = []
     authority_failures = {}
     for folder in folders:
-        from vfx_harness.orchestration.plan_authority import (
-            POINTER,
-            PlanPublicationError,
-            prepare_consumer_view,
-            resolve_current,
-        )
 
         if (folder / POINTER).exists():
             try:
                 resolve_current(folder)
-                import tempfile
 
                 temporary = tempfile.TemporaryDirectory(prefix="vfx-plan-eval-")
                 scratch_root = Path(temporary.name) / "scratch"

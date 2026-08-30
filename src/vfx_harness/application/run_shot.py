@@ -30,6 +30,7 @@ import sys
 import time
 from pathlib import Path
 
+from vfx_harness.application.inspect_run import collect
 from vfx_harness.application.preflight import warn_if_broken
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.infrastructure.config import Settings
@@ -60,7 +61,6 @@ def _can_advance(status: str, *, dry_run: bool) -> bool:
 
 def _publish_summary(layout: run_artifacts.RunLayout) -> None:
     try:
-        from vfx_harness.application.inspect_run import collect
         layout.write_summary(collect(layout.shot, run_id=layout.run_id))
     except Exception as exc:
         log(f"! run summary could not be published: {str(exc)[:160]}", 1)

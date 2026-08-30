@@ -14,15 +14,15 @@ from types import ModuleType
 
 from vfx_harness.infrastructure.config import Settings
 
+from . import codex_images, higgsfield
+
 DEFAULT_BACKEND = "codex"
 
 
 def get_image_backend(name: str | None = None) -> ModuleType:
     name = (name or Settings.from_environment().asset_image_backend or DEFAULT_BACKEND).lower()
     if name == "codex":
-        from . import codex_images
         return codex_images
     if name == "higgsfield":
-        from . import higgsfield
         return higgsfield
     raise ValueError(f"unknown image backend {name!r}; known: codex, higgsfield")

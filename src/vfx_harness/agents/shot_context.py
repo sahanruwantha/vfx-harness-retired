@@ -20,8 +20,11 @@ from pathlib import Path
 
 from vfx_harness.agents.unit_scope import compile_scope_with_predecessors, format_unit_scope_card, helper_inventory
 from vfx_harness.domain.brief import Shot
+from vfx_harness.evidence.scene_checks import load_rows
 from vfx_harness.orchestration.escalate import answers_block, open_block
-from vfx_harness.orchestration.layer_plans import work_unit_plan_path
+from vfx_harness.orchestration.layer_plans import amendment_block, prior_outcomes_block, work_unit_plan_path
+from vfx_harness.orchestration.layer_state import as_prompt_block
+from vfx_harness.orchestration.unit_state import load as load_unit_state
 
 _HEADER = "<!-- generated per layer run by vfx_harness.agents.shot_context — safe to overwrite -->"
 
@@ -53,14 +56,12 @@ def write_layer_context(
     # rewriting it every round would invalidate the cache and cost more than it saves.
     prior_state = ""
     try:
-        from vfx_harness.orchestration.layer_state import as_prompt_block
         prior_state = as_prompt_block(shot.folder)
     except Exception as e:                       # never block a build on context assembly
         print(f"! prior layer state unavailable: {e}", flush=True)
     if prior_state:
         supervisor = prior_state + "\n" + supervisor
     try:
-        from vfx_harness.orchestration.layer_plans import amendment_block, prior_outcomes_block
         hierarchical = "\n\n".join(
             block for block in (
                 amendment_block(shot.folder, str(layer.id)),
@@ -93,20 +94,15 @@ def write_layer_context(
         for claim in unit.evaluation.claims
     )
     try:
-        from vfx_harness.evidence.scene_checks import load_rows
-        from vfx_harness.orchestration.unit_state import load as load_unit_state
-
         contracts = load_rows(shot.folder)
     except (OSError, ValueError):
         contracts = []
-        load_unit_state = None  # type: ignore[assignment]
     try:
         durable_state: dict = {}
-        if load_unit_state is not None:
-            try:
-                durable_state = load_unit_state(shot.folder, str(layer.id))
-            except (OSError, ValueError):
-                durable_state = {}
+        try:
+            durable_state = load_unit_state(shot.folder, str(layer.id))
+        except (OSError, ValueError):
+            durable_state = {}
         scope_card = format_unit_scope_card(
             compile_scope_with_predecessors(
                 unit=unit,

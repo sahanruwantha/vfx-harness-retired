@@ -9,13 +9,16 @@ They grow by harvesting passing builds (see build_agent.distill_recipe), not by 
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 from collections.abc import Sequence
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 from claude_agent_sdk import create_sdk_mcp_server, tool
+
+from vfx_harness.observability import run_artifacts
 
 RECIPES_DIR = Path(__file__).with_name("recipes")
 _FM = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
@@ -195,10 +198,6 @@ def log_recipe_use(shot_folder, names: list[str]) -> None:
     N builds is dead weight behind an index line."""
     if not names:
         return
-    import json
-    from datetime import datetime
-
-    from vfx_harness.observability import run_artifacts
     p = run_artifacts.logs_dir(shot_folder) / "recipe_use.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as fh:

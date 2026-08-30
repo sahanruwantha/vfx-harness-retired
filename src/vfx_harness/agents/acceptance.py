@@ -14,19 +14,21 @@ from __future__ import annotations
 
 import argparse
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 
 import anyio
 
 from vfx_harness.domain.brief import Shot, load_shot
+from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
 from vfx_harness.orchestration.ledger import Ledger, load_layers, load_milestones
+from vfx_harness.orchestration.plan_due import require_due_clear, resolve_acceptance_completion
 
 from ..blender.session import BlenderSession
-from .builder import _judge, _stash_render, _verdict, ensure_axes
+from .builder import _RESET, PASS_MIN, _judge, _preamble, _stash_render, _verdict, ensure_axes
 
 
 class IncompleteChain(RuntimeError):
@@ -57,7 +59,6 @@ def _chain(session: BlenderSession, shot: Shot, *, force: bool = False) -> list[
     if missing or unpassed:
         log(f"! --force: judging an INCOMPLETE chain — {'; '.join(missing + unpassed)}")
 
-    from .builder import _RESET, _preamble
     session.run(_RESET)
     session.run(_preamble(shot))
     ran = []
@@ -135,7 +136,6 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
                         "metric_failures": blocking,
                         "scores": verdict.get("scores", {}),
                         "issues": verdict.get("issues", [])[:4]}
-        from vfx_harness.evidence.checks import acceptance_evidence
 
         contract_evidence = acceptance_evidence(
             shot.folder,
@@ -155,10 +155,6 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
                          seconds=verdict.get("round_s"))
 
     if not only:
-        from vfx_harness.orchestration.plan_due import (
-            require_due_clear,
-            resolve_acceptance_completion,
-        )
 
         resolve_acceptance_completion(
             shot.folder,
@@ -228,7 +224,6 @@ def reconcile(shot: Shot, results: dict, ledger: Ledger) -> list[str]:
 
 
 def _now_str() -> str:
-    from datetime import datetime
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
@@ -247,7 +242,6 @@ def repair_plan(shot: Shot, results: dict) -> list[dict]:
     not a stage. `owns` already maps every axis to the layer responsible for it, so the
     routing was available all along; nothing consumed it.
     """
-    from .builder import PASS_MIN
 
     layers = load_layers(shot)
     axis_owner: dict[str, str] = {}
@@ -328,7 +322,6 @@ def apply_repair(shot: Shot, plan: list[dict], ledger: Ledger) -> list[str]:
 async def _run(folder: str, only: str | None, blender: str, force: bool = False,
                repair: bool = False) -> None:
     shot = load_shot(folder)
-    from vfx_harness.orchestration.plan_due import require_due_clear
 
     require_due_clear(
         shot.folder,

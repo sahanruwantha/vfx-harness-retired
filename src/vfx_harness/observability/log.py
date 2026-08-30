@@ -25,6 +25,8 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
+from . import transcript
+
 # Optional block/message types — import defensively across SDK versions.
 try:
     from claude_agent_sdk import ThinkingBlock
@@ -212,7 +214,6 @@ def log_message(m) -> None:
 
     Also appends it to the durable transcript when one is bound (see `transcript.bind`).
     """
-    from . import transcript
     transcript.message(m)
 
     if SystemMessage is not None and isinstance(m, SystemMessage):
@@ -251,7 +252,9 @@ def log_message(m) -> None:
         return
 
     if isinstance(m, ResultMessage):
-        from . import costlog
+        # costlog reports failures through this logger, so the reverse edge stays lazy.
+        from . import costlog  # noqa: PLC0415
+
         costlog.record(m)          # one row per session, labelled by role — see costlog
         cost = getattr(m, "total_cost_usd", None)
         dur = getattr(m, "duration_ms", None)

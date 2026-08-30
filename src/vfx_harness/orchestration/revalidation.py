@@ -15,6 +15,7 @@ from pathlib import Path
 from vfx_harness.domain.work_units import read_document
 from vfx_harness.infrastructure.config import Settings
 from vfx_harness.orchestration.layer_plans import global_plan_path, work_unit_plan_path
+from vfx_harness.orchestration.plan_authority import POINTER, selected_artifact_path
 
 OUTCOME_SCHEMA = 2
 try:
@@ -31,8 +32,6 @@ def digest(path: str | Path) -> str | None:
 
 
 def _layers(folder: Path) -> list[dict]:
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
-
     try:
         rows = read_document(selected_artifact_path(folder, "layers.json"))
     except (OSError, ValueError):
@@ -89,6 +88,26 @@ def _runtime_checks_digest(folder: Path, current: int) -> str | None:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _harness_identity_paths(package: Path) -> tuple[Path, ...]:
+    """Hash files, expanding packages so a split cannot drop identity members."""
+    roots = (
+        package / "orchestration" / "revalidation.py",
+        package / "evidence" / "checks.py",
+        package / "evidence" / "scene_checks",
+        package / "agents" / "builder",
+        package / "blender" / "session.py",
+        package / "blender" / "worker.py",
+        package / "blender" / "render_ext.py",
+    )
+    paths: list[Path] = []
+    for root in roots:
+        if root.is_dir():
+            paths.extend(sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.parts))
+        else:
+            paths.append(root)
+    return tuple(paths)
+
+
 def input_manifest(
     folder: str | Path, layer, *, blender_version: str, comparison_mode: str = "eevee", comparison_scale: float = 0.5
 ) -> dict:
@@ -100,8 +119,6 @@ def input_manifest(
         global_plan_path(root),
         root / "plan_amendments.jsonl",
     ]
-    from vfx_harness.orchestration.plan_authority import POINTER, selected_artifact_path
-
     paths.extend(
         selected_artifact_path(root, name)
         for name in ("layers.json", "acceptance.json", "critic_axes.json", "checks.json", "scene_checks.json")
@@ -134,18 +151,7 @@ def input_manifest(
         files[rel] = digest(path)
     package = Path(__file__).resolve().parents[1]
     settings = Settings.from_environment(load_dotenv_file=False)
-    harness_files = {
-        str(path.relative_to(package)): digest(path)
-        for path in (
-            package / "orchestration" / "revalidation.py",
-            package / "evidence" / "checks.py",
-            package / "evidence" / "scene_checks.py",
-            package / "agents" / "builder.py",
-            package / "blender" / "session.py",
-            package / "blender" / "worker.py",
-            package / "blender" / "render_ext.py",
-        )
-    }
+    harness_files = {str(path.relative_to(package)): digest(path) for path in _harness_identity_paths(package)}
     return {
         "harness_version": HARNESS_VERSION,
         "harness_files": dict(sorted(harness_files.items())),

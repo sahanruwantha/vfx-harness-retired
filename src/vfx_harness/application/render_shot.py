@@ -20,6 +20,7 @@ from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration.ledger import Ledger, load_layers
 
 
 class IncompleteRender(RuntimeError):
@@ -35,7 +36,6 @@ def _chain_scripts(shot: Shot, upto: str | None = None, *,
     experiment or a half-written 09_*.py silently entered the mp4, and a real layer that
     was misnamed silently did not. The ledger is the record; the directory is a cache.
     """
-    from vfx_harness.orchestration.ledger import Ledger, load_layers
 
     build_dir = shot.folder / "build"
     if not build_dir.is_dir():

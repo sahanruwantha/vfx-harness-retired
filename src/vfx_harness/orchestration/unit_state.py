@@ -15,10 +15,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.unit_outcomes import HYPOTHESIS_FALSIFICATION_SCHEMA, HypothesisFalsification
 from vfx_harness.domain.work_units import (
     UNIT_STATES,
     WorkUnit,
     geometry_vis_protection_ids,
+    ready_units,
     validate_unit_dag,
 )
 from vfx_harness.observability.provenance import atomic_write
@@ -144,7 +146,6 @@ def ready_from_durable_state(
     ``eligible_passed`` may narrow passed rows whose replay artifacts are locally
     available to a caller; it can never broaden durable acceptance.
     """
-    from vfx_harness.domain.work_units import ready_units
 
     state = load(folder, layer_id)
     validate_current(state, layer_id, units)
@@ -539,10 +540,6 @@ def record_hypothesis_falsification(
     The authoritative copy lives in the work-unit state transaction.  A content-identical
     JSON artifact is also written for the public replan command and external review.
     """
-    from vfx_harness.domain.unit_outcomes import (
-        HYPOTHESIS_FALSIFICATION_SCHEMA,
-        HypothesisFalsification,
-    )
 
     validate_unit_dag(units, f"layer {layer_id} work units")
     value = load(folder, layer_id)

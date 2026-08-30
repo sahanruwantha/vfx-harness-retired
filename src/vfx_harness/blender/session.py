@@ -256,7 +256,8 @@ class BlenderSession:
 
         Client-side on purpose: Blender's bundled Python has no Pillow, and subtracting
         two files that are already on disk never needed a scene."""
-        from .tools import subtract_png
+        # tools imports BlenderSession; delay the reverse edge until the method runs.
+        from .tools import subtract_png  # noqa: PLC0415
 
         return subtract_png(a, b, dest or str(self.artifacts / "diff.png"))
 

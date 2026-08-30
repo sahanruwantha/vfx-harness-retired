@@ -17,8 +17,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.contracts import load_document
+from vfx_harness.domain.image_debts import metric_matches_property, normalize_evidence_id
 from vfx_harness.domain.work_units import EXTRA_FRAME_BINDING_RULE
+from vfx_harness.evidence.checks import load_image_contract_payment_rows
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 OBSERVATION_KINDS = {"measurable", "qualitative"}
 RECONCILIATION_STATES = {
@@ -278,10 +282,8 @@ class ClosureResult:
 def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> ClosureResult:
     """Prove that schema-4 required claims close over the plan's concrete contracts."""
 
-    from vfx_harness.domain.contracts import load_document
 
     root = Path(folder)
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
     scene_rows = load_document(selected_artifact_path(root, "scene_checks.json"), "contracts")
     image_rows = load_document(selected_artifact_path(root, "checks.json"), "checks")
@@ -289,11 +291,6 @@ def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> Closure
         "scene_contract": {str(row.get("id")): row for row in scene_rows if row.get("id")},
         "image_contract": {str(row.get("id")): row for row in image_rows if row.get("id")},
     }
-    from vfx_harness.domain.image_debts import (
-        metric_matches_property,
-        normalize_evidence_id,
-    )
-    from vfx_harness.evidence.checks import load_image_contract_payment_rows
 
     runtime_by_id = {
         normalize_evidence_id(row.get("id")): row

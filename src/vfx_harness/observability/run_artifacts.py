@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.observability.runid import RUN_ID
+
 ENV = "VFXH_RUN_DIR"
 SCHEMA = "vfx-harness.run/v1"
 LATEST_SCHEMA = "vfx-harness.latest-run/v1"
@@ -237,7 +239,6 @@ def ensure(shot_folder: str | Path, run_id: str | None = None, *,
     if current:
         return current
     if run_id is None:
-        from vfx_harness.observability.runid import RUN_ID
         run_id = RUN_ID
     return create(
         shot_folder,
@@ -340,7 +341,6 @@ def invocation(shot_folder: str | Path, command: str, *,
 
 
 def _direct_run_id() -> str:
-    from vfx_harness.observability.runid import RUN_ID
     return RUN_ID
 
 

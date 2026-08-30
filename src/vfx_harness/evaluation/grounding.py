@@ -49,6 +49,7 @@ from vfx_harness.evidence.metrics import (
     METRIC_SET,
     canonical_fingerprint,
 )
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 # token -> (pattern, absolute floor below which a relative gap is meaningless)
 # The patterns accept both the glyphs _metrics_line emits (μ, σ) and the ASCII the planner
@@ -168,7 +169,6 @@ def check_fingerprint(text: str, truth: dict) -> tuple[list[dict], list[str]]:
 
 
 def audit(folder: Path) -> dict:
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
     acc = selected_artifact_path(folder, "acceptance.json")
     if not acc.is_file():

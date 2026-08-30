@@ -107,7 +107,7 @@ def test_unmeasurable_metric_reads_as_inapplicable_not_failed() -> None:
 
     from vfx_harness.agents import builder
 
-    source = inspect.getsource(builder)
+    source = inspect.getsource(builder._scene_contract_issue)
     assert 'if row.get("value") is None:' in source
     assert "INAPPLICABLE to its subject" in source
     assert "binding defect, not a build defect" in source
@@ -124,7 +124,10 @@ def test_projection_failure_names_its_reason() -> None:
     from vfx_harness.agents import builder
     from vfx_harness.evidence import scene_checks
 
-    assert 'why = str(row.get("error") or row.get("note") or "").strip()' in inspect.getsource(builder)
+    assert (
+        'why = str(row.get("error") or row.get("note") or "").strip()'
+        in inspect.getsource(builder._scene_contract_issue)
+    )
 
     probe = inspect.getsource(scene_checks._blender_probe)
     assert "selector matched no objects" in probe

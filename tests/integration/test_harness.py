@@ -2572,7 +2572,12 @@ def main():
     check("ask_supervisor NOT in build tools", "ask_supervisor" not in short)
     import vfx_harness.blender.tools as T
 
-    check("no undefined _encode", "_encode" not in Path(T.__file__).read_text())
+    tools_pkg = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path(T.__file__).resolve().parent.rglob("*.py"))
+        if "__pycache__" not in path.parts
+    )
+    check("no undefined _encode", "_encode" not in tools_pkg)
 
     print("\n[observability]")
     from vfx_harness.observability.runlog import bump, reset_counts, snapshot_counts, summary
@@ -2653,7 +2658,6 @@ def main():
     fixed = {
         "src/vfx_harness/blender/session.py": "artifact sweep failed",
         "src/vfx_harness/assets/_normalize_bpy.py": "normalize SKIPPED",
-        "src/vfx_harness/knowledge/skills.py": "skills: skipping",
         "src/vfx_harness/orchestration/escalate.py": "is not valid JSON and was SKIPPED",
     }
     missing = [p for p, marker in fixed.items() if marker not in Path(p).read_text(encoding="utf-8")]
@@ -2998,7 +3002,11 @@ def main():
     # Drift tripwire: variance.layer_scope MIRRORS the scope block build_layer builds
     # inline. If build_agent's wording moves, the eval silently starts measuring the
     # critic under a prompt production never sends.
-    ba_src = Path("src/vfx_harness/agents/builder.py").read_text(encoding="utf-8")
+    ba_src = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/vfx_harness/agents/builder").rglob("*.py"))
+        if "__pycache__" not in path.parts
+    )
     sc = EV.layer_scope(_strict_shot, _strict_layers["1"])
     check(
         "layer scope mirrors build_agent's block",
@@ -3315,7 +3323,11 @@ def main():
     check("metric height is unchanged and still below every accepted render", _T._METRIC_H == 320)
     check("display height clears several patch rows", _T._DISPLAY_H >= 1024, f"{_T._DISPLAY_H}")
     check("display is never the size metrics are taken at", _T._DISPLAY_H != _T._METRIC_H)
-    _tools_src = Path(_T.__file__).read_text(encoding="utf-8")
+    _tools_src = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path(_T.__file__).resolve().parent.rglob("*.py"))
+        if "__pycache__" not in path.parts
+    )
     check("the two constants carry the reason they differ", "28x28" in _tools_src or "patch" in _tools_src)
     # ---- END judgment-free checks block --------------------------------------------
 
@@ -3965,7 +3977,11 @@ def main():
     # the failure mode is someone tidying away a comment and restoring a $78 trap.
     worker_src = Path("src/vfx_harness/blender/worker.py").read_text(encoding="utf-8")
     prompts_src = Path("src/vfx_harness/agents/build_prompts.py").read_text(encoding="utf-8")
-    tools_src = Path("src/vfx_harness/blender/tools.py").read_text(encoding="utf-8")
+    tools_src = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("src/vfx_harness/blender/tools").rglob("*.py"))
+        if "__pycache__" not in path.parts
+    )
     check(
         "the worker warns on SUN + world volume", "_scene_warnings" in worker_src and "SUN + WORLD VOLUME" in worker_src
     )

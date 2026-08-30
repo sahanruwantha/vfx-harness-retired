@@ -12,9 +12,15 @@ import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from vfx_harness.domain.work_units import WorkUnit, _id, _mapping, _text, bound_claim_contract_ids
+from vfx_harness.domain.claim_bindings import bound_claim_contract_ids
+from vfx_harness.domain.field_parsing import identifier as _id
+from vfx_harness.domain.field_parsing import mapping as _mapping
+from vfx_harness.domain.field_parsing import text as _text
+
+if TYPE_CHECKING:
+    from vfx_harness.domain.work_units.unit import WorkUnit
 
 SCHEMA = "vfx-harness.publish-interface/v1"
 PUBLISH_INTERFACE_KINDS = frozenset(

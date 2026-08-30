@@ -42,7 +42,8 @@ def _slug(script: str) -> str:
 
 
 def global_plan_path(folder: str | Path) -> Path:
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+    # plan_authority imports this module only for unit-plan consumer-view validation.
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path  # noqa: PLC0415
 
     return selected_artifact_path(folder, "global.md")
 
@@ -61,7 +62,7 @@ def work_unit_plan_path(folder: str | Path, unit) -> Path:
         raise ValueError(f"work-unit plan escapes the shot root: {unit.plan!r}") from exc
     if path.relative_to(root).parts[:1] != (PLAN_DIR,):
         raise ValueError(f"work-unit plan must live under {PLAN_DIR}/: {unit.plan!r}")
-    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
+    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current  # noqa: PLC0415
 
     if (root / POINTER).exists():
         bundle = resolve_current(root)
@@ -77,7 +78,7 @@ def is_selected_bundle_member(folder: str | Path, path: str | Path) -> bool:
     Resolving current authority verifies every member hash, so this predicate also refuses a
     bundle that has been modified after publication.
     """
-    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
+    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current  # noqa: PLC0415
 
     root = Path(folder).resolve()
     if not (root / POINTER).exists():
@@ -108,7 +109,7 @@ def stamp_work_unit_plan(folder: str | Path, path: str | Path, *, gate: dict | N
     two-phase form: the materialization transaction re-stamps with
     ``gate={"clean": True, "blocking": 0, "run_id": …}`` after (and only after) the gate
     passes, and consumers refuse anything less (see validate_work_unit_plan_authority)."""
-    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
+    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current  # noqa: PLC0415
 
     root = Path(folder).resolve()
     plan = Path(path).resolve()
@@ -161,7 +162,7 @@ def validate_work_unit_plan_authority(
     ``require_gate=False`` is for the gate pipeline itself (view staging and the gate's
     own hierarchy check): those run BEFORE attestation exists and check integrity only.
     Every build-time consumer takes the default and refuses unattested plans."""
-    from vfx_harness.orchestration.plan_authority import (
+    from vfx_harness.orchestration.plan_authority import (  # noqa: PLC0415
         BUNDLE_SCHEMA,
         CONSUMER_VIEW_SCHEMA,
         POINTER,
@@ -415,7 +416,12 @@ def write_layer_outcome(
     blender_version: str,
 ) -> Path:
     """Seal measured state for the next layer's just-in-time planning input."""
-    from vfx_harness.orchestration.revalidation import OUTCOME_SCHEMA, canonical_records, input_manifest
+    # revalidation imports the path helpers above; outcome sealing is the reverse edge.
+    from vfx_harness.orchestration.revalidation import (  # noqa: PLC0415
+        OUTCOME_SCHEMA,
+        canonical_records,
+        input_manifest,
+    )
 
     evidence = [
         item

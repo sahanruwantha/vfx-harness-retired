@@ -39,6 +39,7 @@ import uuid
 from pathlib import Path
 
 import httpx
+from PIL import Image
 
 from vfx_harness.observability.log import log
 
@@ -223,8 +224,6 @@ def remove_background(image: str | Path, out: str | Path, *, tolerance: int = 28
 
 def _key_background(src: Path, out: Path, *, tolerance: int = 28) -> Path:
     """Flood-fill the flat backdrop from the image border and write RGBA."""
-    from PIL import Image  # lazy: only the cutout path needs Pillow
-
     im = Image.open(src).convert("RGB")
     w, h = im.size
     px = im.load()

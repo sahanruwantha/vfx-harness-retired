@@ -64,6 +64,7 @@ select = [
   "UP",   # pyupgrade
   "B",    # bugbear
   "C4", "PIE", "SIM", "RUF",
+  "PLC0415", # imports belong at module scope unless an explicit runtime boundary says otherwise
 ]
 ignore = [
   "E741",   # ambiguous names: `l`/`L` read fine in the geometry and metrics code
@@ -90,3 +91,11 @@ ignore = [
 # sys.path.insert that makes it resolvable, and the probe stops running.
 "docs/research/probes/*.py" = ["E402", "I001"]
 "src/vfx_harness/__init__.py" = ["E402"]
+# These modules execute inside Blender's bundled Python. bpy, bmesh, mathutils, and
+# worker-adjacent modules do not exist in the normal harness interpreter.
+"src/vfx_harness/blender/checks.py" = ["PLC0415"]
+"src/vfx_harness/blender/render_ext.py" = ["PLC0415"]
+"src/vfx_harness/blender/worker.py" = ["PLC0415"]
+# Tests intentionally import after monkeypatching modules, environment, and optional
+# Blender shims. Production import hygiene is enforced independently above.
+"tests/**/*.py" = ["PLC0415"]

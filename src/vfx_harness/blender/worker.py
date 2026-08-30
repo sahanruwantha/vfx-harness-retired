@@ -9,7 +9,10 @@ stdout chatter (render logs, warnings) is ignored by the client.
 import contextlib
 import io
 import json
+import math
+import math as _math
 import os
+import random as _r
 import sys
 import time
 import traceback
@@ -81,7 +84,6 @@ def _bvfx_scatter_emissive(count, area=200.0, z_range=(0.0, 6.0), color=(1.0, 0.
                            **_) -> "bpy.types.Object":
     """A carpet of `count` emissive points as ONE vertex-instanced object (fast for
     thousands). Returns the instancer. Use this instead of a per-light loop."""
-    import random as _r
     rng = _r.Random(seed)
     me = bpy.data.meshes.new(name + "_pts")
     verts = [(rng.uniform(-area, area), rng.uniform(-area, area),
@@ -721,7 +723,6 @@ def _bvfx_camera_rig(name="cam_rig", lens=35.0, sensor=36.0, clip=(0.5, 20000.0)
             "the scene and must carry a semantic role inside your unit's declared "
             "mutation scope. Pass the role your unit owns, not the display name."
         )
-    import math  # not a module-level import in this worker
     sc = bpy.context.scene
     for n in (name, "camera"):
         o = bpy.data.objects.get(n)
@@ -988,7 +989,6 @@ def h_run(a: dict) -> dict:
     `bvfx_*` helpers, `mathutils`, `Vector` and `math` are pre-injected into scope (each
     call is a FRESH namespace — imports don't persist between calls, which is why raw-
     tuple math kept recurring). Returns timing + scene-delta so the agent feels cost."""
-    import math as _math
 
     import mathutils as _mathutils
     ns: dict = {"bpy": bpy, "math": _math, "mathutils": _mathutils,
@@ -1485,7 +1485,6 @@ def h_render(a: dict) -> dict:
 
 def h_inspect_view(a: dict) -> dict:
     """Render one transactional role-aimed artist view without touching shot authority."""
-    import math
 
     import checks
     from mathutils import Matrix, Vector

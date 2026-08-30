@@ -1,0 +1,37 @@
+"""The plan gate — deterministic bar a plan must clear before anything is built on it."""
+
+from vfx_harness.evaluation.plan_gate.contracts import _check_contracts as _check_contracts
+from vfx_harness.evaluation.plan_gate.contracts import _cross_row_contract_findings as _cross_row_contract_findings
+from vfx_harness.evaluation.plan_gate.coverage import _check_citations as _check_citations
+from vfx_harness.evaluation.plan_gate.coverage import _check_coverage as _check_coverage
+from vfx_harness.evaluation.plan_gate.coverage import _check_done as _check_done
+from vfx_harness.evaluation.plan_gate.coverage import _check_evidence as _check_evidence
+from vfx_harness.evaluation.plan_gate.coverage import _check_grounded as _check_grounded
+from vfx_harness.evaluation.plan_gate.evidence_coherence import _check_evidence_coherence as _check_evidence_coherence
+from vfx_harness.evaluation.plan_gate.hierarchical import _check_hierarchical_plans as _check_hierarchical_plans
+from vfx_harness.evaluation.plan_gate.meta import _check_meta_records as _check_meta_records
+from vfx_harness.evaluation.plan_gate.run import feedback as feedback
+from vfx_harness.evaluation.plan_gate.run import report as report
+from vfx_harness.evaluation.plan_gate.run import run as run
+from vfx_harness.evaluation.plan_gate.types import _CITE as _CITE
+from vfx_harness.evaluation.plan_gate.types import _RECIPE as _RECIPE
+from vfx_harness.evaluation.plan_gate.types import _SPIKE as _SPIKE
+from vfx_harness.evaluation.plan_gate.types import _SPIKE_EXT as _SPIKE_EXT
+from vfx_harness.evaluation.plan_gate.types import _TICKET as _TICKET
+from vfx_harness.evaluation.plan_gate.types import _URL as _URL
+from vfx_harness.evaluation.plan_gate.types import Finding as Finding
+from vfx_harness.evaluation.plan_gate.types import GateResult as GateResult
+from vfx_harness.evaluation.plan_gate.types import _builder_render as _builder_render
+from vfx_harness.evaluation.plan_gate.types import _global_authority_layers as _global_authority_layers
+from vfx_harness.evaluation.plan_gate.types import _global_executable_checks_apply as _global_executable_checks_apply
+from vfx_harness.evaluation.plan_gate.types import _materialized_view as _materialized_view
+from vfx_harness.evaluation.plan_gate.types import _planned_outputs as _planned_outputs
+from vfx_harness.evaluation.plan_gate.types import _resolve as _resolve
+from vfx_harness.evaluation.plan_gate.types import write_report as write_report
+from vfx_harness.evaluation.plan_gate.unit_deps import _camera_only_host_roles as _camera_only_host_roles
+from vfx_harness.evaluation.plan_gate.unit_deps import _check_unit_dependencies as _check_unit_dependencies
+from vfx_harness.evaluation.plan_gate.unit_deps import (
+    _deferred_subject_framing_covers as _deferred_subject_framing_covers,
+)
+from vfx_harness.evaluation.plan_gate.unit_deps import _is_subject_framing_row as _is_subject_framing_row
+from vfx_harness.evaluation.plan_gate.unit_deps import _role_matches_any as _role_matches_any

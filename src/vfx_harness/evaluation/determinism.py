@@ -26,13 +26,20 @@ seconds-to-minutes. Two defect classes live here, both observed:
 
 from __future__ import annotations
 
+import re
 import statistics
 import tempfile
 from pathlib import Path
 
+from PIL import Image
+
 from vfx_harness.domain.brief import Shot
 from vfx_harness.evidence.metrics import compare, look_pair, look_vector
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration.ledger import Ledger, load_layers
+
+from ..agents.builder import _RESET, _preamble
+from ..blender.session import BlenderError, BlenderSession
 
 # The scales the render tools actually offer. render_frame and compare_frame default to
 # 0.4, render_frames to 0.35, _stash_render to 0.5 — so a builder's own measurements and
@@ -74,8 +81,6 @@ def _one_image_scale_sweep(image: Path, scales, tmp: Path, delivery: tuple[int, 
     reported "11 blocking failures", which is a scale of 0.125 the pipeline never uses.
     An eval that overstates its finding is the same defect as one that misses it.
     """
-    from PIL import Image
-
     im = Image.open(image).convert("RGB")
     base_w, base_h = delivery or im.size
     out = {}
@@ -120,10 +125,9 @@ def metric_scale_consistency(images: list[Path], scales=RENDER_SCALES,
                       detail="no images to check (no refs, no judged renders)")
     skipped: list[str] = []
     if delivery:
-        from PIL import Image as _I
         keep = []
         for p in images:
-            w, h = _I.open(p).size
+            w, h = Image.open(p).size
             (keep if (w, h) >= delivery else skipped).append(
                 p if (w, h) >= delivery else f"{p.name} ({w}x{h})")
         images = keep
@@ -228,12 +232,9 @@ def accepted_prefix(shot: Shot) -> tuple[list, int]:
     non-deterministic script is cheapest to find. Returns (layers, total) so the caller
     can say how much of the chain it actually exercised.
     """
-    import re as _re
-
-    from vfx_harness.orchestration.ledger import Ledger, load_layers
 
     def num(script: str) -> int:
-        m = _re.match(r"(\d+)", Path(script).name)
+        m = re.match(r"(\d+)", Path(script).name)
         return int(m.group(1)) if m else 10_000
 
     layers = sorted(load_layers(shot).values(), key=lambda L: num(L.script))
@@ -251,8 +252,6 @@ def replay_equivalence(shot: Shot, *, blender: str = "blender", passes: int = 2,
                        mode: str = "eevee") -> Result:
     """Run the accepted chain from empty `passes` times; require the same scene and the
     same look vector every time."""
-    from ..agents.builder import _RESET, _preamble
-    from ..blender.session import BlenderError, BlenderSession
 
     try:
         layers, total = accepted_prefix(shot)

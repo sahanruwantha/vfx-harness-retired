@@ -16,7 +16,13 @@ from claude_agent_sdk import HookMatcher
 
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.domain.contracts import load_document
+from vfx_harness.domain.plan_records import load_assumptions, load_obligations, load_requirements
+from vfx_harness.evaluation.grounding import check_fingerprint, check_structured_fingerprint, measure
+from vfx_harness.evaluation.plan_gate import _check_unit_dependencies
+from vfx_harness.evidence.checks import load
+from vfx_harness.evidence.scene_checks import validate_row, validate_row_set
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration.ledger import load_layers
 
 _MACHINE_ARTIFACTS = {
     "layers.json",
@@ -65,7 +71,6 @@ def _acceptance_errors(folder: Path) -> list[str]:
         if not isinstance(fingerprint, (str, dict)) or not fingerprint:
             errors.append(f"{where}.fingerprint must be structured metrics or legacy prose")
         elif isinstance(fingerprint, dict) and isinstance(ref, str) and (folder / ref).is_file():
-            from vfx_harness.evaluation.grounding import check_structured_fingerprint
 
             claims, fingerprint_errors = check_structured_fingerprint(fingerprint, folder / ref)
             errors.extend(f"{where}.fingerprint: {error}" for error in fingerprint_errors)
@@ -75,7 +80,6 @@ def _acceptance_errors(folder: Path) -> list[str]:
                 if claim["verdict"] != "ok"
             )
         elif isinstance(fingerprint, str) and isinstance(ref, str) and (folder / ref).is_file():
-            from vfx_harness.evaluation.grounding import check_fingerprint, measure
 
             claims, _ = check_fingerprint(fingerprint, measure(folder / ref))
             errors.extend(
@@ -92,8 +96,6 @@ def validate_planner_artifact(folder: str | Path, name: str) -> list[str]:
     path = root / name
     try:
         if name == "layers.json":
-            from vfx_harness.evaluation.plan_gate import _check_unit_dependencies
-            from vfx_harness.orchestration.ledger import load_layers
 
             dependency_errors = [
                 f"{finding.where}: {finding.what}" for finding in _check_unit_dependencies(root)
@@ -103,7 +105,6 @@ def validate_planner_artifact(folder: str | Path, name: str) -> list[str]:
             load_layers(load_shot(root))
             return []
         if name == "scene_checks.json":
-            from vfx_harness.evidence.scene_checks import validate_row, validate_row_set
 
             rows = load_document(path, "contracts")
             errors = []
@@ -117,7 +118,6 @@ def validate_planner_artifact(folder: str | Path, name: str) -> list[str]:
             errors.extend(f"scene_checks.json {finding}" for finding in validate_row_set(rows))
             return errors
         if name == "checks.json":
-            from vfx_harness.evidence.checks import load
 
             load(path)
             return []
@@ -141,17 +141,14 @@ def validate_planner_artifact(folder: str | Path, name: str) -> list[str]:
                 seen.add(row["key"])
             return errors
         if name == "requirements.json":
-            from vfx_harness.domain.plan_records import load_requirements
 
             load_requirements(root)
             return []
         if name == "obligations.json":
-            from vfx_harness.domain.plan_records import load_obligations
 
             load_obligations(root)
             return []
         if name == "assumptions.json":
-            from vfx_harness.domain.plan_records import load_assumptions
 
             load_assumptions(root)
             return []

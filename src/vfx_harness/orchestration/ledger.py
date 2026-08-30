@@ -21,6 +21,7 @@ from pathlib import Path
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.work_units import (
     EXTRA_FRAME_BINDING_RULE,
+    GLOBAL_SCENE_CAPABILITIES,
     JudgePoint,
     WorkUnit,
     read_document,
@@ -30,6 +31,7 @@ from vfx_harness.domain.work_units import (
 )
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.runid import RUN_ID
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 
 @dataclass(frozen=True)
@@ -60,8 +62,6 @@ DEFAULT_AXES: list[tuple[str, str]] = [
 def load_axes(shot: Shot) -> list[tuple[str, str]]:
     """The critic rubric for this shot: shot/critic_axes.json if present, else defaults.
     Stored as a list of {"key","desc"} objects."""
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
-
     path = selected_artifact_path(shot.folder, "critic_axes.json")
     if path.is_file():
         try:
@@ -250,7 +250,6 @@ def load_layers_from_path(
                 raise ValueError(
                     f"{where}.jit.promises is superseded; use ownership-only owned_requirements"
                 )
-            from vfx_harness.domain.work_units import GLOBAL_SCENE_CAPABILITIES
 
             raw_provides = raw_jit.get("provides", {})
             if not isinstance(raw_provides, dict):
@@ -436,8 +435,6 @@ def load_layers_from_path(
 
 def load_layers(shot: Shot, *, replacing_layer_id: str | None = None) -> dict[str, Layer]:
     """Per-shot build layers from the singular selected plan generation."""
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
-
     return load_layers_from_path(
         selected_artifact_path(shot.folder, "layers.json"),
         replacing_layer_id=replacing_layer_id,
@@ -453,8 +450,6 @@ def load_milestones(shot: Shot) -> dict[str, Milestone]:
     typography (M2 @ f184) before studio light (M1 @ f72). Attributing a whole-frame
     moment to one additive layer is what made layers get judged on work they don't own.
     """
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
-
     path = selected_artifact_path(shot.folder, "acceptance.json")
     if not path.is_file():
         raise FileNotFoundError(

@@ -1,1 +1,1 @@
-"""Packaged VFX recipes, capability reports, and verification."""
+"""Packaged VFX recipes and their verification."""

@@ -17,6 +17,9 @@ numbers without asking (the critic never once noticed barrel_roll M1 was 54% hot
 
 from __future__ import annotations
 
+import ast
+import ast as _ast
+import builtins
 import json
 import re
 from datetime import UTC, datetime
@@ -25,9 +28,13 @@ from typing import Any
 
 from claude_agent_sdk import HookMatcher
 
-from vfx_harness.observability import run_artifacts
+from vfx_harness.evidence.metrics import compare, look_pair, report
+from vfx_harness.infrastructure.sandbox import path_sandbox
+from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
 from vfx_harness.observability.runlog import bump
+from vfx_harness.orchestration.layer_state import as_prompt_block, checkpoint, path_for
+from vfx_harness.orchestration.plan_authority import resolve_current, selected_artifact_path
 
 # pattern -> what to do instead. Each of these was hit for real during a build.
 _BANNED: list[tuple[re.Pattern, str]] = [
@@ -105,7 +112,6 @@ def api_guardrails() -> HookMatcher:
 def _injected_scope() -> set[str]:
     """Exactly what a run_bpy call can see. Read from worker.py's own _HELPERS so a new
     bvfx_* helper can never become a false positive here."""
-    import builtins
     names = {"bpy", "math", "mathutils", "Vector"} | set(dir(builtins))
     try:
         package = Path(__file__).resolve().parents[1]
@@ -127,7 +133,6 @@ def _undefined_names(tree) -> set[str]:
     injected scope. Anything dynamic (globals(), exec, star-import, getattr) disables the
     check entirely rather than risking a wrong deny.
     """
-    import ast
     scope = _injected_scope()
     if not scope:
         return set()
@@ -168,7 +173,6 @@ def _run_bpy_has_authored_mutation(tree) -> bool:
     It only keeps scripts with no durable-write operation out of the mutation boundary,
     journal, and one-repair convergence arm.
     """
-    import ast
 
     unscoped_scene_property_lines = set(_run_bpy_unscoped_scene_property_write_lines(tree))
 
@@ -247,7 +251,6 @@ def _run_bpy_unscoped_scene_property_write_lines(tree) -> list[int]:
     scoped production mutation. Treating one as an authored write let a read-only probe
     increment ``scene['debug_probe']`` solely to enter the mutation boundary.
     """
-    import ast
 
     def path(node) -> str:
         if isinstance(node, ast.Name):
@@ -320,7 +323,6 @@ def script_sanity() -> HookMatcher:
     Parsing also gives a free syntax check. A typo currently costs a full round-trip into
     Blender to discover.
     """
-    import ast as _ast
 
     async def _check(inp, tool_use_id, ctx) -> dict:
         tool = inp.get("tool_name", "") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
@@ -506,7 +508,6 @@ def metrics_feedback(shot_folder: str | Path, ref_rel: str | None, *,
         if not ref.is_file():
             return {}
         try:
-            from vfx_harness.evidence.metrics import compare, look_pair, report
             layout = run_artifacts.ensure(folder, command="metrics-feedback")
             cands = [
                 *layout.scratch.joinpath("blender").glob("*.png"),
@@ -541,14 +542,11 @@ def compaction_notice(shot_folder: str | Path) -> HookMatcher:
     async def _pre(inp, tool_use_id, ctx):
         bump("compaction_started")
         trigger = (inp or {}).get("trigger", "?")
-        from vfx_harness.orchestration.layer_state import path_for
         state_rel = path_for(shot_folder).relative_to(Path(shot_folder)).as_posix()
         log(f"⚠ CONTEXT COMPACTION STARTING (trigger={trigger}) — checkpointing "
             f"conclusions in {state_rel}")
         block = ""
         try:
-            from vfx_harness.observability import transcript
-            from vfx_harness.orchestration.layer_state import as_prompt_block, checkpoint
             checkpoint(shot_folder, trigger=trigger)
             block = as_prompt_block(shot_folder)
             transcript.event("pre_compact", trigger=trigger, state_file=state_rel)
@@ -615,7 +613,6 @@ def recipe_write_guard() -> HookMatcher:
 
 def distiller_hooks(*roots, cwd: str | Path | None = None) -> dict:
     """Sandbox + the recipe-frontmatter guard, for the harvesting agent."""
-    from vfx_harness.infrastructure.sandbox import path_sandbox
     return {"PreToolUse": [path_sandbox(*roots, cwd=cwd), recipe_write_guard()]}
 
 
@@ -826,7 +823,6 @@ def bounded_unit_context_guard(
         raw = args.get({"Read": "file_path", "Grep": "path", "Glob": "path", "LSP": "path"}[tool])
         candidate = Path(str(raw or ".")).expanduser()
         candidate = (candidate if candidate.is_absolute() else root / candidate).resolve()
-        from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
         protected = {root / "brief.md"}
         for name in (
@@ -873,7 +869,6 @@ def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = No
                   phase: dict[str, Any] | None = None) -> dict:
     """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback.
     PostToolUseFailure: durable failure log. Stop: the artifacts must exist."""
-    from vfx_harness.infrastructure.sandbox import path_sandbox
     active_phase = phase or {"mode": "live"}
     return {
         "PreToolUse": [path_sandbox(*roots, cwd=shot_folder),
@@ -934,7 +929,6 @@ def selected_plan_read_guard(shot_folder: str | Path) -> HookMatcher:
             return {}
         args = (inp.get("tool_input") if isinstance(inp, dict)
                 else getattr(inp, "tool_input", {})) or {}
-        from vfx_harness.orchestration.plan_authority import resolve_current
 
         bundle = resolve_current(root)
         active = run_artifacts.active(root)

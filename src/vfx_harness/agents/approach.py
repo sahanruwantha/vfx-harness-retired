@@ -24,7 +24,8 @@ from pathlib import Path
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
 
 from vfx_harness.infrastructure.config import DEFAULT_EXECUTION_MODEL, Settings
-from vfx_harness.knowledge.recipes import recipe_index, search_recipes
+from vfx_harness.infrastructure.sandbox import sandbox_hooks
+from vfx_harness.knowledge.recipes import RECIPES_DIR, recipe_index, search_recipes
 from vfx_harness.observability import costlog
 from vfx_harness.observability.log import log, log_message
 
@@ -61,8 +62,6 @@ DO: the concrete replacement (or the single value, if KEEP). Name recipes to pul
 
 
 def _options(shot_folder: Path) -> ClaudeAgentOptions:
-    from vfx_harness.infrastructure.sandbox import sandbox_hooks
-    from vfx_harness.knowledge.recipes import RECIPES_DIR
     return ClaudeAgentOptions(
         model=reviewer_model(),
         system_prompt=REVIEWER_SYSTEM + "\n\n" + recipe_index(),

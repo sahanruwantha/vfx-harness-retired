@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.run_artifacts import RunLayout
 
 POINTER_SCHEMA = "vfx-harness.plan-pointer/v1"
@@ -407,8 +408,8 @@ def promote_candidate(
     candidate authority can be copied into this run's isolated workspace, and the current
     deterministic gate clears that copied surface.
     """
-    from vfx_harness.evaluation import plan_gate
-    from vfx_harness.observability import run_artifacts
+    # The gate imports authority readers; promotion invokes it only after publication setup.
+    from vfx_harness.evaluation import plan_gate  # noqa: PLC0415
 
     shot = Path(shot_folder).expanduser().resolve()
     source_layout = run_artifacts.select(shot, source_run_id)
@@ -629,7 +630,10 @@ def selected_artifact_path(shot_folder: str | Path, name: str) -> Path:
     shot = Path(shot_folder).expanduser().resolve()
     if (shot / POINTER).exists():
         if name in {"layers.json", "scene_checks.json", "checks.json", "requirements.json"}:
-            from vfx_harness.orchestration.jit_materialization import selected_view_artifact
+            # Materialized-view publication imports authority resolution in the reverse direction.
+            from vfx_harness.orchestration.jit_materialization import (  # noqa: PLC0415
+                selected_view_artifact,
+            )
 
             bundle = resolve_current(shot)
             overlay = selected_view_artifact(shot, name, bundle.content_hash)
@@ -694,16 +698,18 @@ def prepare_consumer_view(layout: RunLayout) -> Path:
             )["layers"]
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise PlanPublicationError("published layers.json is unreadable") from exc
+        # This import is delayed to avoid the plan-authority/layer-plans module cycle,
+        # but resolved once per consumer view rather than once per staged unit.
+        from vfx_harness.orchestration.layer_plans import (  # noqa: PLC0415
+            validate_work_unit_plan_authority,
+            work_unit_plan_authority_path,
+        )
+
         for layer in layers:
             for unit in layer.get("stages") or []:
                 rel = Path(str(unit.get("plan") or ""))
                 source = layout.shot / rel
                 if source.is_file():
-                    from vfx_harness.orchestration.layer_plans import (
-                        validate_work_unit_plan_authority,
-                        work_unit_plan_authority_path,
-                    )
-
                     try:
                         # staging feeds the gate, which runs before attestation exists
                         validate_work_unit_plan_authority(layout.shot, source, require_gate=False)

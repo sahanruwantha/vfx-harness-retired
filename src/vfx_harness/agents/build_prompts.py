@@ -9,9 +9,13 @@ Two agents:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-from vfx_harness.orchestration.ledger import Milestone
+from vfx_harness.agents.unit_scope import format_unit_scope_card
+from vfx_harness.domain.work_units import LOOK_CAPABILITIES
+from vfx_harness.orchestration.ledger import Ledger, Milestone
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 LOOK_AXIS_WORDS = (
     "light",
@@ -40,7 +44,6 @@ def capability_feedback_groups(capabilities) -> frozenset[str]:
     inferred from axis names, so an appearance-owning unit cannot be classified as
     look-free while its own plan demands machined surface quality.
     """
-    from vfx_harness.domain.work_units import LOOK_CAPABILITIES
 
     groups: set[str] = set()
     for name in capabilities or ():
@@ -457,8 +460,6 @@ def ticket_guidance_names(ticket_context: str | None) -> tuple[str, ...]:
     """Names of domain modules selected for one layer; empty context means legacy/full."""
     if ticket_context is None:
         return tuple(_TICKET_DOMAINS)
-    import re
-
     words = set(re.findall(r"[a-z0-9]+", ticket_context.lower()))
 
     def mentioned(term: str) -> bool:
@@ -523,7 +524,6 @@ def recurring_complaints(shot, m: Milestone, min_attempts: int = 2) -> str:
     handed to the very next attempt. Ordinary live-round notes still require recurrence
     across attempts before they become standing defects.
     """
-    from vfx_harness.orchestration.ledger import Ledger
 
     try:
         slot = Ledger(shot)._slot(m)
@@ -608,7 +608,6 @@ def builder_kickoff(
         else ""
     )
     contract_block = ""
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
     scene_contract = selected_artifact_path(shot.folder, "scene_checks.json")
     if scene_contract.is_file() and not unit_scope:
@@ -623,7 +622,6 @@ def builder_kickoff(
         )
     scope_block = ""
     if unit_scope:
-        from vfx_harness.agents.unit_scope import format_unit_scope_card
 
         scope_block = format_unit_scope_card(unit_scope) + "\n\n"
     if priors:
