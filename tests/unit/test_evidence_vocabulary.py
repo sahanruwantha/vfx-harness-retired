@@ -42,7 +42,7 @@ def test_new_kinds_are_registered_and_defined() -> None:
 
 
 def test_operator_vocabulary_names_exact_threshold_fields() -> None:
-    """HIR-0124: equality targets use value, never a guessed eq field."""
+    """HIR-0125: equality targets use value, never a guessed eq field."""
     assert OPERATOR_FIELDS["eq"]["required"] == ["value"]
     assert OPERATOR_FIELDS["eq"]["optional"] == ["tol"]
     assert "no `eq` field" in OPERATOR_FIELDS["eq"]["description"]

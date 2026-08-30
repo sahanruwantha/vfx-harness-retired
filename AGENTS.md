@@ -441,6 +441,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
 - Absence fails closed: a required contract never evaluated blocks sealing; unknown keys are
   rejected naming the accepted set; silence is never consent (HIR-0014). An empty obstacle
   selection is not path clearance — the 1e9 sentinel never PASSes (HIR-0024).
+  Threshold operators have one enumerated field shape: `eq` uses numeric `value`
+  and optional numeric `tol` (there is no `eq` field), `min` uses `lo`, `max`
+  uses `hi`, and `band` uses both `lo` and `hi`; validation names the exact field
+  on the first rejection (HIR-0125).
   A `curve_derivative_max` miss names the argmax adjacent-frame pair and compact
   over-`hi` segments; a scalar without its argmax is an estimate (HIR-0035).
   A `keyframe_schedule` path miss names the requested aliases (`P`, `data.P`)
