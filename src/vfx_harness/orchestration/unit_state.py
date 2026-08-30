@@ -532,6 +532,7 @@ def record_hypothesis_falsification(
     conflict: dict,
     evidence: list[str],
     affected_seed_ids: set[str] | tuple[str, ...] | list[str] | None = None,
+    preserve_accepted_source: bool = False,
 ) -> dict:
     """Seal a plan finding and stop the unit without granting it mutation authority.
 
@@ -552,8 +553,13 @@ def record_hypothesis_falsification(
     if slot is None:
         raise KeyError(f"unknown work unit {unit.id!r}")
     before = slot.get("status")
-    if "hypothesis_falsified" not in _TRANSITIONS.get(before, set()):
+    preserve_accepted = bool(preserve_accepted_source and before == "passed")
+    if not preserve_accepted and "hypothesis_falsified" not in _TRANSITIONS.get(before, set()):
         raise ValueError(f"cannot falsify plan hypothesis for {unit.id} from state {before}")
+    if preserve_accepted_source and not preserve_accepted:
+        raise ValueError(
+            f"preserve_accepted_source requires passed state for {unit.id}, found {before}"
+        )
     known_ids = {candidate.id for candidate in units}
     seeds = {str(uid) for uid in (affected_seed_ids or {unit.id}) if str(uid)}
     seeds.add(unit.id)
@@ -598,12 +604,18 @@ def record_hypothesis_falsification(
     event = {
         "at": now,
         "from": before,
-        "to": "hypothesis_falsified",
-        "reason": "executable evidence requires authority outside the active unit plan",
+        "to": "passed" if preserve_accepted else "hypothesis_falsified",
+        "reason": (
+            "composed canonical evidence falsified authority after unit acceptance; "
+            "checkpoint preserved until transactional replan"
+            if preserve_accepted
+            else "executable evidence requires authority outside the active unit plan"
+        ),
         "metadata": {"record_id": payload["record_id"], "affected": affected},
     }
     slot.setdefault("history", []).append(event)
-    slot["status"] = "hypothesis_falsified"
+    if not preserve_accepted:
+        slot["status"] = "hypothesis_falsified"
     slot["falsification"] = payload
     slot["updated"] = now
     for affected_unit in affected:

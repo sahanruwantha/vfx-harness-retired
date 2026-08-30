@@ -3270,6 +3270,7 @@ def _composition_judge_unit(layer, provisional_decisions=()):
         provisional_requirement_ids=tuple(
             str(decision["id"]) for decision in provisional_decisions
         ),
+        provisional_decisions=provisional_decisions,
         worklist_units=stages,
         mutates=MutationScope(
             mode="scoped",
@@ -3433,6 +3434,81 @@ def _lookless_without_executable_verdict(unit, frame: int, axes: list[tuple[str,
     }
 
 
+def _provisional_composition_contract_gap(
+    judged: dict, active_unit, frame: int
+) -> dict:
+    """Route qualified composed criticism to replan without losing its evidence.
+
+    The critic may identify a concrete defect under qualified qualitative authority,
+    but the synthetic composition unit owns no executable script.  Preserve that exact
+    observation as a contract-gap row instead of retaining a broad repair instruction or
+    replacing it with an opaque score-only summary.
+    """
+    provisional = tuple(
+        getattr(active_unit, "provisional_requirement_ids", ()) or ()
+    )
+    prefixes = tuple(f"requirement:{requirement_id}:" for requirement_id in provisional)
+    rows = list(judged.get("observation_reconciliation") or [])
+    converted = []
+    retained = []
+    for row in rows:
+        observation = dict(row.get("observation") or {})
+        claim_id = str(observation.get("claim_id") or "")
+        if row.get("state") == "actionable" and claim_id.startswith(prefixes):
+            converted.append(
+                {
+                    **row,
+                    "state": "contract_gap",
+                    "observation": observation,
+                    "reason": (
+                        "qualified canonical judgment falsified a provisional layer "
+                        "decision, but composed judgment grants no cross-unit mutation "
+                        "authority; transactionally replan the cited producer closure"
+                    ),
+                }
+            )
+        else:
+            retained.append(row)
+    if not converted:
+        converted = [
+            {
+                "state": "contract_gap",
+                "observation": {
+                    "id": f"provisional-requirement-{requirement_id}",
+                    "kind": "qualitative",
+                    "observation": (
+                        "canonical reference judgment falsified provisional requirement "
+                        f"{requirement_id}"
+                    ),
+                    "action": (
+                        "replan the bounded producer units; composed judgment grants no "
+                        "cross-unit mutation authority"
+                    ),
+                    "axis": "reference_match",
+                    "property": "reference_identity",
+                    "moment": int(frame),
+                    "roles": list(getattr(active_unit.mutates, "roles", ()) or ()),
+                    "claim_id": f"requirement:{requirement_id}",
+                    "check_ids": [],
+                    "panel_ids": [],
+                },
+                "reason": (
+                    "an approved/planner start owned by this layer remains provisional "
+                    "until independent canonical reference judgment passes"
+                ),
+                "check_ids": [],
+            }
+            for requirement_id in provisional
+        ]
+    judged["issues"] = []
+    judged["contract_gap"] = True
+    judged["contract_gaps"] = converted
+    judged["observation_reconciliation"] = [*retained, *converted]
+    judged["decided_by"] = "provisional_requirement_contract_gap"
+    judged["judge_conflict"] = False
+    return judged
+
+
 async def _judge_unit_or_layer(
     shot: Shot,
     m: Milestone,
@@ -3513,41 +3589,7 @@ async def _judge_unit_or_layer(
             getattr(active_unit, "provisional_requirement_ids", ()) or ()
         )
         if provisional and not judged.get("pass"):
-            observed = list(judged.get("observations") or ())
-            judged["issues"] = []
-            judged["contract_gap"] = True
-            judged["contract_gaps"] = [
-                {
-                    "state": "contract_gap",
-                    "observation": {
-                        "id": f"provisional-requirement-{requirement_id}",
-                        "observation": (
-                            "canonical reference judgment falsified provisional requirement "
-                            f"{requirement_id}"
-                        ),
-                        "action": (
-                            "replan the bounded producer units; composed judgment grants no "
-                            "cross-unit mutation authority"
-                        ),
-                        "axis": None,
-                        "property": "reference_identity",
-                        "moment": int(m.frame),
-                        "roles": list(getattr(active_unit.mutates, "roles", ()) or ()),
-                        "claim_id": f"requirement:{requirement_id}",
-                        "check_ids": [],
-                        "panel_ids": [],
-                    },
-                    "reason": (
-                        "an approved/planner start owned by this layer remains provisional "
-                        "until independent canonical reference judgment passes; critic "
-                        f"observations={observed[:3]}"
-                    ),
-                    "check_ids": [],
-                }
-                for requirement_id in provisional
-            ]
-            judged["decided_by"] = "provisional_requirement_contract_gap"
-            judged["judge_conflict"] = False
+            _provisional_composition_contract_gap(judged, active_unit, int(m.frame))
         return judged
     status = "PASS ✅" if verdict["pass"] else "REVISE ✎"
     expected = len(
@@ -5616,6 +5658,19 @@ async def build_layer(
         active_unit=composition_unit,
         out_verdicts=canonical,
     )
+    if (
+        result == "contract_gap"
+        and composition_unit is not None
+        and tuple(getattr(composition_unit, "provisional_requirement_ids", ()) or ())
+    ):
+        finding = _record_composed_contract_gap_falsification(
+            shot, layer, composition_unit
+        )
+        log(
+            "composed provisional judgment published typed producer-closure finding → "
+            f"{finding['record_id']} (accepted checkpoints preserved until replan)",
+            1,
+        )
     status = "passed" if result == "passed" else result
     best = {"round": 0, "mean": min((v.get("mean", 0) for _fr, v in canonical), default=0), "render": None}
     write_layer_outcome(
@@ -5734,7 +5789,15 @@ def _metric_report(shot: Shot, render_rel: str, ref_rel: str) -> str:
         return ""
 
 
-def _persist_contract_gaps(shot: Shot, layer, m: Milestone, render_rel: str, verdict: dict) -> None:
+def _persist_contract_gaps(
+    shot: Shot,
+    layer,
+    m: Milestone,
+    render_rel: str,
+    verdict: dict,
+    *,
+    mode: str = "eevee",
+) -> None:
     """Pin a coverage defect to the exact canonical pixels and comparison boundary."""
     rows = list(verdict.get("observation_reconciliation") or [])
     if not verdict.get("contract_gap") or not any(row.get("state") == "contract_gap" for row in rows):
@@ -5751,7 +5814,7 @@ def _persist_contract_gaps(shot: Shot, layer, m: Milestone, render_rel: str, ver
         ]
         unit_id = active[0] if len(active) == 1 else "+".join(active) or "coverage_audit"
     settings = {
-        "mode": "eevee",
+        "mode": str(mode),
         "scale": 0.5,
         "frame": int(m.frame),
         "reference": str(m.ref),
@@ -5923,6 +5986,117 @@ def _record_contract_gap_falsification(shot: Shot, layer, unit) -> dict:
             "controls": list(unit.mutates.controls),
         },
         evidence=["state/contract-gaps.jsonl"],
+    )
+
+
+def _record_composed_contract_gap_falsification(
+    shot: Shot, layer, composition_unit
+) -> dict:
+    """Publish a replan-consumable finding after all producer units have passed.
+
+    Composition has no script identity of its own.  Bind the finding to the earliest
+    exact producer implicated by the critic's role evidence, preserve every accepted
+    checkpoint, and name the full role-derived producer/downstream closure for the
+    transaction that consumes it.
+    """
+    from vfx_harness.domain.work_units import dependency_ordered_units
+    from vfx_harness.observability.run_artifacts import shot_state_dir
+    from vfx_harness.orchestration.layer_plans import work_unit_plan_path
+    from vfx_harness.orchestration.plan_authority import resolve_current
+    from vfx_harness.orchestration.unit_state import record_hypothesis_falsification
+
+    gaps_path = shot_state_dir(shot.folder) / "contract-gaps.jsonl"
+    records = []
+    if gaps_path.is_file():
+        for line_no, line in enumerate(
+            gaps_path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{gaps_path}:{line_no} is invalid JSON: {exc}") from exc
+            if (
+                str(row.get("layer")) == str(layer.id)
+                and row.get("classification") == "plan_defect"
+            ):
+                records.append(row)
+    if not records:
+        raise ValueError(
+            f"composed contract gap for layer {layer.id} has no hash-pinned gap record"
+        )
+    gap = records[-1]
+    observations = list(gap.get("gaps") or [])
+    if not observations:
+        raise ValueError("latest composed contract-gap record has no observations")
+
+    observed_roles = {
+        str(role)
+        for finding in observations
+        for role in (finding.get("observation") or {}).get("roles") or []
+        if str(role)
+    }
+    ordered = dependency_ordered_units(layer.stages)
+    implicated = [
+        unit
+        for unit in ordered
+        if any(
+            fnmatch.fnmatchcase(role, selector)
+            for role in observed_roles
+            for selector in unit.mutates.roles
+        )
+    ]
+    if not implicated:
+        implicated = list(ordered)
+    source = implicated[0]
+    cited = sorted(
+        {
+            str(value)
+            for finding in observations
+            for value in (
+                *(finding.get("check_ids") or []),
+                str((finding.get("observation") or {}).get("claim_id") or ""),
+            )
+            if str(value).strip()
+        }
+    )
+    decisions = [
+        {"id": str(row["id"]), "strength": str(row["decision_strength"])}
+        for row in tuple(getattr(composition_unit, "provisional_decisions", ()) or ())
+    ]
+    bundle = resolve_current(shot.folder)
+    unit_plan = work_unit_plan_path(shot.folder, source)
+    return record_hypothesis_falsification(
+        shot.folder,
+        str(layer.id),
+        source,
+        ordered,
+        bundle_hash=bundle.content_hash,
+        unit_plan_hash=hashlib.sha256(unit_plan.read_bytes()).hexdigest(),
+        candidate_hash=str(gap.get("candidate_hash")),
+        settings_hash=str(gap.get("settings_hash")),
+        contract_ids=cited,
+        observations=observations,
+        decisions=decisions,
+        conflict={
+            "kind": "decision",
+            "required_authority": (
+                "amend the bounded producer claim/contract graph and transactionally "
+                "reopen the role-derived producer closure"
+            ),
+            "roles": sorted(observed_roles),
+            "controls": sorted(
+                {
+                    control
+                    for unit in implicated
+                    for control in unit.mutates.controls
+                }
+            ),
+        },
+        evidence=["state/contract-gaps.jsonl"],
+        affected_seed_ids={unit.id for unit in implicated},
+        preserve_accepted_source=True,
     )
 
 
@@ -6192,7 +6366,14 @@ async def _verify_script(
                     1,
                 )
                 if is_gap:
-                    _persist_contract_gaps(shot, layer, m_i, render_rel, verdict)
+                    _persist_contract_gaps(
+                        shot,
+                        layer,
+                        m_i,
+                        render_rel,
+                        verdict,
+                        mode=_unit_raster_mode(active_unit),
+                    )
                     return "contract_gap"
                 return "reproduced"
     results: list = [None] * len(shots_)
@@ -6229,7 +6410,14 @@ async def _verify_script(
     verdicts = []
     for i, (frame, ref, _m_i, render_rel) in enumerate(shots_):
         v = results[i]
-        _persist_contract_gaps(shot, layer, _m_i, render_rel, v)
+        _persist_contract_gaps(
+            shot,
+            layer,
+            _m_i,
+            render_rel,
+            v,
+            mode=_unit_raster_mode(active_unit),
+        )
         ledger.record_round(m, kind="canonical", index=i, render=render_rel, verdict=v)
         verdicts.append(((frame, ref), v))
     if out_verdicts is not None:

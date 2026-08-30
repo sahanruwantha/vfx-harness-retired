@@ -71,6 +71,24 @@ def test_unqualified_qualitative_residual_is_not_autonomous_blocker():
     assert result["state"] == "unverified_qualitative"
 
 
+def test_qualified_claim_binding_id_is_known_judgment_authority():
+    binding = "requirement:R51:building_silhouette_character"
+    result = reconcile_observation(
+        _observation(
+            kind="qualitative",
+            property="roof_silhouette_profile",
+            claim_id=binding,
+            check_ids=[binding],
+        ),
+        [],
+        claim_bindings={binding: {binding}},
+        qualified_claims={binding},
+    )
+
+    assert result["state"] == "actionable"
+    assert result["check_ids"] == [binding]
+
+
 def test_gap_record_contains_hash_pinned_plan_defect(tmp_path):
     reconciled = reconcile_observations([_observation()], [])
     path = append_gap_record(

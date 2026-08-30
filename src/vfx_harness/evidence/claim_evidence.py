@@ -131,7 +131,21 @@ def reconcile_observation(
                 "reason": "cites evidence not bound to the claim: " + ", ".join(outside),
                 "check_ids": cited,
             }
-    missing = sorted(cid for cid in cited if cid not in facts)
+    # A qualification binding is evidence of *judgment authority*, not a scene fact
+    # with PASS/FAIL.  Critics commonly cite the exact bound qualification id in
+    # check_ids.  Treat that id as known when it belongs to this qualified claim so it
+    # reaches the qualified-qualitative branch below; accepting an arbitrary unknown id
+    # would still be a protocol error.
+    qualification_ids = (
+        set(claim_bindings.get(observation.claim_id, ()))
+        if observation.kind == "qualitative"
+        and observation.claim_id in set(qualified_claims)
+        and claim_bindings is not None
+        else set()
+    )
+    missing = sorted(
+        cid for cid in cited if cid not in facts and cid not in qualification_ids
+    )
     if missing:
         return {
             "state": "protocol_error",
@@ -139,7 +153,11 @@ def reconcile_observation(
             "reason": "cites unknown evidence: " + ", ".join(missing),
             "check_ids": cited,
         }
-    failed = [cid for cid in cited if facts[cid].get("authoritative") and not facts[cid].get("pass")]
+    failed = [
+        cid
+        for cid in cited
+        if cid in facts and facts[cid].get("authoritative") and not facts[cid].get("pass")
+    ]
     if failed:
         return {
             "state": "actionable",
@@ -147,7 +165,11 @@ def reconcile_observation(
             "reason": "supported by failed authoritative evidence",
             "check_ids": failed,
         }
-    passing = [cid for cid in cited if facts[cid].get("authoritative") and facts[cid].get("pass")]
+    passing = [
+        cid
+        for cid in cited
+        if cid in facts and facts[cid].get("authoritative") and facts[cid].get("pass")
+    ]
     if passing:
         return {
             "state": "contradicted",

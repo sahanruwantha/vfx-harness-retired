@@ -116,6 +116,46 @@ def test_falsification_can_name_passed_upstream_fault_owner_for_replan(tmp_path:
     assert state["units"]["atmosphere"]["status"] == "blocked"
 
 
+def test_composed_falsification_preserves_accepted_source_until_replan(
+    tmp_path: Path,
+) -> None:
+    units = (_unit("mass"), _unit("roof", depends_on=["mass"]))
+    initialize(tmp_path, "2", units, plan_hash="a" * 64)
+    for unit_id in ("mass", "roof"):
+        for status in ("planning", "building", "frozen", "evaluating", "passed"):
+            transition(tmp_path, "2", unit_id, status, reason="accepted")
+
+    finding = record_hypothesis_falsification(
+        tmp_path,
+        "2",
+        units[0],
+        units,
+        bundle_hash="b" * 64,
+        unit_plan_hash="c" * 64,
+        candidate_hash="d" * 64,
+        settings_hash="e" * 64,
+        contract_ids=["requirement:R51:form"],
+        observations=[{"classification": "qualified_composed_failure"}],
+        decisions=[{"id": "R51", "strength": "approved_start"}],
+        conflict={
+            "kind": "decision",
+            "required_authority": "transactionally reopen producer closure",
+            "roles": ["building.mass", "building.roof"],
+            "controls": [],
+        },
+        evidence=["state/contract-gaps.jsonl"],
+        affected_seed_ids={"mass", "roof"},
+        preserve_accepted_source=True,
+    )
+
+    state = load(tmp_path, "2")
+    assert finding["affected"] == ["mass", "roof"]
+    assert state["units"]["mass"]["status"] == "passed"
+    assert state["units"]["roof"]["status"] == "passed"
+    assert state["units"]["mass"]["falsification"]["record_id"] == finding["record_id"]
+    assert state["units"]["mass"]["history"][-1]["to"] == "passed"
+
+
 def test_falsification_records_earlier_layer_camera_without_local_affected(
     tmp_path: Path,
 ) -> None:

@@ -14,6 +14,7 @@ from vfx_harness.agents.builder import (
     _active_unit_layer_view,
     _composition_judge_unit,
     _executable_unit_verdict,
+    _provisional_composition_contract_gap,
     _provisional_decisions_for_layer,
     _scope_unit_evidence,
     _unit_raster_mode,
@@ -218,6 +219,47 @@ def test_provisional_owned_decision_compiles_lookless_composition_audit(tmp_path
     assert qualitative[0].proposition == selected[0]["resolution"]["decision"]
     assert _unit_requires_raster(SimpleNamespace(folder=tmp_path), audit) is True
     assert _unit_raster_mode(audit) == "solid"
+
+
+def test_provisional_composition_preserves_concrete_critic_observation_as_gap() -> None:
+    binding = "requirement:R-holistic:form"
+    observation = {
+        "id": "generic-crown",
+        "kind": "qualitative",
+        "axis": "form",
+        "property": "roof_profile",
+        "observation": "The crown reads as an unrelated pointed keep.",
+        "action": "Replace the points with the reference's low horizontal parapet.",
+        "moment": 40,
+        "roles": ["building.roof"],
+        "claim_id": binding,
+        "check_ids": [binding],
+        "panel_ids": [],
+    }
+    judged = {
+        "pass": False,
+        "issues": [observation["action"]],
+        "observation_reconciliation": [
+            {
+                "state": "actionable",
+                "observation": observation,
+                "reason": "claim has qualified qualitative blocking authority",
+                "check_ids": [binding],
+            }
+        ],
+    }
+    active = SimpleNamespace(
+        provisional_requirement_ids=("R-holistic",),
+        mutates=SimpleNamespace(roles=("building.roof",)),
+    )
+
+    result = _provisional_composition_contract_gap(judged, active, 40)
+
+    assert result["issues"] == []
+    assert result["contract_gap"] is True
+    assert result["judge_conflict"] is False
+    assert result["contract_gaps"][0]["observation"] == observation
+    assert result["observation_reconciliation"][0]["state"] == "contract_gap"
 
 
 def test_kickoff_copy_is_camera_or_mutator_not_any_unit() -> None:

@@ -13,6 +13,11 @@ deadline. Expiry is a typed model-session failure and cannot publish a partially
 candidate; turn and spend caps alone do not bound a stream without a terminal event
 (HIR-0138).
 
+When independent composed judgment falsifies a provisional layer decision after every
+constituent unit passed, the exact qualified observation becomes hash-pinned replanning
+evidence. Its cited semantic roles derive the affected producer closure; accepted checkpoints
+remain frozen until the typed finding is consumed transactionally (HIR-0139).
+
 ## Context
 
 ADR-0005 removed whole-shot evidence design from global planning, but retained one exception:

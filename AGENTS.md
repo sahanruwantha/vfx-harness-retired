@@ -442,7 +442,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `planner_start` remains build-time debt: cumulative composed replay receives an
   independent reference judgment on the exact decision statement. Look-less composition
   uses Workbench solid through the sealed camera; failure records a contract gap for
-  bounded replanning and never grants cross-unit repair authority (HIR-0137).
+  bounded replanning and never grants cross-unit repair authority (HIR-0137). A qualification
+  binding id cited by that critic is typed judgment authority, not a missing scene check. The
+  exact concrete observation is persisted as the composed contract gap, mapped to producer
+  roles, and published as a replan-consumable finding while every already-passed checkpoint
+  remains frozen. The finding, not a score-only failure or operator choice, reopens the
+  affected producer/downstream closure (HIR-0139).
 - Unit plans publish only through the gate-attested two-phase transaction (HIR-0016). Do not
   hand-author placeholder units, edit `state/jit-layers/current.json`, or reinitialize,
   hand-edit, or delete durable work-unit state to make a new DAG fit. A selected
