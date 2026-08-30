@@ -351,6 +351,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `owner_layer` is inactive at the authoring unit: it may bind through
   `composition_context.contract_ids`, never through that unit's claim evidence
   (HIR-0129).
+  A future-active contract keeps its owner layer's judge-frame authority; the
+  activation layer pays that moment as extra-frame evidence and must not add it to
+  its own judge list (HIR-0130).
   `cannot_express_in_scope` may name an earlier-layer camera provider; the finding
   records those ids as `fault_owner_units` without treating them as same-layer
   affected seeds (HIR-0127).

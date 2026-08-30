@@ -94,6 +94,9 @@ live in the linked Harness Improvement Records.
   authoring unit; staging, finalization, and the terminal gate now agree on that due
   boundary
   ([HIR-0129](docs/improvements/HIR-0129-deferred-contracts-are-context-not-unit-evidence.md)).
+  Deferred contracts now retain their owner layer's judge-frame authority while later
+  activation layers evaluate those moments as extra-frame evidence
+  ([HIR-0130](docs/improvements/HIR-0130-deferred-contracts-keep-owner-frame-authority.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

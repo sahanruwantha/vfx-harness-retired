@@ -673,6 +673,73 @@ def test_future_active_contract_is_context_not_claim_evidence(tmp_path: Path) ->
     )
 
 
+def test_deferred_contract_keeps_owner_judge_frame_authority(tmp_path: Path) -> None:
+    """HIR-0130: activation layers pay owner moments as extra-frame evidence."""
+    from vfx_harness.domain.work_units import DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE
+    from vfx_harness.evaluation.plan_gate import _check_contracts
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["primary_judge"] = 40
+    layers["layers"][1]["judge"] = [{"frame": 40, "ref": "refs/a.png"}]
+    _write(tmp_path / "layers.json", layers)
+    scene = json.loads((tmp_path / "scene_checks.json").read_text(encoding="utf-8"))
+    deferred = {
+        "id": "owner-frame-deferred-bbox",
+        "kind": "bbox_height",
+        "owner_layer": "1",
+        "fault_owner": "1",
+        "activates_at": "2",
+        "lifecycle": "persistent",
+        "axis": "final_lock",
+        "roles": ["comp"],
+        "frame": 239,
+        "op": "band",
+        "lo": 0.45,
+        "hi": 0.55,
+    }
+    scene["contracts"].append(deferred)
+    _write(tmp_path / "scene_checks.json", scene)
+
+    findings, _counts = _check_contracts(tmp_path)
+    assert not any(
+        finding.check == "contracts"
+        and finding.where == deferred["id"]
+        and "not judged" in finding.what
+        for finding in findings
+    )
+
+    scene["contracts"][-1]["frame"] = 238
+    _write(tmp_path / "scene_checks.json", scene)
+    findings, _counts = _check_contracts(tmp_path)
+    frame_findings = [
+        finding
+        for finding in findings
+        if finding.check == "contracts"
+        and finding.where == deferred["id"]
+        and "not judged" in finding.what
+    ]
+    assert frame_findings
+    assert "owner layer 1" in frame_findings[0].what
+    assert "activation layer 2" not in frame_findings[0].what
+    assert DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE in frame_findings[0].fix
+
+    scene["contracts"][-1].update(
+        {"owner_layer": "2", "fault_owner": "2", "frame": 239}
+    )
+    _write(tmp_path / "scene_checks.json", scene)
+    findings, _counts = _check_contracts(tmp_path)
+    ordinary = [
+        finding
+        for finding in findings
+        if finding.check == "contracts"
+        and finding.where == deferred["id"]
+        and "not judged" in finding.what
+    ]
+    assert ordinary and "activation layer 2" in ordinary[0].what
+
+
 def test_unit_staging_refuses_unpayable_image_property_before_write(
     tmp_path: Path,
 ) -> None:

@@ -1184,20 +1184,36 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                         "route the contract to the layer answerable for that property",
                     )
                 )
-            if row.get("frame") is not None and active in layer_frames:
+            frame_authority = owner if owner != active and owner in layer_frames else active
+            if row.get("frame") is not None and frame_authority in layer_frames:
                 try:
                     frame = int(row["frame"])
                 except (TypeError, ValueError):
                     out.append(Finding("contracts", True, rid, "frame is not an integer"))
                 else:
-                    if frame not in layer_frames[active]:
+                    if frame not in layer_frames[frame_authority]:
+                        if frame_authority == owner and owner != active:
+                            from vfx_harness.domain.work_units import (
+                                DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE,
+                            )
+
+                            detail = (
+                                f"frame {frame} is not judged by owner layer {owner}; "
+                                f"the contract activates later at layer {active}"
+                            )
+                            fix = DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE
+                        else:
+                            detail = (
+                                f"frame {frame} is not judged by activation layer {active}"
+                            )
+                            fix = "add the frame to the layer judge list or move the contract"
                         out.append(
                             Finding(
                                 "contracts",
                                 True,
                                 rid,
-                                f"frame {frame} is not judged by activation layer {active}",
-                                "add the frame to the layer judge list or move the contract",
+                                detail,
+                                fix,
                             )
                         )
             try:
@@ -1234,14 +1250,36 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                         )
                     )
             for temporal_frame in row.get("frames") or []:
-                if active in layer_frames and temporal_frame not in layer_frames[active]:
+                if (
+                    frame_authority in layer_frames
+                    and temporal_frame not in layer_frames[frame_authority]
+                ):
+                    if frame_authority == owner and owner != active:
+                        from vfx_harness.domain.work_units import (
+                            DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE,
+                        )
+
+                        detail = (
+                            f"temporal frame {temporal_frame} is not judged by owner "
+                            f"layer {owner}; the contract activates later at layer {active}"
+                        )
+                        fix = DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE
+                    else:
+                        detail = (
+                            f"temporal frame {temporal_frame} is not judged by "
+                            f"activation layer {active}"
+                        )
+                        fix = (
+                            "every temporal endpoint is a real judge frame; add it to "
+                            "the layer and unit judge lists"
+                        )
                     out.append(
                         Finding(
                             "contracts",
                             True,
                             rid,
-                            f"temporal frame {temporal_frame} is not judged by activation layer {active}",
-                            "every temporal endpoint is a real judge frame; add it to the layer and unit judge lists",
+                            detail,
+                            fix,
                         )
                     )
     if unit_first and scene_rows:

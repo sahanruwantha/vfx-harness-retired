@@ -1041,6 +1041,11 @@ DEFERRED_CONTRACT_CONTEXT_RULE = (
     "evaluation.composition_context.contract_ids; the later mutator pays and "
     "freeze-protects it when it becomes active"
 )
+DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE = (
+    "a future-active scene contract keeps the authoring owner layer's judge-frame "
+    "authority. The activation layer evaluates it as extra-frame evidence; do not add "
+    "the owner's reference moments to the activation layer's judge list"
+)
 
 
 def allowed_unit_provides(global_layer_row: Mapping[str, Any]) -> frozenset[str]:
