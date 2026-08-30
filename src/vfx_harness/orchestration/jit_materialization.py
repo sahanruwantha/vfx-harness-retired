@@ -980,13 +980,22 @@ def validate_materialization(
                     return KIND_DOMAINS.get(str(entry[1].get("kind")), "unknown")
 
                 bound = {binding.id: _domain_of(binding.id) for binding in claim.evidence}
-                if claim.asserts not in set(bound.values()):
-                    summary = ", ".join(f"{cid}={domain}" for cid, domain in bound.items())
+                incompatible = {
+                    binding_id: domain
+                    for binding_id, domain in bound.items()
+                    if domain != claim.asserts
+                }
+                if incompatible:
+                    summary = ", ".join(
+                        f"{cid}={domain}" for cid, domain in incompatible.items()
+                    )
                     note(
                         json_ptr("layer", "stages", unit_index, "evaluation", "claims"),
-                        f"claim {claim.id} asserts {claim.asserts!r} but none of its bound "
-                        f"evidence can certify that domain ({summary or 'no bindings'}); "
-                        f"bind a {claim.asserts} metric",
+                        f"claim {claim.id} asserts {claim.asserts!r} but carries padding "
+                        f"evidence that cannot certify that domain ({summary}); every "
+                        f"required evidence binding must be a {claim.asserts} metric. Put "
+                        "cross-domain observations in composition_context or split the "
+                        "proposition into separately typed claims",
                     )
 
     # A structured human decision whose roles live in this layer's reserved namespaces is
@@ -1181,6 +1190,23 @@ def validate_materialization(
             note(json_ptr("requirement_bindings"), str(exc))
             continue
         contract_ids = requirement_bindings.get(requirement_id, ())
+        undeclared_contracts = {
+            contract_id: contract_domains.get(contract_id, "unknown")
+            for contract_id in contract_ids
+            if contract_domains.get(contract_id) not in declared
+        }
+        if undeclared_contracts:
+            witnesses = ", ".join(
+                f"{contract_id}={domain}"
+                for contract_id, domain in undeclared_contracts.items()
+            )
+            note(
+                json_ptr("requirement_bindings"),
+                f"requirement {requirement_id} carries padding contract bindings outside "
+                f"its declared AND domains {list(declared)}: {witnesses}. Remove those ids "
+                "from this requirement binding; each witness may pay only its canonical "
+                "registry domain",
+            )
         by_domain = {
             domain: tuple(sorted(cid for cid in contract_ids if contract_domains.get(cid) == domain))
             for domain in declared

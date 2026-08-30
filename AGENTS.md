@@ -474,7 +474,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   retains `evidence_domains` plus exact typed `domain_bindings`; the terminal gate re-derives
   every contract domain and rejects relabelling, structural decisions, missing domains, and
   padding decisions. Approved/planner starts schedule judgment; they are not confirmed outcomes
-  (HIR-0124, HIR-0145).
+  (HIR-0124, HIR-0145). Every required structural claim binding must itself match the
+  claim's canonical metric domain; one valid metric cannot hide incompatible count or
+  projection padding. Likewise every requirement contract id must belong to one of its
+  declared domains and every concrete resolution id must survive in exactly one typed
+  domain-binding row. Cross-domain observations belong in `composition_context` or a
+  separately typed claim (HIR-0146).
 - Unit plans publish only through the gate-attested two-phase transaction (HIR-0016). Do not
   hand-author placeholder units, edit `state/jit-layers/current.json`, or reinitialize,
   hand-edit, or delete durable work-unit state to make a new DAG fit. A selected

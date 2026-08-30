@@ -384,6 +384,18 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
                     f"{where}.resolution provisional domain bindings must share one "
                     "statement and decision_strength"
                 )
+            assigned_ids = {
+                binding_id
+                for _domain, binding_kind, binding_ids in parsed_bindings
+                if binding_kind == "contract"
+                for binding_id in binding_ids
+            }
+            if assigned_ids != set(ids):
+                unassigned = sorted(set(ids) - assigned_ids)
+                raise ValueError(
+                    f"{where}.resolution.domain_bindings must assign every resolution id "
+                    f"to one declared domain; unassigned {unassigned}"
+                )
             if kind == "decision" and provisional_values != {(str(decision), str(strength))}:
                 raise ValueError(
                     f"{where}.resolution decision must match its provisional domain bindings"

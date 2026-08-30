@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from vfx_harness.domain.plan_records import load_active_structured_decisions
+from vfx_harness.domain.plan_records import load_active_structured_decisions, load_requirements
 from vfx_harness.evaluation.plan_gate import _check_meta_records
 from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.observability import run_artifacts
@@ -3426,6 +3426,79 @@ def test_gate_rejects_relabelled_requirement_domain_binding(tmp_path: Path) -> N
         and "final-lock=image" in finding.what
         for finding in findings
     )
+
+
+def test_requirement_binding_rejects_contract_padding_outside_declared_domains(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = _deferred_owner("2", "image")
+    _write(tmp_path / "requirements.json", requirements)
+    layout = run_artifacts.create(tmp_path, "requirement-padding")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["scene_contracts"].append({
+        "id": "polish-count-padding",
+        "kind": "object_count",
+        "owner_layer": "2",
+        "fault_owner": "2",
+        "activates_at": "2",
+        "lifecycle": "layer",
+        "axis": "final_lock",
+        "roles": ["polish.comp"],
+        "op": "min",
+        "lo": 1,
+    })
+    data["layer"]["stages"][0]["evaluation"]["claims"].append({
+        "id": "polish-count-claim",
+        "proposition": "the polish subject exists",
+        "axis": "final_lock",
+        "property": "object_count",
+        "subject_roles": ["polish.comp"],
+        "subject_controls": [],
+        "moments": [239, 240],
+        "kind": "atomic",
+        "required": True,
+        "authority": "executable_required",
+        "repair_owner": "polish",
+        "asserts": "scene",
+        "evidence": [{"kind": "scene_contract", "id": "polish-count-padding"}],
+    })
+    data["requirement_bindings"][0]["contract_ids"].append("polish-count-padding")
+    data["requirement_bindings"][0]["decision"] = {
+        "statement": "The exact rendered lock remains provisional until canonical judgment.",
+        "decision_strength": "approved_start",
+    }
+    _write(payload, data)
+
+    with pytest.raises(ValueError, match="padding contract bindings"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+
+def test_selected_requirement_map_refuses_unassigned_resolution_ids(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "contract",
+        "ids": ["final-lock", "unassigned-padding"],
+        "evidence_domains": ["image"],
+        "domain_bindings": [{
+            "domain": "image",
+            "kind": "contract",
+            "ids": ["final-lock"],
+        }],
+    }
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match=r"unassigned \['unassigned-padding'\]"):
+        load_requirements(tmp_path)
 
 
 def test_direct_required_bbox_claims_are_projected_composition_context(

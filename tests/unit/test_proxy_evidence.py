@@ -92,6 +92,43 @@ def test_matching_domain_is_accepted(tmp_path, monkeypatch) -> None:
     )  # must not raise
 
 
+def test_one_valid_metric_cannot_hide_padding_on_a_required_claim(
+    tmp_path, monkeypatch
+) -> None:
+    """A temporal metric does not make an unrelated count a temporal witness."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+
+    def add_count_padding(data: dict) -> None:
+        data["scene_contracts"].append({
+            "id": "polish-count-padding",
+            "kind": "object_count",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["polish.comp"],
+            "op": "min",
+            "lo": 1,
+        })
+        claim = data["layer"]["stages"][0]["evaluation"]["claims"][0]
+        claim["asserts"] = "image"
+        claim["evidence"].append({
+            "kind": "scene_contract", "id": "polish-count-padding"
+        })
+
+    # Image claims are candidate-bound and have additional payment rules, so exercise
+    # the structural gate with the equivalent temporal domain.
+    def as_temporal_with_padding(data: dict) -> None:
+        add_count_padding(data)
+        data["layer"]["stages"][0]["evaluation"]["claims"][0]["asserts"] = "temporal"
+
+    with pytest.raises(ValueError, match="carries padding evidence"):
+        _materialize(
+            tmp_path, as_temporal_with_padding, requirement_domain="image"
+        )
+
+
 def test_required_claims_must_declare_their_domain(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
 
