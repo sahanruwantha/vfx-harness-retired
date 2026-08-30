@@ -1034,6 +1034,13 @@ CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE = (
     "layer, set activates_at to that form layer, and bind those ids through the camera "
     "unit's composition_context"
 )
+DEFERRED_CONTRACT_CONTEXT_RULE = (
+    "a scene contract whose activates_at layer is later than its owner_layer is "
+    "inactive at the owner's unit boundary and cannot be required claim evidence. "
+    "Keep the contract out of claim.evidence and bind its id through "
+    "evaluation.composition_context.contract_ids; the later mutator pays and "
+    "freeze-protects it when it becomes active"
+)
 
 
 def allowed_unit_provides(global_layer_row: Mapping[str, Any]) -> frozenset[str]:
@@ -1769,6 +1776,50 @@ def bound_claim_contract_ids(unit: WorkUnit) -> tuple[str, ...]:
         for cid in context.contract_ids:
             add(cid)
     return tuple(ids)
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredClaimBindingGap:
+    unit_id: str
+    claim_id: str
+    contract_id: str
+    owner_layer: str
+    activates_at: str
+
+
+def deferred_claim_binding_gaps(
+    units: Iterable[WorkUnit],
+    scene_contracts: Iterable[Mapping[str, Any]],
+) -> tuple[DeferredClaimBindingGap, ...]:
+    """Find future-active contracts incorrectly authored as unit claim evidence."""
+    rows = {
+        str(row.get("id")): row
+        for row in scene_contracts
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    gaps: list[DeferredClaimBindingGap] = []
+    for unit in units:
+        for claim in unit.evaluation.claims:
+            for binding in claim.evidence:
+                if binding.kind != "scene_contract":
+                    continue
+                row = rows.get(str(binding.id))
+                if row is None:
+                    continue
+                owner = str(row.get("owner_layer") or "")
+                activates = str(row.get("activates_at") or owner)
+                if not owner or not activates or activates == owner:
+                    continue
+                gaps.append(
+                    DeferredClaimBindingGap(
+                        unit.id,
+                        claim.id,
+                        str(binding.id),
+                        owner,
+                        activates,
+                    )
+                )
+    return tuple(gaps)
 
 
 def offered_interface_keys(unit: WorkUnit) -> tuple[tuple[str, str], ...]:

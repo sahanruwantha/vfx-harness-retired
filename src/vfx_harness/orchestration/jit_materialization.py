@@ -454,6 +454,27 @@ def validate_materialization(
     all_contracts.update({
         str(row.get("id")): ("image_contract", row) for row in image_rows if row.get("id")
     })
+    if layer is not None:
+        from vfx_harness.domain.work_units import (
+            DEFERRED_CONTRACT_CONTEXT_RULE,
+            deferred_claim_binding_gaps,
+        )
+
+        unit_index_by_id = {unit.id: index for index, unit in enumerate(layer.stages)}
+        for gap in deferred_claim_binding_gaps(layer.stages, scene_rows):
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    "evaluation",
+                    "claims",
+                ),
+                f"unit {gap.unit_id} claim {gap.claim_id} directly binds deferred "
+                f"scene contract {gap.contract_id} (owner_layer={gap.owner_layer}, "
+                f"activates_at={gap.activates_at}). "
+                + DEFERRED_CONTRACT_CONTEXT_RULE,
+            )
     # HIR-0122: JIT materialization deliberately publishes no candidate-sensitive
     # image rows. Required image bindings on the typed work-unit claims are the
     # authoritative build-time debt catalog until propose_checks can measure a live
@@ -1268,6 +1289,24 @@ def _validate_local_staged_units(
     parsed_units = [
         WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)
     ]
+    from vfx_harness.domain.work_units import (
+        DEFERRED_CONTRACT_CONTEXT_RULE,
+        deferred_claim_binding_gaps,
+    )
+
+    deferred_gaps = deferred_claim_binding_gaps(parsed_units, contracts)
+    if deferred_gaps:
+        detail = "; ".join(
+            f"unit {gap.unit_id} claim {gap.claim_id} binds {gap.contract_id} "
+            f"(owner_layer={gap.owner_layer}, activates_at={gap.activates_at})"
+            for gap in deferred_gaps
+        )
+        raise ValueError(
+            "deferred contract claim binding refused before candidate write: "
+            + detail
+            + ". "
+            + DEFERRED_CONTRACT_CONTEXT_RULE
+        )
     if allowed_provides is not None:
         from vfx_harness.domain.work_units import CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE
 

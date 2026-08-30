@@ -569,6 +569,110 @@ def test_materialization_finalization_rejects_camera_layer_geometry_proxy(
     assert CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE in text
 
 
+def test_future_active_contract_is_context_not_claim_evidence(tmp_path: Path) -> None:
+    """HIR-0129: deferred evidence cannot seal the unit that merely authors it."""
+    from vfx_harness.domain.work_units import DEFERRED_CONTRACT_CONTEXT_RULE
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "deferred-contract-context")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    deferred_bbox = {
+        "id": "future-subject-bbox",
+        "kind": "bbox_height",
+        "owner_layer": "2",
+        "fault_owner": "2",
+        "activates_at": "3",
+        "lifecycle": "persistent",
+        "axis": "final_lock",
+        "roles": ["product.subject"],
+        "frame": 240,
+        "op": "band",
+        "lo": 0.45,
+        "hi": 0.55,
+    }
+    direct_unit = json.loads(json.dumps(full["layer"]["stages"][0]))
+    direct_unit["evaluation"]["claims"][0]["evidence"].append(
+        {"kind": "scene_contract", "id": deferred_bbox["id"], "moments": [240]}
+    )
+    direct_target = tmp_path / "deferred-direct.json"
+    seed_materialization_candidate(
+        bundle.root, direct_target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    before = direct_target.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match=r"deferred contract claim binding refused.*future-subject-bbox.*composition_context",
+    ):
+        stage_materialization_unit(
+            direct_target,
+            unit=direct_unit,
+            scene_contracts=[*full["scene_contracts"], deferred_bbox],
+            requirement_bindings=full["requirement_bindings"],
+        )
+
+    assert direct_target.read_bytes() == before
+
+    context_unit = json.loads(json.dumps(full["layer"]["stages"][0]))
+    context_unit["evaluation"]["composition_context"]["contract_ids"].append(
+        deferred_bbox["id"]
+    )
+    context_target = tmp_path / "deferred-context.json"
+    seed_materialization_candidate(
+        bundle.root, context_target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    stage_materialization_unit(
+        context_target,
+        unit=context_unit,
+        scene_contracts=[*full["scene_contracts"], deferred_bbox],
+        requirement_bindings=full["requirement_bindings"],
+    )
+    staged = json.loads(context_target.read_text(encoding="utf-8"))
+    assert deferred_bbox["id"] in (
+        staged["layer"]["stages"][0]["evaluation"]["composition_context"]["contract_ids"]
+    )
+
+    direct_payload = tmp_path / "deferred-direct-finalization.json"
+    direct_document = json.loads(json.dumps(full))
+    direct_document["layer"]["stages"][0] = direct_unit
+    direct_document["scene_contracts"].append(deferred_bbox)
+    _write(direct_payload, direct_document)
+    findings, accepted = inspect_materialization(
+        bundle.root, direct_payload, expected_bundle_hash=bundle.content_hash
+    )
+    assert accepted is None
+    assert DEFERRED_CONTRACT_CONTEXT_RULE in "\n".join(findings)
+
+    from vfx_harness.evaluation.plan_gate import _check_evidence_coherence
+
+    gate_root = tmp_path / "deferred-gate"
+    _write(gate_root / "layers.json", {"schema": 4, "layers": [direct_document["layer"]]})
+    _write(
+        gate_root / "scene_checks.json",
+        {"schema": 2, "contracts": direct_document["scene_contracts"]},
+    )
+    _write(gate_root / "checks.json", {"schema": 2, "checks": []})
+    gate_findings, _counts = _check_evidence_coherence(gate_root)
+    due = [
+        finding
+        for finding in gate_findings
+        if finding.check == "unit-evidence-due"
+        and "future-subject-bbox" in finding.where
+    ]
+    assert due and DEFERRED_CONTRACT_CONTEXT_RULE in due[0].fix
+    assert not any(
+        finding.check == "role-selector-closure"
+        and "future-subject-bbox" in finding.where
+        for finding in gate_findings
+    )
+
+
 def test_unit_staging_refuses_unpayable_image_property_before_write(
     tmp_path: Path,
 ) -> None:

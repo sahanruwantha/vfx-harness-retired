@@ -90,6 +90,10 @@ live in the linked Harness Improvement Records.
   staging and finalization refuse proxy `geometry` before it can replace deferred
   rendered-subject bbox evidence
   ([HIR-0128](docs/improvements/HIR-0128-camera-capability-does-not-authorize-subject-form.md)).
+  Future-active scene contracts are context bindings, not evidence that can seal their
+  authoring unit; staging, finalization, and the terminal gate now agree on that due
+  boundary
+  ([HIR-0129](docs/improvements/HIR-0129-deferred-contracts-are-context-not-unit-evidence.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

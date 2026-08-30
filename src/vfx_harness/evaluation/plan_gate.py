@@ -1889,6 +1889,25 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     if binding.get("kind") != "scene_contract":
                         continue
                     contract = scene_by_id.get(evidence_id) or {}
+                    owner_layer = str(contract.get("owner_layer") or "")
+                    activates_at = str(contract.get("activates_at") or owner_layer)
+                    if owner_layer and activates_at and activates_at != owner_layer:
+                        from vfx_harness.domain.work_units import (
+                            DEFERRED_CONTRACT_CONTEXT_RULE,
+                        )
+
+                        out.append(
+                            Finding(
+                                "unit-evidence-due",
+                                True,
+                                f"layer {lid} unit {uid} claim "
+                                f"{claim.get('id', '?')} contract {evidence_id}",
+                                f"directly binds a deferred scene contract owned by "
+                                f"layer {owner_layer} and active at layer {activates_at}",
+                                DEFERRED_CONTRACT_CONTEXT_RULE,
+                            )
+                        )
+                        continue
                     if str(contract.get("kind") or "") in PROJECTED_ORIGIN_KINDS:
                         owner_id = str(claim.get("repair_owner") or uid)
                         owner = stages.get(owner_id) or unit

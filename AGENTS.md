@@ -347,6 +347,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   `lifecycle: persistent`, and `fault_owner` on the camera owner; the camera unit
   binds the ids through `composition_context` and does not seal them. Geometry units
   that mutate the measured roles freeze-protect the active deferred rows.
+  More generally, any scene contract whose `activates_at` differs from its
+  `owner_layer` is inactive at the authoring unit: it may bind through
+  `composition_context.contract_ids`, never through that unit's claim evidence
+  (HIR-0129).
   `cannot_express_in_scope` may name an earlier-layer camera provider; the finding
   records those ids as `fault_owner_units` without treating them as same-layer
   affected seeds (HIR-0127).
