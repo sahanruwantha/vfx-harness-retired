@@ -9,8 +9,14 @@ import anyio
 import pytest
 
 from vfx_harness.agents.guardrails import selected_plan_read_guard
-from vfx_harness.agents.plan_guardrails import planner_hooks, planner_path_scope
+from vfx_harness.agents.plan_guardrails import (
+    format_staged_relative_reads,
+    planner_hooks,
+    planner_path_scope,
+    staged_relative_reads,
+)
 from vfx_harness.agents.planner import _phase_tools, plan_role_capabilities
+from vfx_harness.agents.prompts import verifier_user_prompt
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.layer_plans import (
     is_selected_bundle_member,
@@ -539,6 +545,74 @@ def test_planner_can_read_only_its_assigned_snapshot_outside_staging(tmp_path: P
         None,
     )
     assert denied_glob["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_planner_path_denial_enumerates_staged_relative_reads(tmp_path: Path) -> None:
+    workspace = tmp_path / "plan-workspace"
+    (workspace / "refs").mkdir(parents=True)
+    (workspace / "plans").mkdir()
+    (workspace / "brief.md").write_text("# brief\n", encoding="utf-8")
+    (workspace / "ownership_mapping.json").write_text("{}\n", encoding="utf-8")
+    (workspace / "plans" / "global.draft.md").write_text("# draft\n", encoding="utf-8")
+    (workspace / "refs" / "frame.png").write_bytes(b"ref")
+    other = tmp_path / "other-project" / "brief.md"
+    other.parent.mkdir()
+    other.write_text("# foreign\n", encoding="utf-8")
+    hook = planner_path_scope(workspace).hooks[0]
+    denied = anyio.run(
+        hook,
+        {"tool_name": "Read", "tool_input": {"file_path": str(other)}},
+        None,
+        None,
+    )
+    reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert str(other) in reason
+    assert "do not prefix another filesystem root" in reason
+    for name in ("brief.md", "ownership_mapping.json", "plans/global.draft.md", "refs/frame.png"):
+        assert name in reason
+    names, total = staged_relative_reads(workspace)
+    assert total == 4
+    assert names == [
+        "brief.md",
+        "ownership_mapping.json",
+        "plans/global.draft.md",
+        "refs/frame.png",
+    ]
+    assert format_staged_relative_reads(workspace) == ", ".join(names)
+
+
+def test_staged_relative_reads_cap_names_remainder(tmp_path: Path) -> None:
+    for index in range(3):
+        (tmp_path / f"file-{index}.txt").write_text("x\n", encoding="utf-8")
+    names, total = staged_relative_reads(tmp_path, limit=1)
+    assert total == 3
+    assert names == ["file-0.txt"]
+    assert format_staged_relative_reads(tmp_path, limit=1) == "file-0.txt, and 2 more"
+
+
+def test_verifier_kickoff_compiles_relative_workspace_reads(tmp_path: Path) -> None:
+    (tmp_path / "refs").mkdir()
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "brief.md").write_text("# brief\n", encoding="utf-8")
+    (tmp_path / "ownership_mapping.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "plans" / "global.draft.md").write_text("# draft\n", encoding="utf-8")
+    still = tmp_path / "refs" / "frame.png"
+    still.write_bytes(b"ref")
+    shot = SimpleNamespace(
+        id="fixture",
+        frames=24,
+        fps=24,
+        engine="BLENDER_EEVEE_NEXT",
+        folder=tmp_path,
+        refs=[still],
+    )
+    text = verifier_user_prompt(shot, "plans/global.draft.md")
+    assert "there is no source video" not in text
+    assert "clips inside refs/" in text
+    assert "do not prefix another project or filesystem root" in text
+    assert "Open first: `brief.md`, `plans/global.draft.md`, `ownership_mapping.json`." in text
+    assert "Staged relative files: brief.md, ownership_mapping.json, plans/global.draft.md, refs/frame.png." in text
 
 
 def test_layer_planner_can_write_only_its_exact_jit_target_and_never_a_bundle(

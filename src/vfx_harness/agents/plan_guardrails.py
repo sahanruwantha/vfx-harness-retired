@@ -249,6 +249,48 @@ def planner_artifact_feedback(shot_folder: str | Path) -> HookMatcher:
     return HookMatcher(matcher=None, hooks=[_after])
 
 
+_STAGED_READ_LIMIT = 32
+
+
+def staged_relative_reads(root: str | Path, *, limit: int = _STAGED_READ_LIMIT) -> tuple[list[str], int]:
+    """Return ``(relative paths capped at limit, total file count)`` for a plan workspace."""
+    folder = Path(root)
+    if not folder.is_dir():
+        return [], 0
+    names = sorted(
+        path.relative_to(folder).as_posix()
+        for path in folder.rglob("*")
+        if path.is_file()
+    )
+    return names[:limit], len(names)
+
+
+def format_staged_relative_reads(root: str | Path, *, limit: int = _STAGED_READ_LIMIT) -> str:
+    names, total = staged_relative_reads(root, limit=limit)
+    if not names:
+        return "(none)"
+    listed = ", ".join(names)
+    extra = total - len(names)
+    if extra:
+        listed += f", and {extra} more"
+    return listed
+
+
+def plan_workspace_read_card(
+    root: str | Path,
+    *,
+    first_reads: tuple[str, ...] = ("brief.md",),
+) -> str:
+    """Compile the isolated workspace's legal relative Read surface."""
+    first = ", ".join(f"`{name}`" for name in first_reads)
+    staged = format_staged_relative_reads(root)
+    return (
+        "This session's cwd is the isolated plan workspace. Read only relative paths "
+        "from that cwd; do not prefix another project or filesystem root. "
+        f"Open first: {first}. Staged relative files: {staged}."
+    )
+
+
 def planner_path_scope(
     shot_folder: str | Path,
     *,
@@ -344,14 +386,17 @@ def planner_path_scope(
 
 def _path_denial(tool: str, target: str, root: Path) -> dict:
     log(f"! planner path denied: {tool} on {target}", 1)
+    staged = format_staged_relative_reads(root)
     return {"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
         "permissionDecisionReason": (
             f"Fresh planning is confined to this run's workspace: {root}. The requested "
             f"{tool} path ({target}) could expose or mutate shot-root state, prior plans, "
-            "or another run. Use the staged brief, refs, and current candidate only. A "
-            "repair may Read only the exact immutable snapshot named in its assignment."
+            "or another run. Read the staged relative names from the workspace cwd; do "
+            "not prefix another filesystem root. Staged relative files: "
+            f"{staged}. A repair may Read only the exact immutable snapshot named in "
+            "its assignment."
         ),
     }}
 

@@ -204,6 +204,9 @@ effect.
 - A JSON-pointer list miss reports the live length, valid indices, stable row ids when
   present, and `-` as the final-token append action. Negative indices never mutate from
   the end; candidate repair does not make the materializer guess list occupancy (HIR-0105).
+- A plan-workspace path miss names the requested path and the staged relative files in
+  that cwd, and forbids prefixing another filesystem root. Draft, verify, and repair
+  kickoffs compile the same relative-read card (HIR-0156).
 - An unresolved write-family rejection names the unresolved mutated roles, the family
   already derived for siblings, its registry-backed write-kind witnesses, and the legal
   mutation selector fields. Comparison selectors such as `compare_roles` are read-only
@@ -239,7 +242,9 @@ on the staging tool whose script span is the identity-derived unit file, project
 revision-checked materialization candidate writes, deferred-owner domain AND-coverage
 against the owner layer's already-validated evidence_domains, subject composition as
 bbox of a rendered subject due when geometry exists, vacuous origin/bbox bands,
-earlier-layer camera in cannot_express options, and
+earlier-layer camera in cannot_express options, a plan-workspace path miss that
+enumerates staged relative reads so a verifier cannot invent another filesystem
+prefix (HIR-0156), and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".

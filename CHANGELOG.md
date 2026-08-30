@@ -7,6 +7,10 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- A denied plan-workspace Read enumerates the staged relative files and forbids
+  prefixing another filesystem root; draft/verify/repair kickoffs compile that card
+  instead of claiming there is no source video
+  ([HIR-0156](docs/improvements/HIR-0156-plan-workspace-path-miss-enumerates-staged-reads.md)).
 - Durable layer memory now lives under shot-root `state/`; reading it cannot create an
   orphan direct run or displace the latest production-run pointer
   ([HIR-0155](docs/improvements/HIR-0155-layer-memory-does-not-create-runs.md)).

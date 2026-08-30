@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from vfx_harness.agents.plan_guardrails import plan_workspace_read_card
+
 PLANNER_SYSTEM = """\
 You publish sparse global authority for an automated VFX build. This is not a
 preproduction session and it must not design any build unit.
@@ -99,16 +101,18 @@ artifacts, then run the deterministic gate.
 
 
 def _refs_block(shot) -> str:
-    """Stills are the ONLY visual input. A real brief arrives as images plus prose.
+    """Stills staged in this workspace are the visual target for global publication.
 
     Global planning receives paths, not image payloads. JIT sessions receive their own
-    judge references when a materialized unit actually needs them.
+    judge references when a materialized unit actually needs them. Video tools register
+    only for clips inside ``refs/``; a clip outside this workspace is not planning input.
     """
     lines = [f"  - refs/{p.name}" for p in shot.refs] or ["  (none)"]
     return (
-        "Reference stills (the complete visual target — there is no source video). "
-        "They are available at these paths for later owning units; do not inspect them "
-        "during sparse global publication:\n"
+        "This workspace stages reference stills as the visual target. Video measurement "
+        "tools register only for clips inside refs/; a clip outside this workspace is "
+        "not planning input. Stills are available at these paths for later owning units; "
+        "do not inspect them during sparse global publication:\n"
         + "\n".join(lines)
         + "\n\nWhen a still becomes due, its owning JIT session inspects it. Fingerprints carry exposure and "
         "density; the pictures carry everything else — camera height and angle, "
@@ -124,7 +128,9 @@ def planner_user_prompt(shot, registry_block: str) -> str:
     return (
         f"Plan shot '{shot.id}'. Build target: {shot.frames} frames @ {shot.fps}fps "
         f"on {shot.engine}.\n\n"
-        f"Read `brief.md` for context. {_refs_block(shot)}\n\n"
+        f"Read `brief.md` for context. "
+        f"{plan_workspace_read_card(shot.folder, first_reads=('brief.md',))} "
+        f"{_refs_block(shot)}\n\n"
         f"This authored-input-only transaction contains no implicit prior plan or build. "
         f"Brief SHA-256 `{brief_hash}` — citations are machine-generated, never authored.\n\n"
         f"Clause registry (resolve EVERY id exactly once in `ownership_mapping.json`):\n"
@@ -185,6 +191,7 @@ def repair_user_prompt(shot, draft_name: str, n: int) -> str:
         f"`ownership_mapping.json`, then close the gate findings listed in your "
         f"instructions by patching the mapping only — expansion regenerates everything "
         f"else. `{draft_name}` is immutable. "
+        f"{plan_workspace_read_card(shot.folder, first_reads=('brief.md', draft_name, 'ownership_mapping.json'))} "
         f"Open §0 with one line per finding: fixed, or overridden with evidence."
     )
 
@@ -195,7 +202,9 @@ def verifier_user_prompt(shot, draft_name: str) -> str:
         f"Verify the draft plan for shot '{shot.id}' (build target: {shot.frames} "
         f"frames @ {shot.fps}fps on {shot.engine}).\n\n"
         f"Read `brief.md`, the rendered draft `{draft_name}`, and the working "
-        f"`ownership_mapping.json` first. {_refs_block(shot)}\n\n"
+        f"`ownership_mapping.json` first. "
+        f"{plan_workspace_read_card(shot.folder, first_reads=('brief.md', draft_name, 'ownership_mapping.json'))} "
+        f"{_refs_block(shot)}\n\n"
         f"Run VERIFY MODE per your instructions — audit owner defensibility, the DAG, "
         f"durable decisions, and blockers — then rewrite `ownership_mapping.json` as the "
         f"audited version so expansion regenerates the superseding artifacts."
