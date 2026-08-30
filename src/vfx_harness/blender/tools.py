@@ -269,11 +269,14 @@ def _bound_static_frames(
         return [int(fallback_frame)]
     from vfx_harness.evidence.scene_checks import FUNCTIONAL_KINDS
 
-    frames = {
-        int(row.get("frame", fallback_frame))
-        for row in rows
-        if str(row.get("id")) in active_ids and row.get("kind") not in FUNCTIONAL_KINDS
-    }
+    frames: set[int] = set()
+    for row in rows:
+        if str(row.get("id")) not in active_ids or row.get("kind") in FUNCTIONAL_KINDS:
+            continue
+        declared = row.get("frames")
+        if not isinstance(declared, (list, tuple)) or not declared:
+            declared = [row.get("frame", fallback_frame)]
+        frames.update(int(frame) for frame in declared)
     return sorted(frames or {int(fallback_frame)})
 
 

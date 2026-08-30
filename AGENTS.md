@@ -376,7 +376,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   (HIR-0129).
   A future-active contract keeps its owner layer's judge-frame authority; the
   activation layer pays that moment as extra-frame evidence and must not add it to
-  its own judge list (HIR-0130).
+  its own judge list. Runtime schedules every bound static row at its declared
+  `frame` or `frames` (falling back to the active judge only when unframed), and
+  lifecycle-tests it there. Live read-back, empty-scene canonical replay, and
+  deterministic revalidation all require geometry-protected extra-frame readings;
+  filtering them through the activation layer's judge list is forbidden
+  (HIR-0130, HIR-0143).
   `cannot_express_in_scope` may name an earlier-layer camera provider; the finding
   records those ids as `fault_owner_units` without treating them as same-layer
   affected seeds (HIR-0127).

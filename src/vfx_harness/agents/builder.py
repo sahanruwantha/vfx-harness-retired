@@ -2648,6 +2648,99 @@ def _scene_ids_active_on_layer(
     return due
 
 
+def _scene_ids_active_at_declared_frames(
+    shot: Shot,
+    layer_id: str,
+    ids: set[str],
+    fallback_frames: tuple[int, ...] | list[int],
+) -> set[str]:
+    """Keep bound ids due at their own evidence frames, not only judge frames.
+
+    A future-active contract keeps the author's frame authority and is paid by the
+    activation layer as extra-frame evidence (HIR-0130).  Filtering the compiled
+    boundary through the activation layer's judge list erases exactly that debt.
+    """
+    from vfx_harness.domain.contracts import active_for, load_document
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    path = selected_artifact_path(shot.folder, "scene_checks.json")
+    if not path.is_file():
+        return set(ids)
+    try:
+        rows = {
+            str(row.get("id")): row
+            for row in load_document(path, "contracts")
+            if isinstance(row, dict) and row.get("id")
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set(ids)
+    fallbacks = tuple(int(frame) for frame in fallback_frames)
+    due: set[str] = set()
+    for cid in ids:
+        row = rows.get(cid)
+        if row is None:
+            due.add(cid)
+            continue
+        declared = row.get("frames")
+        if not isinstance(declared, (list, tuple)) or not declared:
+            declared = [row.get("frame")] if row.get("frame") is not None else fallbacks
+        if any(active_for(row, layer_id, int(frame)) for frame in declared):
+            due.add(cid)
+    return due
+
+
+def _geometry_protected_evidence(
+    shot: Shot,
+    layer,
+    unit,
+    session: BlenderSession,
+    *,
+    fallback_frame: int,
+) -> tuple[set[str], list[dict]]:
+    """Measure geometry-protected contracts at each contract's declared frame.
+
+    The returned ids are canonical obligations.  The readings are additional evidence,
+    not additional unit or layer judge frames.
+    """
+    if unit is None or layer is None:
+        return set(), []
+    protected = _geometry_protected_vis_ids(shot, layer, unit)
+    if not protected:
+        return set(), []
+    due = _scene_ids_active_at_declared_frames(
+        shot, str(layer.id), protected, [int(fallback_frame)]
+    )
+    if not due:
+        return set(), []
+    from vfx_harness.evidence.scene_checks import layer_evidence as scene_layer_evidence
+    from vfx_harness.evidence.scene_checks import load_rows
+
+    rows = {
+        str(row.get("id")): row
+        for row in load_rows(shot.folder)
+        if isinstance(row, dict) and row.get("id")
+    }
+    scheduled: dict[int, set[str]] = {}
+    for cid in due:
+        row = rows.get(cid) or {}
+        declared = row.get("frames")
+        if not isinstance(declared, (list, tuple)) or not declared:
+            declared = [row.get("frame", fallback_frame)]
+        for frame in declared:
+            scheduled.setdefault(int(frame), set()).add(cid)
+    evidence: list[dict] = []
+    for frame, frame_ids in sorted(scheduled.items()):
+        measured = scene_layer_evidence(
+            shot.folder, str(layer.id), frame=frame, session=session
+        )
+        evidence.extend(
+            {**row, "evidence_frame": int(frame)}
+            for row in measured
+            if str(row.get("id")) in frame_ids
+        )
+    return due, evidence
+
+
 def _fault_owner_options_for_unit(shot: Shot | None, layer, active_unit) -> list[dict]:
     """Same-layer ancestors plus earlier-layer camera providers (HIR-0127)."""
     fault_owner_options: list[dict] = []
@@ -2882,10 +2975,17 @@ def _unit_evidence_ids_by_frame(shot: Shot, layer, unit, judges) -> dict[str, li
         if layer is not None:
             with contextlib.suppress(OSError, ValueError, KeyError):
                 ids.update(
-                    _geometry_protected_vis_ids(shot, layer, unit, int(frame))
+                    _scene_ids_active_at_declared_frames(
+                        shot,
+                        str(layer.id),
+                        _geometry_protected_vis_ids(shot, layer, unit),
+                        [int(frame)],
+                    )
                 )
             with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
-                ids = _scene_ids_active_on_layer(shot, str(layer.id), ids, [int(frame)])
+                ids = _scene_ids_active_at_declared_frames(
+                    shot, str(layer.id), ids, [int(frame)]
+                )
         compiled[str(int(frame))] = sorted(ids)
     return compiled
 
@@ -2929,8 +3029,15 @@ def _render_evidence(
     extra = set()
     if active_unit is not None:
         try:
-            extra = _geometry_protected_vis_ids(shot, layer, active_unit, int(m.frame))
-        except (OSError, ValueError, KeyError):
+            extra, protected_evidence = _geometry_protected_evidence(
+                shot,
+                layer,
+                active_unit,
+                session,
+                fallback_frame=int(m.frame),
+            )
+            evidence.extend(protected_evidence)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
             extra = set()
     return _scope_unit_evidence(evidence, active_unit, int(m.frame), extra_ids=extra)
 
@@ -3607,13 +3714,16 @@ async def _judge_unit_or_layer(
     layer = kwargs.pop("layer", None)
     if active_unit is not None and layer is not None:
         try:
-            extra_required = _geometry_protected_vis_ids(
-                shot, layer, active_unit, int(m.frame)
+            extra_required = _scene_ids_active_at_declared_frames(
+                shot,
+                str(layer.id),
+                _geometry_protected_vis_ids(shot, layer, active_unit),
+                [int(m.frame)],
             )
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
             extra_required = set()
     inactive_ids: set[str] = set()
-    bound_ids = set(_unit_evidence_ids(active_unit, int(m.frame)) or set()) | extra_required
+    bound_ids = set(_unit_evidence_ids(active_unit, int(m.frame)) or set())
     if active_unit is not None and layer is not None:
         try:
             due = _scene_ids_active_on_layer(
@@ -3958,7 +4068,9 @@ def _try_revalidate(
                 f"revalidate_f{frame}",
                 mode=_unit_raster_mode(active_unit),
             )
-            evidence = _render_evidence(shot, layer, m_i, render_rel, session)
+            evidence = _render_evidence(
+                shot, layer, m_i, render_rel, session, active_unit=active_unit
+            )
             authoritative = [row for row in evidence if row.get("authoritative")]
             prior = sealed.get(int(frame)) or {}
             reproduction = _image_reproduction(
@@ -3989,10 +4101,13 @@ def _try_revalidate(
             inactive_ids: set[str] = set()
             if active_unit is not None:
                 with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
-                    extra_required = _geometry_protected_vis_ids(
-                        shot, layer, active_unit, int(frame)
+                    extra_required = _scene_ids_active_at_declared_frames(
+                        shot,
+                        str(layer.id),
+                        _geometry_protected_vis_ids(shot, layer, active_unit),
+                        [int(frame)],
                     )
-                    bound_ids = set(_unit_evidence_ids(active_unit, int(frame)) or set()) | extra_required
+                    bound_ids = set(_unit_evidence_ids(active_unit, int(frame)) or set())
                     due = _scene_ids_active_on_layer(
                         shot, str(layer.id), bound_ids, [int(frame)]
                     )
@@ -4209,7 +4324,7 @@ async def build_unit(
         frames = [int(m.frame)]
         frames.extend(int(frame) for frame, _ref in (getattr(layer, "judges", None) or ()))
         with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
-            active_evidence_ids = _scene_ids_active_on_layer(
+            active_evidence_ids = _scene_ids_active_at_declared_frames(
                 shot, str(layer.id), active_evidence_ids, frames
             )
     active_image_evidence_ids = {

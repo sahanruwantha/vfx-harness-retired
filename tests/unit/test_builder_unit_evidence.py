@@ -55,6 +55,14 @@ def test_active_unit_static_evidence_is_produced_at_every_bound_frame() -> None:
     assert _bound_static_frames(rows, {"frame-1", "frame-36", "functional"}, 1) == [1, 36]
 
 
+def test_bound_static_frames_honors_temporal_contract_frame_list() -> None:
+    rows = [
+        {"id": "temporal-static", "frames": [3, 9], "kind": "visible_fraction"},
+    ]
+
+    assert _bound_static_frames(rows, {"temporal-static"}, 39) == [3, 9]
+
+
 def test_candidate_probe_evidence_is_exactly_unit_and_frame_scoped() -> None:
     unit = SimpleNamespace(
         evaluation=SimpleNamespace(

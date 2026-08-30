@@ -89,6 +89,15 @@ stages remain dependency and repair-owner authority. Otherwise a typed future vi
 owner disappears from the projection and the conservative ambiguity rule falsely makes
 the current unit pay it (HIR-0135).
 
+### Amendment: contract-declared evidence schedules
+
+Judge frames are qualitative authority, not the runtime schedule for every bound scene
+contract. A static contract executes at its own declared `frame` or `frames`; only an
+unframed row falls back to the active judge moment. Lifecycle activation is evaluated at
+those contract frames. Geometry-protected debts are measured on that schedule by live
+read-back, empty-scene canonical replay, and deterministic revalidation, while layer and
+unit judge lists remain unchanged. Missing extra-frame evidence fails closure (HIR-0143).
+
 ## Consequences
 
 Global planning can publish without acceptance fingerprints, executable stages, recipes, or

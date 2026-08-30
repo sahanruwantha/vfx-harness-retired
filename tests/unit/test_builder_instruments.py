@@ -677,3 +677,100 @@ def test_geometry_protects_deferred_subject_bbox_and_camera_omits_inactive_debt(
     )
     assert unpaid is not None and unpaid["pass"] is False
     assert "subject-bbox" in unpaid["missing_evidence"]
+
+
+def test_deferred_bbox_is_measured_at_owner_frame_without_becoming_a_judge(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """HIR-0143: activation evidence follows contract frames, not the f39 judge list."""
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from tests.unit.test_vis_repair_authority import _detail_unit
+    from vfx_harness.agents.builder import (
+        _geometry_protected_evidence,
+        _scene_ids_active_at_declared_frames,
+    )
+    from vfx_harness.evidence import scene_checks
+
+    rows = [
+        {
+            "id": "bbox-f1",
+            "kind": "bbox_height",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "2",
+            "lifecycle": "persistent",
+            "axis": "camera_framing",
+            "roles": ["building"],
+            "frame": 1,
+            "op": "max",
+            "hi": 0.2,
+        },
+        {
+            "id": "bbox-f114",
+            "kind": "bbox_height",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "2",
+            "lifecycle": "persistent",
+            "axis": "camera_framing",
+            "roles": ["building"],
+            "frame": 114,
+            "op": "min",
+            "lo": 0.6,
+        },
+        {
+            "id": "future-bbox",
+            "kind": "bbox_height",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "3",
+            "lifecycle": "persistent",
+            "axis": "camera_framing",
+            "roles": ["building"],
+            "frame": 176,
+            "op": "min",
+            "lo": 0.8,
+        },
+    ]
+    (tmp_path / "scene_checks.json").write_text(
+        json.dumps({"schema": 2, "contracts": rows}), encoding="utf-8"
+    )
+    shot = SimpleNamespace(folder=tmp_path)
+    unit = _detail_unit(provides=["geometry"])
+    unit = replace(
+        unit,
+        mutates=replace(unit.mutates, roles=("building.mass.tower",)),
+    )
+    layer = SimpleNamespace(id="2", stages=(unit,), judges=((39, "refs/f39.png"),))
+
+    assert _scene_ids_active_at_declared_frames(
+        shot, "2", {"bbox-f1", "bbox-f114", "future-bbox"}, [39]
+    ) == {"bbox-f1", "bbox-f114"}
+
+    measured_frames: list[int] = []
+
+    def fake_layer_evidence(_folder, _layer_id, *, frame, session):
+        measured_frames.append(frame)
+        return [
+            {
+                "id": row["id"],
+                "authoritative": True,
+                "pass": True,
+            }
+            for row in rows
+            if row["frame"] == frame and row["activates_at"] == "2"
+        ]
+
+    monkeypatch.setattr(scene_checks, "layer_evidence", fake_layer_evidence)
+    due, evidence = _geometry_protected_evidence(
+        shot, layer, unit, object(), fallback_frame=39
+    )
+
+    assert due == {"bbox-f1", "bbox-f114"}
+    assert measured_frames == [1, 114]
+    assert {row["id"] for row in evidence} == due
+    assert {row["evidence_frame"] for row in evidence} == {1, 114}
+    assert layer.judges == ((39, "refs/f39.png"),)
