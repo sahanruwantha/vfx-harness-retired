@@ -1462,12 +1462,14 @@ def build_plan_tools(
             "projected_origin_x": [
                 "roles/control_roles selecting exactly one object (Empty/control is legal)",
                 "op min/max/band in normalized camera coordinates; camera-alignment only, "
-                "not visibility; repair_owner must provide camera",
+                "not visibility or subject composition coverage; repair_owner must provide "
+                "camera; a band wider than half the frame is vacuous",
             ],
             "projected_origin_y": [
                 "roles/control_roles selecting exactly one object (Empty/control is legal)",
                 "op min/max/band in normalized top-left camera coordinates; camera-alignment "
-                "only; repair_owner must provide camera",
+                "only; repair_owner must provide camera; a band wider than half the frame "
+                "is vacuous",
             ],
             "node_link_count": [
                 "graph", "from_node_roles", "to_node_roles",
@@ -1489,8 +1491,13 @@ def build_plan_tools(
             }
         note = (
             "Projected bbox_* and projected_origin_* targets must lie inside the normalized frame; "
+            "a band whose width is greater than half that frame is vacuous. "
             "bbox/visible_fraction require rendered surfaces, while projected_origin_* is "
-            "the camera-owner alignment instrument for Empty/control hosts. The control "
+            "the camera-owner alignment instrument for Empty/control hosts and does not "
+            "cover subject composition. When the subject does not exist yet, author bbox_* "
+            "with owner_layer on the camera layer, activates_at on the earliest geometry "
+            "layer, lifecycle persistent, and fault_owner on the camera owner. "
+            "The control "
             "producer proves fixed world state with scene evidence and publishes a typed "
             "placement_control; the camera successor depends on it, declares the exact "
             "consume, and owns projection without mutating the observed selector. "

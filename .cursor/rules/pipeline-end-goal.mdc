@@ -118,3 +118,7 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
 - Treat a zero-animation bound as keyframe write authority.
 - Infer deferred_owner evidence domains from brief keywords.
 - Leave a deferred_owner row's domains uncovered by its owner layer.
+- Let a projected_origin band wider than half the frame, or projected_origin of a
+  camera-only host, count as subject composition coverage.
+- Let a camera unit seal inactive deferred subject bbox rows, or omit an earlier-layer
+  camera provider from cannot_express fault_owner_options.

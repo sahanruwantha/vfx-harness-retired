@@ -229,6 +229,21 @@ def test_unit_scope_lists_owed_image_contract_debts() -> None:
     assert "owed image-contract debts" in dumped
 
 
+def test_unit_scope_names_earlier_layer_on_fault_owner_options() -> None:
+    camera = _unit("camera_rig", roles=["cam_rig"], contract_id="cam-spine")
+    card = compile_unit_scope(unit=camera, layer_id="1", contracts=_contracts())
+    card["fault_owner_options"] = [
+        {
+            "id": "camera_path",
+            "layer": "1",
+            "roles": ["camera"],
+            "controls": [],
+        }
+    ]
+    dumped = format_unit_scope_card(card)
+    assert "`camera_path` layer=1" in dumped
+
+
 def test_unknown_bound_contract_names_requested_and_present() -> None:
     unit = _unit("camera_rig", roles=["cam_rig"], contract_id="missing-spine")
     with pytest.raises(ValueError, match="missing-spine") as caught:

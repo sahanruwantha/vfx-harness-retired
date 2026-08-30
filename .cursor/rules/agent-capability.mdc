@@ -45,6 +45,8 @@ mutation is a harness defect, not a model limitation to paper over with a longer
 - Locked revision-checked materialization candidate writes; patch cannot insert stage rows
 - Closed-loop mutation: every write has a matching observation
 - Deferred-owner domain AND-coverage against the owner layer's already-validated evidence_domains
+- Subject composition as bbox of a rendered subject due when geometry exists; vacuous origin/bbox bands fail closed
+- Earlier-layer camera providers in cannot_express fault_owner_options
 - Earned qualitative judgment where executable evidence cannot decide
 
 ## Not wanted

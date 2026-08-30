@@ -128,6 +128,7 @@ class HypothesisFalsification:
     conflict: AuthorityConflict
     evidence: tuple[str, ...]
     affected: tuple[str, ...]
+    fault_owner_units: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, value: Any, where: str = "hypothesis falsification") -> HypothesisFalsification:
@@ -169,6 +170,11 @@ class HypothesisFalsification:
             AuthorityConflict.parse(value.get("conflict"), f"{where}.conflict"),
             _strings(value.get("evidence"), f"{where}.evidence"),
             _strings(value.get("affected"), f"{where}.affected"),
+            _strings(
+                value.get("fault_owner_units", []),
+                f"{where}.fault_owner_units",
+                allow_empty=True,
+            ),
         )
 
     @property

@@ -182,7 +182,12 @@ _MATERIALIZATION_EXAMPLE = """{
  "scene_contracts": [{
   "id": "example-contract", "kind": "<contract kind>", "owner_layer": "<this layer id>",
   "fault_owner": "<this layer id>", "activates_at": "<this layer id>", "lifecycle": "layer",
-  "axis": "<an owned axis>", "op": "max", "hi": 0.01}],
+  "axis": "<an owned axis>", "op": "max", "hi": 0.01},
+  {"id": "example-subject-bbox-later", "kind": "bbox_height",
+   "owner_layer": "<this camera layer id>", "fault_owner": "<this camera layer id>",
+   "activates_at": "<earliest geometry layer id>", "lifecycle": "persistent",
+   "axis": "<this camera layer axis>", "roles": ["<subject role that layer will create>"],
+   "frame": 1, "op": "band", "lo": 0.35, "hi": 0.55}],
  "image_contracts": [],
  "requirement_bindings": [
   {"requirement_id": "<owned id>", "contract_ids": ["example-contract"]},
@@ -256,6 +261,13 @@ _TWO_SIDED_CONTRACT_BINDING = (
     "visibility observation, bounded coordination, and consumed assembly interfaces "
     "are typed exceptions. Required claims share one repair_owner. Publish interfaces "
     "export only roles, controls, or sealed contract ids.\n"
+    "Subject composition: a projected_composition owner covers each judge frame with "
+    "bbox_* of a rendered subject, never projected_origin of a camera-only host "
+    "(alignment, not framing). Vacuous normalized bands wider than half the frame are "
+    "rejected. When the subject does not exist yet, author the bbox on this camera "
+    "layer with activates_at on the earliest geometry layer, lifecycle persistent, "
+    "fault_owner this camera layer; bind the ids through composition_context. Do not "
+    "seal those rows on the camera unit.\n"
 )
 
 

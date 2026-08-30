@@ -13,6 +13,7 @@ from vfx_harness.evaluation.grounding import audit
 from vfx_harness.evaluation.plan_gate import (
     Finding,
     GateResult,
+    _check_contracts,
     _check_done,
     _check_evidence,
     _check_evidence_coherence,
@@ -22,6 +23,79 @@ from vfx_harness.evaluation.plan_gate import (
 from vfx_harness.evidence.metrics import METRIC_SET, canonical_fingerprint, look_vector
 from vfx_harness.evidence.scene_checks import _blender_probe, functional_evidence, validate_row
 from vfx_harness.observability import run_artifacts
+
+
+def _form_layer() -> dict:
+    return {
+        "id": "2",
+        "script": "build/02_form.py",
+        "title": "Form",
+        "primary_judge": 1,
+        "judge": [{"frame": 1, "ref": "refs/a.png"}, {"frame": 2, "ref": "refs/b.png"}],
+        "owns": ["form"],
+        "reads": "subject form",
+        "stages": [
+            {
+                "id": "shell",
+                "title": "Shell",
+                "plan": "plans/02_form/01_shell.md",
+                "depends_on": [],
+                "mutates": {
+                    "mode": "scoped",
+                    "roles": ["atrium.shell"],
+                    "controls": [],
+                    "script_spans": ["build/units/02/shell.py"],
+                },
+                "protects": {
+                    "selector": "all_active_upstream_interfaces",
+                    "resolve_to_explicit_ids_at": "freeze",
+                },
+                "provides": ["geometry"],
+                "evaluation": {
+                    "primary_judge": 1,
+                    "judge": [
+                        {"frame": 1, "ref": "refs/a.png"},
+                        {"frame": 2, "ref": "refs/b.png"},
+                    ],
+                    "temporal_evidence": "none",
+                    "claims": [
+                        {
+                            "id": "shell-claim",
+                            "proposition": "shell exists",
+                            "axis": "form",
+                            "property": "object_count",
+                            "subject_roles": ["atrium.shell"],
+                            "subject_controls": [],
+                            "moments": [1, 2],
+                            "kind": "atomic",
+                            "required": True,
+                            "authority": "executable_required",
+                            "repair_owner": "shell",
+                            "evidence": [{"kind": "scene_contract", "id": "shell-count"}],
+                        }
+                    ],
+                },
+                "completion": "all_required_claims_and_protected_contracts_pass",
+            }
+        ],
+    }
+
+
+def _subject_bbox(row_id: str, frame: int, *, lifecycle: str = "persistent", fault_owner: str = "1") -> dict:
+    return {
+        "id": row_id,
+        "kind": "bbox_height",
+        "owner_layer": "1",
+        "fault_owner": fault_owner,
+        "activates_at": "2",
+        "lifecycle": lifecycle,
+        "axis": "camera_framing",
+        "roles": ["atrium.shell"],
+        "frame": frame,
+        "op": "band",
+        "lo": 0.35,
+        "hi": 0.55,
+    }
 
 
 def test_global_plan_defers_all_world_model_work_to_jit() -> None:
@@ -38,6 +112,19 @@ def test_global_plan_defers_all_world_model_work_to_jit() -> None:
     assert "evidence_domains" in PLANNER_SYSTEM
     assert "Coverage is AND" in flat
     assert "no reference measurement, image-check\ncalibration, recipe search" in PLANNER_SYSTEM
+
+
+def test_materialization_example_enumerates_deferred_subject_composition() -> None:
+    from vfx_harness.agents.planner import (
+        _MATERIALIZATION_EXAMPLE,
+        _TWO_SIDED_CONTRACT_BINDING,
+    )
+
+    assert "example-subject-bbox-later" in _MATERIALIZATION_EXAMPLE
+    assert '"lifecycle": "persistent"' in _MATERIALIZATION_EXAMPLE
+    assert "earliest geometry layer" in _MATERIALIZATION_EXAMPLE
+    assert "Subject composition" in _TWO_SIDED_CONTRACT_BINDING
+    assert "projected_origin of a camera-only host" in _TWO_SIDED_CONTRACT_BINDING
 
 
 def _write(path: Path, value: object) -> None:
@@ -905,3 +992,218 @@ def test_another_layers_stuck_state_does_not_block_this_layers_plan() -> None:
         findings=[Finding("contracts", True, "scene_checks.json", "bad row", "fix")],
     )
     assert not plan_wide.clean_for("1")
+
+
+def test_camera_only_projected_origin_does_not_cover_subject_composition(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="trend")
+    move = doc["layers"][0]["stages"][0]
+    move["provides"] = ["camera"]
+    move["mutates"]["roles"] = ["camera", "camera.target"]
+    move["evaluation"]["composition_context"] = {
+        "frames": [1, 2],
+        "contract_ids": ["aim-x-1", "aim-y-1", "aim-x-2", "aim-y-2"],
+    }
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "trend",
+                    "kind": "radial_distance_trend",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "lifecycle": "layer",
+                    "axis": "camera_framing",
+                    "roles": ["hero"],
+                    "frames": [1, 2],
+                    "op": "max",
+                    "hi": 0,
+                },
+                *[
+                    {
+                        "id": f"aim-{axis}-{frame}",
+                        "kind": f"projected_origin_{axis}",
+                        "owner_layer": "1",
+                        "fault_owner": "1",
+                        "activates_at": "1",
+                        "lifecycle": "layer",
+                        "axis": "camera_framing",
+                        "roles": ["camera.target"],
+                        "frame": frame,
+                        "op": "band",
+                        "lo": 0.35,
+                        "hi": 0.55,
+                    }
+                    for frame in (1, 2)
+                    for axis in ("x", "y")
+                ],
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    coverage = [f for f in findings if f.check == "composition-coverage"]
+    assert coverage and all(f.blocking for f in coverage)
+    assert any("no executable subject framing" in f.what for f in coverage)
+
+
+def test_bbox_of_camera_only_host_does_not_cover_subject_composition(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="trend")
+    move = doc["layers"][0]["stages"][0]
+    move["provides"] = ["camera"]
+    move["mutates"]["roles"] = ["camera", "camera.target"]
+    move["evaluation"]["composition_context"] = {
+        "frames": [1, 2],
+        "contract_ids": ["target-bbox-1", "target-bbox-2"],
+    }
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "trend",
+                    "kind": "radial_distance_trend",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "lifecycle": "layer",
+                    "axis": "camera_framing",
+                    "roles": ["hero"],
+                    "frames": [1, 2],
+                    "op": "max",
+                    "hi": 0,
+                },
+                {
+                    "id": "target-bbox-1",
+                    "kind": "bbox_height",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "lifecycle": "layer",
+                    "axis": "camera_framing",
+                    "roles": ["camera.target"],
+                    "frame": 1,
+                    "op": "band",
+                    "lo": 0.35,
+                    "hi": 0.55,
+                },
+                {
+                    "id": "target-bbox-2",
+                    "kind": "bbox_height",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "lifecycle": "layer",
+                    "axis": "camera_framing",
+                    "roles": ["camera.target"],
+                    "frame": 2,
+                    "op": "band",
+                    "lo": 0.35,
+                    "hi": 0.55,
+                },
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    assert any(f.check == "composition-coverage" and f.blocking for f in findings)
+
+
+def test_deferred_subject_bbox_covers_camera_composition(tmp_path: Path) -> None:
+    doc = _layer_doc(temporal_id="trend")
+    move = doc["layers"][0]["stages"][0]
+    move["provides"] = ["camera"]
+    move["evaluation"]["composition_context"] = {
+        "frames": [1, 2],
+        "contract_ids": ["subject-bbox-1", "subject-bbox-2"],
+    }
+    doc["layers"].append(_form_layer())
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "trend",
+                    "kind": "radial_distance_trend",
+                    "owner_layer": "1",
+                    "fault_owner": "1",
+                    "activates_at": "1",
+                    "lifecycle": "layer",
+                    "axis": "camera_framing",
+                    "roles": ["hero"],
+                    "frames": [1, 2],
+                    "op": "max",
+                    "hi": 0,
+                },
+                _subject_bbox("subject-bbox-1", 1),
+                _subject_bbox("subject-bbox-2", 2),
+                {
+                    "id": "shell-count",
+                    "kind": "object_count",
+                    "owner_layer": "2",
+                    "fault_owner": "2",
+                    "activates_at": "2",
+                    "lifecycle": "layer",
+                    "axis": "form",
+                    "roles": ["atrium.shell"],
+                    "op": "eq",
+                    "value": 1,
+                },
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+
+    assert not any(f.check == "composition-coverage" for f in findings)
+
+
+def test_deferred_subject_bbox_must_be_persistent_with_camera_fault_owner(
+    tmp_path: Path,
+) -> None:
+    doc = _layer_doc(temporal_id="trend")
+    doc["layers"].append(_form_layer())
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "critic_axes.json",
+        [
+            {"key": "camera_framing", "desc": "camera"},
+            {"key": "form", "desc": "form"},
+        ],
+    )
+    _write(tmp_path / "acceptance.json", [])
+    (tmp_path / "refs").mkdir()
+    Image.new("RGB", (8, 8)).save(tmp_path / "refs/a.png")
+    Image.new("RGB", (8, 8)).save(tmp_path / "refs/b.png")
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                _subject_bbox("subject-bbox-layer", 1, lifecycle="layer"),
+                _subject_bbox("subject-bbox-wrong-fault", 2, fault_owner="2"),
+            ],
+        },
+    )
+
+    findings, _ = _check_contracts(tmp_path)
+
+    lifecycle = [f for f in findings if f.check == "deferred-composition-lifecycle"]
+    fault = [f for f in findings if f.check == "deferred-composition-fault"]
+    assert lifecycle and lifecycle[0].blocking
+    assert "subject-bbox-layer" in lifecycle[0].where
+    assert fault and fault[0].blocking
+    assert "subject-bbox-wrong-fault" in fault[0].where
+    assert "fault_owner='1'" in fault[0].what

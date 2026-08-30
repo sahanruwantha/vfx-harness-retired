@@ -557,13 +557,9 @@ def record_hypothesis_falsification(
     known_ids = {candidate.id for candidate in units}
     seeds = {str(uid) for uid in (affected_seed_ids or {unit.id}) if str(uid)}
     seeds.add(unit.id)
-    unknown_seeds = sorted(seeds - known_ids)
-    if unknown_seeds:
-        raise ValueError(
-            "hypothesis falsification names unknown affected seed units: "
-            + ", ".join(unknown_seeds)
-        )
-    affected = sorted(_downstream(seeds, units))
+    upstream_owners = sorted(seeds - known_ids)
+    local_seeds = (seeds & known_ids) | {unit.id}
+    affected = sorted(_downstream(local_seeds, units))
     now = _now()
     payload = {
         "schema": HYPOTHESIS_FALSIFICATION_SCHEMA,
@@ -585,6 +581,7 @@ def record_hypothesis_falsification(
         "conflict": dict(conflict),
         "evidence": list(evidence),
         "affected": affected,
+        "fault_owner_units": list(upstream_owners),
     }
     identity_payload = dict(payload)
     identity_payload.pop("record_id")

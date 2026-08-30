@@ -891,6 +891,10 @@ def _cross_row_contract_findings(scene_rows: list) -> list[Finding]:
 
 
 def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tuple[list[Finding], dict]:
+    from vfx_harness.evidence.scene_checks import (
+        BBOX_KINDS,
+        SUBJECT_COMPOSITION_RULE,
+    )
     from vfx_harness.evidence.scene_checks import validate_row as validate_scene_check
 
     out = []
@@ -1196,6 +1200,39 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                                 "add the frame to the layer judge list or move the contract",
                             )
                         )
+            try:
+                owner_n = int(owner)
+                active_n = int(active)
+            except (TypeError, ValueError):
+                owner_n = active_n = None
+            if (
+                owner_n is not None
+                and active_n is not None
+                and active_n > owner_n
+                and str(row.get("kind") or "") in BBOX_KINDS
+            ):
+                if str(row.get("lifecycle") or "") != "persistent":
+                    out.append(
+                        Finding(
+                            "deferred-composition-lifecycle",
+                            True,
+                            rid,
+                            "subject composition due on a later layer must be persistent "
+                            "so later layers keep the camera framed",
+                            SUBJECT_COMPOSITION_RULE,
+                        )
+                    )
+                if lid != owner:
+                    out.append(
+                        Finding(
+                            "deferred-composition-fault",
+                            True,
+                            rid,
+                            f"deferred subject composition must keep fault_owner={owner!r} "
+                            f"(the camera owner), not {lid!r}",
+                            SUBJECT_COMPOSITION_RULE,
+                        )
+                    )
             for temporal_frame in row.get("frames") or []:
                 if active in layer_frames and temporal_frame not in layer_frames[active]:
                     out.append(
@@ -1334,14 +1371,75 @@ def _check_unit_dependencies(folder: Path) -> list[Finding]:
     return findings
 
 
+def _camera_only_host_roles(stages: dict[str, dict]) -> frozenset[str]:
+    """Roles mutated by a camera provider that does not also provide geometry."""
+    roles: set[str] = set()
+    for unit in stages.values():
+        provides = {str(item) for item in (unit.get("provides") or [])}
+        if "camera" not in provides or "geometry" in provides:
+            continue
+        mutates = unit.get("mutates") or {}
+        roles.update(str(item) for item in mutates.get("roles") or [])
+        roles.update(str(item) for item in mutates.get("controls") or [])
+    return frozenset(roles)
+
+
+def _role_matches_any(role: str, selectors: frozenset[str]) -> bool:
+    return any(
+        fnmatch.fnmatchcase(role, selector) or fnmatch.fnmatchcase(selector, role)
+        for selector in selectors
+    )
+
+
+def _is_subject_framing_row(row: dict, camera_only_roles: frozenset[str]) -> bool:
+    """True when a row can certify subject composition (HIR-0127).
+
+    `projected_origin` of a camera-only host is alignment, not framing. `bbox_*` of a
+    rendered subject is framing. A bbox whose every role is a camera-only host is not.
+    """
+    from vfx_harness.evidence.scene_checks import BBOX_KINDS
+
+    if str(row.get("kind") or "") not in BBOX_KINDS:
+        return False
+    roles = [str(item) for item in row.get("roles") or [] if str(item)]
+    if not roles or not camera_only_roles:
+        return True
+    return not all(_role_matches_any(role, camera_only_roles) for role in roles)
+
+
+def _deferred_subject_framing_covers(
+    scene_rows: list,
+    layer_id: str,
+    frame: int,
+    camera_only_roles: frozenset[str],
+) -> bool:
+    for row in scene_rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("owner_layer") or "") != layer_id:
+            continue
+        try:
+            owner = int(row.get("owner_layer"))
+            active = int(row.get("activates_at") or owner)
+        except (TypeError, ValueError):
+            continue
+        if active <= owner:
+            continue
+        if row.get("frame") != frame:
+            continue
+        if _is_subject_framing_row(row, camera_only_roles):
+            return True
+    return False
+
+
 def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     """Check temporal, composition, and mutation ownership coverage across contracts."""
     from vfx_harness.domain.contracts import load_document
     from vfx_harness.domain.work_units import PROJECTED_ORIGIN_REPAIR_RULE
     from vfx_harness.evidence.scene_checks import (
         CAMERA_REQUIRED_KINDS,
-        PROJECTED_CONTEXT_KINDS,
         PROJECTED_ORIGIN_KINDS,
+        SUBJECT_COMPOSITION_RULE,
         SURFACE_PROJECTED_KINDS,
         TEMPORAL_KINDS,
     )
@@ -1615,15 +1713,15 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                 )
             return False
 
+        camera_only_roles = _camera_only_host_roles(stages)
         if owns_composition:
             for frame in judges:
                 covered = False
                 for unit in stages.values():
                     evaluation = unit.get("evaluation") or {}
-                    # A required claim bound straight to a bbox contract at this judge
-                    # frame IS executable projected context — the remediation text has
-                    # always said a direct binding is valid, so honor it rather than
-                    # demanding the composition_context restatement of the same fact.
+                    # A required claim bound straight to a subject bbox at this judge
+                    # frame IS executable projected context. projected_origin of a
+                    # camera-only host is alignment, not framing (HIR-0127).
                     if any(
                         isinstance(claim, dict)
                         and claim.get("required")
@@ -1631,9 +1729,12 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         and any(
                             isinstance(binding, dict)
                             and binding.get("kind") == "scene_contract"
-                            and scene_by_id.get(str(binding.get("id")), {}).get("kind")
-                            in PROJECTED_CONTEXT_KINDS
-                            and scene_by_id.get(str(binding.get("id")), {}).get("frame") == frame
+                            and scene_by_id.get(str(binding.get("id")), {}).get("frame")
+                            == frame
+                            and _is_subject_framing_row(
+                                scene_by_id.get(str(binding.get("id")), {}),
+                                camera_only_roles,
+                            )
                             for binding in claim.get("evidence") or []
                         )
                         for claim in evaluation.get("claims") or []
@@ -1644,14 +1745,11 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     if frame not in (context.get("frames") or []):
                         continue
                     contract_ids = {str(value) for value in context.get("contract_ids") or []}
-                    if (
-                        contract_ids
-                        and all(
-                            cid in scene_by_id
-                            and scene_by_id[cid].get("kind") in PROJECTED_CONTEXT_KINDS
-                            for cid in contract_ids
-                        )
-                        and any(scene_by_id[cid].get("frame") == frame for cid in contract_ids)
+                    if any(
+                        cid in scene_by_id
+                        and scene_by_id[cid].get("frame") == frame
+                        and _is_subject_framing_row(scene_by_id[cid], camera_only_roles)
+                        for cid in contract_ids
                     ):
                         covered = True
                         break
@@ -1672,23 +1770,26 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         }
                         if frame in source_frames and any(
                             str(row.get("id")) in source_contracts
-                            and
-                            row.get("kind") in PROJECTED_CONTEXT_KINDS
                             and row.get("frame") == frame
                             and str(row.get("activates_at") or "") == lid
+                            and _is_subject_framing_row(row, camera_only_roles)
                             for row in scene_rows
+                            if isinstance(row, dict)
                         ):
                             covered = True
                             break
+                if not covered and _deferred_subject_framing_covers(
+                    scene_rows, lid, frame, camera_only_roles
+                ):
+                    covered = True
                 if not covered:
                     out.append(
                         Finding(
                             "composition-coverage",
                             True,
                             f"layer {lid} judge f{frame}",
-                            "camera/composition owner has no executable projected context",
-                            "bind a bbox contract directly or depend on a blockout unit that "
-                            "is bbox-checked at this judge frame before sealing the camera",
+                            "camera/composition owner has no executable subject framing",
+                            SUBJECT_COMPOSITION_RULE,
                         )
                     )
         for uid, unit in stages.items():

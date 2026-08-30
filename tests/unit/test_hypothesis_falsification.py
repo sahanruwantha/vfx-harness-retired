@@ -116,6 +116,87 @@ def test_falsification_can_name_passed_upstream_fault_owner_for_replan(tmp_path:
     assert state["units"]["atmosphere"]["status"] == "blocked"
 
 
+def test_falsification_records_earlier_layer_camera_without_local_affected(
+    tmp_path: Path,
+) -> None:
+    units = (_unit("facade"),)
+    initialize(tmp_path, "2", units, plan_hash="a" * 64)
+    transition(tmp_path, "2", "facade", "planning", reason="ready")
+    transition(tmp_path, "2", "facade", "building", reason="started")
+
+    finding = record_hypothesis_falsification(
+        tmp_path,
+        "2",
+        units[0],
+        units,
+        bundle_hash="b" * 64,
+        unit_plan_hash="c" * 64,
+        candidate_hash="d" * 64,
+        settings_hash="e" * 64,
+        contract_ids=["subject-bbox-1"],
+        observations=[{"pass": False, "classification": "unsatisfiable_in_scope"}],
+        decisions=[],
+        conflict={
+            "kind": "ownership",
+            "required_authority": "reopen the earlier camera owner",
+            "roles": ["atrium.shell"],
+            "controls": [],
+        },
+        evidence=["runs/run-1/evidence/f038.png"],
+        affected_seed_ids={"facade", "camera_path"},
+    )
+
+    state = load(tmp_path, "2")
+    assert finding["affected"] == ["facade"]
+    assert finding["fault_owner_units"] == ["camera_path"]
+    assert "camera_path" not in finding["affected"]
+    assert state["units"]["facade"]["status"] == "hypothesis_falsified"
+    parsed = load_hypothesis_falsification(
+        tmp_path
+        / "state/work-units/hypothesis-falsifications"
+        / f"{finding['record_id']}.json"
+    )
+    assert parsed.fault_owner_units == ("camera_path",)
+
+
+def test_hypothesis_falsification_parses_without_fault_owner_units() -> None:
+    from vfx_harness.domain.unit_outcomes import (
+        HYPOTHESIS_FALSIFICATION_SCHEMA,
+        HypothesisFalsification,
+    )
+
+    digest = "b" * 64
+    parsed = HypothesisFalsification.parse(
+        {
+            "schema": HYPOTHESIS_FALSIFICATION_SCHEMA,
+            "record_id": "hf-legacy",
+            "recorded_at": "2026-08-30T00:00:00+00:00",
+            "layer": "2",
+            "unit": "facade",
+            "identities": {
+                "bundle_hash": digest,
+                "plan_hash": digest,
+                "unit_hash": digest,
+                "unit_plan_hash": digest,
+                "candidate_hash": digest,
+                "settings_hash": digest,
+            },
+            "contract_ids": ["subject-bbox-1"],
+            "observations": [{"pass": False}],
+            "decisions": [],
+            "conflict": {
+                "kind": "contract",
+                "required_authority": "amend",
+                "roles": [],
+                "controls": [],
+            },
+            "evidence": ["runs/run-1/evidence/f038.png"],
+            "affected": ["facade"],
+        }
+    )
+    assert parsed.fault_owner_units == ()
+
+
 def test_falsifying_decisions_classify_by_declared_path_only() -> None:
     approved = SimpleNamespace(
         id="A2",

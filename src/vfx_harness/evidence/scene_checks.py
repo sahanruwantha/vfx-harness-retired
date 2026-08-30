@@ -110,6 +110,16 @@ PROJECTED_ORIGIN_KINDS = frozenset({"projected_origin_x", "projected_origin_y"})
 SURFACE_PROJECTED_KINDS = BBOX_KINDS | {"visible_fraction"}
 PROJECTED_CONTEXT_KINDS = BBOX_KINDS | PROJECTED_ORIGIN_KINDS
 _PROJECTED_KINDS = SURFACE_PROJECTED_KINDS | PROJECTED_ORIGIN_KINDS
+# Inclusive width greater than half the normalized frame is "somewhere on screen"
+# (Room 1046 cam-aim 0.2–0.8 sealed a nadir camera). Vis already fails lo<=0.
+VACUOUS_NORMALIZED_BAND_SPAN = 0.5
+SUBJECT_COMPOSITION_RULE = (
+    "a projected_composition owner covers each judge frame with bbox_* of a rendered "
+    "subject, not projected_origin of a camera-only host. When that subject does not "
+    "exist yet, the camera layer authors the bbox with activates_at on the earliest "
+    "geometry layer, lifecycle persistent, and fault_owner on the camera owner layer; "
+    "the camera unit binds the ids through composition_context and does not seal them"
+)
 # These instruments cannot produce a reading without ``scene.camera``.  Keep the
 # capability beside the canonical metric registry so planning and execution do not
 # maintain divergent guesses about which evidence needs a camera.  Functional kinds
@@ -513,6 +523,20 @@ def validate_row(row: dict) -> str | None:
                     "the metric can only read [0,1], so this target is vacuous. "
                     "Use a bound inside the frame, another kind, or record a "
                     "vocabulary-gap escalation"
+                )
+        if row.get("op") == "band":
+            lo, hi = row.get("lo"), row.get("hi")
+            numeric = (
+                not isinstance(lo, bool)
+                and not isinstance(hi, bool)
+                and isinstance(lo, (int, float))
+                and isinstance(hi, (int, float))
+            )
+            if numeric and float(hi) - float(lo) > VACUOUS_NORMALIZED_BAND_SPAN:
+                return (
+                    f"{kind} band width {float(hi) - float(lo):g} covers more than half "
+                    "the normalized frame — vacuous. Tighten lo/hi around the ref "
+                    "measurement (HIR-0127)"
                 )
     if kind == "render_region_stat":
         region = row.get("region")
@@ -1446,6 +1470,39 @@ def load_rows(shot_folder: str | Path) -> list[dict]:
     from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
     return load_document(selected_artifact_path(shot_folder, "scene_checks.json"), "contracts")
+
+
+def deferred_subject_composition_ids(
+    rows: Sequence[Mapping[str, object]],
+    layer_id: str | int,
+    frame: int | None = None,
+) -> tuple[str, ...]:
+    """Camera-owned bbox rows that become testable on a later geometry layer (HIR-0127)."""
+    from vfx_harness.domain.contracts import active_for
+
+    try:
+        current = int(layer_id)
+    except (TypeError, ValueError):
+        return ()
+    ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("kind") or "") not in BBOX_KINDS:
+            continue
+        cid = str(row.get("id") or "")
+        if not cid:
+            continue
+        try:
+            owner = int(row.get("owner_layer"))
+        except (TypeError, ValueError):
+            continue
+        if owner >= current:
+            continue
+        if not active_for(dict(row), layer_id, frame):
+            continue
+        ids.append(cid)
+    return tuple(sorted(ids))
 
 
 def layer_evidence(shot_folder: str | Path, layer_id: str, *, frame: int, session) -> list[dict]:

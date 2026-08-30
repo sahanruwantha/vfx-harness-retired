@@ -2504,19 +2504,131 @@ def _image_reproduction(live: str | Path, canonical: str | Path) -> dict:
 
 
 def _geometry_protected_vis_ids(shot: Shot, layer, unit, frame: int | None = None) -> set[str]:
-    """Lifecycle-active vis ids a geometry unit must re-evaluate (HIR-0051)."""
+    """Lifecycle-active vis and deferred subject-composition ids a geometry unit must re-evaluate."""
     from vfx_harness.domain.contracts import load_document
     from vfx_harness.domain.work_units import (
         geometry_vis_protection_ids,
         layer_active_visible_fraction_ids,
+        plan_selector_declared,
     )
+    from vfx_harness.evidence.scene_checks import deferred_subject_composition_ids
     from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
     if unit is None or "geometry" not in getattr(unit, "provides", ()):
         return set()
     rows = load_document(selected_artifact_path(shot.folder, "scene_checks.json"), "contracts")
     vis = layer_active_visible_fraction_ids(rows, str(layer.id), frame=frame)
-    return set(geometry_vis_protection_ids(unit.provides, vis))
+    protected = set(geometry_vis_protection_ids(unit.provides, vis))
+    scope = getattr(unit, "mutates", None)
+    mutated = {
+        str(item)
+        for item in (
+            *(getattr(scope, "roles", ()) or ()),
+            *(getattr(scope, "dresses", ()) or ()),
+        )
+        if str(item)
+    }
+    by_id = {str(row.get("id")): row for row in rows if isinstance(row, dict) and row.get("id")}
+    for cid in deferred_subject_composition_ids(rows, str(layer.id), frame):
+        roles = [str(item) for item in (by_id.get(cid) or {}).get("roles") or [] if str(item)]
+        if roles and any(plan_selector_declared(role, mutated) for role in roles):
+            protected.add(cid)
+    return protected
+
+
+def _scene_ids_active_on_layer(
+    shot: Shot, layer_id: str, ids: set[str], frames: tuple[int, ...] | list[int]
+) -> set[str]:
+    """Keep bound ids that are due on this layer; drop later-activating composition debts."""
+    from vfx_harness.domain.contracts import active_for, load_document
+    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+    path = selected_artifact_path(shot.folder, "scene_checks.json")
+    if not path.is_file():
+        return set(ids)
+    try:
+        rows = {
+            str(row.get("id")): row
+            for row in load_document(path, "contracts")
+            if isinstance(row, dict) and row.get("id")
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set(ids)
+    due: set[str] = set()
+    frame_list = tuple(int(frame) for frame in frames)
+    for cid in ids:
+        row = rows.get(cid)
+        if row is None:
+            due.add(cid)
+            continue
+        if row.get("frame") is None:
+            if active_for(row, layer_id):
+                due.add(cid)
+            continue
+        if any(active_for(row, layer_id, frame) for frame in frame_list):
+            due.add(cid)
+    return due
+
+
+def _fault_owner_options_for_unit(shot: Shot | None, layer, active_unit) -> list[dict]:
+    """Same-layer ancestors plus earlier-layer camera providers (HIR-0127)."""
+    fault_owner_options: list[dict] = []
+    if active_unit is None or layer is None:
+        return fault_owner_options
+    units_by_id = {candidate.id: candidate for candidate in layer.stages}
+    ancestors: set[str] = set()
+    frontier = list(active_unit.depends_on)
+    while frontier:
+        candidate_id = frontier.pop()
+        if candidate_id in ancestors:
+            continue
+        ancestors.add(candidate_id)
+        candidate = units_by_id.get(candidate_id)
+        if candidate is not None:
+            frontier.extend(candidate.depends_on)
+    seen: set[str] = set()
+    for candidate in layer.stages:
+        if candidate.id not in ancestors or candidate.id in seen:
+            continue
+        seen.add(candidate.id)
+        fault_owner_options.append({
+            "id": candidate.id,
+            "title": candidate.title,
+            "layer": str(layer.id),
+            "roles": list(candidate.mutates.roles),
+            "controls": list(candidate.mutates.controls),
+        })
+    if shot is None:
+        return fault_owner_options
+    try:
+        from vfx_harness.orchestration.ledger import load_layers
+
+        all_layers = load_layers(shot)
+    except (OSError, ValueError, KeyError, FileNotFoundError, json.JSONDecodeError):
+        return fault_owner_options
+    try:
+        current = int(layer.id)
+    except (TypeError, ValueError):
+        return fault_owner_options
+    for prior in all_layers.values():
+        try:
+            prior_id = int(prior.id)
+        except (TypeError, ValueError):
+            continue
+        if prior_id >= current:
+            continue
+        for candidate in prior.stages:
+            if "camera" not in (candidate.provides or ()) or candidate.id in seen:
+                continue
+            seen.add(candidate.id)
+            fault_owner_options.append({
+                "id": candidate.id,
+                "title": candidate.title,
+                "layer": str(prior.id),
+                "roles": list(candidate.mutates.roles),
+                "controls": list(candidate.mutates.controls),
+            })
+    return fault_owner_options
 
 
 def _unit_evidence_ids(unit, frame: int) -> set[str] | None:
@@ -2687,6 +2799,8 @@ def _unit_evidence_ids_by_frame(shot: Shot, layer, unit, judges) -> dict[str, li
                 ids.update(
                     _geometry_protected_vis_ids(shot, layer, unit, int(frame))
                 )
+            with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
+                ids = _scene_ids_active_on_layer(shot, str(layer.id), ids, [int(frame)])
         compiled[str(int(frame))] = sorted(ids)
     return compiled
 
@@ -2836,6 +2950,7 @@ def _executable_unit_verdict(
     evidence: list[dict],
     contract_frames: dict[str, int] | None = None,
     extra_required_ids: set[str] | None = None,
+    inactive_ids: set[str] | None = None,
 ) -> dict | None:
     """Let exact executable claims decide an atomic unit without a vision call."""
     if unit is None:
@@ -2887,6 +3002,8 @@ def _executable_unit_verdict(
     }
     if extra_required_ids:
         required_ids |= {str(item) for item in extra_required_ids}
+    if inactive_ids:
+        required_ids -= {str(item) for item in inactive_ids}
     by_id = {str(row.get("id")): row for row in evidence if row.get("id")}
     missing = sorted(required_ids - set(by_id))
     failures = [
@@ -3174,6 +3291,16 @@ async def _judge_unit_or_layer(
             )
         except (OSError, ValueError, KeyError):
             extra_required = set()
+    inactive_ids: set[str] = set()
+    bound_ids = set(_unit_evidence_ids(active_unit, int(m.frame)) or set()) | extra_required
+    if active_unit is not None and layer is not None:
+        try:
+            due = _scene_ids_active_on_layer(
+                shot, str(layer.id), bound_ids, [int(m.frame)]
+            )
+            inactive_ids = bound_ids - due
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            inactive_ids = set()
     verdict = _executable_unit_verdict(
         active_unit,
         int(m.frame),
@@ -3181,6 +3308,7 @@ async def _judge_unit_or_layer(
         evidence,
         contract_frames=contract_frames,
         extra_required_ids=extra_required,
+        inactive_ids=inactive_ids,
     )
     if verdict is None:
         if active_unit is not None and not tuple(
@@ -3199,7 +3327,10 @@ async def _judge_unit_or_layer(
             **kwargs,
         )
     status = "PASS ✅" if verdict["pass"] else "REVISE ✎"
-    expected = len((_unit_evidence_ids(active_unit, int(m.frame)) or set()) | extra_required)
+    expected = len(
+        ((_unit_evidence_ids(active_unit, int(m.frame)) or set()) | extra_required)
+        - inactive_ids
+    )
     observed = expected - len(verdict["missing_evidence"])
     log(f"unit evidence: {observed}/{expected} bound checks observed · {status}", 1)
     for issue in verdict["issues"][:6]:
@@ -3518,12 +3649,26 @@ def _try_revalidate(
             evidence = _render_evidence(
                 shot, layer, m_i, None, session, active_unit=active_unit
             )
+            extra_required: set[str] = set()
+            inactive_ids: set[str] = set()
+            if active_unit is not None:
+                with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
+                    extra_required = _geometry_protected_vis_ids(
+                        shot, layer, active_unit, int(frame)
+                    )
+                    bound_ids = set(_unit_evidence_ids(active_unit, int(frame)) or set()) | extra_required
+                    due = _scene_ids_active_on_layer(
+                        shot, str(layer.id), bound_ids, [int(frame)]
+                    )
+                    inactive_ids = bound_ids - due
             verdict = _executable_unit_verdict(
                 active_unit,
                 int(frame),
                 [(str(axis), str(axis)) for axis in getattr(layer, "owns", ())],
                 evidence,
                 contract_frames=contract_frames,
+                extra_required_ids=extra_required,
+                inactive_ids=inactive_ids,
             ) or _lookless_without_executable_verdict(
                 active_unit,
                 int(frame),
@@ -3725,6 +3870,12 @@ async def build_unit(
         except (OSError, ValueError, KeyError):
             extra_vis = set()
         active_evidence_ids = set(active_evidence_ids) | extra_vis
+        frames = [int(m.frame)]
+        frames.extend(int(frame) for frame, _ref in (getattr(layer, "judges", None) or ()))
+        with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
+            active_evidence_ids = _scene_ids_active_on_layer(
+                shot, str(layer.id), active_evidence_ids, frames
+            )
     active_image_evidence_ids = {
         binding.id
         for claim in (active_unit.evaluation.claims if active_unit else ())
@@ -3747,28 +3898,7 @@ async def build_unit(
     )
     from vfx_harness.orchestration.unit_state import unit_digest
 
-    fault_owner_options: list[dict] = []
-    if active_unit is not None:
-        units_by_id = {candidate.id: candidate for candidate in layer.stages}
-        ancestors: set[str] = set()
-        frontier = list(active_unit.depends_on)
-        while frontier:
-            candidate_id = frontier.pop()
-            if candidate_id in ancestors:
-                continue
-            ancestors.add(candidate_id)
-            candidate = units_by_id.get(candidate_id)
-            if candidate is not None:
-                frontier.extend(candidate.depends_on)
-        for candidate in layer.stages:
-            if candidate.id not in ancestors:
-                continue
-            fault_owner_options.append({
-                "id": candidate.id,
-                "title": candidate.title,
-                "roles": list(candidate.mutates.roles),
-                "controls": list(candidate.mutates.controls),
-            })
+    fault_owner_options = _fault_owner_options_for_unit(shot, layer, active_unit)
 
     phase = {
         "mode": "live",

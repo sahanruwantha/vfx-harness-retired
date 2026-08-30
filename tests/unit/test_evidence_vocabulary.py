@@ -152,6 +152,40 @@ def test_projected_bounds_outside_the_frame_are_vacuous() -> None:
     assert error is not None and "outside the normalized frame" in error
 
 
+def test_projected_band_wider_than_half_the_frame_is_vacuous() -> None:
+    """HIR-0127: 0.2–0.8 is 'somewhere on screen', not a composition target."""
+    from vfx_harness.evidence.scene_checks import deferred_subject_composition_ids
+
+    for kind in ("projected_origin_x", "projected_origin_y", "bbox_width", "bbox_height"):
+        wide = _row(
+            id=f"wide-{kind}", kind=kind, roles=["hero"], frame=1, op="band", lo=0.2, hi=0.8,
+        )
+        error = validate_row(wide)
+        assert error is not None and "vacuous" in error, kind
+        tight = {**wide, "lo": 0.35, "hi": 0.65}
+        assert validate_row(tight) is None, kind
+        half = {**wide, "lo": 0.4, "hi": 0.9}
+        assert validate_row(half) is None, kind
+
+    deferred = _row(
+        id="subject-bbox-later",
+        kind="bbox_height",
+        roles=["atrium.shell"],
+        frame=38,
+        op="band",
+        lo=0.35,
+        hi=0.55,
+        owner_layer="1",
+        fault_owner="1",
+        activates_at="2",
+        lifecycle="persistent",
+    )
+    assert validate_row(deferred) is None
+    assert deferred_subject_composition_ids([deferred], "1", 38) == ()
+    assert deferred_subject_composition_ids([deferred], "2", 38) == ("subject-bbox-later",)
+    assert deferred_subject_composition_ids([deferred], "2", 1) == ()
+
+
 def test_builder_writable_custom_properties_cannot_certify() -> None:
     error = validate_row(
         _row(id="s", kind="object_property", roles=["cam_rig"], frame=1,

@@ -210,7 +210,9 @@ role-bound global camera capability whose dependency closure reaches every judge
 typed camera availability that role names cannot impersonate, a closed unit-ticket schema
 on the staging tool, projection consumption that matches the exporting interface, locked
 revision-checked materialization candidate writes, deferred-owner domain AND-coverage
-against the owner layer's already-validated evidence_domains, and
+against the owner layer's already-validated evidence_domains, subject composition as
+bbox of a rendered subject due when geometry exists, vacuous origin/bbox bands,
+earlier-layer camera in cannot_express options, and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -335,6 +337,16 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   Every scene-contract kind that projects or renders through the active camera must bind
   on a unit whose dependency closure (or an earlier materialized layer) provides a camera;
   otherwise publication fails `composition-bootstrap` (HIR-0085).
+  A projected_composition owner covers each judge frame with `bbox_*` of a rendered
+  subject, not `projected_origin` of a camera-only host. A normalized `band` wider
+  than half the frame is vacuous. When the subject does not exist yet, the camera
+  layer authors those bbox rows with `activates_at` on the earliest geometry layer,
+  `lifecycle: persistent`, and `fault_owner` on the camera owner; the camera unit
+  binds the ids through `composition_context` and does not seal them. Geometry units
+  that mutate the measured roles freeze-protect the active deferred rows.
+  `cannot_express_in_scope` may name an earlier-layer camera provider; the finding
+  records those ids as `fault_owner_units` without treating them as same-layer
+  affected seeds (HIR-0127).
   Camera availability is global DAG authority: each sparse layer declares `jit.provides`
   as capability → reserved-role selectors, every judged layer's transitive closure must
   contain camera, and a materialized camera unit must mutate one of that layer's exact
@@ -445,6 +457,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   and optional numeric `tol` (there is no `eq` field), `min` uses `lo`, `max`
   uses `hi`, and `band` uses both `lo` and `hi`; validation names the exact field
   on the first rejection (HIR-0125).
+  A projected `band` whose width is greater than half the normalized frame is
+  vacuous. `projected_origin` of a camera-only host is alignment, not subject
+  composition coverage; coverage is `bbox_*` of a rendered subject, deferred to
+  the earliest geometry layer when that subject does not exist yet (HIR-0127).
   A `curve_derivative_max` miss names the argmax adjacent-frame pair and compact
   over-`hi` segments; a scalar without its argmax is an estimate (HIR-0035).
   A `keyframe_schedule` path miss names the requested aliases (`P`, `data.P`)

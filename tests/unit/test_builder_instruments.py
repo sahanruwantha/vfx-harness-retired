@@ -415,3 +415,228 @@ def test_repair_candidate_server_binds_cannot_express(tmp_path) -> None:
     )
     assert "mcp__candidate__cannot_express_in_scope" not in finalize_names
     assert all("propose_checks" not in name for name in finalize_names)
+
+
+def _staged_unit_row(
+    uid: str,
+    *,
+    layer: str,
+    roles: list[str],
+    provides: list[str],
+    axis: str,
+    depends_on: list[str] | None = None,
+) -> dict:
+    return {
+        "id": uid,
+        "title": uid,
+        "plan": f"plans/{layer.zfill(2)}_{uid}/{uid}.md",
+        "depends_on": depends_on or [],
+        "mutates": {
+            "mode": "scoped",
+            "roles": roles,
+            "controls": [],
+            "script_spans": [f"build/units/{layer.zfill(2)}/{uid}.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "look_capabilities": [],
+        "provides": provides,
+        "evaluation": {
+            "primary_judge": 1,
+            "judge": [{"frame": 1, "ref": "refs/a.png"}],
+            "temporal_evidence": "none",
+            "claims": [
+                {
+                    "id": f"{uid}-claim",
+                    "proposition": f"{uid} holds",
+                    "axis": axis,
+                    "property": "object_count",
+                    "subject_roles": roles,
+                    "subject_controls": [],
+                    "moments": [1],
+                    "kind": "atomic",
+                    "required": True,
+                    "authority": "executable_required",
+                    "repair_owner": uid,
+                    "evidence": [{"kind": "scene_contract", "id": f"{uid}-count"}],
+                }
+            ],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+    }
+
+
+def test_fault_owner_options_include_earlier_layer_camera(tmp_path: Path) -> None:
+    import json
+    from types import SimpleNamespace
+
+    from vfx_harness.agents.builder import _fault_owner_options_for_unit
+    from vfx_harness.blender.tools import record_cannot_express
+    from vfx_harness.orchestration.ledger import load_layers
+
+    (tmp_path / "layers.json").write_text(
+        json.dumps(
+            {
+                "schema": 4,
+                "layers": [
+                    {
+                        "id": "1",
+                        "script": "build/01_camera.py",
+                        "title": "Camera",
+                        "primary_judge": 1,
+                        "judge": [{"frame": 1, "ref": "refs/a.png"}],
+                        "owns": ["camera_framing"],
+                        "reads": "camera",
+                        "stages": [
+                            _staged_unit_row(
+                                "camera_path",
+                                layer="1",
+                                roles=["camera"],
+                                provides=["camera"],
+                                axis="camera_framing",
+                            )
+                        ],
+                    },
+                    {
+                        "id": "2",
+                        "script": "build/02_form.py",
+                        "title": "Form",
+                        "primary_judge": 1,
+                        "judge": [{"frame": 1, "ref": "refs/a.png"}],
+                        "owns": ["form"],
+                        "reads": "form",
+                        "stages": [
+                            _staged_unit_row(
+                                "lighting",
+                                layer="2",
+                                roles=["hero.light"],
+                                provides=[],
+                                axis="form",
+                            ),
+                            _staged_unit_row(
+                                "facade",
+                                layer="2",
+                                roles=["atrium.shell"],
+                                provides=["geometry"],
+                                axis="form",
+                                depends_on=["lighting"],
+                            ),
+                        ],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    shot = SimpleNamespace(folder=tmp_path)
+    layers = load_layers(shot)
+    options = _fault_owner_options_for_unit(shot, layers["2"], layers["2"].stages[1])
+    by_id = {row["id"]: row for row in options}
+    assert "lighting" in by_id
+    assert by_id["lighting"]["layer"] == "2"
+    assert "camera_path" in by_id
+    assert by_id["camera_path"]["layer"] == "1"
+    routed = {"fault_owner_options": options}
+    accepted = record_cannot_express(
+        routed,
+        {
+            "contract_ids": ["subject-bbox-1"],
+            "reason": "screen composition is owned by the earlier camera",
+            "fault_owner_units": ["camera_path"],
+        },
+    )
+    assert not accepted.get("is_error")
+    assert routed["cannot_express"]["fault_owner_units"] == ["camera_path"]
+
+
+def test_geometry_protects_deferred_subject_bbox_and_camera_omits_inactive_debt(
+    tmp_path: Path,
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    from tests.unit.test_vis_repair_authority import _detail_unit
+    from vfx_harness.agents.builder import (
+        _executable_unit_verdict,
+        _geometry_protected_vis_ids,
+        _scene_ids_active_on_layer,
+    )
+
+    rows = [
+        {
+            "id": "cam-count",
+            "kind": "object_count",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "1",
+            "lifecycle": "layer",
+            "axis": "camera_framing",
+            "roles": ["camera"],
+            "op": "eq",
+            "value": 1,
+        },
+        {
+            "id": "subject-bbox",
+            "kind": "bbox_height",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "2",
+            "lifecycle": "persistent",
+            "axis": "camera_framing",
+            "roles": ["world.detail"],
+            "frame": 40,
+            "op": "band",
+            "lo": 0.35,
+            "hi": 0.55,
+        },
+        {
+            "id": "other-bbox",
+            "kind": "bbox_width",
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "2",
+            "lifecycle": "persistent",
+            "axis": "camera_framing",
+            "roles": ["atrium.shell"],
+            "frame": 40,
+            "op": "band",
+            "lo": 0.35,
+            "hi": 0.55,
+        },
+    ]
+    (tmp_path / "scene_checks.json").write_text(
+        json.dumps({"schema": 2, "contracts": rows}),
+        encoding="utf-8",
+    )
+    shot = SimpleNamespace(folder=tmp_path)
+    layer = SimpleNamespace(id="2")
+    unit = _detail_unit(provides=["geometry"])
+    protected = _geometry_protected_vis_ids(shot, layer, unit, 40)
+    assert "subject-bbox" in protected
+    assert "other-bbox" not in protected
+
+    due_camera = _scene_ids_active_on_layer(
+        shot, "1", {"cam-count", "subject-bbox", "missing-id"}, [40]
+    )
+    assert due_camera == {"cam-count", "missing-id"}
+    due_form = _scene_ids_active_on_layer(shot, "2", {"cam-count", "subject-bbox"}, [40])
+    assert due_form == {"subject-bbox"}
+
+    axes = [("form", "declared form")]
+    evidence = [{"id": "contract.detail", "pass": True, "authoritative": True}]
+    sealed = _executable_unit_verdict(
+        unit,
+        40,
+        axes,
+        evidence,
+        extra_required_ids={"subject-bbox"},
+        inactive_ids={"subject-bbox"},
+    )
+    assert sealed is not None and sealed["pass"] is True
+    unpaid = _executable_unit_verdict(
+        unit, 40, axes, evidence, extra_required_ids={"subject-bbox"}
+    )
+    assert unpaid is not None and unpaid["pass"] is False
+    assert "subject-bbox" in unpaid["missing_evidence"]

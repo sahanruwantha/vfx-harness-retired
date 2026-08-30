@@ -409,7 +409,9 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         if isinstance(row, Mapping) and row.get("signature")
     )
     fault_owners = "\n".join(
-        f"  - `{row.get('id')}` roles={','.join(row.get('roles') or []) or 'none'} "
+        f"  - `{row.get('id')}`"
+        + (f" layer={row.get('layer')}" if row.get("layer") else "")
+        + f" roles={','.join(row.get('roles') or []) or 'none'} "
         f"controls={','.join(row.get('controls') or []) or 'none'}"
         for row in (card.get("fault_owner_options") or [])
         if isinstance(row, Mapping) and row.get("id")

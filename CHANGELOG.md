@@ -76,6 +76,12 @@ live in the linked Harness Improvement Records.
   vocabulary as layer `evidence_domains` and `claim.asserts`; the owner layer
   must cover every declared domain, and a rejection names covering layers
   ([HIR-0124](docs/improvements/HIR-0124-deferred-owner-domains-must-cover-owner-layer.md)).
+  Subject composition is `bbox_*` of a rendered subject, not `projected_origin` of
+  a camera-only host; vacuous origin/bbox bands fail closed; camera-owned bbox
+  due at a later geometry layer stays inactive on the camera unit; geometry
+  freeze-protects matching deferred rows; and `cannot_express` may name an
+  earlier-layer camera without treating it as a same-layer affected seed
+  ([HIR-0127](docs/improvements/HIR-0127-subject-composition-is-due-when-geometry-exists.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan
