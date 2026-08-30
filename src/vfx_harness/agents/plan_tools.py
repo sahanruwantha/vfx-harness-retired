@@ -1398,6 +1398,7 @@ def build_plan_tools(
             FRAME_SCOPED_KINDS,
             KIND_DEFINITIONS,
             KIND_DOMAINS,
+            OPERATOR_FIELDS,
             SUPPORTED_KINDS,
             WINDOW_KINDS,
         )
@@ -1496,7 +1497,12 @@ def build_plan_tools(
             "path_clearance_min fails closed on an empty obstacle selection — persistent "
             "lifecycle re-evaluates as geometry arrives, it does not make absence a PASS."
         )
-        return _text(json.dumps({"kinds": entries, "note": note}, indent=1))
+        return _text(
+            json.dumps(
+                {"kinds": entries, "operators": OPERATOR_FIELDS, "note": note},
+                indent=1,
+            )
+        )
 
     gate_preview_calls = 0
     prior_preview_signature: str | None = None

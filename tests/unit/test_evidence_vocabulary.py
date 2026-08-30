@@ -12,6 +12,7 @@ from __future__ import annotations
 from vfx_harness.evidence.scene_checks import (
     KIND_DEFINITIONS,
     KIND_DOMAINS,
+    OPERATOR_FIELDS,
     SUPPORTED_KINDS,
     _blender_probe,
     validate_row,
@@ -38,6 +39,39 @@ def test_new_kinds_are_registered_and_defined() -> None:
     assert KIND_DOMAINS["curve_derivative_max"] == "temporal"
     assert KIND_DOMAINS["path_clearance_min"] == "temporal"
     assert KIND_DOMAINS["parallax_displacement_profile"] == "projected_composition"
+
+
+def test_operator_vocabulary_names_exact_threshold_fields() -> None:
+    """HIR-0124: equality targets use value, never a guessed eq field."""
+    assert OPERATOR_FIELDS["eq"]["required"] == ["value"]
+    assert OPERATOR_FIELDS["eq"]["optional"] == ["tol"]
+    assert "no `eq` field" in OPERATOR_FIELDS["eq"]["description"]
+    assert OPERATOR_FIELDS["min"]["required"] == ["lo"]
+    assert OPERATOR_FIELDS["max"]["required"] == ["hi"]
+    assert OPERATOR_FIELDS["band"]["required"] == ["lo", "hi"]
+
+
+def test_threshold_errors_name_the_exact_required_field() -> None:
+    eq_error = validate_row(_row(kind="object_count", roles=["x"], op="eq")) or ""
+    assert 'op "eq"' in eq_error
+    assert "`value`" in eq_error
+    assert "do not add an `eq` field" in eq_error
+
+    assert "`tol` must be numeric" in (
+        validate_row(
+            _row(kind="object_count", roles=["x"], op="eq", value=1, tol="wide")
+        )
+        or ""
+    )
+    assert "`lo`" in (
+        validate_row(_row(kind="object_count", roles=["x"], op="min")) or ""
+    )
+    assert "`hi`" in (
+        validate_row(_row(kind="object_count", roles=["x"], op="max")) or ""
+    )
+    assert "`lo` and `hi`" in (
+        validate_row(_row(kind="object_count", roles=["x"], op="band")) or ""
+    )
 
 
 def test_new_kinds_validate_and_compile_into_the_probe() -> None:

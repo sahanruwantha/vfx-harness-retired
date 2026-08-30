@@ -129,6 +129,28 @@ KIND_DOMAINS: dict[str, str] = {
     "parallax_displacement_profile": "projected_composition",
 }
 SUPPORTED_OPS = {"band", "eq", "min", "max"}
+OPERATOR_FIELDS = {
+    "band": {
+        "required": ["lo", "hi"],
+        "description": "numeric inclusive lower and upper thresholds",
+    },
+    "eq": {
+        "required": ["value"],
+        "optional": ["tol"],
+        "description": (
+            "numeric equality target in `value` with optional numeric tolerance in "
+            "`tol`; there is no `eq` field"
+        ),
+    },
+    "min": {
+        "required": ["lo"],
+        "description": "numeric lower threshold",
+    },
+    "max": {
+        "required": ["hi"],
+        "description": "numeric upper threshold",
+    },
+}
 
 # object_property may only certify properties Blender itself evaluates. A custom
 # property is written by the builder that the contract judges — self-certification
@@ -640,21 +662,30 @@ def validate_row(row: dict) -> str | None:
     op = str(row.get("op", "band"))
     if op not in SUPPORTED_OPS:
         return f"unsupported op {op!r}"
-    try:
-        if op == "band":
-            if row.get("lo") is None or row.get("hi") is None:
-                return "band requires lo and hi"
-            if float(row["lo"]) > float(row["hi"]):
-                return "band lo exceeds hi"
-        elif op == "eq":
-            float(row["value"])
-            float(row.get("tol", 0))
-        elif op == "min":
-            float(row["lo"])
-        else:
-            float(row["hi"])
-    except (KeyError, TypeError, ValueError):
-        return f"{op} threshold must be numeric"
+
+    def numeric(value: object) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    if op == "band":
+        if row.get("lo") is None or row.get("hi") is None:
+            return 'op "band" requires numeric fields `lo` and `hi`'
+        if not numeric(row.get("lo")) or not numeric(row.get("hi")):
+            return 'op "band" requires numeric fields `lo` and `hi`'
+        if float(row["lo"]) > float(row["hi"]):
+            return "band lo exceeds hi"
+    elif op == "eq":
+        if not numeric(row.get("value")):
+            return (
+                'op "eq" requires numeric field `value` (and optional numeric `tol`); '
+                "do not add an `eq` field"
+            )
+        if not numeric(row.get("tol", 0)):
+            return 'op "eq" optional field `tol` must be numeric'
+    elif op == "min":
+        if not numeric(row.get("lo")):
+            return 'op "min" requires numeric field `lo`'
+    elif not numeric(row.get("hi")):
+        return 'op "max" requires numeric field `hi`'
     return None
 
 
