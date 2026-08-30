@@ -162,6 +162,11 @@ effect.
   surface evidence and a unit mutating their roles must provide geometry or dress an existing
   rendered surface. Executable-only camera/control units with no rendered subject owe no
   invented visibility proxy (HIR-0090, HIR-0094).
+- Camera-relative placement of proposed coordinates uses the read-only
+  `check_scene(kind='projection', frame=…, points=[[x,y,z], …])` instrument. It evaluates
+  the active camera and frame and preserves off-frame coordinates; never create temporary
+  marker geometry, broaden roles, or reproduce projection math in `run_bpy` to answer a
+  coordinate query (HIR-0136).
 - Measure, don't estimate: if a decision depends on a quantity, expose an instrument that
   measures it; a judgment call where a measurement is possible is a patch.
 - Look-less form/layout reference comparison defaults to a live Workbench-solid plate when

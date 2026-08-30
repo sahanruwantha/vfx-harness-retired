@@ -38,6 +38,7 @@ except ImportError:
         _rspec.loader.exec_module(_roles)
 
 frustum_union_ndc = _geom.frustum_union_ndc
+project_clip_point = _geom.project_clip_point
 BOX_EDGES = _geom.BOX_EDGES
 mesh_issues = _geom.mesh_issues
 motion_from_positions = _geom.motion_from_positions
@@ -259,6 +260,29 @@ def check_framing(name: str, frames: list[int]) -> dict:
         rec["frame"] = int(f)
         per.append(rec)
     return {"ok": not issues, "object": name, "frames": per, "issues": issues}
+
+
+def check_projection(points: list[list[float]], frame: int) -> dict:
+    """Read-only world-point projection through the evaluated active camera."""
+    import bpy
+    from mathutils import Vector
+
+    scene = bpy.context.scene
+    scene.frame_set(int(frame))
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    matrix = camera_clip_matrix(scene, depsgraph)
+    projected = []
+    for raw in points:
+        world = [float(value) for value in raw]
+        record = project_clip_point(tuple(matrix @ Vector((*world, 1.0))))
+        projected.append({"world": world, **record})
+    return {
+        "ok": True,
+        "frame": int(frame),
+        "camera": scene.camera.name,
+        "points": projected,
+        "issues": [],
+    }
 
 
 def check_motion(name: str, frames: list[int]) -> dict:
@@ -550,6 +574,8 @@ def dispatch(kind: str, args: dict) -> dict:
     if k == "framing":
         frames = args.get("frames") or [int(args["frame"])]
         return check_framing(args["object"], [int(f) for f in frames])
+    if k == "projection":
+        return check_projection(args["points"], int(args["frame"]))
     if k == "motion":
         frames = args.get("frames") or []
         if len(frames) < 2:

@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import inspect
 
-from vfx_harness.blender.geom import BOX_EDGES, frustum_union_ndc
+from vfx_harness.blender.geom import BOX_EDGES, frustum_union_ndc, project_clip_point
+from vfx_harness.blender.tools import _check_args_error, _check_report
 from vfx_harness.evidence import scene_checks
 
 
@@ -35,6 +36,48 @@ def test_inside_points_map_to_top_left_screen_bbox() -> None:
     assert rec is not None
     assert rec["bbox"] == [0.4, 0.3, 0.6, 0.6]
     assert rec["points_inside"] == 2 and rec["points_total"] == 2
+
+
+def test_point_projection_preserves_off_frame_coordinates_without_marker_geometry() -> None:
+    assert project_clip_point((0.0, 0.0, 0.0, 1.0)) == {
+        "screen": [0.5, 0.5],
+        "in_front": True,
+        "in_frustum": True,
+        "clip_w": 1.0,
+    }
+    assert project_clip_point((3.0, 0.0, 0.0, 1.0)) == {
+        "screen": [2.0, 0.5],
+        "in_front": True,
+        "in_frustum": False,
+        "clip_w": 1.0,
+    }
+    assert project_clip_point((0.0, 0.0, 0.0, -1.0))["screen"] is None
+
+
+def test_projection_check_is_selector_free_and_teaches_read_only_probe() -> None:
+    args = {"frame": 39, "points": [[0, 8, 0], [0, 8, 26]]}
+    assert _check_args_error("projection", args) is None
+    assert "exactly [x, y, z]" in _check_args_error(
+        "projection", {"frame": 39, "points": [[0, 8]]}
+    )
+    report = _check_report(
+        "projection",
+        {
+            "ok": True,
+            "frame": 39,
+            "camera": "camera",
+            "points": [
+                {
+                    "world": [0.0, 8.0, 0.0],
+                    "screen": None,
+                    "in_front": False,
+                    "in_frustum": False,
+                    "clip_w": -1.0,
+                }
+            ],
+        },
+    )
+    assert "do not create marker meshes" in report
 
 
 def test_grazing_segment_is_clipped_to_the_frame_never_a_blowup() -> None:

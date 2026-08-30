@@ -140,6 +140,33 @@ def _screen_xy(p: Sequence[float]) -> tuple[float, float]:
     return x, y
 
 
+def project_clip_point(clip_point: Sequence[float]) -> dict:
+    """Project one homogeneous clip point without pretending it is rendered geometry.
+
+    Unlike ``frustum_union_ndc``, this diagnostic intentionally preserves off-frame
+    coordinates.  It answers where a proposed world point lands through the active
+    camera so an agent does not need to create marker meshes merely to query projection.
+    """
+    point = tuple(float(value) for value in clip_point)
+    if len(point) != 4:
+        raise ValueError("clip_point must contain exactly four coordinates")
+    in_front = point[3] > 1e-9
+    if not in_front:
+        return {
+            "screen": None,
+            "in_front": False,
+            "in_frustum": False,
+            "clip_w": round(point[3], 6),
+        }
+    x, y = _screen_xy(point)
+    return {
+        "screen": [round(x, 6), round(y, 6)],
+        "in_front": True,
+        "in_frustum": all(_plane_eval(plane, point) >= 0.0 for plane in _CLIP_PLANES),
+        "clip_w": round(point[3], 6),
+    }
+
+
 def frustum_union_ndc(
     clip_points: Sequence[Sequence[float]],
     edges: Iterable[Sequence[int]] = (),

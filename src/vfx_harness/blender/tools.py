@@ -441,8 +441,10 @@ def _check_report(kind: str, r: dict) -> str:
     the finding has to read as a finding, not as a payload to be re-derived.
     """
     issues = r.get("issues") or []
-    if kind == "visibility":
+    if kind in {"visibility", "projection"}:
         head = "check visibility: " + ("OBSERVED ✅" if r.get("ok") else "ISSUES ✗")
+        if kind == "projection":
+            head = "check projection: " + ("OBSERVED ✅" if r.get("ok") else "ISSUES ✗")
     else:
         head = f"check {kind}: " + ("PASS ✅" if r.get("ok") else "ISSUES ✗")
     lines = [head]
@@ -467,6 +469,20 @@ def _check_report(kind: str, r: dict) -> str:
                 f"w {fr.get('width')} h {fr.get('height')} · "
                 f"centre {fr.get('centre')} · on-screen {fr.get('on_screen')}"
             )
+    elif kind == "projection":
+        lines.append(
+            f"  f{r.get('frame')} through camera {r.get('camera')} · coordinates "
+            "origin TOP-LEFT (x right, y down); off-frame values are preserved"
+        )
+        for point in r.get("points", []):
+            lines.append(
+                f"  world {point.get('world')} → screen {point.get('screen')} · "
+                f"in-front {point.get('in_front')} · in-frustum {point.get('in_frustum')} "
+                f"· clip-w {point.get('clip_w')}"
+            )
+        lines.append(
+            "  read-only projection probe — do not create marker meshes to measure points."
+        )
     elif kind == "motion":
         holds = (
             f" · holds {r.get('leading_hold_segments', 0)} before/{r.get('trailing_hold_segments', 0)} after"
@@ -718,6 +734,7 @@ def _check_args_error(kind: str, args: dict) -> str | None:
         "scale": (),
         "passes": ("frame",),
         "bbox": ("frame",),
+        "projection": ("frame", "points"),
     }
     missing = [name for name in requirements[kind] if args.get(name) is None]
     if kind == "framing" and args.get("frame") is None and not args.get("frames"):
@@ -731,7 +748,21 @@ def _check_args_error(kind: str, args: dict) -> str | None:
             "check_scene(kind='visibility') uses the canonical registry sampling policy; "
             "omit samples"
         )
-    if kind != "passes":
+    if kind == "projection":
+        points = args.get("points")
+        if not isinstance(points, list) or not points:
+            return "check_scene(kind='projection') requires a non-empty points array"
+        if any(
+            not isinstance(point, list)
+            or len(point) != 3
+            or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in point)
+            for point in points
+        ):
+            return (
+                "check_scene(kind='projection') points must each be exactly [x, y, z] "
+                "numbers in world space"
+            )
+    elif kind != "passes":
         selector = _object_or_role_error(args, f"check_scene(kind={kind!r})")
         if selector:
             return selector
@@ -2062,7 +2093,9 @@ def build_blender_tools(
         "kind='visibility' reports the canonical on-screen surface visible_fraction "
         "without inventing a pass threshold (use contract_result for the bound target), "
         "'framing' gives the NDC bbox/width/centre via "
-        "world_to_camera_view, 'motion' gives max speed/accel/jerk and whether the move is "
+        "world_to_camera_view, 'projection' maps proposed [x,y,z] world points through "
+        "the evaluated active camera without creating marker objects, 'motion' gives max "
+        "speed/accel/jerk and whether the move is "
         "unbroken, 'mesh' counts non-manifold edges, loose verts, n-gons, poles and "
         "disconnected islands, 'scale' checks dimensions and that scale is applied, "
         "'passes' checks the render buffer for NaN/Inf/negative pixels, 'bbox' returns the "
@@ -2071,7 +2104,8 @@ def build_blender_tools(
         "of the named hosts. object= is the display-name fallback. A miss names present "
         "roles and names. "
         "Required arguments: visibility=role-or-object+frame; "
-        "framing=role-or-object+(frame or frames); motion=role-or-object+2+ frames; "
+        "framing=role-or-object+(frame or frames); projection=frame+points; "
+        "motion=role-or-object+2+ frames; "
         "mesh/scale=role-or-object; passes=frame; bbox=role-or-object+frame. For "
         "intentional open shells, mesh accepts allow_boundary=true and still rejects "
         "branch/wire edges.",
@@ -2080,7 +2114,10 @@ def build_blender_tools(
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["visibility", "framing", "motion", "mesh", "scale", "passes", "bbox"],
+                    "enum": [
+                        "visibility", "framing", "projection", "motion", "mesh",
+                        "scale", "passes", "bbox",
+                    ],
                 },
                 "role": {
                     "type": "string",
@@ -2095,6 +2132,21 @@ def build_blender_tools(
                 },
                 "frame": {"type": "integer"},
                 "frames": {"type": "array", "items": {"type": "integer"}},
+                "points": {
+                    "type": "array",
+                    "description": (
+                        "projection only: proposed world-space points; read-only and "
+                        "does not require temporary scene objects"
+                    ),
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                    },
+                    "minItems": 1,
+                    "maxItems": 64,
+                },
                 "scale": {"type": "number"},
                 "allow_boundary": {
                     "type": "boolean",
