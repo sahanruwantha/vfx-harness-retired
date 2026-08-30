@@ -457,7 +457,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   exact concrete observation is persisted as the composed contract gap, mapped to producer
   roles, and published as a replan-consumable finding while every already-passed checkpoint
   remains frozen. The finding, not a score-only failure or operator choice, reopens the
-  affected producer/downstream closure (HIR-0139).
+  affected producer/downstream closure (HIR-0139). Rebinding that requirement to executable
+  producer contracts during rematerialization does not confirm its qualitative proposition:
+  an exact current-bundle typed falsification keeps the approved/planner-start composed
+  reference debt alive. Findings from another bundle are inert, and only a selected
+  `confirmed_outcome` retires the debt (HIR-0142).
 - Unit plans publish only through the gate-attested two-phase transaction (HIR-0016). Do not
   hand-author placeholder units, edit `state/jit-layers/current.json`, or reinitialize,
   hand-edit, or delete durable work-unit state to make a new DAG fit. A selected

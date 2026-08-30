@@ -3143,17 +3143,33 @@ def _executable_unit_verdict(
 
 
 def _provisional_decisions_for_layer(
-    base_requirements: list[dict], selected_requirements: list[dict], layer_id: str
+    base_requirements: list[dict],
+    selected_requirements: list[dict],
+    layer_id: str,
+    *,
+    falsifications: tuple[dict, ...] | list[dict] = (),
+    bundle_hash: str | None = None,
 ) -> tuple[dict, ...]:
     """Provisional owned decisions that still owe build-time judgment."""
     owned = {
-        str(row.get("id")): tuple((row.get("resolution") or {}).get("evidence_domains") or ())
+        str(row.get("id")): {
+            "evidence_domains": tuple(
+                (row.get("resolution") or {}).get("evidence_domains") or ()
+            ),
+            "statement": str(row.get("statement") or "").strip(),
+        }
         for row in base_requirements
         if isinstance(row, dict)
         and (row.get("resolution") or {}).get("kind") == "deferred_owner"
         and str((row.get("resolution") or {}).get("owner_layer") or "") == str(layer_id)
     }
+    selected_by_id = {
+        str(row.get("id")): row
+        for row in selected_requirements
+        if isinstance(row, dict) and row.get("id")
+    }
     rows = []
+    found: set[str] = set()
     for row in selected_requirements:
         requirement_id = str(row.get("id") or "")
         resolution = row.get("resolution") or {}
@@ -3169,14 +3185,60 @@ def _provisional_decisions_for_layer(
                     "id": requirement_id,
                     "statement": statement,
                     "decision_strength": strength,
-                    "evidence_domains": owned[requirement_id],
+                    "evidence_domains": owned[requirement_id]["evidence_domains"],
                 }
             )
+            found.add(requirement_id)
+
+    # A rematerialization may replace the selected requirement's decision resolution
+    # with executable contract ids. That closes mechanical producer debt, but cannot
+    # erase an already-consumed current-bundle finding that says the approved/planner
+    # start failed independent reference judgment. The typed finding is the lineage;
+    # old-bundle records and confirmed outcomes remain inert.
+    for finding in falsifications:
+        if not isinstance(finding, dict):
+            continue
+        identities = finding.get("identities") or {}
+        if bundle_hash and str(identities.get("bundle_hash") or "") != str(bundle_hash):
+            continue
+        for decision in finding.get("decisions") or ():
+            if not isinstance(decision, dict):
+                continue
+            requirement_id = str(decision.get("id") or "")
+            strength = str(decision.get("strength") or "")
+            if (
+                requirement_id in found
+                or requirement_id not in owned
+                or strength not in {"approved_start", "planner_start"}
+            ):
+                continue
+            selected = selected_by_id.get(requirement_id) or {}
+            resolution = selected.get("resolution") or {}
+            if (
+                resolution.get("kind") == "decision"
+                and resolution.get("decision_strength") == "confirmed_outcome"
+            ):
+                continue
+            statement = str(selected.get("statement") or "").strip()
+            if not statement:
+                statement = owned[requirement_id]["statement"]
+            if not statement:
+                continue
+            rows.append(
+                {
+                    "id": requirement_id,
+                    "statement": statement,
+                    "decision_strength": strength,
+                    "evidence_domains": owned[requirement_id]["evidence_domains"],
+                }
+            )
+            found.add(requirement_id)
     return tuple(rows)
 
 
 def _load_provisional_decisions(shot: Shot, layer_id: str) -> tuple[dict, ...]:
     from vfx_harness.orchestration.plan_authority import resolve_current, selected_artifact_path
+    from vfx_harness.orchestration.unit_state import load as load_unit_state
 
     def rows(path: Path) -> list[dict]:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -3186,10 +3248,13 @@ def _load_provisional_decisions(shot: Shot, layer_id: str) -> tuple[dict, ...]:
         return values
 
     bundle = resolve_current(shot.folder)
+    state = load_unit_state(shot.folder, str(layer_id))
     return _provisional_decisions_for_layer(
         rows(bundle.root / "requirements.json"),
         rows(selected_artifact_path(shot.folder, "requirements.json")),
         str(layer_id),
+        falsifications=tuple(state.get("falsifications") or ()),
+        bundle_hash=bundle.content_hash,
     )
 
 

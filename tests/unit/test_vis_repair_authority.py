@@ -221,6 +221,72 @@ def test_provisional_owned_decision_compiles_lookless_composition_audit(tmp_path
     assert _unit_raster_mode(audit) == "solid"
 
 
+def test_current_bundle_falsification_keeps_provisional_debt_after_contract_rebind() -> None:
+    base = [
+        {
+            "id": "R-holistic",
+            "statement": "The subject reads as the specific reference, not a generic proxy.",
+            "resolution": {
+                "kind": "deferred_owner",
+                "owner_layer": "2",
+                "evidence_domains": ["image", "scene"],
+            },
+        }
+    ]
+    selected = [
+        {
+            "id": "R-holistic",
+            "statement": "The subject reads as the specific reference, not a generic proxy.",
+            "resolution": {"kind": "contract", "ids": ["mass.exists"]},
+        }
+    ]
+    finding = {
+        "identities": {"bundle_hash": "bundle-a"},
+        "decisions": [{"id": "R-holistic", "strength": "approved_start"}],
+    }
+
+    decisions = _provisional_decisions_for_layer(
+        base,
+        selected,
+        "2",
+        falsifications=[finding],
+        bundle_hash="bundle-a",
+    )
+
+    assert decisions == (
+        {
+            "id": "R-holistic",
+            "statement": "The subject reads as the specific reference, not a generic proxy.",
+            "decision_strength": "approved_start",
+            "evidence_domains": ("image", "scene"),
+        },
+    )
+    assert not _provisional_decisions_for_layer(
+        base,
+        selected,
+        "2",
+        falsifications=[finding],
+        bundle_hash="bundle-b",
+    )
+    confirmed = [
+        {
+            **selected[0],
+            "resolution": {
+                "kind": "decision",
+                "decision": selected[0]["statement"],
+                "decision_strength": "confirmed_outcome",
+            },
+        }
+    ]
+    assert not _provisional_decisions_for_layer(
+        base,
+        confirmed,
+        "2",
+        falsifications=[finding],
+        bundle_hash="bundle-a",
+    )
+
+
 def test_provisional_composition_preserves_concrete_critic_observation_as_gap() -> None:
     binding = "requirement:R-holistic:form"
     observation = {

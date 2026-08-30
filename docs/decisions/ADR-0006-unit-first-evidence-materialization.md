@@ -30,6 +30,11 @@ and attests only the clean candidate revision. Materialization sessions do not e
 separate clean-looking `gate_preview`; any patch requires the same terminal operation again
 (HIR-0141).
 
+Rebinding a provisional requirement to executable producer contracts does not confirm its
+qualitative proposition. An exact current-bundle typed falsification keeps approved/planner
+start reference-judgment debt alive across rematerialization; only a selected confirmed outcome
+retires it. Other-bundle findings are inert (HIR-0142).
+
 ## Context
 
 ADR-0005 removed whole-shot evidence design from global planning, but retained one exception:
