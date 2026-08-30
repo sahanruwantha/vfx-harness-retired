@@ -36,8 +36,11 @@ selected authority had changed that external owner before consuming the finding.
 - Before consuming a falsification with `fault_owner_units` outside the requested layer,
   public replan resolves those units in both the explicit base authority and current
   selected authority.
-- Every external owner must be resolvable on both sides and have a changed exact unit
-  digest. Unchanged or unresolved owners reject the transaction before state mutation.
+- Every external owner must have a changed exact unit digest. When the explicit sparse
+  base omits a previously materialized owner, durable work-unit state must match the
+  selected current digest and contain a different superseded digest recorded after the
+  finding. Unchanged owners or owners with no exact base/audit bridge reject before state
+  mutation.
 - The rejection names unchanged and unresolved owners and teaches the legal next action:
   publish amended authority for those owners, then consume the finding.
 - HIR-0049 remains unchanged for same-layer findings and findings without external fault
@@ -47,9 +50,12 @@ selected authority had changed that external owner before consuming the finding.
 ## General mechanism
 
 `_unchanged_external_fault_owners` indexes exact work-unit identities across every layer
-in the base and selected views. `_replan` invokes it after falsification identity and hard-
-constraint checks but before computing or applying local effects. Unit display names,
-roles, and bundle proximity do not substitute for digest change.
+in the base and selected views. For a unit-first sparse-base omission, it verifies the
+selected digest against the external layer's current durable slot and requires a
+different superseded digest whose transaction timestamp is later than the finding.
+`_replan` invokes the classifier after falsification identity and hard-constraint checks
+but before computing or applying local effects. Unit display names, roles, and bundle
+proximity do not substitute for digest change.
 
 ## Rejected alternatives
 
@@ -65,8 +71,9 @@ roles, and bundle proximity do not substitute for digest change.
 The unit-admin regression creates a Layer 1 mass finding naming an unchanged external
 `camera_path`. Even though the local mass unit changes, public replan refuses the
 transaction, names `unchanged=camera_path`, and instructs the caller not to rerun the
-identical local DAG. Existing HIR-0049 fixtures continue to prove same-layer same-digest
-reopen behavior.
+identical local DAG. A second fixture proves a sparse base can proceed after durable state
+records an exact external-owner supersession later than the finding. Existing HIR-0049
+fixtures continue to prove same-layer same-digest reopen behavior.
 
 ## Release and rollback
 

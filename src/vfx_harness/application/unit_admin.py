@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from datetime import datetime
 from pathlib import Path
 
 from vfx_harness.domain.brief import load_shot
@@ -46,6 +47,7 @@ def _invalidate(args: argparse.Namespace) -> int:
 def _unchanged_external_fault_owners(
     finding,
     *,
+    folder: str | Path,
     requested_layer_id: str,
     base_layers,
     current_layers,
@@ -72,15 +74,54 @@ def _unchanged_external_fault_owners(
 
     old_by_id = _index(base_layers)
     new_by_id = _index(current_layers)
+    current_layer_by_id = {
+        unit.id: str(layer_id)
+        for layer_id, layer in current_layers.items()
+        for unit in layer.stages
+    }
     unchanged: list[str] = []
     unresolved: list[str] = []
     for unit_id in external:
         old = old_by_id.get(unit_id)
         new = new_by_id.get(unit_id)
-        if old is None or new is None:
+        if new is None:
             unresolved.append(unit_id)
-        elif unit_digest(old) == unit_digest(new):
+        elif old is not None and unit_digest(old) == unit_digest(new):
             unchanged.append(unit_id)
+        elif old is None:
+            # Unit-first sparse bundles may omit the materialized earlier-layer DAG.
+            # In that case, the durable replan audit is the exact old-identity bridge:
+            # selected current state must match the new digest and carry a superseded
+            # different digest recorded after this finding (HIR-0154).
+            owner_layer = current_layer_by_id.get(unit_id)
+            state = load_unit_state(folder, owner_layer) if owner_layer else None
+            current_slot = ((state or {}).get("units") or {}).get(unit_id) or {}
+            current_hash = unit_digest(new)
+            try:
+                finding_time = datetime.fromisoformat(str(finding.recorded_at))
+            except ValueError:
+                unresolved.append(unit_id)
+                continue
+            superseded_after_finding = False
+            for row in ((state or {}).get("superseded") or []):
+                if (
+                    row.get("id") != unit_id
+                    or row.get("unit_hash") == current_hash
+                    or not isinstance(row.get("superseded_at"), str)
+                ):
+                    continue
+                try:
+                    superseded_time = datetime.fromisoformat(str(row["superseded_at"]))
+                except ValueError:
+                    continue
+                if superseded_time > finding_time:
+                    superseded_after_finding = True
+                    break
+            if (
+                current_slot.get("unit_hash") != current_hash
+                or not superseded_after_finding
+            ):
+                unresolved.append(unit_id)
     return tuple(unchanged), tuple(unresolved)
 
 
@@ -160,6 +201,7 @@ def _replan(args: argparse.Namespace) -> int:
             )
         unchanged_owners, unresolved_owners = _unchanged_external_fault_owners(
             finding,
+            folder=shot.folder,
             requested_layer_id=layer_id,
             base_layers=base_layers,
             current_layers=current_layers,

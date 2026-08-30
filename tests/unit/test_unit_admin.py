@@ -449,6 +449,67 @@ def test_public_replan_refuses_unchanged_out_of_layer_fault_owner(
     assert "do not rerun the identical local DAG" in str(exc.value)
 
 
+def test_public_replan_accepts_audited_external_owner_supersession(
+    tmp_path, monkeypatch
+) -> None:
+    args, _finding = _falsified_replan_fixture(
+        tmp_path, monkeypatch, strength="approved_start"
+    )
+    finding_path = tmp_path / args.falsification
+    payload = json.loads(finding_path.read_text(encoding="utf-8"))
+    payload["fault_owner_units"] = ["camera_path"]
+    payload["recorded_at"] = "2026-08-30T12:00:00+00:00"
+    finding_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    new_camera = _unit(
+        "camera_path",
+        script_span="build/units/00/camera_path.py",
+        proposition_suffix=" amended",
+    )
+    old_mass = _unit("blockout")
+    new_mass = _unit("blockout", proposition_suffix=" amended")
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers",
+        lambda shot: {
+            "0": SimpleNamespace(stages=(new_camera,)),
+            "1": SimpleNamespace(stages=(new_mass,)),
+        },
+    )
+    # The explicit sparse base omits the materialized external camera unit.
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers_from_path",
+        lambda path: {
+            "0": SimpleNamespace(stages=()),
+            "1": SimpleNamespace(stages=(old_mass,)),
+        },
+    )
+    original_load_state = unit_admin.load_unit_state
+    new_camera_hash = unit_admin.unit_digest(new_camera)
+
+    def load_state(folder, layer_id):
+        if str(layer_id) == "0":
+            return {
+                "units": {
+                    "camera_path": {
+                        "unit_hash": new_camera_hash,
+                        "status": "passed",
+                    }
+                },
+                "superseded": [{
+                    "id": "camera_path",
+                    "unit_hash": "f" * 64,
+                    "superseded_at": "2026-08-30T12:01:00+00:00",
+                }],
+            }
+        return original_load_state(folder, layer_id)
+
+    monkeypatch.setattr(unit_admin, "load_unit_state", load_state)
+
+    assert unit_admin._replan(args) == 0
+
+
 def test_public_replan_consumes_jit_falsification_against_view_identity(
     tmp_path, monkeypatch
 ) -> None:

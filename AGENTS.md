@@ -531,8 +531,10 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   finding reopens that unit and its affected closure even when the published
   DAG bytes are unchanged (HIR-0049). That exception is local: when a finding names
   out-of-layer `fault_owner_units`, replan first proves each exact owner digest changed
-  between base and selected authority. An unchanged or unresolved external owner rejects
-  the transaction and names the required upstream amendment; a local reopen cannot repeat
+  between base and selected authority. If a unit-first sparse base omits the materialized
+  owner, the bridge is the external layer's current exact digest plus a different durable
+  superseded digest recorded after the finding. An unchanged owner or one without either
+  proof rejects and names the required upstream amendment; a local reopen cannot repeat
   work it has no authority to repair (HIR-0154).
 - When passing requires a decision, dependency, ownership, scope, contract, or sealed-outcome
   change outside the active unit, record `hypothesis_falsified` and stop. Replanning is a
