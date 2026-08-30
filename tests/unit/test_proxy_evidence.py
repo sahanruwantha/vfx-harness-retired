@@ -23,9 +23,14 @@ from vfx_harness.orchestration.plan_authority import publish_current
 from .test_plan_records import _add_deferred_layer, _candidate, _jit_payload, _write
 
 
-def _materialize(tmp_path, mutate) -> None:
+def _materialize(tmp_path, mutate, *, requirement_domain: str = "image") -> None:
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"]["evidence_domains"] = [
+        requirement_domain
+    ]
+    _write(tmp_path / "requirements.json", requirements)
     layout = run_artifacts.create(tmp_path, "proxy-evidence")
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = _jit_payload(tmp_path, bundle.content_hash)
@@ -61,7 +66,9 @@ def test_count_cannot_certify_a_temporal_claim(tmp_path, monkeypatch) -> None:
         claim["asserts"] = "temporal"
 
     with pytest.raises(ValueError, match="asserts 'temporal'"):
-        _materialize(tmp_path, as_count_backed_temporal_claim)
+        _materialize(
+            tmp_path, as_count_backed_temporal_claim, requirement_domain="scene"
+        )
 
 
 def test_matching_domain_is_accepted(tmp_path, monkeypatch) -> None:
@@ -80,7 +87,9 @@ def test_matching_domain_is_accepted(tmp_path, monkeypatch) -> None:
         claim = data["layer"]["stages"][0]["evaluation"]["claims"][0]
         claim["asserts"] = "scene"
 
-    _materialize(tmp_path, as_count_backed_scene_claim)  # must not raise
+    _materialize(
+        tmp_path, as_count_backed_scene_claim, requirement_domain="scene"
+    )  # must not raise
 
 
 def test_required_claims_must_declare_their_domain(tmp_path, monkeypatch) -> None:
@@ -132,17 +141,25 @@ def _mesh_case(tmp_path, *, contract_roles, geometry_provider: bool):
 def test_mesh_metric_on_a_camera_rig_is_rejected(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     with pytest.raises(ValueError, match="can only read None"):
-        _materialize(tmp_path, _mesh_case(
-            tmp_path, contract_roles=["polish.comp"], geometry_provider=False
-        ))
+        _materialize(
+            tmp_path,
+            _mesh_case(
+                tmp_path, contract_roles=["polish.comp"], geometry_provider=False
+            ),
+            requirement_domain="scene",
+        )
 
 
 def test_mesh_metric_on_declared_geometry_is_accepted(tmp_path, monkeypatch) -> None:
     """The guard must discriminate, not reject every mesh metric."""
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    _materialize(tmp_path, _mesh_case(
-        tmp_path, contract_roles=["polish.comp"], geometry_provider=True
-    ))
+    _materialize(
+        tmp_path,
+        _mesh_case(
+            tmp_path, contract_roles=["polish.comp"], geometry_provider=True
+        ),
+        requirement_domain="scene",
+    )
 
 
 def test_legacy_units_declaring_nothing_are_not_judged(tmp_path, monkeypatch) -> None:
@@ -159,4 +176,6 @@ def test_legacy_units_declaring_nothing_are_not_judged(tmp_path, monkeypatch) ->
             contract.pop(key, None)
         data["layer"]["stages"][0]["evaluation"]["claims"][0]["asserts"] = "scene"
 
-    _materialize(tmp_path, mutate)  # no provides anywhere -> unjudged
+    _materialize(
+        tmp_path, mutate, requirement_domain="scene"
+    )  # no provides anywhere -> unjudged

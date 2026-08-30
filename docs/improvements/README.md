@@ -15,3 +15,8 @@ canonical replay, and deterministic revalidation without becoming new judge mome
 A bare critic majority cannot erase an uncontradicted qualified actionable observation.
 Executable contradiction and typed conflict still reconcile it; otherwise the aggregate
 fails while preserving the exact dissent for bounded repair or replanning (HIR-0144).
+
+Deferred requirement evidence domains remain logical AND obligations through concrete
+materialization. Selected authority retains a typed domain-to-binding map; structural domains
+need matching registry contracts, while unpaid image/human domains remain explicit provisional
+judgment debt (HIR-0145).

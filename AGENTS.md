@@ -467,6 +467,14 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   an exact current-bundle typed falsification keeps the approved/planner-start composed
   reference debt alive. Findings from another bundle are inert, and only a selected
   `confirmed_outcome` retires the debt (HIR-0142).
+  More generally, every deferred requirement's `evidence_domains` is logical AND through
+  materialization: structural domains require same-domain registry contracts, while an unpaid
+  `image` or `human` domain requires explicit `approved_start`/`planner_start` judgment debt.
+  Mixed requirements bind contracts and that decision in one row. Selected concrete authority
+  retains `evidence_domains` plus exact typed `domain_bindings`; the terminal gate re-derives
+  every contract domain and rejects relabelling, structural decisions, missing domains, and
+  padding decisions. Approved/planner starts schedule judgment; they are not confirmed outcomes
+  (HIR-0124, HIR-0145).
 - Unit plans publish only through the gate-attested two-phase transaction (HIR-0016). Do not
   hand-author placeholder units, edit `state/jit-layers/current.json`, or reinitialize,
   hand-edit, or delete durable work-unit state to make a new DAG fit. A selected

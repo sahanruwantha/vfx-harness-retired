@@ -227,6 +227,8 @@ class MaterializedLayer:
     image_contracts: tuple[dict[str, Any], ...]
     requirement_bindings: dict[str, tuple[str, ...]]
     requirement_decisions: dict[str, dict[str, str]]
+    requirement_evidence_domains: dict[str, tuple[str, ...]]
+    requirement_domain_bindings: dict[str, tuple[dict[str, Any], ...]]
     acceptance: tuple[dict[str, Any], ...]
 
 
@@ -1036,6 +1038,9 @@ def validate_materialization(
         raw_bindings = []
     requirement_bindings: dict[str, tuple[str, ...]] = {}
     requirement_decisions: dict[str, dict[str, str]] = {}
+    requirement_evidence_domains: dict[str, tuple[str, ...]] = {}
+    requirement_domain_bindings: dict[str, tuple[dict[str, Any], ...]] = {}
+    seen_requirements: set[str] = set()
     for index, binding in enumerate(raw_bindings):
         if not isinstance(binding, dict):
             note(
@@ -1046,22 +1051,16 @@ def validate_materialization(
         requirement_id = str(binding.get("requirement_id") or "")
         if (
             not requirement_id
-            or requirement_id in requirement_bindings
-            or requirement_id in requirement_decisions
+            or requirement_id in seen_requirements
         ):
             note(
                 json_ptr("requirement_bindings", index, "requirement_id"),
                 f"requirement_bindings[{index}].requirement_id must be unique",
             )
             continue
+        seen_requirements.add(requirement_id)
         contract_ids = tuple(map(str, binding.get("contract_ids") or []))
         decision = binding.get("decision")
-        if contract_ids and decision is not None:
-            note(
-                json_ptr("requirement_bindings", index),
-                f"requirement {requirement_id} cannot bind contracts and a decision",
-            )
-            continue
         if contract_ids:
             if len(set(contract_ids)) != len(contract_ids):
                 note(
@@ -1077,7 +1076,7 @@ def validate_materialization(
                 )
                 continue
             requirement_bindings[requirement_id] = contract_ids
-        elif isinstance(decision, dict):
+        if isinstance(decision, dict):
             statement = str(decision.get("statement") or "").strip()
             strength = str(decision.get("decision_strength") or "").strip()
             if not statement or strength not in {
@@ -1092,7 +1091,12 @@ def validate_materialization(
                 "statement": statement,
                 "decision_strength": strength,
             }
-        else:
+        elif decision is not None:
+            note(
+                json_ptr("requirement_bindings", index, "decision"),
+                f"requirement {requirement_id} decision must be an object",
+            )
+        if not contract_ids and decision is None:
             note(
                 json_ptr("requirement_bindings", index),
                 f"requirement {requirement_id} must bind contracts or an explicit typed decision",
@@ -1110,9 +1114,13 @@ def validate_materialization(
         if base_requirements_path is not None
         else root / "requirements.json"
     )
-    register = {
-        str(row.get("id")): (row.get("resolution") or {})
+    register_rows = {
+        str(row.get("id")): row
         for row in _rows(_document(register_path), "requirements", "requirements.json")
+    }
+    register = {
+        requirement_id: (row.get("resolution") or {})
+        for requirement_id, row in register_rows.items()
     }
     unknown_owned = sorted(rid for rid in owned if rid not in register)
     if unknown_owned:
@@ -1150,6 +1158,84 @@ def validate_materialization(
             + (f"; missing {', '.join(missing_requirements)}" if missing_requirements else "")
             + (f"; unknown {', '.join(extra_requirements)}" if extra_requirements else ""),
         )
+
+    contract_domains: dict[str, str] = {}
+    for contract_id, (binding_kind, row) in all_contracts.items():
+        contract_domains[contract_id] = (
+            "image"
+            if binding_kind == "image_contract"
+            else KIND_DOMAINS.get(str(row.get("kind") or ""), "unknown")
+        )
+    contract_domains.update(dict.fromkeys(image_debt_ids, "image"))
+    qualitative_domains = {"image", "human"}
+    from vfx_harness.domain.work_units import parse_evidence_domains
+
+    for requirement_id in sorted(owned & bound):
+        resolution = register.get(requirement_id) or {}
+        try:
+            declared = parse_evidence_domains(
+                resolution.get("evidence_domains"),
+                f"requirements.json requirement {requirement_id}.resolution.evidence_domains",
+            )
+        except ValueError as exc:
+            note(json_ptr("requirement_bindings"), str(exc))
+            continue
+        contract_ids = requirement_bindings.get(requirement_id, ())
+        by_domain = {
+            domain: tuple(sorted(cid for cid in contract_ids if contract_domains.get(cid) == domain))
+            for domain in declared
+        }
+        decision = requirement_decisions.get(requirement_id)
+        decision_domains = {
+            domain for domain in declared if domain in qualitative_domains and not by_domain[domain]
+        }
+        if decision and not decision_domains:
+            note(
+                json_ptr("requirement_bindings"),
+                f"requirement {requirement_id} carries a decision but every declared domain "
+                "already has contract evidence; remove the padding decision",
+            )
+        if decision and str(decision.get("decision_strength") or "") not in {
+            "approved_start",
+            "planner_start",
+        }:
+            note(
+                json_ptr("requirement_bindings"),
+                f"requirement {requirement_id} qualitative domain debt must use "
+                "approved_start or planner_start; materialization cannot invent a "
+                "confirmed outcome",
+            )
+        covered = {domain for domain, ids in by_domain.items() if ids}
+        if decision:
+            covered.update(decision_domains)
+        missing_domains = sorted(set(declared) - covered)
+        if missing_domains:
+            witnesses = ", ".join(
+                f"{contract_id}={contract_domains.get(contract_id, 'unknown')}"
+                for contract_id in contract_ids
+            ) or "no contract ids"
+            note(
+                json_ptr("requirement_bindings"),
+                f"requirement {requirement_id} declares AND domains {list(declared)} but "
+                f"does not pay {missing_domains}; bound witnesses: {witnesses}. Bind a "
+                "same-domain contract for structural domains and an explicit "
+                "approved_start/planner_start decision for unpaid image or human debt",
+            )
+            continue
+        domain_rows: list[dict[str, Any]] = []
+        for domain in declared:
+            ids = by_domain[domain]
+            if ids:
+                domain_rows.append({"domain": domain, "kind": "contract", "ids": list(ids)})
+            else:
+                domain_rows.append({
+                    "domain": domain,
+                    "kind": "provisional_decision",
+                    "statement": decision["statement"],
+                    "decision_strength": decision["decision_strength"],
+                })
+        requirement_evidence_domains[requirement_id] = declared
+        requirement_domain_bindings[requirement_id] = tuple(domain_rows)
 
     acceptance = payload.get("acceptance", [])
     if not isinstance(acceptance, list) or any(not isinstance(row, dict) for row in acceptance):
@@ -1215,6 +1301,8 @@ def validate_materialization(
         tuple(image_rows),
         requirement_bindings,
         requirement_decisions,
+        requirement_evidence_domains,
+        requirement_domain_bindings,
         tuple(acceptance),
     )
 
@@ -2020,6 +2108,8 @@ def _overlay_documents(materialized, bases: dict) -> dict:
         requirement_id = str(row.get("id") or "")
         contract_ids = materialized.requirement_bindings.get(requirement_id)
         decision = materialized.requirement_decisions.get(requirement_id)
+        evidence_domains = materialized.requirement_evidence_domains.get(requirement_id)
+        domain_bindings = materialized.requirement_domain_bindings.get(requirement_id)
         if not contract_ids and not decision:
             continue
         resolution = row.get("resolution") or {}
@@ -2031,13 +2121,20 @@ def _overlay_documents(materialized, bases: dict) -> dict:
                 f"requirement {requirement_id} is not owned by materialized layer {layer_id}"
             )
         if contract_ids:
-            row["resolution"] = {"kind": "contract", "ids": sorted(set(contract_ids))}
+            row["resolution"] = {
+                "kind": "contract",
+                "ids": sorted(set(contract_ids)),
+                "evidence_domains": list(evidence_domains or ()),
+                "domain_bindings": list(domain_bindings or ()),
+            }
         else:
             row["resolution"] = {
                 "kind": "decision",
                 "ids": [],
                 "decision": decision["statement"],
                 "decision_strength": decision["decision_strength"],
+                "evidence_domains": list(evidence_domains or ()),
+                "domain_bindings": list(domain_bindings or ()),
             }
     acceptance_doc = json.loads(Path(bases["acceptance.json"]).read_text(encoding="utf-8"))
     if not isinstance(acceptance_doc, list):

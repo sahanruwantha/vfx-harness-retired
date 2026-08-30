@@ -190,8 +190,8 @@ _MATERIALIZATION_EXAMPLE = """{
    "frame": 1, "op": "band", "lo": 0.35, "hi": 0.55}],
  "image_contracts": [],
  "requirement_bindings": [
-  {"requirement_id": "<owned id>", "contract_ids": ["example-contract"]},
-  {"requirement_id": "<owned id>", "decision": {"statement": "one-sentence closure",
+  {"requirement_id": "<owned id>", "contract_ids": ["example-contract"],
+   "decision": {"statement": "one-sentence provisional qualitative debt",
     "decision_strength": "approved_start"}}],
  "acceptance": []
 }"""
@@ -576,9 +576,12 @@ closes. If a later cross-unit finding proves a staged decomposition wrong, call
 staged, call `finalize_materialization`; repair its complete findings with
 `patch_materialization`, then finalize again. The completed candidate must contain non-empty
 bounded stages and close every
-globally owned requirement exactly once, either with one or more concrete contract ids or an
-explicit decision carrying `statement` and `decision_strength`. Preserve global layer structure
-exactly. Mutated roles must stay inside reserved namespaces. Every scene contract must be
+globally owned requirement exactly once. Every declared structural evidence domain needs one or
+more same-domain contract ids. Every image/human domain not paid by a candidate-bound contract
+needs an explicit provisional decision carrying `statement` and `decision_strength`; mixed-domain
+requirements therefore bind contracts AND a decision in the same row. The harness retains this
+domain-to-binding map in the selected view and refuses partial coverage. Preserve global layer
+structure exactly. Mutated roles must stay inside reserved namespaces. Every scene contract must be
 required evidence of a materialized producing claim.
 A unit that must ASSIGN materials to another layer's geometry declares `mutates.dresses`:
 selectors the OWNING layer's row lists under `dressable` (granted by the owner, never

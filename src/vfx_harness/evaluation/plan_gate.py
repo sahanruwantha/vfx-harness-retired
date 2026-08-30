@@ -2231,7 +2231,7 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
         load_obligations,
         load_requirements,
     )
-    from vfx_harness.evidence.scene_checks import TEMPORAL_KINDS
+    from vfx_harness.evidence.scene_checks import KIND_DOMAINS, TEMPORAL_KINDS
 
     names = ("requirements.json", "obligations.json", "assumptions.json")
     missing = [name for name in names if not (folder / name).is_file()]
@@ -2792,6 +2792,41 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                     f"resolution names unknown {requirement.resolution_kind} ids: {', '.join(unknown)}",
                     "bind the requirement to exact records present in this candidate bundle",
                 ))
+        if requirement.domain_bindings:
+            actual_domains = {
+                str(row.get("id")): KIND_DOMAINS.get(
+                    str(row.get("kind") or ""), "unknown"
+                )
+                for row in scene_rows
+                if row.get("id")
+            }
+            actual_domains.update(dict.fromkeys(image_ids, "image"))
+            for domain, binding_kind, binding_ids in requirement.domain_bindings:
+                if binding_kind != "contract":
+                    if domain not in {"image", "human"}:
+                        findings.append(Finding(
+                            "requirement-domain-binding",
+                            True,
+                            requirement.id,
+                            f"provisional decision cannot pay structural domain {domain!r}",
+                            "bind a registry-backed contract whose metric certifies that domain",
+                        ))
+                    continue
+                mismatched = [
+                    f"{contract_id}={actual_domains.get(contract_id, 'missing')}"
+                    for contract_id in binding_ids
+                    if actual_domains.get(contract_id) != domain
+                ]
+                if mismatched:
+                    findings.append(Finding(
+                        "requirement-domain-binding",
+                        True,
+                        requirement.id,
+                        f"domain {domain!r} is bound by incompatible witnesses: "
+                        + ", ".join(mismatched),
+                        "bind ids whose canonical registry domain exactly matches the "
+                        "declared requirement domain; do not relabel a metric",
+                    ))
     for records in (obligations, assumptions):
         for record in records:
             unknown_requirements = sorted(set(record.requirement_ids) - requirement_ids)

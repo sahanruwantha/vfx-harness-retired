@@ -132,7 +132,7 @@ def _add_deferred_layer(root: Path) -> None:
         "primary_judge": 240,
         "judge": [{"frame": 239, "ref": "refs/a.png"}, {"frame": 240, "ref": "refs/a.png"}],
         "owns": ["final_lock"], "reads": "polished ending",
-        "evidence_domains": ["scene", "temporal"],
+        "evidence_domains": ["scene", "temporal", "image", "projected_composition"],
         "execution": "jit_deferred", "stages": [],
         "jit": {
             "depends_on_layers": ["1"],
@@ -144,7 +144,7 @@ def _add_deferred_layer(root: Path) -> None:
     })
     _write(root / "layers.json", data)
     requirements = json.loads((root / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = _deferred_owner("2")
+    requirements["requirements"][0]["resolution"] = _deferred_owner("2", "image")
     _write(root / "requirements.json", requirements)
     _write(root / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -269,7 +269,7 @@ def test_deferred_root_materializes_without_fabricated_outcome(
     _write(tmp_path / "layers.json", document)
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1", "image")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -336,7 +336,7 @@ def test_materialized_consumer_keeps_global_camera_capability_from_sparse_bundle
     _write(tmp_path / "layers.json", document)
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1", "image")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -1487,6 +1487,11 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
     """A fixed control publishes first; its camera successor owns projection."""
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = _deferred_owner(
+        "2", "scene", "projected_composition"
+    )
+    _write(tmp_path / "requirements.json", requirements)
     layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
     layers["layers"][1]["jit"]["reserved_roles"] = [role, "camera.rig"]
     layers["layers"][1]["jit"]["provides"] = {"camera": ["camera.rig"]}
@@ -2044,7 +2049,12 @@ def test_deferred_layer_has_no_fake_units_and_materializes_through_bound_contrac
         selected_artifact_path(tmp_path, "requirements.json").read_text(encoding="utf-8")
     )
     assert requirements["requirements"][0]["resolution"] == {
-        "kind": "contract", "ids": ["polish-lock"],
+        "kind": "contract",
+        "ids": ["polish-lock"],
+        "evidence_domains": ["image"],
+        "domain_bindings": [
+            {"domain": "image", "kind": "contract", "ids": ["polish-lock"]}
+        ],
     }
     assert not (tmp_path / "state" / "units" / "2.json").exists()
 
@@ -3024,7 +3034,7 @@ def test_root_materialization_validates_with_deferred_dependents(
     _write(tmp_path / "layers.json", document)
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1", "image")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],
@@ -3126,7 +3136,7 @@ def test_owned_requirement_deferred_to_another_layer_fails_closed(
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1", "image")
     _write(tmp_path / "requirements.json", requirements)
     layout = run_artifacts.create(tmp_path, "foreign-owner")
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
@@ -3304,6 +3314,118 @@ def test_materialization_can_close_owned_requirement_with_typed_decision(tmp_pat
     )
 
     assert materialized.requirement_decisions["R-final-lock"]["decision_strength"] == "approved_start"
+
+
+def test_materialization_requires_and_retains_every_requirement_domain(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = _deferred_owner(
+        "2", "image", "scene"
+    )
+    _write(tmp_path / "requirements.json", requirements)
+    layout = run_artifacts.create(tmp_path, "domain-and")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["scene_contracts"].append({
+        "id": "polish-count",
+        "kind": "object_count",
+        "owner_layer": "2",
+        "fault_owner": "2",
+        "activates_at": "2",
+        "lifecycle": "layer",
+        "axis": "final_lock",
+        "roles": ["polish.comp"],
+        "op": "min",
+        "lo": 1,
+    })
+    data["layer"]["stages"][0]["evaluation"]["claims"].append({
+        "id": "polish-count-claim",
+        "proposition": "the polish subject exists",
+        "axis": "final_lock",
+        "property": "object_count",
+        "subject_roles": ["polish.comp"],
+        "subject_controls": [],
+        "moments": [239, 240],
+        "kind": "atomic",
+        "required": True,
+        "authority": "executable_required",
+        "repair_owner": "polish",
+        "asserts": "scene",
+        "evidence": [{"kind": "scene_contract", "id": "polish-count"}],
+    })
+    data["requirement_bindings"] = [{
+        "requirement_id": "R-final-lock",
+        "contract_ids": ["polish-count"],
+    }]
+    _write(payload, data)
+
+    with pytest.raises(ValueError, match=r"does not pay \['image'\]"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
+
+    data["requirement_bindings"][0]["decision"] = {
+        "statement": "The exact rendered lock remains provisional until canonical judgment.",
+        "decision_strength": "approved_start",
+    }
+    _write(payload, data)
+    materialized = validate_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized.requirement_evidence_domains["R-final-lock"] == (
+        "image",
+        "scene",
+    )
+    assert materialized.requirement_domain_bindings["R-final-lock"] == (
+        {
+            "domain": "image",
+            "kind": "provisional_decision",
+            "statement": "The exact rendered lock remains provisional until canonical judgment.",
+            "decision_strength": "approved_start",
+        },
+        {"domain": "scene", "kind": "contract", "ids": ["polish-count"]},
+    )
+
+    _passed_layer_one_outcome(tmp_path)
+    pointer = publish_materialization(tmp_path, payload)
+    selected = json.loads(
+        (tmp_path / json.loads(pointer.read_text(encoding="utf-8"))["artifacts"]["requirements.json"])
+        .read_text(encoding="utf-8")
+    )
+    resolution = selected["requirements"][0]["resolution"]
+    assert resolution["evidence_domains"] == ["image", "scene"]
+    assert resolution["domain_bindings"] == list(
+        materialized.requirement_domain_bindings["R-final-lock"]
+    )
+
+
+def test_gate_rejects_relabelled_requirement_domain_binding(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "contract",
+        "ids": ["final-lock"],
+        "evidence_domains": ["projected_composition"],
+        "domain_bindings": [{
+            "domain": "projected_composition",
+            "kind": "contract",
+            "ids": ["final-lock"],
+        }],
+    }
+    _write(tmp_path / "requirements.json", requirements)
+
+    findings, _ = _check_meta_records(tmp_path)
+
+    assert any(
+        finding.check == "requirement-domain-binding"
+        and "final-lock=image" in finding.what
+        for finding in findings
+    )
 
 
 def test_direct_required_bbox_claims_are_projected_composition_context(
@@ -3516,7 +3638,7 @@ def test_unselected_revert_of_last_layer_does_not_unlink_pointer(
     _write(tmp_path / "layers.json", document)
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
-    requirements["requirements"][0]["resolution"] = _deferred_owner("1")
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1", "image")
     _write(tmp_path / "requirements.json", requirements)
     _write(tmp_path / "obligations.json", {
         "schema": "vfx-harness.obligations/v1", "obligations": [],

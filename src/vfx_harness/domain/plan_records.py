@@ -180,6 +180,8 @@ class Requirement:
     owner_layer: str | None = None
     due: DueGate | None = None
     evidence_domains: tuple[str, ...] = ()
+    decision_strength: str | None = None
+    domain_bindings: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,13 +281,24 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
             allow_empty=kind in {"decision", "deferred_owner"},
         )
         decision = resolution.get("decision")
+        strength = resolution.get("decision_strength")
         owner_layer = None
         due = None
         evidence_domains: tuple[str, ...] = ()
-        if kind != "deferred_owner" and resolution.get("evidence_domains") is not None:
-            raise ValueError(f"{where}.resolution.{kind} must omit evidence_domains")
+        domain_bindings: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+        raw_domains = resolution.get("evidence_domains")
+        raw_domain_bindings = resolution.get("domain_bindings")
+        if kind != "deferred_owner" and (raw_domains is None) != (raw_domain_bindings is None):
+            raise ValueError(
+                f"{where}.resolution must carry evidence_domains and domain_bindings together"
+            )
         if kind == "decision":
             decision = _text(decision, f"{where}.resolution.decision")
+            strength = decision_strength(
+                strength,
+                f"{where}.resolution.decision_strength",
+                legacy_default=raw_domain_bindings is None,
+            )
             if ids:
                 raise ValueError(f"{where}.resolution decision must not carry ids")
         elif kind == "deferred_owner":
@@ -302,11 +315,84 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
             evidence_domains = parse_evidence_domains(
                 resolution.get("evidence_domains"), f"{where}.resolution.evidence_domains"
             )
-        elif decision is not None:
-            raise ValueError(f"{where}.resolution.{kind} must omit decision")
+            if raw_domain_bindings is not None:
+                raise ValueError(
+                    f"{where}.resolution.deferred_owner must omit domain_bindings"
+                )
+        else:
+            if decision is not None or strength is not None:
+                raise ValueError(
+                    f"{where}.resolution.{kind} must omit decision and decision_strength"
+                )
+        if raw_domain_bindings is not None:
+            evidence_domains = parse_evidence_domains(
+                raw_domains, f"{where}.resolution.evidence_domains"
+            )
+            if not isinstance(raw_domain_bindings, list) or not raw_domain_bindings:
+                raise ValueError(
+                    f"{where}.resolution.domain_bindings must be a non-empty list"
+                )
+            parsed_bindings: list[tuple[str, str, tuple[str, ...]]] = []
+            provisional_values: set[tuple[str, str]] = set()
+            for binding_index, binding in enumerate(raw_domain_bindings):
+                at = f"{where}.resolution.domain_bindings[{binding_index}]"
+                if not isinstance(binding, dict):
+                    raise ValueError(f"{at} must be an object")
+                domain = _text(binding.get("domain"), f"{at}.domain")
+                binding_kind = binding.get("kind")
+                if domain not in evidence_domains:
+                    raise ValueError(
+                        f"{at}.domain {domain!r} is not declared in evidence_domains"
+                    )
+                if binding_kind == "contract":
+                    binding_ids = _ids(binding.get("ids"), f"{at}.ids")
+                    if not set(binding_ids) <= set(ids):
+                        raise ValueError(
+                            f"{at}.ids must be a subset of resolution.ids"
+                        )
+                elif binding_kind == "provisional_decision":
+                    binding_statement = _text(
+                        binding.get("statement"), f"{at}.statement"
+                    )
+                    binding_strength = decision_strength(
+                        binding.get("decision_strength"), f"{at}.decision_strength"
+                    )
+                    if binding_strength not in {"approved_start", "planner_start"}:
+                        raise ValueError(
+                            f"{at}.decision_strength must be approved_start or planner_start"
+                        )
+                    provisional_values.add((binding_statement, binding_strength))
+                    binding_ids = ()
+                else:
+                    raise ValueError(
+                        f"{at}.kind must be 'contract' or 'provisional_decision'"
+                    )
+                parsed_bindings.append((domain, str(binding_kind), binding_ids))
+            domains_bound = [domain for domain, _kind, _ids_ in parsed_bindings]
+            if len(domains_bound) != len(set(domains_bound)):
+                raise ValueError(
+                    f"{where}.resolution.domain_bindings contains duplicate domains"
+                )
+            if set(domains_bound) != set(evidence_domains):
+                missing = sorted(set(evidence_domains) - set(domains_bound))
+                raise ValueError(
+                    f"{where}.resolution.domain_bindings must cover every evidence domain; "
+                    f"missing {missing}"
+                )
+            if len(provisional_values) > 1:
+                raise ValueError(
+                    f"{where}.resolution provisional domain bindings must share one "
+                    "statement and decision_strength"
+                )
+            if kind == "decision" and provisional_values != {(str(decision), str(strength))}:
+                raise ValueError(
+                    f"{where}.resolution decision must match its provisional domain bindings"
+                )
+            domain_bindings = tuple(parsed_bindings)
         out.append(Requirement(
             rid, _text(row.get("statement"), f"{where}.statement"), cited_hash,
             start, end, kind, ids, decision, owner_layer, due, evidence_domains,
+            str(strength) if strength is not None else None, domain_bindings,
         ))
     if not out:
         raise ValueError("requirements.json.requirements must not be empty")

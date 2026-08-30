@@ -287,6 +287,51 @@ def test_current_bundle_falsification_keeps_provisional_debt_after_contract_rebi
     )
 
 
+def test_compound_requirement_resolution_keeps_provisional_image_debt() -> None:
+    base = [
+        {
+            "id": "R-holistic",
+            "statement": "The form reads as the specific reference.",
+            "resolution": {
+                "kind": "deferred_owner",
+                "owner_layer": "2",
+                "evidence_domains": ["image", "scene"],
+            },
+        }
+    ]
+    selected = [
+        {
+            "id": "R-holistic",
+            "statement": "The form reads as the specific reference.",
+            "resolution": {
+                "kind": "contract",
+                "ids": ["mass.exists"],
+                "evidence_domains": ["image", "scene"],
+                "domain_bindings": [
+                    {"domain": "scene", "kind": "contract", "ids": ["mass.exists"]},
+                    {
+                        "domain": "image",
+                        "kind": "provisional_decision",
+                        "statement": "The form reads as the specific reference.",
+                        "decision_strength": "approved_start",
+                    },
+                ],
+            },
+        }
+    ]
+
+    decisions = _provisional_decisions_for_layer(base, selected, "2")
+
+    assert decisions == (
+        {
+            "id": "R-holistic",
+            "statement": "The form reads as the specific reference.",
+            "decision_strength": "approved_start",
+            "evidence_domains": ("image", "scene"),
+        },
+    )
+
+
 def test_provisional_composition_preserves_concrete_critic_observation_as_gap() -> None:
     binding = "requirement:R-holistic:form"
     observation = {

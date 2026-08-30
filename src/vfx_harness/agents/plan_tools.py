@@ -1637,7 +1637,35 @@ def build_plan_tools(
                 "scene_contracts": {"type": "array", "items": {"type": "object"}},
                 "requirement_bindings": {
                     "type": "array",
-                    "items": {"type": "object"},
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "requirement_id": {"type": "string"},
+                            "contract_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "uniqueItems": True,
+                            },
+                            "decision": {
+                                "type": "object",
+                                "properties": {
+                                    "statement": {"type": "string"},
+                                    "decision_strength": {
+                                        "type": "string",
+                                        "enum": ["approved_start", "planner_start"],
+                                    },
+                                },
+                                "required": ["statement", "decision_strength"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "required": ["requirement_id"],
+                        "anyOf": [
+                            {"required": ["contract_ids"]},
+                            {"required": ["decision"]},
+                        ],
+                        "additionalProperties": False,
+                    },
                 },
                 "layer_updates": {
                     "type": "object",

@@ -60,6 +60,9 @@ def _deferred_root(root: Path) -> None:
     layer = document["layers"][0]
     layer["execution"] = "jit_deferred"
     layer["stages"] = []
+    layer["evidence_domains"] = sorted(
+        set(layer.get("evidence_domains") or []) | {"image"}
+    )
     layer["jit"] = {
         "depends_on_layers": [],
         "required_outcomes": [],
@@ -95,7 +98,7 @@ def _deferred_root(root: Path) -> None:
     requirements["requirements"][0]["resolution"] = {
         "kind": "deferred_owner", "ids": [], "owner_layer": "1",
         "due": {"kind": "before_layer", "layer": "1"},
-        "evidence_domains": ["scene"],
+        "evidence_domains": ["image"],
     }
     digest = hashlib.sha256((root / "brief.md").read_bytes()).hexdigest()
     requirements["requirements"][0]["citation"] = {

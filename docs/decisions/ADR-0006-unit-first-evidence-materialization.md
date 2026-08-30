@@ -106,6 +106,15 @@ itself refute an actionable dissent. When a nominal passing majority contains su
 the aggregate remains failing and retains the exact observation. Only executable
 contradiction or typed conflict/gap/protocol reconciliation can retire it (HIR-0144).
 
+### Amendment: requirement-domain closure follows concrete bindings
+
+Owner-layer domain coverage is necessary but not sufficient. Every deferred requirement's
+declared evidence domains remain an AND obligation when materialized. Structural domains bind
+same-domain registry contracts; unpaid image/human domains bind explicit provisional judgment
+debt. Mixed rows carry both. The selected resolution preserves the exact domain map, and the
+terminal gate independently re-derives contract domains so stored labels cannot self-certify
+(HIR-0145).
+
 ## Consequences
 
 Global planning can publish without acceptance fingerprints, executable stages, recipes, or

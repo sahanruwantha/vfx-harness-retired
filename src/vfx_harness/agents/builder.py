@@ -3341,12 +3341,33 @@ def _provisional_decisions_for_layer(
     for row in selected_requirements:
         requirement_id = str(row.get("id") or "")
         resolution = row.get("resolution") or {}
-        strength = str(resolution.get("decision_strength") or "")
-        if requirement_id not in owned or resolution.get("kind") != "decision":
+        if requirement_id not in owned:
             continue
-        if strength not in {"approved_start", "planner_start"}:
+        decisions = []
+        if resolution.get("kind") == "decision":
+            decisions.append({
+                "statement": resolution.get("decision") or resolution.get("statement"),
+                "decision_strength": resolution.get("decision_strength"),
+            })
+        decisions.extend(
+            binding
+            for binding in (resolution.get("domain_bindings") or ())
+            if isinstance(binding, dict)
+            and binding.get("kind") == "provisional_decision"
+        )
+        provisional = next(
+            (
+                decision
+                for decision in decisions
+                if str(decision.get("decision_strength") or "")
+                in {"approved_start", "planner_start"}
+            ),
+            None,
+        )
+        if provisional is None:
             continue
-        statement = str(resolution.get("decision") or resolution.get("statement") or "").strip()
+        strength = str(provisional.get("decision_strength") or "")
+        statement = str(provisional.get("statement") or "").strip()
         if statement:
             rows.append(
                 {
