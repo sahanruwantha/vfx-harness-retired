@@ -701,6 +701,7 @@ def build_plan_tools(
     materialization_write_lock = anyio.Lock()
     materialization_revision_token: str | None = None
     materialization_axis_ids: tuple[str, ...] | None = None
+    materialization_layer_id: str | None = None
     if candidate_materialization is not None:
         candidate_path = Path(candidate_materialization)
         if candidate_path.is_file():
@@ -711,6 +712,9 @@ def build_plan_tools(
             materialization_revision_token = materialization_candidate_revision(candidate_path)
             try:
                 candidate_payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+                materialization_layer_id = str(
+                    (candidate_payload.get("layer") or {}).get("id") or ""
+                ) or None
                 materialization_axis_ids = tuple(
                     str(value)
                     for value in ((candidate_payload.get("layer") or {}).get("owns") or [])
@@ -1589,6 +1593,8 @@ def build_plan_tools(
         "of none/keyframes/motion for temporal_evidence, and omit composition_context "
         "unless it has non-empty frames plus exactly one source_unit or contract_ids. "
         "Every claim.axis enumerates the active layer's exact owned axis ids. "
+        "script_spans contains exactly the identity-derived unit file enumerated by the "
+        "schema under build/units/<layer>/; layer scripts and #fragments are invalid. "
         "After all units, call finalize_materialization. This is unpublished scratch "
         "state; duplicate unit, contract, or requirement ids are refused.",
         {
@@ -1597,6 +1603,7 @@ def build_plan_tools(
                 "unit": work_unit_authoring_schema(
                     image_property_kinds=payable_image_property_kinds(METRICS),
                     axis_ids=materialization_axis_ids,
+                    layer_id=materialization_layer_id,
                 ),
                 "scene_contracts": {"type": "array", "items": {"type": "object"}},
                 "requirement_bindings": {

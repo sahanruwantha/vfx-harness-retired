@@ -1164,7 +1164,10 @@ async def generate_layer_plan(
     global_path = global_plan_path(shot.folder)
     if not global_path.is_file():
         raise FileNotFoundError(f"{global_path} missing — generate and gate the strict global plan first")
-    layers = load_layers(shot)
+    layers = load_layers(
+        shot,
+        replacing_layer_id=str(layer_id) if rematerialize is not None else None,
+    )
     try:
         layer = layers[str(layer_id)]
     except KeyError as exc:

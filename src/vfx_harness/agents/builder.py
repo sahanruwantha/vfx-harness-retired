@@ -1545,7 +1545,14 @@ async def _make_focus_panels(
     return panels
 
 
-def _required_focus_requests(shot: Shot, layer_id: str, frame: int, axes: list[tuple[str, str]]) -> list[dict]:
+def _required_focus_requests(
+    shot: Shot,
+    layer_id: str,
+    frame: int,
+    axes: list[tuple[str, str]],
+    *,
+    layers: dict | None = None,
+) -> list[dict]:
     """Load planner-declared optical evidence that must reach the first judge.
 
     Whole-frame vision cannot reliably grade a feature occupying a few encoder patches.
@@ -1559,8 +1566,9 @@ def _required_focus_requests(shot: Shot, layer_id: str, frame: int, axes: list[t
     if not path.is_file():
         return []
     try:
+        loaded = layers if layers is not None else load_layers(shot)
         reference_by_frame = {
-            int(judge_frame): str(ref) for judge_frame, ref in load_layers(shot)[str(layer_id)].judges
+            int(judge_frame): str(ref) for judge_frame, ref in loaded[str(layer_id)].judges
         }
     except (KeyError, FileNotFoundError, ValueError, json.JSONDecodeError):
         reference_by_frame = {}

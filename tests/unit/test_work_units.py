@@ -220,6 +220,23 @@ def test_unit_ticket_schema_exposes_exact_consumes_and_optional_context(role: st
     )
 
 
+def test_unit_ticket_schema_exposes_active_layer_script_directory() -> None:
+    """HIR-0126: script location is visible before the staging transaction."""
+    schema = work_unit_authoring_schema(layer_id="3")
+    ticket = _camera_ticket("product.camera_target")
+    ticket["mutates"]["script_spans"] = ["build/units/03/camera.py"]
+    assert list(Draft202012Validator(schema).iter_errors(ticket)) == []
+
+    for invalid in (
+        "build/03_scene.py#camera",
+        "build/03_scene.py",
+        "build/units/02/camera.py",
+    ):
+        ticket["mutates"]["script_spans"] = [invalid]
+        errors = list(Draft202012Validator(schema).iter_errors(ticket))
+        assert any(list(error.absolute_path)[:2] == ["mutates", "script_spans"] for error in errors)
+
+
 def test_unit_ticket_schema_enumerates_active_layer_axes() -> None:
     schema = work_unit_authoring_schema(axis_ids=["iris_ingress_sequence"])
     ticket = _camera_ticket("product.camera_target")

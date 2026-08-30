@@ -16,7 +16,8 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
   of internal work units from the shot, references, dependencies, control families, and risk.
 - Give every work unit one bounded goal, one derived write-cluster, semantic mutation scope,
   dependencies, protected contracts, evidence policy, completion clause, checkpoint, repair
-  owner, and typed successor interfaces.
+  owner, typed successor interfaces, and one identity-derived `build/units/<layer>/<unit-id>.py`
+  replay file.
 - Treat camera availability as typed `provides` / sparse `jit.provides` authority, never as
   a role-name inference. Stage materialization through one locked, revision-checked candidate
   transaction.
@@ -122,3 +123,5 @@ target. The canonical rationale is in `docs/architecture/pipeline-end-goal.md`.
   camera-only host, count as subject composition coverage.
 - Let a camera unit seal inactive deferred subject bbox rows, or omit an earlier-layer
   camera provider from cannot_express fault_owner_options.
+- Let `#fragment` notation, a composed layer script, or an alternate basename be a unit's
+  replay authority.

@@ -1238,6 +1238,7 @@ def _validate_local_staged_units(payload: dict[str, Any]) -> None:
         PROJECTED_ORIGIN_REPAIR_RULE,
         WorkUnit,
         point_projection_interface_gaps,
+        validate_unit_script_path,
     )
 
     if payload.get("schema") != MATERIALIZATION_SCHEMA:
@@ -1248,6 +1249,9 @@ def _validate_local_staged_units(payload: dict[str, Any]) -> None:
     parsed_units = [
         WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)
     ]
+    layer_id = str((payload.get("layer") or {}).get("id") or "")
+    for unit_index, unit in enumerate(parsed_units):
+        validate_unit_script_path(layer_id, unit, f"staged unit[{unit_index}]")
     from vfx_harness.domain.image_debts import (
         IMAGE_PROPERTY_VOCABULARY_RULE,
         image_property_vocabulary_gaps,
@@ -1327,7 +1331,7 @@ def _validate_local_staged_units(payload: dict[str, Any]) -> None:
     gaps = atomicity_gaps(
         parsed_units,
         contracts,
-        layer_id=str((payload.get("layer") or {}).get("id") or ""),
+        layer_id=layer_id,
         raw_stages=stages,
     )
     if gaps:

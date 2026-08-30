@@ -158,6 +158,32 @@ def _relative_path(value: Any, where: str) -> str:
     return out
 
 
+def canonical_unit_script_path(layer_id: str, unit_id: str) -> str:
+    """Return the sole replay artifact path for one unit.
+
+    Unit scripts are executable files, not addressable spans inside a composed layer
+    script.  Keeping the path derivable from typed layer/unit identity prevents a
+    planner from publishing fragment notation that the filesystem later interprets as
+    a literal filename.
+    """
+    layer = _id(str(layer_id), "layer id")
+    unit = _id(str(unit_id), "unit id")
+    directory = layer.zfill(2) if layer.isdigit() else layer
+    return f"build/units/{directory}/{unit}.py"
+
+
+def validate_unit_script_path(layer_id: str, unit: WorkUnit, where: str) -> None:
+    """Fail closed unless a unit owns its exact identity-derived Python artifact."""
+    expected = canonical_unit_script_path(layer_id, unit.id)
+    actual = list(unit.mutates.script_spans)
+    if actual != [expected]:
+        raise ValueError(
+            f"{where}.mutates.script_spans must be exactly [{expected!r}]; got {actual}. "
+            "A work unit owns one distinct replayable Python file; composed layer paths, "
+            "#fragment notation, and alternate basenames are not script authority."
+        )
+
+
 @dataclass(frozen=True)
 class JudgePoint:
     frame: int
@@ -1391,6 +1417,7 @@ def work_unit_authoring_schema(
     *,
     image_property_kinds: Iterable[str] | None = None,
     axis_ids: Iterable[str] | None = None,
+    layer_id: str | None = None,
 ) -> dict[str, Any]:
     """Closed JSON schema exposed by the materialization unit-ticket tool.
 
@@ -1420,6 +1447,37 @@ def work_unit_authoring_schema(
         if nonempty:
             row["minItems"] = 1
         return row
+
+    script_item = dict(text)
+    if layer_id is not None:
+        directory = canonical_unit_script_path(str(layer_id), "unit-id").rsplit("/", 1)[0]
+        script_item.update(
+            {
+                "pattern": rf"^{re.escape(directory)}/[a-zA-Z0-9][a-zA-Z0-9_.-]*\.py$",
+                "description": (
+                    f"Exact unit artifact under {directory}/; the basename must equal "
+                    "the ticket id plus .py. Fragment notation is invalid."
+                ),
+            }
+        )
+    else:
+        script_item.update(
+            {
+                "pattern": r"^build/units/[a-zA-Z0-9][a-zA-Z0-9_.-]*/"
+                r"[a-zA-Z0-9][a-zA-Z0-9_.-]*\.py$",
+                "description": (
+                    "One identity-derived build/units/<layer>/<unit-id>.py artifact; "
+                    "fragment notation is invalid."
+                ),
+            }
+        )
+    script_spans = {
+        "type": "array",
+        "items": script_item,
+        "minItems": 1,
+        "maxItems": 1,
+        "uniqueItems": True,
+    }
 
     judge = {
         "type": "object",
@@ -1598,7 +1656,7 @@ def work_unit_authoring_schema(
                         "type": "object", "additionalProperties": strings(nonempty=True)
                     },
                     "dresses": strings(),
-                    "script_spans": strings(),
+                    "script_spans": script_spans,
                 },
                 "required": [
                     "mode", "roles", "controls", "control_roles", "script_spans"

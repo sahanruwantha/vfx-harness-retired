@@ -76,6 +76,10 @@ live in the linked Harness Improvement Records.
   vocabulary as layer `evidence_domains` and `claim.asserts`; the owner layer
   must cover every declared domain, and a rejection names covering layers
   ([HIR-0124](docs/improvements/HIR-0124-deferred-owner-domains-must-cover-owner-layer.md)).
+  Each work unit owns exactly one identity-derived replay file
+  (`build/units/<layer>/<unit-id>.py`); composed layer paths and `#fragment`
+  notation fail closed at staging and `load_layers`
+  ([HIR-0126](docs/improvements/HIR-0126-unit-replay-is-an-identity-derived-file.md)).
   Subject composition is `bbox_*` of a rendered subject, not `projected_origin` of
   a camera-only host; vacuous origin/bbox bands fail closed; camera-owned bbox
   due at a later geometry layer stays inactive on the camera unit; geometry

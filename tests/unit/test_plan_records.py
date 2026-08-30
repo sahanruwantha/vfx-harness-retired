@@ -69,7 +69,7 @@ def _candidate(root: Path) -> None:
                 "depends_on": [],
                 "mutates": {"mode": "scoped", "roles": ["comp"], "controls": ["hold"],
                             "control_roles": {"hold": ["comp"]},
-                            "script_spans": ["build/units/01_finish/lock.py"]},
+                            "script_spans": ["build/units/01/lock.py"]},
                 "protects": {"selector": "all_active_upstream_interfaces",
                              "resolve_to_explicit_ids_at": "freeze"},
                 "evaluation": {"primary_judge": 240,
@@ -182,7 +182,7 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
         "depends_on": [],
         "mutates": {"mode": "scoped", "roles": ["polish.comp"], "controls": ["hold"],
                     "control_roles": {"hold": ["polish.comp"]},
-                    "script_spans": ["build/units/02_polish/polish.py"]},
+                    "script_spans": ["build/units/02/polish.py"]},
         "protects": {"selector": "all_active_upstream_interfaces",
                      "resolve_to_explicit_ids_at": "freeze"},
         "evaluation": {"primary_judge": 240, "judge": layer["judge"],
@@ -524,6 +524,47 @@ def test_unit_staging_refuses_unpayable_image_property_before_write(
     assert target.read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    "invalid_path",
+    [
+        "build/02_polish.py#polish",
+        "build/02_polish.py",
+        "build/units/02/not-polish.py",
+    ],
+)
+def test_unit_staging_refuses_noncanonical_replay_path_before_write(
+    tmp_path: Path, invalid_path: str
+) -> None:
+    """HIR-0126: a fragment string must never become a literal build filename."""
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "script-path-staging")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "incremental.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    unit = full["layer"]["stages"][0]
+    unit["mutates"]["script_spans"] = [invalid_path]
+    before = target.read_bytes()
+
+    with pytest.raises(ValueError, match=r"build/units/02/polish\.py"):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=full["scene_contracts"],
+            requirement_bindings=full["requirement_bindings"],
+        )
+
+    assert target.read_bytes() == before
+
+
 def test_unstage_materialization_unit_prunes_only_unbound_candidate_rows(
     tmp_path: Path,
 ) -> None:
@@ -599,7 +640,7 @@ def test_unstage_materialization_unit_refuses_surviving_dependant(
     successor["mutates"]["roles"] = ["polish.successor"]
     successor["mutates"]["controls"] = ["next_hold"]
     successor["mutates"]["control_roles"] = {"next_hold": ["polish.successor"]}
-    successor["mutates"]["script_spans"] = ["build/units/02_polish/successor.py"]
+    successor["mutates"]["script_spans"] = ["build/units/02/successor.py"]
     claim = successor["evaluation"]["claims"][0]
     claim["id"] = "successor-claim"
     claim["repair_owner"] = "successor"

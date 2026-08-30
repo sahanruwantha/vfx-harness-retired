@@ -26,6 +26,7 @@ from vfx_harness.domain.work_units import (
     read_document,
     validate_qualification,
     validate_unit_dag,
+    validate_unit_script_path,
 )
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.runid import RUN_ID
@@ -151,7 +152,9 @@ class Layer:
                          (strips or {}).get(frame, ()))
 
 
-def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
+def load_layers_from_path(
+    path: str | Path, *, replacing_layer_id: str | None = None
+) -> dict[str, Layer]:
     """Parse one already-authorized layers artifact without selecting authority."""
     path = Path(path)
     if not path.is_file():
@@ -194,6 +197,9 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
                 "claims and units materialize at the JIT gate"
             )
         stages = tuple(WorkUnit.parse(row, f"{where}.stages[{i}]") for i, row in enumerate(raw_stages))
+        if str(lid) != str(replacing_layer_id):
+            for unit_index, unit in enumerate(stages):
+                validate_unit_script_path(lid, unit, f"{where}.stages[{unit_index}]")
         validate_unit_dag(stages, f"{where}.stages")
         jit = None
         raw_jit = g.get("jit")
@@ -428,11 +434,14 @@ def load_layers_from_path(path: str | Path) -> dict[str, Layer]:
     return out
 
 
-def load_layers(shot: Shot) -> dict[str, Layer]:
+def load_layers(shot: Shot, *, replacing_layer_id: str | None = None) -> dict[str, Layer]:
     """Per-shot build layers from the singular selected plan generation."""
     from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
-    return load_layers_from_path(selected_artifact_path(shot.folder, "layers.json"))
+    return load_layers_from_path(
+        selected_artifact_path(shot.folder, "layers.json"),
+        replacing_layer_id=replacing_layer_id,
+    )
 
 
 def load_milestones(shot: Shot) -> dict[str, Milestone]:

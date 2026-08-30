@@ -40,7 +40,7 @@ mutation is a harness defect, not a model limitation to paper over with a longer
 - Camera availability only from typed `provides`; role names never imply a capability
 - Camera-dependent evidence cannot publish before a camera provider
 - Role-bound global camera capability whose dependency closure reaches every judged layer
-- Closed WorkUnit authoring schema on the staging tool
+- Closed WorkUnit authoring schema on the staging tool, including the identity-derived unit script path
 - Point-projection consume matches the exporting interface
 - Locked revision-checked materialization candidate writes; patch cannot insert stage rows
 - Closed-loop mutation: every write has a matching observation

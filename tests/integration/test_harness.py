@@ -89,15 +89,63 @@ def main():
         Ledger,
         Milestone,
         load_axes,
-        load_layers,
+        load_layers_from_path,
         load_milestones,
         plan_strips,
     )
     from vfx_harness.orchestration.script_map import find_lines, outline
     from vfx_harness.orchestration.unit_state import unit_digest
 
+    def _canonicalize_copied_layers(folder: Path) -> None:
+        """Rewrite unit spans in a throwaway shot copy so production load_layers can run."""
+        from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+        targets: list[Path] = []
+        root = folder / "layers.json"
+        if root.is_file():
+            targets.append(root)
+        try:
+            selected = selected_artifact_path(folder, "layers.json")
+        except Exception:
+            selected = None
+        if (
+            selected is not None
+            and selected.is_file()
+            and selected.resolve() not in {path.resolve() for path in targets}
+        ):
+            targets.append(selected)
+        for path in targets:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            for layer_row in payload.get("layers") or []:
+                layer_token = str(layer_row["id"]).zfill(2)
+                for unit_row in layer_row.get("stages") or []:
+                    unit_row["mutates"]["script_spans"] = [
+                        f"build/units/{layer_token}/{unit_row['id']}.py"
+                    ]
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _load_unit_first_fixture(fixture_shot):
+        """Adapt untracked pre-unit-path production data in test scratch only."""
+        fixture_layers = json.loads(
+            (fixture_shot.folder / "layers.json").read_text(encoding="utf-8")
+        )
+        for layer_row in fixture_layers["layers"]:
+            layer_token = str(layer_row["id"]).zfill(2)
+            for unit_row in layer_row.get("stages") or []:
+                unit_row["mutates"]["script_spans"] = [
+                    f"build/units/{layer_token}/{unit_row['id']}.py"
+                ]
+        with tempfile.TemporaryDirectory(prefix="vfx-legacy-fixture-") as fixture_dir:
+            fixture_path = Path(fixture_dir) / "layers.json"
+            fixture_path.write_text(json.dumps(fixture_layers), encoding="utf-8")
+            return load_layers_from_path(fixture_path)
+
     shot = load_shot("shots/barrel_roll")
-    layers, axes, moments = load_layers(shot), load_axes(shot), load_milestones(shot)
+    # These shots predate unit-first replay paths and are untracked user production
+    # data. Adapt temporary read-only test views instead of mutating them or weakening
+    # the production loader's strict boundary.
+    layers = _load_unit_first_fixture(shot)
+    axes, moments = load_axes(shot), load_milestones(shot)
 
     print("\n[whole-shot dry run]")
     check("dry-run advances past an unchanged pending verdict", _can_advance("pending", dry_run=True))
@@ -118,7 +166,7 @@ def main():
     check("every layer multi-frame aware", all(len(l.judges) >= 1 for l in layers.values()))
     check("every judge ref exists", all((shot.folder / r).is_file() for l in layers.values() for _f, r in l.judges))
     _strict_shot = load_shot("shots/beacon_wake")
-    _strict_layers = load_layers(_strict_shot)
+    _strict_layers = _load_unit_first_fixture(_strict_shot)
     check(
         "strict per-layer plans resolve for the migrated shot",
         all(len(_plan_layer_excerpt(_strict_shot, l)) > 200 for l in _strict_layers.values()),
@@ -879,6 +927,7 @@ def main():
             "2",
             1,
             _owned_axes(load_axes(_strict_shot), _strict_layers["2"]),
+            layers=_strict_layers,
         )
         check(
             "small contract-critical features require focus before the first judge",
@@ -1283,7 +1332,7 @@ def main():
                                     "mode": "scoped",
                                     "roles": [],
                                     "controls": [],
-                                    "script_spans": ["build/01_test.py"],
+                                    "script_spans": ["build/units/01/complete.py"],
                                 },
                                 "protects": {
                                     "selector": "all_active_upstream_interfaces",
@@ -2739,6 +2788,7 @@ def main():
     print("\n[evals · baseline]")
     t3 = Path(tempfile.mkdtemp()) / "br"
     shutil.copytree(shot.folder, t3, ignore=shutil.ignore_patterns(".artifacts", ".snapshots", ".versions", "assets"))
+    _canonicalize_copied_layers(t3)
     from vfx_harness.observability import run_artifacts as _run_artifacts
     _fixture_run = _run_artifacts.create(t3, "baseline-fixture")
     for _report in (t3 / "logs").glob("run_layer*.json"):
@@ -2787,6 +2837,7 @@ def main():
     # Fixture with three planted defects, one of each class the checker claims to find.
     t4 = Path(tempfile.mkdtemp()) / "br"
     shutil.copytree(shot.folder, t4, ignore=shutil.ignore_patterns(".artifacts", ".snapshots", ".versions", "assets"))
+    _canonicalize_copied_layers(t4)
     led = json.loads((t4 / "shot.json").read_text())
     led["milestones"]["1"]["rounds"][0]["render"] = "renders/vanished.png"
     # Plant the defect explicitly rather than relying on layer 3 happening to have no
@@ -3950,7 +4001,7 @@ def main():
         from vfx_harness.domain.brief import load_shot as _ls
 
         s2 = _ls(str(dst))
-        led2, lay2 = Ledger(s2), load_layers(s2)
+        led2, lay2 = Ledger(s2), _load_unit_first_fixture(s2)
         m1 = lay2["1"].as_milestone()
         led2.mark(m1, "passed")
         check("marking a pass records the script digest", led2.script_digest(m1))

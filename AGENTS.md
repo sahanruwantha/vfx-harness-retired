@@ -119,6 +119,9 @@ belongs under `shots/` or `artifacts/` and must not be imported as source.
   revalidation, warm-start, ablation, canonical, and composed constituent replay share
   that barrier; composition is not raw script concatenation (HIR-0117).
 - Builders and repairs may mutate only declared semantic roles, controls, and script spans.
+  Each unit owns exactly one identity-derived replay file
+  (`build/units/<layer>/<unit-id>.py`); composed layer paths and `#fragment` notation
+  are not script authority (HIR-0126).
 - Fail closed on stale, ambiguous, incomplete, or schema-incompatible authority.
 - Core code must not contain shot names, display-name selectors, fixed shot frames, fixed layer
   or unit counts, scene-specific coordinates, keyword inference for moments or evidence modes,
@@ -208,7 +211,7 @@ gate that names mixed mutation families, typed digest-bound successor publish
 interfaces, camera-dependent evidence that cannot publish before a camera provider,
 role-bound global camera capability whose dependency closure reaches every judged layer,
 typed camera availability that role names cannot impersonate, a closed unit-ticket schema
-on the staging tool, projection consumption that matches the exporting interface, locked
+on the staging tool whose script span is the identity-derived unit file, projection consumption that matches the exporting interface, locked
 revision-checked materialization candidate writes, deferred-owner domain AND-coverage
 against the owner layer's already-validated evidence_domains, subject composition as
 bbox of a rendered subject due when geometry exists, vacuous origin/bbox bands,
@@ -373,7 +376,8 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   interface from the same producer is not authority. The selector is read-only and
   never enters camera mutation authority (HIR-0096, HIR-0099).
   The incremental unit staging tool exposes the closed WorkUnit authoring schema:
-  temporal enums, the active layer's exact owned claim-axis ids, optional
+  temporal enums, the active layer's exact owned claim-axis ids, the identity-derived
+  `build/units/<layer>/<unit-id>.py` script span (HIR-0126), optional
   composition-context union, and exact typed publish/consume fields are enumerated
   before generation rather than learned through parser retries
   (HIR-0097). An `interaction` claim requires the complete conditional coordination

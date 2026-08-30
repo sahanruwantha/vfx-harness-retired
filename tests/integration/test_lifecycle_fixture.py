@@ -145,7 +145,7 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
         "depends_on": [],
         "mutates": {"mode": "scoped", "roles": ["comp"], "controls": ["hold"],
                     "control_roles": {"hold": ["comp"]},
-                    "script_spans": ["build/units/01_finish/lock.py"]},
+                    "script_spans": ["build/units/01/lock.py"]},
         "protects": {"selector": "all_active_upstream_interfaces",
                      "resolve_to_explicit_ids_at": "freeze"},
         "evaluation": {"primary_judge": 240,

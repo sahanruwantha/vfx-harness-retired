@@ -191,7 +191,7 @@ def test_materialization_refuses_volume_vis_and_keeps_camera_vis(tmp_path: Path)
         "roles": ["world.atmosphere_volume"],
         "controls": [],
         "control_roles": {},
-        "script_spans": ["build/units/02_polish/fog.py"],
+        "script_spans": ["build/units/02/fog.py"],
     }
     fog["evaluation"]["claims"] = [
         {
@@ -244,7 +244,7 @@ def test_materialization_refuses_geometry_with_future_vis_producer(tmp_path: Pat
         "roles": ["polish.future_detail"],
         "controls": [],
         "control_roles": {},
-        "script_spans": ["build/units/02_polish/future_detail.py"],
+        "script_spans": ["build/units/02/future_detail.py"],
     }
     future["evaluation"]["temporal_evidence"] = "none"
     future["evaluation"]["claims"] = [{

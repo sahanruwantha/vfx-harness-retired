@@ -90,8 +90,9 @@ def _unit(
     depends_on: list[str] | None = None,
     frame: int = 40,
     proposition_suffix: str = "",
-    script_span: str = "build/04_lighting.py",
+    script_span: str | None = None,
 ) -> WorkUnit:
+    script_span = script_span or f"build/units/04/{uid}.py"
     row = {
         "id": uid,
         "title": uid,
@@ -729,9 +730,13 @@ def test_explicit_primary_is_not_reordered(tmp_path):
     assert [frame for frame, _ref in layer.judges] == [120, 1, 40]
 
 
-def test_multi_unit_layer_requires_distinct_unit_artifacts(tmp_path):
+def test_layer_loader_rejects_fragment_script_authority(tmp_path):
     first = _unit("form")
-    second = _unit("finish", depends_on=["form"])
+    second = _unit(
+        "finish",
+        depends_on=["form"],
+        script_span="build/04_lighting.py#finish",
+    )
     stages = [json.loads(json.dumps(unit, default=lambda value: value.__dict__)) for unit in (first, second)]
     for stage in stages:
         stage["evaluation"]["judge"] = [{"frame": 40, "ref": "refs/f040.png"}]
@@ -755,11 +760,11 @@ def test_multi_unit_layer_requires_distinct_unit_artifacts(tmp_path):
         ],
     }
     (tmp_path / "layers.json").write_text(json.dumps(doc), encoding="utf-8")
-    with pytest.raises(ValueError, match="distinct script spans"):
+    with pytest.raises(ValueError, match="#fragment notation"):
         load_layers(SimpleNamespace(folder=tmp_path))
 
 
-def test_multi_unit_layer_reserves_layer_script_for_composition(tmp_path):
+def test_layer_loader_rejects_composed_layer_script_as_unit_authority(tmp_path):
     units = (
         _unit("form", script_span="build/units/04/form.py"),
         _unit("finish", depends_on=["form"], script_span="build/04_lighting.py"),
@@ -791,7 +796,7 @@ def test_multi_unit_layer_reserves_layer_script_for_composition(tmp_path):
         ),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="reserved for the composed"):
+    with pytest.raises(ValueError, match="composed layer paths"):
         load_layers(SimpleNamespace(folder=tmp_path))
 
 
@@ -837,7 +842,7 @@ def test_layer_loader_requires_hash_pinned_passed_qualitative_qualification(tmp_
     raw = (json.dumps(artifact, sort_keys=True) + "\n").encode()
     (tmp_path / "qualifications").mkdir()
     (tmp_path / "qualifications" / "form-v1.json").write_bytes(raw)
-    unit = _unit("form")
+    unit = _unit("form", script_span="build/units/01/form.py")
     stage = json.loads(json.dumps(unit, default=lambda value: value.__dict__))
     stage["evaluation"]["judge"] = [{"frame": 40, "ref": "refs/f040.png"}]
     stage["protects"] = {
