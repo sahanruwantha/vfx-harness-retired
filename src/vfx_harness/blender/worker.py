@@ -1433,7 +1433,10 @@ def h_render(a: dict) -> dict:
     else:
         sc.render.resolution_percentage = max(1, min(100, int(scale * 100)))
 
-    tag = mode if not extended else f"{mode}_{shade if shade != 'beauty' else pass_name}"
+    tag = str(a.get("artifact_tag") or (
+        mode if not extended else f"{mode}_{shade if shade != 'beauty' else pass_name}"
+    ))
+    tag = "".join(char if char.isalnum() or char in "_-" else "-" for char in tag)
     tag = tag.replace(":", "-")
     path = os.path.join(ARTIFACTS, f"{tag}_f{frame:04d}.png")
     sc.render.filepath = path
@@ -1478,6 +1481,163 @@ def h_render(a: dict) -> dict:
         except Exception as e:
             out["pixels_error"] = str(e)[:120]
     return out
+
+
+def h_inspect_view(a: dict) -> dict:
+    """Render one transactional role-aimed artist view without touching shot authority."""
+    import math
+
+    import checks
+    from mathutils import Matrix, Vector
+
+    sc = bpy.context.scene
+    original_camera = sc.camera
+    original_frame = sc.frame_current
+    role = str(a.get("role") or "").strip()
+    view = str(a.get("view") or "through_camera")
+    frame = int(a.get("frame", sc.frame_current))
+    mode = str(a.get("mode") or "solid")
+    scale = float(a.get("scale", 0.5))
+    isolate = bool(a.get("isolate", False))
+    if not role:
+        raise ValueError("inspect_view requires a semantic role namespace")
+    if mode not in {"solid", "wire"}:
+        raise ValueError("inspect_view mode must be solid or wire")
+    if view not in {"through_camera", "orbit", "front", "right", "back", "left", "top"}:
+        raise ValueError(
+            "inspect_view view must be through_camera, orbit, front, right, back, left, or top"
+        )
+    if original_camera is None:
+        raise ValueError("inspect_view requires the selected scene camera")
+
+    sc.frame_set(frame)
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    rendered_types = {"MESH", "CURVE", "SURFACE", "META", "FONT", "VOLUME"}
+    inventory = [
+        {"name": obj.name, "role": str(obj.get("bvfx_role") or "")}
+        for obj in sc.objects
+    ]
+    subjects = []
+    corners = []
+    for obj in sc.objects:
+        tag = str(obj.get("bvfx_role") or "")
+        if not checks.match_semantic(tag, [role]) or obj.type not in rendered_types:
+            continue
+        evaluated = obj.evaluated_get(depsgraph)
+        box = [evaluated.matrix_world @ Vector(point) for point in evaluated.bound_box]
+        if box:
+            subjects.append(obj)
+            corners.extend(box)
+    if not corners:
+        raise ValueError(checks.format_object_miss(inventory=inventory, role=role))
+
+    lo = Vector(tuple(min(float(point[i]) for point in corners) for i in range(3)))
+    hi = Vector(tuple(max(float(point[i]) for point in corners) for i in range(3)))
+    center = (lo + hi) * 0.5
+    extent = hi - lo
+    hidden = {obj.name: bool(obj.hide_render) for obj in sc.objects}
+    temporary_camera = None
+    temporary_data = None
+    try:
+        if isolate:
+            selected = {obj.name for obj in subjects}
+            for obj in sc.objects:
+                if obj.type in rendered_types:
+                    obj.hide_render = obj.name not in selected
+
+        if view != "through_camera":
+            temporary_data = original_camera.data.copy()
+            temporary_data.name = "_bvfx_inspect_view_camera_data"
+            temporary_camera = bpy.data.objects.new(
+                "_bvfx_inspect_view_camera", temporary_data
+            )
+            sc.collection.objects.link(temporary_camera)
+
+            source_location = original_camera.matrix_world.translation.copy()
+            radial = source_location - center
+            horizontal = Vector((radial.x, radial.y, 0.0))
+            if horizontal.length < 1e-6:
+                horizontal = Vector((0.0, -1.0, 0.0))
+            base = horizontal.normalized()
+            diagonal = max(float(extent.length), 0.01)
+
+            if view == "orbit":
+                angle = math.radians(int(a.get("orbit_degrees", 30)))
+                direction = Matrix.Rotation(angle, 4, "Z") @ radial
+                if direction.length < 1e-6:
+                    direction = base
+                half_angle = max(
+                    0.05,
+                    min(
+                        float(getattr(temporary_data, "angle_x", temporary_data.angle)),
+                        float(getattr(temporary_data, "angle_y", temporary_data.angle)),
+                    )
+                    * 0.5,
+                )
+                fit_distance = diagonal * 0.65 / math.tan(half_angle)
+                direction.normalize()
+                temporary_camera.location = center + direction * max(
+                    float(radial.length), fit_distance
+                )
+                temporary_data.type = "PERSP"
+            else:
+                quarter_turns = {"front": 0, "right": 1, "back": 2, "left": -1}
+                if view == "top":
+                    direction = Vector((0.0, 0.0, 1.0))
+                else:
+                    direction = Matrix.Rotation(
+                        math.radians(90 * quarter_turns[view]), 4, "Z"
+                    ) @ base
+                temporary_camera.location = center + direction * max(diagonal * 2.0, 1.0)
+                temporary_data.type = "ORTHO"
+                aspect = max(
+                    0.1,
+                    float(sc.render.resolution_x) / max(1.0, float(sc.render.resolution_y)),
+                )
+                vertical = max(float(extent.z), 0.01)
+                horizontal_span = max(float(extent.x), float(extent.y), 0.01)
+                temporary_data.ortho_scale = max(vertical, horizontal_span / aspect) * 1.3
+
+            aim = center - temporary_camera.location
+            temporary_camera.rotation_euler = aim.to_track_quat("-Z", "Y").to_euler()
+            temporary_data.clip_start = min(
+                float(temporary_data.clip_start), max(0.001, diagonal * 0.001)
+            )
+            temporary_data.clip_end = max(
+                float(temporary_data.clip_end),
+                float((temporary_camera.location - center).length + diagonal * 3.0),
+            )
+            sc.camera = temporary_camera
+
+        orbit_suffix = f"-{int(a.get('orbit_degrees', 30))}" if view == "orbit" else ""
+        result = h_render({
+            "frame": frame,
+            "mode": mode,
+            "scale": scale,
+            "artifact_tag": f"inspect-{view}{orbit_suffix}-{role}",
+        })
+        result.update({
+            "diagnostic_only": True,
+            "view": view + orbit_suffix,
+            "role": role,
+            "isolated": isolate,
+            "subject_count": len(subjects),
+            "subject_bbox_min": tuple(round(float(value), 4) for value in lo),
+            "subject_bbox_max": tuple(round(float(value), 4) for value in hi),
+        })
+        return result
+    finally:
+        sc.camera = original_camera
+        for obj in sc.objects:
+            if obj.name in hidden:
+                obj.hide_render = hidden[obj.name]
+        if temporary_camera is not None:
+            bpy.data.objects.remove(temporary_camera, do_unlink=True)
+        if temporary_data is not None and temporary_data.users == 0:
+            bpy.data.cameras.remove(temporary_data)
+        sc.frame_set(original_frame)
+        bpy.context.view_layer.update()
 
 
 def _set_image_format(settings, fmt: str) -> None:
@@ -1526,6 +1686,7 @@ HANDLERS = {
     "black_context": h_black_context,
     "keyframes": h_keyframes,
     "render": h_render,
+    "inspect_view": h_inspect_view,
     "snapshot": h_snapshot,
     "restore": h_restore,
     "journal": h_journal,

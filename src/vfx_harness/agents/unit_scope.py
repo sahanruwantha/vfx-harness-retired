@@ -215,6 +215,12 @@ def compile_unit_scope(
         ],
         "contracts": [_contract_row(by_id[cid]) for cid in bound],
         "image_debts": image_debts,
+        "diagnostic_instruments": ([{
+            "name": "inspect_view",
+            "purpose": "orbit/elevation/solo inspection of owned form by semantic role",
+            "views": ["through_camera", "orbit", "front", "right", "back", "left", "top"],
+            "acceptance_evidence": False,
+        }] if "geometry" in unit.provides else []),
         "publish_interfaces": publish_interfaces,
         "producer_unit_digest": str(unit_digest or ""),
         "consumes": [

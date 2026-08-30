@@ -156,7 +156,11 @@ def _capture_image_artifact(
 
 def _payment_eligible_candidate(rendered: dict) -> bool:
     """Whether a live render can share the fixed v2 adversary settings."""
-    return str(rendered.get("mode")) == "eevee" and float(rendered.get("scale", 0.0)) == 0.5
+    return (
+        not bool(rendered.get("diagnostic_only"))
+        and str(rendered.get("mode")) == "eevee"
+        and float(rendered.get("scale", 0.0)) == 0.5
+    )
 
 
 def capture_image_adversaries(
@@ -1869,7 +1873,7 @@ def build_blender_tools(
         "local/evaluated world location, dimensions, evaluated world_bbox_min/"
         "world_bbox_max, visibility, role, and owner. Pass "
         "role= to filter by semantic bvfx_role "
-        "(fnmatch). Use this to verify structure before spending a render.",
+        "(literal namespace or fnmatch). Use this to verify structure before spending a render.",
         {
             "type": "object",
             "properties": {
@@ -1880,7 +1884,10 @@ def build_blender_tools(
                 "frame": {"type": "integer", "description": "optional evaluation frame"},
                 "role": {
                     "type": "string",
-                    "description": "optional bvfx_role selector (fnmatch); miss names present roles and names",
+                    "description": (
+                        "optional bvfx_role selector (literal namespace or fnmatch); "
+                        "miss names present roles and names"
+                    ),
                 },
             },
             "required": [],
@@ -1989,6 +1996,80 @@ def build_blender_tools(
             )
         cap += await _black_frame_note(r)
         return _image(r["image_path"], cap, feedback_groups=feedback_policy["groups"])
+
+    @tool(
+        "inspect_view",
+        "Read-only 3D form inspection aimed at one semantic role namespace. Renders "
+        "a temporary Workbench camera, restores the sealed shot camera and every "
+        "temporary visibility change, and returns no image-evidence handle. Use "
+        "view='orbit' with orbit_degrees, a shot-relative elevation "
+        "(front/right/back/left/top), or through_camera. isolate=true solos matching "
+        "rendered hosts transactionally. This diagnostic can teach a mutation but can "
+        "never pay a contract.",
+        {
+            "type": "object",
+            "properties": {
+                "frame": {"type": "integer"},
+                "role": {
+                    "type": "string",
+                    "description": "semantic namespace, e.g. building or building.mass.tower",
+                },
+                "view": {
+                    "type": "string",
+                    "enum": [
+                        "through_camera", "orbit", "front", "right", "back", "left", "top"
+                    ],
+                },
+                "orbit_degrees": {
+                    "type": "integer",
+                    "enum": [-60, -30, 30, 60],
+                    "description": "required only for view='orbit'; positive tumbles right",
+                },
+                "mode": {"type": "string", "enum": ["solid", "wire"]},
+                "isolate": {"type": "boolean"},
+                "scale": {"type": "number", "minimum": 0.1, "maximum": 1.0},
+            },
+            "required": ["frame", "role", "view"],
+            "additionalProperties": False,
+        },
+    )
+    async def inspect_view(args):
+        role = str(args.get("role") or "").strip()
+        if not role:
+            return _text("inspect_view requires a semantic role namespace", is_error=True)
+        view = str(args.get("view") or "")
+        orbit_degrees = args.get("orbit_degrees")
+        if view == "orbit" and orbit_degrees not in {-60, -30, 30, 60}:
+            return _text(
+                "inspect_view view='orbit' requires orbit_degrees from "
+                "[-60, -30, 30, 60]",
+                is_error=True,
+            )
+        if view != "orbit" and orbit_degrees is not None:
+            return _text(
+                "inspect_view orbit_degrees is legal only when view='orbit'",
+                is_error=True,
+            )
+        try:
+            r = await _call(
+                "inspect_view",
+                frame=int(args["frame"]),
+                role=role,
+                view=view,
+                **({"orbit_degrees": int(orbit_degrees)} if orbit_degrees is not None else {}),
+                mode=str(args.get("mode") or "solid"),
+                isolate=bool(args.get("isolate", False)),
+                scale=float(args.get("scale", 0.5)),
+            )
+        except BlenderError as e:
+            return _text(str(e), is_error=True)
+        cap = (
+            f"DIAGNOSTIC ONLY — cannot pay contracts · role {role!r} · "
+            f"{r['view']} at frame {r['frame']} · sealed camera restored"
+        )
+        if r.get("isolated"):
+            cap += f" · isolated {r.get('subject_count', 0)} matching hosts"
+        return _image(r["image_path"], cap, feedback_groups=[])
 
     @tool(
         "render_pass",
@@ -2854,6 +2935,7 @@ def build_blender_tools(
         inspect_nodes,
         list_keyframes,
         render_frame,
+        inspect_view,
         render_frames,
         render_pass,
         check_scene,

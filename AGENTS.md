@@ -174,6 +174,12 @@ effect.
   coordinate query (HIR-0136).
 - Measure, don't estimate: if a decision depends on a quantity, expose an instrument that
   measures it; a judgment call where a measurement is possible is a patch.
+- Form builders inspect off-axis geometry with the typed `inspect_view` instrument, never by
+  moving the shot camera. It resolves a semantic role namespace, offers bounded orbit/elevation/
+  through-camera Workbench views and optional transactional soloing, then restores camera,
+  frame, visibility, and temporary datablocks in `finally`. These images are diagnostic-only,
+  mint no payment handle, and cannot satisfy a contract; geometry units discover the tool in
+  compiled unit context rather than a larger global prompt (HIR-0148).
 - Look-less form/layout reference comparison defaults to a live Workbench-solid plate when
   `compare_frame` omits `mode`; an explicit mode is honored. That diagnostic can guide geometry
   through the sealed camera but never pays EEVEE beauty debt. An `image-signal-bootstrap`

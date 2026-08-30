@@ -87,10 +87,20 @@ def test_declared_capabilities_beat_identifier_scanning_in_the_tool_policy() -> 
     class _Session:
         pass
 
-    server, _names = build_blender_tools(
+    server, names = build_blender_tools(
         _Session(), layer_id="1", feedback_groups=["detail", "color"]
     )
     assert server is not None  # wiring accepts the typed override
+    assert "mcp__blender__inspect_view" in names
+
+
+def test_diagnostic_artist_view_can_never_mint_image_payment() -> None:
+    from vfx_harness.blender.tools import _payment_eligible_candidate
+
+    assert _payment_eligible_candidate({"mode": "eevee", "scale": 0.5})
+    assert not _payment_eligible_candidate({
+        "mode": "eevee", "scale": 0.5, "diagnostic_only": True
+    })
 
 
 def test_work_unit_parses_and_defaults_capabilities() -> None:

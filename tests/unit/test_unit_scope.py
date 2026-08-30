@@ -37,7 +37,14 @@ def _claim(uid: str, *, contract_id: str, frame: int = 1) -> dict:
     }
 
 
-def _unit(uid: str, *, roles: list[str], contract_id: str, extra_contract: str | None = None) -> WorkUnit:
+def _unit(
+    uid: str,
+    *,
+    roles: list[str],
+    contract_id: str,
+    extra_contract: str | None = None,
+    provides: list[str] | None = None,
+) -> WorkUnit:
     evaluation: dict = {
         "primary_judge": 1,
         "judge": [{"frame": 1, "ref": "refs/a.png"}],
@@ -66,6 +73,7 @@ def _unit(uid: str, *, roles: list[str], contract_id: str, extra_contract: str |
         },
         "evaluation": evaluation,
         "completion": "all_required_claims_and_protected_contracts_pass",
+        "provides": provides or [],
     }
     return WorkUnit.parse(row, f"unit.{uid}")
 
@@ -123,6 +131,23 @@ def test_unit_scope_card_is_the_active_unit_not_a_sibling() -> None:
     assert "bvfx_role" in dumped
     assert "owed image-contract debts" in dumped
     assert "(none)" in dumped.split("owed image-contract debts")[1].split("run_bpy")[0]
+
+
+def test_geometry_scope_compiles_diagnostic_artist_view_without_acceptance() -> None:
+    geometry = _unit(
+        "building_mass",
+        roles=["building.mass.tower"],
+        contract_id="fg-exist",
+        provides=["geometry"],
+    )
+    card = compile_unit_scope(unit=geometry, layer_id="2", contracts=_contracts())
+
+    assert card["diagnostic_instruments"] == [{
+        "name": "inspect_view",
+        "purpose": "orbit/elevation/solo inspection of owned form by semantic role",
+        "views": ["through_camera", "orbit", "front", "right", "back", "left", "top"],
+        "acceptance_evidence": False,
+    }]
 
 
 def test_unit_scope_keeps_exact_evaluator_fields_for_bound_contract() -> None:

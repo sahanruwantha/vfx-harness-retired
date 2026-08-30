@@ -206,6 +206,28 @@ def test_render_handler_restores_common_scene_settings(worker) -> None:
     )
 
 
+def test_inspect_view_restores_camera_visibility_frame_and_temp_hosts(worker) -> None:
+    """HIR-0148: an artist view is an observation, never authored camera state."""
+    import inspect
+
+    source = inspect.getsource(worker.h_inspect_view)
+    for statement in (
+        "original_camera = sc.camera",
+        "original_frame = sc.frame_current",
+        "hidden = {obj.name: bool(obj.hide_render)",
+        "finally:",
+        "sc.camera = original_camera",
+        "obj.hide_render = hidden[obj.name]",
+        "bpy.data.objects.remove(temporary_camera, do_unlink=True)",
+        "bpy.data.cameras.remove(temporary_data)",
+        "sc.frame_set(original_frame)",
+        '"diagnostic_only": True',
+    ):
+        assert statement in source
+    assert "original_camera.location" not in source
+    assert "original_camera.rotation_euler" not in source
+
+
 def test_scene_inspection_refreshes_current_frame_and_evaluated_hosts(worker) -> None:
     """HIR-0116: omitting frame selects the current frame; it never skips evaluation."""
     import inspect
