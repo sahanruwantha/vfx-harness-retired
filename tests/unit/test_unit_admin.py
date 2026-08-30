@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -408,6 +409,44 @@ def test_public_replan_reopens_falsified_unit_when_dag_bytes_are_unchanged(
     assert state["replans"][-1]["falsification_id"] == finding["record_id"]
     assert state["replans"][-1]["invalidated"] == ["blockout"]
     assert state["replans"][-1]["preserved"] == []
+
+
+def test_public_replan_refuses_unchanged_out_of_layer_fault_owner(
+    tmp_path, monkeypatch
+) -> None:
+    args, _finding = _falsified_replan_fixture(
+        tmp_path, monkeypatch, strength="approved_start"
+    )
+    finding_path = tmp_path / args.falsification
+    payload = json.loads(finding_path.read_text(encoding="utf-8"))
+    payload["fault_owner_units"] = ["camera_path"]
+    finding_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    camera = _unit("camera_path", script_span="build/units/00/camera_path.py")
+    old_mass = _unit("blockout")
+    new_mass = _unit("blockout", proposition_suffix=" amended")
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers",
+        lambda shot: {
+            "0": SimpleNamespace(stages=(camera,)),
+            "1": SimpleNamespace(stages=(new_mass,)),
+        },
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers_from_path",
+        lambda path: {
+            "0": SimpleNamespace(stages=(camera,)),
+            "1": SimpleNamespace(stages=(old_mass,)),
+        },
+    )
+
+    with pytest.raises(SystemExit, match="out-of-layer fault owner units") as exc:
+        unit_admin._replan(args)
+
+    assert "unchanged=camera_path" in str(exc.value)
+    assert "do not rerun the identical local DAG" in str(exc.value)
 
 
 def test_public_replan_consumes_jit_falsification_against_view_identity(

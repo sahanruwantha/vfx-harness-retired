@@ -529,7 +529,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   on a JIT layer compares `plan_hash` and unit digest to durable state and the
   selected view, not sha256 of the sparse bundle `layers.json`; consuming the
   finding reopens that unit and its affected closure even when the published
-  DAG bytes are unchanged (HIR-0049).
+  DAG bytes are unchanged (HIR-0049). That exception is local: when a finding names
+  out-of-layer `fault_owner_units`, replan first proves each exact owner digest changed
+  between base and selected authority. An unchanged or unresolved external owner rejects
+  the transaction and names the required upstream amendment; a local reopen cannot repeat
+  work it has no authority to repair (HIR-0154).
 - When passing requires a decision, dependency, ownership, scope, contract, or sealed-outcome
   change outside the active unit, record `hypothesis_falsified` and stop. Replanning is a
   versioned transaction: freeze accepted state, validate the amendment, compute the complete

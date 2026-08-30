@@ -43,6 +43,47 @@ def _invalidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _unchanged_external_fault_owners(
+    finding,
+    *,
+    requested_layer_id: str,
+    base_layers,
+    current_layers,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Fault owners a layer-local replan cannot prove were amended.
+
+    HIR-0127 deliberately keeps an earlier-layer owner out of the affected seed set.
+    Consuming that finding must therefore prove the selected authority changed the
+    external owner; reopening an identical local DAG only repeats a known impossibility.
+    """
+    requested_ids = {
+        unit.id for unit in current_layers[requested_layer_id].stages
+    }
+    external = sorted(set(finding.fault_owner_units) - requested_ids)
+    if not external:
+        return (), ()
+
+    def _index(layers) -> dict[str, object]:
+        return {
+            unit.id: unit
+            for layer in layers.values()
+            for unit in layer.stages
+        }
+
+    old_by_id = _index(base_layers)
+    new_by_id = _index(current_layers)
+    unchanged: list[str] = []
+    unresolved: list[str] = []
+    for unit_id in external:
+        old = old_by_id.get(unit_id)
+        new = new_by_id.get(unit_id)
+        if old is None or new is None:
+            unresolved.append(unit_id)
+        elif unit_digest(old) == unit_digest(new):
+            unchanged.append(unit_id)
+    return tuple(unchanged), tuple(unresolved)
+
+
 def _replan(args: argparse.Namespace) -> int:
     """Move durable unit state from one proven bundle DAG to current authority."""
     shot = load_shot(args.folder)
@@ -116,6 +157,26 @@ def _replan(args: argparse.Namespace) -> int:
             raise SystemExit(
                 "falsification involves a hard constraint; pass --hard-constraint-approval "
                 "with the human approval evidence locator"
+            )
+        unchanged_owners, unresolved_owners = _unchanged_external_fault_owners(
+            finding,
+            requested_layer_id=layer_id,
+            base_layers=base_layers,
+            current_layers=current_layers,
+        )
+        if unchanged_owners or unresolved_owners:
+            detail: list[str] = []
+            if unchanged_owners:
+                detail.append("unchanged=" + ",".join(unchanged_owners))
+            if unresolved_owners:
+                detail.append("unresolved=" + ",".join(unresolved_owners))
+            raise SystemExit(
+                "falsification assigns repair to out-of-layer fault owner units, but "
+                "the selected authority does not prove those owners were amended ("
+                + "; ".join(detail)
+                + "). A layer-local replan cannot repair them: publish amended authority "
+                "that changes the named owner units, then consume this finding; do not "
+                "rerun the identical local DAG"
             )
         falsification_id = finding.record_id
         reopen = {finding.unit, *finding.affected}
