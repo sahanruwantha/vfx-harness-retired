@@ -1181,6 +1181,9 @@ def validate_materialization(
 
     for requirement_id in sorted(owned & bound):
         resolution = register.get(requirement_id) or {}
+        authored_statement = str(
+            (register_rows.get(requirement_id) or {}).get("statement") or ""
+        ).strip()
         try:
             declared = parse_evidence_domains(
                 resolution.get("evidence_domains"),
@@ -1212,6 +1215,14 @@ def validate_materialization(
             for domain in declared
         }
         decision = requirement_decisions.get(requirement_id)
+        if decision and str(decision.get("statement") or "").strip() != authored_statement:
+            note(
+                json_ptr("requirement_bindings"),
+                f"requirement {requirement_id} provisional decision must preserve the "
+                f"authored requirement statement exactly; expected {authored_statement!r}, "
+                f"found {str(decision.get('statement') or '').strip()!r}. Materialization "
+                "may classify the debt strength but cannot rewrite the proposition",
+            )
         decision_domains = {
             domain for domain in declared if domain in qualitative_domains and not by_domain[domain]
         }
@@ -1257,7 +1268,7 @@ def validate_materialization(
                 domain_rows.append({
                     "domain": domain,
                     "kind": "provisional_decision",
-                    "statement": decision["statement"],
+                    "statement": authored_statement,
                     "decision_strength": decision["decision_strength"],
                 })
         requirement_evidence_domains[requirement_id] = declared

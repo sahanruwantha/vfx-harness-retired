@@ -703,6 +703,7 @@ def build_plan_tools(
     materialization_axis_ids: tuple[str, ...] | None = None
     materialization_layer_id: str | None = None
     materialization_allowed_provides: frozenset[str] | None = None
+    materialization_requirement_statements: dict[str, str] = {}
     if candidate_materialization is not None:
         candidate_path = Path(candidate_materialization)
         if candidate_path.is_file():
@@ -739,6 +740,21 @@ def build_plan_tools(
                     and str(row.get("id") or "") == materialization_layer_id
                 )
                 materialization_allowed_provides = allowed_unit_provides(global_row)
+                owned_requirement_ids = {
+                    str(value)
+                    for value in ((global_row.get("jit") or {}).get("owned_requirements") or [])
+                    if str(value)
+                }
+                global_requirements = json.loads(
+                    (bundle.root / "requirements.json").read_text(encoding="utf-8")
+                )
+                materialization_requirement_statements = {
+                    str(row.get("id")): str(row.get("statement") or "").strip()
+                    for row in (global_requirements.get("requirements") or [])
+                    if isinstance(row, dict)
+                    and str(row.get("id") or "") in owned_requirement_ids
+                    and str(row.get("statement") or "").strip()
+                }
             except (
                 OSError,
                 ValueError,
@@ -1369,12 +1385,23 @@ def build_plan_tools(
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
         log(f"plan-lab vocabulary gap {gap_id}: {args['requirement_id']} — {str(args['claim'])[:70]}", 1)
+        authored = materialization_requirement_statements.get(
+            str(args["requirement_id"]), ""
+        )
+        statement_rule = (
+            f" Use the exact authored statement {authored!r}; materialization may not "
+            "rewrite it."
+            if authored
+            else ""
+        )
         return _text(
             f"Recorded {gap_id} for {args['requirement_id']}. Close the requirement with an "
-            f"explicit decision resolution referencing {gap_id} (statement + "
-            f"decision_strength), not a contract. The gap is durable state: the harness "
-            f"grows the vocabulary against it, and a later generation re-binds the "
-            f"requirement to a real metric."
+            f"explicit decision resolution ({gap_id} is durable audit state; the "
+            "decision carries the authored statement + decision_strength), not a contract."
+            + statement_rule
+            + " The gap is durable state: the harness "
+            "grows the vocabulary against it, and a later generation re-binds the "
+            "requirement to a real metric."
         )
 
     @tool(
@@ -1649,7 +1676,17 @@ def build_plan_tools(
                             "decision": {
                                 "type": "object",
                                 "properties": {
-                                    "statement": {"type": "string"},
+                                    "statement": {
+                                        "type": "string",
+                                        "enum": sorted(
+                                            set(materialization_requirement_statements.values())
+                                        ),
+                                        "description": (
+                                            "exact authored statement for this requirement; "
+                                            "validation rejects a statement belonging to "
+                                            "another id or any rewritten/meta proposition"
+                                        ),
+                                    },
                                     "decision_strength": {
                                         "type": "string",
                                         "enum": ["approved_start", "planner_start"],

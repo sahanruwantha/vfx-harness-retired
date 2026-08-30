@@ -3367,7 +3367,10 @@ def _provisional_decisions_for_layer(
         if provisional is None:
             continue
         strength = str(provisional.get("decision_strength") or "")
-        statement = str(provisional.get("statement") or "").strip()
+        # The selected binding carries strength, never new authored intent. Always judge
+        # the immutable global requirement proposition so meta-text such as "deferred to
+        # lookdev" cannot replace "reads as the specific hotel" (HIR-0149).
+        statement = owned[requirement_id]["statement"]
         if statement:
             rows.append(
                 {

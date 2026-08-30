@@ -491,6 +491,12 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   declared domains and every concrete resolution id must survive in exactly one typed
   domain-binding row. Cross-domain observations belong in `composition_context` or a
   separately typed claim (HIR-0146).
+  A provisional domain binding never authors a second proposition: its statement must equal
+  the exact cited requirement statement, and materialization chooses only approved/planner
+  strength. The staging schema enumerates those authored statements, selected parsing rejects
+  any rewrite, and composed judgment reads the immutable sparse-bundle proposition rather than
+  binding meta-text. Vocabulary-gap or downstream-deferral prose is audit context, never a
+  replacement for what the current layer must be judged against (HIR-0149).
 - Unit plans publish only through the gate-attested two-phase transaction (HIR-0016). Do not
   hand-author placeholder units, edit `state/jit-layers/current.json`, or reinitialize,
   hand-edit, or delete durable work-unit state to make a new DAG fit. A selected

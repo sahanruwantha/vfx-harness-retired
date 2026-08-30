@@ -176,6 +176,7 @@ def test_provisional_owned_decision_compiles_lookless_composition_audit(tmp_path
     base = [
         {
             "id": "R-holistic",
+            "statement": "The subject reads as the specific reference, not a generic proxy.",
             "resolution": {
                 "kind": "deferred_owner",
                 "owner_layer": "2",
@@ -186,9 +187,10 @@ def test_provisional_owned_decision_compiles_lookless_composition_audit(tmp_path
     selected = [
         {
             "id": "R-holistic",
+            "statement": "The subject reads as the specific reference, not a generic proxy.",
             "resolution": {
                 "kind": "decision",
-                "decision": "The subject reads as the specific reference, not a generic proxy.",
+                "decision": "This debt is deferred to downstream look development.",
                 "decision_strength": "approved_start",
             },
         }
@@ -216,7 +218,7 @@ def test_provisional_owned_decision_compiles_lookless_composition_audit(tmp_path
         if claim.authority == "qualified_qualitative_required"
     ]
     assert len(qualitative) == 1
-    assert qualitative[0].proposition == selected[0]["resolution"]["decision"]
+    assert qualitative[0].proposition == base[0]["statement"]
     assert _unit_requires_raster(SimpleNamespace(folder=tmp_path), audit) is True
     assert _unit_raster_mode(audit) == "solid"
 

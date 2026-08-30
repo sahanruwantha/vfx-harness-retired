@@ -253,6 +253,7 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
         where = f"requirements.json.requirements[{index}]"
         if not isinstance(row, dict):
             raise ValueError(f"{where} must be an object")
+        requirement_statement = _text(row.get("statement"), f"{where}.statement")
         rid = _text(row.get("id"), f"{where}.id")
         if rid in seen:
             raise ValueError(f"{where}.id duplicates {rid!r}")
@@ -354,6 +355,12 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
                     binding_statement = _text(
                         binding.get("statement"), f"{at}.statement"
                     )
+                    if binding_statement != requirement_statement:
+                        raise ValueError(
+                            f"{at}.statement must exactly equal the authored requirement "
+                            f"statement {requirement_statement!r}; provisional debt cannot "
+                            "rewrite the proposition"
+                        )
                     binding_strength = decision_strength(
                         binding.get("decision_strength"), f"{at}.decision_strength"
                     )
@@ -402,7 +409,7 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
                 )
             domain_bindings = tuple(parsed_bindings)
         out.append(Requirement(
-            rid, _text(row.get("statement"), f"{where}.statement"), cited_hash,
+            rid, requirement_statement, cited_hash,
             start, end, kind, ids, decision, owner_layer, due, evidence_domains,
             str(strength) if strength is not None else None, domain_bindings,
         ))

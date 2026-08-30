@@ -3303,7 +3303,7 @@ def test_materialization_can_close_owned_requirement_with_typed_decision(tmp_pat
     data["requirement_bindings"] = [{
         "requirement_id": "R-final-lock",
         "decision": {
-            "statement": "The authored lock is retained as an approved constraint.",
+            "statement": "frames 239 and 240 are unchanged",
             "decision_strength": "approved_start",
         },
     }]
@@ -3314,6 +3314,30 @@ def test_materialization_can_close_owned_requirement_with_typed_decision(tmp_pat
     )
 
     assert materialized.requirement_decisions["R-final-lock"]["decision_strength"] == "approved_start"
+
+
+def test_materialization_cannot_replace_requirement_with_meta_debt_statement(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "proposition-laundering")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["requirement_bindings"] = [{
+        "requirement_id": "R-final-lock",
+        "decision": {
+            "statement": "This image debt is deferred to downstream look development.",
+            "decision_strength": "approved_start",
+        },
+    }]
+    _write(payload, data)
+
+    with pytest.raises(ValueError, match="preserve the authored requirement statement exactly"):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash
+        )
 
 
 def test_materialization_requires_and_retains_every_requirement_domain(
@@ -3369,7 +3393,7 @@ def test_materialization_requires_and_retains_every_requirement_domain(
         )
 
     data["requirement_bindings"][0]["decision"] = {
-        "statement": "The exact rendered lock remains provisional until canonical judgment.",
+        "statement": "frames 239 and 240 are unchanged",
         "decision_strength": "approved_start",
     }
     _write(payload, data)
@@ -3385,7 +3409,7 @@ def test_materialization_requires_and_retains_every_requirement_domain(
         {
             "domain": "image",
             "kind": "provisional_decision",
-            "statement": "The exact rendered lock remains provisional until canonical judgment.",
+            "statement": "frames 239 and 240 are unchanged",
             "decision_strength": "approved_start",
         },
         {"domain": "scene", "kind": "contract", "ids": ["polish-count"]},
@@ -3469,7 +3493,7 @@ def test_requirement_binding_rejects_contract_padding_outside_declared_domains(
     })
     data["requirement_bindings"][0]["contract_ids"].append("polish-count-padding")
     data["requirement_bindings"][0]["decision"] = {
-        "statement": "The exact rendered lock remains provisional until canonical judgment.",
+        "statement": "frames 239 and 240 are unchanged",
         "decision_strength": "approved_start",
     }
     _write(payload, data)
@@ -3498,6 +3522,30 @@ def test_selected_requirement_map_refuses_unassigned_resolution_ids(
     _write(tmp_path / "requirements.json", requirements)
 
     with pytest.raises(ValueError, match=r"unassigned \['unassigned-padding'\]"):
+        load_requirements(tmp_path)
+
+
+def test_selected_provisional_domain_binding_preserves_authored_proposition(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "decision",
+        "ids": [],
+        "decision": "This debt is deferred to a downstream layer.",
+        "decision_strength": "approved_start",
+        "evidence_domains": ["image"],
+        "domain_bindings": [{
+            "domain": "image",
+            "kind": "provisional_decision",
+            "statement": "This debt is deferred to a downstream layer.",
+            "decision_strength": "approved_start",
+        }],
+    }
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match="provisional debt cannot rewrite the proposition"):
         load_requirements(tmp_path)
 
 
