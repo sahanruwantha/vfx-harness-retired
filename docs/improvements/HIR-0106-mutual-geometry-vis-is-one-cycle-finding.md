@@ -108,3 +108,10 @@ Implementation commit: `d494489` (`fix: report mutual geometry visibility cycles
 No authority schema or migration. The gate remains equally strict; only the diagnostic
 unit changes from repeated edges to their graph-level cause. Rollback restores repair
 guidance that falsely presents a cycle as reorderable, so rollback is unsafe.
+
+## Amendment
+
+HIR-0132 gives required visibility a typed repair-owner activation boundary. Owned rows
+now produce one acyclic missing-dependency finding when geometry is unordered. This cycle
+card remains authoritative for ambiguous or unbound rows, which still activate
+conservatively across the layer.

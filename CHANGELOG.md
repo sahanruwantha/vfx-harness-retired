@@ -101,6 +101,10 @@ live in the linked Harness Improvement Records.
   Deferred contracts now retain their owner layer's judge-frame authority while later
   activation layers evaluate those moments as extra-frame evidence
   ([HIR-0130](docs/improvements/HIR-0130-deferred-contracts-keep-owner-frame-authority.md)).
+  Required visibility now activates at its typed repair-owner unit: downstream geometry
+  must depend on and protect it, while earlier units no longer owe surfaces that do not
+  exist yet; ambiguous rows retain conservative layer-wide protection
+  ([HIR-0132](docs/improvements/HIR-0132-visibility-activates-at-its-unit-owner.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan

@@ -335,14 +335,13 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   A required claim that binds `visible_fraction` is repaired by a unit that
   `provides: ["camera"]` or mutates/dresses every `roles` selector on that row;
   a volume-only unit cannot bind mesh vis as required repair. Multi-role vis is
-  logical AND across named roles. A unit that `provides: ["geometry"]`
-  freeze-protects lifecycle-active vis on this layer, including sibling-owned
-  rows (HIR-0051). If a protected vis role is produced by another same-layer unit,
-  that producer must be in the geometry unit's transitive dependency closure; a future
-  producer is an unsealable DAG and publication fails closed (HIR-0057). Mutual
-  producer edges are reported as one strongly connected cycle with every involved unit,
-  contract, role, and edge; reordering or lifecycle edits cannot repair that cycle
-  (HIR-0106).
+  logical AND across named roles. A required vis row becomes due at its typed
+  `repair_owner` unit. That owner pays the row; every downstream geometry unit whose
+  dependency closure contains the owner freeze-protects it. Geometry before the owner
+  does not pretend the future surface exists. Unordered geometry is rejected with the
+  one missing acyclic dependency; ambiguous/unbound vis remains conservatively
+  layer-active and mutual ambiguity is reported as one cycle (HIR-0051, HIR-0057,
+  HIR-0106, HIR-0132).
   Every scene-contract kind that projects or renders through the active camera must bind
   on a unit whose dependency closure (or an earlier materialized layer) provides a camera;
   otherwise publication fails `composition-bootstrap` (HIR-0085).
@@ -675,10 +674,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   failure, never a green repair read-back (HIR-0058).
 - Protection wildcards resolve to an explicit sorted contract-id closure at freeze; evaluation,
   repair, resume, and revalidation use that recorded closure, never a re-evaluated wildcard.
-  A unit that `provides: ["geometry"]` also freeze-protects lifecycle-active
-  `visible_fraction` rows on this layer, including sibling-owned vis (HIR-0051).
-  Publication rejects a geometry unit when one of those roles is produced only by a
-  same-layer unit outside its dependency closure (HIR-0057).
+  A required `visible_fraction` row activates at its typed repair-owner unit; that owner
+  and dependency-ordered downstream geometry freeze-protect it. Publication rejects an
+  unordered later geometry unit rather than making earlier geometry owe a future subject;
+  rows without typed ownership retain conservative layer-wide protection (HIR-0051,
+  HIR-0057, HIR-0132).
   Publication also refuses a unit whose derived write-clusters are heterogeneous
   without a typed exception; the finding names the clusters. A successor consumes
   digest-matched publish interfaces from the compiled card, not producer scripts.

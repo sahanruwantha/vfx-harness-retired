@@ -1567,9 +1567,8 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             for unit in layer.get("stages") or []
             if isinstance(unit, dict) and unit.get("id")
         }
-        # HIR-0057: HIR-0051's implicit geometry visibility protection must be
-        # satisfiable at this unit boundary. A later sibling cannot produce evidence
-        # which an earlier geometry unit must freeze-protect before sealing.
+        # HIR-0132: vis activates at its typed repair owner; every later geometry
+        # provider must carry that owner in its dependency closure.
         try:
             from vfx_harness.domain.work_units import (
                 GEOMETRY_VIS_CYCLE_RULE,
@@ -1613,8 +1612,9 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     True,
                     f"layer {lid} unit {gap.unit_id}",
                     f"provides geometry and therefore protects visible_fraction "
-                    f"{gap.contract_id}, but role {gap.role!r} is produced only by "
-                    f"non-dependency unit(s) {', '.join(gap.producer_ids)}",
+                    f"{gap.contract_id}, but typed repair owner(s) / role producer(s) "
+                    f"{', '.join(gap.producer_ids)} are outside its dependency closure "
+                    f"for role {gap.role!r}",
                     GEOMETRY_VIS_DEPENDENCY_RULE,
                 )
             )

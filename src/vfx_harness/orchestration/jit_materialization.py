@@ -545,9 +545,8 @@ def validate_materialization(
         if str(row.get("owner_layer") or "") != layer_id
     ] + list(scene_rows)
 
-    # HIR-0057: a geometry unit implicitly protects every active visibility row on
-    # this layer. If a selected role is created only by a future sibling, the unit can
-    # never seal: its protected evidence is due before its producer exists.
+    # HIR-0132: a required visibility row activates at its repair-owner unit. Later
+    # geometry must depend on and protect that owner; future surfaces are not due early.
     if layer is not None:
         from vfx_harness.domain.work_units import (
             GEOMETRY_VIS_CYCLE_RULE,
@@ -582,8 +581,9 @@ def validate_materialization(
                     "provides",
                 ),
                 f"geometry unit {gap.unit_id} protects visible_fraction "
-                f"{gap.contract_id}, but role {gap.role!r} is produced only by "
-                f"non-dependency unit(s) {list(gap.producer_ids)}. "
+                f"{gap.contract_id}, but its typed repair owner(s) / role producer(s) "
+                f"{list(gap.producer_ids)} are outside the dependency closure for "
+                f"role {gap.role!r}. "
                 + GEOMETRY_VIS_DEPENDENCY_RULE,
             )
         for gap in point_projection_interface_gaps(layer.stages, scene_rows):

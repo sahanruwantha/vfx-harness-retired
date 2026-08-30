@@ -12,13 +12,14 @@ from tests.unit.test_plan_records import _write as _write_plan
 from vfx_harness.agents.builder import _executable_unit_verdict, _scope_unit_evidence
 from vfx_harness.agents.planner import _TWO_SIDED_CONTRACT_BINDING
 from vfx_harness.domain.work_units import (
-    GEOMETRY_VIS_CYCLE_RULE,
     GEOMETRY_VIS_DEPENDENCY_RULE,
     VIS_REPAIR_OWNER_RULE,
+    EvidenceBinding,
     WorkUnit,
     geometry_vis_dependency_cycles,
     geometry_vis_dependency_gaps,
     geometry_vis_protection_ids,
+    geometry_vis_protection_ids_for_unit,
     vis_roles_unrepairable_by,
 )
 from vfx_harness.evaluation.plan_gate import _check_evidence_coherence
@@ -221,7 +222,7 @@ def test_materialization_refuses_volume_vis_and_keeps_camera_vis(tmp_path: Path)
     assert VIS_REPAIR_OWNER_RULE in text
 
 
-def test_materialization_refuses_geometry_with_future_vis_producer(tmp_path: Path) -> None:
+def test_materialization_requires_later_geometry_to_depend_on_vis_owner(tmp_path: Path) -> None:
     from vfx_harness.observability import run_artifacts
     from vfx_harness.orchestration.jit_materialization import inspect_materialization
     from vfx_harness.orchestration.plan_authority import publish_current
@@ -278,29 +279,26 @@ def test_materialization_refuses_geometry_with_future_vis_producer(tmp_path: Pat
     })
     _write_plan(payload, document)
 
-    cycle_findings, cycle_materialized = inspect_materialization(
+    order_findings, order_materialized = inspect_materialization(
         bundle.root, payload, expected_bundle_hash=bundle.content_hash
     )
 
-    assert cycle_materialized is None
-    cycle_text = "\n".join(cycle_findings)
-    assert "mutual geometry visibility cycle" in cycle_text
-    assert "polish->future_detail" in cycle_text
-    assert "future_detail->polish" in cycle_text
-    assert GEOMETRY_VIS_CYCLE_RULE in cycle_text
-    assert "geometry unit polish protects visible_fraction vis-future" not in cycle_text
+    assert order_materialized is None
+    order_text = "\n".join(order_findings)
+    assert "geometry unit future_detail protects visible_fraction" in order_text
+    assert "['polish'] are outside the dependency closure" in order_text
+    assert GEOMETRY_VIS_DEPENDENCY_RULE in order_text
+    assert "mutual geometry visibility cycle" not in order_text
 
     document["layer"]["stages"][1]["depends_on"] = ["polish"]
     _write_plan(payload, document)
-    findings, materialized = inspect_materialization(
+    findings, _materialized = inspect_materialization(
         bundle.root, payload, expected_bundle_hash=bundle.content_hash
     )
 
-    assert materialized is None
     text = "\n".join(findings)
-    assert "geometry unit polish protects visible_fraction vis-future" in text
-    assert "future_detail" in text
-    assert GEOMETRY_VIS_DEPENDENCY_RULE in text
+    assert "geometry unit" not in text or "protects visible_fraction" not in text
+    assert "mutual geometry visibility cycle" not in text
 
 
 def test_two_role_vis_fails_when_one_named_role_is_below_lo() -> None:
@@ -396,9 +394,7 @@ def test_geometry_sibling_freeze_protects_layer_vis(tmp_path: Path) -> None:
     assert "vis.core" not in state["units"]["fog"]["checkpoint"]["protected_contract_ids"]
 
 
-def test_geometry_unit_cannot_protect_visibility_created_by_future_sibling(
-    tmp_path: Path,
-) -> None:
+def test_unowned_visibility_remains_conservative_for_future_sibling() -> None:
     material = _detail_unit(provides=["geometry"])
     future_detail = replace(
         _detail_unit(provides=["geometry"]),
@@ -419,43 +415,8 @@ def test_geometry_unit_cannot_protect_visibility_created_by_future_sibling(
     assert gaps[0].contract_id == "vis.future"
     assert gaps[0].producer_ids == (future_detail.id,)
 
-    doc = _layer_doc(temporal_id="vis.future")
-    root = doc["layers"][0]["stages"][0]
-    root["provides"] = ["geometry"]
-    root["mutates"]["roles"] = ["world.material_proxy"]
-    detail = json.loads(json.dumps(root))
-    detail["id"] = "future_detail"
-    detail["title"] = "Future detail"
-    detail["plan"] = "plans/01_camera/02_future_detail.md"
-    detail["depends_on"] = ["move"]
-    detail["provides"] = ["geometry"]
-    detail["mutates"]["roles"] = ["world.future_detail"]
-    detail["mutates"]["script_spans"] = ["build/units/01_camera/02_future_detail.py"]
-    detail["evaluation"]["claims"][0]["repair_owner"] = "future_detail"
-    detail["evaluation"]["claims"][0]["subject_roles"] = ["world.future_detail"]
-    doc["layers"][0]["stages"].append(detail)
-    _write(tmp_path / "layers.json", doc)
-    _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": [row]})
-    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
 
-    findings, _ = _check_evidence_coherence(tmp_path)
-
-    assert any(
-        finding.check == "geometry-vis-dependency"
-        and finding.blocking
-        and finding.where == "layer 1 unit move"
-        and "future_detail" in finding.what
-        and finding.fix == GEOMETRY_VIS_DEPENDENCY_RULE
-        for finding in findings
-    )
-
-    root["provides"] = []
-    _write(tmp_path / "layers.json", doc)
-    findings, _ = _check_evidence_coherence(tmp_path)
-    assert not any(finding.check == "geometry-vis-dependency" for finding in findings)
-
-
-def test_mutual_geometry_visibility_cycle_is_one_typed_design_finding(
+def test_unowned_mutual_geometry_visibility_cycle_stays_conservative(
     tmp_path: Path,
 ) -> None:
     left = _detail_unit(provides=["geometry"])
@@ -506,15 +467,64 @@ def test_mutual_geometry_visibility_cycle_is_one_typed_design_finding(
     _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
 
     findings, _ = _check_evidence_coherence(tmp_path)
-    cycle_findings = [finding for finding in findings if finding.check == "geometry-vis-cycle"]
+    dependencies = [
+        finding for finding in findings if finding.check == "geometry-vis-dependency"
+    ]
 
-    assert len(cycle_findings) == 1
-    assert cycle_findings[0].blocking
-    assert cycle_findings[0].where == "layer 1 units move, rim_geometry"
-    assert "move->rim_geometry" in cycle_findings[0].what
-    assert "rim_geometry->move" in cycle_findings[0].what
-    assert cycle_findings[0].fix == GEOMETRY_VIS_CYCLE_RULE
-    assert not any(finding.check == "geometry-vis-dependency" for finding in findings)
+    assert len(dependencies) == 1
+    assert dependencies[0].blocking
+    assert dependencies[0].where == "layer 1 unit rim_geometry"
+    assert "move" in dependencies[0].what
+    assert dependencies[0].fix == GEOMETRY_VIS_DEPENDENCY_RULE
+    assert not any(finding.check == "geometry-vis-cycle" for finding in findings)
+
+    rim["depends_on"] = ["move"]
+    _write(tmp_path / "layers.json", doc)
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert not any(
+        finding.check in {"geometry-vis-cycle", "geometry-vis-dependency"}
+        for finding in findings
+    )
+
+
+def test_typed_vis_activates_at_owner_and_is_protected_downstream() -> None:
+    left = _detail_unit(provides=["geometry"])
+    left_claim = replace(
+        left.evaluation.claims[0],
+        property="visible_fraction",
+        asserts="projected_composition",
+        evidence=(EvidenceBinding("scene_contract", "vis.detail", (40,)),),
+    )
+    left = replace(left, evaluation=replace(left.evaluation, claims=(left_claim,)))
+    right = replace(
+        left,
+        id="rim_geometry",
+        depends_on=(left.id,),
+        mutates=replace(
+            left.mutates,
+            roles=("world.rim",),
+            script_spans=("build/units/02/rim_geometry.py",),
+        ),
+    )
+    right_claim = replace(
+        right.evaluation.claims[0],
+        id="claim.rim",
+        repair_owner=right.id,
+        subject_roles=("world.rim",),
+        evidence=(EvidenceBinding("scene_contract", "vis.rim", (40,)),),
+    )
+    right = replace(right, evaluation=replace(right.evaluation, claims=(right_claim,)))
+    rows = (
+        _vis_row(row_id="vis.detail", roles=["world.detail"]),
+        _vis_row(row_id="vis.rim", roles=["world.rim"]),
+    )
+
+    assert geometry_vis_protection_ids_for_unit(
+        (left, right), left, rows, "1", frame=1
+    ) == ("vis.detail",)
+    assert geometry_vis_protection_ids_for_unit(
+        (left, right), right, rows, "1", frame=1
+    ) == ("vis.detail", "vis.rim")
 
 
 def test_geometry_protected_vis_failure_blocks_the_executable_verdict() -> None:

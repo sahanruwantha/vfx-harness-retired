@@ -648,12 +648,72 @@ def geometry_vis_protection_ids(
     return tuple(sorted({str(item) for item in layer_active_vis_ids if str(item)}))
 
 
+def _dependency_closure(unit: WorkUnit, by_id: Mapping[str, WorkUnit]) -> set[str]:
+    found: set[str] = set()
+    frontier = list(unit.depends_on)
+    while frontier:
+        current = frontier.pop()
+        if current in found:
+            continue
+        found.add(current)
+        dependency = by_id.get(current)
+        if dependency is not None:
+            frontier.extend(dependency.depends_on)
+    return found
+
+
+def visible_fraction_repair_owners(
+    units: Sequence[WorkUnit],
+) -> dict[str, tuple[str, ...]]:
+    """Required-claim repair owners that make each vis row due (HIR-0132)."""
+    owners: dict[str, set[str]] = {}
+    for unit in units:
+        for claim in unit.evaluation.claims:
+            if not claim.required:
+                continue
+            for binding in claim.evidence:
+                if binding.kind != "scene_contract":
+                    continue
+                owners.setdefault(str(binding.id), set()).add(str(claim.repair_owner))
+    return {contract_id: tuple(sorted(values)) for contract_id, values in owners.items()}
+
+
+def geometry_vis_protection_ids_for_unit(
+    units: Sequence[WorkUnit],
+    unit: WorkUnit,
+    rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
+    layer_id: str | int,
+    *,
+    frame: int | None = None,
+) -> tuple[str, ...]:
+    """Vis rows due at this geometry unit after typed unit activation.
+
+    A row bound to a required claim becomes due at that claim's repair owner.  It is
+    then protected by every downstream geometry unit whose dependency closure contains
+    that owner.  Rows without typed ownership retain HIR-0051's conservative layer-wide
+    behavior instead of being silently dropped.
+    """
+    if "geometry" not in unit.provides:
+        return ()
+    unit_rows = tuple(units)
+    by_id = {item.id: item for item in unit_rows}
+    closure = _dependency_closure(unit, by_id) | {unit.id}
+    owners = visible_fraction_repair_owners(unit_rows)
+    active_ids = layer_active_visible_fraction_ids(rows, layer_id, frame=frame)
+    return tuple(
+        contract_id
+        for contract_id in active_ids
+        if not owners.get(contract_id) or set(owners[contract_id]).intersection(closure)
+    )
+
+
 GEOMETRY_VIS_DEPENDENCY_RULE = (
-    "a unit that provides geometry freeze-protects every lifecycle-active visible_fraction "
-    "row on its layer. If one of those roles is produced by another same-layer unit, that "
-    "producer must be in the geometry unit's dependency closure; a future producer makes "
-    "the earlier geometry unit impossible to seal. Remove geometry from the earlier unit, "
-    "use already-existing dressable geometry, or reorder/split the DAG."
+    "a required visible_fraction row becomes due at its typed repair-owner unit. Every "
+    "later geometry unit freeze-protects that row and must include the owner in its "
+    "dependency closure; a geometry unit before the owner does not pretend future surfaces "
+    "already exist. Order the units with a real acyclic dependency, use already-existing "
+    "owner-granted dressable geometry, or split the DAG. Rows without typed ownership "
+    "remain conservatively layer-active."
 )
 
 
@@ -690,12 +750,12 @@ def geometry_vis_dependency_gaps(
     rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
     layer_id: str | int,
 ) -> tuple[GeometryVisDependencyGap, ...]:
-    """Find geometry units that would protect visibility owned by a future sibling.
+    """Find geometry/visibility order that lacks an authority edge.
 
-    HIR-0051 intentionally makes geometry preservation conservative. That protection
-    becomes an unsealable cycle when an active visibility row selects geometry which a
-    later same-layer unit is responsible for creating. Catch the cycle at authority
-    publication instead of making the builder discover it from a missing role.
+    Required vis activates at its typed repair owner (HIR-0132). A later geometry unit
+    must depend on that owner before it can protect the row; an earlier unit does not owe
+    the future subject. Rows without typed ownership retain HIR-0051's conservative
+    layer-wide producer check.
     """
     unit_rows = tuple(units)
     by_id = {unit.id: unit for unit in unit_rows}
@@ -706,34 +766,47 @@ def geometry_vis_dependency_gaps(
     }
     active_ids = layer_active_visible_fraction_ids(row_by_id.values(), layer_id)
 
-    def dependency_closure(unit: WorkUnit) -> set[str]:
-        found: set[str] = set()
-        frontier = list(unit.depends_on)
-        while frontier:
-            current = frontier.pop()
-            if current in found:
-                continue
-            found.add(current)
-            dependency = by_id.get(current)
-            if dependency is not None:
-                frontier.extend(dependency.depends_on)
-        return found
+    closures = {unit.id: _dependency_closure(unit, by_id) for unit in unit_rows}
+    order = {unit.id: index for index, unit in enumerate(unit_rows)}
+    owners_by_contract = visible_fraction_repair_owners(unit_rows)
 
     gaps: list[GeometryVisDependencyGap] = []
     for unit in unit_rows:
         if "geometry" not in unit.provides:
             continue
-        dependencies = dependency_closure(unit)
+        dependencies = closures[unit.id]
         own_roles = (*unit.mutates.roles, *unit.mutates.dresses)
         for contract_id in active_ids:
             row = row_by_id[contract_id]
+            typed_owners = tuple(
+                owner
+                for owner in owners_by_contract.get(contract_id, ())
+                if owner in by_id
+            )
+            if typed_owners:
+                # A required vis row activates at its repair owner. For two unordered
+                # geometry units, authored position is only a deterministic tie-break;
+                # require the later row to publish the missing authority edge. This
+                # produces one acyclic teaching finding instead of a false mutual cycle.
+                earlier_unordered = tuple(
+                    owner
+                    for owner in typed_owners
+                    if owner != unit.id
+                    and owner not in dependencies
+                    and unit.id not in closures[owner]
+                    and order[owner] < order[unit.id]
+                )
+                if not earlier_unordered:
+                    continue
+            else:
+                earlier_unordered = ()
             unresolved = vis_roles_unrepairable_by(
                 provides=(),
                 mutation_roles=own_roles,
                 vis_roles=row.get("roles") or (),
             )
             for role in unresolved:
-                producers = tuple(
+                producers = earlier_unordered or tuple(
                     sorted(
                         other.id
                         for other in unit_rows

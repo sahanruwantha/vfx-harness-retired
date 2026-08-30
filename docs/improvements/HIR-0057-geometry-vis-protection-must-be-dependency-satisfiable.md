@@ -57,3 +57,10 @@ repository suite remain green.
 
 This is a stricter publication validation with no persisted schema change. Rollback removes the
 new finding, but would restore a plan shape that is mechanically impossible to execute.
+
+## Amendment
+
+HIR-0132 narrows “active” to the typed unit boundary for required visibility. Future
+repair-owner rows are no longer due before their subject exists; unordered downstream
+geometry still fails this dependency gate, and unowned rows retain this record's original
+conservative behavior.

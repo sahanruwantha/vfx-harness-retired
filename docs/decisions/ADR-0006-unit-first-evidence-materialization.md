@@ -40,6 +40,22 @@ Tool capability follows phase rather than shot vocabulary:
 - build/evidence: candidate-bound image checks and renders;
 - repair: only implicated controls and evidence.
 
+### Amendment: unit-relative activation inside a layer
+
+Layer lifecycle alone is too coarse for evidence whose rendered subject is created by
+one bounded unit. A required same-layer `visible_fraction` row becomes due at the typed
+repair owner of the claim that binds it. That owner evaluates the row; every downstream
+geometry unit whose dependency closure contains the owner re-evaluates it as protected
+authority. A geometry unit ordered before the owner does not certify a future subject.
+
+Publication requires geometry units that can affect already-due visibility to carry a
+real acyclic dependency on the owner. Authored array position is only the deterministic
+tie-break used to name the missing edge, never sufficient authority by itself. Rows with
+missing or ambiguous typed ownership remain conservatively active for the whole layer and
+fail closed. Composed canonical replay evaluates the full claim fan-in. This keeps evidence
+cost and due context proportional to the active unit without weakening cumulative replay
+or allowing one role's visibility to hide another's (HIR-0132).
+
 ## Consequences
 
 Global planning can publish without acceptance fingerprints, executable stages, recipes, or

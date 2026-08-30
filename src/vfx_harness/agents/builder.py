@@ -2516,7 +2516,7 @@ def _geometry_protected_vis_ids(shot: Shot, layer, unit, frame: int | None = Non
     from vfx_harness.domain.contracts import load_document
     from vfx_harness.domain.work_units import (
         geometry_vis_protection_ids,
-        layer_active_visible_fraction_ids,
+        geometry_vis_protection_ids_for_unit,
         plan_selector_declared,
     )
     from vfx_harness.evidence.scene_checks import deferred_subject_composition_ids
@@ -2525,8 +2525,19 @@ def _geometry_protected_vis_ids(shot: Shot, layer, unit, frame: int | None = Non
     if unit is None or "geometry" not in getattr(unit, "provides", ()):
         return set()
     rows = load_document(selected_artifact_path(shot.folder, "scene_checks.json"), "contracts")
-    vis = layer_active_visible_fraction_ids(rows, str(layer.id), frame=frame)
-    protected = set(geometry_vis_protection_ids(unit.provides, vis))
+    stages = tuple(getattr(layer, "stages", ()) or ())
+    if stages and any(getattr(item, "id", None) == getattr(unit, "id", None) for item in stages):
+        protected = set(
+            geometry_vis_protection_ids_for_unit(
+                stages, unit, rows, str(layer.id), frame=frame
+            )
+        )
+    else:
+        # Diagnostic/backward callers without a typed layer DAG stay conservative.
+        from vfx_harness.domain.work_units import layer_active_visible_fraction_ids
+
+        vis = layer_active_visible_fraction_ids(rows, str(layer.id), frame=frame)
+        protected = set(geometry_vis_protection_ids(unit.provides, vis))
     scope = getattr(unit, "mutates", None)
     mutated = {
         str(item)
