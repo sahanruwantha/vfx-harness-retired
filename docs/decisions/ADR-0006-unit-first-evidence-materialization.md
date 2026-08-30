@@ -8,6 +8,11 @@ supersedes: ADR-0005
 
 # Unit-first planning with candidate-bound evidence materialization
 
+Model response streams used by unit execution are bounded by a configurable event-idle
+deadline. Expiry is a typed model-session failure and cannot publish a partially observed
+candidate; turn and spend caps alone do not bound a stream without a terminal event
+(HIR-0138).
+
 ## Context
 
 ADR-0005 removed whole-shot evidence design from global planning, but retained one exception:

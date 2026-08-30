@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import anyio
+import pytest
 from PIL import Image
 
 from vfx_harness.agents.builder import (
@@ -185,6 +186,42 @@ def test_builder_drain_preserves_provider_error_fields(monkeypatch) -> None:
     assert info["subtype"] == "success"
     assert info["is_error"] is True
     assert info["api_error_status"] == 429
+
+
+def test_builder_drain_fails_closed_when_response_stream_goes_idle(monkeypatch) -> None:
+    from vfx_harness.agents import builder
+
+    class FakeSettings:
+        model_event_idle_seconds = 0.01
+
+        @classmethod
+        def from_environment(cls, **_kwargs):
+            return cls()
+
+    class FakeClient:
+        async def receive_response(self):
+            await anyio.sleep_forever()
+            yield  # pragma: no cover - makes this an async generator
+
+    events = []
+    monkeypatch.setattr(builder, "Settings", FakeSettings)
+    monkeypatch.setattr(builder.transcript, "event", lambda name, **fields: events.append((name, fields)))
+
+    with pytest.raises(builder.BuildTruncated) as caught:
+        anyio.run(builder._drain_once, FakeClient(), False)
+
+    assert caught.value.terminal_cause == "model_session_idle_timeout"
+    assert "no SDK event for 0.01s" in str(caught.value)
+    assert events == [
+        (
+            "model_event_idle_timeout",
+            {
+                "idle_seconds": 0.01,
+                "messages_seen": 0,
+                "last_message_type": "response_start",
+            },
+        )
+    ]
 
 
 def test_provider_error_skips_optional_context_usage_telemetry(monkeypatch) -> None:

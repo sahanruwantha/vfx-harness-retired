@@ -67,15 +67,25 @@ def test_plan_max_turns_setting_parses_and_rejects_nonsense(
 ) -> None:
     monkeypatch.delenv("VFXH_PLAN_MAX_TURNS", raising=False)
     monkeypatch.delenv("VFXH_PLAN_VERIFY_MAX_TURNS", raising=False)
+    monkeypatch.delenv("VFXH_MODEL_EVENT_IDLE_SECONDS", raising=False)
     settings = Settings.from_environment(load_dotenv_file=False)
     assert settings.plan_max_turns == 12
     assert settings.plan_verify_max_turns == 6
+    assert settings.model_event_idle_seconds == 360
 
     monkeypatch.setenv("VFXH_PLAN_MAX_TURNS", "60")
     assert Settings.from_environment(load_dotenv_file=False).plan_max_turns == 60
 
     monkeypatch.setenv("VFXH_PLAN_MAX_TURNS", "0")
     with pytest.raises(ValueError, match="VFXH_PLAN_MAX_TURNS"):
+        Settings.from_environment(load_dotenv_file=False)
+
+    monkeypatch.setenv("VFXH_PLAN_MAX_TURNS", "12")
+    monkeypatch.setenv("VFXH_MODEL_EVENT_IDLE_SECONDS", "90")
+    assert Settings.from_environment(load_dotenv_file=False).model_event_idle_seconds == 90
+
+    monkeypatch.setenv("VFXH_MODEL_EVENT_IDLE_SECONDS", "0")
+    with pytest.raises(ValueError, match="VFXH_MODEL_EVENT_IDLE_SECONDS"):
         Settings.from_environment(load_dotenv_file=False)
 
 

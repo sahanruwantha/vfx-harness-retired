@@ -1201,7 +1201,32 @@ async def _drain_once(client: ClaudeSDKClient, verbose: bool) -> dict:
         "is_error": False,
         "api_error_status": None,
     }
-    async for message in client.receive_response():
+    idle_seconds = Settings.from_environment(load_dotenv_file=False).model_event_idle_seconds
+    response = client.receive_response().__aiter__()
+    messages_seen = 0
+    last_message_type = "response_start"
+    while True:
+        try:
+            with anyio.fail_after(idle_seconds):
+                message = await anext(response)
+        except StopAsyncIteration:
+            break
+        except TimeoutError as exc:
+            transcript.event(
+                "model_event_idle_timeout",
+                idle_seconds=idle_seconds,
+                messages_seen=messages_seen,
+                last_message_type=last_message_type,
+            )
+            raise BuildTruncated(
+                f"builder emitted no SDK event for {idle_seconds}s after "
+                f"{last_message_type}; the model session is indeterminate — retry the "
+                "unit through the audited retry transition (resume only when its ledger "
+                "names an existing checkpoint and journal)",
+                terminal_cause="model_session_idle_timeout",
+            ) from exc
+        messages_seen += 1
+        last_message_type = type(message).__name__
         if verbose:
             log_message(message)
         else:

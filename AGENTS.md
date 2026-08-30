@@ -681,6 +681,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   (HIR-0080). Structured termination preserves the cause: provider/zero-work failures are
   `model_session_failure`, turn exhaustion is `max_turns_exhausted`, and the configured
   model-dollar ceiling is `model_budget_exhausted`; exit 3 is not sufficient diagnosis.
+  Every model response stream also has a positive configurable event-idle deadline. If no
+  SDK event arrives before it, the phase fails closed as `model_session_idle_timeout`,
+  journals the deadline, message count, and last event type, and publishes no candidate.
+  Turn and spend caps do not bound a stream that never emits a terminal result; an operator
+  interrupt is not the normal timeout mechanism (HIR-0138).
   Optional context-usage telemetry is bypassed after authoritative provider error facts;
   observability may not delay terminal propagation (HIR-0080).
   A scoped unit may not write free-form renderer policy through `run_bpy` (`eevee`, `cycles`,

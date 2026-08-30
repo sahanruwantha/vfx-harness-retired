@@ -147,6 +147,11 @@ class Settings:
     # `vfx plan --max-turns` still overrides per invocation.
     plan_max_turns: int = 12
     plan_verify_max_turns: int = 6
+    # Fail closed when an SDK response stream stops producing events.  A turn and
+    # spend cap cannot bound a transport/model session that never emits a terminal
+    # ResultMessage, so this is deliberately an event-idle deadline rather than a
+    # total response deadline.
+    model_event_idle_seconds: int = 360
 
     @classmethod
     def from_environment(cls, *, load_dotenv_file: bool = True) -> Settings:
@@ -169,4 +174,5 @@ class Settings:
             critic_model=_text("VFXH_CRITIC_MODEL", DEFAULT_CRITIC_MODEL),
             plan_max_turns=_int("VFXH_PLAN_MAX_TURNS", 12),
             plan_verify_max_turns=_int("VFXH_PLAN_VERIFY_MAX_TURNS", 6),
+            model_event_idle_seconds=_int("VFXH_MODEL_EVENT_IDLE_SECONDS", 360),
         )
