@@ -42,11 +42,33 @@ def test_legal_dotted_tokens_round_trip() -> None:
     assert validate_role_token(" world.bloom.compositor ") == "world.bloom.compositor"
 
 
-def test_match_semantic_is_fnmatch_and_empty_misses() -> None:
+def test_match_semantic_supports_fnmatch_namespaces_and_empty_misses() -> None:
     assert match_semantic("cam.blockout_fg", ["cam.blockout_*"])
     assert not match_semantic("cam.blockout_fg", ["lookdev.*"])
     assert not match_semantic("cam.blockout_fg", [])
     assert match_semantic("cam.blockout_fg", "cam.blockout_fg")
+    assert match_semantic("building.mass.tower", "building")
+    assert match_semantic("building.roof.sign", "building")
+    assert not match_semantic("buildingish.mass", "building")
+    assert not match_semantic("building", "building.mass")
+
+
+def test_plan_and_runtime_share_parent_namespace_meaning() -> None:
+    from vfx_harness.domain.work_units import plan_selector_declared
+
+    assert plan_selector_declared("building", ("building.mass.tower",))
+    assert match_semantic("building.mass.tower", "building")
+    assert not plan_selector_declared("building", ("buildingish.mass",))
+
+
+def test_parent_role_selector_collects_rendered_descendants() -> None:
+    inventory = [
+        {"name": "tower", "role": "building.mass.tower"},
+        {"name": "roof", "role": "building.roof.silhouette"},
+        {"name": "island", "role": "site.ground_island"},
+    ]
+    hits = pick_objects(inventory, role="building")
+    assert [row["name"] for row in hits] == ["tower", "roof"]
 
 
 def test_name_miss_names_present_roles() -> None:

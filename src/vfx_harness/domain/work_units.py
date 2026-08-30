@@ -8,7 +8,6 @@ not be guessed from an obsolete document.
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import re
@@ -586,13 +585,13 @@ VIS_REPAIR_OWNER_RULE = (
 
 
 def plan_selector_declared(selector: str, declarations: Iterable[str]) -> bool:
-    """Whether a contract selector is covered by a declared role/dress pattern."""
+    """Whether selector and declared role namespaces can address the same tag."""
+    from vfx_harness.domain.semantic_roles import match_semantic
+
     token = str(selector)
     return any(
-        token == declared
-        or token.startswith(f"{declared}.")
-        or fnmatch.fnmatchcase(token, declared)
-        or fnmatch.fnmatchcase(declared, token)
+        match_semantic(token, (str(declared),))
+        or match_semantic(str(declared), (token,))
         for declared in declarations
     )
 

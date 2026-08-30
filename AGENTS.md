@@ -145,6 +145,11 @@ effect.
 
 - Query, don't recall: agents act on authoritative state read through tools, never on memory of
   the scene, the plan, or a prior run.
+- Semantic roles use one matcher everywhere. A literal dotted selector names its exact tag
+  and every dotted descendant (`building` includes `building.mass.tower`); wildcard selectors
+  retain fnmatch behavior, and prefixes without a dot do not match. Aggregate rendered-subject
+  evidence composes every matching surface. A single-host tool that reaches several descendants
+  fails closed and enumerates legal `object=` choices (HIR-0147).
 - Camera availability comes only from typed `provides: ["camera"]` authority; role names,
   including `camera.target`, never imply a capability (HIR-0098).
 - `inspect_scene(render/lights)` exposes the world/compositor identity, EEVEE volumetric and

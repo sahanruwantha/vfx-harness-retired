@@ -1,8 +1,9 @@
 """Semantic role alphabet and matching — one implementation, every caller.
 
-A *tag* is one dotted token on one host. A *selector* is a fnmatch pattern over tags.
-Commas are not membership. Contracts, ``bvfx_role()``, and builder scene tools must
-not grow a private copy of this matching (ADR-0003).
+A *tag* is one dotted token on one host. A *selector* is either a literal dotted
+namespace (matching itself and its descendants) or a fnmatch pattern over tags. Commas
+are not membership. Contracts, ``bvfx_role()``, and builder scene tools must not grow a
+private copy of this matching (ADR-0003).
 
 The Blender worker loads this file by path so its interpreter never imports the
 ``vfx_harness`` package.
@@ -45,13 +46,27 @@ def validate_role_token(role) -> str:
 
 
 def match_semantic(value, patterns) -> bool:
-    """Whether ``value`` matches any fnmatch pattern. Empty pattern lists miss."""
+    """Whether ``value`` matches a literal namespace or fnmatch selector.
+
+    A literal ``building`` selects both a host tagged ``building`` and descendants such
+    as ``building.mass.tower``. Wildcard selectors retain ordinary fnmatch semantics.
+    This lets a camera-owned aggregate subject contract measure the exact child roles
+    published later without inventing an untagged parent proxy.
+    """
     if isinstance(patterns, str):
         patterns = [patterns]
     if not patterns:
         return False
     text = str(value or "")
-    return any(fnmatch.fnmatchcase(text, str(pattern)) for pattern in patterns)
+    for pattern in patterns:
+        selector = str(pattern)
+        if fnmatch.fnmatchcase(text, selector):
+            return True
+        if not any(marker in selector for marker in "*?[") and text.startswith(
+            f"{selector}."
+        ):
+            return True
+    return False
 
 
 def format_object_miss(
