@@ -355,11 +355,12 @@ def _families_for_namespace(
     # the evidence family to replace the provides family is exactly how a heterogeneous
     # Layer 2 unit published as keyframe-only in run 20260829T145841Z-1efac6.
     residual = _provides_residual_family(unit)
-    if residual == "camera" and families.issubset({"control", "keyframe"}):
-        # A camera provider owns the camera host's placement and motion as one typed
-        # camera interface. Splitting construction from its animated transform would
-        # invalidate a legal camera path while adding no independent successor surface.
-        families = {"camera"}
+    if residual == "camera":
+        # Camera-host optics, placement, and motion are one typed camera interface.
+        # A data.lens (or other camera-property) row must not leave temporal evidence
+        # as a sibling control_host/keyframe cluster (HIR-0157).
+        families.difference_update({"control", "keyframe"})
+        families.add("camera")
     elif residual:
         families.add(residual)
     if families:

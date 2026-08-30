@@ -1085,7 +1085,7 @@ def test_materialization_refuses_mixed_unit_before_it_enters_staged_scratch(
     })
     unit["evaluation"]["claims"][0]["evidence"].append({
         "kind": "scene_contract",
-        "id": "camera-lens",
+        "id": "fill-energy",
     })
     contracts = [
         *full["scene_contracts"],
@@ -1106,7 +1106,7 @@ def test_materialization_refuses_mixed_unit_before_it_enters_staged_scratch(
             "hi": 0.01,
         },
         {
-            "id": "camera-lens",
+            "id": "fill-energy",
             "kind": "object_property",
             "owner_layer": "2",
             "fault_owner": "2",
@@ -1115,10 +1115,10 @@ def test_materialization_refuses_mixed_unit_before_it_enters_staged_scratch(
             "axis": "final_lock",
             "roles": ["polish.comp"],
             "frame": 239,
-            "property": "data.lens",
-            "op": "band",
-            "lo": 35,
-            "hi": 55,
+            "property": "data.energy",
+            "op": "eq",
+            "value": 50,
+            "tol": 0.1,
         },
     ]
     before = target.read_bytes()

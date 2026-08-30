@@ -244,7 +244,8 @@ against the owner layer's already-validated evidence_domains, subject compositio
 bbox of a rendered subject due when geometry exists, vacuous origin/bbox bands,
 earlier-layer camera in cannot_express options, a plan-workspace path miss that
 enumerates staged relative reads so a verifier cannot invent another filesystem
-prefix (HIR-0156), and
+prefix (HIR-0156), camera-host optics plus motion that stay one camera write-cluster
+(HIR-0157), and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -434,7 +435,9 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   instrument family); authored family strings are padding and do not satisfy the
   gate. A typed producer capability is additive mutation authority, not a fallback
   label: geometry plus keyframe evidence is mesh plus keyframe work. Camera-host
-  placement and motion remain one camera family. Instrument family comes from typed mutation targets and write-kind evidence;
+  optics, placement, and motion remain one camera family even when a camera-property
+  row is bound with temporal evidence on that host (HIR-0095, HIR-0112, HIR-0157).
+  Instrument family comes from typed mutation targets and write-kind evidence;
   object-level transforms are control state, and a zero-animation bound is observation,
   not keyframe authority (HIR-0095, HIR-0112). Unresolved families fail closed. Dressing, vis
   observation/protection, and bounded
@@ -789,7 +792,7 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   and Blender API calls and checked against the one write-cluster in the compiled unit card.
   Mixed payloads fail before scene mutation or journaling; `bvfx_role`/`bvfx_control` tagging
   cannot launder mesh, shading, light, camera, volume, compositor, or keyframe work into scope.
-  Explicit `dresses` permits shading and camera-host keyframes remain camera work (HIR-0112).
+  Explicit `dresses` permits shading and camera-host keyframes remain camera work (HIR-0112, HIR-0157).
   Candidate `probe_candidate` applies the same scoped new-object role validation as
   canonical verification before returning evidence; an undeclared helper/role is a probe
   failure, never a green repair read-back (HIR-0058).

@@ -264,6 +264,74 @@ def test_camera_provider_absorbs_same_host_placement_and_motion() -> None:
     )
 
 
+def test_camera_provider_absorbs_optics_and_motion_on_the_same_host() -> None:
+    unit = _unit(
+        "camera_path",
+        roles=["camera.rig"],
+        contract_id="camera-lens",
+        extra_contracts=["camera-motion"],
+        provides=["camera"],
+    )
+    rows = [
+        {
+            **_count_row("camera-lens", ["camera.rig"], kind="object_property"),
+            "property": "data.lens",
+            "op": "eq",
+            "value": 35,
+            "tol": 0.001,
+        },
+        {
+            **_count_row("camera-motion", ["camera.rig"], kind="curve_derivative_max"),
+            "property": "location",
+            "frames": [1, 36],
+            "op": "max",
+            "hi": 0.5,
+        },
+    ]
+
+    assert [cluster.label() for cluster in write_clusters(unit, rows)] == [
+        "camera.rig/camera/camera"
+    ]
+    assert not any(
+        gap.code == "mixed_clusters"
+        for gap in atomicity_gaps([unit], rows, layer_id="1")
+    )
+
+
+def test_camera_provider_does_not_absorb_unrelated_light_work() -> None:
+    unit = _unit(
+        "camera_path",
+        roles=["camera.rig"],
+        contract_id="camera-motion",
+        extra_contracts=["fill-energy"],
+        provides=["camera"],
+    )
+    rows = [
+        {
+            **_count_row("camera-motion", ["camera.rig"], kind="keyframe_schedule"),
+            "samples": [
+                {"frame": 1, "values": {"location": [0, 0, 0]}},
+                {"frame": 36, "values": {"location": [1, 2, 3]}},
+            ],
+        },
+        {
+            **_count_row("fill-energy", ["camera.rig"], kind="object_property"),
+            "property": "data.energy",
+            "op": "eq",
+            "value": 50,
+            "tol": 0.1,
+        },
+    ]
+
+    labels = [cluster.label() for cluster in write_clusters(unit, rows)]
+    assert "camera.rig/camera/camera" in labels
+    assert "camera.rig/control_host/light" in labels
+    assert any(
+        gap.code == "mixed_clusters"
+        for gap in atomicity_gaps([unit], rows, layer_id="1")
+    )
+
+
 def test_run_bpy_family_evidence_is_typed_and_ignores_semantic_tags() -> None:
     source = """
 mesh = bpy.data.meshes.new('blade')

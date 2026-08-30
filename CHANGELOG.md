@@ -11,6 +11,10 @@ live in the linked Harness Improvement Records.
   prefixing another filesystem root; draft/verify/repair kickoffs compile that card
   instead of claiming there is no source video
   ([HIR-0156](docs/improvements/HIR-0156-plan-workspace-path-miss-enumerates-staged-reads.md)).
+- A camera-providing unit that binds a camera-property row and same-host motion
+  evidence publishes one `camera` write-cluster; the optics row no longer leaves
+  temporal kinds as a sibling `control_host/keyframe` cluster
+  ([HIR-0157](docs/improvements/HIR-0157-camera-optics-do-not-split-motion.md)).
 - Durable layer memory now lives under shot-root `state/`; reading it cannot create an
   orphan direct run or displace the latest production-run pointer
   ([HIR-0155](docs/improvements/HIR-0155-layer-memory-does-not-create-runs.md)).
