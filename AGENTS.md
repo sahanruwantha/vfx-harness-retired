@@ -284,6 +284,11 @@ suppresses, defers, or narrows the symptom is a patch and must not land, even "f
   republication or a sibling view change means the selected layer no longer reconstructs
   that DAG. Current-schema stored unit digests drive the exact preserve/change/remove
   diff; missing or cross-schema identity fails closed (HIR-0102).
+  Plain first-time `vfx plan --layer` uses that same digest-backed state transaction
+  when the selected sparse generation materializes over prior-generation durable units;
+  a publish-before-state-move crash is recovered on the next bounded plan call. It never
+  reinitializes, deletes, or requires `--discard-accepted` for comparable current-schema
+  state (HIR-0133).
   `--discard-accepted` retires accepted orphans and wipes state only when the replan
   base is unusable — it is not the door on remat (HIR-0052). Task and Agent are not remat repair
   instruments. An exhausted materialization session does not publish: max-turns is a failed

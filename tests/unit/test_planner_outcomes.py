@@ -437,6 +437,65 @@ def test_rematerialize_uses_digest_bound_state_after_global_republication(
     }
 
 
+def test_direct_materialization_reconciles_prior_generation_state(
+    tmp_path, monkeypatch
+) -> None:
+    """HIR-0133: plain plan --layer is the legal first materialization command."""
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.orchestration.unit_state import initialize, load
+
+    old_units = (_unit("facade"), _unit("windows", depends_on=["facade"]))
+    new_units = (_unit("massing"), _unit("roof", depends_on=["massing"]))
+    initialize(tmp_path, "2", old_units, plan_hash="old-generation")
+    _mark_passed(tmp_path, "2", "facade", "windows")
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.plan_authority.active_plan_hash",
+        lambda folder, **kwargs: "selected-materialized-view",
+    )
+    shot = SimpleNamespace(folder=tmp_path, id="shot")
+    layer = SimpleNamespace(id="2", stages=new_units)
+
+    changed = planner._reconcile_materialized_layer_state(shot, layer)
+
+    assert changed is True
+    state = load(tmp_path, "2")
+    assert state["plan_hash"] == "selected-materialized-view"
+    assert set(state["units"]) == {"massing", "roof"}
+    assert {row["status"] for row in state["units"].values()} == {"pending"}
+    record = state["replans"][-1]
+    assert record["old_plan_hash"] == "old-generation"
+    assert record["removed"] == ["facade", "windows"]
+    assert record["added"] == ["massing", "roof"]
+    assert record.get("discard_accepted") is None
+    assert {row["id"] for row in state["superseded"][-2:]} == {
+        "facade",
+        "windows",
+    }
+
+
+def test_direct_materialization_reconciliation_is_noop_for_matching_digests(
+    tmp_path, monkeypatch
+) -> None:
+    from tests.architecture.test_staged_architecture import _unit
+    from vfx_harness.orchestration.unit_state import initialize, load
+
+    units = (_unit("massing"),)
+    initialize(tmp_path, "2", units, plan_hash="old-view-hash")
+    before = load(tmp_path, "2")
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.plan_authority.active_plan_hash",
+        lambda folder, **kwargs: "new-combined-view-hash",
+    )
+
+    changed = planner._reconcile_materialized_layer_state(
+        SimpleNamespace(folder=tmp_path, id="shot"),
+        SimpleNamespace(id="2", stages=units),
+    )
+
+    assert changed is False
+    assert load(tmp_path, "2") == before
+
+
 def test_rematerialize_unusable_base_does_not_wipe_accepted_units(
     tmp_path, monkeypatch
 ) -> None:

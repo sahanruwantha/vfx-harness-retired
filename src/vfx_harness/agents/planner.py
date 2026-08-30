@@ -1160,6 +1160,57 @@ async def _rematerialize_layer(
     return refreshed
 
 
+def _reconcile_materialized_layer_state(shot, layer) -> bool:
+    """Move stale durable identity onto the selected materialized DAG (HIR-0133).
+
+    A newly selected sparse bundle can make a layer ``jit_deferred`` while durable
+    state still names the prior generation. Ordinary ``plan --layer`` materializes the
+    replacement without the explicit ``--rematerialize`` tuple, so the next call used
+    to fall into ``initialize`` and fail after publication. The selected view is already
+    validated design authority; current-schema durable hashes are the exact predecessor
+    identity. Reconcile those two authorities through the same state-backed transaction
+    used by rematerialization, never by reinitializing or discarding accepted work.
+    """
+    from vfx_harness.orchestration.plan_authority import active_plan_hash
+    from vfx_harness.orchestration.unit_state import apply_replan, validate_current
+    from vfx_harness.orchestration.unit_state import load as load_unit_state
+
+    layer_id = str(layer.id)
+    state = load_unit_state(shot.folder, layer_id)
+    if not state or not (state.get("units") or {}):
+        return False
+    try:
+        validate_current(state, layer_id, layer.stages)
+        return False
+    except ValueError:
+        pass
+    new_plan_hash = active_plan_hash(shot.folder)
+    old_plan_hash = str(state.get("plan_hash") or "")
+    apply_replan(
+        shot.folder,
+        layer_id,
+        (),
+        layer.stages,
+        old_plan_hash=old_plan_hash,
+        new_plan_hash=new_plan_hash,
+        owner="vfx-harness.plan-layer",
+        trigger=(
+            "selected JIT materialization replaced a prior-generation durable unit DAG"
+        ),
+        evidence=[
+            "state/jit-layers/current.json",
+            f"state/work-units/layer_{layer_id}.json",
+        ],
+        state_backed_base=True,
+    )
+    log(
+        f"work-unit state reconciled from durable digests → "
+        f"{', '.join(unit.id for unit in layer.stages)}",
+        1,
+    )
+    return True
+
+
 async def generate_layer_plan(
     folder: str | Path,
     layer_id: str,
@@ -1212,6 +1263,7 @@ async def generate_layer_plan(
     from vfx_harness.orchestration.unit_state import digest_matched_passed
     from vfx_harness.orchestration.unit_state import initialize as initialize_unit_state
 
+    _reconcile_materialized_layer_state(shot, layer)
     layers_hash = active_plan_hash(shot.folder)
     state = initialize_unit_state(
         shot.folder, str(layer.id), layer.stages, plan_hash=layers_hash

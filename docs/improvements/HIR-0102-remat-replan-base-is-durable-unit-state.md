@@ -140,3 +140,7 @@ Materialization publication and work-unit state movement remain two ordered
 atomic writes, not one filesystem transaction. A process death between them
 still leaves a published replacement with old state; rerunning remat now has a
 deterministic digest-bound recovery path instead of requiring a wipe.
+
+HIR-0133 extends that recovery to ordinary first materialization through
+`vfx plan --layer`: the selected validated DAG is reconciled before initialization even
+when the operator did not invoke the explicit rematerialization surface.

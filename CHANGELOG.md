@@ -105,6 +105,10 @@ live in the linked Harness Improvement Records.
   must depend on and protect it, while earlier units no longer owe surfaces that do not
   exist yet; ambiguous rows retain conservative layer-wide protection
   ([HIR-0132](docs/improvements/HIR-0132-visibility-activates-at-its-unit-owner.md)).
+  Plain JIT layer materialization now reconciles prior-generation durable unit state
+  through the same digest-backed `apply_replan` transaction as rematerialization, including
+  deterministic recovery when publication completed before the state move
+  ([HIR-0133](docs/improvements/HIR-0133-direct-materialization-reconciles-durable-state.md)).
   A sibling rematerialization that only changes the combined `layers.json`
   hash adopts that identity and preserves the unchanged layer's unit
   statuses; it is not a DAG replan
