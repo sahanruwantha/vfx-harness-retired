@@ -13,6 +13,8 @@ from vfx_harness.domain.stop_envelope_primitives import (
     require_digest,
     require_id,
     require_text,
+    require_text_tuple,
+    text_tuple_from_list,
 )
 
 
@@ -84,13 +86,75 @@ class EnvironmentCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class EnvironmentProbeSpec:
+    """The exact versioned observation surface used by one environment probe."""
+
+    SCHEMA: ClassVar[str] = "vfx-harness.preflight-probe-spec/v2"
+
+    probe_id: str
+    probe_revision: int
+    check_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        require_id(self.probe_id, "EnvironmentProbeSpec.probe_id")
+        if (
+            not isinstance(self.probe_revision, int)
+            or isinstance(self.probe_revision, bool)
+            or self.probe_revision < 1
+        ):
+            raise ValueError("EnvironmentProbeSpec.probe_revision must be a positive integer")
+        object.__setattr__(
+            self,
+            "check_ids",
+            require_text_tuple(self.check_ids, "EnvironmentProbeSpec.check_ids"),
+        )
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "schema": self.SCHEMA,
+            "probe_id": self.probe_id,
+            "probe_revision": self.probe_revision,
+            "check_ids": list(self.check_ids),
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self._payload())
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**self._payload(), "probe_spec_digest": self.digest}
+
+    @classmethod
+    def from_dict(cls, value: Any, where: str) -> EnvironmentProbeSpec:
+        row = record(
+            value,
+            where,
+            cls.SCHEMA,
+            ("probe_id", "probe_revision", "check_ids", "probe_spec_digest"),
+        )
+        candidate = cls(
+            probe_id=row["probe_id"],
+            probe_revision=row["probe_revision"],
+            check_ids=text_tuple_from_list(row["check_ids"], f"{where}.check_ids"),
+        )
+        require_canonical_digest(
+            row["probe_spec_digest"],
+            candidate.digest,
+            where,
+            "probe_spec_digest",
+        )
+        return candidate
+
+
+@dataclass(frozen=True, slots=True)
 class EnvironmentResult:
     """A complete standalone preflight result; it never creates shot authority."""
 
-    SCHEMA: ClassVar[str] = "vfx-harness.environment-result/v1"
+    SCHEMA: ClassVar[str] = "vfx-harness.environment-result/v2"
 
     probe_id: str
     checks: tuple[EnvironmentCheck, ...]
+    probe_spec: EnvironmentProbeSpec | None = None
 
     def __post_init__(self) -> None:
         require_id(self.probe_id, "EnvironmentResult.probe_id")
@@ -102,15 +166,35 @@ class EnvironmentResult:
         if len(ids) != len(set(ids)):
             raise ValueError("EnvironmentResult.checks contains duplicate check ids")
         object.__setattr__(self, "checks", tuple(sorted(self.checks, key=lambda check: check.check_id)))
+        expected_ids = tuple(sorted(ids))
+        if self.probe_spec is None:
+            object.__setattr__(
+                self,
+                "probe_spec",
+                EnvironmentProbeSpec(
+                    probe_id=self.probe_id,
+                    probe_revision=1,
+                    check_ids=expected_ids,
+                ),
+            )
+        elif not isinstance(self.probe_spec, EnvironmentProbeSpec):
+            raise ValueError("EnvironmentResult.probe_spec must be an EnvironmentProbeSpec")
+        elif (
+            self.probe_spec.probe_id != self.probe_id
+            or self.probe_spec.check_ids != expected_ids
+        ):
+            raise ValueError("EnvironmentResult.probe_spec must bind its exact probe and check IDs")
 
     @property
     def ok(self) -> bool:
         return all(check.passed for check in self.checks)
 
     def _environment_payload(self) -> dict[str, Any]:
+        assert self.probe_spec is not None
         return {
-            "schema": "vfx-harness.environment-state/v1",
+            "schema": "vfx-harness.environment-state/v2",
             "probe_id": self.probe_id,
+            "probe_spec_digest": self.probe_spec.digest,
             "checks": [
                 {
                     "check_id": check.check_id,
@@ -126,9 +210,11 @@ class EnvironmentResult:
         return canonical_digest(self._environment_payload())
 
     def _payload(self) -> dict[str, Any]:
+        assert self.probe_spec is not None
         return {
             "schema": self.SCHEMA,
             "probe_id": self.probe_id,
+            "probe_spec": self.probe_spec.as_dict(),
             "ok": self.ok,
             "environment_digest": self.environment_digest,
             "checks": [check.as_dict() for check in self.checks],
@@ -147,13 +233,26 @@ class EnvironmentResult:
             value,
             where,
             cls.SCHEMA,
-            ("probe_id", "ok", "environment_digest", "checks", "result_digest"),
+            (
+                "probe_id",
+                "probe_spec",
+                "ok",
+                "environment_digest",
+                "checks",
+                "result_digest",
+            ),
         )
         checks = tuple(
             EnvironmentCheck.from_dict(item, f"{where}.checks[{index}]")
             for index, item in enumerate(list_value(row["checks"], f"{where}.checks"))
         )
-        candidate = cls(probe_id=row["probe_id"], checks=checks)
+        candidate = cls(
+            probe_id=row["probe_id"],
+            checks=checks,
+            probe_spec=EnvironmentProbeSpec.from_dict(
+                row["probe_spec"], f"{where}.probe_spec"
+            ),
+        )
         if row["ok"] is not candidate.ok:
             raise ValueError(f"{where}.ok is inconsistent with its checks")
         require_canonical_digest(

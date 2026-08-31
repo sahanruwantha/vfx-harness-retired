@@ -70,11 +70,13 @@ unit attempt advanced, environment reverified, checkpointed session advanced, hu
 decision committed, or engineering route committed. Target and postcondition identities
 must agree structurally.
 
-Every future dispatchable execution must produce `vfx-harness.transaction-receipt/v1`.
-The landed evaluation contract binds an exact-schema, content-addressed receipt reference,
+Every dispatchable execution must produce `vfx-harness.transaction-receipt/v1`.
+The evaluation contract binds an exact-schema, content-addressed receipt reference,
 action, evaluator, authoritative before/after digests, and an idempotency key derived from the
-action, before-state, attempt evidence, and receipt schema. It is not a receipt producer or
-parser. A satisfied evaluation must claim changed authoritative domain state. The domain helper
+action, before-state, attempt evidence, and receipt schema. A satisfied evaluation must claim
+changed authoritative domain state. HIR-0166 implements the strict parser/store and the first
+producer/evaluator for `recover_environment`; no other transaction inherits that capability by
+proximity. The domain helper
 defines a future `repeated-dispatch-defect/v1` payload binding the full stable current stop,
 prior attempt, evaluation, and its one exact-schema receipt reference. Because no verified
 receipt/defect consumer exists, the classifier currently stops an unchanged repetition by
@@ -133,13 +135,12 @@ paired with an informal controller.
 ## Remaining limitations
 
 The typed action, target, state-assertion, postcondition, evaluation, idempotency, and
-fail-closed loop-detection scaffolding is implemented. A recovery controller is not. There is
-no transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
-safe resume-record producer, or producer that can yet prove
-`local_implementation_miss`. Consequently none of the seven transaction types is
-dispatch-ready, even when an envelope names it. Existing reviewed commands remain the
-only execution path, and a typed action is a closed proposal rather than evidence that
-its transaction ran.
+fail-closed loop-detection scaffolding is implemented. HIR-0166 adds a durable receipt store,
+commit reconciliation, and explicit public execution for `recover_environment` only. A recovery
+controller is not implemented. There is no controller journal, automatic dispatch, safe
+resume-record producer, or producer that can yet prove `local_implementation_miss`. The other
+six transaction types remain non-dispatchable even when an envelope names one; their typed action
+is a closed proposal rather than evidence that a transaction ran.
 
 HIR-0163 supplies the separate non-stop `EvidenceNotDue` classifier value. Runtime carries
 that successful continuation through debt state and ordinary scheduling; no run summary or

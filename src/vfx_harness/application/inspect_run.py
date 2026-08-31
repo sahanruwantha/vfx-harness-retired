@@ -32,6 +32,7 @@ from collections import Counter
 from pathlib import Path
 
 from vfx_harness.domain.brief import load_shot
+from vfx_harness.domain.stop_transactions import action_idempotency_key
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 
@@ -198,6 +199,11 @@ def collect(shot_folder: str | Path, *, history: bool = False,
                         "precondition_digest": action.precondition_digest,
                         "postcondition_schema": action.postcondition.SCHEMA,
                         "action_digest": action.digest,
+                        "idempotency_key": action_idempotency_key(
+                            action,
+                            authoritative_before_digest=envelope.authoritative_before_digest,
+                            attempt_evidence_digest=envelope.attempt_evidence_digest,
+                        ),
                     }
                     for action in envelope.actions
                 ],

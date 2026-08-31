@@ -15,6 +15,7 @@ _COMMANDS = {
     "inspect": "vfx_harness.application.inspect_run:main",
     "plan": "vfx_harness.agents.planner:main",
     "preflight": "vfx_harness.application.preflight:main",
+    "recover-environment": "vfx_harness.application.environment_recovery:main",
     "render": "vfx_harness.application.render_shot:main",
     "run": "vfx_harness.application.run_shot:main",
     "units": "vfx_harness.application.unit_admin:main",

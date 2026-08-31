@@ -38,12 +38,24 @@ def test_environment_result_round_trips_and_rejects_stale_summary() -> None:
     result = preflight.environment_result(_failed_raw())
 
     assert result.ok is False
+    assert result.as_dict()["probe_spec"]["probe_revision"] == 1
     assert EnvironmentResult.from_dict(result.as_dict(), "result") == result
 
     stale = deepcopy(result.as_dict())
     stale["ok"] = True
     with pytest.raises(ValueError, match="ok is inconsistent"):
         EnvironmentResult.from_dict(stale, "result")
+
+    legacy = deepcopy(result.as_dict())
+    legacy["schema"] = "vfx-harness.environment-result/v1"
+    legacy.pop("probe_spec")
+    with pytest.raises(ValueError, match=r"fields mismatch|schema must be"):
+        EnvironmentResult.from_dict(legacy, "result")
+
+    changed_probe = deepcopy(result.as_dict())
+    changed_probe["probe_spec"]["probe_revision"] = 2
+    with pytest.raises(ValueError, match="probe_spec_digest is stale"):
+        EnvironmentResult.from_dict(changed_probe, "result")
 
 
 def test_failed_preflight_stop_is_recovery_only_and_stable_across_runs(
@@ -77,7 +89,7 @@ def test_strict_preflight_emits_typed_result_and_optional_output(
     stdout = json.loads(capsys.readouterr().out)
     written = json.loads(output.read_text(encoding="utf-8"))
     assert stdout == written
-    assert stdout["schema"] == "vfx-harness.environment-result/v1"
+    assert stdout["schema"] == "vfx-harness.environment-result/v2"
     assert stdout["ok"] is False
     assert {check["check_id"] for check in stdout["checks"]} == {
         "blender_executable",

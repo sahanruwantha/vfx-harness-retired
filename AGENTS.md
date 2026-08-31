@@ -57,11 +57,14 @@ operation.
   layer; interruption → last checkpoint, journal, and final transcript events.
   `EvidenceNotDue` is successful continuation to its DAG-compiled provider, never a stop or
   replan request. A stop envelope proposes exactly one typed transaction; it does not prove that
-  transaction ran. Until immutable transaction receipts, postcondition consumers, and commit
-  reconciliation exist, do not automatically dispatch it or infer progress from a repeated
-  finding. None of the seven transaction kinds is dispatch-ready, and no current producer proves
+  transaction ran. `recover_environment` is the sole receipt-backed public adapter: after an
+  operator repairs the environment, invoke it with the exact source run and idempotency key; its
+  independent evaluator proves the commit. Identical typed stops from separate runs converge on
+  semantic evidence identity, and an explicit retry reconciles exactly one already-written direct
+  receipt orphan before probing again (HIR-0166). There is no automatic controller. The
+  other six transaction kinds remain non-dispatchable, and no current producer proves
   `local_implementation_miss`; never infer local retry authority from a generic builder failure
-  (HIR-0164).
+  or progress from a repeated finding (HIR-0164, HIR-0166).
 - Do not resume a truncated builder merely because a ledger row names a checkpoint and journal.
   Safe resume requires a phase-specific immutable receipt binding the selected bundle/view,
   exact unit and plan digests, candidate, checkpoint, durable journal/WAL, model session, phase,

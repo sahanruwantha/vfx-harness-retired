@@ -328,13 +328,8 @@ def environment_stop(layout, result: EnvironmentResult) -> StopEnvelope:
         record_schema=EnvironmentResult.SCHEMA,
         record_digest=result.digest,
     )
-    probe_spec_digest = canonical_digest(
-        {
-            "schema": "vfx-harness.preflight-probe-spec/v1",
-            "probe_id": result.probe_id,
-            "check_ids": [check.check_id for check in result.checks],
-        }
-    )
+    assert result.probe_spec is not None
+    probe_spec_digest = result.probe_spec.digest
     environment = EnvironmentResultAssertion(
         probe_id=result.probe_id,
         probe_spec_digest=probe_spec_digest,

@@ -57,7 +57,8 @@ unaccepted boundary must publish and read back one immutable
 separates a stable cause fingerprint from exact attempt evidence and carries one typed
 transaction target, closed preconditions, evidence references, dispatch mode, typed
 progress postcondition, and receipt schema. Strict preflight publishes
-`vfx-harness.environment-result/v1`; the whole-run driver allocates its run before that
+`vfx-harness.environment-result/v2` with its exact embedded probe specification; the whole-run
+driver allocates its run before that
 probe. Owning classifiers currently cover rejected global-plan structure, JIT
 materialization structure, builder/composition hypothesis falsification, strict
 preflight, and failed full-acceptance moments. Any other untyped terminal boundary fails closed
@@ -85,11 +86,11 @@ dependency authorization; they are not recovery dispatch.
 This does **not** complete the program. Deterministic equivalence/successor handling for
 already-satisfied discharges, explicit same-bundle lineage/retirement, failure reasons
 beyond no-signal, cross-layer fault routing, the fresh real-model two-layer CLI eval, and
-several owning stop classifiers remain open. There is no dispatch controller, controller
-journal, transaction implementation that consumes an idempotency key, or durable
-`prepared -> running -> terminal` transaction receipt. The pure action, idempotency-key,
-and postcondition-evaluation contracts are scaffolding, not permission to invoke a
-transaction automatically. Safe checkpointed session resume is likewise unimplemented;
+several owning stop classifiers remain open. There is no dispatch controller or controller
+journal. HIR-0166 implements the durable `prepared -> running -> terminal` receipt protocol and
+an explicitly invoked, idempotency-key-consuming `recover_environment` adapter; it is the only
+receipt-capable transaction and does not authorize automatic dispatch. Safe checkpointed
+session resume is likewise unimplemented;
 a legacy checkpoint-and-journal row does not establish the full authority, unit, session,
 phase, and write-ahead-log identity required by that transition. The motion chamber is
 not the next validation target; the remaining heterogeneous fixtures and real-model
@@ -700,7 +701,7 @@ for audit, but it is not a standalone progress-producing action and consumes no 
 attempt. If preview requires a policy choice rather than a deterministic check, the boundary
 emits `human_decision_required`.
 
-### Dispatchable transaction protocol — not implemented
+### Dispatchable transaction protocol — implemented for environment reverification only
 
 A public transaction is not legal for automated dispatch merely because it accepts a CLI
 flag. It must implement `vfx-harness.transaction-receipt/v1`, keyed by the controller's
@@ -717,11 +718,16 @@ again. If a crash occurred during paid/external work and the result cannot be pr
 resumed, recovery halts with an infrastructure/harness stop; absence of a controller
 `committed` row is never permission to repeat an uncertain transaction.
 
-No current public transaction implements this receipt protocol or consumes a controller
-idempotency key. In particular, the existing builder resume record does not seal the
-selected bundle/view, exact unit plan and candidate, model session and phase, and durable
-write-ahead-log identity needed by `resume_checkpointed_session`. That action remains
-non-dispatchable.
+HIR-0166 implements the generic immutable key-addressable receipt chain plus the explicit
+`vfx recover-environment` adapter. The adapter records `prepared` before its read-only probe,
+keeps a still-broken environment `running`, commits only a fully passing exact probe, reconciles
+a unique direct receipt orphan before any new observation, reconciles a commit-before-terminal
+crash, and is evaluated by a separate byte-verifying boundary. Semantically identical source runs
+converge on one key even when their run-local evidence locators differ. It does not edit the
+environment or run automatically. The other six actions remain non-dispatchable.
+In particular, the existing builder resume record does not seal the selected bundle/view, exact
+unit plan and candidate, model session and phase, and durable write-ahead-log identity needed by
+`resume_checkpointed_session`.
 
 ### Deterministic controller loop — not implemented
 
@@ -798,7 +804,7 @@ owner and is forbidden.
 `vfx run` must allocate its structured invocation/run layout before strict preflight so an
 environment stop has a legal run-local envelope destination. Standalone `vfx preflight
 --strict` may have no shot or run; it emits a separate typed
-`vfx-harness.environment-result/v1` to stdout and, when explicitly requested, an output path.
+`vfx-harness.environment-result/v2` to stdout and, when explicitly requested, an output path.
 It does not create or advance shot authority merely to obtain an envelope.
 
 If a run boundary cannot atomically publish or read back its envelope, the driver halts paid
@@ -1058,10 +1064,10 @@ has earned those actions, and other legacy builder/session/replay stops fall bac
 
 ### Milestone 6 — Bounded dispatch driver
 
-**Implementation note (2026-08-31):** controller implementation has not started. The
-pure typed action, idempotency-key, and postcondition-evaluation records do not execute
-actions. No controller command, persistent controller journal, key-consuming transaction
-adapter, or `vfx-harness.transaction-receipt/v1` producer exists.
+**Implementation note (2026-08-31):** controller implementation has not started. HIR-0166
+lands the generic durable receipt protocol and one explicit key-consuming
+`recover_environment` transaction with independent evaluation. There is no controller command
+or persistent controller journal, and no other action is dispatchable.
 
 **Work**
 

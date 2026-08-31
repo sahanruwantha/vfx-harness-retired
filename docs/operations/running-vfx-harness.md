@@ -29,7 +29,7 @@ Confirm Python dependencies and Blender before spending model budget:
 ```
 
 `vfx preflight --strict` prints one secret-safe
-`vfx-harness.environment-result/v1` JSON record. Use `--output <path>` to publish the
+`vfx-harness.environment-result/v2` JSON record. Use `--output <path>` to publish the
 same record atomically when another process must consume it. Standalone preflight does
 not create a shot run or advance shot authority. `vfx run` instead creates its structured
 run before invoking strict preflight, so a failed probe can publish a run-scoped
@@ -37,6 +37,23 @@ run before invoking strict preflight, so a failed probe can publish a run-scoped
 
 Stop if preflight fails. Authentication, Blender, or configuration failures can resemble an empty
 successful agent session and must not be diagnosed as a VFX-quality problem.
+
+When a run has already stopped on that typed infrastructure failure, repair the named
+credential, configuration, or Blender installation externally. Then read the exact key from
+`vfx inspect <shot> --run <run-id> --json` and reverify that source run:
+
+```bash
+.venv/bin/vfx recover-environment shots/<shot-id> --run-id <run-id> \
+  --idempotency-key <key-from-legal-action>
+```
+
+This command never edits the environment. It writes `prepared` before probing, records a
+durable `running` receipt while recovery is still absent, and commits only after the same
+versioned probe surface fully passes. It first selects one exact direct receipt left by a crash
+before pointer publication, without repeating that observation. A crash after the commit is
+reconciled by key without a second probe. An identical stop in another run converges on the same
+semantic transaction despite its different evidence locator. A terminal recovery receipt does
+not exempt the next production run from strict preflight.
 
 ## 2. Create and gate the global plan
 
@@ -171,11 +188,13 @@ envelope publication or read-back fails, status records that the envelope is una
 no action is authorized.
 
 This is a stop boundary, not an automatic recovery loop. There is no public
-`--until-accepted` controller, controller journal, or key-consuming transaction-receipt runtime.
-The envelope's one typed action names the only legal route, but there is not yet a generic
-adapter that consumes that action. An operator may use an existing reviewed command only when
-its independent authority and preconditions apply; otherwise the stop remains terminal and is
-routed to its named human or engineering owner.
+`--until-accepted` controller or controller journal. The envelope's one typed action names the
+only legal route. `recover_environment` is the sole key-consuming receipt-backed adapter and
+requires explicit operator invocation after external repair; retry, amendment, replan,
+engineering route, resume, and human-decision actions remain non-dispatchable. An operator may
+use another existing reviewed command only when its independent authority and preconditions
+apply; otherwise the stop remains terminal and is routed to its named human or engineering
+owner.
 
 Published global plans contain executable units only for Layer 1. A later layer is selected as a
 typed `jit_deferred` boundary with upstream outcome dependencies, reserved semantic roles, and

@@ -109,10 +109,11 @@ controller yet.
 vfx preflight --strict
 ```
 
-Strict preflight prints a secret-safe `vfx-harness.environment-result/v1` JSON record;
+Strict preflight prints a secret-safe `vfx-harness.environment-result/v2` JSON record;
 `--output <path>` writes the same typed result atomically. During `vfx run`, the run
 layout exists before this probe so a failure can publish a run-scoped infrastructure
-stop without creating or advancing shot authority.
+stop without creating or advancing shot authority. Version 2 embeds the exact probe
+specification and revision instead of re-deriving historical probe identity from current code.
 
 **Can happen:** missing auth, wrong env var name, Blender missing, config error. These can
 look like a successful empty agent session (`cost=$0`, one turn, nothing built). Fix the
@@ -255,6 +256,7 @@ plan → materialize/rematerialize per layer → build units → accept → rend
 | **layer design** | `vfx plan <shot> --layer N` | Materialize, then plan the first ready unit. `--unit ID` picks a ready unit. |
 | **build** | `vfx build <shot> --layer N` | Build that layer's ready units as additive scripts. |
 | **run** | `vfx run <shot>` | Whole driver. Stops on first unaccepted boundary. `--dry-run` previews. |
+| **recover environment** | `vfx recover-environment <shot> --run-id ID --idempotency-key KEY` | Reverify an exact typed infrastructure stop after external repair; never edits the environment. |
 | **accept** | `vfx accept <shot>` | Empty-scene full chain; publish an exact typed acceptance outcome. |
 | **render** | `vfx render <shot>` | Encode a deliverable only from the current passing acceptance outcome. |
 | **inspect** | `vfx inspect <shot> --list-runs` | Read generated runs in the supported order. |
@@ -277,8 +279,9 @@ shot run in this order:
 For a failed or interrupted run, read and validate `reports/stop-envelope.json` through
 that status pointer. `detail`, `terminal_cause`, and the process exit code remain useful
 operator summaries, but none authorizes retry, replan, recovery, or escalation. A legal
-action in the envelope names the only allowed route; no controller or transaction-receipt
-runtime executes it automatically yet.
+action in the envelope names the only allowed route. There is no automatic controller.
+`recover_environment` is the sole receipt-backed public adapter: an operator may invoke it
+after repairing the environment, and every other action remains non-dispatchable.
 
 Open `reports/layers/`, `plan_gate.json`, evidence, transcripts, or checkpoints only when
 the summary names a reason. Do not diagnose by listing the shot or grepping every log.
