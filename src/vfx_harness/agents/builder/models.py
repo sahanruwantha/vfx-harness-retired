@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from typing import Any, Literal
+
 from vfx_harness.agents.builder.pkg import builder_package
+from vfx_harness.domain.unit_outcomes import HypothesisFalsification
 from vfx_harness.infrastructure.config import (
     DEFAULT_CRITIC_MODEL,
     DEFAULT_EXECUTION_MODEL,
@@ -121,6 +125,41 @@ def _budget_terminal_cause(subtype: str) -> str:
 
 class BuildUnpassed(RuntimeError):
     """A direct build completed without accepting every unit in its requested layer."""
+
+
+class BuildAuthorityDefect(RuntimeError):
+    """Executable evidence proved that the current plan authority must change.
+
+    The layer runtime carries the already-published strict finding to the public
+    CLI boundary.  It deliberately carries no replan choice: the boundary may
+    authorize publication of amended authority, but a revision-checked replan is
+    selectable only after that replacement authority exists.
+    """
+
+    def __init__(
+        self,
+        finding: dict[str, Any],
+        *,
+        stage: Literal["builder", "composition"],
+        exit_code: int,
+        legacy_detail: str,
+    ) -> None:
+        payload = deepcopy(finding)
+        self.finding = HypothesisFalsification.parse(
+            payload,
+            "builder terminal hypothesis falsification",
+        )
+        self.finding_payload = payload
+        if stage not in {"builder", "composition"}:
+            raise ValueError("builder authority defect stage must be builder or composition")
+        self.stage = stage
+        self.exit_code = int(exit_code)
+        if self.exit_code not in {7, 9}:
+            raise ValueError("builder authority defect exit code must preserve legacy code 7 or 9")
+        self.legacy_detail = str(legacy_detail).strip()
+        if not self.legacy_detail:
+            raise ValueError("builder authority defect requires legacy terminal detail")
+        super().__init__(self.legacy_detail)
 
 
 class LayerVerdictFailed(RuntimeError):

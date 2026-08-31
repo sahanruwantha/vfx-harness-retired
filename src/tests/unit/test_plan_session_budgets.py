@@ -162,6 +162,7 @@ def test_spike_refuses_adopted_decision_and_falsification_hypotheses(tmp_path) -
     )
     (state / "plan-resolutions.jsonl").write_text(
         json.dumps({
+            "schema": "vfx-harness.plan-resolutions/v1",
             "id": "A2",
             "bundle_hash": selected,
             "status": "satisfied",
@@ -213,6 +214,7 @@ def test_spike_refuses_check_prefixed_falsification_ids(tmp_path) -> None:
     )
     (state / "plan-resolutions.jsonl").write_text(
         json.dumps({
+            "schema": "vfx-harness.plan-resolutions/v1",
             "id": "look-debt",
             "bundle_hash": selected,
             "status": "satisfied",
@@ -342,6 +344,7 @@ def test_materialization_registers_incremental_unit_staging_tools(tmp_path: Path
         enabled_tools=frozenset({
             "stage_materialization_unit",
             "unstage_materialization_unit",
+            "mint_refobs",
             "materialization_status",
             "finalize_materialization",
         }),
@@ -351,6 +354,7 @@ def test_materialization_registers_incremental_unit_staging_tools(tmp_path: Path
     assert {name.split("__")[-1] for name in names} == {
         "stage_materialization_unit",
         "unstage_materialization_unit",
+        "mint_refobs",
         "materialization_status",
         "finalize_materialization",
     }
@@ -365,6 +369,7 @@ def test_materializer_denies_generic_write_and_requires_valid_staged_candidate()
     assert 'disallowed_tools=[*MATERIALIZATION_DENIED_TOOLS, "Write"]' in source
     assert "stage_materialization_unit" in source
     assert "unstage_materialization_unit" in source
+    assert "mint_refobs" in source
     assert "materialization_finalization_attested" in source
     assert "accept_max_turns_if_succeeded=True" in source
     assert '"gate_preview"' not in source

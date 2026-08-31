@@ -262,7 +262,8 @@ def test_workunit_shape_changes_demand_a_digest_schema_bump() -> None:
     identity stays comparable; non-empty interface rows participate (HIR-0084).
     If this test fails because a new always-present field landed in the payload,
     bump DIGEST_SCHEMA in orchestration/unit_state.py and update BOTH constants
-    here together."""
+    here together. Default procedural construction is omitted like empty
+    publishes/consumes (ADR-0009); a generate/retrieve/simplify route participates."""
     from vfx_harness.domain.work_units import WorkUnit
     from vfx_harness.orchestration.unit_state import DIGEST_SCHEMA, unit_digest
 

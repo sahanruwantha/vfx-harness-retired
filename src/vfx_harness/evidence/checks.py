@@ -511,6 +511,17 @@ def load_image_contract_payment_rows(shot_folder: str | Path) -> list[dict]:
     return rows
 
 
+def _matches_image_moment(row: dict, *, frame: int, ref: str) -> bool:
+    """Match one image contract to its exact authored moment selector."""
+
+    if row.get("frame") is not None:
+        try:
+            return int(row["frame"]) == int(frame)
+        except (TypeError, ValueError):
+            return False
+    return not row.get("ref") or str(row.get("ref")) == str(ref)
+
+
 def layer_evidence(
     shot_folder: str | Path, layer_id: str, *, frame: int, ref: str, render: str | Path, stage: str = "pre_grade"
 ) -> list[dict]:
@@ -565,13 +576,7 @@ def layer_evidence(
 
     out = []
     for row in rows:
-        if row.get("frame") is not None:
-            try:
-                if int(row["frame"]) != int(frame):
-                    continue
-            except (TypeError, ValueError):
-                continue
-        elif row.get("ref") and str(row.get("ref")) != str(ref):
+        if not _matches_image_moment(row, frame=frame, ref=ref):
             continue
         check = Check.from_dict(row)
         if check.stage not in ("any", stage):
@@ -609,13 +614,14 @@ def layer_evidence(
 
 
 def acceptance_evidence(
-    shot_folder: str | Path, *, frame: int, render: str | Path
+    shot_folder: str | Path, *, frame: int, ref: str, render: str | Path
 ) -> list[dict]:
     """Evaluate finished-chain image contracts regardless of their build lifecycle.
 
     Layer lifecycle controls when a builder may use a check. Acceptance is a distinct
-    finished-chain boundary, so every post-grade/any contract for the rendered frame is
-    eligible and retains the same planner-authored authority rules.
+    finished-chain boundary, so every post-grade/any contract matching the selected
+    milestone by explicit frame, or otherwise by exact reference, is eligible and
+    retains the same planner-authored authority rules.
     """
     root = Path(shot_folder)
     image = Path(render)
@@ -626,7 +632,7 @@ def acceptance_evidence(
     rows = load_document(selected_artifact_path(root, "checks.json"), "checks")
     out = []
     for row in rows:
-        if row.get("frame") is not None and int(row["frame"]) != int(frame):
+        if not _matches_image_moment(row, frame=frame, ref=ref):
             continue
         check = Check.from_dict(row)
         if check.stage not in {"post_grade", "any"}:

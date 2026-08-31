@@ -61,6 +61,12 @@ from pathlib import Path
 
 from vfx_harness.domain.work_units import read_document
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.jit_materialization.view_pointer import (
+    JitViewPointerError,
+    canonical_view_hash,
+    parse_jit_view_pointer,
+    require_materialized_layers_match,
+)
 from vfx_harness.orchestration.plan_authority import CONSUMER_VIEW_SCHEMA, resolve_current
 
 # A path-looking token in the plan prose. Two shapes, because plans cite both ways and a
@@ -120,27 +126,31 @@ def _materialized_view(folder: Path) -> tuple[set[str], set[str]]:
     if not pointer_path.is_file():
         return set(), set()
     try:
-        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-        if pointer.get("schema") != "vfx-harness.jit-layer-view/v1":
-            return set(), set()
+        selected = parse_jit_view_pointer(
+            json.loads(pointer_path.read_text(encoding="utf-8"))
+        )
         marker_path = folder / ".plan-consumer-view.json"
         if marker_path.is_file():
             marker = json.loads(marker_path.read_text(encoding="utf-8"))
-            if pointer.get("bundle_hash") != marker.get("content_hash"):
+            if selected.bundle_hash != marker.get("content_hash"):
                 return set(), set()
-        pinned = set()
-        for name, expected in (pointer.get("hashes") or {}).items():
+        documents: dict[str, object] = {}
+        for name, expected in selected.hashes.items():
             staged = folder / name
-            if (
-                isinstance(expected, str)
-                and staged.is_file()
-                and hashlib.sha256(staged.read_bytes()).hexdigest() == expected
-            ):
-                pinned.add(str(name))
-        if "layers.json" not in pinned:
+            if not staged.is_file() or hashlib.sha256(staged.read_bytes()).hexdigest() != expected:
+                return set(), set()
+            documents[name] = json.loads(staged.read_text(encoding="utf-8"))
+        require_materialized_layers_match(selected, documents["layers.json"])
+        if canonical_view_hash(documents) != selected.view_hash:
             return set(), set()
-        return {str(layer_id) for layer_id in pointer.get("materialized_layers") or []}, pinned
-    except (OSError, ValueError, json.JSONDecodeError):
+        return set(selected.materialized_layers), set(selected.hashes)
+    except (
+        JitViewPointerError,
+        OSError,
+        UnicodeDecodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
         return set(), set()
 
 

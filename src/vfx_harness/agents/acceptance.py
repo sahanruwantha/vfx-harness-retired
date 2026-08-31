@@ -24,18 +24,36 @@ from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration.judgment_debt_state import require_judgment_debts_satisfied
 from vfx_harness.orchestration.ledger import Ledger, load_layers, load_milestones
 from vfx_harness.orchestration.plan_due import require_due_clear, resolve_acceptance_completion
+from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
 
 from ..blender.session import BlenderSession
-from .builder import _RESET, PASS_MIN, _judge, _preamble, _stash_render, _verdict, ensure_axes
+from . import acceptance_stop, acceptance_stop_evidence
+from .builder import (
+    _RESET,
+    PASS_MIN,
+    _judge,
+    _preamble,
+    _run_artifact_script,
+    _stash_render_with_receipt,
+    _verdict,
+    ensure_axes,
+)
 
 
 class IncompleteChain(RuntimeError):
     """Acceptance was asked to judge a shot that is not finished."""
 
 
-def _chain(session: BlenderSession, shot: Shot, *, force: bool = False) -> list[str]:
+def _chain(
+    session: BlenderSession,
+    shot: Shot,
+    *,
+    force: bool = False,
+    expected_bundle_digest: str | None = None,
+) -> list[str]:
     """Run every layer script from an empty scene — the deliverable, start to finish.
 
     Refuses a PARTIAL chain. This used to log a missing script and carry on, so
@@ -43,7 +61,10 @@ def _chain(session: BlenderSession, shot: Shot, *, force: bool = False) -> list[
     reconcile() would mark real layer verdicts `superseded_by_acceptance` on the
     strength of that partial render, corrupting good records with a bad judgement.
     """
-    layers = sorted(load_layers(shot).values(), key=lambda g: g.script)
+    layers = selected_layer_chain(
+        shot,
+        expected_bundle_digest=expected_bundle_digest,
+    )
     ledger = Ledger(shot)
     missing = [f"layer {g.id} ({g.script}) has no script"
                for g in layers if not (shot.folder / g.script).is_file()]
@@ -67,7 +88,7 @@ def _chain(session: BlenderSession, shot: Shot, *, force: bool = False) -> list[
         if not p.is_file():
             continue                      # only reachable under --force
         log(f"chain: {g.script}", 1)
-        session.run(p.read_text(encoding="utf-8"))
+        _run_artifact_script(session, p)
         ran.append(g.script)
     return ran
 
@@ -75,26 +96,39 @@ def _chain(session: BlenderSession, shot: Shot, *, force: bool = False) -> list[
 async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
                  verbose: bool = True, force: bool = False,
                  repair: bool = False) -> dict:
+    if only is None:
+        try:
+            require_judgment_debts_satisfied(shot.folder)
+        except ValueError as exc:
+            raise IncompleteChain(str(exc)) from exc
     moments = load_milestones(shot)
     if only:
         moments = {k: v for k, v in moments.items() if k == only} or moments
+    authority_before = acceptance_stop.capture_acceptance_authority(shot, moments)
     axes = await ensure_axes(shot, verbose)
     tpath = transcript.bind(shot.folder, "accept")
     if tpath:
         log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
-    ran = _chain(session, shot, force=force)
+    ran = _chain(
+        session,
+        shot,
+        force=force,
+        expected_bundle_digest=authority_before.bundle_digest,
+    )
     log(f"chain rebuilt from empty: {len(ran)} scripts — judging {len(moments)} moment(s)")
     transcript.event("accept_start", moments=list(moments), chained=ran,
                      axes=[k for k, _ in axes])
 
     ledger = Ledger(shot)
     results: dict[str, dict] = {}
-    passed_contract_evidence: set[tuple[str, str]] = set()
+    contract_verdicts: dict[tuple[str, str], list[bool]] = {}
     for mid, m in moments.items():
         t0 = time.monotonic()
         log(f"── {mid} @ f{m.frame} vs {m.ref} ──")
         # The whole frame IS the subject here, so NO scope block: the full rubric applies.
-        render_rel = _stash_render(session, shot, m, "accept")
+        render_rel, render_capture = _stash_render_with_receipt(
+            session, shot, m, "accept"
+        )
         # DETERMINISTIC first. The critic never once mentioned that barrel_roll M1 was
         # 54% over-exposed against its own measured target; a number catches that for
         # free and grounds the critic's feedback in something checkable.
@@ -123,73 +157,159 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             verdict = await _judge(shot, m, render_rel, axes, session, verbose,
                                    ("MEASURED GAPS vs the reference (objective, already "
                                     "computed — treat as fact):\n" + extra) if extra else None)
-            verdict["decided_by"] = "critic"
+            # `_judge` deterministically rejects an empty/black plate before any model
+            # call. Preserve that provenance; labelling it "critic" would claim a paid
+            # qualitative judgment that never happened.
+            if verdict.get("decided_by") != "no_optical_signal":
+                verdict["decided_by"] = "critic"
         verdict["round_s"] = round(time.monotonic() - t0, 1)
         if m.fingerprint:
             verdict["fingerprint"] = m.fingerprint
+        metric_readings = [
+            {
+                "metric_id": str(delta.key),
+                "value": round(float(delta.got), 6),
+                "reference": round(float(delta.ref), 6),
+                "relative_delta": round(float(delta.rel), 6),
+                "blocking": bool(delta.blocking),
+            }
+            for delta in blocking
+        ]
         blocking = [str(d) for d in blocking]
-        ok = verdict["pass"] and not blocking
-        results[mid] = {"frame": m.frame, "ref": m.ref, "render": render_rel,
+        contract_evidence = acceptance_evidence(
+            shot.folder,
+            frame=m.frame,
+            ref=m.ref,
+            render=render_rel,
+        )
+        failed_authoritative_contracts = [
+            row
+            for row in contract_evidence
+            if row.get("authoritative") is True and row.get("pass") is not True
+        ]
+        ok = verdict["pass"] and not blocking and not failed_authoritative_contracts
+        scores = {
+            str(axis): float(score)
+            for axis, score in verdict.get("scores", {}).items()
+            if isinstance(score, (int, float)) and not isinstance(score, bool)
+        }
+        results[mid] = {"schema": acceptance_stop_evidence.MOMENT_SCHEMA,
+                        "frame": m.frame, "ref": m.ref, "render": render_rel,
+                        "render_capture": render_capture,
                         "mean": verdict["mean"], "pass": ok,
                         "critic_pass": verdict["pass"],
                         "decided_by": verdict.get("decided_by", "critic"),
                         "metric_failures": blocking,
-                        "scores": verdict.get("scores", {}),
-                        "issues": verdict.get("issues", [])[:4]}
-
-        contract_evidence = acceptance_evidence(
-            shot.folder,
-            frame=m.frame,
-            render=render_rel,
-        )
-        results[mid]["contract_evidence"] = contract_evidence
-        passed_contract_evidence.update(
-            (str(row["source"]), str(row["id"]))
-            for row in contract_evidence
-            if row.get("pass") is True and row.get("authoritative") is True
-        )
+                        "metric_readings": metric_readings,
+                        "scores": scores,
+                        "issues": verdict.get("issues", [])[:4],
+                        "contract_evidence": contract_evidence}
+        for row in contract_evidence:
+            if row.get("authoritative") is not True:
+                continue
+            binding = (str(row["source"]), str(row["id"]))
+            contract_verdicts.setdefault(binding, []).append(row.get("pass") is True)
         verdict["pass"] = ok
         why = "" if not blocking else f"  (critic {verdict['mean']}, but {len(blocking)} metric(s) out of tolerance)"
         log(f"{mid}: mean {verdict['mean']} {'PASS ✅' if ok else 'FAIL ✗'}{why}")
         transcript.event("accept_moment", moment=mid, **results[mid],
                          seconds=verdict.get("round_s"))
 
-    if not only:
-
+    # ``--force`` is a debugging preview.  Even when its incomplete replay happens
+    # to look acceptable, it cannot mint a deliverable outcome or discharge plan
+    # debt.  Promotion is reserved for the ordinary complete-chain path.
+    publishable = not force
+    outcome = (
+        acceptance_stop.compile_acceptance_outcome(shot, authority_before, results)
+        if not only and publishable
+        else None
+    )
+    authority_after = acceptance_stop.capture_acceptance_authority(shot, moments)
+    if authority_after != authority_before:
+        raise ValueError(
+            "selected acceptance authority, judgment debt, or accepted build changed "
+            "during judgment; the verdict is not attributable to one before-state"
+        )
+    failed = {mid: result for mid, result in results.items() if not result["pass"]}
+    if not only and publishable:
+        # A frame-unspecified contract is evaluated at every acceptance moment.  One
+        # passing reading cannot permanently satisfy the obligation when another
+        # authoritative reading of the same binding fails in this attempt.
+        passed_contract_evidence = {
+            binding
+            for binding, verdicts in contract_verdicts.items()
+            if verdicts and all(verdicts)
+        }
         resolve_acceptance_completion(
             shot.folder,
             passed_evidence=passed_contract_evidence,
+            expected_bundle_digest=authority_before.bundle_digest,
         )
-        require_due_clear(shot.folder, acceptance=True)
+    if not failed and not only and publishable:
+        require_due_clear(
+            shot.folder,
+            acceptance=True,
+            expected_bundle_digest=authority_before.bundle_digest,
+        )
 
-    ledger.data["acceptance"] = {
+    acceptance_record = {
         "scripts": ran,
         "moments": results,
         "passed": sum(1 for r in results.values() if r["pass"]),
         "total": len(results),
     }
-    ledger.save()
-    if not only:                      # a partial run cannot judge the whole chain
-        ledger.data["acceptance"]["superseded"] = reconcile(shot, results, ledger)
-        plan = repair_plan(shot, results)
-        ledger.data["acceptance"]["repair_plan"] = plan
+    if outcome is not None:
+        acceptance_record["outcome"] = outcome.as_dict()
+    if force:
+        acceptance_record["authoritative"] = False
+        acceptance_record["reason"] = "forced_debug_preview"
+        if repair:
+            log("! --repair is ignored for a forced debugging preview")
+    else:
+        ledger.data["acceptance"] = acceptance_record
         ledger.save()
-        if plan:
-            marked = apply_repair(shot, plan, ledger) if repair else []
-            if not repair:
-                log(f"! {len(plan)} failing moment group(s) route to layer(s) "
-                    f"{', '.join(c['layer'] for c in plan)} — re-run with --repair to "
-                    f"invalidate and rebuild them")
-            ledger.data["acceptance"]["repaired"] = marked
+        if not only:                  # a partial run cannot judge the whole chain
+            acceptance_record["superseded"] = reconcile(shot, results, ledger)
+            plan = repair_plan(shot, results)
+            acceptance_record["repair_plan"] = plan
+            ledger.data["acceptance"] = acceptance_record
             ledger.save()
-    log(f"acceptance: {ledger.data['acceptance']['passed']}/{len(results)} moments passed "
-        f"→ {ledger.path}")
+            if plan:
+                log(
+                    f"! {len(plan)} failing moment group(s) diagnose layer(s) "
+                    f"{', '.join(c['layer'] for c in plan)}, but acceptance has no exact "
+                    "revision-checked unit transaction; automatic repair is not authorized"
+                )
+            if repair:
+                log("! --repair is fail-closed: the diagnostic layer route does not authorize "
+                    "unit-state mutation")
+            acceptance_record["repaired"] = []
+            ledger.data["acceptance"] = acceptance_record
+            ledger.save()
+    destination = "run-scoped debug preview" if force else str(ledger.path)
+    log(f"acceptance: {acceptance_record['passed']}/{len(results)} moments passed "
+        f"→ {destination}")
     for mid, r in results.items():
         log(f"  {mid} f{r['frame']}: {r['mean']} {'✅' if r['pass'] else '✗'}", 1)
-    transcript.event("accept_end", **{k: v for k, v in ledger.data["acceptance"].items()
+    transcript.event("accept_end", **{k: v for k, v in acceptance_record.items()
                                       if k != "moments"})
     transcript.unbind()
-    return ledger.data["acceptance"]
+    if failed:
+        layout = run_artifacts.active(shot.folder)
+        if layout is None:
+            raise ValueError(
+                "failed acceptance requires an active structured run before a typed stop "
+                "can be published"
+            )
+        envelope = acceptance_stop.compile_acceptance_stop(
+            shot,
+            layout,
+            authority_before,
+            results,
+            axes,
+        )
+        raise run_artifacts.TypedStop(9, envelope)
+    return acceptance_record
 
 
 def reconcile(shot: Shot, results: dict, ledger: Ledger) -> list[str]:
@@ -225,12 +345,6 @@ def reconcile(shot: Shot, results: dict, ledger: Ledger) -> list[str]:
 
 def _now_str() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
-
-
-# A repair loop that cannot stop is worse than none — it burns the budget re-running the
-# same layer against the same failure. Two attempts per layer, and a round that improves
-# nothing ends it.
-MAX_REPAIR_ROUNDS = 2
 
 
 def repair_plan(shot: Shot, results: dict) -> list[dict]:
@@ -286,43 +400,15 @@ def _order(layers: dict, layer_id: str) -> int:
     return keys.index(layer_id) if layer_id in keys else 10_000
 
 
-def apply_repair(shot: Shot, plan: list[dict], ledger: Ledger) -> list[str]:
-    """Mark the repair root and everything downstream as needing a rebuild."""
-    if not plan:
-        return []
-    layers = load_layers(shot)
-    root = plan[0]
-    touched = [root["layer"], *list(root["invalidates"])]
-    marked = []
-    for lid in touched:
-        g = layers.get(lid)
-        if g is None:
-            continue
-        m = g.as_milestone()
-        slot = ledger._slot(m)
-        n = int(slot.get("repair_rounds", 0))
-        if lid == root["layer"] and n >= MAX_REPAIR_ROUNDS:
-            log(f"! layer {lid} has already been repaired {n}x — not looping again; "
-                f"this needs a human or a plan change")
-            return marked
-        if slot.get("status") == "passed":
-            slot["status"] = "needs_repair"
-        slot["repair_rounds"] = n + (1 if lid == root["layer"] else 0)
-        slot["repair_reason"] = {
-            "axes": root["axes"], "moments": root["moments"],
-            "root": root["layer"], "at": _now_str()}
-        marked.append(lid)
-    ledger.save()
-    log(f"repair routed → rebuild layer {root['layer']} "
-        f"(owns {', '.join(root['axes'])}, failing {', '.join(root['moments'])}); "
-        f"{len(marked) - 1} downstream layer(s) invalidated with it")
-    return marked
-
-
 async def _run(folder: str, only: str | None, blender: str, force: bool = False,
                repair: bool = False) -> None:
     shot = load_shot(folder)
 
+    if only is None:
+        try:
+            require_judgment_debts_satisfied(shot.folder)
+        except ValueError as exc:
+            raise IncompleteChain(str(exc)) from exc
     require_due_clear(
         shot.folder,
         acceptance=True,
@@ -348,8 +434,8 @@ def main() -> None:
                     help="judge even an incomplete chain (debugging only — the verdict "
                          "will not be about the deliverable)")
     ap.add_argument("--repair", action="store_true",
-                    help="act on a failure: invalidate the layer that owns the failing "
-                         "axis and everything downstream of it, so they rebuild")
+                    help="request failure routing; currently fail-closed because acceptance "
+                         "does not identify an exact revision-checked unit transaction")
     args = ap.parse_args()
     shot = load_shot(args.folder)
     with run_artifacts.invocation(shot.folder, "accept", shot_id=shot.id,

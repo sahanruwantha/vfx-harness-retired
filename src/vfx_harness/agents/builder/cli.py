@@ -6,7 +6,9 @@ import argparse
 
 import anyio
 
+import vfx_harness.agents.builder.stops as stop_runtime
 from vfx_harness.agents.builder.models import (
+    BuildAuthorityDefect,
     BuildTruncated,
     BuildUnpassed,
     LayerVerdictFailed,
@@ -121,6 +123,32 @@ async def _run(
         clear_layer_context(shot)
 
 
+def _authority_defect_exit(shot, failure: BuildAuthorityDefect) -> run_artifacts.TypedStop:
+    """Seal one exact finding while preserving the builder's established exit UX."""
+    layout = run_artifacts.active(shot.folder)
+    if layout is None:
+        raise RuntimeError(
+            "builder authority defect reached a public boundary without a run layout"
+        )
+    envelope = stop_runtime.compile_hypothesis_falsification_stop(
+        shot,
+        layout,
+        failure.finding_payload,
+        stage=failure.stage,
+    )
+    if failure.exit_code == 7:
+        log(f"BUILD UNPASSED — {failure.legacy_detail}")
+        detail = f"INCOMPLETE CHAIN — {failure.legacy_detail}"
+    else:
+        log(f"LAYER VERDICT — {failure.legacy_detail}")
+        detail = failure.legacy_detail
+    stopped = run_artifacts.TypedStop(failure.exit_code, envelope)
+    # Keep the established operator-facing exit detail while the immutable
+    # envelope, not prose or exit code, becomes dispatch authority.
+    stopped.detail = detail
+    return stopped
+
+
 def main() -> None:
     load_environment()
     ap = argparse.ArgumentParser(description="Build one plan layer with the critic loop.")
@@ -151,6 +179,8 @@ def main() -> None:
         # `from None` on all three: the handler has already logged a message written for a
         # human, and the exit code carries the meaning for the driver. Chaining the original
         # traceback on top would bury both under a stack nobody needs.
+        except BuildAuthorityDefect as e:
+            raise _authority_defect_exit(shot, e) from None
         except BuildTruncated as e:
             log(f"BUILD TRUNCATED — {e}")
             raise run_artifacts.RequestedExit(

@@ -1,0 +1,251 @@
+"""The whole-shot driver consumes typed child stops, never exit-code meaning."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from vfx_harness.application import run_shot
+from vfx_harness.application.inspect_run import collect
+from vfx_harness.domain.stop_envelope_primitives import canonical_digest
+from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
+from vfx_harness.domain.stop_transaction_state import (
+    EvidenceRecordAssertion,
+    StopEvidenceRef,
+)
+from vfx_harness.domain.stop_transactions import (
+    EscalateQuestionTarget,
+    HumanDecisionCommitted,
+    StopAction,
+)
+from vfx_harness.observability import run_artifacts
+
+
+def _digest(label: str) -> str:
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+def _child_stop(layout: run_artifacts.RunLayout) -> StopEnvelope:
+    run_id = layout.run_id
+    facts = _digest("acceptance facts")
+    question_digest = _digest("acceptance question")
+    allowed_answer_ids = ("abstain", "review_unit:L1:form")
+    evidence_document = {
+        "schema": "vfx-harness.acceptance-question/v1",
+        "question_digest": question_digest,
+        "allowed_answer_ids": list(allowed_answer_ids),
+    }
+    evidence_path = layout.write_report("acceptance-question", evidence_document)
+    evidence = StopEvidenceRef(
+        kind="stop_evidence",
+        locator=evidence_path.relative_to(layout.shot).as_posix(),
+        sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        record_schema="vfx-harness.acceptance-question/v1",
+        record_digest=canonical_digest(evidence_document),
+    )
+    question = EvidenceRecordAssertion(
+        record_kind="question",
+        record_id="acceptance-question-M1",
+        evidence=evidence,
+    )
+    target = EscalateQuestionTarget(
+        question_record=question,
+        question_digest=question_digest,
+        decision_authority_id="acceptance-review",
+        decision_schema="vfx-harness.acceptance-decision/v1",
+        allowed_answer_ids=allowed_answer_ids,
+        evidence=(evidence,),
+    )
+    action = StopAction(
+        target=target,
+        postcondition=HumanDecisionCommitted(
+            question_digest=question_digest,
+            decision_authority_id=target.decision_authority_id,
+            decision_schema=target.decision_schema,
+            allowed_answer_ids=allowed_answer_ids,
+        ),
+    )
+    return StopEnvelope(
+        stage="acceptance",
+        stop_class="human_decision_required",
+        identity=StopIdentity(
+            run_id=run_id,
+            bundle_digest=_digest("bundle"),
+            view_digest=_digest("view"),
+            layer_id=None,
+            unit_id=None,
+            unit_plan_digest=None,
+            unit_digest=None,
+            candidate_digest=_digest("candidate"),
+            checkpoint_digest=None,
+            settings_digest=_digest("settings"),
+            debt_state_digest=_digest("debt"),
+        ),
+        cause=StopCause(
+            invariant_id="acceptance_moments_failed",
+            finding_ids=("moment-M1",),
+            owner_scope_ids=("acceptance",),
+            normalized_facts_digest=facts,
+        ),
+        attempt_evidence_digest=_digest("attempt"),
+        classification_evidence_digest=_digest("classification"),
+        artifact_state_digest=_digest("artifact"),
+        authoritative_before_digest=_digest("before"),
+        actions=(action,),
+        evidence_refs=(evidence,),
+        budget_key="acceptance-decision",
+        expected="Every required acceptance moment passes.",
+        found="Acceptance moment M1 failed.",
+        next_action="Resolve its exact repair authority.",
+    )
+
+
+def test_driver_preserves_child_selected_stop_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(tmp_path, "driver-child-stop")
+    envelope = _child_stop(layout)
+    layout.write_stop_envelope(envelope)
+    layout.set_status(
+        "failed",
+        exit_code=9,
+        metadata={
+            "stop_envelope": "reports/stop-envelope.json",
+            "stop_envelope_digest": envelope.digest,
+        },
+    )
+    monkeypatch.setattr(run_shot, "_publish_summary", lambda _layout: None)
+
+    with pytest.raises(SystemExit) as raised:
+        run_shot._stop_after_stage(layout, 9, "acceptance")
+
+    assert raised.value.code == 9
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["stop_class"] == "human_decision_required"
+    assert status["stop_envelope_digest"] == envelope.digest
+    assert layout.read_terminal_stop() == envelope
+    digest = collect(tmp_path, run_id=layout.run_id)
+    assert digest["run"]["stop"]["stop_class"] == "human_decision_required"
+    assert digest["run"]["stop"]["legal_transactions"] == ["escalate_question"]
+    assert digest["run"]["stop"]["legal_actions"][0]["dispatch_mode"] == "human_handoff"
+    assert digest["run"]["stop"]["evidence_refs"][0]["record_schema"] == ("vfx-harness.acceptance-question/v1")
+
+
+def test_inspect_run_marks_a_stop_with_tampered_evidence_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(tmp_path, "inspect-tampered-stop")
+    envelope = _child_stop(layout)
+    layout.write_stop_envelope(envelope)
+    layout.set_status(
+        "failed",
+        exit_code=9,
+        metadata={
+            "stop_envelope": "reports/stop-envelope.json",
+            "stop_envelope_digest": envelope.digest,
+        },
+    )
+    evidence_path = layout.shot / envelope.evidence_refs[0].locator
+    evidence_path.write_text('{"schema":"vfx-harness.acceptance-question/v1"}\n')
+
+    digest = collect(tmp_path, run_id=layout.run_id)
+
+    assert digest["run"]["stop"]["valid"] is False
+    assert "SHA-256 mismatch" in digest["run"]["stop"]["error"]
+
+
+def test_driver_does_not_infer_recovery_from_bare_child_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(tmp_path, "driver-missing-stop")
+    monkeypatch.setattr(run_shot, "_publish_summary", lambda _layout: None)
+
+    with pytest.raises(SystemExit) as raised:
+        run_shot._stop_after_stage(layout, 3, "layer-1-plan-gate")
+
+    assert raised.value.code == 3
+    envelope = layout.read_terminal_stop()
+    assert envelope.stop_class == "harness_defect"
+    assert envelope.cause.invariant_id == "terminal_boundary_requires_typed_stop"
+    assert [action.transaction_id for action in envelope.actions] == ["route_engineering"]
+
+
+def test_driver_interruption_publishes_a_fail_closed_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(tmp_path, "driver-interrupted")
+    monkeypatch.setattr(run_shot, "_publish_summary", lambda _layout: None)
+
+    run_shot._mark_interrupted(layout)
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["state"] == "interrupted"
+    assert status["exit_code"] == 130
+    envelope = layout.read_terminal_stop()
+    assert envelope.stop_class == "harness_defect"
+    assert envelope.cause.invariant_id == "terminal_boundary_requires_typed_stop"
+    assert envelope.actions[0].transaction_id == "route_engineering"
+
+
+def test_run_allocates_layout_then_stops_on_strict_preflight_before_any_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    shot = SimpleNamespace(folder=tmp_path, id="strict-preflight-shot")
+    layer = SimpleNamespace(
+        id="1",
+        title="form",
+        script="build/01_form.py",
+        as_milestone=lambda: SimpleNamespace(id="1"),
+    )
+    monkeypatch.setattr(run_shot, "load_shot", lambda _folder: shot)
+    monkeypatch.setattr(run_shot, "load_layers", lambda _shot: {"1": layer})
+    monkeypatch.setattr(
+        run_shot,
+        "preflight_probe",
+        lambda _blender: {
+            "ok": False,
+            "auth": {
+                "ok": False,
+                "using": None,
+                "problems": ["no selected credential"],
+                "notes": [],
+                "present": [],
+                "decoys": [],
+            },
+            "configuration": {"ok": True, "problems": []},
+            "blender": {
+                "ok": True,
+                "requested": "blender",
+                "resolved": "/usr/bin/blender",
+                "problems": [],
+            },
+        },
+    )
+    monkeypatch.setattr(run_shot, "_publish_summary", lambda _layout: None)
+    monkeypatch.setattr(
+        run_shot,
+        "_run",
+        lambda *_args, **_kwargs: pytest.fail("no stage may run after failed strict preflight"),
+    )
+    monkeypatch.setattr(sys, "argv", ["vfx run", str(tmp_path), "--skip-render"])
+
+    with pytest.raises(SystemExit) as raised:
+        run_shot.main()
+
+    assert raised.value.code == 1
+    layout = run_artifacts.latest(tmp_path)
+    assert layout is not None
+    envelope = layout.read_terminal_stop()
+    assert envelope.stop_class == "infrastructure_failure"
+    assert [action.transaction_id for action in envelope.actions] == ["recover_environment"]

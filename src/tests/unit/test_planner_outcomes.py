@@ -10,7 +10,10 @@ import anyio
 import pytest
 
 from vfx_harness.agents import planner
+from vfx_harness.agents.planner import kickoff as kickoff_runtime
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration import revalidation
+from vfx_harness.orchestration.layer_plans import write_layer_outcome
 
 
 def test_two_pass_seeds_canonical_gate_candidate_from_draft(
@@ -146,7 +149,9 @@ def test_materialization_kickoff_lists_only_selected_bundle_decisions(tmp_path: 
     )
     (bundle_root / "requirements.json").write_text(
         json.dumps({
-            "schema": "vfx-harness.requirements/v1",
+            "schema": "vfx-harness.requirements/v2",
+            "judgment_debt_definitions": [],
+            "judgment_debt_activations": [],
             "requirements": [{"id": "R-look", "statement": "author the look"}],
         }),
         encoding="utf-8",
@@ -626,20 +631,23 @@ def test_rematerialization_kickoff_carries_the_replacement_reason(tmp_path: Path
 
 def test_materialization_kickoff_compiles_frame_authority_and_named_outcomes(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Remat6 Read plans/outcomes as a directory, then put extra-frame vis on
     composition_context.frames until max-turns. Kickoff must compile the subset
     rule from the global row and name outcome files, not a directory."""
     bundle_root = tmp_path / "runs" / "r1" / "checkpoints" / "plans" / "bundles" / "abc"
     bundle_root.mkdir(parents=True)
+    dependency_id = "camera.hero"
+    layer_id = "look.final"
     row = {
-        "id": "2", "script": "build/02.py", "title": "Look",
+        "id": layer_id, "script": "build/look.py", "title": "Look",
         "primary_judge": 1, "judge": [{"frame": 1, "ref": "refs/a.png"},
                                       {"frame": 240, "ref": "refs/a.png"}],
         "owns": ["look"], "evidence_domains": ["scene"],
         "reads": "authored brief", "execution": "jit_deferred", "stages": [],
         "jit": {
-            "depends_on_layers": ["1"],
+            "depends_on_layers": [dependency_id],
             "required_outcomes": [{"kind": "scene_contract", "id": "upstream-lock"}],
             "reserved_roles": ["look.*"],
             "owned_requirements": ["R-look"],
@@ -650,21 +658,82 @@ def test_materialization_kickoff_compiles_frame_authority_and_named_outcomes(
     )
     (bundle_root / "requirements.json").write_text(
         json.dumps({
-            "schema": "vfx-harness.requirements/v1",
+            "schema": "vfx-harness.requirements/v2",
+            "judgment_debt_definitions": [],
+            "judgment_debt_activations": [],
             "requirements": [{"id": "R-look", "statement": "author the look"}],
         }),
         encoding="utf-8",
     )
-    outcomes = tmp_path / "plans" / "outcomes"
-    outcomes.mkdir(parents=True)
-    (outcomes / "01.json").write_text('{"layer": "1", "status": "passed"}\n', encoding="utf-8")
-    (outcomes / "02.json").write_text('{"layer": "2", "status": "passed"}\n', encoding="utf-8")
+    (tmp_path / "refs").mkdir()
+    (tmp_path / "refs" / "a.png").write_bytes(b"named-outcome-reference")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "01.py").write_text(
+        "# named predecessor outcome\n",
+        encoding="utf-8",
+    )
+    predecessor = SimpleNamespace(
+        id=dependency_id,
+        title="Upstream",
+        script="build/01.py",
+        judges=((1, "refs/a.png"),),
+        stages=(),
+    )
+    monkeypatch.setattr(
+        revalidation,
+        "input_manifest",
+        lambda *_args, **_kwargs: {"complete": "named-outcome"},
+    )
+    write_layer_outcome(
+        tmp_path,
+        predecessor,
+        status="passed",
+        best={"round": 1, "mean": 5.0, "render": None},
+        canonical=[
+            (
+                (1, "refs/a.png"),
+                {
+                    "evidence_kind": "executable_only",
+                    "pass": True,
+                    "issues": [],
+                    "evidence": [
+                        {
+                            "id": "upstream-lock",
+                            "metric": "object_property",
+                            "value": 1.0,
+                            "target": ">= 1",
+                            "pass": True,
+                            "source": "interface_contract",
+                            "authoritative": True,
+                            "owner_layer": dependency_id,
+                            "fault_owner": dependency_id,
+                            "activates_at": dependency_id,
+                            "lifecycle": "persistent",
+                        }
+                    ],
+                },
+            )
+        ],
+        run_id="named-outcome",
+        attempt=1,
+        blender_version="fixture",
+    )
+    monkeypatch.setattr(
+        kickoff_runtime,
+        "load_layers_from_path",
+        lambda _path: {dependency_id: predecessor},
+    )
+    monkeypatch.setattr(
+        kickoff_runtime,
+        "current_outcome_eligibility",
+        lambda *_args, **_kwargs: (True, ()),
+    )
     bundle = SimpleNamespace(root=bundle_root, content_hash="abc123")
     layer = SimpleNamespace(
-        id="2",
+        id=layer_id,
         title="Look",
         jit=SimpleNamespace(
-            depends_on_layers=["1"],
+            depends_on_layers=[dependency_id],
             required_outcomes=(("scene_contract", "upstream-lock"),),
         ),
     )
@@ -675,9 +744,9 @@ def test_materialization_kickoff_compiles_frame_authority_and_named_outcomes(
 
     assert '"layer_judge_frames": [\n  1,\n  240\n ]' in kickoff
     assert "Do not add those frames to" in kickoff
-    assert '"layer": "1"' in kickoff
+    assert f'"layer": "{dependency_id}"' in kickoff
     assert '"status": "passed"' in kickoff
-    assert '"layer": "2"' not in kickoff
+    assert f'"layer": "{layer_id}"' not in kickoff
     assert "readable_files" not in kickoff
 
 

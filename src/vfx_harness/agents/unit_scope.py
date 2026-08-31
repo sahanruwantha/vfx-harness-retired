@@ -115,6 +115,15 @@ def helper_inventory() -> tuple[dict[str, str], ...]:
     return tuple(helpers)
 
 
+def helpers_for_route(
+    inventory: Sequence[Mapping[str, str]],
+    route: str,
+) -> tuple[dict[str, str], ...]:
+    """Hide the helper that would reopen a second construction authority."""
+    hide = "bvfx_import_asset" if route == "generate" else "bvfx_import_construction"
+    return tuple(dict(row) for row in inventory if row.get("name") != hide)
+
+
 def _contract_row(row: Mapping[str, Any]) -> dict[str, Any]:
     # This is already the exact, active-unit closure. Keep every evaluator field so
     # the builder sees socket, graph, node/material selectors, paths, and bounds rather
@@ -147,6 +156,7 @@ def compile_unit_scope(
             f"present: {', '.join(present)}"
         )
     inventory = tuple(helpers) if helpers is not None else helper_inventory()
+    inventory = helpers_for_route(inventory, unit.construction.route)
     image_debts = [card.as_dict() for card in image_contract_debt_cards(unit)]
     clusters = write_clusters(unit, contracts)
     publish_family = (
@@ -233,6 +243,10 @@ def compile_unit_scope(
             }
             for item in unit.consumes
         ],
+        "construction": {
+            "route": unit.construction.route,
+            "witnesses": list(unit.construction.witnesses),
+        },
         "helpers": [dict(row) for row in inventory],
     }
 
@@ -485,6 +499,9 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         f"typed publish interfaces (role/control/contract-id exports only):\n"
         f"{interfaces}\n"
         f"declared consumes:\n{consumes}\n"
+        f"construction.route: {card.get('construction', {}).get('route') or 'procedural'}\n"
+        f"construction.witnesses: "
+        f"{', '.join((card.get('construction') or {}).get('witnesses') or []) or 'none'}\n"
         f"predecessor publish interfaces (digest-matched, no producer scripts):\n"
         f"{predecessors}\n"
         f"legal upstream fault owners for cannot_express_in_scope:\n{fault_owners}\n"

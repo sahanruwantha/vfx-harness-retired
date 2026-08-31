@@ -205,7 +205,7 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
     }]
     payload = root / "root-jit.json"
     _write(payload, {
-        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "schema": "vfx-harness.jit-layer-materialization/v2",
         "bundle_hash": bundle_hash,
         "layer": _declaring(layer),
         "scene_contracts": [

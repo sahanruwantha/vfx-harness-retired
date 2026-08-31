@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from vfx_harness.domain.claim_bindings import bound_claim_contract_ids
+from vfx_harness.domain.construction import ConstructionSpec, parse_construction
 from vfx_harness.domain.publish_interfaces import (
     PUBLISH_INTERFACE_KINDS,
     UNKNOWN_KIND_RULE,
@@ -201,6 +202,7 @@ class WorkUnit:
     provides: tuple[str, ...] = ()
     publishes: tuple[PublishSpec, ...] = ()
     consumes: tuple[ConsumeSpec, ...] = ()
+    construction: ConstructionSpec = field(default_factory=ConstructionSpec)
 
     @classmethod
     def parse(cls, value: Any, where: str) -> WorkUnit:
@@ -209,6 +211,7 @@ class WorkUnit:
         depends_on = _strings(row.get("depends_on", []), f"{where}.depends_on")
         mutates = MutationScope.parse(row.get("mutates"), f"{where}.mutates")
         evaluation = EvaluationPolicy.parse(row.get("evaluation"), f"{where}.evaluation")
+        construction = parse_construction(row.get("construction"), f"{where}.construction")
         draft = cls(
             uid,
             _text(row.get("title", uid), f"{where}.title"),
@@ -220,6 +223,7 @@ class WorkUnit:
             _text(row.get("completion"), f"{where}.completion"),
             parse_look_capabilities(row.get("look_capabilities", []), f"{where}.look_capabilities"),
             parse_provides(row.get("provides", []), f"{where}.provides"),
+            construction=construction,
         )
         legal = {
             *draft.mutates.roles,
@@ -240,6 +244,7 @@ class WorkUnit:
             draft.provides,
             _parse_publish_specs(row.get("publishes"), f"{where}.publishes", legal_tokens=legal),
             _parse_consume_specs(row.get("consumes"), f"{where}.consumes", depends_on=draft.depends_on),
+            draft.construction,
         )
         context = unit.evaluation.composition_context
         if context and context.source_unit and context.source_unit not in unit.depends_on:

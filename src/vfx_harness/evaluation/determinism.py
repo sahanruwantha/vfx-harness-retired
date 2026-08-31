@@ -38,7 +38,7 @@ from vfx_harness.evidence.metrics import compare, look_pair, look_vector
 from vfx_harness.observability.log import log
 from vfx_harness.orchestration.ledger import Ledger, load_layers
 
-from ..agents.builder import _RESET, _preamble
+from ..agents.builder import _RESET, _preamble, _run_artifact_script
 from ..blender.session import BlenderError, BlenderSession
 
 # The scales the render tools actually offer. render_frame and compare_frame default to
@@ -284,7 +284,7 @@ def replay_equivalence(shot: Shot, *, blender: str = "blender", passes: int = 2,
                 session.run(_RESET)
                 session.run(_preamble(shot))
                 for p in scripts:
-                    session.run(p.read_text(encoding="utf-8"))
+                    _run_artifact_script(session, p)
                 manifests.append(_scene_manifest(session))
                 out = tmp / f"pass{i}.png"
                 out.write_bytes(Path(session.render(frame=frame, mode=mode,

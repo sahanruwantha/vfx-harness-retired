@@ -591,13 +591,22 @@ def builder_kickoff(
 ) -> str:
     adir = shot.folder / "assets"
     assets = sorted(p.name for p in adir.iterdir() if (p / "model.glb").is_file()) if adir.is_dir() else []
-    asset_line = (
-        f"AVAILABLE ASSETS — import with import_asset() using these EXACT names "
-        f"(do NOT guess a name): {assets}. Prefer the committed hero mesh over "
-        f"hand-modelling a detailed prop.\n\n"
-        if assets
-        else ""
-    )
+    route = str(((unit_scope or {}).get("construction") or {}).get("route") or "procedural")
+    if route == "generate":
+        asset_line = (
+            "GENERATE CONSTRUCTION — the harness already prepared identity-gated plates "
+            "and promoted a GLB. Inside run_bpy and the finalize script call "
+            "`bvfx_import_construction()` with no arguments. Do not call import_asset "
+            "or bvfx_import_asset; do not invent a Meshy or Higgsfield call.\n\n"
+        )
+    elif assets:
+        asset_line = (
+            f"AVAILABLE ASSETS — import with import_asset() using these EXACT names "
+            f"(do NOT guess a name): {assets}. Prefer the committed hero mesh over "
+            f"hand-modelling a detailed prop.\n\n"
+        )
+    else:
+        asset_line = ""
     plan_block = (
         f"YOUR LAYER'S PLAN SECTION — these tickets are your build instructions "
         f"(methods, starting values marked *(start)*, gotchas, done-checks). "
@@ -719,6 +728,7 @@ def finalize_prompt(
     script_rel: str | None = None,
     journal_rel: str | None = None,
     raster_required: bool = True,
+    construction_route: str = "procedural",
 ) -> str:
     script = script_rel or f"build/{m.id.lower()}.py"
     if priors:
@@ -740,6 +750,15 @@ def finalize_prompt(
             "owes no raster, so the probe returns `raster_required: false` instead of images"
         )
     )
+    import_line = (
+        "`bvfx_import_construction()` with no arguments (the harness pinned the "
+        "promoted GLB; import_asset is not a construction route)"
+        if construction_route == "generate"
+        else (
+            "`bvfx_import_asset('<name>')` (the import_asset TOOL is NOT in scope inside the "
+            "script) — do not hardcode asset file paths"
+        )
+    )
     return (
         f"MODE: FINALIZE_SCRIPT — the live search is over; publish its deterministic "
         f"artifact. Do not make new look decisions in this mode.\n"
@@ -750,8 +769,7 @@ def finalize_prompt(
         f"Now persist your work. Write `{script}` — {scope}. Assume the "
         f"frame range (1–{shot.frames}), fps ({shot.fps}) and motion blur are already set "
         f"by the harness. To bring in a committed hero mesh, call "
-        f"`bvfx_import_asset('<name>')` (the import_asset TOOL is NOT in scope inside the "
-        f"script) — do not hardcode asset file paths. Use your Write tool. Write only that "
+        f"{import_line}. Use your Write tool. Write only that "
         f"file."
         + (
             f"\n\nSTART FROM THE TRANSCRIPT, don't rewrite from memory: `{journal_rel}` "

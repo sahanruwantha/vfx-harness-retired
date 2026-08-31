@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from vfx_harness.domain.construction import UNIT_CONSTRUCTION_ROUTES
 from vfx_harness.domain.publish_interfaces import PUBLISH_INTERFACE_KINDS
 from vfx_harness.domain.publish_interfaces import SCHEMA as PUB_SCHEMA
 from vfx_harness.domain.work_units.capabilities import CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE, UNIT_PROVIDES
@@ -382,6 +383,66 @@ def work_unit_authoring_schema(
                 "additionalProperties": False,
             },
             "completion": text,
+            "construction": {
+                "type": "object",
+                "description": (
+                    "Optional construction route. Omit for procedural mesh. generate "
+                    "and retrieve require a mesh write family; generate requires "
+                    "refobs-* witnesses. omit and abstain are not unit routes."
+                ),
+                "properties": {
+                    "route": {
+                        "type": "string",
+                        "enum": sorted(UNIT_CONSTRUCTION_ROUTES),
+                    },
+                    "witnesses": {
+                        "type": "array",
+                        "items": dict(text),
+                        "uniqueItems": True,
+                    },
+                    "reason": {"type": "string"},
+                },
+                "required": ["route"],
+                "additionalProperties": False,
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {"route": {"const": "generate"}},
+                            "required": ["route"],
+                        },
+                        "then": {
+                            "required": ["witnesses"],
+                            "properties": {
+                                "witnesses": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "uniqueItems": True,
+                                    "items": {
+                                        "type": "string",
+                                        "pattern": r"^refobs-[A-Za-z0-9]+$",
+                                    },
+                                }
+                            },
+                        },
+                    },
+                    {
+                        "if": {
+                            "properties": {"route": {"const": "retrieve"}},
+                            "required": ["route"],
+                        },
+                        "then": {
+                            "required": ["witnesses"],
+                            "properties": {
+                                "witnesses": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "uniqueItems": True,
+                                }
+                            },
+                        },
+                    },
+                ],
+            },
         },
         "required": [
             "id",

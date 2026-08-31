@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -39,6 +40,77 @@ from vfx_harness.observability.log import (
 from vfx_harness.orchestration.ledger import Milestone, load_layers
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
+RENDER_CAPTURE_SCHEMA = "vfx-harness.canonical-render-capture/v1"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _capture_digest(payload: dict) -> str:
+    try:
+        encoded = json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("canonical render capture contains non-JSON or non-finite data") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _stash_render_with_receipt(
+    session: BlenderSession,
+    shot: Shot,
+    m: Milestone,
+    tag: str,
+    scale: float = 0.5,
+    *,
+    mode: str = "eevee",
+) -> tuple[str, dict]:
+    """Render, copy, and attest the exact settings and PNG bytes used by a judge."""
+    result = session.render_full(frame=m.frame, mode=mode, scale=scale)
+    if not isinstance(result, dict):
+        raise ValueError("Blender render did not return a typed capture receipt")
+    if result.get("frame") != int(m.frame) or result.get("mode") != mode:
+        raise ValueError(
+            "Blender render receipt does not match the requested canonical frame/mode"
+        )
+    resolution = result.get("resolution")
+    render_state = result.get("render_state")
+    if (
+        not isinstance(resolution, list)
+        or len(resolution) != 3
+        or not all(isinstance(value, int) and value > 0 for value in resolution)
+        or not isinstance(render_state, dict)
+    ):
+        raise ValueError("Blender render receipt is missing exact resolution/render state")
+    src = Path(str(result.get("image_path") or ""))
+    if not src.is_file():
+        raise ValueError("Blender render receipt names a missing candidate image")
+    dest_dir = run_artifacts.renders_dir(shot.folder)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{m.id}_{tag}.png"
+    shutil.copyfile(src, dest)
+    payload = {
+        "schema": RENDER_CAPTURE_SCHEMA,
+        "frame": int(m.frame),
+        "mode": mode,
+        "scale": float(scale),
+        "resolution": resolution,
+        "render_state": render_state,
+        "warnings": list(result.get("warnings") or ()),
+        "png_sha256": _sha256(dest),
+    }
+    receipt = {**payload, "capture_digest": _capture_digest(payload)}
+    return dest.relative_to(shot.folder).as_posix(), receipt
+
 
 def _stash_render(
     session: BlenderSession,
@@ -51,12 +123,15 @@ def _stash_render(
 ) -> str:
     """Render the judge frame (eevee) and copy it into the shot for the critic.
     Returns the path relative to the shot folder."""
-    src = session.render(frame=m.frame, mode=mode, scale=scale)
-    dest_dir = run_artifacts.renders_dir(shot.folder)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{m.id}_{tag}.png"
-    shutil.copyfile(src, dest)
-    return dest.relative_to(shot.folder).as_posix()
+    render_rel, _receipt = _stash_render_with_receipt(
+        session,
+        shot,
+        m,
+        tag,
+        scale,
+        mode=mode,
+    )
+    return render_rel
 
 
 def _image_reproduction(live: str | Path, canonical: str | Path) -> dict:
@@ -468,6 +543,11 @@ def _unit_requires_raster(shot: Shot, unit) -> bool:
 
 def _unit_raster_mode(unit) -> str:
     """Use look-independent pixels when qualitative form is owed without look authority."""
+    debt_medium = getattr(unit, "judgment_observation_medium", None)
+    if debt_medium == "workbench_solid":
+        return "solid"
+    if debt_medium == "eevee":
+        return "eevee"
     if unit is not None and not tuple(getattr(unit, "look_capabilities", ()) or ()):
         return "solid"
     return "eevee"

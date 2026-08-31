@@ -43,6 +43,7 @@ from vfx_harness.knowledge.recipes import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import log, log_message
 from vfx_harness.observability.provenance import atomic_write
+from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 from vfx_harness.orchestration.layer_plans import (
     amendment_block,
     contract_gaps_block,
@@ -357,7 +358,7 @@ async def generate_layer_plan(
         predecessor_cards=predecessor_cards,
     )
     layout = run_artifacts.ensure(shot.folder, command="plan-layer")
-    lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}"
+    lab_dir = layout.scratch / "plan-lab" / layer_identity_segment(str(layer.id))
     pserver, pnames = build_plan_tools(
         shot.folder,
         blender=blender,

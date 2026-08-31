@@ -30,11 +30,25 @@ restores the API key explicitly.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
+from pathlib import Path
 
-from vfx_harness.infrastructure.config import credential_preference, load_environment
+from vfx_harness.domain.environment_results import EnvironmentCheck, EnvironmentResult
+from vfx_harness.domain.stop_envelope_primitives import canonical_digest
+from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
+from vfx_harness.domain.stop_transaction_state import (
+    EnvironmentResultAssertion,
+    StopEvidenceRef,
+)
+from vfx_harness.domain.stop_transactions import (
+    EnvironmentReverified,
+    RecoverEnvironmentTarget,
+    StopAction,
+)
+from vfx_harness.infrastructure.config import Settings, credential_preference, load_environment
 from vfx_harness.observability.log import log
 
 # What the Agent SDK / Claude Code CLI actually reads, in the precedence measured above.
@@ -120,9 +134,261 @@ def auth() -> dict:
             "present": sorted(present), "decoys": sorted(decoys)}
 
 
-def check() -> dict:
-    a = auth()
-    return {"ok": a["ok"], "auth": a}
+def _command_path(command: str) -> str | None:
+    candidate = Path(command).expanduser()
+    if candidate.is_absolute() or candidate.parent != Path("."):
+        resolved = candidate.resolve()
+        return str(resolved) if resolved.is_file() and os.access(resolved, os.X_OK) else None
+    return shutil.which(command)
+
+
+def _safe_auth() -> dict:
+    try:
+        return auth()
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "using": None,
+            "problems": [str(exc)],
+            "notes": [],
+            "present": sorted(name for name in _READ if os.environ.get(name)),
+            "decoys": sorted(name for name in _DECOYS if os.environ.get(name)),
+        }
+
+
+def check(blender: str | None = None) -> dict:
+    a = _safe_auth()
+    configuration = {"ok": True, "problems": []}
+    configured_blender = blender
+    try:
+        settings = Settings.from_environment(load_dotenv_file=False)
+        configured_blender = configured_blender or settings.blender_bin
+    except (OSError, ValueError) as exc:
+        configuration = {"ok": False, "problems": [str(exc)]}
+    configured_blender = configured_blender or "blender"
+    resolved_blender = _command_path(configured_blender)
+    blender_result = {
+        "ok": resolved_blender is not None,
+        "requested": configured_blender,
+        "resolved": resolved_blender,
+        "problems": (
+            []
+            if resolved_blender is not None
+            else [f"Blender executable {configured_blender!r} is not available or executable."]
+        ),
+    }
+    return {
+        "ok": bool(a["ok"] and configuration["ok"] and blender_result["ok"]),
+        "auth": a,
+        "configuration": configuration,
+        "blender": blender_result,
+    }
+
+
+def probe(blender: str | None = None) -> dict:
+    """Load configuration and return every strict preflight failure as typed-safe data."""
+    try:
+        load_environment()
+    except (OSError, ValueError) as exc:
+        configuration = {"ok": False, "problems": [str(exc)]}
+        a = _safe_auth()
+        requested = blender or os.environ.get("BLENDER_BIN") or "blender"
+        resolved = _command_path(requested)
+        blender_result = {
+            "ok": resolved is not None,
+            "requested": requested,
+            "resolved": resolved,
+            "problems": (
+                []
+                if resolved is not None
+                else [f"Blender executable {requested!r} is not available or executable."]
+            ),
+        }
+        return {
+            "ok": False,
+            "auth": a,
+            "configuration": configuration,
+            "blender": blender_result,
+        }
+    return check(blender)
+
+
+def environment_result(value: dict) -> EnvironmentResult:
+    """Compile secret-free preflight facts into the standalone strict result schema."""
+    auth_result = value.get("auth") if isinstance(value, dict) else None
+    configuration = value.get("configuration") if isinstance(value, dict) else None
+    blender = value.get("blender") if isinstance(value, dict) else None
+    if not all(isinstance(row, dict) for row in (auth_result, configuration, blender)):
+        raise ValueError("preflight result requires auth, configuration, and Blender observations")
+    assert isinstance(auth_result, dict)
+    assert isinstance(configuration, dict)
+    assert isinstance(blender, dict)
+    safe_observation = {
+        "schema": "vfx-harness.auth-observation/v1",
+        "using": auth_result.get("using"),
+        "present": list(auth_result.get("present") or []),
+        "decoys": list(auth_result.get("decoys") or []),
+        "problems": list(auth_result.get("problems") or []),
+        "notes": list(auth_result.get("notes") or []),
+    }
+    auth_passed = bool(auth_result.get("ok"))
+    problems = safe_observation["problems"]
+    auth_found = (
+        f"Credential selection is valid and uses {safe_observation['using']}."
+        if auth_passed
+        else f"Credential configuration has {len(problems)} blocking problem(s): "
+        + "; ".join(str(problem) for problem in problems)
+    )
+    configuration_safe = {
+        "schema": "vfx-harness.configuration-observation/v1",
+        "problems": list(configuration.get("problems") or []),
+    }
+    configuration_passed = bool(configuration.get("ok"))
+    configuration_found = (
+        "Runtime configuration parsed successfully."
+        if configuration_passed
+        else "Runtime configuration is invalid: "
+        + "; ".join(str(problem) for problem in configuration_safe["problems"])
+    )
+    blender_safe = {
+        "schema": "vfx-harness.blender-observation/v1",
+        "requested": blender.get("requested"),
+        "resolved": blender.get("resolved"),
+        "problems": list(blender.get("problems") or []),
+    }
+    blender_passed = bool(blender.get("ok"))
+    blender_found = (
+        f"Blender resolves to {blender_safe['resolved']}."
+        if blender_passed
+        else "; ".join(str(problem) for problem in blender_safe["problems"])
+    )
+    return EnvironmentResult(
+        probe_id="preflight",
+        checks=(
+            EnvironmentCheck(
+                check_id="credential_configuration",
+                passed=auth_passed,
+                observed_digest=canonical_digest(safe_observation),
+                expected="Exactly one valid selected credential is visible to the model runtime.",
+                found=auth_found,
+                next_action=(
+                    "No environment recovery is required."
+                    if auth_passed
+                    else "Correct the named credential variables, then run strict preflight again."
+                ),
+            ),
+            EnvironmentCheck(
+                check_id="runtime_configuration",
+                passed=configuration_passed,
+                observed_digest=canonical_digest(configuration_safe),
+                expected="Runtime configuration parses under the current strict settings schema.",
+                found=configuration_found,
+                next_action=(
+                    "No configuration recovery is required."
+                    if configuration_passed
+                    else "Correct the named configuration value, then run strict preflight again."
+                ),
+            ),
+            EnvironmentCheck(
+                check_id="blender_executable",
+                passed=blender_passed,
+                observed_digest=canonical_digest(blender_safe),
+                expected="The configured Blender executable resolves to an executable file.",
+                found=blender_found,
+                next_action=(
+                    "No Blender recovery is required."
+                    if blender_passed
+                    else "Install Blender or select a valid executable, then run strict preflight again."
+                ),
+            ),
+        ),
+    )
+
+
+def environment_stop(layout, result: EnvironmentResult) -> StopEnvelope:
+    """Turn a failed run-scoped preflight into recovery-only terminal authority."""
+    if not isinstance(result, EnvironmentResult) or result.ok:
+        raise ValueError("environment_stop requires a failed EnvironmentResult")
+    failed = tuple(check for check in result.checks if not check.passed)
+    document = result.as_dict()
+    evidence_path = layout.write_report("preflight-environment-result", document)
+    try:
+        observed = EnvironmentResult.from_dict(
+            json.loads(evidence_path.read_text(encoding="utf-8")),
+            "run preflight environment result",
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError("run-scoped preflight evidence failed typed read-back") from exc
+    if observed != result:
+        raise RuntimeError("run-scoped preflight evidence changed during publication")
+    evidence = StopEvidenceRef(
+        kind="environment_result",
+        locator=evidence_path.relative_to(layout.shot).as_posix(),
+        sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        record_schema=EnvironmentResult.SCHEMA,
+        record_digest=result.digest,
+    )
+    probe_spec_digest = canonical_digest(
+        {
+            "schema": "vfx-harness.preflight-probe-spec/v1",
+            "probe_id": result.probe_id,
+            "check_ids": [check.check_id for check in result.checks],
+        }
+    )
+    environment = EnvironmentResultAssertion(
+        probe_id=result.probe_id,
+        probe_spec_digest=probe_spec_digest,
+        result_digest=result.digest,
+    )
+    failed_check_ids = tuple(check.check_id for check in failed)
+    target = RecoverEnvironmentTarget(
+        environment=environment,
+        failed_check_ids=failed_check_ids,
+        recovery_adapter_id="external_operator",
+        evidence=(evidence,),
+    )
+    action = StopAction(
+        target=target,
+        postcondition=EnvironmentReverified(
+            probe_id=result.probe_id,
+            probe_spec_digest=probe_spec_digest,
+            before_result_digest=result.digest,
+            failed_check_ids=failed_check_ids,
+        ),
+    )
+    return StopEnvelope(
+        stage="infrastructure",
+        stop_class="infrastructure_failure",
+        identity=StopIdentity(
+            run_id=layout.run_id,
+            bundle_digest=None,
+            view_digest=None,
+            layer_id=None,
+            unit_id=None,
+            unit_plan_digest=None,
+            unit_digest=None,
+            candidate_digest=None,
+            checkpoint_digest=None,
+            settings_digest=None,
+            debt_state_digest=None,
+        ),
+        cause=StopCause(
+            invariant_id="strict_preflight_failed",
+            finding_ids=tuple(check.check_id for check in failed),
+            owner_scope_ids=("environment",),
+            normalized_facts_digest=result.environment_digest,
+        ),
+        attempt_evidence_digest=result.digest,
+        classification_evidence_digest=result.environment_digest,
+        artifact_state_digest=result.environment_digest,
+        authoritative_before_digest=result.environment_digest,
+        actions=(action,),
+        evidence_refs=(evidence,),
+        budget_key="environment-recovery",
+        expected="Strict preflight passes before any paid execution begins.",
+        found="; ".join(check.found for check in failed),
+        next_action="Recover the environment and re-run strict preflight.",
+    )
 
 
 def report(d: dict) -> str:
@@ -133,6 +399,21 @@ def report(d: dict) -> str:
         L.append(f"     · {n}")
     for p in a["problems"]:
         L.append(f"   ✗ {p}")
+    configuration = d.get("configuration") or {"ok": False, "problems": ["not checked"]}
+    L.append(f"   config: {'valid' if configuration['ok'] else 'INVALID'}")
+    for problem in configuration["problems"]:
+        L.append(f"   ✗ {problem}")
+    blender = d.get("blender") or {
+        "ok": False,
+        "requested": None,
+        "resolved": None,
+        "problems": ["not checked"],
+    }
+    L.append(
+        f"   blender: {blender['resolved'] if blender['ok'] else blender['requested'] or 'UNSET'}"
+    )
+    for problem in blender["problems"]:
+        L.append(f"   ✗ {problem}")
     if d["ok"]:
         L.append("   ✓ nothing to fix")
     return "\n".join(L)
@@ -149,7 +430,11 @@ def warn_if_broken() -> bool:
     if d["ok"]:
         return True
     log("── PREFLIGHT PROBLEMS ──")
-    for p in d["auth"]["problems"]:
+    for p in [
+        *d["auth"]["problems"],
+        *d["configuration"]["problems"],
+        *d["blender"]["problems"],
+    ]:
         log(f"✗ {p}", 1)
     log("  fix these first: a misconfigured credential does not fail loudly, it fails "
         "as a zero-cost 'success' that the pipeline then critiques as if it were work.", 1)
@@ -209,17 +494,24 @@ def model_phase_failure(
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_environment()
     ap = argparse.ArgumentParser(prog="vfx_harness.application.preflight")
     ap.add_argument("--strict", action="store_true", help="exit 1 if anything is wrong")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--output", type=Path, help="write the typed environment result to this path")
     a = ap.parse_args(argv)
-    d = check()
-    if a.json:
-        print(json.dumps(d, indent=2))
+    d = probe()
+    typed = environment_result(d)
+    serialized = json.dumps(typed.as_dict(), indent=2, sort_keys=True) + "\n"
+    if a.output:
+        a.output.parent.mkdir(parents=True, exist_ok=True)
+        tmp = a.output.with_name(a.output.name + f".tmp.{os.getpid()}")
+        tmp.write_text(serialized, encoding="utf-8")
+        os.replace(tmp, a.output)
+    if a.json or a.strict:
+        print(serialized, end="")
     else:
         print(report(d))
-    return 1 if (a.strict and not d["ok"]) else 0
+    return 1 if (a.strict and not typed.ok) else 0
 
 
 if __name__ == "__main__":

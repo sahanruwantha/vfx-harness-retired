@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 
 from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
+from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
+from vfx_harness.domain.construction_routes import construction_route_gaps
 from vfx_harness.domain.dressing import DRESSING_CLOSURE_FIX, SAME_LAYER_DRESS_RULE, same_layer_dress_gaps
 from vfx_harness.domain.image_debts import (
     IMAGE_PROPERTY_VOCABULARY_RULE,
@@ -368,7 +370,7 @@ def validate_materialization(
         note(
             json_ptr("scene_contracts", gap.index, "activates_at"),
             f"scene contract {gap.contract_id} activates_at={gap.found!r}; compiled "
-            f"earliest_geometry_layer is {gap.expected!r}. "
+            f"earliest relevant dependency-complete subject carrier is {gap.expected!r}. "
             + DEFERRED_SUBJECT_ACTIVATION_RULE,
         )
     for index, row in enumerate(image_rows):
@@ -509,6 +511,16 @@ def validate_materialization(
                 f"unit {gap.unit_id}: {gap.detail}{extra} Legal next actions: "
                 "split the unit, consume a typed assembly interface, bind dressing, "
                 "or reassign evidence. " + ATOMICITY_RULE,
+            )
+        for gap in construction_route_gaps(layer.stages, scene_rows):
+            note(
+                json_ptr(
+                    "layer",
+                    "stages",
+                    unit_index_by_id[gap.unit_id],
+                    "construction",
+                ),
+                f"unit {gap.unit_id}: {gap.detail}. " + CONSTRUCTION_ROUTE_RULE,
             )
 
 
@@ -873,6 +885,10 @@ def validate_materialization(
         layer_id=layer_id,
         layer=layer,
         layer_row=layer_row,
+        global_layer_row=global_row,
+        global_layers=global_layers,
+        parsed_layers=parsed or {},
+        provider_scene_rows=combined_scene_rows,
         root=root,
         resolutions_path=resolutions_path,
         expected_bundle_hash=expected_bundle_hash,

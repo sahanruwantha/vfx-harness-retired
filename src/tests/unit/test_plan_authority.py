@@ -18,6 +18,7 @@ from vfx_harness.agents.plan_guardrails import (
 from vfx_harness.agents.planner import _phase_tools, plan_role_capabilities
 from vfx_harness.agents.prompts import verifier_user_prompt
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.jit_materialization.schema import OVERLAY_ARTIFACTS
 from vfx_harness.orchestration.layer_plans import (
     is_selected_bundle_member,
     read_work_unit_plan,
@@ -55,7 +56,9 @@ def _write_plan(folder: Path, *, marker: str = "one") -> None:
         (folder / name).write_text(json.dumps(value) + "\n", encoding="utf-8")
     brief_hash = hashlib.sha256((folder / "brief.md").read_bytes()).hexdigest()
     (folder / "requirements.json").write_text(json.dumps({
-        "schema": "vfx-harness.requirements/v1",
+        "schema": "vfx-harness.requirements/v2",
+        "judgment_debt_definitions": [],
+        "judgment_debt_activations": [],
         "requirements": [{
             "id": "R1",
             "statement": "fixture brief",
@@ -360,8 +363,13 @@ def test_superseded_jit_view_is_inert_after_republication(
             {
                 "schema": "vfx-harness.jit-layer-view/v1",
                 "bundle_hash": "0" * 64,  # a superseded generation, not the selection
-                "artifacts": {"layers.json": "state/jit-layers/old/layers.json"},
-                "hashes": {"layers.json": "0" * 64},
+                "view_hash": "1" * 64,
+                "materialized_layers": [],
+                "artifacts": {
+                    name: f"state/jit-layers/old/{name}"
+                    for name in OVERLAY_ARTIFACTS
+                },
+                "hashes": dict.fromkeys(OVERLAY_ARTIFACTS, "2" * 64),
             }
         )
         + "\n",

@@ -329,7 +329,17 @@ After every layer seals:
 4. Evaluate approval moments and transition corridors.
 5. Judge cross-layer interactions and final qualitative residuals.
 6. Reject downstream compensation for an upstream-owned defect.
-7. Publish a final acceptance outcome with complete evidence provenance.
+7. Publish `vfx-harness.acceptance-outcome/v1` for the exact selected bundle and JIT
+   view, accepted script chain, selected moment set, and content-addressed evidence.
+8. Permit final media publication only after re-resolving those identities and re-hashing
+   every bound evidence record. A failed, missing, or stale outcome cannot start Blender;
+   forced and partial renders are previews rather than deliverables.
+
+When all prerequisites are present but a selected moment fails, full acceptance is an
+unaccepted boundary, not a diagnostic success. It preserves the complete failed outcome
+and exact evidence, publishes a typed `human_decision_required` stop, and may report
+candidate fault-owning layers without mutating their unit state. Automatic recovery
+remains outside this boundary.
 
 ## Planning cache and provenance
 

@@ -63,6 +63,8 @@ from vfx_harness.domain.plan_records import (
     brief_clause_spans,
     load_active_structured_decisions,
     load_assumptions,
+    load_judgment_debt_activations,
+    load_judgment_debt_definitions,
     load_obligations,
     load_requirements,
     read_selected_bundle_hash,
@@ -100,6 +102,16 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
         )], {}
     try:
         requirements = load_requirements(folder)
+        selected_bundle = read_selected_bundle_hash(folder)
+        judgment_debt_definitions = load_judgment_debt_definitions(
+            folder,
+            requirements=requirements,
+            selected_bundle_digest=selected_bundle,
+        )
+        load_judgment_debt_activations(
+            folder,
+            definitions=judgment_debt_definitions,
+        )
         obligations = load_obligations(folder)
         assumptions = load_assumptions(folder)
         scene_rows = load_document(folder / "scene_checks.json", "contracts")
@@ -237,7 +249,6 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
     # inert, and a later superseded or falsified row retires the id (HIR-0028).
     decision_path = folder / "state" / "plan-resolutions.jsonl"
 
-    selected_bundle = read_selected_bundle_hash(folder)
     if decision_path.is_file():
         for line_no, line in enumerate(
             decision_path.read_text(encoding="utf-8").splitlines(), 1

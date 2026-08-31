@@ -62,6 +62,10 @@ from vfx_harness.evaluation.plan_gate.types import (
     _global_executable_checks_apply,
 )
 from vfx_harness.evaluation.plan_gate.unit_deps import _check_unit_dependencies
+from vfx_harness.orchestration.layer_outcome_paths import (
+    layer_outcome_locator,
+    layer_outcome_path,
+)
 from vfx_harness.orchestration.layer_plans import (
     load_amendments,
     validate_work_unit_plan_authority,
@@ -125,14 +129,27 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
         return [*out, Finding("hierarchy", True, "layers.json", str(exc))], {}
 
     passed: set[str] = set()
-    outcomes = folder / "plans" / "outcomes"
-    for path in sorted(outcomes.glob("*.json")) if outcomes.is_dir() else []:
+    for layer_id in layers:
+        path = layer_outcome_path(folder, layer_id)
+        if not path.is_file():
+            continue
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(row, dict) or row.get("layer") != layer_id:
+                raise ValueError(
+                    f"sealed outcome does not name exact layer {layer_id!r}"
+                )
             if row.get("status") == "passed":
-                passed.add(str(row.get("layer")))
-        except (OSError, json.JSONDecodeError) as exc:
-            out.append(Finding("hierarchy", True, str(path.relative_to(folder)), f"unreadable sealed outcome: {exc}"))
+                passed.add(layer_id)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            out.append(
+                Finding(
+                    "hierarchy",
+                    True,
+                    layer_outcome_locator(layer_id),
+                    f"unreadable sealed outcome: {exc}",
+                )
+            )
     ledger_passed: set[str] = set()
     ledger_path = folder / "shot.json"
     if ledger_path.is_file():
@@ -154,7 +171,7 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
             Finding(
                 "hierarchy",
                 True,
-                f"plans/outcomes/{int(lid):02d}.json",
+                layer_outcome_locator(lid),
                 f"ledger marks layer {lid} passed but its sealed planning outcome is missing",
                 "revalidate that layer and publish its authoritative outcome before planning downstream work",
             )

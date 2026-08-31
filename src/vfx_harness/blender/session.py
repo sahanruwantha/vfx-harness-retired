@@ -15,6 +15,7 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
+from vfx_harness.blender.observation_environment import validate_observation_request
 from vfx_harness.observability import run_artifacts
 
 SENT = "@@VFXH@@"
@@ -234,6 +235,30 @@ class BlenderSession:
 
     def inspect(self, section: str = "all") -> str:
         return self.call("inspect", section=section)["text"]
+
+    def canonical_observation_environment(
+        self,
+        *,
+        frame: int,
+        subject_roles: tuple[str, ...] | list[str],
+        observation_medium: str,
+        carrier_families: tuple[str, ...] | list[str],
+    ) -> dict:
+        """Read one canonical, hashable observation environment without rendering.
+
+        The worker re-evaluates the requested frame and fails closed if there is no
+        active camera or a requested semantic subject has no rendered host.
+        """
+        selected_frame, roles, medium, families = validate_observation_request(
+            frame, subject_roles, observation_medium, carrier_families
+        )
+        return self.call(
+            "observation_environment",
+            frame=selected_frame,
+            subject_roles=list(roles),
+            observation_medium=medium,
+            carrier_families=list(families),
+        )
 
     def keyframes(self, obj: str) -> str:
         return self.call("keyframes", object=obj)["text"]

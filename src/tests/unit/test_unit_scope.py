@@ -45,6 +45,7 @@ def _unit(
     contract_id: str,
     extra_contract: str | None = None,
     provides: list[str] | None = None,
+    construction: dict | None = None,
 ) -> WorkUnit:
     evaluation: dict = {
         "primary_judge": 1,
@@ -76,6 +77,8 @@ def _unit(
         "completion": "all_required_claims_and_protected_contracts_pass",
         "provides": provides or [],
     }
+    if construction is not None:
+        row["construction"] = construction
     return WorkUnit.parse(row, f"unit.{uid}")
 
 
@@ -358,3 +361,54 @@ def test_kickoff_carries_the_compiled_card(tmp_path: Path) -> None:
     assert "cam_rig" in text
     assert "bvfx_camera_rig" in text
     assert "cam.blockout_fg" not in text
+    helpers = {row["name"] for row in card["helpers"]}
+    assert "bvfx_import_asset" in helpers
+    assert "bvfx_import_construction" not in helpers
+    assert "AVAILABLE ASSETS" not in text
+    assert "bvfx_import_construction()" not in text
+
+
+def test_generate_unit_scope_hides_import_asset_and_kickoff_names_construction(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "brief.md").write_text(
+        "---\nid: fixture\nframes: 24\nfps: 24\n---\nA fixture shot.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "refs").mkdir()
+    from vfx_harness.domain.brief import load_shot
+
+    unit = _unit(
+        "prop_source",
+        roles=["prop.shell"],
+        contract_id="prop-count",
+        provides=["geometry"],
+        construction={"route": "generate", "witnesses": ["refobs-abc123"]},
+    )
+    contracts = [
+        {
+            "id": "prop-count",
+            "kind": "object_count",
+            "roles": ["prop.shell"],
+            "frame": 1,
+            "op": "eq",
+            "value": 1,
+        }
+    ]
+    card = compile_unit_scope(unit=unit, layer_id="2", contracts=contracts)
+    names = {row["name"] for row in card["helpers"]}
+    assert "bvfx_import_construction" in names
+    assert "bvfx_import_asset" not in names
+    assert card["construction"]["route"] == "generate"
+    dumped = format_unit_scope_card(card)
+    assert "bvfx_import_construction" in dumped
+    assert "construction.route: generate" in dumped
+
+    shot = load_shot(tmp_path)
+    text = builder_kickoff(
+        shot,
+        Milestone("2@prop_source", 1, "refs/a.png", "source exists", ()),
+        unit_scope=card,
+    )
+    assert "bvfx_import_construction()" in text
+    assert "AVAILABLE ASSETS" not in text

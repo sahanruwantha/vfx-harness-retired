@@ -57,6 +57,8 @@ import json
 from pathlib import Path
 
 from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
+from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
+from vfx_harness.domain.construction_routes import construction_route_gaps
 from vfx_harness.domain.contracts import load_document
 from vfx_harness.domain.dressing import DRESSING_CLOSURE_FIX, SAME_LAYER_DRESS_RULE, same_layer_dress_gaps
 from vfx_harness.domain.image_debts import (
@@ -299,6 +301,16 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     gap.detail + extra,
                     "split the unit, consume a typed assembly interface, bind dressing, "
                     "or reassign evidence. " + ATOMICITY_RULE,
+                )
+            )
+        for gap in construction_route_gaps(typed_stages, scene_rows):
+            out.append(
+                Finding(
+                    "construction-route",
+                    True,
+                    f"layer {lid} unit {gap.unit_id}",
+                    gap.detail,
+                    CONSTRUCTION_ROUTE_RULE,
                 )
             )
 

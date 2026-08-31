@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from itertools import pairwise
 from pathlib import Path
-from types import SimpleNamespace
 
 from PIL import Image
 
@@ -18,13 +17,18 @@ from vfx_harness.agents.builder.evidence import (
     _unit_evidence_ids,
 )
 from vfx_harness.agents.builder.pkg import builder_package
+from vfx_harness.agents.builder.provisional_judgment import (
+    _composition_judge_unit,
+)
+from vfx_harness.agents.builder.provisional_judgment import (
+    _load_provisional_decisions as _load_provisional_decisions_impl,
+)
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.image_debts import UNPAID_IMAGE_DEBT_RULE, image_contract_debt_cards, normalize_evidence_id
 from vfx_harness.domain.work_units import (
     LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
     UNIT_JUDGE_CLAIM_COVERAGE_RULE,
-    MutationScope,
     unearned_look_judge_frames,
 )
 from vfx_harness.evidence import scene_checks
@@ -33,10 +37,20 @@ from vfx_harness.observability.log import (
     log,
 )
 from vfx_harness.observability.worklists import load_unit_worklist
+from vfx_harness.orchestration.judgment_debt_state import current_judgment_debt_states
 from vfx_harness.orchestration.ledger import Milestone
-from vfx_harness.orchestration.plan_authority import resolve_current, selected_artifact_path
-from vfx_harness.orchestration.unit_state import load as load_unit_state
 from vfx_harness.orchestration.unit_state import unit_digest
+
+__all__ = ("_composition_judge_unit", "_load_provisional_decisions")
+
+
+def _load_provisional_decisions(shot: Shot, layer_id: str) -> tuple[dict, ...]:
+    """Compatibility seam for verdict-level callers and monkeypatched tests."""
+    return _load_provisional_decisions_impl(
+        shot,
+        layer_id,
+        state_loader=current_judgment_debt_states,
+    )
 
 
 def _executable_unit_verdict(
@@ -265,113 +279,6 @@ def _provisional_decisions_for_layer(
     return tuple(rows)
 
 
-def _load_provisional_decisions(shot: Shot, layer_id: str) -> tuple[dict, ...]:
-
-    def rows(path: Path) -> list[dict]:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        values = payload.get("requirements") if isinstance(payload, dict) else None
-        if not isinstance(values, list):
-            raise ValueError(f"{path} must contain requirements[]")
-        return values
-
-    bundle = resolve_current(shot.folder)
-    state = load_unit_state(shot.folder, str(layer_id))
-    return _provisional_decisions_for_layer(
-        rows(bundle.root / "requirements.json"),
-        rows(selected_artifact_path(shot.folder, "requirements.json")),
-        str(layer_id),
-        falsifications=tuple(state.get("falsifications") or ()),
-        bundle_hash=bundle.content_hash,
-    )
-
-
-def _composition_judge_unit(layer, provisional_decisions=()):
-    """Fan-in unit for composed canonical when every stage is executable-only.
-
-    Multi-unit composition used to call ``_verify_script`` with ``active_unit=None``,
-    which ``_judge_unit_or_layer`` treats as a critic session. Look-less camera layers
-    then scored EEVEE-black plates as look 1.0 on every ``layer.owns`` axis, including
-    axes with no required unit claim (run 20260827T031330Z-c4687e, HIR-0039).
-    """
-    stages = tuple(getattr(layer, "stages", ()) or ())
-    if not stages:
-        return None
-    provisional_decisions = tuple(provisional_decisions or ())
-    if (
-        any(tuple(getattr(unit, "look_capabilities", ()) or ()) for unit in stages)
-        and not provisional_decisions
-    ):
-        return None
-    unit_claims = tuple(
-        claim for unit in stages for claim in (unit.evaluation.claims or ())
-    )
-    required = [claim for claim in unit_claims if claim.required]
-    if not required and not provisional_decisions:
-        return None
-    if any(claim.authority != "executable_required" for claim in required) and not provisional_decisions:
-        return None
-
-    roles = tuple(
-        dict.fromkeys(role for unit in stages for role in unit.mutates.roles)
-    )
-    controls = tuple(
-        dict.fromkeys(control for unit in stages for control in unit.mutates.controls)
-    )
-    moments = tuple(int(frame) for frame, _ref in getattr(layer, "judges", ()) or ())
-    qualitative = []
-    for decision in provisional_decisions:
-        for axis in tuple(getattr(layer, "owns", ()) or ("reference_match",)):
-            binding_id = f"requirement:{decision['id']}:{axis}"
-            qualitative.append(
-                SimpleNamespace(
-                    id=binding_id,
-                    proposition=decision["statement"],
-                    axis=str(axis),
-                    property="reference_identity",
-                    subject_roles=roles,
-                    subject_controls=controls,
-                    moments=moments,
-                    kind="atomic",
-                    required=True,
-                    authority="qualified_qualitative_required",
-                    repair_owner=f"{getattr(layer, 'id', 'layer')}._composition",
-                    asserts="image",
-                    evidence=(SimpleNamespace(kind="qualification", id=binding_id),),
-                    binding_ids=(binding_id,),
-                )
-            )
-    claims = (*unit_claims, *qualitative)
-    return SimpleNamespace(
-        id=f"{getattr(layer, 'id', 'layer')}._composition",
-        look_capabilities=tuple(
-            dict.fromkeys(
-                capability
-                for unit in stages
-                for capability in (getattr(unit, "look_capabilities", ()) or ())
-            )
-        ),
-        evaluation=SimpleNamespace(
-            claims=claims,
-            judges=tuple(
-                SimpleNamespace(frame=int(frame), ref=ref)
-                for frame, ref in getattr(layer, "judges", ()) or ()
-            ),
-            composition_context=None,
-        ),
-        provisional_requirement_ids=tuple(
-            str(decision["id"]) for decision in provisional_decisions
-        ),
-        provisional_decisions=provisional_decisions,
-        worklist_units=stages,
-        mutates=MutationScope(
-            mode="scoped",
-            roles=roles,
-            controls=controls,
-            script_spans=(),
-        ),
-    )
-
-
 def _required_claims_at(unit, frame: int):
     """Required claims whose moments include this canonical frame."""
     claims = tuple(getattr(getattr(unit, "evaluation", None), "claims", ()) or ())
@@ -533,10 +440,21 @@ def _provisional_composition_contract_gap(
     observation as a contract-gap row instead of retaining a broad repair instruction or
     replacing it with an opaque score-only summary.
     """
+    # HIR-0032's no-signal result is an inability to observe the proposition, not
+    # independent qualitative evidence that the proposition is false.  Preserve the
+    # typed unpaid attempt so the provisional debt remains unresolved; converting it
+    # here would make an empty plate publish a false HIR-0137 falsification.
+    if judged.get("decided_by") == "no_optical_signal":
+        return judged
+
     provisional = tuple(
         getattr(active_unit, "provisional_requirement_ids", ()) or ()
     )
-    prefixes = tuple(f"requirement:{requirement_id}:" for requirement_id in provisional)
+    debt_ids = tuple(getattr(active_unit, "provisional_debt_ids", ()) or ())
+    prefixes = (
+        *(f"requirement:{requirement_id}:" for requirement_id in provisional),
+        *(f"judgment-debt:{debt_id}:" for debt_id in debt_ids),
+    )
     rows = list(judged.get("observation_reconciliation") or [])
     converted = []
     retained = []
@@ -577,7 +495,11 @@ def _provisional_composition_contract_gap(
                     "property": "reference_identity",
                     "moment": int(frame),
                     "roles": list(getattr(active_unit.mutates, "roles", ()) or ()),
-                    "claim_id": f"requirement:{requirement_id}",
+                    "claim_id": (
+                        f"judgment-debt:{debt_ids[index]}"
+                        if index < len(debt_ids)
+                        else f"requirement:{requirement_id}"
+                    ),
                     "check_ids": [],
                     "panel_ids": [],
                 },
@@ -587,7 +509,7 @@ def _provisional_composition_contract_gap(
                 ),
                 "check_ids": [],
             }
-            for requirement_id in provisional
+            for index, requirement_id in enumerate(provisional)
         ]
     judged["issues"] = []
     judged["contract_gap"] = True

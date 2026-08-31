@@ -41,8 +41,9 @@ These are the names the rest of this file and the CLI use. They are not departme
 | **write-cluster** | The one mutation family a unit is allowed (role namespace × host × instrument). Mixed families cannot publish. |
 | **evidence** | Measurements and renders on disk. Model prose is not evidence. |
 | **critic** | Visual judge for qualitative leftovers. It cannot override a passing measurement of the same fact. |
-| **hypothesis_falsified** | Builder found the published plan cannot work inside its scope. Stop. Do not patch around it. Consume the finding with `vfx units replan`. |
-| **cannot_express_in_scope** | Repair cannot fix this with the unit's allowed mutations. Remaining repair budget stops. Same replan/remat path, not more builder turns. |
+| **hypothesis_falsified** | Builder proved the selected unit authority cannot work inside its scope. Stop. Publish a validated amended authority generation first; only then may `vfx units replan` consume the exact finding. |
+| **cannot_express_in_scope** | Repair cannot fix this with the unit's allowed mutations. Remaining repair budget stops. Read the typed stop; do not infer replan, rematerialize, or retry from this label alone. |
+| **stop envelope** | The immutable typed reason a run stopped, plus its one legal route and exact evidence. Exit code, `status.detail`, and `contract_gap` are summaries, not dispatch authority. |
 | **superseded / blocked / passed** | Lifecycle of a unit: replaced by a newer DAG, waiting on a failed/replaced dependency, or accepted. Not scene-quality scores. |
 | **fail closed** | On stale, ambiguous, or incomplete authority, stop. Do not guess or silently use an old file. |
 | **`--force`** | Debug only. Never a deliverable. |
@@ -86,8 +87,8 @@ brief.md + refs/
                       ├─ pass → checkpoint, next unit
                       ├─ repairable miss → bounded repair from checkpoint
                       ├─ cannot_express / hypothesis_falsified → STOP
-                      │         then rematerialize and/or units replan
-                      ├─ interrupt → units retry from last checkpoint
+                      │         follow only the current typed stop action
+                      ├─ interrupt → STOP; no automatic session resume
                       └─ units passed, composed layer failed → STOP (exit 9)
         ▼
    ACCEPT (empty-scene full chain)  ── fail → declared fault-owning layer
@@ -96,13 +97,22 @@ brief.md + refs/
 ```
 
 `vfx run <shot>` walks this under one run id and **stops at the first unaccepted
-boundary**. Do not stack later layers on a broken earlier one.
+boundary**. A stopped run selects `reports/stop-envelope.json` by digest from
+`status.json`; bare child exits fail closed as `harness_defect`. Do not stack later
+layers on a broken earlier one. If envelope publication or read-back fails, status marks
+the envelope unavailable and no action is authorized. There is no automatic recovery
+controller yet.
 
 ### 1. Preflight
 
 ```bash
 vfx preflight --strict
 ```
+
+Strict preflight prints a secret-safe `vfx-harness.environment-result/v1` JSON record;
+`--output <path>` writes the same typed result atomically. During `vfx run`, the run
+layout exists before this probe so a failure can publish a run-scoped infrastructure
+stop without creating or advancing shot authority.
 
 **Can happen:** missing auth, wrong env var name, Blender missing, config error. These can
 look like a successful empty agent session (`cost=$0`, one turn, nothing built). Fix the
@@ -167,7 +177,7 @@ and later empty-scene replay of the published script.
 | qualitative miss | Critic on owned axes only; still cannot override a passing measurement. |
 | `cannot_express_in_scope` | Stop remaining repairs. Typed finding, not more mutations. |
 | `hypothesis_falsified` | Plan is wrong. Publish amended authority; `vfx units replan --falsification`. |
-| interrupt / SDK failure | Rollback. Retry only if the ledger names a real checkpoint and journal. |
+| interrupt / SDK failure | Stop. Start a new run from the fault-owning unit. The operator-only `vfx units retry` command requires independent review; it neither consumes the stop action nor emits a receipt. A legacy checkpoint-and-journal row does not authorize automatic session resume. |
 | unpassed prior | Refuse (exit 6). Do not build on a layer that never passed. |
 | brief changed since plan | Refuse (exit 8). Replan first. |
 | unanswered question on this layer | Refuse (exit 5). Escalate. |
@@ -222,9 +232,16 @@ vfx render shots/<shot>
 
 Acceptance replays the **whole chain from an empty scene** and judges the approval
 moments. A missing or unaccepted layer refuses (exit 7). `--repair` routes a failure to
-the layer that owns the failing axis — it does not let a later layer compensate.
+the layer that owns the failing axis for diagnosis only — it does not mutate unit state
+or let a later layer compensate. When all prerequisites are present but a selected
+moment fails, full acceptance persists its exact evidence and returns a typed
+`human_decision_required` stop.
 
-Render encodes the accepted chain to mp4.
+Successful full acceptance stores `vfx-harness.acceptance-outcome/v1`, bound to the
+selected bundle and JIT view, accepted script chain, exact moment set, and evidence
+bytes. Full `vfx render` re-resolves and re-hashes that outcome before starting Blender;
+missing, failed, or stale acceptance refuses. `--upto` and `--force` are preview modes
+and default under the current run's `scratch/previews/`, never `deliverables/`.
 
 ## Commands
 
@@ -238,22 +255,30 @@ plan → materialize/rematerialize per layer → build units → accept → rend
 | **layer design** | `vfx plan <shot> --layer N` | Materialize, then plan the first ready unit. `--unit ID` picks a ready unit. |
 | **build** | `vfx build <shot> --layer N` | Build that layer's ready units as additive scripts. |
 | **run** | `vfx run <shot>` | Whole driver. Stops on first unaccepted boundary. `--dry-run` previews. |
-| **accept** | `vfx accept <shot>` | Empty-scene full chain. |
-| **render** | `vfx render <shot>` | Encode the accepted frame range. |
+| **accept** | `vfx accept <shot>` | Empty-scene full chain; publish an exact typed acceptance outcome. |
+| **render** | `vfx render <shot>` | Encode a deliverable only from the current passing acceptance outcome. |
 | **inspect** | `vfx inspect <shot> --list-runs` | Read generated runs in the supported order. |
 
-Also: `vfx escalate` (answer plan questions), `vfx asset` (image→3D cache),
+Also: `vfx escalate` (answer plan questions),
 `vfx evals plan` / `vfx evals checks`.
 
 ## Run outputs
 
-Every producing command writes under `shots/<shot>/runs/<run-id>/`. Read in this order:
+Every shot-scoped producing command writes under `shots/<shot>/runs/<run-id>/`.
+Standalone preflight is the typed stdout/output-path exception described above. Read a
+shot run in this order:
 
 1. `runs/latest.json`
 2. that run's `manifest.json`
-3. `status.json` — `detail` is the stop meaning, not the exit-code digit
+3. `status.json` — terminal state and, when unaccepted, the digest-selected stop-envelope pointer
 4. `reports/summary.json`
 5. `artifacts.json`
+
+For a failed or interrupted run, read and validate `reports/stop-envelope.json` through
+that status pointer. `detail`, `terminal_cause`, and the process exit code remain useful
+operator summaries, but none authorizes retry, replan, recovery, or escalation. A legal
+action in the envelope names the only allowed route; no controller or transaction-receipt
+runtime executes it automatically yet.
 
 Open `reports/layers/`, `plan_gate.json`, evidence, transcripts, or checkpoints only when
 the summary names a reason. Do not diagnose by listing the shot or grepping every log.
@@ -292,13 +317,14 @@ The pipeline refuses rather than proceeding on unreviewed work:
 
 - building a layer on a prior that never passed (`UnpassedPrior`, exit 6)
 - judging acceptance on a partial chain (`IncompleteChain`, exit 7)
-- rendering a chain with missing or unaccepted layers (`IncompleteRender`, exit 7)
+- rendering without a current passing typed acceptance outcome (`IncompleteRender`, exit 7)
 - building when `brief.md` has changed since the plan was written (exit 8)
 - building with unanswered questions that affect this layer or one of its owned axes
   (exit 5); downstream-only questions do not block unrelated earlier layers
 - units passed but composed layer verdict did not (exit 9)
 
-Each has a `--force` for debugging, which names exactly what it is overriding.
+Where a debugging override exists, it never produces a deliverable. Forced and partial
+renders are previews even when their scripts execute successfully.
 
 ## Judging, in short
 
@@ -382,8 +408,11 @@ Whole shot under one run id:
 vfx run shots/barrel_roll            # --dry-run to preview
 ```
 
-It skips layers already recorded as passed (so it doubles as resume), stops at the first
-failing layer, and propagates that layer's exit code.
+It skips layers already recorded as passed, stops at the first failing layer, and
+preserves the numeric exit code for CLI compatibility. Recovery meaning comes only from
+the child-selected typed stop envelope; a bare exit is reclassified as a harness defect,
+not guessed into a retry or replan. This is checkpoint reuse across runs, not automatic
+resume of an interrupted model session.
 
 ## What a run leaves behind
 
@@ -399,9 +428,10 @@ shots/<shot>/
   runs/latest.json          selected structured run
   runs/<run-id>/
     manifest.json           schema, invocation, layout, authority
-    status.json             terminal state; read `detail`, not the exit digit
+    status.json             terminal state and selected stop-envelope digest
     artifacts.json          complete file catalog
-    reports/summary.json    findings, cost, trajectory
+    reports/summary.json    findings, cost, trajectory, typed stop summary
+    reports/stop-envelope.json  immutable terminal stop authority when unaccepted
     reports/layers/         one aggregate report per layer
     logs/                   console, transcripts, costs
     evidence/               judged renders and comparisons

@@ -7,6 +7,10 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- A camera-providing sparse layer may reserve only its camera grant. Extra form
+  selectors fail at ownership mapping and the plan gate, so global publication
+  cannot combine camera provide with later subject-form namespaces
+  ([HIR-0128](docs/improvements/HIR-0128-camera-capability-does-not-authorize-subject-form.md)).
 - Internal layout: oversized modules are subpackages under the existing layer
   folders (`domain/work_units`, `agents/builder`, `blender/tools`, and so on).
   Public imports, CLI entry points, and `python -m` commands are unchanged.
@@ -34,6 +38,63 @@ live in the linked Harness Improvement Records.
   `dressable` grant is for later layers only, and the rejection no longer tells
   the materializer to list those selectors on the owning layer's row
   ([HIR-0161](docs/improvements/HIR-0161-same-layer-dressing-is-not-owner-granted.md)).
+- A work unit may declare a closed construction route (`procedural` default,
+  `generate`, `retrieve`, `simplify`). `generate`/`retrieve` require a mesh write
+  family; `generate` requires `refobs-*` witnesses and cannot bind a required
+  `object_count` whose minimum exceeds 1. The Meshy adapter posts every supplied
+  view (1–4) to `/multi-image-to-3d` and cannot drop extras onto a single
+  `image_url`
+  ([HIR-0162](docs/improvements/HIR-0162-construction-route-replaces-ungoverned-asset-import.md),
+  [ADR-0009](docs/decisions/ADR-0009-construction-route-authority.md)).
+  Generate-construction plates (`isolate_relight`, `orbit_view`, `isolate_cutout`)
+  call Higgsfield with a parent crop; text-only generate is refused, and an all-white
+  derived plate fails identity before Meshy. Materialization mints `refobs-*` crops
+  into shot-root `state/refobs/` and refuses unregistered generate witnesses. On
+  `vfx run`, a generate unit is prepared before the builder session: identity-gated
+  plates → Meshy multi-image → hash-verified promotion to
+  `build/construction/<sha256>.glb`. Generate units import with
+  `bvfx_import_construction()`; `vfx asset` and generate-unit `import_asset` fail
+  closed.
+- Provisional image judgment is now typed debt with exact requirement, owner,
+  fault unit, subject, moment, carrier, medium, lifecycle, and digest authority.
+  The harness derives activation from the selected DAG's first relevant carrier,
+  pins exact payer unit digests, and moves debt to `due` only after cumulative
+  empty-scene replay issues a checkpoint- and artifact-verified payer receipt. It
+  keeps executable checkpoints independent from `pending_not_due` debt and records
+  durable `due → satisfied|falsified` transitions. A deterministic two-layer
+  orchestration ratchet proves the camera artifact can pass, matching form pays once,
+  a camera-only prefix is refused, restart does not repay, and acceptance cannot lose
+  open debt. Unrelated carriers and misowned appearance fail closed, no-signal plates
+  do not call a critic, and final acceptance refuses unresolved debt. Due observations
+  now carry a sealed current-authority/replay/reference/environment/config request plus
+  the actual render-settings/PNG capture receipt. No-signal attempts persist under the
+  exact request digest: unchanged direct restart revalidates replay but performs no
+  raster or critic call, while a changed typed environment permits one new attempt.
+  Downstream JIT publication, planner kickoff, and materialization-stop classification
+  also require the dependency's producer-valid current sealed outcome: global-DAG replay
+  prefix, script/reference inputs, explicit raster-or-executable observation kind, and
+  render receipt/bytes where applicable. Semantic layer ids use traversal-safe outcome
+  and planning-scratch locators rather than decimal filename conventions
+  ([HIR-0163](docs/improvements/HIR-0163-provisional-judgment-debt-activates-on-relevant-carriers.md)).
+- Unaccepted stage boundaries now publish one immutable, digest-selected
+  `vfx-harness.stop-envelope/v1` whose closed class, exact authority/evidence identity,
+  and single typed transaction replace exit codes and prose as machine dispatch
+  authority. `EvidenceNotDue` is successful continuation. Transaction targets derive
+  their exact state assertions, dispatch mode, receipt schema, and matching domain
+  postcondition; receipt-bound evaluation and idempotency contracts make unchanged
+  repeated causes detectable without claiming progress. The common run boundary reads
+  the envelope back and `status.json` selects it by digest. This release provides
+  classification and transaction scaffolding only: there is no recovery controller,
+  transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
+  safe resume producer, or proven local-implementation retry producer
+  ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- A normal full render now requires a complete passing
+  `vfx-harness.acceptance-outcome/v1` for the exact current bundle, materialized view,
+  accepted layer/unit script chain, selected moments, and unchanged render/reference
+  evidence. Missing, failed, partial, or stale outcomes refuse deliverable publication.
+  Forced and `--upto` renders remain previews and default to the current run's scratch
+  tree rather than the deliverables directory
+  ([HIR-0165](docs/improvements/HIR-0165-deliverables-require-current-acceptance.md)).
 - Durable layer memory now lives under shot-root `state/`; reading it cannot create an
   orphan direct run or displace the latest production-run pointer
   ([HIR-0155](docs/improvements/HIR-0155-layer-memory-does-not-create-runs.md)).

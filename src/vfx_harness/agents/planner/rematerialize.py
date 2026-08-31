@@ -12,9 +12,10 @@ from vfx_harness.agents.planner.kickoff import (
     _materialization_kickoff,
     _with_target_feedback,
 )
+from vfx_harness.agents.planner.materialization_stop import publish_materialization_stop
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.planner.types import MATERIALIZATION_DENIED_TOOLS, _phase_tools
-from vfx_harness.agents.resilience import result_signal, run_session
+from vfx_harness.agents.resilience import AgentSessionFailure, result_signal, run_session
 from vfx_harness.infrastructure.config import DEFAULT_EXECUTION_MODEL
 from vfx_harness.knowledge.recipes import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
@@ -29,6 +30,7 @@ from vfx_harness.orchestration.jit_materialization import (
     seed_materialization_candidate,
     selected_view_artifact,
 )
+from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 
 
 async def _materialize_deferred_layer(
@@ -49,7 +51,8 @@ async def _materialize_deferred_layer(
 
     bundle = plan_authority.resolve_current(shot.folder)
     layout = run_artifacts.ensure(shot.folder, command="plan-layer")
-    target = layout.scratch / f"jit-layer-{layer.id}.json"
+    identity_segment = layer_identity_segment(str(layer.id))
+    target = layout.scratch / f"jit-{identity_segment}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     rel_target = target.relative_to(shot.folder).as_posix()
     seed_materialization_candidate(
@@ -102,7 +105,9 @@ result before authoring the next unit. Never issue several staging calls in one 
 turn. Include only that unit, its scene contracts, and the owned requirement bindings it
 closes. If a later cross-unit finding proves a staged decomposition wrong, call
 `unstage_materialization_unit` in reverse dependency order; never replace
-`/layer/stages` through `patch_materialization`. After all units are
+`/layer/stages` through `patch_materialization`. A unique source mesh may set
+`construction.route` generate only after `mint_refobs` on a refs/ crop (not a whole
+frame); retrieve is not wired. After all units are
 staged, call `finalize_materialization`; repair its complete findings with
 `patch_materialization`, then finalize again. The completed candidate must contain non-empty
 bounded stages and close every
@@ -187,7 +192,7 @@ global authority, create unit state, write prose, or write another file."""
         replacing,
         overlay_root=overlay_root,
     )
-    lab_dir = layout.scratch / "plan-lab" / f"layer-{int(layer.id):02d}-materialize"
+    lab_dir = layout.scratch / "plan-lab" / f"{identity_segment}-materialize"
     pserver, pnames = build_plan_tools(
         shot.folder,
         blender=blender,
@@ -196,7 +201,7 @@ global authority, create unit state, write prose, or write another file."""
         enabled_tools=frozenset({
             "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
             "escalate_vocabulary_gap", "stage_materialization_unit",
-            "unstage_materialization_unit",
+            "unstage_materialization_unit", "mint_refobs",
             "materialization_status", "finalize_materialization", "patch_materialization",
         }),
         candidate_materialization=target,
@@ -206,7 +211,7 @@ global authority, create unit state, write prose, or write another file."""
     materialization_tools = _phase_tools(
         pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
         "escalate_vocabulary_gap", "stage_materialization_unit",
-        "unstage_materialization_unit",
+        "unstage_materialization_unit", "mint_refobs",
         "materialization_status", "finalize_materialization", "patch_materialization",
     )
     options = ClaudeAgentOptions(
@@ -258,7 +263,6 @@ global authority, create unit state, write prose, or write another file."""
         max_turns=max_turns,
     )
     try:
-
         await run_session(
             _attempt,
             succeeded=lambda: materialization_finalization_attested(
@@ -267,14 +271,31 @@ global authority, create unit state, write prose, or write another file."""
             label=f"materialize layer {layer.id}",
             accept_max_turns_if_succeeded=True,
         )
-    except Exception as exc:
+    except AgentSessionFailure as exc:
         log(f"! materialize session died: {str(exc)[:200]}")
         transcript.event("died", error=str(exc)[:2000])
-        raise
+        envelope = publish_materialization_stop(
+            layout,
+            bundle=bundle,
+            layer_id=str(layer.id),
+            candidate=target,
+            overlay_root=overlay_root,
+        )
+        raise run_artifacts.TypedStop(3, envelope) from exc
     finally:
         transcript.unbind()
         costlog.unbind()
-    publish_materialization(shot.folder, target, overlay_root=overlay_root)
+    try:
+        publish_materialization(shot.folder, target, overlay_root=overlay_root)
+    except (OSError, TypeError, ValueError, plan_authority.PlanPublicationError) as exc:
+        envelope = publish_materialization_stop(
+            layout,
+            bundle=bundle,
+            layer_id=str(layer.id),
+            candidate=target,
+            overlay_root=overlay_root,
+        )
+        raise run_artifacts.TypedStop(3, envelope) from exc
     log(f"deferred layer {layer.id} materialized against bundle {bundle.content_hash[:12]}")
 
 DRAFT_MODEL = DEFAULT_EXECUTION_MODEL

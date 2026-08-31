@@ -222,6 +222,23 @@ def test_unit_ticket_schema_exposes_exact_consumes_and_optional_context(role: st
         for error in errors
     )
 
+    generate = json.loads(json.dumps(ticket))
+    generate["construction"] = {
+        "route": "generate",
+        "witnesses": ["refobs-abc123"],
+    }
+    assert list(Draft202012Validator(schema).iter_errors(generate)) == []
+
+    omit = json.loads(json.dumps(ticket))
+    omit["construction"] = {"route": "omit"}
+    errors = list(Draft202012Validator(schema).iter_errors(omit))
+    assert any("is not one of" in error.message for error in errors)
+
+    bare_generate = json.loads(json.dumps(ticket))
+    bare_generate["construction"] = {"route": "generate"}
+    errors = list(Draft202012Validator(schema).iter_errors(bare_generate))
+    assert errors
+
 
 def test_materialization_ticket_encodes_one_mutation_namespace() -> None:
     schema = work_unit_authoring_schema(clustered_mutation_roles=True)
@@ -393,9 +410,89 @@ def test_deferred_subject_activation_compiles_earliest_geometry_successor() -> N
         "kind": "bbox_height",
         "owner_layer": "1",
         "activates_at": "3",
+        "roles": ["subject.mass"],
     }
     gaps = deferred_subject_activation_gaps(card, [wrong])
     assert len(gaps) == 1
     assert gaps[0].found == "3"
     assert gaps[0].expected == "2"
     assert not deferred_subject_activation_gaps(card, [{**wrong, "activates_at": "2"}])
+
+
+def test_deferred_subject_activation_ignores_unrelated_geometry_prefix() -> None:
+    layers = [
+        {
+            "id": "1",
+            "jit": {
+                "depends_on_layers": [],
+                "provides": {"camera": ["camera.rig"]},
+                "reserved_roles": ["camera.rig"],
+            },
+        },
+        {
+            "id": "2",
+            "jit": {
+                "depends_on_layers": ["1"],
+                "provides": {},
+                "reserved_roles": ["environment.ground"],
+            },
+        },
+        {
+            "id": "3",
+            "jit": {
+                "depends_on_layers": ["2"],
+                "provides": {},
+                "reserved_roles": ["character.body.torso"],
+            },
+        },
+    ]
+    card = compile_deferred_subject_activation(layers, "1")
+    row = {
+        "id": "character-framing",
+        "kind": "bbox_height",
+        "owner_layer": "1",
+        "activates_at": "2",
+        "roles": ["character.body"],
+    }
+
+    gaps = deferred_subject_activation_gaps(card, [row])
+
+    assert len(gaps) == 1
+    assert gaps[0].expected == "3"
+    assert not deferred_subject_activation_gaps(
+        card, [{**row, "activates_at": "3"}]
+    )
+
+
+def test_deferred_subject_activation_rejects_no_reachable_matching_geometry() -> None:
+    layers = [
+        {
+            "id": "1",
+            "jit": {
+                "depends_on_layers": [],
+                "provides": {"camera": ["camera.rig"]},
+                "reserved_roles": ["camera.rig"],
+            },
+        },
+        {
+            "id": "2",
+            "jit": {
+                "depends_on_layers": ["1"],
+                "provides": {},
+                "reserved_roles": ["set.backdrop"],
+            },
+        },
+    ]
+    card = compile_deferred_subject_activation(layers, "1")
+    row = {
+        "id": "vehicle-framing",
+        "kind": "bbox_height",
+        "owner_layer": "1",
+        "activates_at": "2",
+        "roles": ["vehicle.cabin"],
+    }
+
+    gaps = deferred_subject_activation_gaps(card, [row])
+
+    assert len(gaps) == 1
+    assert gaps[0].expected is None

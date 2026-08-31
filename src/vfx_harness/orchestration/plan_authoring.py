@@ -27,9 +27,11 @@ from vfx_harness.domain.plan_records import (
     brief_clause_spans,
 )
 from vfx_harness.domain.work_units import (
+    CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
     EVIDENCE_DOMAINS,
     GLOBAL_SCENE_CAPABILITIES,
     REQUIREMENT_DOMAIN_COVERAGE_FIX,
+    extra_reserved_roles_on_camera_layer,
     layers_covering_evidence_domains,
     parse_evidence_domains,
     requirement_domain_coverage_what,
@@ -284,6 +286,24 @@ def validate_mapping(
                         f"{where}.provides.{capability} names roles not present verbatim "
                         "in reserved_roles: " + ", ".join(undeclared)
                     )
+            extra_form = extra_reserved_roles_on_camera_layer(
+                provided_capabilities=provided,
+                camera_selectors=(
+                    list(provides.get("camera") or [])
+                    if isinstance(provides.get("camera"), list)
+                    else []
+                ),
+                reserved_roles=roles or [],
+            )
+            if extra_form:
+                errors.append(
+                    f"{where}.reserved_roles names form selectors a camera-providing "
+                    "layer cannot mutate as geometry: "
+                    + ", ".join(extra_form)
+                    + f" — {CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE} Split camera provide "
+                    "onto its own layer; reserve those selectors on a later layer that "
+                    "does not provide camera."
+                )
         dependency_capabilities = {
             capability
             for dependency in (depends if isinstance(depends, list) else [])
@@ -434,8 +454,10 @@ def expand_mapping(
             }
         requirement_rows.append({**row, "resolution": resolved})
     _write("requirements.json", {
-        "schema": "vfx-harness.requirements/v1",
+        "schema": "vfx-harness.requirements/v2",
         "requirements": requirement_rows,
+        "judgment_debt_definitions": [],
+        "judgment_debt_activations": [],
     })
 
     owned = derive_owned_requirements(mapping)

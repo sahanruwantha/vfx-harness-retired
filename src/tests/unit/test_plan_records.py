@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from vfx_harness.domain.plan_records import load_active_structured_decisions, load_requirements
+from vfx_harness.domain.judgment_debts import (
+    JudgmentDebtActivation,
+    JudgmentDebtSeed,
+    JudgmentPoint,
+    JudgmentProvider,
+    compile_judgment_debt,
+)
+from vfx_harness.domain.plan_records import (
+    load_active_structured_decisions,
+    load_judgment_debt_activations,
+    load_judgment_debt_definitions,
+    load_requirements,
+)
 from vfx_harness.evaluation.plan_gate import _check_meta_records
 from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.observability import run_artifacts
@@ -18,14 +31,17 @@ from vfx_harness.orchestration.jit_materialization import (
     publish_materialization,
     validate_materialization,
 )
+from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
+from vfx_harness.orchestration.layer_plans import write_layer_outcome
 from vfx_harness.orchestration.ledger import load_layers_from_path
-from vfx_harness.orchestration.plan_authority import publish_current
+from vfx_harness.orchestration.plan_authority import publish_current, selected_artifact_path
 from vfx_harness.orchestration.plan_due import (
     PlanDueError,
     require_due_clear,
     resolve_acceptance_completion,
     resolve_unit_completion,
 )
+from vfx_harness.orchestration.revalidation import eligibility, input_manifest
 
 
 def _deferred_owner(layer: str, *domains: str) -> dict:
@@ -35,6 +51,26 @@ def _deferred_owner(layer: str, *domains: str) -> dict:
         "owner_layer": layer,
         "due": {"kind": "before_layer", "layer": layer},
         "evidence_domains": list(domains) or ["scene"],
+    }
+
+
+def _judgment(
+    *,
+    fault_owner: str = "polish",
+    property_kind: str = "subject_appearance",
+    subject_roles: list[str] | None = None,
+    moments: list[int] | None = None,
+) -> dict:
+    return {
+        "claim_kind": "atomic",
+        "property": property_kind,
+        "fault_owner": fault_owner,
+        "subject_roles": subject_roles or ["polish.comp"],
+        "axes": ["final_lock"],
+        "moments": moments or [239, 240],
+        "carrier_families": ["mesh"],
+        "observation_medium": "workbench_solid",
+        "lifecycle": "persistent",
     }
 
 
@@ -54,6 +90,7 @@ def _select_generation(root: Path, bundle_hash: str) -> None:
 def _candidate(root: Path) -> None:
     (root / "brief.md").write_text("Final image must hold unchanged from frame 239 to 240.\n", encoding="utf-8")
     (root / "refs").mkdir()
+    (root / "refs" / "a.png").write_bytes(b"sealed layer-one reference")
     (root / "plans").mkdir()
     (root / "plans" / "global.md").write_text("# executable fixture plan\n", encoding="utf-8")
     _write(root / "layers.json", {
@@ -103,7 +140,9 @@ def _candidate(root: Path) -> None:
     }]})
     digest = hashlib.sha256((root / "brief.md").read_bytes()).hexdigest()
     _write(root / "requirements.json", {
-        "schema": "vfx-harness.requirements/v1",
+        "schema": "vfx-harness.requirements/v2",
+        "judgment_debt_definitions": [],
+        "judgment_debt_activations": [],
         "requirements": [{
             "id": "R-final-lock", "statement": "frames 239 and 240 are unchanged",
             "citation": {"source": "brief.md", "sha256": digest, "line_start": 1, "line_end": 1},
@@ -122,6 +161,185 @@ def _candidate(root: Path) -> None:
     _write(root / "assumptions.json", {
         "schema": "vfx-harness.assumptions/v1", "assumptions": [],
     })
+
+
+def _add_judgment_debt_catalog(root: Path, bundle_digest: str) -> None:
+    """Attach one exact qualitative-debt definition and payer to the fixture."""
+    definition = compile_judgment_debt(
+        JudgmentDebtSeed(
+            requirement_id="R-final-lock",
+            statement="frames 239 and 240 are unchanged",
+            decision_strength="approved_start",
+            claim_kind="atomic",
+            property="reference_identity",
+            owner_layer="1",
+            fault_owner="lock",
+            subject_roles=("comp",),
+            axes=("final_lock",),
+            judge_points=(JudgmentPoint(frame=240, ref="refs/a.png"),),
+            observation_medium="workbench_solid",
+            lifecycle="layer",
+            bundle_digest=bundle_digest,
+            carrier_families=("mesh",),
+        ),
+        (JudgmentProvider("comp-mesh", "1", "mesh", ("comp.surface",)),),
+        layer_dependencies={"1": ()},
+        layer_order=("1",),
+    )
+    activation = JudgmentDebtActivation.for_definition(
+        definition,
+        payer_unit_digests=(("lock", hashlib.sha256(b"lock").hexdigest()),),
+    )
+    requirements = json.loads((root / "requirements.json").read_text(encoding="utf-8"))
+    requirements["judgment_debt_definitions"] = [definition.as_dict()]
+    requirements["judgment_debt_activations"] = [activation.as_dict()]
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "decision",
+        "ids": [],
+        "decision": definition.seed.statement,
+        "decision_strength": definition.seed.decision_strength,
+        "evidence_domains": ["image"],
+        "domain_bindings": [
+            {
+                "domain": "image",
+                "kind": "provisional_decision",
+                "statement": definition.seed.statement,
+                "decision_strength": definition.seed.decision_strength,
+                "debt_id": definition.debt_id,
+                "definition_digest": definition.digest,
+                "activates_at": definition.binding.activates_at,
+            }
+        ],
+    }
+    _write(root / "requirements.json", requirements)
+
+
+def test_judgment_debt_catalog_loads_strict_typed_round_trip(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    bundle_digest = hashlib.sha256(b"selected-plan").hexdigest()
+    _add_judgment_debt_catalog(tmp_path, bundle_digest)
+
+    requirements = load_requirements(tmp_path)
+    definitions = load_judgment_debt_definitions(
+        tmp_path,
+        requirements=requirements,
+        selected_bundle_digest=bundle_digest,
+    )
+    activations = load_judgment_debt_activations(
+        tmp_path,
+        definitions=definitions,
+    )
+
+    assert len(definitions) == len(activations) == 1
+    assert activations[0].definition_digest == definitions[0].digest
+
+
+def test_judgment_debt_catalog_rejects_stale_and_orphan_rows(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    bundle_digest = hashlib.sha256(b"selected-plan").hexdigest()
+    _add_judgment_debt_catalog(tmp_path, bundle_digest)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["judgment_debt_definitions"][0]["definition_digest"] = "0" * 64
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match="definition_digest is stale"):
+        load_judgment_debt_definitions(tmp_path)
+
+    _add_judgment_debt_catalog(tmp_path, bundle_digest)
+    definitions = load_judgment_debt_definitions(tmp_path)
+    orphan = replace(
+        load_judgment_debt_activations(tmp_path, definitions=definitions)[0],
+        definition_digest=hashlib.sha256(b"orphan-definition").hexdigest(),
+    )
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["judgment_debt_activations"] = [orphan.as_dict()]
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match="unknown judgment debt definition"):
+        load_judgment_debt_activations(tmp_path, definitions=definitions)
+
+
+def test_judgment_debt_catalog_rejects_duplicate_definition_and_activation(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    bundle_digest = hashlib.sha256(b"selected-plan").hexdigest()
+    _add_judgment_debt_catalog(tmp_path, bundle_digest)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["judgment_debt_definitions"].append(
+        requirements["judgment_debt_definitions"][0]
+    )
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match="definition_digest duplicates exact definition"):
+        load_judgment_debt_definitions(tmp_path)
+
+    _add_judgment_debt_catalog(tmp_path, bundle_digest)
+    definition = load_judgment_debt_definitions(tmp_path)[0]
+    conflicting = compile_judgment_debt(
+        replace(
+            definition.seed,
+            bundle_digest=hashlib.sha256(b"conflicting-plan").hexdigest(),
+        ),
+        definition.providers,
+        layer_dependencies={"1": ()},
+        layer_order=("1",),
+    )
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["judgment_debt_definitions"].append(conflicting.as_dict())
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match="debt_id duplicates"):
+        load_judgment_debt_definitions(tmp_path)
+
+    _add_judgment_debt_catalog(tmp_path, bundle_digest)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["judgment_debt_activations"].append(
+        requirements["judgment_debt_activations"][0]
+    )
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match="duplicates activation for exact definition"):
+        load_judgment_debt_activations(tmp_path)
+
+
+def test_judgment_debt_catalog_requires_exact_image_domain_binding(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    bundle_digest = hashlib.sha256(b"selected-plan").hexdigest()
+    _add_judgment_debt_catalog(tmp_path, bundle_digest)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    binding = requirements["requirements"][0]["resolution"]["domain_bindings"][0]
+    binding["definition_digest"] = hashlib.sha256(b"unknown-definition").hexdigest()
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match="names no selected judgment debt definition"):
+        load_judgment_debt_definitions(tmp_path)
+
+
+def test_plan_gate_reports_judgment_debt_requirement_and_bundle_conflicts(
+    tmp_path: Path,
+) -> None:
+    _candidate(tmp_path)
+    bundle_digest = hashlib.sha256(b"selected-plan").hexdigest()
+    _add_judgment_debt_catalog(tmp_path, bundle_digest)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["statement"] = "rewritten requirement"
+    _write(tmp_path / "requirements.json", requirements)
+
+    with pytest.raises(ValueError, match=r"must exactly equal.*requirement"):
+        load_judgment_debt_definitions(tmp_path)
+
+    requirements["requirements"][0]["statement"] = "frames 239 and 240 are unchanged"
+    _write(tmp_path / "requirements.json", requirements)
+    _select_generation(tmp_path, hashlib.sha256(b"different-plan").hexdigest())
+
+    findings, _ = _check_meta_records(tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].check == "requirement-closure"
+    assert "seed.bundle_digest is stale for selected bundle" in findings[0].what
 
 
 def _add_deferred_layer(root: Path) -> None:
@@ -204,7 +422,7 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
     }]
     path = root / "jit.json"
     _write(path, {
-        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "schema": "vfx-harness.jit-layer-materialization/v2",
         "bundle_hash": bundle_hash,
         "layer": layer,
         "scene_contracts": [{
@@ -222,10 +440,83 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
 
 
 def _passed_layer_one_outcome(root: Path) -> None:
-    _write(root / "plans" / "outcomes" / "01.json", {
-        "schema": 2, "layer": "1", "status": "passed",
-        "interfaces": [{"id": "final-lock", "pass": True}],
-    })
+    layer = load_layers_from_path(selected_artifact_path(root, "layers.json"))["1"]
+    script = root / layer.script
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# sealed executable layer-one fixture\n", encoding="utf-8")
+    for unit in layer.stages:
+        plan = root / unit.plan
+        plan.parent.mkdir(parents=True, exist_ok=True)
+        plan.write_text(f"# sealed plan for {unit.id}\n", encoding="utf-8")
+    for _frame, ref in layer.judges:
+        reference = root / ref
+        if not reference.is_file():
+            raise AssertionError(f"fixture reference was not published before plan selection: {ref}")
+    write_layer_outcome(
+        root,
+        layer,
+        status="passed",
+        best={"round": 1, "mean": 5.0, "render": None},
+        canonical=[
+            (
+                (frame, ref),
+                {
+                    "evidence_kind": "executable_only",
+                    "pass": True,
+                    "mean": 5.0,
+                    "decided_by": "unit_executable_evidence",
+                    "issues": [],
+                    "evidence": [
+                        {
+                            "id": "final-lock",
+                            "metric": "frame_delta",
+                            "value": 0.0,
+                            "target": "<= 0.01",
+                            "pass": True,
+                            "source": "interface_contract",
+                            "authoritative": True,
+                            "owner_layer": "1",
+                            "fault_owner": "1",
+                            "activates_at": "1",
+                            "lifecycle": "layer",
+                        }
+                    ],
+                },
+            )
+            for frame, ref in layer.judges
+        ],
+        run_id="sealed-layer-one-fixture",
+        attempt=1,
+        blender_version="fixture",
+    )
+
+
+def test_producer_sealed_outcome_rejects_a_changed_layer_script(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "sealed-script-integrity")
+    publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    _passed_layer_one_outcome(tmp_path)
+
+    layer = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))["1"]
+    outcome = json.loads(
+        layer_outcome_path(tmp_path, "1").read_text(encoding="utf-8")
+    )
+    sealed_manifest = input_manifest(tmp_path, layer, blender_version="fixture")
+    assert eligibility(outcome, sealed_manifest, tmp_path)[0]
+
+    (tmp_path / layer.script).write_text(
+        "# changed after the producer sealed this layer\n",
+        encoding="utf-8",
+    )
+    changed_manifest = input_manifest(tmp_path, layer, blender_version="fixture")
+    eligible, reasons = eligibility(outcome, changed_manifest, tmp_path)
+    assert not eligible
+    assert "input manifest changed" in reasons
 
 
 def test_deferred_root_needs_no_fictional_upstream_outcome(tmp_path: Path) -> None:
@@ -278,7 +569,7 @@ def test_deferred_root_materializes_without_fabricated_outcome(
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = tmp_path / "root-jit.json"
     _write(payload, {
-        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "schema": "vfx-harness.jit-layer-materialization/v2",
         "bundle_hash": bundle.content_hash,
         "layer": _declaring({**ready_layer, "execution": "ready"}),
         "scene_contracts": [{
@@ -348,7 +639,7 @@ def test_materialized_consumer_keeps_global_camera_capability_from_sparse_bundle
     for row in visibility:
         row["roles"] = [camera_role]
     _write(payload, {
-        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "schema": "vfx-harness.jit-layer-materialization/v2",
         "bundle_hash": bundle.content_hash,
         "layer": _declaring({**ready_layer, "execution": "ready"}),
         "scene_contracts": [{
@@ -491,6 +782,7 @@ def test_camera_global_layer_refuses_geometry_proxy_before_candidate_write(
     from vfx_harness.domain.work_units import (
         CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
         allowed_unit_provides,
+        extra_reserved_roles_on_camera_layer,
         work_unit_authoring_schema,
     )
     from vfx_harness.orchestration.jit_materialization import (
@@ -536,6 +828,16 @@ def test_camera_global_layer_refuses_geometry_proxy_before_candidate_write(
 
     assert target.read_bytes() == before
     assert "earliest downstream form layer" in CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE
+    assert extra_reserved_roles_on_camera_layer(
+        provided_capabilities={"camera"},
+        camera_selectors=["product.view_rig"],
+        reserved_roles=["product.view_rig", "polish.*"],
+    ) == ("polish.*",)
+    assert extra_reserved_roles_on_camera_layer(
+        provided_capabilities={"camera"},
+        camera_selectors=["motion.capture_host"],
+        reserved_roles=["motion.capture_host"],
+    ) == ()
 
 
 def test_materialization_finalization_rejects_camera_layer_geometry_proxy(
@@ -854,6 +1156,183 @@ def test_unit_staging_refuses_same_layer_dressing_before_write(tmp_path: Path) -
             scene_contracts=[shade_contract],
             requirement_bindings=[],
         )
+
+
+def test_unit_staging_refuses_generate_on_non_mesh_family_before_write(tmp_path: Path) -> None:
+    """HIR-0162: generate is illegal on a look/control unit; candidate bytes stay put."""
+    from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "generate-route-staging")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "generate-route.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    unit = json.loads(json.dumps(full["layer"]["stages"][0]))
+    unit["construction"] = {"route": "generate", "witnesses": ["refobs-abc123"]}
+    before = target.read_bytes()
+
+    with pytest.raises(ValueError, match="construction route refused"):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=full["scene_contracts"],
+            requirement_bindings=[],
+        )
+
+    assert target.read_bytes() == before
+    with pytest.raises(ValueError, match=CONSTRUCTION_ROUTE_RULE[:40]):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=full["scene_contracts"],
+            requirement_bindings=[],
+            shot_folder=tmp_path,
+        )
+
+
+def _generate_mesh_unit(witness: str) -> tuple[dict, list[dict]]:
+    unit = {
+        "id": "prop_source",
+        "title": "Prop source",
+        "plan": "plans/02_polish/prop_source.md",
+        "depends_on": [],
+        "provides": ["geometry"],
+        "look_capabilities": [],
+        "construction": {"route": "generate", "witnesses": [witness]},
+        "mutates": {
+            "mode": "scoped",
+            "roles": ["prop.shell"],
+            "controls": [],
+            "control_roles": {},
+            "script_spans": ["build/units/02/prop_source.py"],
+        },
+        "protects": {
+            "selector": "all_active_upstream_interfaces",
+            "resolve_to_explicit_ids_at": "freeze",
+        },
+        "evaluation": {
+            "primary_judge": 240,
+            "judge": [
+                {"frame": 239, "ref": "refs/a.png"},
+                {"frame": 240, "ref": "refs/a.png"},
+            ],
+            "temporal_evidence": "none",
+            "claims": [{
+                "id": "prop-count",
+                "proposition": "one source mesh exists",
+                "axis": "final_lock",
+                "property": "object_count",
+                "subject_roles": ["prop.shell"],
+                "subject_controls": [],
+                "moments": [239, 240],
+                "kind": "atomic",
+                "required": True,
+                "authority": "executable_required",
+                "repair_owner": "prop_source",
+                "asserts": "scene",
+                "evidence": [
+                    {"kind": "scene_contract", "id": "prop-count-239"},
+                    {"kind": "scene_contract", "id": "prop-count-240"},
+                ],
+            }],
+        },
+        "completion": "all_required_claims_and_protected_contracts_pass",
+    }
+    contracts = [
+        {
+            "id": f"prop-count-{frame}",
+            "kind": "object_count",
+            "owner_layer": "2",
+            "fault_owner": "2",
+            "activates_at": "2",
+            "lifecycle": "layer",
+            "axis": "final_lock",
+            "roles": ["prop.shell"],
+            "frame": frame,
+            "op": "eq",
+            "value": 1,
+        }
+        for frame in (239, 240)
+    ]
+    return unit, contracts
+
+
+def test_unit_staging_refuses_unregistered_generate_witness(tmp_path: Path) -> None:
+    """HIR-0162: mesh generate still fails closed until mint_refobs persists the crop."""
+    from vfx_harness.domain.refobs import UNREGISTERED_WITNESS_RULE
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "unregistered-witness-staging")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    target = tmp_path / "generate-witness.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    unit, contracts = _generate_mesh_unit("refobs-notminted")
+    before = target.read_bytes()
+
+    with pytest.raises(ValueError, match="unregistered witnesses"):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=contracts,
+            requirement_bindings=[],
+            shot_folder=tmp_path,
+        )
+    assert target.read_bytes() == before
+    with pytest.raises(ValueError, match=UNREGISTERED_WITNESS_RULE[:24]):
+        stage_materialization_unit(
+            target,
+            unit=unit,
+            scene_contracts=contracts,
+            requirement_bindings=[],
+        )
+
+
+def test_unit_staging_accepts_minted_generate_witness(tmp_path: Path) -> None:
+    """HIR-0162: a minted refobs-* crop is the generate-construction witness."""
+    from vfx_harness.orchestration.jit_materialization import (
+        seed_materialization_candidate,
+        stage_materialization_unit,
+    )
+    from vfx_harness.orchestration.refobs import mint_refobs
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    still = tmp_path / "refs" / "a.png"
+    Image.new("RGB", (64, 64), (40, 80, 120)).save(still)
+    token = mint_refobs(tmp_path, still, [0.2, 0.2, 0.6, 0.55], source_rel="refs/a.png")
+    layout = run_artifacts.create(tmp_path, "minted-witness-staging")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    target = tmp_path / "generate-minted.json"
+    seed_materialization_candidate(
+        bundle.root, target, layer_id="2", bundle_hash=bundle.content_hash
+    )
+    unit, contracts = _generate_mesh_unit(token)
+
+    stage_materialization_unit(
+        target,
+        unit=unit,
+        scene_contracts=contracts,
+        requirement_bindings=[],
+        shot_folder=tmp_path,
+    )
+    staged = json.loads(target.read_text(encoding="utf-8"))
+    assert [row["id"] for row in staged["layer"]["stages"]] == ["prop_source"]
+    assert staged["layer"]["stages"][0]["construction"]["witnesses"] == [token]
 
 
 @pytest.mark.parametrize(
@@ -1233,17 +1712,28 @@ def _pin_materialized_view(root: Path, layer_ids: list[str]) -> None:
 
     pointer_dir = root / "state" / "jit-layers"
     pointer_dir.mkdir(parents=True, exist_ok=True)
+    documents = {}
     hashes = {}
-    for name in ("layers.json", "scene_checks.json", "checks.json", "requirements.json", "acceptance.json"):
+    names = (
+        "layers.json",
+        "scene_checks.json",
+        "checks.json",
+        "requirements.json",
+        "acceptance.json",
+    )
+    for name in names:
         path = root / name
-        if path.is_file():
-            hashes[name] = _hashlib.sha256(path.read_bytes()).hexdigest()
+        documents[name] = json.loads(path.read_text(encoding="utf-8"))
+        hashes[name] = _hashlib.sha256(path.read_bytes()).hexdigest()
+    view_hash = _hashlib.sha256(
+        json.dumps(documents, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     _write(pointer_dir / "current.json", {
         "schema": "vfx-harness.jit-layer-view/v1",
-        "bundle_hash": "view-bundle",
-        "view_hash": "fixture",
+        "bundle_hash": "a" * 64,
+        "view_hash": view_hash,
         "materialized_layers": [str(layer_id) for layer_id in layer_ids],
-        "artifacts": {},
+        "artifacts": {name: name for name in names},
         "hashes": hashes,
     })
 
@@ -1317,7 +1807,7 @@ def test_materialized_decision_adoption_satisfies_reservation(tmp_path: Path) ->
 @pytest.mark.parametrize(
     ("title", "reserved_role", "axis"),
     [
-        ("Product foundation", "product.*", "product_shape"),
+        ("Product foundation", "product.view_rig", "product_shape"),
         ("Camera foundation", "camera.*", "camera_framing"),
     ],
 )
@@ -1351,8 +1841,8 @@ def test_unit_first_global_bundle_is_clean_for_heterogeneous_roots(
             "execution": "jit_deferred", "stages": [],
             "jit": {
                 "depends_on_layers": [], "required_outcomes": [],
-                "provides": {"camera": ["camera.*"]},
-                "reserved_roles": list(dict.fromkeys([reserved_role, "camera.*"])),
+                "provides": {"camera": [reserved_role]},
+                "reserved_roles": [reserved_role],
                 "owned_requirements": ["R1"],
             },
         }],
@@ -1363,7 +1853,9 @@ def test_unit_first_global_bundle_is_clean_for_heterogeneous_roots(
     _write(tmp_path / "scene_checks.json", {"schema": 2, "contracts": []})
     digest = hashlib.sha256((tmp_path / "brief.md").read_bytes()).hexdigest()
     _write(tmp_path / "requirements.json", {
-        "schema": "vfx-harness.requirements/v1",
+        "schema": "vfx-harness.requirements/v2",
+        "judgment_debt_definitions": [],
+        "judgment_debt_activations": [],
         "requirements": [{
             "id": "R1", "statement": "The delivered image must preserve the approved visual target.",
             "citation": {
@@ -2014,6 +2506,34 @@ def test_materialization_rejects_same_layer_dressing(tmp_path: Path) -> None:
     assert "same-layer mutation roles" in text
     assert "polish.mass" in text
     assert SAME_LAYER_DRESS_RULE in text
+
+
+def test_materialization_rejects_generate_on_non_mesh_family(tmp_path: Path) -> None:
+    """HIR-0162: collectable validation names construction on a non-mesh generate unit."""
+    from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "generate-route-validate")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["layer"]["stages"][0]["construction"] = {
+        "route": "generate",
+        "witnesses": ["refobs-abc123"],
+    }
+    _write(payload, document)
+
+    findings, materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash
+    )
+
+    assert materialized is None
+    text = "\n".join(findings)
+    assert "/layer/stages/0/construction:" in text
+    assert "generate" in text
+    assert "mesh" in text
+    assert CONSTRUCTION_ROUTE_RULE in text
 
 
 def test_materialization_requirement_binding_accepts_required_image_debt(
@@ -2824,7 +3344,7 @@ def test_acceptance_obligation_blocks_verdict_not_acceptance_entry(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _candidate(tmp_path)
     layout = run_artifacts.create(tmp_path, "plan-run")
-    publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
 
     # The finished-chain renderer must be allowed to run and produce this evidence.
     require_due_clear(
@@ -2838,10 +3358,12 @@ def test_acceptance_obligation_blocks_verdict_not_acceptance_entry(
     assert resolve_acceptance_completion(
         tmp_path,
         passed_evidence={("scene_contract", "wrong-contract")},
+        expected_bundle_digest=bundle.content_hash,
     ) == ()
     assert resolve_acceptance_completion(
         tmp_path,
         passed_evidence={("scene_contract", "final-lock")},
+        expected_bundle_digest=bundle.content_hash,
     ) == ("O-final-lock",)
     require_due_clear(tmp_path, acceptance=True)
 
@@ -2900,13 +3422,76 @@ def test_acceptance_evidence_evaluates_post_grade_contracts(
         lambda _root, name: checks if name == "checks.json" else tmp_path / name,
     )
 
-    rows = acceptance_evidence(tmp_path, frame=240, render=render)
+    rows = acceptance_evidence(
+        tmp_path,
+        frame=240,
+        ref="refs/a.png",
+        render=render,
+    )
 
     assert len(rows) == 1
     assert rows[0]["id"] == "finished-exposure"
     assert rows[0]["pass"] is True
     assert rows[0]["authoritative"] is True
     assert rows[0]["source"] == "image_contract"
+
+
+def test_acceptance_evidence_scopes_frameless_checks_to_the_selected_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    render = tmp_path / "finished.png"
+    Image.new("RGB", (16, 16), (100, 100, 100)).save(render)
+    checks = tmp_path / "checks.json"
+    _write(checks, {
+        "schema": 2,
+        "checks": [
+            {
+                "id": "m1-only-exposure",
+                "metric": "frame_mean",
+                "op": "band",
+                "lo": 90,
+                "hi": 110,
+                "ref": "refs/m1.png",
+                "owner_layer": "1",
+                "fault_owner": "1",
+                "activates_at": "1",
+                "lifecycle": "acceptance",
+                "axis": "exposure",
+                "stage": "post_grade",
+                "rejects": ["artifacts/m1-bad.png"],
+                "proof": {"adversary": [20.0]},
+            },
+            {
+                "id": "m2-only-exposure",
+                "metric": "frame_mean",
+                "op": "band",
+                "lo": 90,
+                "hi": 110,
+                "ref": "refs/m2.png",
+                "owner_layer": "2",
+                "fault_owner": "2",
+                "activates_at": "2",
+                "lifecycle": "acceptance",
+                "axis": "exposure",
+                "stage": "post_grade",
+                "rejects": ["artifacts/m2-bad.png"],
+                "proof": {"adversary": [20.0]},
+            },
+        ],
+    })
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.plan_authority.selected_artifact_path",
+        lambda _root, name: checks if name == "checks.json" else tmp_path / name,
+    )
+
+    rows = acceptance_evidence(
+        tmp_path,
+        frame=200,
+        ref="refs/m2.png",
+        render=render,
+    )
+
+    assert [row["id"] for row in rows] == ["m2-only-exposure"]
 
 
 def test_typed_promises_are_rejected_by_the_loader(tmp_path: Path) -> None:
@@ -2955,7 +3540,7 @@ def test_unit_judge_outside_layer_names_extra_frame_binding(tmp_path: Path) -> N
     assert EXTRA_FRAME_BINDING_RULE in message
 
 
-def _structured_camera_decision(root: Path, bundle_hash: str = "view-bundle") -> dict:
+def _structured_camera_decision(root: Path, bundle_hash: str = "a" * 64) -> dict:
     state = root / "state"
     state.mkdir(exist_ok=True)
     expected = {
@@ -3357,7 +3942,7 @@ def test_root_materialization_validates_with_deferred_dependents(
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = tmp_path / "root-jit.json"
     _write(payload, {
-        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "schema": "vfx-harness.jit-layer-materialization/v2",
         "bundle_hash": bundle.content_hash,
         "layer": _declaring({**ready_layer, "execution": "ready"}),
         "scene_contracts": [{
@@ -3614,11 +4199,13 @@ def test_materialization_can_close_owned_requirement_with_typed_decision(tmp_pat
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = _jit_payload(tmp_path, bundle.content_hash)
     data = json.loads(payload.read_text(encoding="utf-8"))
+    data["layer"]["stages"][0]["provides"] = ["geometry"]
     data["requirement_bindings"] = [{
         "requirement_id": "R-final-lock",
         "decision": {
             "statement": "frames 239 and 240 are unchanged",
             "decision_strength": "approved_start",
+            "judgment": _judgment(),
         },
     }]
     _write(payload, data)
@@ -3782,7 +4369,9 @@ def test_materialization_requires_and_retains_every_requirement_domain(
     data["requirement_bindings"][0]["decision"] = {
         "statement": "frames 239 and 240 are unchanged",
         "decision_strength": "approved_start",
+        "judgment": _judgment(),
     }
+    data["layer"]["stages"][0]["provides"] = ["geometry"]
     _write(payload, data)
     materialized = validate_materialization(
         bundle.root, payload, expected_bundle_hash=bundle.content_hash
@@ -3792,15 +4381,20 @@ def test_materialization_requires_and_retains_every_requirement_domain(
         "image",
         "scene",
     )
+    definition = materialized.judgment_debt_definitions[0]
     assert materialized.requirement_domain_bindings["R-final-lock"] == (
         {
             "domain": "image",
             "kind": "provisional_decision",
             "statement": "frames 239 and 240 are unchanged",
             "decision_strength": "approved_start",
+            "debt_id": definition["debt_id"],
+            "definition_digest": definition["definition_digest"],
+            "activates_at": "2",
         },
         {"domain": "scene", "kind": "contract", "ids": ["polish-count"]},
     )
+    assert len(materialized.judgment_debt_activations) == 1
 
     _passed_layer_one_outcome(tmp_path)
     pointer = publish_materialization(tmp_path, payload)
@@ -4045,6 +4639,10 @@ def test_unselected_revert_leaves_live_pointer(tmp_path, monkeypatch) -> None:
     payload = _jit_payload(tmp_path, bundle.content_hash)
     _passed_layer_one_outcome(tmp_path)
     publish_materialization(tmp_path, payload)
+    # This test exercises overlay selection, not stale predecessor dispatch. Re-seal the
+    # fixture through the producer against the now-selected full view so that boundary is
+    # independently valid before the expected ownership error below.
+    _passed_layer_one_outcome(tmp_path)
 
     pointer = tmp_path / "state" / "jit-layers" / "current.json"
     before = pointer.read_bytes()
@@ -4155,7 +4753,7 @@ def test_unselected_revert_of_last_layer_does_not_unlink_pointer(
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = tmp_path / "root-jit.json"
     _write(payload, {
-        "schema": "vfx-harness.jit-layer-materialization/v1",
+        "schema": "vfx-harness.jit-layer-materialization/v2",
         "bundle_hash": bundle.content_hash,
         "layer": _declaring({**ready_layer, "execution": "ready"}),
         "scene_contracts": [{

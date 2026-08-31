@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from vfx_harness.domain.atomicity import atomicity_gaps
+from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
+from vfx_harness.domain.construction_routes import construction_route_gaps
 from vfx_harness.domain.dressing import SAME_LAYER_DRESS_RULE, same_layer_dress_gaps
 from vfx_harness.domain.image_debts import IMAGE_PROPERTY_VOCABULARY_RULE, image_property_vocabulary_gaps
 from vfx_harness.domain.json_pointer import set_at as set_pointer
 from vfx_harness.domain.json_pointer import split as split_pointer
+from vfx_harness.domain.refobs import UNREGISTERED_WITNESS_RULE
 from vfx_harness.domain.work_units import (
     CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
     DEFERRED_CONTRACT_CONTEXT_RULE,
@@ -38,6 +41,7 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     _rows,
 )
 from vfx_harness.orchestration.jit_materialization.validate import validate_materialization
+from vfx_harness.orchestration.refobs import missing_witness_ids
 
 
 def inspect_materialization(
@@ -106,6 +110,7 @@ def _validate_local_staged_units(
     payload: dict[str, Any],
     *,
     allowed_provides: frozenset[str] | None = None,
+    shot_folder: str | Path | None = None,
 ) -> None:
     """Enforce unit-local publication predicates on an in-memory candidate."""
 
@@ -236,6 +241,29 @@ def _validate_local_staged_units(
             f"unit {gap.unit_id} {gap.code}: {gap.detail}" for gap in gaps
         )
         raise ValueError("unit atomicity refused before candidate write: " + detail)
+    route_gaps = construction_route_gaps(parsed_units, contracts)
+    if route_gaps:
+        gap = route_gaps[0]
+        raise ValueError(
+            "construction route refused before candidate write: "
+            f"unit {gap.unit_id} {gap.code}: {gap.detail}. "
+            + CONSTRUCTION_ROUTE_RULE
+        )
+    for unit in parsed_units:
+        if unit.construction.route != "generate":
+            continue
+        if shot_folder is None:
+            raise ValueError(
+                f"generate unit {unit.id} names witnesses "
+                f"{list(unit.construction.witnesses)} without a refobs registry. "
+                + UNREGISTERED_WITNESS_RULE
+            )
+        missing = missing_witness_ids(shot_folder, unit.construction.witnesses)
+        if missing:
+            raise ValueError(
+                f"generate unit {unit.id} names unregistered witnesses {list(missing)}. "
+                + UNREGISTERED_WITNESS_RULE
+            )
 
 
 def _stage_materialization_payload(
@@ -246,6 +274,7 @@ def _stage_materialization_payload(
     requirement_bindings: list[dict[str, Any]],
     layer_updates: dict[str, Any] | None,
     allowed_provides: frozenset[str] | None,
+    shot_folder: str | Path | None,
 ) -> None:
     """Apply one stage operation and validate it before the transaction writes."""
 
@@ -314,7 +343,9 @@ def _stage_materialization_payload(
     stages.append(unit)
     payload["scene_contracts"].extend(contracts)
     payload["requirement_bindings"].extend(bindings)
-    _validate_local_staged_units(payload, allowed_provides=allowed_provides)
+    _validate_local_staged_units(
+        payload, allowed_provides=allowed_provides, shot_folder=shot_folder
+    )
 
 
 def stage_materialization_unit(
@@ -326,6 +357,7 @@ def stage_materialization_unit(
     layer_updates: dict[str, Any] | None = None,
     allowed_provides: frozenset[str] | None = None,
     expected_revision: str | None = None,
+    shot_folder: str | Path | None = None,
 ) -> Path:
     """Append one bounded unit through the serialized candidate transaction."""
     path = Path(materialization_path)
@@ -338,6 +370,7 @@ def stage_materialization_unit(
             requirement_bindings=requirement_bindings,
             layer_updates=layer_updates,
             allowed_provides=allowed_provides,
+            shot_folder=shot_folder,
         ),
         expected_revision=expected_revision,
     )
@@ -348,6 +381,7 @@ def _unstage_materialization_payload(
     payload: dict[str, Any],
     *,
     unit_id: str,
+    shot_folder: str | Path | None = None,
 ) -> UnstagedMaterializationUnit:
     """Remove one scratch unit and rows that no surviving unit can consume."""
 
@@ -420,7 +454,7 @@ def _unstage_materialization_payload(
             row = {**row, "contract_ids": contract_ids}
         retained_bindings.append(row)
     payload["requirement_bindings"] = retained_bindings
-    _validate_local_staged_units(payload)
+    _validate_local_staged_units(payload, shot_folder=shot_folder)
     return UnstagedMaterializationUnit(
         unit_id=unit_id,
         removed_contract_ids=removed_contract_ids,
@@ -433,6 +467,7 @@ def unstage_materialization_unit(
     *,
     unit_id: str,
     expected_revision: str | None = None,
+    shot_folder: str | Path | None = None,
 ) -> UnstagedMaterializationUnit:
     """Retire one unit from unpublished scratch through the candidate transaction."""
     token = str(unit_id).strip()
@@ -442,7 +477,9 @@ def unstage_materialization_unit(
 
     def mutate(payload: dict[str, Any]) -> None:
         nonlocal result
-        result = _unstage_materialization_payload(payload, unit_id=token)
+        result = _unstage_materialization_payload(
+            payload, unit_id=token, shot_folder=shot_folder
+        )
 
     _mutate_materialization_candidate(
         Path(materialization_path),
@@ -465,6 +502,7 @@ def apply_materialization_patch(
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
     expected_revision: str | None = None,
+    shot_folder: str | Path | None = None,
 ) -> list[str]:
     """Set one JSON pointer on the candidate file and return remaining findings."""
     return apply_materialization_patches(
@@ -477,6 +515,7 @@ def apply_materialization_patch(
         resolutions_path=resolutions_path,
         base_requirements_path=base_requirements_path,
         expected_revision=expected_revision,
+        shot_folder=shot_folder,
     )
 
 
@@ -491,6 +530,7 @@ def apply_materialization_patches(
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
     expected_revision: str | None = None,
+    shot_folder: str | Path | None = None,
 ) -> list[str]:
     """Atomically set several JSON pointers and validate the resulting candidate once.
 
@@ -543,6 +583,7 @@ def apply_materialization_patches(
             _validate_local_staged_units(
                 payload,
                 allowed_provides=allowed_unit_provides(global_row),
+                shot_folder=shot_folder,
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(

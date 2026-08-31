@@ -13,10 +13,13 @@ long SDK conversation and a growing context; recycling the process between layer
 keeps one layer's leak from becoming the next layer's problem. They share a run id through
 the environment (see vfx_harness/observability/runid.py).
 
-Exit codes are propagated, not flattened, because they say different things:
+Exit codes are propagated for CLI compatibility and operator summaries only:
     3 truncated (budget)   4 chain broken       5 unanswered questions
     6 unaccepted prior     7 incomplete chain   8 plan is stale vs the brief
     9 ran cleanly but the VERDICT was not a pass
+
+They are never recovery authority. A failed/interrupted run selects one immutable
+typed stop envelope; a missing child envelope fails closed as a harness defect.
 """
 
 from __future__ import annotations
@@ -31,9 +34,11 @@ import time
 from pathlib import Path
 
 from vfx_harness.application.inspect_run import collect
-from vfx_harness.application.preflight import warn_if_broken
+from vfx_harness.application.preflight import environment_result, environment_stop
+from vfx_harness.application.preflight import probe as preflight_probe
+from vfx_harness.application.preflight import report as preflight_report
 from vfx_harness.domain.brief import load_shot
-from vfx_harness.infrastructure.config import Settings
+from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.runid import RUN_ID
@@ -66,11 +71,85 @@ def _publish_summary(layout: run_artifacts.RunLayout) -> None:
         log(f"! run summary could not be published: {str(exc)[:160]}", 1)
 
 
-def _stop(layout: run_artifacts.RunLayout, code: int, detail: str) -> None:
-    layout.set_status("failed", exit_code=code, detail=detail)
+def _stop(layout: run_artifacts.RunLayout, code: int, envelope: StopEnvelope) -> None:
+    layout.write_stop_envelope(envelope)
+    detail = f"{envelope.stop_class}: {envelope.found} {envelope.next_action}"
+    layout.set_status(
+        "failed",
+        exit_code=code,
+        detail=detail,
+        metadata={
+            "terminal_cause": envelope.stop_class,
+            "stop_envelope": "reports/stop-envelope.json",
+            "stop_envelope_digest": envelope.digest,
+            "stop_class": envelope.stop_class,
+            "stop_stage": envelope.stage,
+            "cause_fingerprint": envelope.cause_fingerprint,
+        },
+    )
     _publish_summary(layout)
     layout.write_inventory()
     raise SystemExit(code)
+
+
+def _stop_after_stage(
+    layout: run_artifacts.RunLayout,
+    code: int,
+    boundary: str,
+) -> None:
+    """Consume only the child-selected envelope; never dispatch from its exit code."""
+    try:
+        envelope = layout.read_terminal_stop()
+    except ValueError:
+        envelope = run_artifacts.missing_boundary_stop(
+            layout,
+            boundary,
+            exit_code=code,
+        )
+    _stop(layout, code, envelope)
+
+
+def _mark_interrupted(layout: run_artifacts.RunLayout) -> None:
+    """Seal an otherwise-unclassified driver exit before the atexit boundary closes."""
+    try:
+        current = json.loads(layout.status.read_text(encoding="utf-8"))
+        if current.get("state") != "running":
+            return
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        envelope = run_artifacts.missing_boundary_stop(
+            layout,
+            "run-driver-interruption",
+            exit_code=130,
+        )
+        layout.write_stop_envelope(envelope)
+    except Exception as exc:
+        layout.set_status(
+            "failed",
+            exit_code=1,
+            detail=f"stop-envelope publication failed during driver interruption: {exc}",
+            metadata={
+                "terminal_cause": "stop_envelope_publication_failure",
+                "stop_envelope_state": "unavailable",
+            },
+        )
+    else:
+        layout.set_status(
+            "interrupted",
+            exit_code=130,
+            detail="driver exited without a terminal result",
+            metadata={
+                "terminal_cause": "interrupted",
+                "stop_envelope": "reports/stop-envelope.json",
+                "stop_envelope_digest": envelope.digest,
+                "stop_class": envelope.stop_class,
+                "stop_stage": envelope.stage,
+                "cause_fingerprint": envelope.cause_fingerprint,
+            },
+        )
+    _publish_summary(layout)
+    layout.write_inventory()
 
 
 def _run(args: list[str], *, dry: bool, tee: Path | None = None) -> int:
@@ -116,7 +195,7 @@ def main() -> None:
     ap.add_argument("--from", dest="start", type=int, default=1, help="first layer id")
     ap.add_argument("--upto", type=int, default=None, help="last layer id")
     ap.add_argument("--rounds", type=int, default=2)
-    ap.add_argument("--blender", default=Settings.from_environment().blender_bin)
+    ap.add_argument("--blender", default=None)
     ap.add_argument("--scale", type=float, default=1.0, help="render scale for the mp4")
     ap.add_argument("--skip-render", action="store_true")
     ap.add_argument("--skip-accept", action="store_true")
@@ -124,7 +203,6 @@ def main() -> None:
                     help="print the plan and the layers that would run, execute nothing")
     a = ap.parse_args()
 
-    warn_if_broken()
     shot = load_shot(a.folder)
     layers = load_layers(shot)
     ids = sorted(layers, key=lambda k: str(layers[k].script))
@@ -147,18 +225,14 @@ def main() -> None:
         },
     )
 
-    def mark_interrupted() -> None:
-        try:
-            current = json.loads(layout.status.read_text(encoding="utf-8"))
-            if current.get("state") != "running":
-                return
-        except (OSError, json.JSONDecodeError):
-            pass
-        layout.set_status("interrupted", detail="driver exited without a terminal result")
-        _publish_summary(layout)
-        layout.write_inventory()
+    preflight_raw = preflight_probe(a.blender)
+    preflight = environment_result(preflight_raw)
+    if not preflight.ok:
+        log(preflight_report(preflight_raw))
+        _stop(layout, 1, environment_stop(layout, preflight))
+    a.blender = str(preflight_raw["blender"]["resolved"])
 
-    atexit.register(mark_interrupted)
+    atexit.register(_mark_interrupted, layout)
     ledger = Ledger(shot)
     done = [i for i in ids if ledger.status(layers[i].as_milestone()) == "passed"]
     py = sys.executable
@@ -182,12 +256,12 @@ def main() -> None:
                    "--layer", lid, "--blender", a.blender], dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ layer {lid} planning exited {rc}; build was not started")
-            _stop(layout, rc, f"layer {lid} planning failed")
+            _stop_after_stage(layout, rc, f"layer-{lid}-planning")
         rc = _run([py, "-m", "vfx_harness.evaluation.cli", "plan", str(shot.folder)],
                   dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ layer {lid} plan did not clear the deterministic gate")
-            _stop(layout, rc, f"layer {lid} plan gate failed")
+            _stop_after_stage(layout, rc, f"layer-{lid}-plan-gate")
         rc = _run([py, "-m", "vfx_harness.agents.builder", str(shot.folder),
                    "--layer", lid, "--rounds", str(a.rounds), "--blender", a.blender],
                   dry=a.dry_run, tee=console)
@@ -197,7 +271,7 @@ def main() -> None:
             log(f"✗ layer {lid} exited {rc}: {_MEANING.get(rc, 'unknown')}")
             log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
                 f"Fix, then resume with --from {lid}")
-            _stop(layout, rc, f"layer {lid}: {_MEANING.get(rc, 'unknown')}")
+            _stop_after_stage(layout, rc, f"layer-{lid}-builder")
 
         # An exit code says the PROCESS completed; the ledger says the WORK was accepted.
         # Conflating them is why this driver announced "✓ layer 2 passed" for a layer whose
@@ -211,7 +285,7 @@ def main() -> None:
                 f"building on it")
             log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
                 f"See {layout.reports}/layers/layer-{lid}.json, then resume with --from {lid}")
-            _stop(layout, 9, f"layer {lid} verdict was {status}")
+            _stop_after_stage(layout, 9, f"layer-{lid}-ledger-verdict")
         if a.dry_run:
             log(f"↷ layer {lid} would run (ledger remains '{status}')")
             continue
@@ -223,7 +297,7 @@ def main() -> None:
                    "--blender", a.blender], dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ acceptance exited {rc}: {_MEANING.get(rc, 'unknown')}")
-            _stop(layout, rc, f"acceptance: {_MEANING.get(rc, 'unknown')}")
+            _stop_after_stage(layout, rc, "acceptance")
 
     if not a.skip_render:
         log("════ RENDER ════")
@@ -232,7 +306,7 @@ def main() -> None:
                   dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ render exited {rc}: {_MEANING.get(rc, 'unknown')}")
-            _stop(layout, rc, f"render: {_MEANING.get(rc, 'unknown')}")
+            _stop_after_stage(layout, rc, "render")
 
     # Harvest recipes only now — nothing in this run consumes them, and doing it between
     # layers made the run wait on a model writing prose.
@@ -245,7 +319,7 @@ def main() -> None:
     layout.set_status(terminal_state, exit_code=0)
     _publish_summary(layout)
     layout.write_inventory()
-    atexit.unregister(mark_interrupted)
+    atexit.unregister(_mark_interrupted)
     log(f"  manifest:          {layout.manifest}")
     log(f"  artifact index:    {layout.inventory}")
     log(f"  per-layer reports: {layout.reports / 'layers'}/*.json")

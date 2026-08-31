@@ -94,6 +94,7 @@ from vfx_harness.observability.log import (
 )
 from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.observability.runlog import reset_counts
+from vfx_harness.orchestration import generate_construction as generate_construction
 from vfx_harness.orchestration.layer_state import record_round as state_round
 from vfx_harness.orchestration.layer_state import start as state_start
 from vfx_harness.orchestration.ledger import Ledger, Milestone
@@ -140,6 +141,15 @@ async def build_unit(
     ledger._slot(m)["unit_hash"] = current_unit_hash
     ledger.begin(m)
     t_layer = time.monotonic()
+
+    promoted = None
+    if active_unit is not None:
+        route = getattr(getattr(active_unit, "construction", None), "route", "procedural")
+        if route in {"generate", "retrieve"}:
+            promoted = generate_construction.prepare_generate_unit(
+                shot.folder, str(getattr(layer, "id", m.id)), active_unit
+            )
+    generate_construction.pin_construction_import(session, promoted)
 
     revalidated = _try_revalidate(
         shot, m, script_rel, prior_paths, session, layer=layer, ledger=ledger,
@@ -295,6 +305,7 @@ async def build_unit(
         # unit checkpoint. Image-payment authority must never use the resumed candidate
         # as its own "before" state.
         priors = builder_package()._run_prior_paths(session, prior_paths)
+        generate_construction.pin_construction_import(session, promoted)
 
         capture_image_adversaries(session, shot.folder, comparison_state, prior_paths)
         unit_journal_start = int(session.journal().get("calls", 0))
@@ -310,6 +321,7 @@ async def build_unit(
             log(f"  ! replay failed ({str(e)[:60]}) — continuing from the checkpoint", 1)
     else:
         priors = builder_package()._run_prior_paths(session, prior_paths)
+        generate_construction.pin_construction_import(session, promoted)
 
         capture_image_adversaries(session, shot.folder, comparison_state, prior_paths)
         unit_journal_start = int(session.journal().get("calls", 0))
@@ -351,6 +363,7 @@ async def build_unit(
             session.run(_RESET)
             session.run(builder_package()._preamble(shot))
             priors = builder_package()._run_prior_paths(session, prior_paths)
+            generate_construction.pin_construction_import(session, promoted)
 
     # The scene is now fully staged (priors + any warm-start replay): everything present
     # is inherited authority the live scope check must not flag against this unit.

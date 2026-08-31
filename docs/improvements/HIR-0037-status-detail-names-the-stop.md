@@ -59,5 +59,13 @@ No schema migration. Rollback is `detail: "7"` again.
 
 ## Remaining limitations
 
+The later strict stop-envelope boundary narrows this record's meaning. `status.json`
+`detail` remains useful operator prose, but it is not classification or dispatch
+authority. A failed or interrupted run selects one content-addressed
+`reports/stop-envelope.json`; readers must resolve that record, and a bare exit/detail
+fails closed as `harness_defect` instead of being interpreted as retry, replan, recovery,
+or escalation. Envelope publication/read-back failure is an explicit unavailable state
+and authorizes no action.
+
 A `SystemExit(2)` argparse abort still has no row in the map and records
 `exit 2`. Add a meaning when that code becomes a harness contract.

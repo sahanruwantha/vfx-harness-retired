@@ -90,6 +90,7 @@ def _unit(
     publishes: list[dict] | None = None,
     consumes: list[dict] | None = None,
     extra_contracts: list[str] | None = None,
+    construction: dict | None = None,
 ) -> WorkUnit:
     subject = roles or dresses or ["x.role"]
     claim = _claim(uid, roles=subject, contract_id=contract_id)
@@ -127,6 +128,8 @@ def _unit(
         row["publishes"] = publishes
     if consumes is not None:
         row["consumes"] = consumes
+    if construction is not None:
+        row["construction"] = construction
     return WorkUnit.parse(row, f"unit.{uid}")
 
 
@@ -507,6 +510,98 @@ def test_same_layer_dress_gaps_name_sibling_producer() -> None:
     assert gaps[0].selectors == ("hero.tower",)
     assert gaps[0].producer_ids == ("hero_massing",)
     assert same_layer_dress_gaps((mass,)) == ()
+
+
+def test_generate_construction_requires_mesh_family_and_unique_count() -> None:
+    """HIR-0162: generate is a mesh source unit, not shading or instancing."""
+    from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
+    from vfx_harness.domain.construction_routes import construction_route_gaps
+
+    generate = {"route": "generate", "witnesses": ["refobs-abc123"]}
+    source = _unit(
+        "prop_source",
+        roles=["prop.shell"],
+        contract_id="prop-count",
+        provides=["geometry"],
+        construction=generate,
+    )
+    unique = _count_row("prop-count", ["prop.shell"])
+    assert construction_route_gaps((source,), (unique,)) == ()
+
+    shade = _unit(
+        "prop_shade",
+        roles=["prop.shade"],
+        contract_id="prop-material",
+        construction=generate,
+    )
+    material = _count_row(
+        "prop-material", ["prop.shade"], kind="material_assignment_fraction"
+    )
+    shade_gaps = construction_route_gaps((shade,), (material,))
+    assert len(shade_gaps) == 1
+    assert shade_gaps[0].code == "family"
+    assert "mesh" in shade_gaps[0].detail
+    assert CONSTRUCTION_ROUTE_RULE
+
+    crowd = _unit(
+        "prop_crowd",
+        roles=["prop.shell"],
+        contract_id="prop-many",
+        provides=["geometry"],
+        construction=generate,
+    )
+    many = {**_count_row("prop-many", ["prop.shell"]), "value": 80}
+    crowd_gaps = construction_route_gaps((crowd,), (many,))
+    assert len(crowd_gaps) == 1
+    assert crowd_gaps[0].code == "instancing"
+    assert crowd_gaps[0].contract_ids == ("prop-many",)
+
+
+def test_omit_and_abstain_are_not_unit_construction_routes() -> None:
+    """HIR-0162: omit is a requirement decision; abstain is a blocker."""
+    from vfx_harness.domain.construction import NON_UNIT_ROUTE_RULE, parse_construction
+
+    for route in ("omit", "abstain"):
+        with pytest.raises(ValueError, match="not a unit route"):
+            parse_construction({"route": route}, "unit.construction")
+    with pytest.raises(ValueError, match=NON_UNIT_ROUTE_RULE[:24]):
+        parse_construction({"route": "omit"}, "unit.construction")
+
+
+def test_generate_without_refobs_witnesses_is_unrepresentable() -> None:
+    from vfx_harness.domain.construction import GENERATE_WITNESS_RULE, parse_construction
+
+    with pytest.raises(ValueError, match="witnesses is empty"):
+        parse_construction({"route": "generate", "witnesses": []}, "unit.construction")
+    with pytest.raises(ValueError, match="do not match"):
+        parse_construction(
+            {"route": "generate", "witnesses": ["plate-front"]},
+            "unit.construction",
+        )
+    with pytest.raises(ValueError, match=GENERATE_WITNESS_RULE[:20]):
+        parse_construction({"route": "generate"}, "unit.construction")
+
+
+def test_default_construction_is_procedural_and_omitted_from_digest() -> None:
+    from vfx_harness.orchestration.unit_state import unit_digest
+
+    procedural = _unit("mass", roles=["prop.shell"], contract_id="prop-count")
+    explicit = _unit(
+        "mass",
+        roles=["prop.shell"],
+        contract_id="prop-count",
+        construction={"route": "procedural"},
+    )
+    generate = _unit(
+        "mass",
+        roles=["prop.shell"],
+        contract_id="prop-count",
+        provides=["geometry"],
+        construction={"route": "generate", "witnesses": ["refobs-abc123"]},
+    )
+    assert procedural.construction.route == "procedural"
+    assert unit_digest(procedural) == unit_digest(explicit)
+    assert unit_digest(generate) != unit_digest(procedural)
 
 
 def test_image_signal_witness_card_is_derived_from_atomicity_registry() -> None:

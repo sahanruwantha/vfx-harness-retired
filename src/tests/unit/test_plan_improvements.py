@@ -1062,6 +1062,60 @@ def test_same_layer_dressing_is_refused_even_when_this_layer_lists_dressable(
     ), [str(f) for f in findings]
 
 
+def test_generate_construction_on_instancing_count_is_refused(tmp_path: Path) -> None:
+    """HIR-0162: generate cannot bind object_count whose minimum exceeds 1."""
+    from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
+
+    doc = _layer_doc()
+    form = _form_layer()
+    form["stages"][0]["look_capabilities"] = []
+    form["stages"][0]["construction"] = {
+        "route": "generate",
+        "witnesses": ["refobs-abc123"],
+    }
+    form["stages"][0]["evaluation"]["claims"][0]["asserts"] = "scene"
+    doc["layers"].append(form)
+    _write(tmp_path / "layers.json", doc)
+    _write(
+        tmp_path / "scene_checks.json",
+        {
+            "schema": 2,
+            "contracts": [
+                {
+                    "id": "shell-count",
+                    "kind": "object_count",
+                    "owner_layer": "2",
+                    "fault_owner": "2",
+                    "activates_at": "2",
+                    "lifecycle": "layer",
+                    "axis": "form",
+                    "roles": ["atrium.shell"],
+                    "op": "eq",
+                    "value": 80,
+                }
+            ],
+        },
+    )
+    _write(tmp_path / "checks.json", {"schema": 2, "checks": []})
+
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert any(
+        f.check == "construction-route"
+        and f.blocking
+        and "shell-count" in f.what
+        and CONSTRUCTION_ROUTE_RULE in f.fix
+        for f in findings
+    ), [str(f) for f in findings]
+
+    contracts = json.loads((tmp_path / "scene_checks.json").read_text(encoding="utf-8"))
+    contracts["contracts"][0]["value"] = 1
+    _write(tmp_path / "scene_checks.json", contracts)
+    findings, _ = _check_evidence_coherence(tmp_path)
+    assert not any(f.check == "construction-route" for f in findings), [
+        str(f) for f in findings
+    ]
+
+
 def test_another_layers_stuck_state_does_not_block_this_layers_plan() -> None:
     """Run bwng97m5n: layer 1's amendment generated a clean unit plan and died on
     'layer 2 has no ready unit' — a state-progress finding the layer-2 transaction

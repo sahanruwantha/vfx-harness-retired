@@ -15,8 +15,11 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vfx_harness.domain.layer_outcomes import OUTCOME_SCHEMA
+from vfx_harness.domain.work_units import strict_topological_sparse_layer_ids
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.provenance import atomic_write
+from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 
 PLAN_DIR = "plans"
 GLOBAL_PLAN = "global.md"
@@ -375,21 +378,65 @@ def contract_gaps_block(folder: str | Path, layer_id: str, unit_id: str | None =
 
 
 def prior_outcomes_block(folder: str | Path, layer_id: str) -> str:
-    out_dir = Path(folder) / PLAN_DIR / "outcomes"
-    if not out_dir.is_dir():
-        return ""
-    rows = []
+    root = Path(folder)
     try:
-        current = int(layer_id)
-    except ValueError:
-        current = 10**9
-    for path in sorted(out_dir.glob("*.json")):
+        # A layer prefix is authority from the selected document, never integer order or
+        # whatever filenames happen to exist in the outcomes directory.
+        from vfx_harness.orchestration.plan_authority import (  # noqa: PLC0415
+            POINTER,
+            resolve_current,
+            selected_artifact_path,
+        )
+
+        selected_document = json.loads(
+            selected_artifact_path(root, "layers.json").read_text(encoding="utf-8")
+        )
+        global_path = (
+            resolve_current(root).root / "layers.json"
+            if (root / POINTER).exists()
+            else selected_artifact_path(root, "layers.json")
+        )
+        global_document = json.loads(global_path.read_text(encoding="utf-8"))
+        selected_rows = (
+            selected_document.get("layers")
+            if isinstance(selected_document, dict)
+            else None
+        )
+        global_rows = (
+            global_document.get("layers")
+            if isinstance(global_document, dict)
+            else None
+        )
+        if (
+            not isinstance(selected_rows, list)
+            or any(not isinstance(row, dict) for row in selected_rows)
+            or not isinstance(global_rows, list)
+            or any(not isinstance(row, dict) for row in global_rows)
+        ):
+            raise ValueError("selected/global layers.json must contain layer objects")
+        ordered_ids = list(strict_topological_sparse_layer_ids(global_rows))
+        selected_ids = [str(row.get("id") or "").strip() for row in selected_rows]
+        if len(selected_ids) != len(set(selected_ids)) or set(selected_ids) != set(ordered_ids):
+            raise ValueError("selected executable layer view does not match the exact global DAG")
+        current = ordered_ids.index(str(layer_id))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot read selected layer DAG for prior outcomes") from exc
+    rows = []
+    for prior_id in ordered_ids[:current]:
+        path = layer_outcome_path(root, prior_id)
+        if not path.is_file():
+            continue
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
-            if int(row.get("layer", current)) < current and row.get("status") == "passed":
+            if str(row.get("layer") or "") != prior_id:
+                raise ValueError(
+                    f"sealed outcome at {path} names layer {row.get('layer')!r}, "
+                    f"expected {prior_id!r}"
+                )
+            if row.get("status") == "passed":
                 rows.append(row)
-        except (OSError, ValueError, json.JSONDecodeError):
-            continue
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"sealed prior-layer outcome is unreadable: {path}") from exc
     if not rows:
         return ""
     lines = ["## Sealed prior-layer outcomes"]
@@ -418,7 +465,6 @@ def write_layer_outcome(
     """Seal measured state for the next layer's just-in-time planning input."""
     # revalidation imports the path helpers above; outcome sealing is the reverse edge.
     from vfx_harness.orchestration.revalidation import (  # noqa: PLC0415
-        OUTCOME_SCHEMA,
         canonical_records,
         input_manifest,
     )
@@ -448,6 +494,20 @@ def write_layer_outcome(
         if item.get("source") == "interface_contract" and str(item.get("owner_layer")) == str(layer.id)
     ]
     decisions = [verdict.get("decided_by", "critic") for _fr, verdict in canonical]
+    revalidation_manifest = input_manifest(
+        folder,
+        layer,
+        blender_version=blender_version,
+    )
+    manifest_sha256 = hashlib.sha256(
+        json.dumps(
+            revalidation_manifest,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     record = {
         "schema": OUTCOME_SCHEMA,
         "at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -463,16 +523,21 @@ def write_layer_outcome(
         "authoritative_passed": sum(bool(item.get("pass")) for item in evidence),
         "failed_contracts": [item.get("id") for item in evidence if not item.get("pass")],
         "interfaces": interfaces,
-        "revalidation_manifest": input_manifest(folder, layer, blender_version=blender_version),
-        "canonical": canonical_records(folder, layer, canonical),
+        "revalidation_manifest": revalidation_manifest,
+        "canonical": canonical_records(
+            folder,
+            layer,
+            canonical,
+            input_manifest_sha256=manifest_sha256,
+        ),
     }
-    path = Path(folder) / PLAN_DIR / "outcomes" / f"{int(layer.id):02d}.json"
+    path = layer_outcome_path(folder, str(layer.id))
     atomic_write(path, json.dumps(record, indent=2) + "\n")
     return path
 
 
 def load_layer_outcome(folder: str | Path, layer_id: str) -> dict:
-    path = Path(folder) / PLAN_DIR / "outcomes" / f"{int(layer_id):02d}.json"
+    path = layer_outcome_path(folder, str(layer_id))
     try:
         row = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -482,7 +547,7 @@ def load_layer_outcome(folder: str | Path, layer_id: str) -> dict:
 
 def record_revalidation(folder: str | Path, layer_id: str, *, run_id: str, attempt: int, evidence: list[dict]) -> Path:
     """Append the latest replay result without changing the sealed pass boundary."""
-    path = Path(folder) / PLAN_DIR / "outcomes" / f"{int(layer_id):02d}.json"
+    path = layer_outcome_path(folder, str(layer_id))
     row = load_layer_outcome(folder, layer_id)
     if not row:
         raise FileNotFoundError(path)

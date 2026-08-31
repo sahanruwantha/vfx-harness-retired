@@ -13,16 +13,21 @@ import fcntl
 import fnmatch
 import hashlib
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.layer_outcomes import (
+    LayerOutcomeContractError,
+    parse_sealed_layer_outcome,
+)
 from vfx_harness.observability.provenance import atomic_write
+from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.ledger import Layer
 
-MATERIALIZATION_SCHEMA = "vfx-harness.jit-layer-materialization/v1"
+MATERIALIZATION_SCHEMA = "vfx-harness.jit-layer-materialization/v2"
 VIEW_SCHEMA = "vfx-harness.jit-layer-view/v1"
 STATE_DIR = Path("state/jit-layers")
 CURRENT = STATE_DIR / "current.json"
@@ -185,37 +190,78 @@ def _matches_reserved(role: str, reserved: tuple[str, ...]) -> bool:
 
 
 def _passed_evidence_ids(value: Any) -> set[str]:
-    found: set[str] = set()
-    if isinstance(value, dict):
-        identifier = value.get("id")
-        if identifier and value.get("pass") is True:
-            found.add(str(identifier))
-        for child in value.values():
-            found.update(_passed_evidence_ids(child))
-    elif isinstance(value, list):
-        for child in value:
-            found.update(_passed_evidence_ids(child))
-    return found
+    """Compatibility projection over the strict sealed-outcome evidence locations."""
+
+    if not isinstance(value, dict):
+        return set()
+    layer_id = value.get("layer")
+    if not isinstance(layer_id, str):
+        return set()
+    try:
+        outcome = parse_sealed_layer_outcome(value, expected_layer_id=layer_id)
+    except LayerOutcomeContractError:
+        return set()
+    return {identifier for _kind, identifier in outcome.passed_bindings}
 
 
-def _require_upstream_outcomes(shot: Path, layer: Layer) -> None:
+def _require_upstream_outcomes(
+    shot: Path,
+    layer: Layer,
+    available_layers: Mapping[str, Layer],
+) -> None:
     if layer.jit is None:
         raise ValueError(f"layer {layer.id} has no deferred JIT authority")
-    passed: set[str] = set()
+    # Imported at the call boundary to avoid making the JIT schema module part of
+    # the layer-plans/revalidation import cycle.
+    from vfx_harness.orchestration.revalidation import (  # noqa: PLC0415
+        current_outcome_eligibility,
+    )
+
+    passed: set[tuple[str, str]] = set()
     for dependency in layer.jit.depends_on_layers:
-        path = shot / "plans" / "outcomes" / f"{int(dependency):02d}.json"
+        dependency_layer = available_layers.get(dependency)
+        if dependency_layer is None:
+            raise ValueError(
+                f"layer {layer.id} dependency {dependency} is absent from the "
+                "selected executable consumer view"
+            )
+        path = layer_outcome_path(shot, dependency)
         try:
             outcome = _document(path)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError(
                 f"layer {layer.id} cannot materialize before dependency {dependency} has a sealed outcome"
             ) from exc
-        if outcome.get("status") != "passed" or str(outcome.get("layer")) != dependency:
+        try:
+            sealed = parse_sealed_layer_outcome(
+                outcome,
+                expected_layer_id=dependency,
+            )
+        except LayerOutcomeContractError as exc:
+            raise ValueError(
+                f"layer {layer.id} dependency {dependency} has an invalid sealed outcome: "
+                f"{exc}"
+            ) from exc
+        if sealed.status != "passed":
             raise ValueError(
                 f"layer {layer.id} dependency {dependency} does not have a passed sealed outcome"
             )
-        passed.update(_passed_evidence_ids(outcome))
-    missing = sorted(identifier for _kind, identifier in layer.jit.required_outcomes if identifier not in passed)
+        eligible, reasons = current_outcome_eligibility(
+            shot,
+            dependency_layer,
+            outcome,
+        )
+        if not eligible:
+            raise ValueError(
+                f"layer {layer.id} dependency {dependency} sealed outcome is stale: "
+                + "; ".join(reasons)
+            )
+        passed.update(sealed.passed_bindings)
+    missing = sorted(
+        f"{kind}:{identifier}"
+        for kind, identifier in layer.jit.required_outcomes
+        if (kind, identifier) not in passed
+    )
     if missing:
         raise ValueError(
             f"layer {layer.id} required upstream outcomes have not passed: " + ", ".join(missing)
@@ -232,4 +278,6 @@ class MaterializedLayer:
     requirement_decisions: dict[str, dict[str, str]]
     requirement_evidence_domains: dict[str, tuple[str, ...]]
     requirement_domain_bindings: dict[str, tuple[dict[str, Any], ...]]
+    judgment_debt_definitions: tuple[dict[str, Any], ...]
+    judgment_debt_activations: tuple[dict[str, Any], ...]
     acceptance: tuple[dict[str, Any], ...]

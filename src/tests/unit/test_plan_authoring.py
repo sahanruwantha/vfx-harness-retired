@@ -96,23 +96,43 @@ def _shot(tmp_path: Path, brief: str, refs: list[str]) -> Path:
 
 def _product_mapping(registry) -> dict:
     rids = [row["id"] for row in registry]
-    resolutions = {rid: _owned("1") for rid in rids}
-    resolutions[rids[-1]] = {
-        "kind": "decision",
-        "statement": "One approval still at frame 1 is the delivery.",
-        "decision_strength": "hard_constraint",
+    resolutions: dict[str, dict] = {
+        rids[0]: _owned("1", "scene", "projected_composition"),
     }
+    for rid in rids[1:-1]:
+        resolutions[rid] = _owned("2")
+    if len(rids) > 2:
+        resolutions[rids[-1]] = {
+            "kind": "decision",
+            "statement": "One approval still at frame 1 is the delivery.",
+            "decision_strength": "hard_constraint",
+        }
+    else:
+        resolutions[rids[-1]] = _owned("2")
     return {
         "schema": "vfx-harness.ownership-mapping/v1",
-        "layers": [{
-            "id": "1", "title": "Hero object", "script": "build/01_hero.py",
-            "charter": "authored brief", "primary_judge": 1,
-            "judge": [{"frame": 1, "ref": "refs/f001.png"}],
-            "owns": ["object_presentation"], "evidence_domains": ["scene", "image"],
-            "depends_on": [], "provides": {"camera": ["camera.*"]},
-            "reserved_roles": ["camera.*", "hero.*"],
-        }],
-        "axes": [{"key": "object_presentation", "desc": "centred, reflected, clean"}],
+        "layers": [
+            {
+                "id": "1", "title": "Studio camera", "script": "build/01_camera.py",
+                "charter": "authored brief", "primary_judge": 1,
+                "judge": [{"frame": 1, "ref": "refs/f001.png"}],
+                "owns": ["camera_hold"], "evidence_domains": ["scene", "projected_composition"],
+                "depends_on": [], "provides": {"camera": ["camera.*"]},
+                "reserved_roles": ["camera.*"],
+            },
+            {
+                "id": "2", "title": "Hero object", "script": "build/02_hero.py",
+                "charter": "studio camera outcome", "primary_judge": 1,
+                "judge": [{"frame": 1, "ref": "refs/f001.png"}],
+                "owns": ["object_presentation"], "evidence_domains": ["scene", "image"],
+                "depends_on": ["1"], "provides": {},
+                "reserved_roles": ["hero.*"],
+            },
+        ],
+        "axes": [
+            {"key": "camera_hold", "desc": "still camera holds the product"},
+            {"key": "object_presentation", "desc": "centred, reflected, clean"},
+        ],
         "resolutions": resolutions,
         "blockers": [],
     }
@@ -213,6 +233,38 @@ def test_global_camera_capability_must_precede_every_judged_layer(tmp_path: Path
 
     assert any("layers[0] is judged before a camera capability" in error for error in errors)
     assert not any("layers[1] is judged before a camera capability" in error for error in errors)
+
+
+def test_camera_layer_cannot_reserve_form_roles(tmp_path: Path) -> None:
+    shot = _shot(tmp_path, MOTION_BRIEF, ["f024.png", "f048.png"])
+    registry = clause_registry(shot / "brief.md")
+    mapping = _motion_mapping(registry)
+    mapping["layers"][0]["reserved_roles"] = ["camera.*", "plaza.*"]
+
+    errors = validate_mapping(mapping, registry, shot / "refs")
+    joined = "\n".join(errors)
+
+    assert "plaza.*" in joined
+    assert "camera-providing layer cannot mutate as geometry" in joined
+    with pytest.raises(ValueError, match="mapping is invalid"):
+        expand_mapping(shot, mapping)
+
+
+def test_plan_gate_refuses_camera_layer_form_reserved_roles(tmp_path: Path) -> None:
+    shot = _shot(tmp_path, MOTION_BRIEF, ["f024.png", "f048.png"])
+    registry = clause_registry(shot / "brief.md")
+    expand_mapping(shot, _motion_mapping(registry))
+    import json
+
+    layers = json.loads((shot / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][0]["jit"]["reserved_roles"] = ["camera.*", "plaza.*"]
+    (shot / "layers.json").write_text(json.dumps(layers), encoding="utf-8")
+
+    result = plan_gate.run(shot, "plans/global.md", require_scene_checks=True)
+    failures = [finding for finding in result.blocking if finding.check == "global-capability"]
+
+    assert any("plaza.*" in finding.what for finding in failures)
+    assert any("form roles" in finding.what for finding in failures)
 
 
 def test_global_camera_capability_flows_through_dependency_closure(tmp_path: Path) -> None:

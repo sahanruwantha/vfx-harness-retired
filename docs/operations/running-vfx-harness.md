@@ -28,6 +28,13 @@ Confirm Python dependencies and Blender before spending model budget:
 .venv/bin/python -m pytest -q
 ```
 
+`vfx preflight --strict` prints one secret-safe
+`vfx-harness.environment-result/v1` JSON record. Use `--output <path>` to publish the
+same record atomically when another process must consume it. Standalone preflight does
+not create a shot run or advance shot authority. `vfx run` instead creates its structured
+run before invoking strict preflight, so a failed probe can publish a run-scoped
+`infrastructure_failure` stop before any paid stage starts.
+
 Stop if preflight fails. Authentication, Blender, or configuration failures can resemble an empty
 successful agent session and must not be diagnosed as a VFX-quality problem.
 
@@ -110,14 +117,18 @@ stay, the vis-owner closure is superseded (HIR-0052). Do not empty-base
 the layer, and do not consume a finding first unless the replacement
 leaves that unit's digest unchanged.
 
-When a deterministic failure has been fixed, or an in-flight planning/build/repair session was
-interrupted, reopen the same unit through the audited retry transition. This preserves the prior
-outcome and keeps dependants blocked until the retried unit passes:
+The existing operator-only retry command can reopen a failed or interrupted unit after a
+reviewed fix. It preserves the prior outcome and keeps dependants blocked until the retried
+unit passes:
 
 ```bash
 .venv/bin/vfx units retry shots/<shot-id> --layer <layer-id> --unit <unit-id> \
   --reason "<why retry is now valid>" --evidence <locator> [--evidence <locator> ...]
 ```
+
+This command does **not** consume a `RetryExactUnitTarget`, verify its typed budget/evidence
+preconditions, or emit a transaction receipt. It is therefore not the implementation of the
+stop-envelope action and must not be called automatically from a stop classification.
 
 If a retained gate-clean candidate predates a publication fix, promote it through a new,
 model-free run instead of editing its immutable bundle or paying to author the same plan again:
@@ -153,7 +164,18 @@ The normal operation is the whole driver:
 
 It performs just-in-time layer planning, the deterministic plan gate, bounded layer building,
 cumulative acceptance, final rendering, and queued distillation under one run ID. It stops on the
-first unaccepted boundary; do not force downstream work past it.
+first unaccepted boundary; do not force downstream work past it. The child boundary must publish
+one immutable `vfx-harness.stop-envelope/v1`, and the whole-run status selects it by digest. A
+bare nonzero child exit is a `harness_defect`, not evidence for retry, replan, or recovery. If
+envelope publication or read-back fails, status records that the envelope is unavailable and
+no action is authorized.
+
+This is a stop boundary, not an automatic recovery loop. There is no public
+`--until-accepted` controller, controller journal, or key-consuming transaction-receipt runtime.
+The envelope's one typed action names the only legal route, but there is not yet a generic
+adapter that consumes that action. An operator may use an existing reviewed command only when
+its independent authority and preconditions apply; otherwise the stop remains terminal and is
+routed to its named human or engineering owner.
 
 Published global plans contain executable units only for Layer 1. A later layer is selected as a
 typed `jit_deferred` boundary with upstream outcome dependencies, reserved semantic roles, and
@@ -184,6 +206,15 @@ Useful bounded operations:
 `--force` is for a bounded debugging experiment only. Its results do not prove that an incomplete
 or unaccepted chain is a deliverable.
 
+Full `vfx accept` publishes `vfx-harness.acceptance-outcome/v1` for the exact selected
+bundle and JIT view, accepted script chain, selected moments, and evidence bytes. When all
+prerequisites are present but a selected moment fails, full acceptance persists its evidence,
+returns `human_decision_required`, and does not let `--repair` mutate unit state. Full
+`vfx render` re-resolves and re-hashes that passing outcome
+before Blender starts. Missing, failed, or stale acceptance refuses. `vfx render --upto ...`
+and `--force` are preview modes and default to the active run's `scratch/previews/`; only a
+current full accepted render uses `deliverables/` by default.
+
 ## 4. Read output in the supported order
 
 Never begin by recursively listing the shot or grepping every transcript.
@@ -197,14 +228,24 @@ For the latest run, read:
 
 1. `runs/latest.json` — selected run ID and terminal state.
 2. `runs/<run-id>/manifest.json` — schema, invocation, layout, and authority.
-3. `runs/<run-id>/status.json` — `running`, `passed`, `failed`, `interrupted`, or `dry-run`.
+3. `runs/<run-id>/status.json` — `running`, `passed`, `failed`, `interrupted`, or `dry-run`;
+   an unaccepted terminal status selects `reports/stop-envelope.json` and its exact digest.
 4. `runs/<run-id>/reports/summary.json` — decisions, findings, cost, and trajectory.
 5. `runs/<run-id>/artifacts.json` — exact catalog for locating supporting detail.
+
+For a failed or interrupted run, resolve the selected stop envelope through the status and
+validate its schema, digest, and run identity before taking action. `status.detail`,
+`terminal_cause`, process exit code, `contract_gap`, max-turns text, and transcript prose are
+diagnostic only. The envelope binds the stable cause, exact attempt evidence, one typed target,
+state preconditions, evidence references, dispatch mode, and authoritative progress
+postcondition. Schema validity does not make the action automatically dispatchable.
 
 Then open only the necessary category:
 
 - `reports/layers/` for a layer verdict and aggregated telemetry;
 - `reports/plan_gate.json` for the final structured plan outcome and repair findings;
+- `reports/stop-envelope.json` for the typed terminal cause and only legal route selected by
+  an unaccepted status;
 - `evidence/renders/` and `evidence/comparisons/` for visual proof;
 - `logs/transcripts/` for prompts, tool calls, model output, and errors;
 - `logs/console.log` for the chronological operator narrative;
@@ -214,17 +255,20 @@ Then open only the necessary category:
 
 ## 5. Diagnose a failed or interrupted run
 
-Use the status and summary before deciding what to change:
+Use the status-selected stop envelope before deciding what to change:
 
 ```text
-preflight/config failure  -> correct environment; do not edit VFX logic
-plan gate failure         -> repair plan/contracts; rerun the gate
-builder evidence failure  -> inspect the owning layer report and cited evidence
-hypothesis_falsified       -> publish amended authority; consume the typed finding with units replan
-canonical replay failure  -> repair deterministic script/checkpoint mechanism
-acceptance failure        -> route to the declared fault-owning layer
-process interruption      -> inspect the last checkpoint, journal, and final transcript events
+local_implementation_miss -> retry_exact_unit only when the exact typed retry target exists
+authority_defect          -> execute its one named action; a later stop may name replan only after amended authority exists
+harness_defect            -> route the exact defect packet and evidence to engineering
+infrastructure_failure    -> external recovery; session resume only with a future fully sealed resume target and receipt
+human_decision_required   -> escalate the exact typed question; automation does not answer it
 ```
+
+Current owning classifiers cover structural global-plan rejection, structural JIT
+materialization rejection, builder/composition hypothesis falsification, strict preflight,
+and failed full-acceptance moments. Other terminal paths deliberately fall back to
+`harness_defect`; never refine that fallback from a legacy label or exit code.
 
 For one layer's action timeline:
 
@@ -232,15 +276,13 @@ For one layer's action timeline:
 .venv/bin/vfx inspect shots/<shot-id> --run <run-id> --layer <layer-id>
 ```
 
-Resume a truncated direct builder session only when its ledger resume record names an existing
-checkpoint and journal:
-
-```bash
-.venv/bin/vfx build shots/<shot-id> --layer <layer-id> --resume
-```
-
-Otherwise start a new run from the fault-owning layer. Never copy a random old render, snapshot,
-or script into the current run and call that a resume.
+Automatic checkpointed-session resume is not currently a legal recovery transaction. The
+legacy ledger row does not seal selected bundle/view, exact unit and unit-plan digest,
+candidate, model session and phase, and durable write-ahead-log identity, and no public
+transaction emits the required `prepared -> running -> terminal` receipt. Start a new run from
+the fault-owning unit under the existing operator procedure. The manual `vfx units retry`
+command above is not a typed resume or automatic retry transaction. Never copy a random old
+render, snapshot, or script into the current run and call that a resume.
 
 ## 6. Authority and editing rules
 

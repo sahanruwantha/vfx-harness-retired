@@ -215,7 +215,9 @@ def build_blender_tools(
     ]
     if shot_dir is not None:
         tools.append(compare_frame)
-    if assets_dir is not None:
+    if assets_dir is not None and str(
+        ((unit_scope or {}).get("construction") or {}).get("route") or "procedural"
+    ) != "generate":
         tools.append(import_asset)
     tools = [*tools, script_map, find_in_script, worklist, cannot_express_in_scope, measure_regions, propose_checks]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)

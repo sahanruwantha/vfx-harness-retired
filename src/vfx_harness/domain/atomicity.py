@@ -81,6 +81,7 @@ HELPER_INSTRUMENT_FAMILY: dict[str, str] = {
     "bvfx_emissive_windows": "shading",
     "bvfx_emissive_from_texture": "shading",
     "bvfx_import_asset": "mesh",
+    "bvfx_import_construction": "mesh",
     "bvfx_aim": "camera",
     "bvfx_scatter_emissive": "shading",
     "bvfx_volumetric_world": "volume",

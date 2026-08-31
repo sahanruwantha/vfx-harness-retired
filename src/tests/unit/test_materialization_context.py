@@ -4,8 +4,11 @@ import json
 from types import SimpleNamespace
 
 from vfx_harness.agents.planner import _materialization_kickoff
+from vfx_harness.agents.planner import kickoff as kickoff_runtime
 from vfx_harness.agents.prompts import layer_user_prompt
 from vfx_harness.agents.unit_scope import compile_predecessor_interface
+from vfx_harness.orchestration import revalidation
+from vfx_harness.orchestration.layer_plans import write_layer_outcome
 
 
 def _write(path, value) -> None:
@@ -13,7 +16,10 @@ def _write(path, value) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def test_materialization_kickoff_compiles_layer_bounded_authority(tmp_path) -> None:
+def test_materialization_kickoff_compiles_layer_bounded_authority(
+    tmp_path,
+    monkeypatch,
+) -> None:
     bundle_root = tmp_path / "bundle"
     layer_two = {
         "id": "2",
@@ -47,26 +53,80 @@ def test_materialization_kickoff_compiles_layer_bounded_authority(tmp_path) -> N
         }, layer_two],
     })
     _write(bundle_root / "requirements.json", {
-        "schema": "vfx-harness.requirements/v1",
+        "schema": "vfx-harness.requirements/v2",
+        "judgment_debt_definitions": [],
+        "judgment_debt_activations": [],
         "requirements": [
             {"id": "R1", "statement": "GLOBAL-JUNK-THAT-MUST-NOT-ENTER-CONTEXT"},
             {"id": "R2", "statement": "Create the material language"},
         ],
     })
-    _write(tmp_path / "plans" / "outcomes" / "01.json", {
-        "schema": 2,
-        "layer": "1",
-        "status": "passed",
-        "script": "build/01.py",
-        "large_unrelated_report": "OUTCOME-JUNK" * 1000,
-        "interfaces": [{
-            "id": "upstream-vis",
-            "kind": "visible_fraction",
-            "value": 1.0,
-            "target": ">= 0.5",
-            "pass": True,
-        }],
-    })
+    (tmp_path / "refs").mkdir()
+    (tmp_path / "refs" / "f72.png").write_bytes(b"bounded-context-reference")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "01.py").write_text(
+        "# bounded-context predecessor\n",
+        encoding="utf-8",
+    )
+    predecessor = SimpleNamespace(
+        id="1",
+        title="Camera",
+        script="build/01.py",
+        judges=((72, "refs/f72.png"),),
+        stages=(),
+    )
+    monkeypatch.setattr(
+        revalidation,
+        "input_manifest",
+        lambda *_args, **_kwargs: {"complete": "bounded-context"},
+    )
+    outcome_path = write_layer_outcome(
+        tmp_path,
+        predecessor,
+        status="passed",
+        best={"round": 1, "mean": 5.0, "render": None},
+        canonical=[
+            (
+                (72, "refs/f72.png"),
+                {
+                    "evidence_kind": "executable_only",
+                    "pass": True,
+                    "issues": [],
+                    "evidence": [
+                        {
+                            "id": "upstream-vis",
+                            "metric": "visible_fraction",
+                            "value": 1.0,
+                            "target": ">= 0.5",
+                            "pass": True,
+                            "source": "interface_contract",
+                            "authoritative": True,
+                            "owner_layer": "1",
+                            "fault_owner": "1",
+                            "activates_at": "1",
+                            "lifecycle": "persistent",
+                        }
+                    ],
+                },
+            )
+        ],
+        run_id="bounded-context",
+        attempt=1,
+        blender_version="fixture",
+    )
+    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+    outcome["large_unrelated_report"] = "OUTCOME-JUNK" * 1000
+    _write(outcome_path, outcome)
+    monkeypatch.setattr(
+        kickoff_runtime,
+        "load_layers_from_path",
+        lambda _path: {"1": predecessor},
+    )
+    monkeypatch.setattr(
+        kickoff_runtime,
+        "current_outcome_eligibility",
+        lambda *_args, **_kwargs: (True, ()),
+    )
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / "plan-resolutions.jsonl").write_text("", encoding="utf-8")
     layer = SimpleNamespace(
@@ -137,7 +197,9 @@ def test_camera_materialization_kickoff_compiles_earliest_geometry_layer(tmp_pat
     }
     _write(bundle_root / "layers.json", {"schema": 5, "layers": [camera, form]})
     _write(bundle_root / "requirements.json", {
-        "schema": "vfx-harness.requirements/v1",
+        "schema": "vfx-harness.requirements/v2",
+        "judgment_debt_definitions": [],
+        "judgment_debt_activations": [],
         "requirements": [],
     })
     (tmp_path / "state").mkdir()

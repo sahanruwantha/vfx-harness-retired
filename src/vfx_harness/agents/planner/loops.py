@@ -10,6 +10,7 @@ import anyio
 
 from vfx_harness.agents.planner.generate import generate_layer_plan
 from vfx_harness.agents.planner.pkg import planner_package
+from vfx_harness.agents.planner.planning_stop import publish_global_plan_gate_stop
 from vfx_harness.agents.planner.types import (
     PlanGateFailure,
     PlanLoopResult,
@@ -242,7 +243,7 @@ async def generate_plan_until_clean(
             f"them; building on this plan means building toward them."
         )
     )
-    return PlanLoopResult(
+    loop_result = PlanLoopResult(
         final,
         outcome,
         n,
@@ -250,6 +251,18 @@ async def generate_plan_until_clean(
         plan_bundle=published_bundle,
         plan_content_hash=published_hash,
     )
+    if not loop_result.clean:
+        envelope = publish_global_plan_gate_stop(layout, loop_result)
+        loop_result = PlanLoopResult(
+            final,
+            outcome,
+            n,
+            plan_pointer=published_pointer,
+            plan_bundle=published_bundle,
+            plan_content_hash=published_hash,
+            stop_envelope=envelope,
+        )
+    return loop_result
 
 
 def main() -> None:
@@ -404,7 +417,11 @@ def main() -> None:
             else:
                 log("provenance → not published for this unaccepted candidate")
         if loop_result is not None and not loop_result.clean:
-            raise PlanGateFailure(loop_result)
+            envelope = loop_result.stop_envelope or publish_global_plan_gate_stop(
+                layout,
+                loop_result,
+            )
+            raise PlanGateFailure(loop_result, stop_envelope=envelope)
         if loop_result is not None:
             layout.terminal_metadata.update(
                 {

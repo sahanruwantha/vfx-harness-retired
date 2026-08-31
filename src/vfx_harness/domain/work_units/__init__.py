@@ -35,6 +35,13 @@ from vfx_harness.domain.work_units.capabilities import (
 from vfx_harness.domain.work_units.capabilities import (
     deferred_subject_activation_gaps as deferred_subject_activation_gaps,
 )
+from vfx_harness.domain.work_units.capabilities import (
+    extra_reserved_roles_on_camera_layer as extra_reserved_roles_on_camera_layer,
+)
+from vfx_harness.domain.work_units.capabilities import sparse_layer_dependencies as sparse_layer_dependencies
+from vfx_harness.domain.work_units.capabilities import (
+    strict_topological_sparse_layer_ids as strict_topological_sparse_layer_ids,
+)
 from vfx_harness.domain.work_units.capabilities import topological_sparse_layer_ids as topological_sparse_layer_ids
 from vfx_harness.domain.work_units.claims import Claim as Claim
 from vfx_harness.domain.work_units.claims import CompositionContext as CompositionContext

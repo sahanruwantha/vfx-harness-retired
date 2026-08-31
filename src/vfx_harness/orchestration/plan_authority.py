@@ -629,7 +629,13 @@ def selected_artifact_path(shot_folder: str | Path, name: str) -> Path:
     """
     shot = Path(shot_folder).expanduser().resolve()
     if (shot / POINTER).exists():
-        if name in {"layers.json", "scene_checks.json", "checks.json", "requirements.json"}:
+        if name in {
+            "layers.json",
+            "scene_checks.json",
+            "checks.json",
+            "requirements.json",
+            "acceptance.json",
+        }:
             # Materialized-view publication imports authority resolution in the reverse direction.
             from vfx_harness.orchestration.jit_materialization import (  # noqa: PLC0415
                 selected_view_artifact,
@@ -660,7 +666,14 @@ def prepare_consumer_view(layout: RunLayout) -> Path:
         for name in bundle.artifacts:
             source = (
                 selected_artifact_path(layout.shot, name)
-                if name in {"layers.json", "scene_checks.json", "checks.json", "requirements.json"}
+                if name
+                in {
+                    "layers.json",
+                    "scene_checks.json",
+                    "checks.json",
+                    "requirements.json",
+                    "acceptance.json",
+                }
                 else bundle.root / name
             )
             target = temp / "plans" / "global.md" if name == "global.md" else temp / name

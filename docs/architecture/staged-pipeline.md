@@ -685,7 +685,10 @@ The first end-to-end verification must be a **fresh run**, not a warm start from
 4. Build every layer and work unit from the beginning.
 5. Exercise checkpoint, resume, repair, rollback, and parallel fan-in paths deliberately.
 6. Replay the entire chain from an empty scene.
-7. Run full-shot acceptance and final rendering.
+7. Run full-shot acceptance, publish a content-addressed acceptance outcome, and permit
+   final rendering only while that passing outcome still matches the selected bundle/view,
+   accepted script chain, selected moments, and evidence bytes. Forced or partial output is
+   preview evidence, not a deliverable.
 8. Compare quality, false decisions, wall time, compute/model cost, repairs, and tool use with the
    archived baseline.
 

@@ -1036,6 +1036,8 @@ def main():
             _mismatch_rejected = True
         check("an aspect-mismatched crop cannot masquerade as an aligned wipe", _mismatch_rejected)
 
+        from vfx_harness.domain.stop_envelope_primitives import canonical_digest as _canonical_digest
+        from vfx_harness.orchestration.revalidation import canonical_records as _canonical_records
         from vfx_harness.orchestration.revalidation import digest as _digest
         from vfx_harness.orchestration.revalidation import eligibility as _eligible
         from vfx_harness.orchestration.revalidation import input_manifest as _input_manifest
@@ -1045,20 +1047,43 @@ def main():
         _EvidenceImage.new("RGB", (16, 9), (20, 20, 20)).save(_sealed)
         _EvidenceImage.new("RGB", (16, 9), (30, 30, 30)).save(_ref_sealed)
         _manifest = {"complete": "boundary"}
+        _capture_payload = {
+            "schema": "vfx-harness.canonical-render-capture/v1",
+            "frame": 1,
+            "mode": "eevee",
+            "scale": 0.5,
+            "resolution": [16, 9, 100],
+            "render_state": {"fixture": "integration-boundary"},
+            "warnings": [],
+            "png_sha256": _digest(_sealed),
+        }
+        _receipt = {
+            **_capture_payload,
+            "capture_digest": _canonical_digest(_capture_payload),
+        }
+        _canonical_layer = type("Layer", (), {"id": "sealed-boundary"})()
         _outcome = {
             "schema": 2,
             "status": "passed",
             "revalidation_manifest": _manifest,
-            "canonical": [
-                {
-                    "frame": 1,
-                    "render": "sealed.png",
-                    "render_sha256": _digest(_sealed),
-                    "ref": "ref.png",
-                    "ref_sha256": _digest(_ref_sealed),
-                    "qualitative_defects": [],
-                }
-            ],
+            "canonical": _canonical_records(
+                _evroot,
+                _canonical_layer,
+                [
+                    (
+                        (1, "ref.png"),
+                        {
+                            "evidence_kind": "render",
+                            "pass": True,
+                            "issues": [],
+                            "evidence": [],
+                            "render": "sealed.png",
+                            "render_capture": _receipt,
+                        },
+                    )
+                ],
+                input_manifest_sha256=_canonical_digest(_manifest),
+            ),
         }
         check(
             "an unchanged schema-2 sealed outcome is revalidation-eligible", _eligible(_outcome, _manifest, _evroot)[0]

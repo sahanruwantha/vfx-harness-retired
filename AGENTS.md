@@ -39,9 +39,12 @@ operation.
   downstream work past it. `--force` is a bounded debugging experiment, never a deliverable.
 - Reading order after any invocation: `runs/latest.json`, then the selected run's
   `manifest.json`, `status.json`, `reports/summary.json`, `artifacts.json`. Fail closed on an
-  unsupported manifest schema. `status.json` `detail` is the stop meaning, never the exit-code
-  digit (HIR-0037). Materialization writes `logs/transcripts/plan/materialize-layer-*.jsonl`
-  (HIR-0038). Open detail (`reports/layers/`, `plan_gate.json`, `evidence/`,
+  unsupported manifest schema. For an unaccepted terminal run, `status.json` selects
+  `reports/stop-envelope.json` by exact digest; that closed envelope is machine dispatch
+  authority. `status.json` `detail` and the exit-code digit are operator diagnostics only
+  (HIR-0037, HIR-0164). Materialization writes
+  `logs/transcripts/plan/materialize-layer-*.jsonl` (HIR-0038). Open detail
+  (`reports/layers/`, `plan_gate.json`, `evidence/`,
   transcripts, checkpoints) only when the summary names a reason. Never diagnose by recursively
   listing the shot or grepping every transcript, and never parse meaning from filenames.
 - Shot-root legacy directories (`logs/`, `renders/`, `.artifacts/`, `.snapshots/`, `.versions/`)
@@ -52,9 +55,20 @@ operation.
   and consume the typed finding with `vfx units replan`; canonical replay failure → the
   deterministic script/checkpoint mechanism; acceptance failure → the declared fault-owning
   layer; interruption → last checkpoint, journal, and final transcript events.
-- Resume a truncated builder session only when its ledger resume record names an existing
-  checkpoint and journal; otherwise start a new run from the fault-owning layer. Never copy an
-  old render, snapshot, or script into a run and call it a resume.
+  `EvidenceNotDue` is successful continuation to its DAG-compiled provider, never a stop or
+  replan request. A stop envelope proposes exactly one typed transaction; it does not prove that
+  transaction ran. Until immutable transaction receipts, postcondition consumers, and commit
+  reconciliation exist, do not automatically dispatch it or infer progress from a repeated
+  finding. None of the seven transaction kinds is dispatch-ready, and no current producer proves
+  `local_implementation_miss`; never infer local retry authority from a generic builder failure
+  (HIR-0164).
+- Do not resume a truncated builder merely because a ledger row names a checkpoint and journal.
+  Safe resume requires a phase-specific immutable receipt binding the selected bundle/view,
+  exact unit and plan digests, candidate, checkpoint, durable journal/WAL, model session, phase,
+  and remaining budget. The current builder does not produce that complete receipt, so no
+  automatic `resume_checkpointed_session` dispatch is authorized; start a new run from the
+  fault-owning unit and current exact authority instead. Never copy an old render, snapshot, or
+  script into a run and call it a resume (HIR-0164).
   A failed-artifact warm start is likewise legal only when the ledger pins that artifact to the
   exact current `WorkUnit` digest; same-id superseded and legacy unpinned scripts replay from clean
   priors instead (HIR-0059).
@@ -80,6 +94,12 @@ operation.
   `scratch/`, cross-run state under shot-root `state/` — never under a prior run. Read-only
   cross-run state access, including `layer_state`, resolves through `shot_state_dir` and must
   not call a run-producing helper or change `runs/latest.json` (HIR-0155).
+- A normal full render is a deliverable only when `shot.json` contains a complete passing
+  `vfx-harness.acceptance-outcome/v1` for the exact current selected bundle, materialized view,
+  accepted script chain, complete moment set, and unchanged acceptance evidence bytes. Missing,
+  failed, partial, or stale acceptance refuses publication. `--force` and `--upto` are previews;
+  their default destination is the current run's `scratch/previews/`, and an explicit output path
+  does not promote them to acceptance authority (HIR-0165).
 
 ## Pipeline north star
 
@@ -286,10 +306,20 @@ prefix (HIR-0156), camera-host optics plus motion that stay one camera write-clu
 (HIR-0157), deferred bbox `activates_at` compiled from the selected DAG so a camera
 layer does not ask_supervisor for layer occupancy (HIR-0158), materialization
 validation that refuses required contract role selectors the binding unit does
-not mutate (HIR-0159), image-contract debt that cannot publish before a mesh,
+not mutate (HIR-0159), global publication that refuses form `reserved_roles` on a
+camera-providing layer so materialization cannot be asked for geometry it cannot
+stage (HIR-0128), image-contract debt that cannot publish before a mesh,
 volume, or compositor carrier is in the replay prefix (HIR-0160), same-layer
 mutation roles that cannot be dressed so a sibling look unit does not retry
-`layer_updates.dressable` until max-turns (HIR-0161), and
+`layer_updates.dressable` until max-turns (HIR-0161), a construction route whose
+generate/retrieve legality is derived from a mesh write family and `refobs-*`
+witnesses so a shading or instancing unit cannot claim image-to-3D (HIR-0162), a
+multi-image Meshy adapter that cannot drop extra views onto a single `image_url`
+(HIR-0162), generate-construction plates that call Higgsfield with a parent crop
+and fail an all-white identity card before Meshy (HIR-0162), minted `refobs-*`
+crops that register before generate staging, harness-owned plate→Meshy→promote
+under `build/construction/<sha256>.glb` with `bvfx_import_construction()`, and
+retired `vfx asset` / generate-unit `import_asset` (HIR-0162), and
 earned qualitative judgment where executable evidence cannot decide. Not wanted: larger prompts or longer sessions as the scaling strategy,
 prompt-only patches for mechanical defects, a confident model verdict replacing executable
 evidence, or extra mutation authority so a builder can "figure it out".
@@ -396,7 +426,14 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   pointer; field repair is `patch_materialization` on the candidate file. Required scene-contract
   role selectors must close against the binding unit's `mutates.roles`/`dresses` in that write —
   a mutation-empty observer cannot look locally clean and then die on terminal-gate
-  `role-selector-closure` (HIR-0159). Unreadable JSON, wrong
+  `role-selector-closure` (HIR-0159). A work unit may declare `construction` with a
+  closed route (`procedural` default, `generate`, `retrieve`, `simplify`). `omit` and
+  `abstain` are not unit routes. `generate`/`retrieve` require a mesh write family;
+  `generate` requires non-empty `refobs-*` witnesses and cannot bind a required
+  `object_count` whose minimum exceeds 1. Route legality is derived; `reason` is
+  audit only. Materialization mints witnesses with `mint_refobs` on a `refs/` crop
+  (not a whole frame) and refuses unregistered generate witnesses. `vfx asset` is
+  retired (ADR-0009, HIR-0162). Unreadable JSON, wrong
   schema, wrong bundle hash, and a non-object layer remain fatal. Historical plan bundles are
   not a repair instrument (HIR-0023). Rematerialization writes a reverted overlay as the design
   base and selects only when the replacement publishes; crash, truncation, or a broken pipe
@@ -535,7 +572,9 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   reserved camera-interface roles (HIR-0086, ADR-0005).
   That sparse camera grant compiles the materialization's unit capability vocabulary:
   a camera-providing layer may stage camera/control units but cannot add
-  `provides: ["geometry"]` to manufacture subject framing. It authors persistent
+  `provides: ["geometry"]` to manufacture subject framing. Global publication refuses
+  `reserved_roles` selectors that do not match the camera grant; those selectors belong
+  on a later layer that does not provide camera. It authors persistent
   downstream rendered-subject `bbox_*` rows and binds them through
   `composition_context`; non-camera form layers retain local geometry authority
   (HIR-0128).
@@ -617,6 +656,27 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   an exact current-bundle typed falsification keeps the approved/planner-start composed
   reference debt alive. Findings from another bundle are inert, and only a selected
   `confirmed_outcome` retires the debt (HIR-0142).
+  Under requirements v2, every provisional image binding names one immutable typed
+  judgment-debt definition: exact requirement statement, semantic owner, fault-owning unit,
+  subject selectors, owner moments, axis, carrier families, observation medium, lifecycle,
+  and digests. The harness derives `activates_at` from the selected DAG and the canonical
+  semantic-role matcher; the planner never authors it, an unrelated carrier cannot trigger it,
+  and a DAG with no reachable matching provider fails before builder or critic spend. The
+  executable artifact and debt are independent state machines: an owner artifact may pass
+  while debt is `pending_not_due`. Selected payer rows alone do not make it `due`: the
+  empty-scene verifier invokes activation only after the actual cumulative replay succeeds,
+  with a receipt proving every exact payer unit is currently passed and its unit artifact still
+  matches its accepted checkpoint. Qualified canonical evidence then makes the debt
+  `satisfied` or `falsified`; final acceptance refuses every unresolved current debt. A
+  no-signal plate never invokes a critic or becomes qualitative falsification, and activation
+  cannot conceal a fault owner whose mutation/dressing authority does not cover a non-camera
+  appearance subject. Every due observation compiles an exact pre-render request from current
+  authority, ordered checkpoint-concordant replay, declared point/reference, carrier-aware
+  evaluated Blender state, promoted assets, medium/mode/scale, comparison, and judge config;
+  the raster publishes its actual settings and PNG digest separately. A no-signal result is
+  append-only attempt state and leaves debt `due`. Direct restart must re-prove replay, then
+  suppress raster and critic for the unchanged request; only a changed relevant digest permits
+  one new attempt (HIR-0163).
   More generally, every deferred requirement's `evidence_domains` is logical AND through
   materialization: structural domains require same-domain registry contracts, while an unpaid
   `image` or `human` domain requires explicit `approved_start`/`planner_start` judgment debt.
@@ -923,6 +983,16 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   dressing is material assignment only — moving, deleting, or remeshing a dressed object breaks
   the owner's sealed contracts (ADR-0007). A selector mutated by any unit on this layer
   cannot be dressed here; this layer's `dressable` grants later layers only (HIR-0161).
+  Image-to-3D is a `generate` construction route on a mesh-family source unit, not a
+  builder-time `import_asset` choice. The adapter posts every supplied view (1–4) as
+  `image_urls` to `/multi-image-to-3d` and never keeps `images[0]`; source-unit
+  generation sets `should_texture: false`. Generate-construction plates (`isolate_relight`,
+  `orbit_view`, `isolate_cutout`) run through the Higgsfield CLI with a parent crop
+  handle; Cursor MCP is not the `vfx run` image adapter. Text-only generate is not a
+  Meshy input. Before the builder session the harness crops minted witnesses, identity-gates
+  plates, posts surviving views to Meshy, and promotes hash-verified bytes to
+  `build/construction/<sha256>.glb`. Generate units call `bvfx_import_construction()`;
+  `vfx asset` and generate-unit `import_asset` fail closed (ADR-0009, HIR-0162).
 - Repair starts from the last accepted checkpoint with a machine-authored manifest: one bounded
   semantic edit per attempt, then re-evaluate failing AND protected evidence; accept only
   monotonic progress without regression, otherwise restore the snapshot. Truncation,
@@ -964,6 +1034,12 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
 - Verify the quantity the layer owns: derive targets from the subject region and from the same
   reference the layer is judged against — a frame-band statistic is invalid for a subject that
   does not fill the band.
+- Image-to-3D candidates are not acceptance: Meshy thumbnails, `preview.png`, and isolate-regen
+  plates do not seal a unit. Generation is a mesh construction route behind witnesses,
+  qualification, and empty-scene replay of a promoted artifact under
+  `build/construction/<sha256>.glb` (ADR-0009, HIR-0162).
+  Generate-construction image-edits use Higgsfield with a parent crop; a white empty plate
+  fails the identity gate before Meshy. `vfx asset` is retired.
 
 ## Change protocol
 

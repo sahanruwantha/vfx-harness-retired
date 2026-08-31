@@ -172,6 +172,52 @@ def collect(shot_folder: str | Path, *, history: bool = False,
     recs = layers(folder, run_id=run_id)
     shot = _load_json(folder / "shot.json")
     acc = (shot.get("acceptance") or {})
+    status = _load_json(layout.status) if layout else {}
+    stop = None
+    if layout and status.get("stop_envelope"):
+        try:
+            envelope = layout.read_terminal_stop()
+        except ValueError as exc:
+            stop = {"valid": False, "error": str(exc)}
+        else:
+            stop = {
+                "valid": True,
+                "stage": envelope.stage,
+                "stop_class": envelope.stop_class,
+                "retryable": envelope.retryable,
+                "cause_fingerprint": envelope.cause_fingerprint,
+                "finding_ids": list(envelope.cause.finding_ids),
+                "legal_transactions": [
+                    action.transaction_id for action in envelope.actions
+                ],
+                "legal_actions": [
+                    {
+                        "transaction_id": action.transaction_id,
+                        "dispatch_mode": action.dispatch_mode,
+                        "evaluator_id": action.evaluator_id,
+                        "precondition_digest": action.precondition_digest,
+                        "postcondition_schema": action.postcondition.SCHEMA,
+                        "action_digest": action.digest,
+                    }
+                    for action in envelope.actions
+                ],
+                "authoritative_before_digest": envelope.authoritative_before_digest,
+                "attempt_evidence_digest": envelope.attempt_evidence_digest,
+                "evidence_refs": [
+                    {
+                        "kind": evidence.kind,
+                        "locator": evidence.locator,
+                        "sha256": evidence.sha256,
+                        "record_schema": evidence.record_schema,
+                        "record_digest": evidence.record_digest,
+                    }
+                    for evidence in envelope.evidence_refs
+                ],
+                "expected": envelope.expected,
+                "found": envelope.found,
+                "next_action": envelope.next_action,
+                "envelope_digest": envelope.digest,
+            }
 
     work_units = []
     for layer_id in sorted({str(rec.get("layer")) for rec in recs if rec.get("layer") is not None}):
@@ -224,7 +270,8 @@ def collect(shot_folder: str | Path, *, history: bool = False,
             "run_id": layout.run_id,
             "root": str(layout.root),
             "manifest": str(layout.manifest),
-            "status": _load_json(layout.status),
+            "status": status,
+            "stop": stop,
         } if layout else None),
         "layers": per,
         "cost_usd": round(sum(p["cost_usd"] for p in per), 2),
@@ -310,6 +357,20 @@ def report(d: dict) -> str:
         L.append(f"   acceptance {acc['passed']}/{acc['total']} moments"
                  + (f" · repair routes to layer(s) {', '.join(acc['repair_plan'])}"
                     if acc["repair_plan"] else ""))
+    run = d.get("run") or {}
+    stop = run.get("stop")
+    if stop and stop.get("valid"):
+        actions = ", ".join(
+            f"{action['transaction_id']} [{action['dispatch_mode']}]"
+            for action in stop["legal_actions"]
+        )
+        L.append(
+            f"   STOP {stop['stop_class']} at {stop['stage']} · "
+            f"legal: {actions}"
+        )
+        L.append(f"     {stop['found']} {stop['next_action']}")
+    elif stop:
+        L.append(f"   STOP ENVELOPE INVALID · {stop['error']}")
 
     f = _findings(d)
     L.append("")

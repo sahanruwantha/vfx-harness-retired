@@ -1,8 +1,8 @@
 """Stage 4 — render the built shot to mp4.
 
-Runs the shot's layer delta scripts (build/NN_*.py) in numeric order in a warm
-session, renders the frame range in EEVEE, and encodes to mp4 with ffmpeg. Run as a module so the
-`vfx_harness` package imports resolve:
+Runs the selected layer delta scripts in the global DAG's stable topological order in
+a warm session, renders the frame range in EEVEE, and encodes to mp4 with ffmpeg. Run as
+a module so the `vfx_harness` package imports resolve:
 
     python -m vfx_harness.application.render_shot <shot-folder> [--upto 40] [--scale 1.0]
 """
@@ -15,20 +15,50 @@ import subprocess
 import time
 from pathlib import Path
 
-from vfx_harness.agents.builder import _RESET, _preamble
+from vfx_harness.agents.acceptance_stop import require_current_accepted_outcome
+from vfx_harness.agents.builder import _RESET, _preamble, _run_artifact_script
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration.ledger import Ledger, load_layers
+from vfx_harness.orchestration.ledger import Ledger
+from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
 
 
 class IncompleteRender(RuntimeError):
     """The deliverable was asked for before the chain that produces it is accepted."""
 
 
-def _chain_scripts(shot: Shot, upto: str | None = None, *,
-                   force: bool = False) -> list[Path]:
+def _render_output_path(
+    shot: Shot,
+    *,
+    upto: str | None,
+    force: bool,
+    out: str | Path | None,
+) -> Path:
+    if out is not None:
+        return Path(out)
+    if force or upto is not None:
+        label = (
+            "forced"
+            if force and upto is None
+            else "upto-" + re.sub(r"[^A-Za-z0-9._-]+", "-", str(upto)).strip("-")
+        )
+        return (
+            run_artifacts.ensure(shot.folder).scratch
+            / "previews"
+            / f"{shot.id}_{label}.mp4"
+        )
+    return run_artifacts.deliverables_dir(shot.folder) / f"{shot.id}_full.mp4"
+
+
+def _chain_scripts(
+    shot: Shot,
+    upto: str | None = None,
+    *,
+    force: bool = False,
+    expected_bundle_digest: str | None = None,
+) -> list[Path]:
     """The layer delta scripts to run, in order, taken from the LEDGER's manifest.
 
     This used to glob build/ and run whatever it found. A glob answers "what files are
@@ -41,19 +71,23 @@ def _chain_scripts(shot: Shot, upto: str | None = None, *,
     if not build_dir.is_dir():
         raise FileNotFoundError(f"no build/ in {shot.folder} — run the build stage first")
 
-    def num(p: Path):
-        m = re.match(r"(\d+)", p.name)
-        return (int(m.group(1)) if m else 10_000, p.name)
-
-    layers = sorted(load_layers(shot).values(), key=lambda g: num(Path(g.script)))
+    layers = list(
+        selected_layer_chain(
+            shot,
+            expected_bundle_digest=expected_bundle_digest,
+        )
+    )
     if upto:
-        keep = [g for g in layers
-                if Path(g.script).name.startswith(upto) or Path(g.script).stem == upto
-                or str(g.id) == upto]
-        if not keep:
+        matching = [
+            index
+            for index, layer in enumerate(layers)
+            if Path(layer.script).name.startswith(upto)
+            or Path(layer.script).stem == upto
+            or str(layer.id) == upto
+        ]
+        if not matching:
             raise FileNotFoundError(f"no layer matching {upto!r} in the plan")
-        cut = num(Path(keep[-1].script))
-        layers = [g for g in layers if num(Path(g.script)) <= cut]
+        layers = layers[: matching[-1] + 1]
 
     ledger = Ledger(shot)
     scripts, problems = [], []
@@ -87,9 +121,27 @@ def _chain_scripts(shot: Shot, upto: str | None = None, *,
 def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
                blender: str = "blender", out: str | Path | None = None,
                force: bool = False) -> Path:
-    scripts = _chain_scripts(shot, upto, force=force)
-    out = (Path(out) if out else
-           run_artifacts.deliverables_dir(shot.folder) / f"{shot.id}_full.mp4")
+    acceptance_outcome = None
+    if upto is None and not force:
+        try:
+            acceptance_outcome = require_current_accepted_outcome(shot)
+        except ValueError as exc:
+            raise IncompleteRender(str(exc)) from exc
+    elif force:
+        log("! --force: final acceptance is not being used as publication authority")
+    else:
+        log("! --upto: partial-chain output is a preview, not a deliverable")
+    scripts = _chain_scripts(
+        shot,
+        upto,
+        force=force,
+        expected_bundle_digest=(
+            acceptance_outcome.bundle_digest
+            if acceptance_outcome is not None
+            else None
+        ),
+    )
+    out = _render_output_path(shot, upto=upto, force=force, out=out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     s = BlenderSession(blender=blender, blend_file=None,
@@ -99,7 +151,7 @@ def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
         s.run(_preamble(shot))
         for p in scripts:
             log(f"running {p.name}")
-            s.run(p.read_text(encoding="utf-8"))
+            _run_artifact_script(s, p)
         log(f"rendering {shot.frames} frames @ scale {scale}…")
         t0 = time.monotonic()
         for f in range(1, shot.frames + 1):

@@ -56,7 +56,12 @@ import json
 from pathlib import Path
 
 from vfx_harness.domain.contracts import load_document
-from vfx_harness.domain.work_units import DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE, read_document
+from vfx_harness.domain.work_units import (
+    CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
+    DEFERRED_CONTRACT_FRAME_AUTHORITY_RULE,
+    extra_reserved_roles_on_camera_layer,
+    read_document,
+)
 from vfx_harness.evaluation.plan_gate.types import (
     Finding,
     _global_authority_layers,
@@ -159,6 +164,28 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                 provided: set[str] = set()
             else:
                 provided = {str(item) for item in raw_provides}
+                extra_form = extra_reserved_roles_on_camera_layer(
+                    provided_capabilities=provided,
+                    camera_selectors=(
+                        list(raw_provides.get("camera") or [])
+                        if isinstance(raw_provides.get("camera"), list)
+                        else []
+                    ),
+                    reserved_roles=jit.get("reserved_roles") or [],
+                )
+                if extra_form:
+                    out.append(
+                        Finding(
+                            "global-capability",
+                            True,
+                            f"layers.json.layers[{index}].jit.reserved_roles",
+                            "camera-providing layer reserves form roles it cannot mutate "
+                            "as geometry: " + ", ".join(extra_form),
+                            CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE
+                            + " Split camera provide onto its own layer; reserve those "
+                            "selectors on a later layer that does not provide camera.",
+                        )
+                    )
             inherited = {
                 capability
                 for dependency in jit.get("depends_on_layers") or []

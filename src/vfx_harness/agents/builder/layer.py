@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,7 +15,8 @@ from vfx_harness.agents.builder.falsify import (
     _record_contract_gap_falsification,
     _record_unsatisfiable_pair_falsification,
 )
-from vfx_harness.agents.builder.models import _RESET, critic_model
+from vfx_harness.agents.builder.judgment_payment import JudgmentDebtPayment
+from vfx_harness.agents.builder.models import _RESET, BuildAuthorityDefect, critic_model
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import (
     _ARTIFACT_EVALUATION_BARRIER,
@@ -22,8 +24,11 @@ from vfx_harness.agents.builder.prior import (
     _prior_layer_paths,
     _run_artifact_script,
 )
+from vfx_harness.agents.builder.provisional_judgment import (
+    _composition_judge_unit,
+    _load_provisional_decisions,
+)
 from vfx_harness.agents.builder.revalidate import _blender_version
-from vfx_harness.agents.builder.verdicts import _composition_judge_unit, _load_provisional_decisions
 from vfx_harness.agents.builder.verify import _verify_script
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.shot_context import write_layer_context
@@ -38,6 +43,11 @@ from vfx_harness.observability.log import (
 )
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.observability.runid import RUN_ID
+from vfx_harness.orchestration.judgment_debt_state import (
+    mark_judgment_debt_due,
+    replay_prefix_receipt,
+    resolve_current_judgment_debt,
+)
 from vfx_harness.orchestration.layer_plans import (
     validate_work_unit_plan_authority,
     work_unit_plan_path,
@@ -249,48 +259,41 @@ async def build_layer(
         elif current.get("status") == "pending":
             transition(shot.folder, str(layer.id), unit.id, "planning", reason="unit became dependency-ready")
         transition(shot.folder, str(layer.id), unit.id, "building", reason="builder transaction started")
+        fps = {}
         try:
-            fps = {}
-            try:
-
-                fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
-            except Exception as exc:
-                log(f"! no measured fingerprints in the unit contract: {str(exc)[:60]}", 1)
-            context_path = write_layer_context(
-                shot, unit_layer, load_axes(shot), fps, unit=unit, layer_units=layer.stages
-            )
-            log(f"unit context → {context_path.relative_to(shot.folder)} (loaded every request)", 1)
-            ledger = await builder_package().build_unit(
-                shot,
-                milestone,
-                _unit_artifact_path(layer, unit),
-                prior_layers + [shot.folder / rel for rel in unit_artifacts],
-                session,
-                rounds=rounds,
-                verbose=verbose,
-                plan_excerpt=unit_excerpt,
-                scope=scope + f"\n  ACTIVE WORK UNIT: {unit.id} — {unit.title}. Only its claims may authorize repair.",
-                layer=unit_layer,
-                active_unit=unit,
-                publish_layer=len(layer.stages) == 1,
-                report_layer=(
-                    unit_layer if len(layer.stages) == 1 else replace(unit_layer, id=f"{layer.id}.{unit.id}")
-                ),
-                resume_ok=resume_ok,
-                layer_units=layer.stages,
-            )
-        except Exception:
-            transition(shot.folder, str(layer.id), unit.id, "failed", reason="unit build raised")
-            block_dependents(
-                shot.folder,
-                str(layer.id),
-                unit.id,
-                layer.stages,
-                reason=f"dependency {unit.id} failed",
-            )
-            raise
+            fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
+        except Exception as exc:
+            log(f"! no measured fingerprints in the unit contract: {str(exc)[:60]}", 1)
+        context_path = write_layer_context(
+            shot, unit_layer, load_axes(shot), fps, unit=unit, layer_units=layer.stages
+        )
+        log(f"unit context → {context_path.relative_to(shot.folder)} (loaded every request)", 1)
+        # A raised boundary error is not evidence that this unit's implementation
+        # failed.  Preserve the in-flight state until a producer-sealed outcome can
+        # classify the cause; otherwise infrastructure, harness, or session failures
+        # falsely invalidate the unit and its entire dependency closure.
+        ledger = await builder_package().build_unit(
+            shot,
+            milestone,
+            _unit_artifact_path(layer, unit),
+            prior_layers + [shot.folder / rel for rel in unit_artifacts],
+            session,
+            rounds=rounds,
+            verbose=verbose,
+            plan_excerpt=unit_excerpt,
+            scope=scope + f"\n  ACTIVE WORK UNIT: {unit.id} — {unit.title}. Only its claims may authorize repair.",
+            layer=unit_layer,
+            active_unit=unit,
+            publish_layer=len(layer.stages) == 1,
+            report_layer=(
+                unit_layer if len(layer.stages) == 1 else replace(unit_layer, id=f"{layer.id}.{unit.id}")
+            ),
+            resume_ok=resume_ok,
+            layer_units=layer.stages,
+        )
         unit_status = ledger.status(milestone)
         if unit_status != "passed":
+            finding = None
             if unit_status == "contract_gap":
                 try:
                     finding = _record_contract_gap_falsification(shot, layer, unit)
@@ -355,6 +358,22 @@ async def build_layer(
                 layer.stages,
                 reason=f"dependency {unit.id} ended {unit_status}",
             )
+            if finding is not None:
+                state_after = load_unit_state(shot.folder, str(layer.id))
+                unpassed = [
+                    f"{uid}={row.get('status')}"
+                    for uid, row in (state_after.get("units") or {}).items()
+                    if row.get("status") != "passed"
+                ]
+                raise BuildAuthorityDefect(
+                    finding,
+                    stage="builder",
+                    exit_code=7,
+                    legacy_detail=(
+                        f"layer {layer.id} did not accept every work unit: "
+                        + ", ".join(unpassed)
+                    ),
+                )
             return ledger
 
         if unit.protects.ids:
@@ -459,51 +478,137 @@ async def build_layer(
         label=f"layer{layer.id}-composition",
         run_id=RUN_ID,
     )
-    axes = _owned_axes(await ensure_axes(shot, verbose), layer)
+    all_axes = await ensure_axes(shot, verbose)
     canonical: list = []
     provisional_decisions = _load_provisional_decisions(shot, str(layer.id))
-    composition_unit = _composition_judge_unit(layer, provisional_decisions)
-    if composition_unit is not None:
-        if provisional_decisions:
-            log(
-                "composed canonical owes independent reference judgment for provisional "
-                "requirement decision(s): "
-                + ", ".join(row["id"] for row in provisional_decisions)
-                + f" · render mode {_unit_raster_mode(composition_unit)}",
-                1,
-            )
-        else:
-            log(
-                "composed canonical fans in look-less unit claims — no critic look vote",
-                1,
-            )
-    result = await _verify_script(
-        shot,
-        milestone,
-        layer.script,
-        prior_layers,
-        session,
-        axes,
-        ledger,
-        verbose,
-        scope=scope,
-        layer=layer,
-        active_unit=composition_unit,
-        out_verdicts=canonical,
+    decision_groups = (
+        tuple((decision,) for decision in provisional_decisions)
+        if provisional_decisions
+        else ((),)
     )
-    if (
-        result == "contract_gap"
-        and composition_unit is not None
-        and tuple(getattr(composition_unit, "provisional_requirement_ids", ()) or ())
-    ):
-        finding = _record_composed_contract_gap_falsification(
-            shot, layer, composition_unit
+    composition_units = tuple(
+        _composition_judge_unit(layer, decisions) for decisions in decision_groups
+    )
+    result = "passed"
+    terminal_finding = None
+    for composition_unit in composition_units:
+        composition_layer = layer
+        active_decisions = tuple(
+            getattr(composition_unit, "provisional_decisions", ()) or ()
         )
-        log(
-            "composed provisional judgment published typed producer-closure finding → "
-            f"{finding['record_id']} (accepted checkpoints preserved until replan)",
-            1,
+        typed_decisions = tuple(
+            decision for decision in active_decisions if decision.get("debt_id")
         )
+        if len(typed_decisions) > 1:
+            raise ValueError(
+                "one composed canonical payment may settle exactly one judgment debt"
+            )
+        if composition_unit is not None and active_decisions:
+            judges = tuple(
+                (int(point.frame), str(point.ref))
+                for point in composition_unit.evaluation.judges
+            )
+            owns = tuple(
+                dict.fromkeys(
+                    claim.axis
+                    for claim in composition_unit.evaluation.claims
+                    if getattr(claim, "required", False)
+                )
+            )
+            composition_layer = replace(layer, judges=judges, owns=owns)
+        axes = _owned_axes(all_axes, composition_layer)
+        if composition_unit is not None:
+            if active_decisions:
+                decision = active_decisions[0]
+                identity = decision.get("debt_id") or decision["id"]
+                log(
+                    "composed canonical owes independent reference judgment for due "
+                    f"debt {identity} · render mode {_unit_raster_mode(composition_unit)}",
+                    1,
+                )
+            else:
+                log(
+                    "composed canonical fans in look-less unit claims — no critic look vote",
+                    1,
+                )
+        on_replay_ready = None
+        if typed_decisions:
+            decision = typed_decisions[0]
+
+            def _activate_after_replay(
+                decision=decision,
+                axes=axes,
+            ) -> JudgmentDebtPayment:
+                receipt = replay_prefix_receipt(
+                    shot.folder,
+                    replayed_layer_scripts=(*prior_layers, shot.folder / layer.script),
+                )
+                mark_judgment_debt_due(
+                    shot.folder,
+                    decision["definition_digest"],
+                    layer_id=str(layer.id),
+                    replayed_unit_digests=receipt.unit_digests,
+                )
+                return JudgmentDebtPayment(
+                    shot=shot,
+                    decision=decision,
+                    session=session,
+                    axes=axes,
+                    replay_receipt=receipt,
+                )
+
+            on_replay_ready = _activate_after_replay
+        canonical_start = len(canonical)
+        result = await _verify_script(
+            shot,
+            milestone,
+            layer.script,
+            prior_layers,
+            session,
+            axes,
+            ledger,
+            verbose,
+            scope=scope,
+            layer=composition_layer,
+            active_unit=composition_unit,
+            out_verdicts=canonical,
+            on_replay_ready=on_replay_ready,
+        )
+        finding_record_id = None
+        if (
+            result == "contract_gap"
+            and composition_unit is not None
+            and tuple(
+                getattr(composition_unit, "provisional_requirement_ids", ()) or ()
+            )
+        ):
+            finding = _record_composed_contract_gap_falsification(
+                shot, layer, composition_unit
+            )
+            terminal_finding = finding
+            finding_record_id = str(finding["record_id"])
+            log(
+                "composed provisional judgment published typed producer-closure finding → "
+                f"{finding['record_id']} (accepted checkpoints preserved until replan)",
+                1,
+            )
+        if typed_decisions and result in {"passed", "reproduced", "contract_gap"}:
+            decision = typed_decisions[0]
+            resolve_current_judgment_debt(
+                shot.folder,
+                decision["definition_digest"],
+                outcome=(
+                    "falsified" if result == "contract_gap" else "satisfied"
+                ),
+                evidence_digest=_judgment_payment_evidence_digest(
+                    decision,
+                    result=result,
+                    verdicts=canonical[canonical_start:],
+                    finding_record_id=finding_record_id,
+                ),
+            )
+        if result not in {"passed", "reproduced"}:
+            break
     status = "passed" if result == "passed" else result
     best = {"round": 0, "mean": min((v.get("mean", 0) for _fr, v in canonical), default=0), "render": None}
     write_layer_outcome(
@@ -519,7 +624,42 @@ async def build_layer(
     ledger.mark(milestone, status, best=best)
     transcript.unbind()
     costlog.unbind()
+    if terminal_finding is not None:
+        raise BuildAuthorityDefect(
+            terminal_finding,
+            stage="composition",
+            exit_code=9,
+            legacy_detail=(
+                f"layer {layer.id} units passed but the composed verdict is {status!r}"
+            ),
+        )
     return ledger
+
+
+def _judgment_payment_evidence_digest(
+    decision: dict,
+    *,
+    result: str,
+    verdicts: list,
+    finding_record_id: str | None = None,
+) -> str:
+    """Bind a debt outcome to the exact canonical verdict slice that produced it."""
+    payload = {
+        "schema": "vfx-harness.judgment-debt-payment-evidence/v1",
+        "debt_id": decision["debt_id"],
+        "definition_digest": decision["definition_digest"],
+        "activation_digest": decision["activation_digest"],
+        "result": result,
+        "verdicts": verdicts,
+        "finding_record_id": finding_record_id,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _compose_unit_artifact_source(parts: list[tuple[str, str, str]]) -> str:

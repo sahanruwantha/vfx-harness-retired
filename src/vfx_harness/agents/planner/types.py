@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from vfx_harness.domain.stop_envelopes import StopEnvelope
+
 # Materialization authority is the selected bundle, the decision ledger, sealed
 # outcomes, and the candidate file. Glob/Grep of historical bundles is not a repair
 # instrument; Edit is JSON text-edit of the wrong document (HIR-0023). Task/Agent
@@ -32,6 +34,7 @@ class PlanLoopResult:
     plan_pointer: str | None = None
     plan_bundle: str | None = None
     plan_content_hash: str | None = None
+    stop_envelope: StopEnvelope | None = None
 
     @property
     def clean(self) -> bool:
@@ -43,11 +46,26 @@ class PlanLoopResult:
 class PlanGateFailure(SystemExit):
     """Exit 3 while preserving a useful run-status detail instead of a traceback."""
 
-    def __init__(self, result: PlanLoopResult):
+    def __init__(
+        self,
+        result: PlanLoopResult,
+        *,
+        stop_envelope: StopEnvelope | None = None,
+    ):
+        envelope = stop_envelope or result.stop_envelope
+        if envelope is not None and not isinstance(envelope, StopEnvelope):
+            raise ValueError("PlanGateFailure.stop_envelope must be a StopEnvelope")
         self.detail = (
-            f"plan loop {result.outcome} with {result.blocking_count} blocking "
-            f"finding(s) remaining in {result.path}"
+            f"{envelope.stop_class}: {envelope.found} {envelope.next_action}"
+            if envelope is not None
+            else (
+                f"plan loop {result.outcome} with {result.blocking_count} blocking "
+                f"finding(s) remaining in {result.path}"
+            )
         )
+        if envelope is not None:
+            self.stop_envelope = envelope
+            self.terminal_cause = envelope.stop_class
         self.run_metadata = {
             "outcome": result.outcome,
             "blocking_count": result.blocking_count,

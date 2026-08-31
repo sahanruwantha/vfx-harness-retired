@@ -195,6 +195,7 @@ def build_plan_tools(
     (
         stage_materialization_unit_tool,
         unstage_materialization_unit_tool,
+        mint_refobs_tool,
         materialization_status,
         finalize_materialization,
         patch_materialization,
@@ -218,6 +219,7 @@ def build_plan_tools(
         tools.extend([
             stage_materialization_unit_tool,
             unstage_materialization_unit_tool,
+            mint_refobs_tool,
             materialization_status,
             finalize_materialization,
             patch_materialization,

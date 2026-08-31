@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import anyio
@@ -14,6 +15,10 @@ from vfx_harness.agents.builder.evidence import (
     _unit_requires_raster,
 )
 from vfx_harness.agents.builder.falsify import _persist_contract_gaps
+from vfx_harness.agents.builder.judgment_payment import (
+    JudgmentDebtPayment,
+    PreparedJudgmentObservation,
+)
 from vfx_harness.agents.builder.models import _RESET
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import _run_artifact_script
@@ -25,6 +30,28 @@ from vfx_harness.observability.log import (
     log,
 )
 from vfx_harness.orchestration.ledger import Ledger, Milestone, plan_strips
+
+
+def _bind_canonical_evidence(
+    verdict: dict,
+    *,
+    raster_required: bool,
+    render_rel: str,
+    render_receipt: dict | None,
+) -> dict:
+    """Attach the producer-owned canonical discriminant and exact raster receipt."""
+
+    if raster_required:
+        if not render_rel or not isinstance(render_receipt, dict):
+            raise ValueError("render canonical is missing its produced locator/receipt")
+        verdict["evidence_kind"] = "render"
+        verdict["render"] = render_rel
+        verdict["render_capture"] = render_receipt
+    else:
+        verdict["evidence_kind"] = "executable_only"
+        verdict.pop("render", None)
+        verdict.pop("render_capture", None)
+    return verdict
 
 
 async def _verify_script(
@@ -43,6 +70,7 @@ async def _verify_script(
     layer=None,
     active_unit=None,
     out_verdicts: list | None = None,
+    on_replay_ready: Callable[[], JudgmentDebtPayment | None] | None = None,
 ) -> str:
     """-> passed | reproduced | contract_gap | judge_conflict | failed.
 
@@ -55,6 +83,7 @@ async def _verify_script(
         log(f"! builder never wrote {script_rel}")
         return "failed"
     log(f"verifying {script_path.name} reproduces from an empty scene…")
+    judgment_payment = None
     try:
         session.run(_RESET)
         session.run(builder_package()._preamble(shot))
@@ -86,6 +115,12 @@ async def _verify_script(
                             "issues": list(scope_errors),
                         }))
                 return "failed"
+        if on_replay_ready is not None:
+            # Debt activation is a claim about the actual cumulative replay, not merely
+            # selected plan rows. Invoke the harness callback only after every prior and
+            # the current artifact executed and the scoped-mutation check stayed clean,
+            # but before any raster or critic work can spend against that prefix.
+            judgment_payment = on_replay_ready()
     except BlenderError as e:
         log(f"! build script failed: {str(e)[:200]}")
         verdict = _verdict({"scores": {}, "issues": [f"script error: {e}"]})
@@ -111,7 +146,18 @@ async def _verify_script(
             "skipping raster and visual critic",
             1,
         )
-    shots_ = []
+    shots_: list[
+        tuple[
+            int,
+            str,
+            Milestone,
+            str,
+            PreparedJudgmentObservation | None,
+            dict | None,
+        ]
+    ] = []
+    render_mode = _unit_raster_mode(active_unit)
+    render_scale = 0.5
     for frame, ref in judges:
         if len(judges) == 1:
             m_i = m
@@ -128,22 +174,33 @@ async def _verify_script(
                 if unit_tag
                 else layer.milestone_at(frame, ref, plan_strips(shot))
             )
-        render_rel = (
-            builder_package()._stash_render(
+        prepared = (
+            judgment_payment.prepare(
+                frame=int(frame),
+                ref=str(ref),
+                render_mode=render_mode,
+                render_scale=render_scale,
+            )
+            if judgment_payment is not None
+            else None
+        )
+        render_rel = ""
+        render_receipt = None
+        if raster_required and not (prepared is not None and prepared.prior_failure is not None):
+            render_rel, render_receipt = builder_package()._stash_render_with_receipt(
                 session,
                 shot,
                 m_i,
                 f"canonical_f{frame}" if len(judges) > 1 else "canonical",
-                mode=_unit_raster_mode(active_unit),
+                scale=render_scale,
+                mode=render_mode,
             )
-            if raster_required
-            else ""
-        )
-        shots_.append((frame, ref, m_i, render_rel))
+        shots_.append((frame, ref, m_i, render_rel, prepared, render_receipt))
 
     canonical_motion_evidence = None
     if (
         raster_required
+        and judgment_payment is None
         and shot.frontmatter.get("type") == "motion"
         and shot.frames > 1
         and _layer_needs_motion(layer)
@@ -164,7 +221,7 @@ async def _verify_script(
     # vote. Multi-frame layers still need their additional claimed frames judged because
     # live iteration only rendered the primary one.
     if len(shots_) == 1 and live_best_render and live_best_verdict:
-        frame, ref, m_i, render_rel = shots_[0]
+        frame, ref, m_i, render_rel, _prepared, render_receipt = shots_[0]
         reproduction = _image_reproduction(shot.folder / live_best_render, shot.folder / render_rel)
         if reproduction.get("match"):
             evidence = builder_package()._render_evidence(
@@ -195,6 +252,12 @@ async def _verify_script(
                         live_best_verdict.get("observation_reconciliation") or []
                     ),
                 }
+                _bind_canonical_evidence(
+                    verdict,
+                    raster_required=True,
+                    render_rel=render_rel,
+                    render_receipt=render_receipt,
+                )
                 ledger.record_round(m, kind="canonical", index=0, render=render_rel, verdict=verdict)
                 wrapped = [((frame, ref), verdict)]
                 if out_verdicts is not None:
@@ -218,7 +281,11 @@ async def _verify_script(
                 return "reproduced"
     results: list = [None] * len(shots_)
 
-    async def _score(i, m_i, render_rel):
+    async def _score(i, m_i, render_rel, prepared):
+        if prepared is not None and prepared.prior_failure is not None:
+            assert judgment_payment is not None
+            results[i] = judgment_payment.cached_verdict(prepared)
+            return
         evidence = builder_package()._render_evidence(
             shot, layer, m_i, render_rel, session, active_unit=active_unit
         )
@@ -239,17 +306,65 @@ async def _verify_script(
         )
 
     if not raster_required:
-        for i, (_f, _r, m_i, rr) in enumerate(shots_):
-            await _score(i, m_i, rr)
+        for i, (_f, _r, m_i, rr, prepared, _render_receipt) in enumerate(shots_):
+            await _score(i, m_i, rr, prepared)
     elif len(shots_) == 1:
-        await _score(0, shots_[0][2], shots_[0][3])
+        await _score(0, shots_[0][2], shots_[0][3], shots_[0][4])
     else:
         async with anyio.create_task_group() as tg:
-            for i, (_f, _r, m_i, rr) in enumerate(shots_):
-                tg.start_soon(_score, i, m_i, rr)
+            for i, (_f, _r, m_i, rr, prepared, _render_receipt) in enumerate(shots_):
+                tg.start_soon(_score, i, m_i, rr, prepared)
     verdicts = []
-    for i, (frame, ref, _m_i, render_rel) in enumerate(shots_):
+    for i, (frame, ref, _m_i, render_rel, prepared, render_receipt) in enumerate(shots_):
         v = results[i]
+        if (
+            judgment_payment is not None
+            and prepared is not None
+            and prepared.prior_failure is None
+        ):
+            if render_receipt is None:
+                raise ValueError("judgment observation is missing its canonical render receipt")
+            capture = judgment_payment.candidate_capture(
+                prepared,
+                render_rel=render_rel,
+                render_receipt=render_receipt,
+            )
+            v["judgment_observation"] = {
+                "request": prepared.request.as_dict(),
+                "candidate_capture": capture,
+                "reused_attempt": None,
+            }
+        if (
+            judgment_payment is not None
+            and prepared is not None
+            and prepared.prior_failure is None
+            and v.get("decided_by") == "no_optical_signal"
+        ):
+            failure = judgment_payment.record_no_optical_signal(
+                prepared,
+                render_rel=render_rel,
+                render_receipt=render_receipt,
+                verdict=v,
+            )
+            v["payment_attempt"] = {
+                "request_digest": prepared.request.digest,
+                "attempt_digest": failure.digest,
+                "reason": failure.reason,
+                "candidate_capture_digest": failure.candidate_capture_digest,
+                "signal_metrics_digest": failure.signal_metrics_digest,
+                "suppressed": False,
+            }
+        if not (
+            raster_required
+            and prepared is not None
+            and prepared.prior_failure is not None
+        ):
+            _bind_canonical_evidence(
+                v,
+                raster_required=raster_required,
+                render_rel=render_rel,
+                render_receipt=render_receipt,
+            )
         _persist_contract_gaps(
             shot,
             layer,

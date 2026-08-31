@@ -42,6 +42,8 @@ but no executable predicate prevented the exact proxy workaround it rejected.
   registry or a prohibition on form work.
 - The model sees the legal capability vocabulary before generation.
 - The staging write and final publication independently fail closed.
+- Global publication refuses reserved form selectors that the camera grant does not
+  match, so a later materialization cannot be asked for geometry it cannot stage.
 - The rejection names the legal deferred-bbox shape instead of merely saying
   `geometry` is invalid.
 - No role-name, shot-name, frame, or department heuristic enters core behavior.
@@ -55,6 +57,11 @@ geometry but cannot invent camera. The closed `stage_materialization_unit` schem
 enumerates that vocabulary. Its revision-checked staging transaction refuses a forged
 capability before candidate bytes change, and materialization finalization repeats the
 check against the hash-verified sparse bundle.
+
+The same compiled grant is a publication predicate: `reserved_roles` on a
+camera-providing layer may only match the camera selectors. Extra form namespaces fail
+at ownership-mapping validation and at the plan gate, so until-clean cannot select a
+layer that owns both camera provide and later subject form.
 
 The teaching rejection says to author persistent `bbox_*` contracts over rendered
 subject roles owned by the earliest downstream form layer, retain `owner_layer` and
@@ -76,28 +83,23 @@ through the camera unit's `composition_context`.
 
 Regression fixtures use typed camera authority with product and motion role names. They
 prove the closed schema exposes only `camera`, the staging transaction leaves bytes
-unchanged on a geometry attempt, finalization reports the same blocker, and a non-camera
-layer retains local geometry authority. Focused materialization, plan-tool, composition,
-and atomicity validation passed 192 tests. Full repository validation passed:
-
-```text
-.venv/bin/ruff check src tests
-All checks passed!
-.venv/bin/python -m pytest -q
-622 passed in 48.21s
-```
-
-The production proof remains the next operational boundary: rematerialize Layer 1 and
-publish deferred subject bbox without proxy geometry.
+unchanged on a geometry attempt, finalization reports the same blocker, a non-camera
+layer retains local geometry authority, ownership mapping refuses extra form
+`reserved_roles` on a camera-providing layer, and the plan gate repeats that
+`global-capability` finding. Heterogeneous grant names (`product.view_rig`,
+`motion.capture_host`) are legal when they match the reserved set; a sibling form
+namespace is not.
 
 ## Release and rollback
 
-This is stricter materialization behavior with no persisted schema change. Unpublished
-scratch candidates that violate sparse authority remain diagnostics and must be
-rematerialized. Rollback would let a camera layer self-author subject form again.
+This is stricter publication and materialization behavior with no persisted schema
+change. An already-selected sparse bundle that reserved form namespaces on a camera
+layer is now gate-dirty and must be republished. Rollback would let a camera layer
+self-author subject form again, or let global publication combine camera provide with
+form ownership so a shading-only unit is asked for meshes.
 
 ## Remaining limitations
 
 This gate proves ownership separation, not that the resulting camera path matches the
 references. Path, timing, targeting, and deferred bbox bindings still require executable
-Layer-1 contracts and empty-scene replay before later form work may start.
+camera-layer contracts and empty-scene replay before later form work may start.

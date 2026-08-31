@@ -1,8 +1,8 @@
-"""Drive the authenticated `higgsfield` CLI for image jobs (ISOLATION + concept art).
+"""Drive the authenticated `higgsfield` CLI for generate-construction plates.
 
-The CLI carries its own auth (`higgsfield auth`), so no API keys are handled here.
-Used for the asset stage's isolation step (regenerate a clean white-bg subject) and
-plain background removal — NOT for 3D (that's Meshy, see `meshy.py`).
+The CLI carries its own auth (`higgsfield auth login`), so no API keys are handled
+here. Cursor MCP at https://mcp.higgsfield.ai/mcp is a coding-agent connector and
+is not the `vfx run` adapter. Image→3D remains Meshy (`meshy.py`).
 """
 
 from __future__ import annotations
@@ -99,6 +99,48 @@ def _download(url: str, out: Path) -> Path:
     return out
 
 
+def edit_image(
+    references: list[str | Path],
+    prompt: str,
+    out: str | Path,
+    *,
+    model: str = "nano_banana_pro",
+    aspect_ratio: str = "1:1",
+    resolution: str = "2k",
+    wait_timeout: str = "8m",
+) -> Path:
+    """Image→image edit. Construction plates must pass a parent crop; text-only is illegal."""
+    refs = [Path(path) for path in references]
+    if not refs:
+        raise ValueError(
+            "Higgsfield image-edit needs at least one parent plate. "
+            "Text-only generate is not a legal construction-route input."
+        )
+    missing = [str(path) for path in refs if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"parent plate(s) not found: {', '.join(missing)}")
+    args = ["generate", "create", model]
+    for path in refs:
+        args.extend(["--image", str(path)])
+    args.extend(
+        [
+            "--prompt",
+            prompt,
+            "--aspect-ratio",
+            aspect_ratio,
+            "--resolution",
+            resolution,
+            "--wait",
+            "--wait-timeout",
+            wait_timeout,
+            "--wait-interval",
+            "5s",
+        ]
+    )
+    job = _first_job(run_cli(*args))
+    return _download(_pick_url(job, (".png", ".webp", ".jpg", ".jpeg")), Path(out))
+
+
 def generate_image(prompt: str, out: str | Path, *, model: str = "nano_banana_pro",
                    aspect_ratio: str = "1:1", resolution: str = "1k",
                    wait_timeout: str = "8m") -> Path:
@@ -124,11 +166,15 @@ def isolate_regen(reference: str | Path, out: str | Path, *, subject: str = "the
         f"WHITE background, even soft studio lighting, crisp architectural detail, "
         f"no other buildings, no sky, no ground, no city lights, no motion blur")
     log(f"isolate(regen): {model} clean white-bg from {Path(reference).name}", 2)
-    job = _first_job(run_cli(
-        "generate", "create", model, "--image-references", str(reference), "--prompt", p,
-        "--aspect-ratio", aspect_ratio, "--resolution", resolution,
-        "--wait", "--wait-timeout", wait_timeout, "--wait-interval", "5s"))
-    return _download(_pick_url(job, (".png", ".webp", ".jpg", ".jpeg")), Path(out))
+    return edit_image(
+        [reference],
+        p,
+        out,
+        model=model,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+        wait_timeout=wait_timeout,
+    )
 
 
 def remove_background(image: str | Path, out: str | Path, *, subject: str | None = None,
@@ -140,6 +186,6 @@ def remove_background(image: str | Path, out: str | Path, *, subject: str | None
     """
     log(f"isolate: background-remove {Path(image).name}", 2)
     job = _first_job(run_cli(
-        "generate", "create", "image_background_remover", "--image-references", str(image),
+        "generate", "create", "image_background_remover", "--image", str(image),
         "--wait", "--wait-timeout", wait_timeout, "--wait-interval", "5s"))
     return _download(_pick_url(job, (".png", ".webp")), Path(out))

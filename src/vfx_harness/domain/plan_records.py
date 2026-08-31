@@ -15,9 +15,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.judgment_debt_catalog import (
+    JUDGMENT_DEBT_ACTIVATIONS_KEY,
+    JUDGMENT_DEBT_DEFINITIONS_KEY,
+)
+from vfx_harness.domain.judgment_debt_catalog import (
+    load_activations as _load_judgment_debt_activations,
+)
+from vfx_harness.domain.judgment_debt_catalog import (
+    load_definitions as _load_judgment_debt_definitions,
+)
+from vfx_harness.domain.judgment_debt_catalog import (
+    selected_bundle_digest as _selected_bundle_digest,
+)
+from vfx_harness.domain.judgment_debts import (
+    JudgmentDebtActivation,
+    JudgmentDebtDefinition,
+)
 from vfx_harness.domain.work_units import parse_evidence_domains
 
-REQUIREMENTS_SCHEMA = "vfx-harness.requirements/v1"
+REQUIREMENTS_SCHEMA = "vfx-harness.requirements/v2"
 OBLIGATIONS_SCHEMA = "vfx-harness.obligations/v1"
 ASSUMPTIONS_SCHEMA = "vfx-harness.assumptions/v1"
 RESOLUTIONS_SCHEMA = "vfx-harness.plan-resolutions/v1"
@@ -111,6 +128,28 @@ def _document(path: Path, schema: str, key: str) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         raise ValueError(f"{path.name}.{key} must be a list")
     return rows
+
+
+def _requirements_document(path: Path) -> dict[str, Any]:
+    """Load the strict v2 requirement register and its debt authority catalogs."""
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path.name} is invalid JSON: {exc}") from exc
+    if not isinstance(raw, dict) or raw.get("schema") != REQUIREMENTS_SCHEMA:
+        raise ValueError(
+            f"{path.name} must be an object with schema={REQUIREMENTS_SCHEMA!r}"
+        )
+    for key in (
+        "requirements",
+        JUDGMENT_DEBT_DEFINITIONS_KEY,
+        JUDGMENT_DEBT_ACTIVATIONS_KEY,
+    ):
+        rows = raw.get(key)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError(f"{path.name}.{key} must be a list of objects")
+    return raw
 
 
 def _text(value: Any, where: str) -> str:
@@ -243,7 +282,7 @@ def resolution_decision_strength(row: dict[str, Any], where: str) -> str:
 
 def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[Requirement, ...]:
     root = Path(root)
-    rows = _document(root / "requirements.json", REQUIREMENTS_SCHEMA, "requirements")
+    rows = _requirements_document(root / "requirements.json")["requirements"]
     brief = root / "brief.md"
     brief_hash = sha256(brief) if verify_brief else None
     line_count = len(brief.read_text(encoding="utf-8").splitlines()) if verify_brief else None
@@ -368,6 +407,29 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
                         raise ValueError(
                             f"{at}.decision_strength must be approved_start or planner_start"
                         )
+                    expected_fields = {
+                        "domain",
+                        "kind",
+                        "statement",
+                        "decision_strength",
+                    }
+                    if domain == "image":
+                        expected_fields.update(
+                            {"debt_id", "definition_digest", "activates_at"}
+                        )
+                    if set(binding) != expected_fields:
+                        raise ValueError(
+                            f"{at} fields mismatch; missing="
+                            f"{sorted(expected_fields - set(binding))}; unexpected="
+                            f"{sorted(set(binding) - expected_fields)}"
+                        )
+                    if domain == "image":
+                        _text(binding.get("debt_id"), f"{at}.debt_id")
+                        _selected_bundle_digest(
+                            binding.get("definition_digest"),
+                            f"{at}.definition_digest",
+                        )
+                        _text(binding.get("activates_at"), f"{at}.activates_at")
                     provisional_values.add((binding_statement, binding_strength))
                     binding_ids = ()
                 else:
@@ -416,6 +478,63 @@ def load_requirements(root: str | Path, *, verify_brief: bool = True) -> tuple[R
     if not out:
         raise ValueError("requirements.json.requirements must not be empty")
     return tuple(out)
+
+
+def load_judgment_debt_catalog(
+    path: str | Path,
+    *,
+    selected_bundle_digest: str | None = None,
+) -> tuple[tuple[JudgmentDebtDefinition, ...], tuple[JudgmentDebtActivation, ...]]:
+    """Load strict debt authority from one already-selected requirements artifact."""
+    source = Path(path)
+    document = _requirements_document(source)
+    typed_requirements = load_requirements(source.parent, verify_brief=False)
+    definitions = _load_judgment_debt_definitions(
+        document,
+        statements={row.id: row.statement for row in typed_requirements},
+        selected_bundle_digest=selected_bundle_digest,
+    )
+    activations = _load_judgment_debt_activations(document, definitions)
+    return definitions, activations
+
+
+def load_judgment_debt_definitions(
+    root: str | Path,
+    *,
+    requirements: tuple[Requirement, ...] | None = None,
+    selected_bundle_digest: str | None = None,
+) -> tuple[JudgmentDebtDefinition, ...]:
+    """Load the requirement register's exact compiled qualitative-debt definitions."""
+    root = Path(root)
+    document = _requirements_document(root / "requirements.json")
+    typed = requirements if requirements is not None else load_requirements(root)
+    return _load_judgment_debt_definitions(
+        document,
+        statements={requirement.id: requirement.statement for requirement in typed},
+        selected_bundle_digest=selected_bundle_digest,
+    )
+
+
+def load_judgment_debt_activations(
+    root: str | Path,
+    *,
+    definitions: tuple[JudgmentDebtDefinition, ...] | None = None,
+    requirements: tuple[Requirement, ...] | None = None,
+    selected_bundle_digest: str | None = None,
+) -> tuple[JudgmentDebtActivation, ...]:
+    """Load payer activations, each bound to exactly one loaded debt definition."""
+    root = Path(root)
+    document = _requirements_document(root / "requirements.json")
+    definitions = (
+        definitions
+        if definitions is not None
+        else load_judgment_debt_definitions(
+            root,
+            requirements=requirements,
+            selected_bundle_digest=selected_bundle_digest,
+        )
+    )
+    return _load_judgment_debt_activations(document, definitions)
 
 
 def _evidence(value: Any, where: str) -> tuple[tuple[str, str], ...]:
@@ -576,29 +695,43 @@ class StructuredDecision:
     decision: str
 
 
-def load_active_structured_decisions(
-    path: str | Path, *, bundle_hash: str
-) -> dict[str, StructuredDecision]:
-    """Last-write-wins structured contracts for exactly one published bundle.
+class ResolutionLedgerError(ValueError):
+    """An append-only resolution row cannot be consumed under the current schema."""
 
-    Rows keyed to another generation are inert. A later ``superseded`` or
-    ``falsified`` row for the same id on this bundle retires it. Satisfied
-    rows without ``values.contract`` are prose approvals, not adoption.
-    Unreadable lines are skipped: ledger integrity is the plan gate's finding.
-    """
-    path = Path(path)
-    if not path.is_file() or not bundle_hash:
-        return {}
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def active_structured_decisions_from_text(
+    text: str,
+    *,
+    bundle_hash: str,
+    source_name: str = "plan-resolutions.jsonl",
+) -> dict[str, StructuredDecision]:
+    """Parse the one strict decision surface shared by gates and stop identity."""
+
     active: dict[str, StructuredDecision] = {}
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_no, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as exc:
+            raise ResolutionLedgerError(
+                "malformed_row",
+                f"{source_name}:{line_no} is invalid JSON: {exc}",
+            ) from exc
         if not isinstance(row, dict):
-            continue
+            raise ResolutionLedgerError(
+                "row_shape",
+                f"{source_name}:{line_no} must contain an object",
+            )
+        if row.get("schema") != RESOLUTIONS_SCHEMA:
+            raise ResolutionLedgerError(
+                "schema",
+                f"{source_name}:{line_no} has unsupported schema",
+            )
         if str(row.get("bundle_hash") or "") != bundle_hash:
             continue
         decision_id = str(row.get("id") or "").strip()
@@ -620,6 +753,26 @@ def load_active_structured_decisions(
             decision=str(row.get("decision") or "").strip(),
         )
     return active
+
+
+def load_active_structured_decisions(
+    path: str | Path, *, bundle_hash: str
+) -> dict[str, StructuredDecision]:
+    """Last-write-wins structured contracts for exactly one published bundle.
+
+    Rows keyed to another generation are inert. A later ``superseded`` or
+    ``falsified`` row for the same id on this bundle retires it. Satisfied
+    rows without ``values.contract`` are prose approvals, not adoption. Every
+    row must still be readable current-schema state before any consumer proceeds.
+    """
+    path = Path(path)
+    if not path.is_file() or not bundle_hash:
+        return {}
+    return active_structured_decisions_from_text(
+        path.read_text(encoding="utf-8"),
+        bundle_hash=bundle_hash,
+        source_name=path.name,
+    )
 
 
 def load_resolutions(

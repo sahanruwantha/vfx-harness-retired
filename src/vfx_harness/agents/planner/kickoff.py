@@ -6,6 +6,10 @@ import json
 from pathlib import Path
 
 from vfx_harness.agents.plan_guardrails import target_validation_feedback
+from vfx_harness.domain.layer_outcomes import (
+    LayerOutcomeContractError,
+    parse_sealed_layer_outcome,
+)
 from vfx_harness.domain.plan_records import load_active_structured_decisions, roles_match_reserved
 from vfx_harness.domain.work_units import (
     CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
@@ -15,8 +19,11 @@ from vfx_harness.domain.work_units import (
     compile_frame_authority,
 )
 from vfx_harness.orchestration.jit_materialization import selected_view_artifact
+from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
+from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_authoring import expand_mapping, validate_mapping
 from vfx_harness.orchestration.plan_authority import resolve_current
+from vfx_harness.orchestration.revalidation import current_outcome_eligibility
 
 
 def mapping_expander(workspace: Path, registry, mapping_path: Path):
@@ -95,9 +102,15 @@ _MATERIALIZATION_EXAMPLE = """{
    "frame": 1, "op": "band", "lo": 0.35, "hi": 0.55}],
  "image_contracts": [],
  "requirement_bindings": [
-  {"requirement_id": "<owned id>", "contract_ids": ["example-contract"],
-   "decision": {"statement": "one-sentence provisional qualitative debt",
-    "decision_strength": "approved_start"}}],
+ {"requirement_id": "<owned id>", "contract_ids": ["example-contract"],
+    "decision": {"statement": "one-sentence provisional qualitative debt",
+    "decision_strength": "approved_start",
+    "judgment": {"claim_kind": "atomic", "property": "<closed judgment property>",
+     "fault_owner": "<exact work-unit id>", "lifecycle": "persistent",
+     "subject_roles": ["<rendered subject selector>"],
+     "axes": ["<one owned axis>"], "moments": [1],
+     "carrier_families": ["mesh"],
+     "observation_medium": "workbench_solid"}}}],
  "acceptance": []
 }"""
 
@@ -172,6 +185,15 @@ _TWO_SIDED_CONTRACT_BINDING = (
     "is earliest geometry occupancy.\n"
 )
 
+_CONSTRUCTION_ROUTE_BLOCK = (
+    "Construction route: omit construction for procedural mesh. A unique source mesh "
+    "may call mint_refobs on a refs/ crop (not a whole frame) then stage "
+    "construction.route generate with those exact refobs-* ids. generate requires a "
+    "mesh write family and cannot bind a required object_count whose minimum exceeds 1. "
+    "retrieve is not wired. omit and abstain are not unit routes. Do not invent an "
+    "assets department or builder-time import_asset.\n"
+)
+
 
 def _frame_authority_block(global_row: dict) -> str:
     """Compile this layer's judge subset rule — remat6 invented extra judge frames."""
@@ -194,7 +216,14 @@ def _unit_capability_authority_block(global_row: dict) -> str:
     )
 
 
-def _sealed_outcomes_block(shot_folder: Path, layer, global_row: dict) -> str:
+def _sealed_outcomes_block(
+    shot_folder: Path,
+    layer,
+    global_row: dict,
+    bundle_hash: str,
+    *,
+    overlay_root: str | Path | None = None,
+) -> str:
     """Compile only dependency status and explicitly required evidence (HIR-0054)."""
     jit_row = global_row.get("jit") if isinstance(global_row.get("jit"), dict) else {}
     depends: list[str] = []
@@ -217,44 +246,48 @@ def _sealed_outcomes_block(shot_folder: Path, layer, global_row: dict) -> str:
             "Sealed upstream outcomes: none. This layer is a dependency root "
             "(empty depends_on_layers and required_outcomes).\n"
         )
-    required_ids = {row["id"] for row in required}
+    selected_layers_path = selected_view_artifact(
+        shot_folder,
+        "layers.json",
+        bundle_hash,
+        overlay_root=overlay_root,
+    )
+    if selected_layers_path is None:
+        selected_layers_path = resolve_current(shot_folder).root / "layers.json"
+    available_layers = load_layers_from_path(selected_layers_path)
+    required_bindings = frozenset((row["kind"], row["id"]) for row in required)
     outcomes: list[dict] = []
     for dep in depends:
-        try:
-            name = f"{int(dep):02d}.json"
-        except (TypeError, ValueError):
-            continue
-        path = shot_folder / "plans" / "outcomes" / name
+        path = layer_outcome_path(shot_folder, dep)
         if not path.is_file():
             outcomes.append({"layer": dep, "status": "missing"})
             continue
         value = json.loads(path.read_text(encoding="utf-8"))
-        matched: list[dict] = []
-
-        def collect(node, sink=matched) -> None:
-            if isinstance(node, dict):
-                if str(node.get("id") or "") in required_ids:
-                    sink.append({
-                        key: node.get(key)
-                        for key in (
-                            "id", "kind", "value", "target", "pass", "error",
-                            "note", "source", "owner_layer", "fault_owner",
-                        )
-                        if node.get(key) not in (None, "")
-                    })
-                for child in node.values():
-                    collect(child)
-            elif isinstance(node, list):
-                for child in node:
-                    collect(child)
-
-        collect(value)
-        unique = {json.dumps(row, sort_keys=True): row for row in matched}
+        try:
+            sealed = parse_sealed_layer_outcome(value, expected_layer_id=dep)
+        except LayerOutcomeContractError as exc:
+            raise ValueError(
+                f"dependency {dep} has an invalid sealed outcome: {exc}"
+            ) from exc
+        dependency_layer = available_layers.get(dep)
+        if dependency_layer is None:
+            raise ValueError(
+                f"dependency {dep} is absent from the selected executable consumer view"
+            )
+        eligible, reasons = current_outcome_eligibility(
+            shot_folder,
+            dependency_layer,
+            value,
+        )
+        if not eligible:
+            raise ValueError(
+                f"dependency {dep} sealed outcome is stale: " + "; ".join(reasons)
+            )
         outcomes.append({
             "layer": dep,
-            "status": value.get("status"),
-            "script": value.get("script"),
-            "required_evidence": list(unique.values()),
+            "status": sealed.status,
+            "script": sealed.script,
+            "required_evidence": list(sealed.required_evidence(required_bindings)),
         })
     card = {
         "depends_on_layers": depends,
@@ -387,9 +420,10 @@ def _materialization_kickoff(
         f"{_frame_authority_block(global_row)}"
         f"{_unit_capability_authority_block(global_row)}"
         f"{_deferred_subject_activation_block(rows.get('layers') or [], str(layer.id))}"
+        f"{_CONSTRUCTION_ROUTE_BLOCK}"
         f"{_TWO_SIDED_CONTRACT_BINDING}"
         f"{_binding_decisions_block(shot_folder, layer, bundle.content_hash)}"
-        f"{_sealed_outcomes_block(shot_folder, layer, global_row)}"
+        f"{_sealed_outcomes_block(shot_folder, layer, global_row, bundle.content_hash, overlay_root=overlay_root)}"
         f"{_PUBLISH_CONSUME_EXAMPLE}"
         f"Document shape (generic minimal-valid example — replace every placeholder, "
         f"add stages/contracts/claims as the layer needs):\n{_MATERIALIZATION_EXAMPLE}\n"

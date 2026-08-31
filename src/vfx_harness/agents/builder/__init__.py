@@ -69,6 +69,9 @@ from vfx_harness.agents.builder.evidence import _scene_ids_active_on_layer as _s
 from vfx_harness.agents.builder.evidence import _scope_bound_evidence as _scope_bound_evidence
 from vfx_harness.agents.builder.evidence import _scope_unit_evidence as _scope_unit_evidence
 from vfx_harness.agents.builder.evidence import _stash_render as _stash_render
+from vfx_harness.agents.builder.evidence import (
+    _stash_render_with_receipt as _stash_render_with_receipt,
+)
 from vfx_harness.agents.builder.evidence import _unit_completion_evidence_ids as _unit_completion_evidence_ids
 from vfx_harness.agents.builder.evidence import _unit_evidence_ids as _unit_evidence_ids
 from vfx_harness.agents.builder.evidence import _unit_evidence_ids_by_frame as _unit_evidence_ids_by_frame
@@ -108,6 +111,7 @@ from vfx_harness.agents.builder.models import MODEL as MODEL
 from vfx_harness.agents.builder.models import PASS_MEAN as PASS_MEAN
 from vfx_harness.agents.builder.models import PASS_MIN as PASS_MIN
 from vfx_harness.agents.builder.models import TASK_BUDGET_TOKENS as TASK_BUDGET_TOKENS
+from vfx_harness.agents.builder.models import BuildAuthorityDefect as BuildAuthorityDefect
 from vfx_harness.agents.builder.models import BuildTruncated as BuildTruncated
 from vfx_harness.agents.builder.models import BuildUnpassed as BuildUnpassed
 from vfx_harness.agents.builder.models import LayerVerdictFailed as LayerVerdictFailed
@@ -143,6 +147,9 @@ from vfx_harness.agents.builder.state import _ERRORS as _ERRORS
 from vfx_harness.agents.builder.state import _FOCUS_RENDER_LOCK as _FOCUS_RENDER_LOCK
 from vfx_harness.agents.builder.state import _JOURNAL_INFO as _JOURNAL_INFO
 from vfx_harness.agents.builder.state import _RECIPES_USED as _RECIPES_USED
+from vfx_harness.agents.builder.stops import (
+    compile_hypothesis_falsification_stop as compile_hypothesis_falsification_stop,
+)
 from vfx_harness.agents.builder.unit_finalize import _metric_report as _metric_report
 from vfx_harness.agents.builder.unit_finalize import (
     _persist_journal_and_finalize_script as _persist_journal_and_finalize_script,

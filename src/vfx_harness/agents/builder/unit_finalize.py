@@ -153,6 +153,11 @@ async def _persist_journal_and_finalize_script(
                 script_rel=script_rel,
                 journal_rel=journal_rel,
                 raster_required=raster_required,
+                construction_route=str(
+                    getattr(getattr(active_unit, "construction", None), "route", "procedural")
+                    if active_unit is not None
+                    else "procedural"
+                ),
             ),
             verbose=verbose,
             probe_ctx=probe_ctx,

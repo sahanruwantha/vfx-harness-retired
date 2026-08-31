@@ -7,12 +7,14 @@ stdout chatter (render logs, warnings) is ignored by the client.
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import math
 import math as _math
 import os
 import random as _r
+import re
 import sys
 import time
 import traceback
@@ -595,10 +597,60 @@ def _bvfx_emissive_from_texture(obj, threshold=0.55, soft=0.10, strength=6.0,
     return touched
 
 
+_PROMOTED_GLB = re.compile(r"^build/construction/[0-9a-f]{64}\.glb$")
+_CONSTRUCTION_PIN = "construction_import.json"
+
+
+def _bvfx_import_construction() -> "list[str]":
+    """Import the harness-promoted generate-construction GLB pinned for this unit.
+
+    Replay reads only hash-verified bytes under build/construction/<sha256>.glb.
+    Generate units call this with no arguments. Procedural units must author mesh
+    in-session; this helper raises without a pin.
+    """
+    pin = os.path.join(ARTIFACTS, _CONSTRUCTION_PIN)
+    if not os.path.isfile(pin):
+        raise RuntimeError(
+            "bvfx_import_construction has no pin; generate construction is prepared "
+            "before the live session. Procedural units must author mesh in-session."
+        )
+    with open(pin, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    rel = str(payload.get("glb") or "")
+    expected = str(payload.get("sha256") or "")
+    if not _PROMOTED_GLB.fullmatch(rel):
+        raise RuntimeError(
+            f"construction pin names illegal path {rel!r}; replay imports only "
+            "build/construction/<sha256>.glb"
+        )
+    glb = os.path.abspath(rel)
+    if not os.path.isfile(glb):
+        raise FileNotFoundError(f"promoted construction {rel} is missing")
+    with open(glb, "rb") as handle:
+        raw = handle.read()
+    actual = hashlib.sha256(raw).hexdigest()
+    if actual != expected:
+        raise RuntimeError(
+            f"promoted construction hash mismatch for {rel}: pin {expected} file {actual}"
+        )
+    before = set(bpy.data.objects.keys())
+    bpy.ops.import_scene.gltf(filepath=glb)
+    new = [n for n in bpy.data.objects if n not in before]
+    for n in new:
+        bpy.data.objects[n].rotation_mode = "XYZ"
+    return new
+
+
 def _bvfx_import_asset(name) -> "list[str]":
     """Import a committed, normalized asset (assets/<name>/model.glb) into the live scene
     and return the new object names. Use this in build scripts — the `import_asset` TOOL
     is not in scope inside run_bpy / a build script, but this helper is."""
+    pin = os.path.join(ARTIFACTS, _CONSTRUCTION_PIN)
+    if os.path.isfile(pin):
+        raise RuntimeError(
+            "generate construction units call bvfx_import_construction(); "
+            "import_asset is not a construction route"
+        )
     if not ASSETS_DIR:
         raise RuntimeError("no assets dir configured for this session")
     glb = os.path.join(ASSETS_DIR, name, "model.glb")
@@ -818,6 +870,7 @@ _HELPERS = {
     "bvfx_emissive_windows": _bvfx_emissive_windows,
     "bvfx_emissive_from_texture": _bvfx_emissive_from_texture,
     "bvfx_import_asset": _bvfx_import_asset,
+    "bvfx_import_construction": _bvfx_import_construction,
     "bvfx_aim": _bvfx_aim,
     "bvfx_scatter_emissive": _bvfx_scatter_emissive,
     "bvfx_volumetric_world": _bvfx_volumetric_world,
@@ -1065,6 +1118,355 @@ def _refresh_inspection_scene(frame=None):
     sc.frame_set(selected_frame)
     bpy.context.view_layer.update()
     return sc, bpy.context.evaluated_depsgraph_get()
+
+
+def _observation_json_value(value):
+    """Return a compact, deterministic JSON value for a Blender RNA scalar/vector."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("observation environment contains a non-finite value")
+        return round(value, 8)
+    if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, dict)):
+        return [_observation_json_value(item) for item in value]
+    return str(value)
+
+
+def _observation_matrix(matrix):
+    return [
+        [_observation_json_value(float(matrix[row][column])) for column in range(4)]
+        for row in range(4)
+    ]
+
+
+def _observation_node_tree(tree):
+    if tree is None:
+        return None
+    nodes = []
+    for node in sorted(tree.nodes, key=lambda item: str(item.name)):
+        inputs = []
+        for socket in sorted(node.inputs, key=lambda item: str(item.name)):
+            value = None
+            if not socket.is_linked and hasattr(socket, "default_value"):
+                with contextlib.suppress(TypeError, ValueError):
+                    value = _observation_json_value(socket.default_value)
+            inputs.append({
+                "name": str(socket.name),
+                "linked": bool(socket.is_linked),
+                "value": value,
+            })
+        nodes.append({
+            "name": str(node.name),
+            "type": str(node.bl_idname),
+            "role": str(node.get("bvfx_role") or ""),
+            "mute": bool(getattr(node, "mute", False)),
+            "inputs": inputs,
+        })
+    links = sorted(
+        (
+            {
+                "from_node": str(link.from_node.name),
+                "from_socket": str(link.from_socket.name),
+                "to_node": str(link.to_node.name),
+                "to_socket": str(link.to_socket.name),
+            }
+            for link in tree.links
+        ),
+        key=lambda item: (
+            item["from_node"], item["from_socket"], item["to_node"], item["to_socket"]
+        ),
+    )
+    return {"name": str(tree.name), "nodes": nodes, "links": links}
+
+
+def _observation_bbox(obj):
+    from mathutils import Vector
+
+    if obj.type not in {"MESH", "CURVE", "SURFACE", "META", "FONT", "VOLUME"}:
+        return None
+    corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    if not corners:
+        return None
+    return {
+        "min": [round(min(float(point[index]) for point in corners), 8) for index in range(3)],
+        "max": [round(max(float(point[index]) for point in corners), 8) for index in range(3)],
+    }
+
+
+def _observation_subject(obj, depsgraph):
+    evaluated = obj.evaluated_get(depsgraph)
+    return {
+        "name": str(obj.name),
+        "role": str(obj.get("bvfx_role") or ""),
+        "type": str(evaluated.type),
+        "matrix_world": _observation_matrix(evaluated.matrix_world),
+        "bbox_world": _observation_bbox(evaluated),
+        "hide_render": bool(obj.hide_render),
+        "hide_viewport": bool(obj.hide_viewport),
+        "visible_view_layer": bool(obj.visible_get()),
+        "visible_camera": bool(getattr(obj, "visible_camera", True)),
+        "materials": [
+            {
+                "name": str(slot.material.name),
+                "role": str(slot.material.get("bvfx_role") or ""),
+                "use_nodes": bool(slot.material.use_nodes),
+            }
+            for slot in obj.material_slots
+            if slot.material is not None
+        ],
+    }
+
+
+def _observation_light(obj, depsgraph):
+    evaluated = obj.evaluated_get(depsgraph)
+    data = evaluated.data
+    return {
+        "name": str(obj.name),
+        "role": str(obj.get("bvfx_role") or ""),
+        "type": str(data.type),
+        "matrix_world": _observation_matrix(evaluated.matrix_world),
+        "energy": _observation_json_value(float(data.energy)),
+        "color": _observation_json_value(data.color),
+        "shape": str(getattr(data, "shape", "")),
+        "size": _observation_json_value(getattr(data, "size", None)),
+        "size_y": _observation_json_value(getattr(data, "size_y", None)),
+        "use_shadow": bool(getattr(data, "use_shadow", False)),
+        "hide_render": bool(obj.hide_render),
+        "visible_camera": bool(getattr(obj, "visible_camera", True)),
+    }
+
+
+def _observation_node_carrier(node, *, family, graph):
+    return {
+        "family": family,
+        "host_kind": f"{graph}_node",
+        "graph": graph,
+        "name": str(node.name),
+        "role": str(node.get("bvfx_role") or ""),
+        "type": str(node.bl_idname),
+    }
+
+
+def _observation_carriers(sc, depsgraph, roles, families, checks):
+    """Resolve debt subjects only through their declared carrier-family authority."""
+    carriers = []
+    world_tree = sc.world.node_tree if sc.world and sc.world.use_nodes else None
+    compositor_tree = getattr(sc, "compositing_node_group", None)
+    for role in roles:
+        matched = []
+        if "mesh" in families:
+            matched.extend(
+                {
+                    "family": "mesh",
+                    "host_kind": "object",
+                    **_observation_subject(obj, depsgraph),
+                }
+                for obj in sc.objects
+                if obj.type == "MESH"
+                and checks.match_semantic(str(obj.get("bvfx_role") or ""), [role])
+            )
+        if "volume" in families:
+            matched.extend(
+                {
+                    "family": "volume",
+                    "host_kind": "object",
+                    **_observation_subject(obj, depsgraph),
+                }
+                for obj in sc.objects
+                if obj.type == "VOLUME"
+                and checks.match_semantic(str(obj.get("bvfx_role") or ""), [role])
+            )
+            if world_tree is not None:
+                matched.extend(
+                    _observation_node_carrier(node, family="volume", graph="world")
+                    for node in world_tree.nodes
+                    if node.type in {"VOLUME_SCATTER", "PRINCIPLED_VOLUME", "VOLUME_PRINCIPLED"}
+                    and checks.match_semantic(str(node.get("bvfx_role") or ""), [role])
+                )
+        if "compositor" in families and compositor_tree is not None:
+            if checks.match_semantic(str(compositor_tree.get("bvfx_role") or ""), [role]):
+                matched.append({
+                    "family": "compositor",
+                    "host_kind": "compositor_group",
+                    "graph": "compositor",
+                    "name": str(compositor_tree.name),
+                    "role": str(compositor_tree.get("bvfx_role") or ""),
+                    "type": "NODE_GROUP",
+                })
+            for node in compositor_tree.nodes:
+                node_role = str(node.get("bvfx_role") or "")
+                group_role = str(
+                    (getattr(node, "node_tree", None) and node.node_tree.get("bvfx_role")) or ""
+                )
+                if checks.match_semantic(node_role, [role]):
+                    matched.append(_observation_node_carrier(node, family="compositor", graph="compositor"))
+                elif group_role and checks.match_semantic(group_role, [role]):
+                    matched.append({
+                        "family": "compositor",
+                        "host_kind": "compositor_group_instance",
+                        "graph": "compositor",
+                        "name": str(node.name),
+                        "role": group_role,
+                        "type": str(node.bl_idname),
+                    })
+        if not matched:
+            inventory = checks.object_inventory()
+            raise ValueError(
+                checks.format_object_miss(inventory=inventory, role=role)
+                + "; no matching rendered carrier exists in allowed families "
+                + ", ".join(families)
+            )
+        carriers.extend(matched)
+    return sorted(
+        carriers,
+        key=lambda row: (
+            str(row["family"]), str(row["role"]), str(row["host_kind"]), str(row["name"])
+        ),
+    )
+
+
+def h_observation_environment(a: dict) -> dict:
+    """Read the canonical scene inputs of a qualitative observation without rendering."""
+    import checks
+    from observation_environment import (
+        SCHEMA,
+        canonical_observation_environment,
+        validate_observation_request,
+    )
+
+    frame, roles, medium, families = validate_observation_request(
+        a.get("frame"),
+        a.get("subject_roles"),
+        a.get("observation_medium"),
+        a.get("carrier_families"),
+    )
+    sc, depsgraph = _refresh_inspection_scene(frame)
+    if sc.camera is None or sc.camera.type != "CAMERA":
+        raise ValueError("canonical observation requires an active camera")
+
+    carriers = _observation_carriers(sc, depsgraph, roles, families, checks)
+
+    camera = sc.camera.evaluated_get(depsgraph)
+    camera_data = camera.data
+    render = sc.render
+    image_settings = render.image_settings
+    view = sc.view_settings
+    display = sc.display_settings
+    world = sc.world
+    eevee = getattr(sc, "eevee", None)
+    workbench = getattr(getattr(sc, "display", None), "shading", None)
+    snapshot = {
+        "schema": SCHEMA,
+        "frame": frame,
+        "observation_medium": medium,
+        "subject_roles": list(roles),
+        "carrier_families": list(families),
+        "blender": {
+            "version": list(bpy.app.version),
+            "version_string": str(bpy.app.version_string),
+            "build_hash": str(getattr(bpy.app, "build_hash", "")),
+            "build_branch": str(getattr(bpy.app, "build_branch", "")),
+            "build_type": str(getattr(bpy.app, "build_type", "")),
+        },
+        "render": {
+            "engine": str(render.engine),
+            "resolution": [int(render.resolution_x), int(render.resolution_y)],
+            "resolution_percentage": int(render.resolution_percentage),
+            "film_transparent": bool(getattr(render, "film_transparent", False)),
+            "fps": int(render.fps),
+            "motion_blur": bool(getattr(render, "use_motion_blur", False)),
+            "image_settings": {
+                "file_format": str(image_settings.file_format),
+                "color_mode": str(image_settings.color_mode),
+                "color_depth": str(image_settings.color_depth),
+            },
+        },
+        "color_management": {
+            "display_device": str(getattr(display, "display_device", "")),
+            "view_transform": str(getattr(view, "view_transform", "")),
+            "look": str(getattr(view, "look", "")),
+            "exposure": _observation_json_value(float(getattr(view, "exposure", 0.0))),
+            "gamma": _observation_json_value(float(getattr(view, "gamma", 1.0))),
+            "sequencer_colorspace": str(
+                getattr(getattr(view, "sequencer_colorspace_settings", None), "name", "")
+            ),
+        },
+        "camera": {
+            "name": str(camera.name),
+            "role": str(sc.camera.get("bvfx_role") or ""),
+            "matrix_world": _observation_matrix(camera.matrix_world),
+            "type": str(camera_data.type),
+            "lens": _observation_json_value(float(camera_data.lens)),
+            "sensor_width": _observation_json_value(float(camera_data.sensor_width)),
+            "sensor_height": _observation_json_value(float(camera_data.sensor_height)),
+            "shift": [
+                _observation_json_value(float(camera_data.shift_x)),
+                _observation_json_value(float(camera_data.shift_y)),
+            ],
+            "clip": [
+                _observation_json_value(float(camera_data.clip_start)),
+                _observation_json_value(float(camera_data.clip_end)),
+            ],
+        },
+        "subject_carriers": carriers,
+        "world": {
+            "name": str(world.name) if world is not None else None,
+            "use_nodes": bool(world and world.use_nodes),
+            "color": _observation_json_value(world.color) if world is not None else None,
+            "nodes": _observation_node_tree(world.node_tree) if world and world.use_nodes else None,
+        },
+        "compositor": _observation_node_tree(getattr(sc, "compositing_node_group", None)),
+        "view_layers": [
+            {
+                "name": str(layer.name),
+                "use": bool(getattr(layer, "use", True)),
+                "use_pass_z": bool(getattr(layer, "use_pass_z", False)),
+                "use_pass_vector": bool(getattr(layer, "use_pass_vector", False)),
+                "use_pass_normal": bool(getattr(layer, "use_pass_normal", False)),
+            }
+            for layer in sorted(sc.view_layers, key=lambda item: str(item.name))
+        ],
+        "active_view_layer": str(bpy.context.view_layer.name),
+        "lights": [
+            _observation_light(obj, depsgraph)
+            for obj in sorted(
+                (item for item in sc.objects if item.type == "LIGHT"),
+                key=lambda item: (str(item.get("bvfx_role") or ""), item.name),
+            )
+        ],
+        "eevee": {
+            key: _observation_json_value(getattr(eevee, key, None))
+            for key in (
+                "taa_render_samples",
+                "taa_samples",
+                "use_gtao",
+                "gtao_distance",
+                "gtao_factor",
+                "use_bloom",
+                "volumetric_start",
+                "volumetric_end",
+                "volumetric_samples",
+                "use_volumetric_shadows",
+            )
+        },
+        "workbench": {
+            key: _observation_json_value(getattr(workbench, key, None))
+            for key in (
+                "light",
+                "studio_light",
+                "color_type",
+                "single_color",
+                "background_type",
+                "background_color",
+                "show_shadows",
+                "show_cavity",
+                "cavity_type",
+                "show_object_outline",
+            )
+        },
+    }
+    return canonical_observation_environment(snapshot)
 
 
 def h_inspect(a: dict) -> dict:
@@ -1446,6 +1848,30 @@ def h_render(a: dict) -> dict:
     # a working optical zoom look like a broken one.
     used = [sc.render.resolution_x, sc.render.resolution_y,
             sc.render.resolution_percentage]
+    used_render_state = {
+        "engine": str(sc.render.engine),
+        "resolution": list(used),
+        "image_settings": {
+            "file_format": str(image_settings.file_format),
+            "color_mode": str(image_settings.color_mode),
+            "color_depth": str(image_settings.color_depth),
+        },
+        "workbench_shading": str(sc.display.shading.type),
+        "eevee_render_samples": _observation_json_value(
+            getattr(getattr(sc, "eevee", None), "taa_render_samples", None)
+        ),
+        "color_management": {
+            "display_device": str(getattr(sc.display_settings, "display_device", "")),
+            "view_transform": str(getattr(sc.view_settings, "view_transform", "")),
+            "look": str(getattr(sc.view_settings, "look", "")),
+            "exposure": _observation_json_value(
+                float(getattr(sc.view_settings, "exposure", 0.0))
+            ),
+            "gamma": _observation_json_value(
+                float(getattr(sc.view_settings, "gamma", 1.0))
+            ),
+        },
+    }
     warnings = []
     try:
         bpy.ops.render.render(write_still=True)
@@ -1471,7 +1897,7 @@ def h_render(a: dict) -> dict:
         sc.frame_set(original["frame"])
     out = {"image_path": path, "frame": frame, "mode": mode,
            "warnings": warnings,
-           "resolution": used}
+           "resolution": used, "render_state": used_render_state}
     if extended:
         out.update({"pass": pass_name, "shade": shade, "light": light,
                     "crop": crop, "res_pct": res_pct, "caption": caption, **did})
@@ -1681,6 +2107,7 @@ HANDLERS = {
     "ping": h_ping,
     "run": h_run,
     "inspect": h_inspect,
+    "observation_environment": h_observation_environment,
     "nodes": h_nodes,
     "black_context": h_black_context,
     "keyframes": h_keyframes,

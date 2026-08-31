@@ -1,0 +1,308 @@
+"""Every finished-chain consumer replays the selected global layer DAG."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import vfx_harness.orchestration.jit_materialization as jit_materialization
+import vfx_harness.orchestration.selected_layer_chain as selected_chain
+from vfx_harness.agents import acceptance, acceptance_stop
+from vfx_harness.application import render_shot
+from vfx_harness.domain.brief import Shot
+from vfx_harness.orchestration.ledger import Milestone
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _write(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+
+
+def _ready_layer(layer_id: str, script: str) -> dict:
+    axis = f"axis_{layer_id}"
+    role = f"subject.{layer_id}"
+    unit_id = "unit"
+    judge = [{"frame": 1, "ref": "refs/M1.png"}]
+    return {
+        "id": layer_id,
+        "script": script,
+        "title": layer_id.title(),
+        "primary_judge": 1,
+        "judge": judge,
+        "owns": [axis],
+        "reads": f"{layer_id} is present",
+        "evidence_domains": ["scene"],
+        "execution": "ready",
+        "stages": [
+            {
+                "id": unit_id,
+                "title": f"Build {layer_id}",
+                "plan": f"plans/{layer_id}/unit.md",
+                "depends_on": [],
+                "mutates": {
+                    "mode": "scoped",
+                    "roles": [role],
+                    "controls": [],
+                    "script_spans": [f"build/units/{layer_id}/{unit_id}.py"],
+                },
+                "protects": {
+                    "selector": "all_active_upstream_interfaces",
+                    "resolve_to_explicit_ids_at": "freeze",
+                },
+                "evaluation": {
+                    "primary_judge": 1,
+                    "judge": judge,
+                    "temporal_evidence": "none",
+                    "claims": [
+                        {
+                            "id": f"{layer_id}-exists",
+                            "proposition": f"{layer_id} exists",
+                            "axis": axis,
+                            "property": "object_count",
+                            "subject_roles": [role],
+                            "subject_controls": [],
+                            "moments": [1],
+                            "kind": "atomic",
+                            "required": True,
+                            "authority": "executable_required",
+                            "repair_owner": unit_id,
+                            "asserts": "scene",
+                            "evidence": [
+                                {
+                                    "kind": "scene_contract",
+                                    "id": f"{layer_id}-exists",
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "completion": "all_required_claims_and_protected_contracts_pass",
+                "look_capabilities": [],
+            }
+        ],
+    }
+
+
+def _sparse_layer(ready: dict, dependencies: list[str]) -> dict:
+    role = ready["stages"][0]["mutates"]["roles"][0]
+    return {
+        **{key: value for key, value in ready.items() if key not in {"execution", "stages"}},
+        "execution": "jit_deferred",
+        "stages": [],
+        "jit": {
+            "depends_on_layers": dependencies,
+            "required_outcomes": [],
+            "provides": {},
+            "reserved_roles": [role],
+            "owned_requirements": [f"R-{ready['id']}"],
+        },
+    }
+
+
+def _selected_dag_fixture(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Shot:
+    (root / "refs").mkdir()
+    (root / "refs" / "M1.png").write_bytes(b"reference")
+    shot = Shot(
+        folder=root,
+        frontmatter={
+            "id": "selected-chain",
+            "frames": 1,
+            "fps": 24,
+            "resolution": [16, 16],
+            "engine": "BLENDER_EEVEE_NEXT",
+        },
+        body="fixture",
+    )
+
+    # Authored position, numeric/lexical script order, and executable order conflict:
+    # authored = composite, camera, form; scripts = composite, form, camera;
+    # selected DAG = camera, form, composite.
+    composite = _ready_layer("composite", "build/01_composite.py")
+    camera = _ready_layer("camera", "build/30_camera.py")
+    form = _ready_layer("form", "build/20_form.py")
+    global_root = root / "selected-global"
+    executable = root / "selected-executable-layers.json"
+    _write(
+        global_root / "layers.json",
+        {
+            "schema": 5,
+            "layers": [
+                _sparse_layer(composite, ["camera", "form"]),
+                _sparse_layer(camera, []),
+                _sparse_layer(form, []),
+            ],
+        },
+    )
+    _write(executable, {"schema": 5, "layers": [composite, camera, form]})
+
+    for layer in (composite, camera, form):
+        layer_script = root / layer["script"]
+        layer_script.parent.mkdir(parents=True, exist_ok=True)
+        layer_script.write_text(f"# {layer['id']} layer\n", encoding="utf-8")
+        unit_script = root / layer["stages"][0]["mutates"]["script_spans"][0]
+        unit_script.parent.mkdir(parents=True, exist_ok=True)
+        unit_script.write_text(f"# {layer['id']} unit\n", encoding="utf-8")
+    _write(
+        root / "shot.json",
+        {
+            "shot": shot.id,
+            "milestones": {
+                layer_id: {"status": "passed"}
+                for layer_id in ("composite", "camera", "form")
+            },
+        },
+    )
+    _write(root / "acceptance.json", [])
+
+    monkeypatch.setattr(
+        selected_chain,
+        "resolve_current",
+        lambda _root: SimpleNamespace(root=global_root, content_hash="a" * 64),
+    )
+    monkeypatch.setattr(
+        jit_materialization,
+        "selected_view_artifact",
+        lambda _root, name, _bundle: (
+            executable if name == "layers.json" else root / name
+        ),
+    )
+    return shot
+
+
+def test_selected_layer_chain_uses_stable_global_dag_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+
+    chain = selected_chain.selected_layer_chain(shot)
+
+    assert [layer.id for layer in chain] == ["camera", "form", "composite"]
+    assert [layer.script for layer in chain] == [
+        "build/30_camera.py",
+        "build/20_form.py",
+        "build/01_composite.py",
+    ]
+
+
+def test_finished_chain_consumers_share_selected_global_dag_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    expected = ["build/30_camera.py", "build/20_form.py", "build/01_composite.py"]
+
+    replayed: list[str] = []
+    monkeypatch.setattr(acceptance, "_RESET", "reset")
+    monkeypatch.setattr(acceptance, "_preamble", lambda _shot: "preamble")
+    monkeypatch.setattr(
+        acceptance,
+        "_run_artifact_script",
+        lambda _session, path: replayed.append(path.relative_to(shot.folder).as_posix()),
+    )
+    session = SimpleNamespace(run=lambda _code: None)
+    assert acceptance._chain(session, shot) == expected
+    assert replayed == expected
+
+    bundle = SimpleNamespace(
+        content_hash=_digest("bundle"),
+        root=tmp_path / "selected-global",
+    )
+    monkeypatch.setattr(acceptance_stop.plan_authority, "resolve_current", lambda _root: bundle)
+    monkeypatch.setattr(
+        acceptance_stop,
+        "selected_view_artifact",
+        lambda root, name, _bundle: (
+            tmp_path / "selected-executable-layers.json"
+            if name == "layers.json"
+            else root / name
+        ),
+    )
+    monkeypatch.setattr(
+        acceptance_stop.judgment_observation,
+        "selected_view_digest",
+        lambda _root, _bundle: _digest("view"),
+    )
+    monkeypatch.setattr(
+        acceptance_stop,
+        "current_judgment_debt_state_digest",
+        lambda _root: _digest("judgment-debt-state"),
+    )
+    snapshot = acceptance_stop.capture_acceptance_authority(
+        shot,
+        {"M1": Milestone("M1", 1, "refs/M1.png", "finished frame")},
+    )
+    assert [row["script"] for row in snapshot.chain] == expected
+
+    assert [path.relative_to(shot.folder).as_posix() for path in render_shot._chain_scripts(shot)] == expected
+
+
+def test_render_mp4_replays_selected_scripts_through_evaluated_frame_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    expected = ["build/30_camera.py", "build/20_form.py", "build/01_composite.py"]
+    barrier_calls: list[str] = []
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.artifacts = tmp_path / "blender-artifacts"
+            self.artifacts.mkdir()
+            self.raw_runs: list[str] = []
+            self.renders: list[tuple[int, str, float]] = []
+            self.closed = False
+
+        def run(self, code: str) -> None:
+            self.raw_runs.append(code)
+
+        def render(self, *, frame: int, mode: str, scale: float) -> None:
+            self.renders.append((frame, mode, scale))
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = FakeSession()
+    monkeypatch.setattr(render_shot, "require_current_accepted_outcome", lambda _shot: None)
+    monkeypatch.setattr(render_shot, "_RESET", "reset")
+    monkeypatch.setattr(render_shot, "_preamble", lambda _shot: "preamble")
+    monkeypatch.setattr(
+        render_shot,
+        "BlenderSession",
+        lambda **_kwargs: SimpleNamespace(start=lambda: session),
+    )
+    monkeypatch.setattr(
+        render_shot,
+        "_run_artifact_script",
+        lambda active, path: (
+            pytest.fail("render barrier received another Blender session")
+            if active is not session
+            else barrier_calls.append(path.relative_to(shot.folder).as_posix())
+        ),
+    )
+
+    def ffmpeg(args, **_kwargs):
+        Path(args[-1]).write_bytes(b"mp4")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(render_shot.subprocess, "run", ffmpeg)
+    output = tmp_path / "final.mp4"
+
+    result = render_shot.render_mp4(shot, out=output)
+
+    assert result == output
+    assert barrier_calls == expected
+    assert session.raw_runs == ["reset", "preamble"]
+    assert session.renders == [(1, "eevee", 1.0)]
+    assert session.closed is True

@@ -27,9 +27,10 @@ from vfx_harness.observability.provenance import atomic_write
 
 SCHEMA = 1
 # Bump whenever WorkUnit gains or loses a field that is always present in `unit_digest`:
-# the hash covers asdict(unit) except empty publishes/consumes, which are omitted so
-# schema-4 durable hashes stay comparable. Non-empty interface rows participate
-# (HIR-0084). Bump WHENEVER a new always-present field lands in that payload —
+# the hash covers asdict(unit) except empty publishes/consumes and default
+# procedural construction, which are omitted so schema-4 durable hashes stay
+# comparable. Non-empty interface rows and non-default construction participate
+# (HIR-0084, ADR-0009). Bump WHENEVER a new always-present field lands in that payload —
 # validate_current only knows to route cross-shape comparison through the replan
 # closure when the schema numbers differ. 3: EvidenceBinding gained optional
 # per-moment bindings (8ab8f5d shipped the field without the bump and bricked every
@@ -88,17 +89,25 @@ def load(folder: str | Path, layer_id: str) -> dict:
 def unit_digest(unit: WorkUnit) -> str:
     """Identity hash of a WorkUnit.
 
-    Empty ``publishes`` / ``consumes`` are omitted so schema-4 durable hashes stay
-    comparable for units that never declared interfaces. Non-empty values participate,
-    so changing an interface id, kind, or export invalidates the producer and its
-    ``apply_replan`` closure (HIR-0084). Adding a field that is always present in
-    this payload still requires a DIGEST_SCHEMA bump.
+    Empty ``publishes`` / ``consumes`` and default procedural ``construction`` are
+    omitted so schema-4 durable hashes stay comparable for units that never declared
+    interfaces or a generate/retrieve/simplify route. Non-empty values participate,
+    so changing an interface id, kind, export, or construction route invalidates the
+    producer and its ``apply_replan`` closure (HIR-0084, ADR-0009). Adding a field
+    that is always present in this payload still requires a DIGEST_SCHEMA bump.
     """
     payload = asdict(unit)
     if not payload.get("publishes"):
         payload.pop("publishes", None)
     if not payload.get("consumes"):
         payload.pop("consumes", None)
+    construction = payload.get("construction")
+    if isinstance(construction, dict) and (
+        construction.get("route", "procedural") == "procedural"
+        and not construction.get("witnesses")
+        and not construction.get("reason")
+    ):
+        payload.pop("construction", None)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

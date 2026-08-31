@@ -44,6 +44,7 @@ from vfx_harness.observability.log import (
     TOOL_USE,
     log,
 )
+from vfx_harness.orchestration import generate_construction as generate_construction
 from vfx_harness.orchestration.layer_plans import read_layer_plan, read_work_unit_plan
 from vfx_harness.orchestration.ledger import Ledger, load_layers
 
@@ -126,6 +127,7 @@ def _run_artifact_script(
     Successors may legally consume producer world transforms immediately, so every
     artifact replay ends with an unjournalled current-frame evaluation (HIR-0117).
     """
+    generate_construction.pin_for_script(session, path)
     result = session.run(path.read_text(encoding="utf-8"), journal=journal)
     session.run(_ARTIFACT_EVALUATION_BARRIER, journal=False)
     return result

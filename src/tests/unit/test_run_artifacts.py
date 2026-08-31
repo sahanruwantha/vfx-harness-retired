@@ -1,18 +1,259 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from vfx_harness.agents.planner import PlanGateFailure, PlanLoopResult
 from vfx_harness.agents.resilience import AgentSessionFailure
+from vfx_harness.domain.stop_envelope_primitives import canonical_digest
+from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
+from vfx_harness.domain.stop_transaction_state import (
+    EvidenceRecordAssertion,
+    StopEvidenceRef,
+)
+from vfx_harness.domain.stop_transactions import (
+    EngineeringRouteCommitted,
+    RouteEngineeringTarget,
+    StopAction,
+    action_idempotency_key,
+)
 from vfx_harness.observability import run_artifacts, transcript
 
 
-def test_structured_run_has_one_machine_readable_entrypoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _digest(label: str) -> str:
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+def _bundle_digest(payloads: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(payloads):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(payloads[name]).hexdigest().encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _write_selected_authority(
+    shot: Path,
+    *,
+    publisher: str,
+    published_at: str,
+    plan_payload: bytes,
+) -> str:
+    payloads = {"global.md": plan_payload}
+    bundle_digest = _bundle_digest(payloads)
+    bundle_root = (
+        shot
+        / "runs"
+        / publisher
+        / "checkpoints"
+        / "plans"
+        / "bundles"
+        / bundle_digest
+    )
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    for name, payload in payloads.items():
+        (bundle_root / name).write_bytes(payload)
+    (bundle_root / "bundle.json").write_text(
+        json.dumps(
+            {
+                "schema": "vfx-harness.plan-bundle/v1",
+                "run_id": publisher,
+                "content_hash": bundle_digest,
+                "outcome": "clean",
+                "artifacts": {
+                    name: hashlib.sha256(payload).hexdigest()
+                    for name, payload in payloads.items()
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pointer = shot / "plans" / "current.json"
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(
+        json.dumps(
+            {
+                "schema": "vfx-harness.plan-pointer/v1",
+                "run_id": publisher,
+                "bundle": bundle_root.relative_to(shot).as_posix(),
+                "content_hash": bundle_digest,
+                "outcome": "clean",
+                "published_at": published_at,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    view_document = {"schema": 5, "layers": []}
+    view_digest = hashlib.sha256(
+        json.dumps(
+            {"layers.json": view_document},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    view_artifact = shot / "state" / "view-sources" / publisher / "layers.json"
+    view_artifact.parent.mkdir(parents=True, exist_ok=True)
+    view_artifact.write_text(
+        json.dumps(view_document, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    view_pointer = shot / "state" / "jit-layers" / "current.json"
+    view_pointer.parent.mkdir(parents=True, exist_ok=True)
+    view_pointer.write_text(
+        json.dumps(
+            {
+                "schema": "vfx-harness.jit-layer-view/v1",
+                "bundle_hash": bundle_digest,
+                "view_hash": view_digest,
+                "materialized_layers": ["form"],
+                "artifacts": {
+                    "layers.json": view_artifact.relative_to(shot).as_posix(),
+                },
+                "hashes": {
+                    "layers.json": hashlib.sha256(view_artifact.read_bytes()).hexdigest(),
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return bundle_digest
+
+
+def _typed_harness_stop(
+    run_id: str,
+    *,
+    evidence: StopEvidenceRef | None = None,
+) -> StopEnvelope:
+    facts = _digest("typed harness stop facts")
+    attempt = _digest("typed attempt")
+    if evidence is None:
+        evidence = StopEvidenceRef(
+            kind="stop_evidence",
+            locator=f"runs/{run_id}/reports/test-harness-defect.json",
+            sha256=_digest("typed defect bytes"),
+            record_schema="vfx-harness.test-harness-defect/v1",
+            record_digest=_digest("typed defect record"),
+        )
+    cause = StopCause(
+        invariant_id="test_harness_invariant",
+        finding_ids=("finding-1",),
+        owner_scope_ids=("observability",),
+        normalized_facts_digest=facts,
+    )
+    defect = EvidenceRecordAssertion(
+        record_kind="defect",
+        record_id="test-harness-defect",
+        evidence=evidence,
+    )
+    target = RouteEngineeringTarget(
+        cause_fingerprint=cause.fingerprint_for("harness_defect"),
+        attempt_evidence_digest=attempt,
+        owner_scope_ids=cause.owner_scope_ids,
+        defect_record=defect,
+        evidence=(evidence,),
+        sink_id="engineering_handoff",
+    )
+    action = StopAction(
+        target=target,
+        postcondition=EngineeringRouteCommitted(
+            defect_packet_digest=evidence.record_digest,
+            sink_id=target.sink_id,
+            owner_scope_ids=target.owner_scope_ids,
+        ),
+    )
+    return StopEnvelope(
+        stage="infrastructure",
+        stop_class="harness_defect",
+        identity=StopIdentity(
+            run_id=run_id,
+            bundle_digest=None,
+            view_digest=None,
+            layer_id=None,
+            unit_id=None,
+            unit_plan_digest=None,
+            unit_digest=None,
+            candidate_digest=None,
+            checkpoint_digest=None,
+            settings_digest=None,
+            debt_state_digest=None,
+        ),
+        cause=cause,
+        attempt_evidence_digest=attempt,
+        classification_evidence_digest=facts,
+        artifact_state_digest=_digest("typed artifact state"),
+        authoritative_before_digest=_digest("typed before state"),
+        actions=(action,),
+        evidence_refs=(evidence,),
+        budget_key="test-harness-stop",
+        expected="The invariant should hold.",
+        found="The invariant failed.",
+        next_action="Route the exact evidence to engineering.",
+    )
+
+
+def _terminal_stop_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    payload: bytes | None = None,
+    declared_record_digest: str | None = None,
+    additional_evidence: tuple[StopEvidenceRef, ...] = (),
+) -> tuple[run_artifacts.RunLayout, StopEnvelope, Path]:
+    shot = tmp_path / "terminal-stop-evidence"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(shot, "terminal-stop-001")
+    evidence_path = layout.reports / "test-harness-defect.json"
+    document = {
+        "schema": "vfx-harness.test-harness-defect/v1",
+        "finding": "the exact typed defect",
+    }
+    if payload is None:
+        evidence_path = layout.write_report("test-harness-defect", document)
+    else:
+        evidence_path.write_bytes(payload)
+    evidence = StopEvidenceRef(
+        kind="stop_evidence",
+        locator=evidence_path.relative_to(layout.shot).as_posix(),
+        sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        record_schema=document["schema"],
+        record_digest=(declared_record_digest if declared_record_digest is not None else canonical_digest(document)),
+    )
+    envelope = _typed_harness_stop(layout.run_id, evidence=evidence)
+    if additional_evidence:
+        envelope = replace(
+            envelope,
+            evidence_refs=(evidence, *additional_evidence),
+        )
+    layout.write_stop_envelope(envelope)
+    layout.set_status(
+        "failed",
+        exit_code=9,
+        metadata={
+            "stop_envelope": "reports/stop-envelope.json",
+            "stop_envelope_digest": envelope.digest,
+        },
+    )
+    return layout, envelope, evidence_path
+
+
+def test_structured_run_has_one_machine_readable_entrypoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shot = tmp_path / "shot-a"
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
@@ -54,9 +295,7 @@ def test_inventory_classifies_outputs_without_scanning_the_shot_root(
     assert by_path["reports/layers/layer-1.json"]["media_type"] == "application/json"
 
 
-def test_transcripts_are_grouped_by_run_stage_and_label(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_transcripts_are_grouped_by_run_stage_and_label(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shot = tmp_path / "shot-c"
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
@@ -73,9 +312,7 @@ def test_transcripts_are_grouped_by_run_stage_and_label(
     assert [row["kind"] for row in transcript.read(path)] == ["open", "test_event", "close"]
 
 
-def test_direct_output_writer_creates_a_structured_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_direct_output_writer_creates_a_structured_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shot = tmp_path / "direct-shot"
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
@@ -107,9 +344,340 @@ def test_direct_cli_invocation_publishes_terminal_status_and_summary(
     assert layout.inventory.is_file()
 
 
-def test_dirty_plan_exit_publishes_failed_status_and_summary(
+def test_typed_stop_is_published_and_read_back_before_direct_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    shot = tmp_path / "typed-stop"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "typed-stop-001")
+    envelope = _typed_harness_stop("typed-stop-001")
+
+    with (
+        pytest.raises(run_artifacts.TypedStop),
+        run_artifacts.invocation(shot, "build", shot_id="typed-stop") as layout,
+    ):
+        raise run_artifacts.TypedStop(9, envelope)
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["stop_class"] == "harness_defect"
+    assert status["stop_envelope"] == "reports/stop-envelope.json"
+    assert status["stop_envelope_digest"] == envelope.digest
+    assert layout.read_stop_envelope(expected_digest=envelope.digest) == envelope
+
+
+def test_terminal_stop_reader_requires_every_cited_evidence_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = StopEvidenceRef(
+        kind="stop_evidence",
+        locator="state/missing-terminal-evidence.json",
+        sha256=_digest("missing bytes"),
+        record_schema="vfx-harness.missing-terminal-evidence/v1",
+        record_digest=_digest("missing record"),
+    )
+    layout, _envelope, _evidence_path = _terminal_stop_fixture(
+        tmp_path,
+        monkeypatch,
+        additional_evidence=(missing,),
+    )
+
+    with pytest.raises(ValueError, match="cited stop evidence is missing"):
+        layout.read_terminal_stop()
+
+
+def test_terminal_stop_reader_rejects_tampered_evidence_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout, _envelope, evidence_path = _terminal_stop_fixture(tmp_path, monkeypatch)
+    evidence_path.write_text('{"schema":"vfx-harness.test-harness-defect/v1"}\n')
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        layout.read_terminal_stop()
+
+
+def test_terminal_stop_reader_rejects_malformed_typed_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout, _envelope, _evidence_path = _terminal_stop_fixture(
+        tmp_path,
+        monkeypatch,
+        payload=b"{not-json",
+        declared_record_digest=_digest("declared malformed record"),
+    )
+
+    with pytest.raises(ValueError, match="malformed JSON"):
+        layout.read_terminal_stop()
+
+
+def test_terminal_stop_reader_rejects_stale_typed_record_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout, _envelope, _evidence_path = _terminal_stop_fixture(
+        tmp_path,
+        monkeypatch,
+        declared_record_digest=_digest("stale record identity"),
+    )
+
+    with pytest.raises(ValueError, match="record digest mismatch"):
+        layout.read_terminal_stop()
+
+
+def test_untyped_terminal_boundary_fails_closed_as_harness_defect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot = tmp_path / "untyped-stop"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "untyped-stop-001")
+
+    with (
+        pytest.raises(RuntimeError, match="raw failure"),
+        run_artifacts.invocation(shot, "materialize", shot_id="untyped-stop") as layout,
+    ):
+        raise RuntimeError("raw failure text is not dispatch authority")
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    envelope = layout.read_stop_envelope(expected_digest=status["stop_envelope_digest"])
+    assert envelope.stage == "infrastructure"
+    assert envelope.stop_class == "harness_defect"
+    assert envelope.cause.invariant_id == "terminal_boundary_requires_typed_stop"
+    assert [action.transaction_id for action in envelope.actions] == ["route_engineering"]
+    assert status["terminal_cause"] == "process_error"
+
+
+def test_unclassified_boundary_identity_is_restart_stable_until_authority_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = tmp_path / "untyped-restart"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    first_bundle = _write_selected_authority(
+        shot,
+        publisher="publisher-a",
+        published_at="2026-08-30T01:02:03+00:00",
+        plan_payload=b"same semantic plan\n",
+    )
+    first_script = shot / "build" / "first-location.py"
+    first_script.parent.mkdir(parents=True, exist_ok=True)
+    first_script.write_text("# same accepted script\n", encoding="utf-8")
+    (shot / "shot.json").write_text(
+        json.dumps(
+            {
+                "shot": "untyped-restart",
+                "milestones": {
+                    "form": {
+                        "status": "passed",
+                        "frame": 1,
+                        "script": first_script.relative_to(shot).as_posix(),
+                        "script_sha": "accepted-script",
+                        "unit_hash": _digest("unit"),
+                        "artifact_unit_hash": _digest("unit"),
+                        "run_id": "publisher-a",
+                        "updated": "2026-08-30T01:02:03+00:00",
+                        "best": {"render": "runs/publisher-a/evidence/render.png"},
+                    }
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    first_layout = run_artifacts.create(
+        shot,
+        "untyped-restart-001",
+        parameters={
+            "command": "build",
+            "run_id": "attempt-a",
+            "started_at": "2026-08-30T01:02:03+00:00",
+            "candidate": "/tmp/run-a/candidate.json",
+        },
+    )
+    first = run_artifacts._unclassified_stop_envelope(
+        first_layout,
+        "build",
+        RuntimeError("failure at /tmp/run-a on 2026-08-30T01:02:03+00:00"),
+        code=7,
+        terminal_cause="unknown:/tmp/run-a:2026-08-30T01:02:03+00:00",
+    )
+
+    second_bundle = _write_selected_authority(
+        shot,
+        publisher="publisher-b",
+        published_at="2099-01-01T00:00:00+00:00",
+        plan_payload=b"same semantic plan\n",
+    )
+    assert second_bundle == first_bundle
+    second_script = shot / "other-build-root" / "second-location.py"
+    second_script.parent.mkdir(parents=True, exist_ok=True)
+    second_script.write_text(first_script.read_text(encoding="utf-8"), encoding="utf-8")
+    (shot / "shot.json").write_text(
+        json.dumps(
+            {
+                "shot": "untyped-restart",
+                "milestones": {
+                    "form": {
+                        "status": "passed",
+                        "frame": 1,
+                        "script": second_script.relative_to(shot).as_posix(),
+                        "script_sha": "accepted-script",
+                        "unit_hash": _digest("unit"),
+                        "artifact_unit_hash": _digest("unit"),
+                        "run_id": "publisher-b",
+                        "updated": "2099-01-01T00:00:00+00:00",
+                        "best": {"render": "runs/publisher-b/evidence/elsewhere.png"},
+                    }
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    second_layout = run_artifacts.create(
+        shot,
+        "untyped-restart-002",
+        parameters={
+            "command": "build",
+            "run_id": "attempt-b",
+            "started_at": "2099-01-01T00:00:00+00:00",
+            "candidate": "/var/tmp/run-b/materialized.json",
+        },
+    )
+    second = run_artifacts._unclassified_stop_envelope(
+        second_layout,
+        "build",
+        RuntimeError("failure at /var/tmp/run-b on 2099-01-01T00:00:00+00:00"),
+        code=7,
+        terminal_cause="unknown:/var/tmp/run-b:2099-01-01T00:00:00+00:00",
+    )
+
+    assert first.identity.run_id != second.identity.run_id
+    assert first.cause_fingerprint == second.cause_fingerprint
+    assert first.authoritative_before_digest == second.authoritative_before_digest
+    assert first.attempt_evidence_digest == second.attempt_evidence_digest
+    assert first.evidence_refs[0].digest == second.evidence_refs[0].digest
+    assert first.actions[0].digest == second.actions[0].digest
+    assert action_idempotency_key(
+        first.actions[0],
+        authoritative_before_digest=first.authoritative_before_digest,
+        attempt_evidence_digest=first.attempt_evidence_digest,
+    ) == action_idempotency_key(
+        second.actions[0],
+        authoritative_before_digest=second.authoritative_before_digest,
+        attempt_evidence_digest=second.attempt_evidence_digest,
+    )
+    first_audit = json.loads(
+        (first_layout.reports / "unclassified-boundary-audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    second_audit = json.loads(
+        (second_layout.reports / "unclassified-boundary-audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert first_audit["run_id"] != second_audit["run_id"]
+    assert (
+        first_audit["authority_sources"]["manifest"]["document"]["invocation"]
+        ["parameters"]
+        != second_audit["authority_sources"]["manifest"]["document"]["invocation"]
+        ["parameters"]
+    )
+    assert (
+        first_audit["authority_sources"]["selected_bundle"]["pointer"]["document"]
+        ["published_at"]
+        != second_audit["authority_sources"]["selected_bundle"]["pointer"]["document"]
+        ["published_at"]
+    )
+    first_evidence = json.loads(
+        (first_layout.reports / "unclassified-boundary-defect.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "parameters" not in first_evidence["authoritative_state"]
+    assert first_evidence["legacy_terminal_cause"] == "unclassified_terminal_cause"
+
+    changed_bundle = _write_selected_authority(
+        shot,
+        publisher="publisher-c",
+        published_at="2099-01-02T00:00:00+00:00",
+        plan_payload=b"changed semantic plan\n",
+    )
+    assert changed_bundle != first_bundle
+    changed_layout = run_artifacts.create(
+        shot,
+        "untyped-restart-003",
+        parameters={"command": "build", "candidate": "/tmp/irrelevant.json"},
+    )
+    changed = run_artifacts._unclassified_stop_envelope(
+        changed_layout,
+        "build",
+        RuntimeError("same exception class"),
+        code=7,
+        terminal_cause="another unknown audit-only cause",
+    )
+    assert changed.authoritative_before_digest != first.authoritative_before_digest
+    assert changed.attempt_evidence_digest != first.attempt_evidence_digest
+    assert changed.evidence_refs[0].digest != first.evidence_refs[0].digest
+    assert changed.actions[0].digest != first.actions[0].digest
+    assert action_idempotency_key(
+        changed.actions[0],
+        authoritative_before_digest=changed.authoritative_before_digest,
+        attempt_evidence_digest=changed.attempt_evidence_digest,
+    ) != action_idempotency_key(
+        first.actions[0],
+        authoritative_before_digest=first.authoritative_before_digest,
+        attempt_evidence_digest=first.attempt_evidence_digest,
+    )
+
+
+def test_inherited_stage_publishes_typed_stop_without_waiting_for_driver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot = tmp_path / "inherited-stop"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(shot, "inherited-001")
+    envelope = _typed_harness_stop(layout.run_id)
+
+    with pytest.raises(run_artifacts.TypedStop), run_artifacts.invocation(shot, "accept", shot_id="inherited-stop"):
+        raise run_artifacts.TypedStop(9, envelope)
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["state"] == "failed"
+    assert layout.read_stop_envelope(expected_digest=status["stop_envelope_digest"]) == envelope
+    # An inherited stage does not claim ownership of the whole-run summary.
+    assert not (layout.reports / "summary.json").exists()
+
+
+def test_typed_stop_with_wrong_run_identity_is_not_publishable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shot = tmp_path / "wrong-run-stop"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    monkeypatch.setenv("VFXH_RUN_ID", "right-run-001")
+
+    with (
+        pytest.raises(run_artifacts.TypedStop),
+        run_artifacts.invocation(shot, "accept", shot_id="wrong-run-stop") as layout,
+    ):
+        raise run_artifacts.TypedStop(9, _typed_harness_stop("wrong-run-001"))
+
+    status = json.loads(layout.status.read_text(encoding="utf-8"))
+    assert status["terminal_cause"] == "stop_envelope_publication_failure"
+    assert status["stop_envelope_state"] == "unavailable"
+    assert not layout.stop_envelope.exists()
+
+
+def test_dirty_plan_exit_publishes_failed_status_and_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shot = tmp_path / "dirty-plan"
     shot.mkdir()
     plan = shot / "plans" / "global.md"
@@ -135,9 +703,7 @@ def test_dirty_plan_exit_publishes_failed_status_and_summary(
     assert status["terminal_cause"] == "plan_budget_exhausted"
 
 
-def test_operator_interrupt_has_explicit_terminal_cause(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_operator_interrupt_has_explicit_terminal_cause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shot = tmp_path / "interrupted"
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
@@ -151,6 +717,9 @@ def test_operator_interrupt_has_explicit_terminal_cause(
     assert status["exit_code"] == 130
     assert status["terminal_cause"] == "interrupted"
     assert status["detail"] == "interrupted by operator"
+    envelope = layout.read_terminal_stop()
+    assert envelope.stop_class == "harness_defect"
+    assert envelope.actions[0].transaction_id == "route_engineering"
 
 
 def test_model_turn_exhaustion_is_not_reported_as_generic_failure(
@@ -188,9 +757,7 @@ def test_integer_systemexit_detail_is_the_meaning_not_the_digit(
     assert status["detail"] != "7"
 
 
-def test_requested_exit_keeps_the_exception_detail(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_requested_exit_keeps_the_exception_detail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shot = tmp_path / "unpassed"
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
@@ -204,17 +771,13 @@ def test_requested_exit_keeps_the_exception_detail(
     assert "cam_spine" in status["detail"]
 
 
-def test_requested_exit_keeps_typed_terminal_cause(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_requested_exit_keeps_typed_terminal_cause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shot = tmp_path / "model-failure"
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     monkeypatch.setenv("VFXH_RUN_ID", "direct-model-failure")
 
-    with pytest.raises(run_artifacts.RequestedExit), run_artifacts.invocation(
-        shot, "build"
-    ) as layout:
+    with pytest.raises(run_artifacts.RequestedExit), run_artifacts.invocation(shot, "build") as layout:
         raise run_artifacts.RequestedExit(
             3,
             "BUILD TRUNCATED — provider returned HTTP 429",
@@ -226,9 +789,7 @@ def test_requested_exit_keeps_typed_terminal_cause(
     assert status["terminal_cause"] == "model_session_failure"
 
 
-def test_reader_refuses_shot_root_legacy_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_reader_refuses_shot_root_legacy_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     shot = tmp_path / "unsupported-output"
     (shot / "renders").mkdir(parents=True)
     (shot / "renders" / "old.png").write_bytes(b"old")

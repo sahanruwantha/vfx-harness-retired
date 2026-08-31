@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
+from vfx_harness.domain.plan_records import load_judgment_debt_catalog
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.orchestration.jit_materialization.schema import (
@@ -21,8 +21,19 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     attest_materialization_finalization,
 )
 from vfx_harness.orchestration.jit_materialization.validate import validate_materialization
+from vfx_harness.orchestration.jit_materialization.view_pointer import (
+    JitViewPointerError,
+    canonical_view_hash,
+    parse_jit_view_pointer,
+    require_materialized_layers_match,
+)
 from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.unit_state import apply_replan, load
+
+# Kept as a private compatibility alias for callers that already import the publisher
+# helper.  The contract itself lives beside the shared pointer parser used by every
+# authority consumer.
+_canonical_view_hash = canonical_view_hash
 
 
 def selected_view_artifact(
@@ -50,23 +61,44 @@ def selected_view_artifact(
     if not pointer.is_file():
         return None
     value = _document(pointer)
-    if value.get("schema") != VIEW_SCHEMA:
-        raise ValueError("selected JIT layer view is malformed")
-    if value.get("bundle_hash") != bundle_hash:
+    try:
+        selected = parse_jit_view_pointer(value)
+    except JitViewPointerError as exc:
+        raise ValueError(f"selected JIT layer view is malformed: {exc}") from exc
+    if selected.bundle_hash != bundle_hash:
         # A view pinned to another generation is superseded state, not authority for the
         # currently selected bundle — serve the bundle's own deferred artifact and let
         # the next materialization write this generation's view. Republication (run
         # 20260824T150358Z-3bc39c) used to leave every consumer — including the replan
         # transaction meant to reconcile the change — failing on the prior view.
         return None
-    relative = (value.get("artifacts") or {}).get(name)
-    expected = (value.get("hashes") or {}).get(name)
-    if not isinstance(relative, str) or not isinstance(expected, str):
-        raise ValueError(f"selected JIT layer view is missing {name}")
-    path = shot / relative
-    if not path.is_file() or _sha256(path) != expected:
-        raise ValueError(f"selected JIT layer view artifact {name} is stale")
-    return path
+    shot_root = shot.resolve()
+    paths: dict[str, Path] = {}
+    documents: dict[str, object] = {}
+    for artifact_name in OVERLAY_ARTIFACTS:
+        path = (shot_root / selected.artifacts[artifact_name]).resolve()
+        if not path.is_relative_to(shot_root):
+            raise ValueError(
+                f"selected JIT layer view artifact {artifact_name!r} escapes the shot root"
+            )
+        if not path.is_file() or _sha256(path) != selected.hashes[artifact_name]:
+            raise ValueError(f"selected JIT layer view artifact {artifact_name} is stale")
+        try:
+            documents[artifact_name] = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"selected JIT layer view artifact {artifact_name} is not canonical JSON"
+            ) from exc
+        paths[artifact_name] = path
+    try:
+        require_materialized_layers_match(selected, documents["layers.json"])
+    except JitViewPointerError as exc:
+        raise ValueError(
+            "selected JIT layer view materialized_layers are invalid"
+        ) from exc
+    if canonical_view_hash(documents) != selected.view_hash:
+        raise ValueError("selected JIT layer view_hash does not match its documents")
+    return paths[name]
 
 
 def _consumer_base_artifact(
@@ -150,6 +182,30 @@ def revert_materialization(
         else row
         for row in view_docs["requirements.json"]["requirements"]
     ]
+    removed_definition_digests = {
+        str(row.get("definition_digest") or "")
+        for row in _rows(
+            view_docs["requirements.json"],
+            "judgment_debt_definitions",
+            "requirements.json",
+        )
+        if str((row.get("seed") or {}).get("owner_layer") or "") == layer_id
+    }
+    view_docs["requirements.json"]["judgment_debt_definitions"] = [
+        row
+        for row in view_docs["requirements.json"]["judgment_debt_definitions"]
+        if str((row.get("seed") or {}).get("owner_layer") or "") != layer_id
+    ]
+    view_docs["requirements.json"]["judgment_debt_activations"] = [
+        row
+        for row in _rows(
+            view_docs["requirements.json"],
+            "judgment_debt_activations",
+            "requirements.json",
+        )
+        if str(row.get("payer_layer") or "") != layer_id
+        and str(row.get("definition_digest") or "") not in removed_definition_digests
+    ]
     for name, key in (("scene_checks.json", "contracts"), ("checks.json", "checks")):
         view_docs[name][key] = [
             row
@@ -161,13 +217,15 @@ def revert_materialization(
         for row in view_docs["layers.json"]["layers"]
         if row.get("execution") != "jit_deferred"
     )
-    view_hash = hashlib.sha256(
-        json.dumps(view_docs, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    view_hash = _canonical_view_hash(view_docs)
     view = shot / STATE_DIR / "views" / view_hash
     view.mkdir(parents=True, exist_ok=True)
     for name in OVERLAY_ARTIFACTS:
         atomic_write(view / name, json.dumps(view_docs[name], indent=2, sort_keys=True) + "\n")
+    load_judgment_debt_catalog(
+        view / "requirements.json",
+        selected_bundle_digest=bundle.content_hash,
+    )
     if not select:
         return view
     if not still_materialized:
@@ -220,9 +278,14 @@ def _composed_documents(
     layer_id = str((payload.get("layer") or {}).get("id") or "")
     if layer_id not in global_layers:
         raise ValueError(f"JIT materialization names unknown layer {layer_id!r}")
-    _require_upstream_outcomes(shot, global_layers[layer_id])
     base_layers = _consumer_base_artifact(
         shot, "layers.json", bundle, overlay_root=overlay_root
+    )
+    executable_layers = load_layers_from_path(base_layers)
+    _require_upstream_outcomes(
+        shot,
+        global_layers[layer_id],
+        executable_layers,
     )
     base_scene = _consumer_base_artifact(
         shot, "scene_checks.json", bundle, overlay_root=overlay_root
@@ -309,6 +372,49 @@ def _overlay_documents(materialized, bases: dict) -> dict:
                 "evidence_domains": list(evidence_domains or ()),
                 "domain_bindings": list(domain_bindings or ()),
             }
+    definitions = _rows(
+        requirements_doc,
+        "judgment_debt_definitions",
+        "requirements.json",
+    )
+    by_debt_id = {str(row.get("debt_id") or ""): row for row in definitions}
+    by_definition_digest = {
+        str(row.get("definition_digest") or ""): row for row in definitions
+    }
+    for row in materialized.judgment_debt_definitions:
+        debt_id = str(row.get("debt_id") or "")
+        definition_digest = str(row.get("definition_digest") or "")
+        prior = by_debt_id.get(debt_id) or by_definition_digest.get(definition_digest)
+        if prior is not None:
+            if prior != row:
+                raise ValueError(
+                    f"judgment debt {debt_id or definition_digest} conflicts with "
+                    "selected immutable authority"
+                )
+            continue
+        definitions.append(row)
+        by_debt_id[debt_id] = row
+        by_definition_digest[definition_digest] = row
+    activations = _rows(
+        requirements_doc,
+        "judgment_debt_activations",
+        "requirements.json",
+    )
+    by_activated_definition = {
+        str(row.get("definition_digest") or ""): row for row in activations
+    }
+    for row in materialized.judgment_debt_activations:
+        definition_digest = str(row.get("definition_digest") or "")
+        prior = by_activated_definition.get(definition_digest)
+        if prior is not None:
+            if prior != row:
+                raise ValueError(
+                    "judgment debt definition has conflicting exact payer activations: "
+                    + definition_digest
+                )
+            continue
+        activations.append(row)
+        by_activated_definition[definition_digest] = row
     acceptance_doc = json.loads(Path(bases["acceptance.json"]).read_text(encoding="utf-8"))
     if not isinstance(acceptance_doc, list):
         raise ValueError("acceptance.json must contain a list")
@@ -367,7 +473,7 @@ def stage_candidate_view(
     pointer = {
         "schema": VIEW_SCHEMA,
         "bundle_hash": bundle.content_hash,
-        "view_hash": "candidate-preview",
+        "view_hash": canonical_view_hash(documents),
         "materialized_layers": sorted(
             str(row.get("id"))
             for row in documents["layers.json"]["layers"]
@@ -485,37 +591,13 @@ def publish_materialization(
     bundle, materialized, bases = _composed_documents(
         shot, materialization_path, overlay_root=overlay_root
     )
-    base_layers = bases["layers.json"]
-    base_scene = bases["scene_checks.json"]
-    base_checks = bases["checks.json"]
-    base_requirements = bases["requirements.json"]
-    base_acceptance = bases["acceptance.json"]
-
     documents = _overlay_documents(materialized, bases)
     layers_doc = documents["layers.json"]
     scene_doc = documents["scene_checks.json"]
     checks_doc = documents["checks.json"]
     requirements_doc = documents["requirements.json"]
     acceptance_doc = documents["acceptance.json"]
-    digest_payload = json.dumps(
-        {
-            "bundle": bundle.content_hash,
-            "base_artifacts": {
-                "layers.json": _sha256(base_layers),
-                "scene_checks.json": _sha256(base_scene),
-                "checks.json": _sha256(base_checks),
-                "requirements.json": _sha256(base_requirements),
-                "acceptance.json": _sha256(base_acceptance),
-            },
-            "layer": materialized.layer_row,
-            "scene": materialized.scene_contracts,
-            "image": materialized.image_contracts,
-            "acceptance": materialized.acceptance,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    view_hash = hashlib.sha256(digest_payload).hexdigest()
+    view_hash = _canonical_view_hash(documents)
     view = shot / STATE_DIR / "views" / view_hash
     view.mkdir(parents=True, exist_ok=True)
     for name, document in (
@@ -526,6 +608,12 @@ def publish_materialization(
         ("acceptance.json", acceptance_doc),
     ):
         atomic_write(view / name, json.dumps(document, indent=2, sort_keys=True) + "\n")
+    # Publication is the authority boundary.  Re-parse the final composed register,
+    # rather than trusting that each input fragment was independently well formed.
+    load_judgment_debt_catalog(
+        view / "requirements.json",
+        selected_bundle_digest=bundle.content_hash,
+    )
     pointer = {
         "schema": VIEW_SCHEMA,
         "bundle_hash": bundle.content_hash,

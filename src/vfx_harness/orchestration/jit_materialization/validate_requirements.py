@@ -7,13 +7,24 @@ from typing import Any
 
 from vfx_harness.domain.json_pointer import encode as json_ptr
 from vfx_harness.domain.json_pointer import format_finding
-from vfx_harness.domain.plan_records import load_active_structured_decisions
+from vfx_harness.domain.judgment_debts import (
+    JudgmentDebtActivation,
+    JudgmentDebtDefinition,
+)
+from vfx_harness.domain.plan_records import (
+    load_active_structured_decisions,
+    load_judgment_debt_catalog,
+)
 from vfx_harness.domain.work_units import (
     STRUCTURAL_CLAIM_DOMAINS,
     parse_evidence_domains,
     unit_requires_surface_visibility,
 )
 from vfx_harness.evidence.scene_checks import KIND_DOMAINS
+from vfx_harness.orchestration.jit_materialization.judgment_authority import (
+    compile_materialized_judgment_activations,
+    compile_materialized_judgment_definition,
+)
 from vfx_harness.orchestration.jit_materialization.schema import (
     MaterializedLayer,
     _document,
@@ -42,11 +53,7 @@ def note_required_claim_metric_domains(*, note, unit, unit_index, claim, all_con
         return KIND_DOMAINS.get(str(entry[1].get("kind")), "unknown")
 
     bound = {binding.id: _domain_of(binding.id) for binding in claim.evidence}
-    incompatible = {
-        binding_id: domain
-        for binding_id, domain in bound.items()
-        if domain != claim.asserts
-    }
+    incompatible = {binding_id: domain for binding_id, domain in bound.items() if domain != claim.asserts}
     if incompatible:
         summary = ", ".join(f"{cid}={domain}" for cid, domain in incompatible.items())
         note(
@@ -72,6 +79,10 @@ def validate_requirement_closure(
     layer_id,
     layer,
     layer_row,
+    global_layer_row,
+    global_layers,
+    parsed_layers,
+    provider_scene_rows,
     root,
     resolutions_path,
     expected_bundle_hash,
@@ -84,20 +95,15 @@ def validate_requirement_closure(
     # owner's materialization. Adoption is last-write-wins for the selected bundle
     # only: a prior generation's values.contract is inert, and a later superseded or
     # falsified row retires the id (HIR-0028).
-    ledger_path = (
-        Path(resolutions_path)
-        if resolutions_path is not None
-        else root / "state" / "plan-resolutions.jsonl"
-    )
-    active_decisions = load_active_structured_decisions(
-        ledger_path, bundle_hash=expected_bundle_hash
-    )
+    ledger_path = Path(resolutions_path) if resolutions_path is not None else root / "state" / "plan-resolutions.jsonl"
+    active_decisions = load_active_structured_decisions(ledger_path, bundle_hash=expected_bundle_hash)
     for decision in active_decisions.values():
         roles = [str(role) for role in (decision.contract.get("roles") or [])]
         if not roles or not all(_matches_reserved(role, reserved) for role in roles):
             continue
         adopted = [
-            row for row in scene_rows
+            row
+            for row in scene_rows
             if str(row.get("decision_id") or "") == decision.id
             and all(row.get(key) == value for key, value in decision.contract.items())
         ]
@@ -126,6 +132,7 @@ def validate_requirement_closure(
         raw_bindings = []
     requirement_bindings: dict[str, tuple[str, ...]] = {}
     requirement_decisions: dict[str, dict[str, str]] = {}
+    requirement_judgments: dict[str, dict[str, Any]] = {}
     requirement_evidence_domains: dict[str, tuple[str, ...]] = {}
     requirement_domain_bindings: dict[str, tuple[dict[str, Any], ...]] = {}
     seen_requirements: set[str] = set()
@@ -137,10 +144,7 @@ def validate_requirement_closure(
             )
             continue
         requirement_id = str(binding.get("requirement_id") or "")
-        if (
-            not requirement_id
-            or requirement_id in seen_requirements
-        ):
+        if not requirement_id or requirement_id in seen_requirements:
             note(
                 json_ptr("requirement_bindings", index, "requirement_id"),
                 f"requirement_bindings[{index}].requirement_id must be unique",
@@ -168,7 +172,10 @@ def validate_requirement_closure(
             statement = str(decision.get("statement") or "").strip()
             strength = str(decision.get("decision_strength") or "").strip()
             if not statement or strength not in {
-                "hard_constraint", "approved_start", "planner_start", "confirmed_outcome"
+                "hard_constraint",
+                "approved_start",
+                "planner_start",
+                "confirmed_outcome",
             }:
                 note(
                     json_ptr("requirement_bindings", index, "decision"),
@@ -179,6 +186,14 @@ def validate_requirement_closure(
                 "statement": statement,
                 "decision_strength": strength,
             }
+            judgment = decision.get("judgment")
+            if isinstance(judgment, dict):
+                requirement_judgments[requirement_id] = dict(judgment)
+            elif judgment is not None:
+                note(
+                    json_ptr("requirement_bindings", index, "decision", "judgment"),
+                    f"requirement {requirement_id} decision.judgment must be an object",
+                )
         elif decision is not None:
             note(
                 json_ptr("requirement_bindings", index, "decision"),
@@ -197,28 +212,28 @@ def validate_requirement_closure(
     # inconsistent authority — fail closed and route to republication. Bending the
     # closure here to tolerate one published bundle's shape would generalize that
     # shot's accident into the contract.
-    register_path = (
-        Path(base_requirements_path)
-        if base_requirements_path is not None
-        else root / "requirements.json"
-    )
-    register_rows = {
-        str(row.get("id")): row
-        for row in _rows(_document(register_path), "requirements", "requirements.json")
-    }
-    register = {
-        requirement_id: (row.get("resolution") or {})
-        for requirement_id, row in register_rows.items()
-    }
+    register_path = Path(base_requirements_path) if base_requirements_path is not None else root / "requirements.json"
+    register_document = _document(register_path)
+    register_rows = {str(row.get("id")): row for row in _rows(register_document, "requirements", "requirements.json")}
+    try:
+        loaded_definitions, loaded_activations = load_judgment_debt_catalog(
+            register_path,
+            selected_bundle_digest=expected_bundle_hash,
+        )
+        existing_definitions = list(loaded_definitions)
+        existing_activations = list(loaded_activations)
+    except ValueError as exc:
+        note(json_ptr("requirement_bindings"), str(exc))
+        existing_definitions = []
+        existing_activations = []
+    register = {requirement_id: (row.get("resolution") or {}) for requirement_id, row in register_rows.items()}
     unknown_owned = sorted(rid for rid in owned if rid not in register)
     if unknown_owned:
         note(
             json_ptr("requirement_bindings"),
             "owned requirements missing from the register: " + ", ".join(unknown_owned),
         )
-    concrete_owned = sorted(
-        rid for rid in owned if rid in register and register[rid].get("kind") != "deferred_owner"
-    )
+    concrete_owned = sorted(rid for rid in owned if rid in register and register[rid].get("kind") != "deferred_owner")
     if concrete_owned:
         note(
             json_ptr("requirement_bindings"),
@@ -228,14 +243,12 @@ def validate_requirement_closure(
             "global plan instead of materializing around it",
         )
     foreign = sorted(
-        rid for rid in owned
-        if rid in register and str(register[rid].get("owner_layer") or "") != layer_id
+        rid for rid in owned if rid in register and str(register[rid].get("owner_layer") or "") != layer_id
     )
     if foreign:
         note(
             json_ptr("requirement_bindings"),
-            "owned requirements are deferred to another layer in the register: "
-            + ", ".join(foreign),
+            "owned requirements are deferred to another layer in the register: " + ", ".join(foreign),
         )
     missing_requirements = sorted(owned - bound)
     extra_requirements = sorted(bound - owned)
@@ -250,18 +263,17 @@ def validate_requirement_closure(
     contract_domains: dict[str, str] = {}
     for contract_id, (binding_kind, row) in all_contracts.items():
         contract_domains[contract_id] = (
-            "image"
-            if binding_kind == "image_contract"
-            else KIND_DOMAINS.get(str(row.get("kind") or ""), "unknown")
+            "image" if binding_kind == "image_contract" else KIND_DOMAINS.get(str(row.get("kind") or ""), "unknown")
         )
     contract_domains.update(dict.fromkeys(image_debt_ids, "image"))
     qualitative_domains = {"image", "human"}
+    judgment_debt_definitions: list[JudgmentDebtDefinition] = []
+    judgment_definition_by_requirement: dict[str, JudgmentDebtDefinition] = {}
+    known_debt_ids = {definition.debt_id for definition in existing_definitions}
 
     for requirement_id in sorted(owned & bound):
         resolution = register.get(requirement_id) or {}
-        authored_statement = str(
-            (register_rows.get(requirement_id) or {}).get("statement") or ""
-        ).strip()
+        authored_statement = str((register_rows.get(requirement_id) or {}).get("statement") or "").strip()
         try:
             declared = parse_evidence_domains(
                 resolution.get("evidence_domains"),
@@ -277,10 +289,7 @@ def validate_requirement_closure(
             if contract_domains.get(contract_id) not in declared
         }
         if undeclared_contracts:
-            witnesses = ", ".join(
-                f"{contract_id}={domain}"
-                for contract_id, domain in undeclared_contracts.items()
-            )
+            witnesses = ", ".join(f"{contract_id}={domain}" for contract_id, domain in undeclared_contracts.items())
             note(
                 json_ptr("requirement_bindings"),
                 f"requirement {requirement_id} carries padding contract bindings outside "
@@ -301,9 +310,7 @@ def validate_requirement_closure(
                 f"found {str(decision.get('statement') or '').strip()!r}. Materialization "
                 "may classify the debt strength but cannot rewrite the proposition",
             )
-        decision_domains = {
-            domain for domain in declared if domain in qualitative_domains and not by_domain[domain]
-        }
+        decision_domains = {domain for domain in declared if domain in qualitative_domains and not by_domain[domain]}
         if decision and not decision_domains:
             note(
                 json_ptr("requirement_bindings"),
@@ -320,15 +327,45 @@ def validate_requirement_closure(
                 "approved_start or planner_start; materialization cannot invent a "
                 "confirmed outcome",
             )
+        if decision and "image" in decision_domains and layer is not None:
+            try:
+                definition = compile_materialized_judgment_definition(
+                    requirement_judgments.get(requirement_id),
+                    requirement_id=requirement_id,
+                    statement=authored_statement,
+                    decision_strength=decision["decision_strength"],
+                    layer=layer,
+                    global_layer=global_layer_row,
+                    global_layers=global_layers,
+                    parsed_layers=parsed_layers,
+                    scene_rows=provider_scene_rows,
+                    bundle_digest=expected_bundle_hash,
+                )
+                if definition.debt_id in known_debt_ids:
+                    raise ValueError(
+                        f"judgment debt id {definition.debt_id} already exists in selected "
+                        "authority; rematerialization must retire or preserve it through "
+                        "the typed lineage transaction"
+                    )
+                known_debt_ids.add(definition.debt_id)
+                judgment_debt_definitions.append(definition)
+                judgment_definition_by_requirement[requirement_id] = definition
+            except ValueError as exc:
+                note(
+                    json_ptr("requirement_bindings"),
+                    f"requirement {requirement_id} judgment debt is invalid: {exc}",
+                )
         covered = {domain for domain, ids in by_domain.items() if ids}
         if decision:
             covered.update(decision_domains)
         missing_domains = sorted(set(declared) - covered)
         if missing_domains:
-            witnesses = ", ".join(
-                f"{contract_id}={contract_domains.get(contract_id, 'unknown')}"
-                for contract_id in contract_ids
-            ) or "no contract ids"
+            witnesses = (
+                ", ".join(
+                    f"{contract_id}={contract_domains.get(contract_id, 'unknown')}" for contract_id in contract_ids
+                )
+                or "no contract ids"
+            )
             note(
                 json_ptr("requirement_bindings"),
                 f"requirement {requirement_id} declares AND domains {list(declared)} but "
@@ -343,14 +380,54 @@ def validate_requirement_closure(
             if ids:
                 domain_rows.append({"domain": domain, "kind": "contract", "ids": list(ids)})
             else:
-                domain_rows.append({
+                provisional_row = {
                     "domain": domain,
                     "kind": "provisional_decision",
                     "statement": authored_statement,
                     "decision_strength": decision["decision_strength"],
-                })
+                }
+                definition = judgment_definition_by_requirement.get(requirement_id)
+                if domain == "image" and definition is not None:
+                    provisional_row.update(
+                        debt_id=definition.debt_id,
+                        definition_digest=definition.digest,
+                        activates_at=definition.binding.activates_at,
+                    )
+                domain_rows.append(provisional_row)
         requirement_evidence_domains[requirement_id] = declared
         requirement_domain_bindings[requirement_id] = tuple(domain_rows)
+
+    definitions_by_digest = {
+        definition.digest: definition for definition in (*existing_definitions, *judgment_debt_definitions)
+    }
+    for activation in existing_activations:
+        definition = definitions_by_digest.get(activation.definition_digest)
+        if definition is None:
+            note(
+                json_ptr("requirement_bindings"),
+                "selected judgment-debt activation names an unknown definition: " + activation.definition_digest,
+            )
+            continue
+        try:
+            activation.assert_matches(definition)
+        except ValueError as exc:
+            note(json_ptr("requirement_bindings"), str(exc))
+    judgment_debt_activations: tuple[JudgmentDebtActivation, ...] = ()
+    if layer is not None:
+        try:
+            judgment_debt_activations = compile_materialized_judgment_activations(
+                tuple(definitions_by_digest.values()),
+                tuple(existing_activations),
+                layer_id=layer_id,
+                global_layers=global_layers,
+                parsed_layers=parsed_layers,
+                scene_rows=provider_scene_rows,
+            )
+        except ValueError as exc:
+            note(
+                json_ptr("requirement_bindings"),
+                f"judgment-debt payer activation is invalid: {exc}",
+            )
 
     acceptance = payload.get("acceptance", [])
     if not isinstance(acceptance, list) or any(not isinstance(row, dict) for row in acceptance):
@@ -365,15 +442,12 @@ def validate_requirement_closure(
             if isinstance(row, dict) and isinstance(row.get("frame"), int)
         }
     bad_acceptance = sorted(
-        str(row.get("id") or "<missing>")
-        for row in acceptance
-        if row.get("frame") not in judge_frames
+        str(row.get("id") or "<missing>") for row in acceptance if row.get("frame") not in judge_frames
     )
     if bad_acceptance:
         note(
             json_ptr("acceptance"),
-            "materialized acceptance rows must use this layer's judge frames: "
-            + ", ".join(bad_acceptance),
+            "materialized acceptance rows must use this layer's judge frames: " + ", ".join(bad_acceptance),
         )
     # A layer judged at a frame nobody proved shows its subject is judged on faith:
     # run 20260825 sealed a whole lookdev layer whose every judged surface sat behind
@@ -382,17 +456,13 @@ def validate_requirement_closure(
     # frame must carry occlusion-true visibility evidence for what the frame judges.
 
     surface_visibility_due = bool(
-        layer is not None
-        and any(unit_requires_surface_visibility(unit) for unit in layer.stages)
+        layer is not None and any(unit_requires_surface_visibility(unit) for unit in layer.stages)
     )
     uncovered = (
         sorted(
             str(frame)
             for frame in judge_frames
-            if not any(
-                row.get("kind") == "visible_fraction" and row.get("frame") == frame
-                for row in scene_rows
-            )
+            if not any(row.get("kind") == "visible_fraction" and row.get("frame") == frame for row in scene_rows)
         )
         if surface_visibility_due
         else []
@@ -409,6 +479,8 @@ def validate_requirement_closure(
         requirement_decisions,
         requirement_evidence_domains,
         requirement_domain_bindings,
+        tuple(definition.as_dict() for definition in judgment_debt_definitions),
+        tuple(activation.as_dict() for activation in judgment_debt_activations),
         acceptance,
     )
 
@@ -428,6 +500,10 @@ def complete_validated_layer(
     layer_id,
     layer,
     layer_row,
+    global_layer_row,
+    global_layers,
+    parsed_layers,
+    provider_scene_rows,
     root,
     resolutions_path,
     expected_bundle_hash,
@@ -438,6 +514,8 @@ def complete_validated_layer(
         requirement_decisions,
         requirement_evidence_domains,
         requirement_domain_bindings,
+        judgment_debt_definitions,
+        judgment_debt_activations,
         acceptance,
     ) = validate_requirement_closure(
         note=note,
@@ -451,6 +529,10 @@ def complete_validated_layer(
         layer_id=layer_id,
         layer=layer,
         layer_row=layer_row,
+        global_layer_row=global_layer_row,
+        global_layers=global_layers,
+        parsed_layers=parsed_layers,
+        provider_scene_rows=provider_scene_rows,
         root=root,
         resolutions_path=resolutions_path,
         expected_bundle_hash=expected_bundle_hash,
@@ -469,5 +551,7 @@ def complete_validated_layer(
         requirement_decisions,
         requirement_evidence_domains,
         requirement_domain_bindings,
+        judgment_debt_definitions,
+        judgment_debt_activations,
         tuple(acceptance),
     )

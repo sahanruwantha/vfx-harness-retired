@@ -55,7 +55,9 @@ Rules, all enforced mechanically:
   repeated verbatim in that layer's `reserved_roles`. Every layer's own/dependency
   closure must contain camera because materialization owes visibility at each judge
   frame. Put the camera-owning layer before geometry that must be framed; use `{}` only
-  after depending on the camera provider.
+  after depending on the camera provider. A camera-providing layer's `reserved_roles`
+  may only match that camera grant. Form namespaces belong on a later layer that does
+  not provide camera; combining them on one layer is refused.
 - A clause settled by durable user or brief authority resolves as a decision; preserve
   explicitly approved values verbatim instead of re-deriving them. Every other clause
   resolves `deferred_owner` to exactly one layer and names `evidence_domains` from the

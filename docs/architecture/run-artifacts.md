@@ -35,6 +35,7 @@ runs/
     reports/
       summary.json
       plan_gate.json
+      stop-envelope.json       one immutable typed stop when the run is unaccepted
       layers/layer-<id>.json
     evidence/
       renders/
@@ -52,10 +53,22 @@ runs/
 ```
 
 `manifest.json` is the entrypoint and declares the schema, identity, invocation parameters,
-layout, and authority relationships. `status.json` is the terminal state. `artifacts.json` is a
-sorted catalog with path, category, size, and media type. `reports/summary.json` is the compact
-semantic digest. `latest.json` is a small pointer, not a symlink, so it works across platforms and
-copied evaluation fixtures.
+layout, and authority relationships. `status.json` is the terminal state. For a failed or
+interrupted run it selects `reports/stop-envelope.json` by relative path and content digest;
+proximity alone does not select an envelope. `artifacts.json` is a sorted catalog with path,
+category, size, and media type. `reports/summary.json` is the compact semantic digest.
+`latest.json` is a small pointer, not a symlink, so it works across platforms and copied
+evaluation fixtures.
+
+`vfx-harness.stop-envelope/v1` is the machine-readable unaccepted-boundary authority. It
+binds one closed stop class and stage, exact authority/state identity, stable cause fingerprint,
+exact attempt-evidence digest, content-addressed evidence references, and one typed action with
+its target, dispatch mode, state preconditions, progress postcondition, and required receipt
+schema. Its expected/found/next-action prose is derived diagnostic text. A valid envelope does
+not mean the action can already be dispatched: no controller, persistent controller journal,
+key-consuming transaction adapter, or transaction-receipt producer exists yet. An untyped
+boundary is published as `harness_defect`; readers never infer a narrower class from its exit
+code or prose.
 
 For planning runs, `reports/plan_gate.json` is the terminal deterministic authority. Its outcome,
 blocking count, and report path are repeated in `status.json` and the summary so readers can decide
@@ -84,10 +97,13 @@ plan bundle and then become selected by the atomic shot-root pointer.
 
 1. Read `runs/latest.json`, or select a run with `vfx inspect --run <id>`.
 2. Validate `manifest.json.schema`; fail closed on an unsupported schema.
-3. Read `status.json` before interpreting partial output. `detail` is the stop
-   meaning, never the exit-code digit (`str(SystemExit(7))` is `"7"`; HIR-0037).
-   Materialization sessions bind `logs/transcripts/plan/materialize-layer-*.jsonl`
-   (HIR-0038).
+3. Read `status.json` before interpreting partial output. For `failed` or `interrupted`,
+   require its stop-envelope path and digest, then strictly read back that envelope and
+   verify its run identity. The only exception is an explicit envelope-unavailable
+   publication failure, which halts and authorizes no action. `detail`, `terminal_cause`,
+   and exit code are operator summaries, never dispatch authority. HIR-0037 still ensures
+   an integer `SystemExit` does not degrade that summary to a digit. Materialization sessions bind
+   `logs/transcripts/plan/materialize-layer-*.jsonl` (HIR-0038).
 4. Read `reports/summary.json` for decisions and findings.
 5. Use `artifacts.json` to locate detail; do not recursively scan or parse meaning from names.
 6. Open transcripts, renders, or checkpoints only when the summary identifies a reason.
@@ -100,6 +116,9 @@ plan bundle and then become selected by the atomic shot-root pointer.
 - Use stable semantic subdirectories. Filenames identify the artifact inside its category and do
   not repeat the shot ID, run ID, stage, and category already encoded by parent directories.
 - Publish JSON atomically. Append-only JSONL is reserved for event streams and queues.
+- Publish an unaccepted run's one immutable stop envelope and read it back before selecting
+  its digest in terminal status. If publication or read-back fails, publish only the explicit
+  envelope-unavailable failure state and halt; do not dispatch from partial state.
 - Put resumable accepted state in `checkpoints/`; put disposable intermediary files in `scratch/`.
 - Put immutable plan bundles and repair-input snapshots under `checkpoints/plans/`; never write
   shot-global `plans/global.roundN.md` snapshots.
