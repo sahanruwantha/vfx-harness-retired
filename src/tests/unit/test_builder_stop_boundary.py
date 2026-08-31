@@ -19,8 +19,9 @@ from vfx_harness.agents.builder.models import BuildAuthorityDefect
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_transaction_state import (
     EvidenceRecordAssertion,
-    SelectedBundleAssertion,
-    SelectedViewAssertion,
+    SelectedAuthorityAssertionV2,
+    SelectedAuthorityBundle,
+    SelectedAuthorityView,
     StopEvidenceRef,
 )
 from vfx_harness.domain.stop_transactions import (
@@ -31,6 +32,10 @@ from vfx_harness.domain.stop_transactions import (
 )
 from vfx_harness.domain.unit_outcomes import HYPOTHESIS_FALSIFICATION_SCHEMA
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.authority_selection import (
+    AuthorityPointerObservation,
+    ResolvedSelectedAuthority,
+)
 from vfx_harness.orchestration.ledger import Layer
 from vfx_harness.orchestration.unit_state import (
     STATE_DIR,
@@ -162,6 +167,30 @@ def _fixture(
         "selected_view_digest",
         lambda _folder, _bundle: view_digest,
     )
+    selected_authority = ResolvedSelectedAuthority(
+        assertion=SelectedAuthorityAssertionV2(
+            "selected",
+            SelectedAuthorityBundle(
+                bundle_digest,
+                "clean_with_deferred",
+                hashlib.sha256(b"bundle manifest").hexdigest(),
+            ),
+            SelectedAuthorityView(
+                "jit",
+                view_digest,
+                hashlib.sha256(b"view manifest").hexdigest(),
+            ),
+        ),
+        pointer_observation=AuthorityPointerObservation(
+            hashlib.sha256(b"plan pointer").hexdigest(),
+            hashlib.sha256(b"jit pointer").hexdigest(),
+        ),
+    )
+    monkeypatch.setattr(
+        builder_stops,
+        "resolve_selected_authority",
+        lambda _folder: selected_authority,
+    )
     monkeypatch.setattr(
         builder_stops.ledger_runtime,
         "load_layers",
@@ -217,12 +246,12 @@ def test_exact_current_falsification_compiles_one_amendment_action(
     assert target.scope == "layer_view"
     assert target.layer_id == finding["layer"]
     assert target.owner_authority_id == "layer-plan-authority"
-    assert target.changes_hard_constraint is False
-    assert isinstance(target.base_bundle, SelectedBundleAssertion)
-    assert target.base_bundle.bundle_digest == finding["identities"]["bundle_hash"]
-    assert isinstance(target.base_view, SelectedViewAssertion)
-    assert target.base_view.bundle_digest == finding["identities"]["bundle_hash"]
-    assert target.base_view.view_digest == envelope.identity.view_digest
+    assert target.base_authority.selection == "selected"
+    assert target.base_authority.bundle is not None
+    assert target.base_authority.bundle.digest == finding["identities"]["bundle_hash"]
+    assert target.base_authority.effective_view is not None
+    assert target.base_authority.effective_view.digest == envelope.identity.view_digest
+    assert target.base_authority.digest == envelope.authoritative_before_digest
     assert len(target.findings) == 1
     finding_assertion = target.findings[0]
     finding_identity = builder_stops._finding_identity_payload(finding)
@@ -234,8 +263,8 @@ def test_exact_current_falsification_compiles_one_amendment_action(
     assert finding_assertion.evidence == evidence_ref
     assert isinstance(action.postcondition, SelectedAuthorityAmendmentCommitted)
     assert action.postcondition.scope == "layer_view"
-    assert action.postcondition.base_bundle_digest == envelope.identity.bundle_digest
-    assert action.postcondition.base_view_digest == envelope.identity.view_digest
+    assert action.postcondition.base_authority_digest == envelope.authoritative_before_digest
+    assert action.postcondition.required_after_source == "jit"
     assert action.postcondition.layer_id == finding["layer"]
     assert action.postcondition.finding_ids == (finding_identity_id,)
     assert action.postcondition.gate_policy_id == (

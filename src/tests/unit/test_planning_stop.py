@@ -84,14 +84,16 @@ def test_structural_gate_blockers_publish_one_authority_action_and_exact_evidenc
     action = envelope.actions[0]
     assert isinstance(action.target, PublishValidatedAmendmentTarget)
     assert action.target.scope == "global_plan"
-    assert action.target.base_bundle.bundle_digest is None
-    assert action.target.base_bundle.selection_digest == envelope.authoritative_before_digest
-    assert action.target.base_view is None
+    assert action.target.base_authority.selection == "absent"
+    assert action.target.base_authority.bundle is None
+    assert action.target.base_authority.effective_view is None
+    assert action.target.base_authority.digest == envelope.authoritative_before_digest
     assert action.target.layer_id is None
-    assert action.target.changes_hard_constraint is False
     assert action.target.findings
     assert isinstance(action.postcondition, SelectedAuthorityAmendmentCommitted)
     assert action.postcondition.gate_policy_id == ("structural-authority/runtime-falsification-v1")
+    assert action.postcondition.base_authority_digest == envelope.authoritative_before_digest
+    assert action.postcondition.required_after_source == "bundle"
     assert StopEnvelope.from_dict(envelope.as_dict(), "envelope") == envelope
     assert "apply-replan" in envelope.next_action
     evidence = json.loads((layout.reports / "plan-stop-evidence.json").read_text(encoding="utf-8"))

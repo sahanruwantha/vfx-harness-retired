@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any, ClassVar, TypeAlias
 
+from vfx_harness.domain.stop_amendment_transactions import AUTHORITY_SCOPES as AUTHORITY_SCOPES
+from vfx_harness.domain.stop_amendment_transactions import (
+    PublishValidatedAmendmentTarget,
+    SelectedAuthorityAmendmentCommitted,
+)
 from vfx_harness.domain.stop_envelope_primitives import (
     canonical_digest,
     list_value,
@@ -37,7 +42,6 @@ from vfx_harness.domain.stop_transaction_state import (
 )
 
 TRANSACTION_RECEIPT_SCHEMA = "vfx-harness.transaction-receipt/v1"
-AUTHORITY_SCOPES = frozenset({"global_plan", "layer_view"})
 ENGINEERING_SINK_IDS = frozenset({"engineering_handoff"})
 RECOVERY_ADAPTER_IDS = frozenset({"external_operator"})
 
@@ -56,48 +60,6 @@ class RetryExactUnitTarget(_StrictRecord):
         if not isinstance(self.budget_state, BudgetStateAssertion) or self.budget_state.remaining_attempts < 1:
             raise ValueError("RetryExactUnitTarget requires remaining typed retry budget")
         object.__setattr__(self, "evidence", _evidence_tuple(self.evidence, "RetryExactUnitTarget.evidence"))
-
-
-@dataclass(frozen=True, slots=True)
-class PublishValidatedAmendmentTarget(_StrictRecord):
-    SCHEMA: ClassVar[str] = "vfx-harness.stop-target.publish-validated-amendment/v1"
-    DIGEST_FIELD: ClassVar[str] = "target_digest"
-    scope: str
-    base_bundle: SelectedBundleAssertion
-    base_view: SelectedViewAssertion | None
-    layer_id: str | None
-    findings: tuple[EvidenceRecordAssertion, ...]
-    owner_authority_id: str
-    changes_hard_constraint: bool
-
-    def __post_init__(self) -> None:
-        if self.scope not in AUTHORITY_SCOPES:
-            raise ValueError(f"PublishValidatedAmendmentTarget.scope must be one of {sorted(AUTHORITY_SCOPES)}")
-        if not isinstance(self.base_bundle, SelectedBundleAssertion):
-            raise ValueError("PublishValidatedAmendmentTarget requires selected bundle state")
-        if self.base_view is not None and (
-            not isinstance(self.base_view, SelectedViewAssertion)
-            or self.base_view.bundle_digest != self.base_bundle.bundle_digest
-        ):
-            raise ValueError("amendment base view must belong to its base bundle")
-        if self.scope == "layer_view":
-            require_id(self.layer_id, "PublishValidatedAmendmentTarget.layer_id")
-            if self.base_bundle.bundle_digest is None:
-                raise ValueError("layer-view amendment requires a selected base bundle")
-        elif self.layer_id is not None:
-            raise ValueError("global-plan amendment cannot name a layer target")
-        if not isinstance(self.findings, tuple) or not self.findings:
-            raise ValueError("PublishValidatedAmendmentTarget.findings must be non-empty")
-        if any(
-            not isinstance(item, EvidenceRecordAssertion) or item.record_kind != "finding" for item in self.findings
-        ):
-            raise ValueError("PublishValidatedAmendmentTarget.findings must be finding assertions")
-        if len({item.digest for item in self.findings}) != len(self.findings):
-            raise ValueError("PublishValidatedAmendmentTarget.findings contains duplicates")
-        object.__setattr__(self, "findings", tuple(sorted(self.findings, key=lambda item: item.digest)))
-        require_id(self.owner_authority_id, "PublishValidatedAmendmentTarget.owner_authority_id")
-        if self.changes_hard_constraint is not False:
-            raise ValueError("automatic validated amendment cannot change a hard constraint")
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,9 +262,8 @@ def target_from_dict(value: Any, where: str) -> StopTransactionTarget:
         kwargs["budget_state"] = state_assertion_from_dict(row["budget_state"], f"{where}.budget_state")
         kwargs["evidence"] = _parse_evidence_list(row["evidence"], f"{where}.evidence")
     elif cls is PublishValidatedAmendmentTarget:
-        kwargs["base_bundle"] = state_assertion_from_dict(row["base_bundle"], f"{where}.base_bundle")
-        kwargs["base_view"] = (
-            None if row["base_view"] is None else state_assertion_from_dict(row["base_view"], f"{where}.base_view")
+        kwargs["base_authority"] = state_assertion_from_dict(
+            row["base_authority"], f"{where}.base_authority"
         )
         kwargs["findings"] = _parse_assertion_list(row["findings"], f"{where}.findings")
     elif cls is ApplyRevisionCheckedReplanTarget:
@@ -325,38 +286,6 @@ def target_from_dict(value: Any, where: str) -> StopTransactionTarget:
         kwargs["allowed_answer_ids"] = text_tuple_from_list(row["allowed_answer_ids"], f"{where}.allowed_answer_ids")
         kwargs["evidence"] = _parse_evidence_list(row["evidence"], f"{where}.evidence")
     return _finish(cls(**kwargs), row, where)
-
-
-@dataclass(frozen=True, slots=True)
-class SelectedAuthorityAmendmentCommitted(_StrictRecord):
-    SCHEMA: ClassVar[str] = "vfx-harness.stop-postcondition.selected-authority-amendment/v1"
-    DIGEST_FIELD: ClassVar[str] = "postcondition_digest"
-    scope: str
-    base_bundle_digest: str
-    base_view_digest: str | None
-    layer_id: str | None
-    finding_ids: tuple[str, ...]
-    gate_policy_id: str
-
-    def __post_init__(self) -> None:
-        if self.scope not in AUTHORITY_SCOPES:
-            raise ValueError(f"authority amendment scope must be one of {sorted(AUTHORITY_SCOPES)}")
-        require_optional_digest(
-            self.base_bundle_digest,
-            "SelectedAuthorityAmendmentCommitted.base_bundle_digest",
-        )
-        require_optional_digest(self.base_view_digest, "SelectedAuthorityAmendmentCommitted.base_view_digest")
-        if self.scope == "layer_view":
-            require_id(self.layer_id, "SelectedAuthorityAmendmentCommitted.layer_id")
-        elif self.layer_id is not None:
-            raise ValueError("global authority postcondition cannot name a layer")
-        object.__setattr__(
-            self, "finding_ids", require_text_tuple(self.finding_ids, "SelectedAuthorityAmendmentCommitted.finding_ids")
-        )
-        require_text(
-            self.gate_policy_id,
-            "SelectedAuthorityAmendmentCommitted.gate_policy_id",
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +480,7 @@ def target_preconditions(target: StopTransactionTarget) -> tuple[StopStateAssert
     if isinstance(target, RetryExactUnitTarget):
         values = (target.unit_state, target.budget_state)
     elif isinstance(target, PublishValidatedAmendmentTarget):
-        values = (target.base_bundle, *((target.base_view,) if target.base_view else ()), *target.findings)
+        values = (target.base_authority, *target.findings)
     elif isinstance(target, ApplyRevisionCheckedReplanTarget):
         values = (
             target.target_bundle,
@@ -600,17 +529,25 @@ def _validate_target_postcondition(target: StopTransactionTarget, postcondition:
     ):
         expected = (
             target.scope,
-            target.base_bundle.bundle_digest,
-            None if target.base_view is None else target.base_view.view_digest,
+            target.base_authority.digest,
             target.layer_id,
             tuple(sorted(item.record_id for item in target.findings)),
+            target.owner_authority_id,
+            target.gate_policy_id,
+            target.gate_schema,
+            target.validation_scope,
+            "bundle" if target.scope == "global_plan" else "jit",
         )
         found = (
             postcondition.scope,
-            postcondition.base_bundle_digest,
-            postcondition.base_view_digest,
+            postcondition.base_authority_digest,
             postcondition.layer_id,
             postcondition.finding_ids,
+            postcondition.owner_authority_id,
+            postcondition.gate_policy_id,
+            postcondition.gate_schema,
+            postcondition.validation_scope,
+            postcondition.required_after_source,
         )
     elif isinstance(target, ApplyRevisionCheckedReplanTarget) and isinstance(
         postcondition, RevisionCheckedReplanCommitted

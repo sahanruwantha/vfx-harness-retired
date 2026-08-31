@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,6 +77,22 @@ def _write_plan(folder: Path, *, marker: str = "one") -> None:
     )
 
 
+def _preexisting_candidate_bundle(
+    shot: Path,
+) -> tuple[Path, run_artifacts.RunLayout, bytes]:
+    _write_plan(shot, marker="selected")
+    selected_layout = run_artifacts.create(shot, "selected-plan")
+    publish_current(shot, selected_layout, outcome="clean")
+    pointer = shot / "plans" / "current.json"
+    selected_pointer = pointer.read_bytes()
+
+    _write_plan(shot, marker="candidate")
+    candidate_layout = run_artifacts.create(shot, "candidate-plan")
+    candidate = publish_current(shot, candidate_layout, outcome="clean")
+    pointer.write_bytes(selected_pointer)
+    return candidate.root, candidate_layout, selected_pointer
+
+
 def test_clean_plan_publishes_one_immutable_bundle_behind_atomic_pointer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -110,6 +127,87 @@ def test_clean_plan_publishes_one_immutable_bundle_behind_atomic_pointer(
     assert (published.root / "global.md").read_text(encoding="utf-8") == "# plan one\n"
     assert selected_artifact_path(tmp_path, "global.md") == published.root / "global.md"
     assert resolve_current(tmp_path) == published
+
+
+@pytest.mark.parametrize("damage", ["tamper", "missing", "symlink", "undeclared"])
+def test_publication_refuses_a_damaged_preexisting_content_addressed_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    root, layout, selected_pointer = _preexisting_candidate_bundle(tmp_path)
+    member = root / "global.md"
+    if damage == "tamper":
+        member.write_text("# different bytes\n", encoding="utf-8")
+    elif damage == "missing":
+        member.unlink()
+    elif damage == "symlink":
+        outside = tmp_path / "substituted-global.md"
+        outside.write_bytes(member.read_bytes())
+        member.unlink()
+        member.symlink_to(outside)
+    else:
+        (root / "undeclared.txt").write_text("not in the manifest\n", encoding="utf-8")
+
+    with pytest.raises(PlanPublicationError, match="plan bundle"):
+        publish_current(tmp_path, layout, outcome="clean")
+
+    pointer = tmp_path / "plans" / "current.json"
+    assert pointer.read_bytes() == selected_pointer
+    assert resolve_current(tmp_path).run_id == "selected-plan"
+
+
+@pytest.mark.parametrize("substitution", ["pointer", "bundle", "manifest", "artifact"])
+def test_selected_authority_refuses_symlink_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    substitution: str,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run-symlink")
+    bundle = publish_current(tmp_path, layout, outcome="clean")
+    pointer = tmp_path / "plans" / "current.json"
+
+    if substitution == "pointer":
+        outside = tmp_path / "substituted-pointer.json"
+        outside.write_bytes(pointer.read_bytes())
+        pointer.unlink()
+        pointer.symlink_to(outside)
+    elif substitution == "bundle":
+        outside = tmp_path / "substituted-bundle"
+        bundle.root.rename(outside)
+        bundle.root.symlink_to(outside, target_is_directory=True)
+    else:
+        member = bundle.root / ("bundle.json" if substitution == "manifest" else "global.md")
+        outside = tmp_path / f"substituted-{member.name}"
+        outside.write_bytes(member.read_bytes())
+        member.unlink()
+        member.symlink_to(outside)
+
+    with pytest.raises(PlanPublicationError, match="symlink"):
+        resolve_current(tmp_path)
+
+
+def test_selected_authority_refuses_manifest_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "plan-run-manifest")
+    bundle = publish_current(tmp_path, layout, outcome="clean")
+    manifest_path = bundle.root / "bundle.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["outcome"] = "clean_with_deferred"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PlanPublicationError, match="outcomes disagree"):
+        resolve_current(tmp_path)
 
 
 def test_publication_preserves_the_compact_mapping_for_provenance(
@@ -194,6 +292,80 @@ def test_plan_staging_contains_authored_inputs_but_no_prior_authority_or_runs(
     assert not (workspace / "layers.json").exists()
     assert not (workspace / "questions.jsonl").exists()
     assert not (workspace / "runs").exists()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_brief",
+        "missing_refs",
+        "brief_symlink",
+        "refs_symlink",
+        "nested_ref_symlink",
+        "special_ref",
+    ],
+)
+def test_first_time_staging_refuses_invalid_authored_input_structure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    brief = tmp_path / "brief.md"
+    refs = tmp_path / "refs"
+    reference = refs / "one.png"
+    reference.write_bytes(b"reference")
+    layout = run_artifacts.create(tmp_path, f"staging-{damage}")
+
+    if damage == "missing_brief":
+        brief.unlink()
+    elif damage == "missing_refs":
+        reference.unlink()
+        refs.rmdir()
+    elif damage == "brief_symlink":
+        outside = tmp_path / "outside-source-brief.md"
+        outside.write_bytes(brief.read_bytes())
+        brief.unlink()
+        brief.symlink_to(outside)
+    elif damage == "refs_symlink":
+        outside = tmp_path / "outside-source-refs"
+        refs.rename(outside)
+        refs.symlink_to(outside, target_is_directory=True)
+    elif damage == "nested_ref_symlink":
+        outside = tmp_path / "outside-source-reference.png"
+        outside.write_bytes(reference.read_bytes())
+        reference.unlink()
+        reference.symlink_to(outside)
+    else:
+        reference.unlink()
+        os.mkfifo(reference)
+
+    with pytest.raises(PlanPublicationError, match="authored"):
+        prepare_staging(layout)
+    assert not (layout.scratch / "plan-workspace").exists()
+
+
+def test_first_time_staging_wraps_an_unreadable_reference_as_publication_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    reference = tmp_path / "refs" / "one.png"
+    reference.write_bytes(b"reference")
+    layout = run_artifacts.create(tmp_path, "staging-unreadable-reference")
+    original_read_bytes = Path.read_bytes
+
+    def deny_reference(path: Path) -> bytes:
+        if path == reference:
+            raise PermissionError("injected unreadable reference")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_reference)
+    with pytest.raises(PlanPublicationError, match="authored reference input is unreadable"):
+        prepare_staging(layout)
+    assert not (layout.scratch / "plan-workspace").exists()
 
 
 def test_plan_bundle_can_publish_from_run_scoped_staging(
@@ -315,11 +487,262 @@ def test_selected_bundle_fails_when_an_authored_reference_changes(
     workspace = prepare_staging(layout)
     _write_plan(workspace)
     publish_current(tmp_path, layout, outcome="clean", source_root=workspace)
+    assert resolve_current(tmp_path).run_id == "fresh-run"
+    prior = reference.stat()
 
-    reference.write_bytes(b"three")
+    reference.write_bytes(b"two")
+    os.utime(reference, ns=(prior.st_atime_ns, prior.st_mtime_ns))
 
     with pytest.raises(PlanPublicationError, match="different authored inputs"):
         resolve_current(tmp_path)
+
+
+def test_selected_bundle_rechecks_same_size_brief_bytes_with_restored_mtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "brief-freshness")
+    publish_current(tmp_path, layout, outcome="clean")
+    assert resolve_current(tmp_path).run_id == "brief-freshness"
+    brief = tmp_path / "brief.md"
+    prior = brief.stat()
+
+    brief.write_text("# grief\n", encoding="utf-8")
+    assert brief.stat().st_size == prior.st_size
+    os.utime(brief, ns=(prior.st_atime_ns, prior.st_mtime_ns))
+
+    with pytest.raises(PlanPublicationError, match="different authored inputs"):
+        resolve_current(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [Path("plan_amendments.jsonl"), Path("state/plan-resolutions.jsonl")],
+)
+def test_selected_bundle_rechecks_planning_decision_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: Path,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    decision = tmp_path / relative
+    decision.parent.mkdir(parents=True, exist_ok=True)
+    decision.write_text('{"id":"one"}\n', encoding="utf-8")
+    layout = run_artifacts.create(tmp_path, f"decision-{decision.name}")
+    publish_current(tmp_path, layout, outcome="clean")
+    assert resolve_current(tmp_path).run_id == layout.run_id
+
+    decision.write_text('{"id":"two"}\n', encoding="utf-8")
+
+    with pytest.raises(PlanPublicationError, match="different planning decisions"):
+        resolve_current(tmp_path)
+
+
+def test_selected_bundle_allows_decision_suffix_but_refuses_truncating_consumed_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    decision = tmp_path / "plan_amendments.jsonl"
+    consumed = b'{"id":"planning-input"}\n'
+    decision.write_bytes(consumed)
+    layout = run_artifacts.create(tmp_path, "append-only-decisions")
+    bundle = publish_current(tmp_path, layout, outcome="clean")
+    provenance = json.loads(
+        (bundle.root / "plan.provenance.json").read_text(encoding="utf-8")
+    )
+    assert provenance["schema"] == "vfx-harness.plan-provenance/v2"
+    assert provenance["decision_inputs"]["plan_amendments.jsonl"] == {
+        "size": len(consumed),
+        "sha256": hashlib.sha256(consumed).hexdigest(),
+    }
+
+    decision.write_bytes(consumed + b'{"id":"later-output"}\n')
+    assert resolve_current(tmp_path).run_id == "append-only-decisions"
+
+    decision.write_bytes(consumed[:-1])
+    with pytest.raises(PlanPublicationError, match="truncated planning decisions"):
+        resolve_current(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("relative", "expected"),
+    [
+        (Path("refs/one.png"), "authored refs input"),
+        (Path("state/plan-resolutions.jsonl"), "planning decision input"),
+    ],
+)
+def test_selected_bundle_rejects_symlinked_live_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: Path,
+    expected: str,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    selected_input = tmp_path / relative
+    selected_input.parent.mkdir(parents=True, exist_ok=True)
+    selected_input.write_bytes(b"same selected bytes\n")
+    layout = run_artifacts.create(tmp_path, f"symlink-{selected_input.name}")
+    publish_current(tmp_path, layout, outcome="clean")
+    assert resolve_current(tmp_path).run_id == layout.run_id
+    outside = tmp_path / f"outside-{selected_input.name}"
+    outside.write_bytes(selected_input.read_bytes())
+    selected_input.unlink()
+    selected_input.symlink_to(outside)
+
+    with pytest.raises(PlanPublicationError, match=rf"{expected}.*symlink"):
+        resolve_current(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["missing_brief", "missing_refs", "brief_symlink", "refs_symlink", "special_ref"],
+)
+def test_selected_bundle_requires_real_complete_authored_input_structure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    reference = tmp_path / "refs" / "one.png"
+    reference.write_bytes(b"reference")
+    layout = run_artifacts.create(tmp_path, f"authored-{damage}")
+    publish_current(tmp_path, layout, outcome="clean")
+
+    brief = tmp_path / "brief.md"
+    refs = tmp_path / "refs"
+    if damage == "missing_brief":
+        brief.unlink()
+    elif damage == "missing_refs":
+        reference.unlink()
+        refs.rmdir()
+    elif damage == "brief_symlink":
+        outside = tmp_path / "outside-brief.md"
+        outside.write_bytes(brief.read_bytes())
+        brief.unlink()
+        brief.symlink_to(outside)
+    elif damage == "refs_symlink":
+        outside = tmp_path / "outside-refs"
+        refs.rename(outside)
+        refs.symlink_to(outside, target_is_directory=True)
+    else:
+        reference.unlink()
+        os.mkfifo(reference)
+
+    with pytest.raises(PlanPublicationError, match="authored"):
+        resolve_current(tmp_path)
+
+
+def test_selected_bundle_wraps_unreadable_authored_input_as_publication_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    reference = tmp_path / "refs" / "one.png"
+    reference.write_bytes(b"reference")
+    layout = run_artifacts.create(tmp_path, "unreadable-reference")
+    publish_current(tmp_path, layout, outcome="clean")
+    original_read_bytes = Path.read_bytes
+
+    def deny_reference(path: Path) -> bytes:
+        if path == reference:
+            raise PermissionError("injected unreadable reference")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_reference)
+    with pytest.raises(PlanPublicationError, match="authored reference input is unreadable"):
+        resolve_current(tmp_path)
+
+
+def test_v1_plan_workspace_marker_is_rejected_after_prefix_provenance_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "old-workspace-schema")
+    workspace = prepare_staging(layout)
+    marker_path = workspace / ".plan-workspace.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["schema"] = "vfx-harness.plan-workspace/v1"
+    marker_path.write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(PlanPublicationError, match="workspace marker schema"):
+        prepare_staging(layout)
+
+
+def test_v1_plan_provenance_is_rejected_after_prefix_contract_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    import vfx_harness.orchestration.plan_authority as plan_authority
+
+    monkeypatch.setattr(
+        plan_authority,
+        "PROVENANCE_SCHEMA",
+        "vfx-harness.plan-provenance/v1",
+    )
+    layout = run_artifacts.create(tmp_path, "old-provenance-schema")
+    publish_current(tmp_path, layout, outcome="clean")
+    monkeypatch.setattr(
+        plan_authority,
+        "PROVENANCE_SCHEMA",
+        "vfx-harness.plan-provenance/v2",
+    )
+
+    with pytest.raises(PlanPublicationError, match="provenance schema is unsupported"):
+        resolve_current(tmp_path)
+
+
+def test_existing_workspace_marker_rejects_duplicate_json_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "duplicate-workspace-marker")
+    workspace = prepare_staging(layout)
+    marker = workspace / ".plan-workspace.json"
+    raw = marker.read_text(encoding="utf-8")
+    schema = '"schema": "vfx-harness.plan-workspace/v2"'
+    marker.write_text(raw.replace(schema, f"{schema},\n  {schema}", 1), encoding="utf-8")
+
+    with pytest.raises(PlanPublicationError, match="duplicate JSON key 'schema'"):
+        prepare_staging(layout)
+
+
+def test_publication_source_marker_rejects_duplicate_json_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    marker = tmp_path / ".plan-workspace.json"
+    marker.write_text(
+        """{
+  "schema": "vfx-harness.plan-workspace/v2",
+  "schema": "vfx-harness.plan-workspace/v2",
+  "run_id": "forged",
+  "shot": "forged",
+  "authored_inputs": {},
+  "decision_inputs": {}
+}
+""",
+        encoding="utf-8",
+    )
+    layout = run_artifacts.create(tmp_path, "duplicate-source-marker")
+
+    with pytest.raises(PlanPublicationError, match="duplicate JSON key 'schema'"):
+        publish_current(tmp_path, layout, outcome="clean")
 
 
 def test_published_ownership_mapping_round_trips_through_resolution(

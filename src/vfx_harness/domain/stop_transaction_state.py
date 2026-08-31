@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from pathlib import PurePosixPath
 from typing import Any, ClassVar, TypeAlias
@@ -48,6 +49,10 @@ UNIT_STATUSES = frozenset(
         "superseded",
     }
 )
+SELECTED_AUTHORITY_OUTCOMES = frozenset(
+    {"clean", "clean_with_assumptions", "clean_with_deferred"}
+)
+SELECTED_AUTHORITY_VIEW_SOURCES = frozenset({"bundle", "jit"})
 
 
 def _optional_text(value: Any, where: str) -> str | None:
@@ -69,6 +74,23 @@ def _safe_locator(value: Any, where: str) -> str:
     path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise ValueError(f"{where} must be a normalized shot-relative path")
+    return value
+
+
+def _closed_mapping(
+    value: Any,
+    where: str,
+    expected: frozenset[str],
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} must be an object")
+    found = set(value)
+    if found != expected:
+        missing = sorted(expected - found)
+        unexpected = sorted(found - expected)
+        raise ValueError(
+            f"{where} fields mismatch; missing={missing}; unexpected={unexpected}"
+        )
     return value
 
 
@@ -217,6 +239,159 @@ class SelectedViewAssertion(_StrictRecord):
 
 
 @dataclass(frozen=True, slots=True)
+class SelectedAuthorityBundle:
+    """Semantic identity of one verified immutable plan bundle."""
+
+    digest: str
+    outcome: str
+    semantic_manifest_digest: str
+
+    def __post_init__(self) -> None:
+        require_digest(self.digest, "SelectedAuthorityBundle.digest")
+        if self.outcome not in SELECTED_AUTHORITY_OUTCOMES:
+            raise ValueError(
+                "SelectedAuthorityBundle.outcome must be one of "
+                f"{sorted(SELECTED_AUTHORITY_OUTCOMES)}"
+            )
+        require_digest(
+            self.semantic_manifest_digest,
+            "SelectedAuthorityBundle.semantic_manifest_digest",
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "digest": self.digest,
+            "outcome": self.outcome,
+            "semantic_manifest_digest": self.semantic_manifest_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any, where: str) -> SelectedAuthorityBundle:
+        row = _closed_mapping(
+            value,
+            where,
+            frozenset({"digest", "outcome", "semantic_manifest_digest"}),
+        )
+        return cls(
+            digest=row["digest"],
+            outcome=row["outcome"],
+            semantic_manifest_digest=row["semantic_manifest_digest"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedAuthorityView:
+    """Semantic identity of the effective consumer view for a selected bundle."""
+
+    source: str
+    digest: str
+    semantic_manifest_digest: str
+
+    def __post_init__(self) -> None:
+        if self.source not in SELECTED_AUTHORITY_VIEW_SOURCES:
+            raise ValueError(
+                "SelectedAuthorityView.source must be one of "
+                f"{sorted(SELECTED_AUTHORITY_VIEW_SOURCES)}"
+            )
+        require_digest(self.digest, "SelectedAuthorityView.digest")
+        require_digest(
+            self.semantic_manifest_digest,
+            "SelectedAuthorityView.semantic_manifest_digest",
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "source": self.source,
+            "digest": self.digest,
+            "semantic_manifest_digest": self.semantic_manifest_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any, where: str) -> SelectedAuthorityView:
+        row = _closed_mapping(
+            value,
+            where,
+            frozenset({"source", "digest", "semantic_manifest_digest"}),
+        )
+        return cls(
+            source=row["source"],
+            digest=row["digest"],
+            semantic_manifest_digest=row["semantic_manifest_digest"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedAuthorityAssertionV2(_StrictRecord):
+    """One canonical semantic snapshot of selected plan and effective-view authority."""
+
+    SCHEMA: ClassVar[str] = "vfx-harness.selected-authority-state/v2"
+    DIGEST_FIELD: ClassVar[str] = "assertion_digest"
+
+    selection: str
+    bundle: SelectedAuthorityBundle | None
+    effective_view: SelectedAuthorityView | None
+
+    def __post_init__(self) -> None:
+        if self.selection not in {"absent", "selected"}:
+            raise ValueError(
+                "SelectedAuthorityAssertionV2.selection must be 'absent' or 'selected'"
+            )
+        if self.selection == "absent":
+            if self.bundle is not None or self.effective_view is not None:
+                raise ValueError(
+                    "absent selected authority requires null bundle and effective_view"
+                )
+            return
+        if not isinstance(self.bundle, SelectedAuthorityBundle) or not isinstance(
+            self.effective_view, SelectedAuthorityView
+        ):
+            raise ValueError(
+                "selected authority requires typed bundle and effective_view records"
+            )
+        if (
+            self.effective_view.source == "bundle"
+            and self.effective_view.digest != self.bundle.digest
+        ):
+            raise ValueError(
+                "bundle-backed effective view digest must equal the selected bundle digest"
+            )
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "schema": self.SCHEMA,
+            "selection": self.selection,
+            "bundle": None if self.bundle is None else self.bundle.as_dict(),
+            "effective_view": (
+                None if self.effective_view is None else self.effective_view.as_dict()
+            ),
+        }
+
+    def _identity_payload(self) -> dict[str, Any]:
+        return self._payload()
+
+    @classmethod
+    def from_dict(cls, value: Any, where: str) -> SelectedAuthorityAssertionV2:
+        row = _row(cls, value, where)
+        candidate = cls(
+            selection=row["selection"],
+            bundle=(
+                None
+                if row["bundle"] is None
+                else SelectedAuthorityBundle.from_dict(row["bundle"], f"{where}.bundle")
+            ),
+            effective_view=(
+                None
+                if row["effective_view"] is None
+                else SelectedAuthorityView.from_dict(
+                    row["effective_view"],
+                    f"{where}.effective_view",
+                )
+            ),
+        )
+        return _finish(candidate, row, where)
+
+
+@dataclass(frozen=True, slots=True)
 class UnitStateAssertion(_StrictRecord):
     SCHEMA: ClassVar[str] = "vfx-harness.stop-state.unit/v1"
     DIGEST_FIELD: ClassVar[str] = "assertion_digest"
@@ -330,6 +505,7 @@ class BudgetStateAssertion(_StrictRecord):
 StopStateAssertion: TypeAlias = (
     SelectedBundleAssertion
     | SelectedViewAssertion
+    | SelectedAuthorityAssertionV2
     | UnitStateAssertion
     | EvidenceRecordAssertion
     | EnvironmentResultAssertion
@@ -341,6 +517,7 @@ _ASSERTION_TYPES = {
     for cls in (
         SelectedBundleAssertion,
         SelectedViewAssertion,
+        SelectedAuthorityAssertionV2,
         UnitStateAssertion,
         EvidenceRecordAssertion,
         EnvironmentResultAssertion,
@@ -356,7 +533,21 @@ def state_assertion_from_dict(value: Any, where: str) -> StopStateAssertion:
     cls = _ASSERTION_TYPES[value["schema"]]
     row = _row(cls, value, where)
     kwargs = {item.name: row[item.name] for item in fields(cls)}
-    if cls is EvidenceRecordAssertion:
+    if cls is SelectedAuthorityAssertionV2:
+        kwargs["bundle"] = (
+            None
+            if row["bundle"] is None
+            else SelectedAuthorityBundle.from_dict(row["bundle"], f"{where}.bundle")
+        )
+        kwargs["effective_view"] = (
+            None
+            if row["effective_view"] is None
+            else SelectedAuthorityView.from_dict(
+                row["effective_view"],
+                f"{where}.effective_view",
+            )
+        )
+    elif cls is EvidenceRecordAssertion:
         kwargs["evidence"] = StopEvidenceRef.from_dict(row["evidence"], f"{where}.evidence")
     elif cls is ResumeRecordAssertion:
         kwargs["checkpoint"] = StopEvidenceRef.from_dict(

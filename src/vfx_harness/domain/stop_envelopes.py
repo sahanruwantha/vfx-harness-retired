@@ -301,6 +301,7 @@ def _validate_action_identity(
     identity: StopIdentity,
     action: StopAction,
     budget_key: str,
+    authoritative_before_digest: str,
 ) -> None:
     if stage not in _ACTION_STAGES[action.transaction_id]:
         raise ValueError(f"transaction {action.transaction_id!r} is illegal at stop stage {stage!r}")
@@ -328,11 +329,18 @@ def _validate_action_identity(
         if target.budget_state.budget_key != budget_key:
             raise ValueError("retry target budget does not match StopEnvelope.budget_key")
     elif isinstance(target, PublishValidatedAmendmentTarget):
-        base_view = None if target.base_view is None else target.base_view.view_digest
+        base_bundle = target.base_authority.bundle
+        base_view = target.base_authority.effective_view
         if (
-            target.base_bundle.bundle_digest != identity.bundle_digest
-            or base_view != identity.view_digest
+            (None if base_bundle is None else base_bundle.digest)
+            != identity.bundle_digest
+            or (
+                target.scope == "layer_view"
+                and (None if base_view is None else base_view.digest)
+                != identity.view_digest
+            )
             or (target.layer_id is not None and target.layer_id != identity.layer_id)
+            or target.base_authority.digest != authoritative_before_digest
         ):
             raise ValueError("amendment target does not match selected stop authority")
         if identity.candidate_digest is None:
@@ -410,7 +418,13 @@ class StopEnvelope:
         if self.stop_class != expected_class:
             raise ValueError(f"transaction {action.transaction_id!r} is illegal for {self.stop_class!r}")
         require_id(self.budget_key, "StopEnvelope.budget_key")
-        _validate_action_identity(self.stage, self.identity, action, self.budget_key)
+        _validate_action_identity(
+            self.stage,
+            self.identity,
+            action,
+            self.budget_key,
+            self.authoritative_before_digest,
+        )
         evidence = _evidence_tuple(self.evidence_refs, "StopEnvelope.evidence_refs")
         object.__setattr__(self, "evidence_refs", evidence)
         if not any(item.record_digest is not None for item in evidence):

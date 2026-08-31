@@ -80,10 +80,6 @@ def _fixture(
     shot = tmp_path / run_id
     bundle_root = shot / "runs" / "publisher" / "checkpoints" / "plans" / "bundles" / BUNDLE_DIGEST
     bundle_root.mkdir(parents=True)
-    (bundle_root / "bundle.json").write_text(
-        json.dumps({"schema": "fixture", "content_hash": BUNDLE_DIGEST}),
-        encoding="utf-8",
-    )
     layer = {
         "id": "1",
         "execution": "jit_deferred",
@@ -95,9 +91,26 @@ def _fixture(
     )
     for name, value in {
         "scene_checks.json": {"schema": 1, "contracts": []},
+        "checks.json": {"schema": 1, "checks": []},
         "requirements.json": {"schema": "fixture", "requirements": []},
+        "acceptance.json": [],
     }.items():
         (bundle_root / name).write_text(json.dumps(value), encoding="utf-8")
+    artifact_names = tuple(OVERLAY_ARTIFACTS)
+    artifact_hashes = {name: _sha(bundle_root / name) for name in artifact_names}
+    (bundle_root / "bundle.json").write_text(
+        json.dumps(
+            {
+                "schema": "vfx-harness.plan-bundle/v1",
+                "run_id": "publisher",
+                "content_hash": BUNDLE_DIGEST,
+                "outcome": "clean_with_deferred",
+                "artifacts": artifact_hashes,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     (shot / "plans").mkdir(parents=True)
     (shot / "plans" / "current.json").write_text(
         json.dumps({"schema": "fixture", "content_hash": BUNDLE_DIGEST}),
@@ -110,7 +123,7 @@ def _fixture(
         run_id="publisher",
         root=bundle_root,
         content_hash=BUNDLE_DIGEST,
-        artifacts=(),
+        artifacts=artifact_names,
         outcome="clean_with_deferred",
     )
     monkeypatch.setattr(materialization_stop.plan_authority, "resolve_current", lambda _shot: bundle)
@@ -795,8 +808,12 @@ def test_local_structural_findings_authorize_only_validated_candidate_amendment(
     action = envelope.actions[0]
     assert isinstance(action.target, PublishValidatedAmendmentTarget)
     assert action.target.scope == "layer_view"
-    assert action.target.base_bundle.bundle_digest == BUNDLE_DIGEST
-    assert action.target.base_view is None
+    assert action.target.base_authority.bundle is not None
+    assert action.target.base_authority.bundle.digest == BUNDLE_DIGEST
+    assert action.target.base_authority.effective_view is not None
+    assert action.target.base_authority.effective_view.source == "bundle"
+    assert envelope.identity.view_digest == BUNDLE_DIGEST
+    assert action.target.base_authority.digest == envelope.authoritative_before_digest
     assert action.target.layer_id == "1"
     assert tuple(sorted(row.record_id for row in action.target.findings)) == (
         envelope.cause.finding_ids
@@ -1023,9 +1040,11 @@ def test_verified_current_view_digest_is_pinned_in_stop_identity(
     assert envelope.identity.view_digest == view_digest
     target = envelope.actions[0].target
     assert isinstance(target, PublishValidatedAmendmentTarget)
-    assert target.base_view is not None
-    assert target.base_view.bundle_digest == BUNDLE_DIGEST
-    assert target.base_view.view_digest == view_digest
+    assert target.base_authority.bundle is not None
+    assert target.base_authority.bundle.digest == BUNDLE_DIGEST
+    assert target.base_authority.effective_view is not None
+    assert target.base_authority.effective_view.source == "jit"
+    assert target.base_authority.effective_view.digest == view_digest
 
 
 def test_gate_identity_ignores_run_file_locator_and_timestamp_metadata(
@@ -1178,7 +1197,10 @@ def test_cited_stop_evidence_identity_ignores_run_local_locators(
                     "run_id": f"publisher-{run_id}",
                     "content_hash": BUNDLE_DIGEST,
                     "outcome": "clean_with_deferred",
-                    "artifacts": {},
+                    "artifacts": {
+                        name: _sha(bundle.root / name)
+                        for name in bundle.artifacts
+                    },
                 },
                 sort_keys=True,
             ),
@@ -1215,8 +1237,9 @@ def test_cited_stop_evidence_identity_ignores_run_local_locators(
     second_target = results[1][0].actions[0].target
     assert isinstance(first_target, PublishValidatedAmendmentTarget)
     assert isinstance(second_target, PublishValidatedAmendmentTarget)
-    assert first_target.base_bundle.selection_digest == (
-        second_target.base_bundle.selection_digest
+    assert first_target.base_authority == second_target.base_authority
+    assert first_target.base_authority.digest == (
+        second_target.base_authority.digest
     )
     first_authority_audit = results[0][2]["audit_locators"]["authority_before"]
     second_authority_audit = results[1][2]["audit_locators"]["authority_before"]
@@ -1253,6 +1276,13 @@ def test_durable_authority_identity_ignores_audit_clocks_and_run_ids(
         }
         (bundle.root / "layers.json").write_text(
             json.dumps({"schema": 5, "layers": [layer]}, sort_keys=True),
+            encoding="utf-8",
+        )
+        manifest_path = bundle.root / "bundle.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"]["layers.json"] = _sha(bundle.root / "layers.json")
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True),
             encoding="utf-8",
         )
         unit_state_path = shot / "state" / "work-units" / "layer_1.json"
@@ -1461,6 +1491,13 @@ def test_semantic_layer_authority_change_changes_stop_identity(
         }
         (bundle.root / "layers.json").write_text(
             json.dumps({"schema": 5, "layers": [layer]}, sort_keys=True),
+            encoding="utf-8",
+        )
+        manifest_path = bundle.root / "bundle.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"]["layers.json"] = _sha(bundle.root / "layers.json")
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True),
             encoding="utf-8",
         )
         monkeypatch.setattr(

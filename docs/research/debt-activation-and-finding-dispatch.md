@@ -83,6 +83,29 @@ and no invented raster fields. Outcome locators and planning scratch paths deriv
 typed layer identities rather than decimal filename conventions. These checks close stale
 dependency authorization; they are not recovery dispatch.
 
+HIR-0167 closes the selected-authority identity seam needed before amendment execution can be
+designed safely. Planning, JIT materialization, and builder falsification now bind one semantic
+`vfx-harness.selected-authority-state/v2` assertion instead of producer-private bundle/view
+digests. The assertion distinguishes true absence from a verified selected bundle and effective
+bundle/JIT consumer view, includes the publishable gate outcome and exact semantic artifact
+manifests, and excludes run ids, paths, timestamps, and pointer locators. Resolution fully
+verifies plan-bundle membership and bytes plus any present JIT pointer/view, then rereads both
+pointers before returning. A valid stale JIT generation is verified and inert; malformed,
+unreadable, inconsistent, or symlinked selection is never treated as absence or silently ignored.
+Selected resolution also rehashes the complete authored input tree and verifies the exact
+planning-time prefix of both append-only decision ledgers. Later decision suffixes remain legal,
+while same-size authored edits, consumed-prefix replacement or truncation, missing input
+structure, symlinks, special files, and unreadable bytes fail closed under strict workspace and
+provenance v2 schemas.
+
+The amendment proposal and postcondition are now strict v2 contracts over that shared base,
+exact findings and owner, the structural plan-gate schema/policy/scope, and the required successor
+source (`bundle` globally, `jit` for a layer). The target no longer accepts a caller-supplied
+hard-constraint Boolean. A hard-constraint falsification instead publishes a typed human question,
+while corrupt global selection routes only to engineering as a harness defect. This is stronger
+classification and precondition authority, not an amendment transaction: no public amendment
+adapter, successor commit, receipt, evaluator, or dispatch permission has been added.
+
 This does **not** complete the program. Deterministic equivalence/successor handling for
 already-satisfied discharges, explicit same-bundle lineage/retirement, failure reasons
 beyond no-signal, cross-layer fault routing, the fresh real-model two-layer CLI eval, and
@@ -1040,6 +1063,11 @@ and the owning classifiers named in the implementation-status section are landed
 incomplete: no exact local-implementation retry or checkpointed-session-resume producer
 has earned those actions, and other legacy builder/session/replay stops fall back to
 `harness_defect` rather than being guessed from their strings or exit codes.
+HIR-0167 additionally gives all current amendment-producing boundaries one verified semantic
+selected-authority assertion and strict amendment-v2 target/postcondition. Corrupt selection
+cannot become initial-plan amendment authority, and hard-constraint findings route to a typed
+human question. These are closed proposal and classification contracts; they do not make
+amendment or human-decision actions dispatchable.
 
 **Work**
 
@@ -1066,8 +1094,13 @@ has earned those actions, and other legacy builder/session/replay stops fall bac
 
 **Implementation note (2026-08-31):** controller implementation has not started. HIR-0166
 lands the generic durable receipt protocol and one explicit key-consuming
-`recover_environment` transaction with independent evaluation. There is no controller command
-or persistent controller journal, and no other action is dispatchable.
+`recover_environment` transaction with independent evaluation. HIR-0167 lands the shared
+semantic before-state and strict amendment-v2 proposal, but not amendment execution. Plan/JIT
+pointers still lack a shared monotone revision, lock, and compare-and-swap commit; global planning
+does not yet bind the complete input/candidate gate attestation needed to name one exact successor;
+and there is no amendment adapter, commit record, receipt reconciliation, or independent evaluator.
+There is no controller command or persistent controller journal, and no other action is
+dispatchable.
 
 **Work**
 
@@ -1171,7 +1204,7 @@ finding.
 | Judgment-debt definition plus activation binding, lineage, lifecycle, scheduling, independent discharge, and cross-layer fault map | new HIR extending HIR-0137 / HIR-0160; strict schema migration; AGENTS.md in the same change |
 | Universal compiled due-time and relevant payer closure | ADR (successor concern to ADR-0005 / ADR-0006); HIR for publication/JIT/runtime gates |
 | Two-layer still as ratchet | deterministic architecture/integration fixture plus tracked real-model eval; not core vocabulary |
-| Closed stop envelope, standalone environment result, and owning-boundary classification | HIR plus versioned schemas and run-summary contract |
+| Closed stop envelope, standalone environment result, shared selected-authority identity, and owning-boundary classification | HIR-0164, HIR-0166, and HIR-0167 plus versioned schemas and run-summary contract |
 | `--until-accepted` bounded dispatch | HIR plus public CLI and operations procedure; transaction table, prepared journal/idempotency contract, and safety refusals pinned by tests |
 | Production promotion | recorded small-scene, exposing-fixture, and held-out evidence with cost/liveness comparison |
 

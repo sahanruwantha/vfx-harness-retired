@@ -17,7 +17,6 @@ from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
 from vfx_harness.domain.stop_transaction_state import (
     EvidenceRecordAssertion,
-    SelectedBundleAssertion,
     StopEvidenceRef,
 )
 from vfx_harness.domain.stop_transactions import (
@@ -28,6 +27,11 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
 )
 from vfx_harness.orchestration import plan_authority
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
 
 if TYPE_CHECKING:
     from vfx_harness.agents.planner.types import PlanLoopResult
@@ -514,8 +518,34 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
     authority_before, before_digest, selected_bundle_digest = _authority_before(layout)
     issues = tuple(issue for issue in (candidate_issue, report_issue) if issue is not None)
     authority_selection = authority_before["selection"]
+    resolved_authority: ResolvedSelectedAuthority | None = None
     if authority_selection not in {"absent", "verified"}:
         issues = (*issues, f"selected_authority_{authority_selection}")
+    else:
+        try:
+            resolved_authority = resolve_selected_authority(layout.shot)
+        except SelectedAuthorityResolutionError:
+            issues = (*issues, "selected_authority_resolution_failed")
+        else:
+            resolved_bundle = resolved_authority.assertion.bundle
+            expected_selection = (
+                "absent" if authority_selection == "absent" else "selected"
+            )
+            if resolved_authority.assertion.selection != expected_selection:
+                issues = (*issues, "selected_authority_snapshot_disagrees")
+            elif (
+                selected_bundle_digest
+                != (None if resolved_bundle is None else resolved_bundle.digest)
+            ):
+                issues = (*issues, "selected_authority_bundle_disagrees")
+    if resolved_authority is not None:
+        authority_before = resolved_authority.assertion.as_dict()
+        before_digest = resolved_authority.assertion.digest
+        selected_bundle_digest = (
+            None
+            if resolved_authority.assertion.bundle is None
+            else resolved_authority.assertion.bundle.digest
+        )
     report: dict[str, Any] | None = None
     blocking: tuple[dict[str, Any], ...] = ()
     if report_bytes is not None:
@@ -535,7 +565,7 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
             authoritative_before_digest=before_digest,
             selected_bundle_digest=selected_bundle_digest,
         )
-    if report is None or candidate_bytes is None:
+    if report is None or candidate_bytes is None or resolved_authority is None:
         return _harness_defect(
             layout,
             result,
@@ -609,6 +639,19 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
             "gate_report_record": report_record,
             "gate_report": report,
             "authoritative_before": authority_before,
+            "pointer_observation": (
+                None
+                if resolved_authority is None
+                else {
+                    "digest": resolved_authority.pointer_observation.digest,
+                    "plan_pointer_sha256": (
+                        resolved_authority.pointer_observation.plan_pointer_sha256
+                    ),
+                    "jit_pointer_sha256": (
+                        resolved_authority.pointer_observation.jit_pointer_sha256
+                    ),
+                }
+            ),
             "blocking_findings": list(finding_records),
         },
     )
@@ -622,27 +665,33 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
     )
     target = PublishValidatedAmendmentTarget(
         scope="global_plan",
-        base_bundle=SelectedBundleAssertion(
-            bundle_digest=selected_bundle_digest,
-            selection_digest=before_digest,
-        ),
-        base_view=None,
+        base_authority=resolved_authority.assertion,
         layer_id=None,
         findings=findings,
         owner_authority_id="global-plan-authority",
-        changes_hard_constraint=False,
+        gate_policy_id=_GATE_POLICY,
+        gate_schema=_GATE_SCHEMA,
+        validation_scope="structural_authority",
     )
     action = StopAction(
         target=target,
         postcondition=SelectedAuthorityAmendmentCommitted(
             scope=target.scope,
-            base_bundle_digest=target.base_bundle.bundle_digest,
-            base_view_digest=None,
+            base_authority_digest=target.base_authority.digest,
             layer_id=None,
             finding_ids=tuple(record["finding_id"] for record in causal_findings),
             gate_policy_id=_GATE_POLICY,
+            gate_schema=_GATE_SCHEMA,
+            validation_scope="structural_authority",
+            owner_authority_id=target.owner_authority_id,
+            required_after_source="bundle",
         ),
     )
+    authority_after = resolve_selected_authority(layout.shot)
+    if authority_after != resolved_authority:
+        raise RuntimeError(
+            "selected authority changed while its global plan stop was compiled"
+        )
     return StopEnvelope(
         stage="plan_gate",
         stop_class="authority_defect",

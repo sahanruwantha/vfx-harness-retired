@@ -26,8 +26,6 @@ from vfx_harness.domain.stop_envelopes import (
 )
 from vfx_harness.domain.stop_transaction_state import (
     EvidenceRecordAssertion,
-    SelectedBundleAssertion,
-    SelectedViewAssertion,
     StopEvidenceRef,
 )
 from vfx_harness.domain.stop_transactions import (
@@ -49,6 +47,7 @@ from vfx_harness.orchestration import (
     unit_state,
 )
 from vfx_harness.orchestration import ledger as ledger_runtime
+from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 
 _FINDING_FIELDS = {
     "schema",
@@ -75,6 +74,7 @@ _IDENTITY_FIELDS = {
 }
 _OWNER_AUTHORITY_ID = "layer-plan-authority"
 _AMENDMENT_GATE_POLICY_ID = "structural-authority/runtime-falsification-v1"
+_AMENDMENT_GATE_SCHEMA = "vfx-harness.plan-gate/v1"
 _HARD_CONSTRAINT_DECISION_AUTHORITY = "human-plan-authority"
 _HARD_CONSTRAINT_DECISION_SCHEMA = (
     "vfx-harness.hard-constraint-amendment-decision/v1"
@@ -199,38 +199,6 @@ def _attempt_identity_digest(
     )
 
 
-def _selected_authority_assertions(
-    *,
-    bundle_digest: str,
-    view_digest: str,
-    layers_digest: str,
-) -> tuple[SelectedBundleAssertion, SelectedViewAssertion]:
-    """Bind the verified semantic selection without run-local pointer locators."""
-
-    selected_bundle = SelectedBundleAssertion(
-        bundle_digest=bundle_digest,
-        selection_digest=canonical_digest(
-            {
-                "schema": "vfx-harness.builder-selected-bundle-state/v1",
-                "bundle_digest": bundle_digest,
-            }
-        ),
-    )
-    selected_view = SelectedViewAssertion(
-        bundle_digest=bundle_digest,
-        view_digest=view_digest,
-        selection_digest=canonical_digest(
-            {
-                "schema": "vfx-harness.builder-selected-view-state/v1",
-                "bundle_digest": bundle_digest,
-                "view_digest": view_digest,
-                "layers_digest": layers_digest,
-            }
-        ),
-    )
-    return selected_bundle, selected_view
-
-
 def _publish_stop_evidence(
     layout: RunLayout,
     document: dict[str, Any],
@@ -338,6 +306,19 @@ def compile_hypothesis_falsification_stop(
         shot_root,
         bundle.content_hash,
     )
+    selected_authority = resolve_selected_authority(shot_root)
+    selected_bundle = selected_authority.assertion.bundle
+    selected_view = selected_authority.assertion.effective_view
+    if (
+        selected_authority.assertion.selection != "selected"
+        or selected_bundle is None
+        or selected_view is None
+        or selected_bundle.digest != finding.bundle_hash
+        or selected_view.digest != view_digest
+    ):
+        raise ValueError(
+            "hypothesis falsification does not match the shared selected-authority state"
+        )
     layers_path = plan_authority.selected_artifact_path(shot_root, "layers.json")
     layers_digest = _sha256(layers_path)
     if layers_digest != finding.plan_hash:
@@ -386,12 +367,6 @@ def compile_hypothesis_falsification_stop(
     finding_identity_id = f"hf-semantic-{finding_identity_digest[:20]}"
     finding_file_sha256 = _sha256(finding_path)
     evidence_rows = _evidence_rows(shot_root, finding)
-    selected_bundle, selected_view = _selected_authority_assertions(
-        bundle_digest=finding.bundle_hash,
-        view_digest=view_digest,
-        layers_digest=finding.plan_hash,
-    )
-
     state_path = shot_root / unit_state.STATE_DIR / f"layer_{finding.layer}.json"
     state_file_sha256 = _sha256(state_path)
     checkpoint_digest = canonical_digest(
@@ -435,7 +410,7 @@ def compile_hypothesis_falsification_stop(
             "fault_owner_units": list(finding.fault_owner_units),
         }
     )
-    authoritative_before_digest = canonical_digest(
+    detailed_authoritative_before_digest = canonical_digest(
         {
             "schema": "vfx-harness.builder-authoritative-before/v1",
             "bundle_digest": finding.bundle_hash,
@@ -451,6 +426,11 @@ def compile_hypothesis_falsification_stop(
             "finding_identity_digest": finding_identity_digest,
             "unit_state_identity_digest": state_identity_digest,
         }
+    )
+    authoritative_before_digest = (
+        detailed_authoritative_before_digest
+        if finding.changes_hard_constraint
+        else selected_authority.assertion.digest
     )
     evidence_sha256 = tuple(row["sha256"] for row in evidence_rows)
     attempt_evidence_digest = _attempt_identity_digest(
@@ -528,6 +508,10 @@ def compile_hypothesis_falsification_stop(
                 "checkpoint_digest": checkpoint_digest,
                 "settings_digest": finding.settings_hash,
                 "authoritative_before_digest": authoritative_before_digest,
+                "selected_authority": selected_authority.assertion.as_dict(),
+                "detailed_authoritative_before_digest": (
+                    detailed_authoritative_before_digest
+                ),
             },
             "finding_record": {
                 "schema": finding_identity["schema"],
@@ -602,20 +586,24 @@ def compile_hypothesis_falsification_stop(
         action = StopAction(
             target=PublishValidatedAmendmentTarget(
                 scope="layer_view",
-                base_bundle=selected_bundle,
-                base_view=selected_view,
+                base_authority=selected_authority.assertion,
                 layer_id=finding.layer,
                 findings=(finding_assertion,),
                 owner_authority_id=_OWNER_AUTHORITY_ID,
-                changes_hard_constraint=False,
+                gate_policy_id=_AMENDMENT_GATE_POLICY_ID,
+                gate_schema=_AMENDMENT_GATE_SCHEMA,
+                validation_scope="structural_authority",
             ),
             postcondition=SelectedAuthorityAmendmentCommitted(
                 scope="layer_view",
-                base_bundle_digest=finding.bundle_hash,
-                base_view_digest=view_digest,
+                base_authority_digest=selected_authority.assertion.digest,
                 layer_id=finding.layer,
                 finding_ids=(finding_identity_id,),
                 gate_policy_id=_AMENDMENT_GATE_POLICY_ID,
+                gate_schema=_AMENDMENT_GATE_SCHEMA,
+                validation_scope="structural_authority",
+                owner_authority_id=_OWNER_AUTHORITY_ID,
+                required_after_source="jit",
             ),
         )
     # Re-read every mutable input before granting even amendment authority.
@@ -625,6 +613,7 @@ def compile_hypothesis_falsification_stop(
         bundle_after.content_hash,
     )
     state_after = unit_state.load(shot_root, finding.layer)
+    selected_authority_after = resolve_selected_authority(shot_root)
     if (
         bundle_after.content_hash != finding.bundle_hash
         or view_after != view_digest
@@ -634,6 +623,7 @@ def compile_hypothesis_falsification_stop(
         or _sha256(finding_path) != finding_file_sha256
         or state_after != state
         or _evidence_rows(shot_root, finding) != evidence_rows
+        or selected_authority_after != selected_authority
     ):
         raise ValueError("builder authority changed while its typed stop was compiled")
 

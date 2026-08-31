@@ -23,11 +23,12 @@ from typing import Any
 
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.run_artifacts import RunLayout
+from vfx_harness.orchestration import plan_bundle_integrity
 
 POINTER_SCHEMA = "vfx-harness.plan-pointer/v1"
 BUNDLE_SCHEMA = "vfx-harness.plan-bundle/v1"
-WORKSPACE_SCHEMA = "vfx-harness.plan-workspace/v1"
-PROVENANCE_SCHEMA = "vfx-harness.plan-provenance/v1"
+WORKSPACE_SCHEMA = "vfx-harness.plan-workspace/v2"
+PROVENANCE_SCHEMA = "vfx-harness.plan-provenance/v2"
 POINTER = Path("plans/current.json")
 
 _SOURCES = {
@@ -42,8 +43,21 @@ _SOURCES = {
     "assumptions.json": Path("assumptions.json"),
 }
 _GENERATED_ARTIFACTS = {"plan.provenance.json"}
-_INPUT_VERIFICATIONS: set[tuple[str, str, tuple[tuple[str, int, int], ...]]] = set()
 CONSUMER_VIEW_SCHEMA = "vfx-harness.plan-consumer-view/v1"
+_PUBLISHABLE_OUTCOMES = frozenset({"clean", "clean_with_assumptions", "clean_with_deferred"})
+_POINTER_FIELDS = frozenset(
+    {"schema", "run_id", "bundle", "content_hash", "outcome", "published_at"}
+)
+_PROVENANCE_FIELDS = frozenset({"schema", "authored_inputs", "decision_inputs"})
+_WORKSPACE_FIELDS = frozenset(
+    {"schema", "run_id", "shot", "authored_inputs", "decision_inputs"}
+)
+_DECISION_INPUT_FIELDS = frozenset({"size", "sha256"})
+_DECISION_INPUT_PATHS = (
+    Path("plan_amendments.jsonl"),
+    Path("state/plan-resolutions.jsonl"),
+)
+PlanPublicationError = plan_bundle_integrity.PlanPublicationError
 
 
 def _supplemental_plan_artifacts(source_root: Path) -> dict[str, Path]:
@@ -106,10 +120,6 @@ def _is_supported_artifact(name: str) -> bool:
     return nested_markdown or plan_evidence
 
 
-class PlanPublicationError(RuntimeError):
-    """The candidate plan set cannot become authoritative."""
-
-
 @dataclass(frozen=True, slots=True)
 class PlanBundle:
     shot: Path
@@ -124,50 +134,167 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def _digest(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def _verify_bundle_root(
+    shot: Path,
+    root: Path,
+    *,
+    expected_manifest: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """Verify an immutable bundle completely before it can be returned or selected."""
+
+    return plan_bundle_integrity.verify_bundle_root(
+        shot,
+        root,
+        schema=BUNDLE_SCHEMA,
+        publishable_outcomes=_PUBLISHABLE_OUTCOMES,
+        supports_artifact=_is_supported_artifact,
+        expected_manifest=expected_manifest,
+    )
 
 
-def _bundle_hash(payloads: dict[str, bytes]) -> str:
-    digest = hashlib.sha256()
-    for name in sorted(payloads):
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(_digest(payloads[name]).encode("ascii"))
-        digest.update(b"\n")
-    return digest.hexdigest()
+def _validate_current_pointer(pointer: dict[str, Any]) -> tuple[str, Path, str, str]:
+    found = set(pointer)
+    if found != _POINTER_FIELDS:
+        raise PlanPublicationError(
+            f"plan pointer fields mismatch; missing={sorted(_POINTER_FIELDS - found)}; "
+            f"unexpected={sorted(found - _POINTER_FIELDS)}"
+        )
+    if pointer["schema"] != POINTER_SCHEMA:
+        raise PlanPublicationError(f"unsupported plan pointer schema: {pointer['schema']!r}")
+    run_id = pointer["run_id"]
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or run_id in {".", ".."}
+        or "/" in run_id
+        or "\\" in run_id
+    ):
+        raise PlanPublicationError(f"plan pointer run id is invalid: {run_id!r}")
+    content_hash = pointer["content_hash"]
+    if not plan_bundle_integrity.is_digest(content_hash):
+        raise PlanPublicationError("plan pointer content hash must be a lowercase SHA-256 digest")
+    outcome = pointer["outcome"]
+    if outcome not in _PUBLISHABLE_OUTCOMES:
+        raise PlanPublicationError(f"plan pointer outcome is not publishable: {outcome!r}")
+    if not isinstance(pointer["published_at"], str) or not pointer["published_at"].strip():
+        raise PlanPublicationError("plan pointer published_at must be a non-empty string")
+    bundle_value = pointer["bundle"]
+    if not isinstance(bundle_value, str) or not bundle_value:
+        raise PlanPublicationError("plan pointer bundle must be a non-empty relative path")
+    bundle = Path(bundle_value)
+    expected = Path("runs") / run_id / "checkpoints" / "plans" / "bundles" / content_hash
+    if bundle.is_absolute() or bundle.as_posix() != bundle_value or bundle != expected:
+        raise PlanPublicationError(
+            "plan pointer bundle must name its exact run-owned content-addressed root"
+        )
+    return run_id, bundle, content_hash, outcome
 
 
-def _authored_paths(root: Path) -> list[Path]:
-    paths = [root / "brief.md"]
-    paths.extend(sorted(path for path in (root / "refs").rglob("*") if path.is_file()))
-    return paths
+def _authored_input_bytes(root: Path) -> dict[str, bytes]:
+    brief = root / "brief.md"
+    inputs = {
+        "brief.md": plan_bundle_integrity.read_real_file(
+            root,
+            brief,
+            "authored brief input",
+        )
+    }
+    for path in plan_bundle_integrity.regular_files_under(
+        root,
+        root / "refs",
+        "authored refs input",
+    ):
+        inputs[path.relative_to(root).as_posix()] = plan_bundle_integrity.read_real_file(
+            root,
+            path,
+            "authored reference input",
+        )
+    return inputs
 
 
 def _authored_inputs(root: Path) -> dict[str, str]:
     """Content identity that selected authority must continue to match."""
-    paths = _authored_paths(root)
+
     return {
-        path.relative_to(root).as_posix(): _digest(path.read_bytes())
-        for path in paths
+        name: plan_bundle_integrity.digest(data)
+        for name, data in _authored_input_bytes(root).items()
     }
 
 
-def _decision_inputs(root: Path) -> dict[str, str]:
+def _decision_input_bytes(root: Path) -> dict[str, bytes]:
+    inputs: dict[str, bytes] = {}
+    for relative in _DECISION_INPUT_PATHS:
+        path = root / relative
+        if path.parent != root and (
+            path.parent.is_symlink()
+            or (path.parent.exists() and not path.parent.is_dir())
+        ):
+            plan_bundle_integrity.require_real_directory(
+                root,
+                path.parent,
+                "planning decision input parent",
+            )
+        if not path.exists() and not path.is_symlink():
+            continue
+        inputs[relative.as_posix()] = plan_bundle_integrity.read_real_file(
+            root,
+            path,
+            "planning decision input",
+        )
+    return inputs
+
+
+def _decision_inputs(root: Path) -> dict[str, dict[str, str | int]]:
     """Append-only cross-run decisions folded into a new planning transaction."""
-    paths = [
-        path
-        for path in (root / "plan_amendments.jsonl", root / "state/plan-resolutions.jsonl")
-        if path.is_file()
-    ]
-    return {path.relative_to(root).as_posix(): _digest(path.read_bytes()) for path in paths}
+
+    return {
+        name: {"size": len(data), "sha256": plan_bundle_integrity.digest(data)}
+        for name, data in _decision_input_bytes(root).items()
+    }
 
 
-def _input_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
-    paths = _authored_paths(root)
-    return tuple(
-        (path.relative_to(root).as_posix(), path.stat().st_size, path.stat().st_mtime_ns)
-        for path in paths
+def _verify_decision_inputs(root: Path, expected: Any) -> None:
+    if not isinstance(expected, dict):
+        raise PlanPublicationError("plan bundle decision-input provenance must be an object")
+    allowed = {path.as_posix() for path in _DECISION_INPUT_PATHS}
+    unsupported = sorted(name for name in expected if name not in allowed)
+    if unsupported:
+        raise PlanPublicationError(
+            "plan bundle decision-input provenance names unsupported paths: "
+            + ", ".join(unsupported)
+        )
+    live = _decision_input_bytes(root)
+    for name, assertion in expected.items():
+        if not isinstance(assertion, dict) or set(assertion) != _DECISION_INPUT_FIELDS:
+            raise PlanPublicationError(
+                f"plan bundle decision-input provenance fields are invalid: {name}"
+            )
+        size = assertion["size"]
+        expected_hash = assertion["sha256"]
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise PlanPublicationError(
+                f"plan bundle decision-input provenance size is invalid: {name}"
+            )
+        if not plan_bundle_integrity.is_digest(expected_hash):
+            raise PlanPublicationError(
+                f"plan bundle decision-input provenance hash is invalid: {name}"
+            )
+        data = live.get(name)
+        if data is None or len(data) < size:
+            raise PlanPublicationError(
+                "published plan was derived from missing or truncated planning decisions"
+            )
+        if plan_bundle_integrity.digest(data[:size]) != expected_hash:
+            raise PlanPublicationError("published plan was derived from different planning decisions")
+
+
+def _read_workspace_marker(anchor: Path, marker: Path) -> dict[str, Any]:
+    return plan_bundle_integrity.read_schema_object(
+        anchor,
+        marker,
+        "plan workspace marker",
+        schema=WORKSPACE_SCHEMA,
+        fields=_WORKSPACE_FIELDS,
     )
 
 
@@ -187,11 +314,8 @@ def prepare_staging(layout: RunLayout) -> Path:
     """
     workspace = layout.scratch / "plan-workspace"
     marker = workspace / ".plan-workspace.json"
-    if workspace.exists():
-        try:
-            record = json.loads(marker.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PlanPublicationError(f"existing plan workspace is unowned: {workspace}") from exc
+    if workspace.exists() or workspace.is_symlink():
+        record = _read_workspace_marker(layout.scratch, marker)
         identity = {
             "schema": WORKSPACE_SCHEMA,
             "run_id": layout.run_id,
@@ -203,29 +327,24 @@ def prepare_staging(layout: RunLayout) -> Path:
             raise PlanPublicationError(f"plan workspace ownership mismatch: {workspace}")
         return workspace
 
-    brief = layout.shot / "brief.md"
-    refs = layout.shot / "refs"
-    if not brief.is_file() or not refs.is_dir():
-        raise PlanPublicationError("plan staging requires authored brief.md and refs/")
+    authored = _authored_input_bytes(layout.shot)
+    decisions = _decision_input_bytes(layout.shot)
     workspace.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(tempfile.mkdtemp(prefix=".plan-workspace.tmp-", dir=workspace.parent))
     try:
-        shutil.copy2(brief, temp / "brief.md")
+        (temp / "brief.md").write_bytes(authored["brief.md"])
         target_refs = temp / "refs"
         target_refs.mkdir()
-        for source in sorted(path for path in refs.rglob("*") if path.is_file()):
-            relative = source.relative_to(refs)
-            target = target_refs / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            # A hard link would make a staged Edit mutate the authored reference inode.
-            # Freshness requires byte isolation as well as path isolation.
-            shutil.copy2(source, target)
-        for source in (layout.shot / "plan_amendments.jsonl", layout.shot / "state/plan-resolutions.jsonl"):
-            if not source.is_file():
+        for name, data in authored.items():
+            if name == "brief.md":
                 continue
-            target = temp / source.relative_to(layout.shot)
+            target = temp / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            target.write_bytes(data)
+        for name, data in decisions.items():
+            target = temp / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
         (temp / ".plan-workspace.json").write_text(
             json.dumps(
                 {
@@ -269,11 +388,8 @@ def _payloads(source_root: Path, plan_path: Path | None) -> dict[str, bytes]:
         )
     payloads = {name: (source_root / rel).read_bytes() for name, rel in sources.items()}
     marker = source_root / ".plan-workspace.json"
-    if marker.is_file():
-        try:
-            workspace = json.loads(marker.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise PlanPublicationError("plan workspace marker is unreadable") from exc
+    if marker.exists() or marker.is_symlink():
+        workspace = _read_workspace_marker(source_root, marker)
         inputs = workspace.get("authored_inputs")
         if not isinstance(inputs, dict) or inputs != _authored_inputs(source_root):
             raise PlanPublicationError("authored planning inputs changed during the transaction")
@@ -303,11 +419,13 @@ def _bundle_root(layout: RunLayout, content_hash: str) -> Path:
 
 
 def _write_bundle(layout: RunLayout, payloads: dict[str, bytes], *, outcome: str) -> PlanBundle:
-    content_hash = _bundle_hash(payloads)
+    content_hash = plan_bundle_integrity.bundle_hash(payloads)
     parent = layout.checkpoints / "plans" / "bundles"
-    parent.mkdir(parents=True, exist_ok=True)
+    plan_bundle_integrity.ensure_real_directories(layout.shot, parent, "plan bundle store")
     root = _bundle_root(layout, content_hash)
-    artifact_hashes = {name: _digest(data) for name, data in sorted(payloads.items())}
+    artifact_hashes = {
+        name: plan_bundle_integrity.digest(data) for name, data in sorted(payloads.items())
+    }
     manifest = {
         "schema": BUNDLE_SCHEMA,
         "run_id": layout.run_id,
@@ -316,13 +434,8 @@ def _write_bundle(layout: RunLayout, payloads: dict[str, bytes], *, outcome: str
         "artifacts": artifact_hashes,
     }
 
-    if root.exists():
-        try:
-            existing = json.loads((root / "bundle.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PlanPublicationError(f"existing plan bundle is unreadable: {root}") from exc
-        if existing != manifest:
-            raise PlanPublicationError(f"immutable plan bundle conflicts with candidate: {root}")
+    if root.exists() or root.is_symlink():
+        _verify_bundle_root(layout.shot, root, expected_manifest=manifest)
     else:
         temp = Path(tempfile.mkdtemp(prefix=f".{content_hash}.tmp-", dir=parent))
         try:
@@ -337,11 +450,12 @@ def _write_bundle(layout: RunLayout, payloads: dict[str, bytes], *, outcome: str
         except BaseException:
             shutil.rmtree(temp, ignore_errors=True)
             raise
+        _verify_bundle_root(layout.shot, root, expected_manifest=manifest)
 
     return PlanBundle(
         shot=layout.shot,
         run_id=layout.run_id,
-        root=root.resolve(),
+        root=root,
         content_hash=content_hash,
         artifacts=tuple(sorted(payloads)),
         outcome=outcome,
@@ -364,7 +478,7 @@ def publish_current(
     shot = Path(shot_folder).expanduser().resolve()
     if layout.shot != shot:
         raise PlanPublicationError("run layout belongs to a different shot")
-    if outcome not in {"clean", "clean_with_assumptions", "clean_with_deferred"}:
+    if outcome not in _PUBLISHABLE_OUTCOMES:
         raise PlanPublicationError(f"non-publishable plan outcome: {outcome!r}")
     source = Path(source_root).expanduser().resolve() if source_root is not None else shot
     if source != shot:
@@ -392,7 +506,17 @@ def publish_current(
         "outcome": outcome,
         "published_at": _now(),
     }
-    _atomic_json(shot / POINTER, pointer)
+    pointer_path = shot / POINTER
+    plan_bundle_integrity.ensure_real_directories(
+        shot,
+        pointer_path.parent,
+        "plan pointer parent",
+    )
+    if pointer_path.is_symlink():
+        raise PlanPublicationError(f"plan pointer must not be a symlink: {pointer_path}")
+    if pointer_path.exists() and not pointer_path.is_file():
+        raise PlanPublicationError(f"plan pointer must be a regular file: {pointer_path}")
+    _atomic_json(pointer_path, pointer)
     return bundle
 
 
@@ -462,73 +586,66 @@ def promote_candidate(
     return bundle, result, target
 
 
-def _resolve_pointer(shot: Path, pointer: dict[str, Any]) -> PlanBundle:
-    """Verify one explicitly identified bundle using the same rules as current authority."""
-    if pointer.get("schema") != POINTER_SCHEMA:
-        raise PlanPublicationError(f"unsupported plan pointer schema: {pointer.get('schema')!r}")
-    root = (shot / str(pointer.get("bundle") or "")).resolve()
-    try:
-        rel = root.relative_to(shot / "runs")
-    except ValueError as exc:
-        raise PlanPublicationError("plan pointer escapes the shot run store") from exc
-    if len(rel.parts) != 5 or rel.parts[1:4] != ("checkpoints", "plans", "bundles"):
-        raise PlanPublicationError(f"plan pointer targets a non-bundle path: {root}")
-    try:
-        manifest = json.loads((root / "bundle.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PlanPublicationError(f"plan bundle is missing or unreadable: {root}") from exc
-    if manifest.get("schema") != BUNDLE_SCHEMA:
-        raise PlanPublicationError(f"unsupported plan bundle schema: {manifest.get('schema')!r}")
-    if manifest.get("content_hash") != pointer.get("content_hash"):
+def _resolve_bundle(
+    shot: Path,
+    *,
+    run_id: str,
+    bundle_relative: Path,
+    content_hash: str,
+    pointer_outcome: str | None,
+) -> PlanBundle:
+    root = shot / bundle_relative
+    manifest, payloads = _verify_bundle_root(shot, root)
+    if manifest["content_hash"] != content_hash:
         raise PlanPublicationError("plan pointer and bundle content hashes disagree")
-    if manifest.get("run_id") != pointer.get("run_id") or rel.parts[0] != pointer.get("run_id"):
+    if manifest["run_id"] != run_id:
         raise PlanPublicationError("plan pointer and bundle run ids disagree")
-    artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, dict) or not artifacts:
-        raise PlanPublicationError("plan bundle carries no artifact manifest")
+    if pointer_outcome is not None and manifest["outcome"] != pointer_outcome:
+        raise PlanPublicationError("plan pointer and bundle outcomes disagree")
+    artifacts = manifest["artifacts"]
     expected_artifacts = set(_SOURCES) | _GENERATED_ARTIFACTS
     missing = sorted(expected_artifacts - set(artifacts))
-    unsupported = sorted(name for name in artifacts if not _is_supported_artifact(name))
-    if missing or unsupported:
-        detail = []
-        if missing:
-            detail.append("missing " + ", ".join(missing))
-        if unsupported:
-            detail.append("unsupported " + ", ".join(unsupported))
-        raise PlanPublicationError("plan bundle artifact set is incomplete: " + "; ".join(detail))
-    payloads: dict[str, bytes] = {}
-    for name, expected in artifacts.items():
-        if not _is_supported_artifact(name):
-            raise PlanPublicationError(f"plan bundle declares unsupported artifact: {name}")
-        path = root / name
-        if not path.is_file():
-            raise PlanPublicationError(f"plan bundle artifact is missing: {name}")
-        data = path.read_bytes()
-        if _digest(data) != expected:
-            raise PlanPublicationError(f"plan bundle artifact hash mismatch: {name}")
-        payloads[name] = data
-    if _bundle_hash(payloads) != pointer.get("content_hash"):
-        raise PlanPublicationError("plan bundle aggregate hash mismatch")
-    try:
-        provenance = json.loads((root / "plan.provenance.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PlanPublicationError("plan bundle provenance is missing or unreadable") from exc
-    if provenance.get("schema") != PROVENANCE_SCHEMA:
+    if missing:
+        raise PlanPublicationError(
+            "plan bundle artifact set is incomplete: missing " + ", ".join(missing)
+        )
+    provenance = plan_bundle_integrity.decode_json_object(
+        payloads["plan.provenance.json"],
+        "plan bundle provenance",
+    )
+    found = set(provenance)
+    if found != _PROVENANCE_FIELDS:
+        raise PlanPublicationError(
+            "plan bundle provenance fields mismatch; "
+            f"missing={sorted(_PROVENANCE_FIELDS - found)}; "
+            f"unexpected={sorted(found - _PROVENANCE_FIELDS)}"
+        )
+    if provenance["schema"] != PROVENANCE_SCHEMA:
         raise PlanPublicationError("plan bundle provenance schema is unsupported")
-    authored = provenance.get("authored_inputs")
-    signature = _input_signature(shot)
-    verification = (str(shot), str(pointer["content_hash"]), signature)
-    if verification not in _INPUT_VERIFICATIONS:
-        if not isinstance(authored, dict) or authored != _authored_inputs(shot):
-            raise PlanPublicationError("published plan was derived from different authored inputs")
-        _INPUT_VERIFICATIONS.add(verification)
+    authored = provenance["authored_inputs"]
+    if not isinstance(authored, dict) or authored != _authored_inputs(shot):
+        raise PlanPublicationError("published plan was derived from different authored inputs")
+    _verify_decision_inputs(shot, provenance["decision_inputs"])
     return PlanBundle(
         shot=shot,
-        run_id=str(pointer["run_id"]),
+        run_id=run_id,
         root=root,
-        content_hash=str(pointer["content_hash"]),
+        content_hash=content_hash,
         artifacts=tuple(sorted(artifacts)),
-        outcome=str(pointer.get("outcome") or manifest.get("outcome") or ""),
+        outcome=str(manifest["outcome"]),
+    )
+
+
+def _resolve_pointer(shot: Path, pointer: dict[str, Any]) -> PlanBundle:
+    """Verify one selected bundle using the complete current-pointer contract."""
+
+    run_id, bundle_relative, content_hash, outcome = _validate_current_pointer(pointer)
+    return _resolve_bundle(
+        shot,
+        run_id=run_id,
+        bundle_relative=bundle_relative,
+        content_hash=content_hash,
+        pointer_outcome=outcome,
     )
 
 
@@ -536,10 +653,11 @@ def resolve_current(shot_folder: str | Path) -> PlanBundle:
     """Resolve and verify the complete plan generation selected by ``plans/current.json``."""
     shot = Path(shot_folder).expanduser().resolve()
     pointer_path = shot / POINTER
-    try:
-        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PlanPublicationError(f"plan pointer is missing or unreadable: {pointer_path}") from exc
+    pointer, _raw = plan_bundle_integrity.read_json_object(
+        shot,
+        pointer_path,
+        "plan pointer",
+    )
     return _resolve_pointer(shot, pointer)
 
 
@@ -568,20 +686,15 @@ def resolve_published_bundle(
         raise PlanPublicationError(f"invalid plan bundle run id: {run_id!r}")
     if len(safe_hash) != 64 or any(char not in "0123456789abcdef" for char in safe_hash):
         raise PlanPublicationError("plan bundle content hash must be a lowercase SHA-256 digest")
-    root = shot / "runs" / safe_run / "checkpoints" / "plans" / "bundles" / safe_hash
-    try:
-        manifest = json.loads((root / "bundle.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PlanPublicationError(f"plan bundle is missing or unreadable: {root}") from exc
-    return _resolve_pointer(
+    bundle_relative = (
+        Path("runs") / safe_run / "checkpoints" / "plans" / "bundles" / safe_hash
+    )
+    return _resolve_bundle(
         shot,
-        {
-            "schema": POINTER_SCHEMA,
-            "run_id": safe_run,
-            "bundle": root.relative_to(shot).as_posix(),
-            "content_hash": safe_hash,
-            "outcome": manifest.get("outcome"),
-        },
+        run_id=safe_run,
+        bundle_relative=bundle_relative,
+        content_hash=safe_hash,
+        pointer_outcome=None,
     )
 
 
@@ -600,6 +713,17 @@ def authority_root(shot_folder: str | Path) -> Path:
     return resolve_current(shot_folder).root
 
 
+def _has_selected_pointer(shot: Path) -> bool:
+    """Distinguish true absence from a symlink substitution that must fail closed."""
+
+    pointer_path = shot / POINTER
+    return (
+        pointer_path.exists()
+        or pointer_path.is_symlink()
+        or pointer_path.parent.is_symlink()
+    )
+
+
 def active_plan_hash(shot_folder: str | Path, *, fallback_root: Path | None = None) -> str:
     """The ONE identity of the active layer DAG: sha256 of the RESOLVED layers.json.
 
@@ -613,7 +737,7 @@ def active_plan_hash(shot_folder: str | Path, *, fallback_root: Path | None = No
     publication pointer (explicit-bundle administrative transactions on archived
     fixtures); a pointer-carrying shot always resolves through the selected view."""
     shot = Path(shot_folder).expanduser().resolve()
-    if fallback_root is not None and not (shot / POINTER).exists():
+    if fallback_root is not None and not _has_selected_pointer(shot):
         return hashlib.sha256((fallback_root / "layers.json").read_bytes()).hexdigest()
     return hashlib.sha256(
         selected_artifact_path(shot, "layers.json").read_bytes()
@@ -628,7 +752,7 @@ def selected_artifact_path(shot_folder: str | Path, name: str) -> Path:
     bounded migration window until they are republished.
     """
     shot = Path(shot_folder).expanduser().resolve()
-    if (shot / POINTER).exists():
+    if _has_selected_pointer(shot):
         if name in {
             "layers.json",
             "scene_checks.json",

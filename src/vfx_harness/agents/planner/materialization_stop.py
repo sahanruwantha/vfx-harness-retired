@@ -20,8 +20,6 @@ from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
 from vfx_harness.domain.stop_transaction_state import (
     EvidenceRecordAssertion,
-    SelectedBundleAssertion,
-    SelectedViewAssertion,
     StopEvidenceRef,
 )
 from vfx_harness.domain.stop_transactions import (
@@ -32,6 +30,11 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
 )
 from vfx_harness.orchestration import plan_authority
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
 from vfx_harness.orchestration.jit_materialization.schema import materialization_finalization_path
 from vfx_harness.orchestration.jit_materialization.staging import inspect_materialization
 
@@ -45,6 +48,7 @@ _STOP_AUDIT_SCHEMA = "vfx-harness.materialization-stop-audit/v1"
 _ENGINEERING_SINK = "engineering_handoff"
 _MATERIALIZATION_AUTHORITY = "jit-materialization-authority"
 _MATERIALIZATION_GATE_POLICY = "structural-authority/runtime-falsification-v1"
+_MATERIALIZATION_GATE_SCHEMA = "vfx-harness.plan-gate/v1"
 
 
 def _publish_stop_evidence(
@@ -98,36 +102,6 @@ def _publish_stop_evidence(
         }
     )
     return reference
-
-
-def _selected_authority(
-    *,
-    bundle_digest: str,
-    view_digest: str | None,
-    authority_before: dict[str, Any],
-) -> tuple[SelectedBundleAssertion, SelectedViewAssertion | None]:
-    selected_bundle = SelectedBundleAssertion(
-        bundle_digest=bundle_digest,
-        selection_digest=canonical_digest(
-            {
-                "schema": "vfx-harness.materialization-selected-bundle-state/v1",
-                "selected_bundle": authority_before["selected_bundle"],
-            }
-        ),
-    )
-    selected_view = None
-    if view_digest is not None:
-        selected_view = SelectedViewAssertion(
-            bundle_digest=bundle_digest,
-            view_digest=view_digest,
-            selection_digest=canonical_digest(
-                {
-                    "schema": "vfx-harness.materialization-selected-view-state/v1",
-                    "selected_view": authority_before["selected_view"],
-                }
-            ),
-        )
-    return selected_bundle, selected_view
 
 
 def _harness_defect(
@@ -250,8 +224,9 @@ def _harness_defect(
 def _authority_defect(
     layout: RunLayout,
     *,
+    selected_authority: ResolvedSelectedAuthority,
     bundle_digest: str,
-    view_digest: str | None,
+    view_digest: str,
     layer_id: str,
     candidate_record: dict[str, Any],
     authority_before: dict[str, Any],
@@ -333,31 +308,34 @@ def _authority_defect(
         )
         for row in causal_findings
     )
-    selected_bundle, selected_view = _selected_authority(
-        bundle_digest=bundle_digest,
-        view_digest=view_digest,
-        authority_before=authority_before,
-    )
     target = PublishValidatedAmendmentTarget(
         scope="layer_view",
-        base_bundle=selected_bundle,
-        base_view=selected_view,
+        base_authority=selected_authority.assertion,
         layer_id=layer_id,
         findings=findings,
         owner_authority_id=_MATERIALIZATION_AUTHORITY,
-        changes_hard_constraint=False,
+        gate_policy_id=_MATERIALIZATION_GATE_POLICY,
+        gate_schema=_MATERIALIZATION_GATE_SCHEMA,
+        validation_scope="structural_authority",
     )
     action = StopAction(
         target=target,
         postcondition=SelectedAuthorityAmendmentCommitted(
             scope=target.scope,
-            base_bundle_digest=bundle_digest,
-            base_view_digest=view_digest,
+            base_authority_digest=selected_authority.assertion.digest,
             layer_id=layer_id,
             finding_ids=tuple(row.record_id for row in target.findings),
             gate_policy_id=_MATERIALIZATION_GATE_POLICY,
+            gate_schema=_MATERIALIZATION_GATE_SCHEMA,
+            validation_scope="structural_authority",
+            owner_authority_id=_MATERIALIZATION_AUTHORITY,
+            required_after_source="jit",
         ),
     )
+    if resolve_selected_authority(layout.shot) != selected_authority:
+        raise RuntimeError(
+            "selected authority changed while its materialization stop was compiled"
+        )
     return StopEnvelope(
         stage="materialization",
         stop_class="authority_defect",
@@ -430,6 +408,29 @@ def publish_materialization_stop(
         layer_id=layer_id,
         overlay_root=overlay_path,
     )
+    selected_authority: ResolvedSelectedAuthority | None = None
+    try:
+        selected_authority = resolve_selected_authority(layout.shot)
+    except SelectedAuthorityResolutionError:
+        authority_issues = (*authority_issues, "selected_authority_resolution_failed")
+    else:
+        selected_bundle = selected_authority.assertion.bundle
+        selected_view = selected_authority.assertion.effective_view
+        if (
+            selected_authority.assertion.selection != "selected"
+            or selected_bundle is None
+            or selected_view is None
+            or selected_bundle.digest != bundle.content_hash
+            or (view_digest is not None and selected_view.digest != view_digest)
+            or (view_digest is None and selected_view.source == "jit")
+        ):
+            authority_issues = (*authority_issues, "selected_authority_snapshot_disagrees")
+        else:
+            view_digest = selected_view.digest
+            authority_before = {
+                **authority_before,
+                "selected_authority": selected_authority.assertion.as_dict(),
+            }
     finalization, finalization_current, finalization_issues = (
         stop_evidence.current_finalization(
             candidate_path,
@@ -507,6 +508,7 @@ def publish_materialization_stop(
         )
 
     if local_findings:
+        assert selected_authority is not None
         finding_records = tuple(
             gate_evidence.materialization_local_finding_records(local_findings)
         )
@@ -515,12 +517,13 @@ def publish_materialization_stop(
         ]
         return _authority_defect(
             layout,
+            selected_authority=selected_authority,
             bundle_digest=bundle.content_hash,
             view_digest=view_digest,
             layer_id=layer_id,
             candidate_record=candidate_record,
             authority_before=authority_before,
-            authoritative_before_digest=before_digest,
+            authoritative_before_digest=selected_authority.assertion.digest,
             artifact_state=artifact_state,
             finding_records=finding_records,
             source="candidate_validation",
@@ -570,14 +573,16 @@ def publish_materialization_stop(
         artifact_state["gate_blocking_fact_digests"] = [
             canonical_digest(row["causal_fact"]) for row in findings
         ]
+        assert selected_authority is not None
         return _authority_defect(
             layout,
+            selected_authority=selected_authority,
             bundle_digest=bundle.content_hash,
             view_digest=view_digest,
             layer_id=layer_id,
             candidate_record=candidate_record,
             authority_before=authority_before,
-            authoritative_before_digest=before_digest,
+            authoritative_before_digest=selected_authority.assertion.digest,
             artifact_state=artifact_state,
             finding_records=findings,
             source="terminal_gate",

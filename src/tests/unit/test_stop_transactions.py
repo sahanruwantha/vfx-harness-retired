@@ -13,6 +13,9 @@ from vfx_harness.domain.stop_transaction_state import (
     EnvironmentResultAssertion,
     EvidenceRecordAssertion,
     ResumeRecordAssertion,
+    SelectedAuthorityAssertionV2,
+    SelectedAuthorityBundle,
+    SelectedAuthorityView,
     SelectedBundleAssertion,
     SelectedViewAssertion,
     StopEvidenceRef,
@@ -38,6 +41,10 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
     action_idempotency_key,
 )
+
+_GATE_POLICY = "structural-authority/runtime-falsification-v1"
+_GATE_SCHEMA = "vfx-harness.plan-gate/v1"
+_VALIDATION_SCOPE = "structural_authority"
 
 
 def _digest(label: str) -> str:
@@ -79,6 +86,27 @@ def _view(bundle: SelectedBundleAssertion, label: str = "view") -> SelectedViewA
         bundle.bundle_digest,
         _digest(label),
         _digest(f"{label}:selection"),
+    )
+
+
+def _authority(
+    label: str = "authority",
+    *,
+    source: str = "jit",
+) -> SelectedAuthorityAssertionV2:
+    bundle_digest = _digest(f"{label}:bundle")
+    return SelectedAuthorityAssertionV2(
+        "selected",
+        SelectedAuthorityBundle(
+            bundle_digest,
+            "clean",
+            _digest(f"{label}:bundle-manifest"),
+        ),
+        SelectedAuthorityView(
+            source,
+            bundle_digest if source == "bundle" else _digest(f"{label}:view"),
+            _digest(f"{label}:view-manifest"),
+        ),
     )
 
 
@@ -131,27 +159,30 @@ def _retry_action() -> StopAction:
 
 def _all_actions() -> tuple[StopAction, ...]:
     retry = _retry_action()
-    old_bundle = _bundle("old-bundle")
-    old_view = _view(old_bundle, "old-view")
+    base_authority = _authority("old-authority")
     findings = (_assertion("plan-finding", "finding"),)
     publish_target = PublishValidatedAmendmentTarget(
         "layer_view",
-        old_bundle,
-        old_view,
+        base_authority,
         "form",
         findings,
         "plan-authority",
-        False,
+        _GATE_POLICY,
+        _GATE_SCHEMA,
+        _VALIDATION_SCOPE,
     )
     publish = StopAction(
         publish_target,
         SelectedAuthorityAmendmentCommitted(
             "layer_view",
-            old_bundle.bundle_digest,
-            old_view.view_digest,
+            base_authority.digest,
             "form",
             tuple(row.record_id for row in findings),
-            "structural-authority/runtime-falsification-v1",
+            "plan-authority",
+            _GATE_POLICY,
+            _GATE_SCHEMA,
+            _VALIDATION_SCOPE,
+            "jit",
         ),
     )
 
@@ -304,29 +335,179 @@ def test_all_seven_transaction_actions_round_trip_with_derived_policy() -> None:
 
 
 def test_global_amendment_can_bind_an_absent_initial_selection() -> None:
-    base = SelectedBundleAssertion(None, _digest("absent-selection"))
+    base = SelectedAuthorityAssertionV2("absent", None, None)
     finding = _assertion("initial-plan-finding", "finding")
     action = StopAction(
         PublishValidatedAmendmentTarget(
             "global_plan",
             base,
             None,
-            None,
             (finding,),
             "plan-authority",
-            False,
+            _GATE_POLICY,
+            _GATE_SCHEMA,
+            _VALIDATION_SCOPE,
         ),
         SelectedAuthorityAmendmentCommitted(
             "global_plan",
-            None,
-            None,
+            base.digest,
             None,
             (finding.record_id,),
-            "structural-authority/runtime-falsification-v1",
+            "plan-authority",
+            _GATE_POLICY,
+            _GATE_SCHEMA,
+            _VALIDATION_SCOPE,
+            "bundle",
         ),
     )
 
     assert StopAction.from_dict(action.as_dict(), "action") == action
+
+
+@pytest.mark.parametrize("source", ["bundle", "jit"])
+def test_layer_amendment_requires_selected_effective_authority(source: str) -> None:
+    base = _authority(f"layer-{source}", source=source)
+    finding = _assertion(f"layer-{source}", "finding")
+    target = PublishValidatedAmendmentTarget(
+        "layer_view",
+        base,
+        "form",
+        (finding,),
+        "plan-authority",
+        _GATE_POLICY,
+        _GATE_SCHEMA,
+        _VALIDATION_SCOPE,
+    )
+    action = StopAction(
+        target,
+        SelectedAuthorityAmendmentCommitted(
+            "layer_view",
+            base.digest,
+            "form",
+            (finding.record_id,),
+            "plan-authority",
+            _GATE_POLICY,
+            _GATE_SCHEMA,
+            _VALIDATION_SCOPE,
+            "jit",
+        ),
+    )
+
+    assert action.preconditions == tuple(sorted((base, finding), key=lambda item: item.digest))
+    assert StopAction.from_dict(action.as_dict(), "action") == action
+
+
+def test_layer_amendment_refuses_absent_authority() -> None:
+    with pytest.raises(ValueError, match="requires selected"):
+        PublishValidatedAmendmentTarget(
+            "layer_view",
+            SelectedAuthorityAssertionV2("absent", None, None),
+            "form",
+            (_assertion("layer-absent", "finding"),),
+            "plan-authority",
+            _GATE_POLICY,
+            _GATE_SCHEMA,
+            _VALIDATION_SCOPE,
+        )
+
+
+@pytest.mark.parametrize(
+    ("scope", "required_after_source"),
+    [("global_plan", "jit"), ("layer_view", "bundle")],
+)
+def test_amendment_postcondition_refuses_wrong_required_after_source(
+    scope: str,
+    required_after_source: str,
+) -> None:
+    with pytest.raises(ValueError, match="required_after_source"):
+        SelectedAuthorityAmendmentCommitted(
+            scope,
+            _digest("base-authority"),
+            None if scope == "global_plan" else "form",
+            ("finding-1",),
+            "plan-authority",
+            _GATE_POLICY,
+            _GATE_SCHEMA,
+            _VALIDATION_SCOPE,
+            required_after_source,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("gate_policy_id", ""),
+        ("gate_schema", "vfx-harness.plan-gate/v2"),
+        ("validation_scope", "runtime_evidence"),
+    ],
+)
+def test_amendment_target_refuses_unbound_gate_contract(field: str, value: str) -> None:
+    kwargs = {
+        "scope": "global_plan",
+        "base_authority": SelectedAuthorityAssertionV2("absent", None, None),
+        "layer_id": None,
+        "findings": (_assertion("invalid-gate", "finding"),),
+        "owner_authority_id": "plan-authority",
+        "gate_policy_id": _GATE_POLICY,
+        "gate_schema": _GATE_SCHEMA,
+        "validation_scope": _VALIDATION_SCOPE,
+    }
+    kwargs[field] = value
+    with pytest.raises(ValueError, match=field):
+        PublishValidatedAmendmentTarget(**kwargs)
+
+
+def test_amendment_postcondition_must_bind_owner_and_gate_contract_exactly() -> None:
+    action = _all_actions()[1]
+    assert isinstance(action.postcondition, SelectedAuthorityAmendmentCommitted)
+    for field, value in (
+        ("owner_authority_id", "other-authority"),
+        ("gate_policy_id", "other-policy"),
+    ):
+        with pytest.raises(ValueError, match="exact transaction target"):
+            StopAction(action.target, replace(action.postcondition, **{field: value}))
+
+
+def test_amendment_v1_and_legacy_field_shapes_are_rejected() -> None:
+    action = _all_actions()[1]
+
+    stale_target_schema = deepcopy(action.as_dict())
+    stale_target_schema["target"]["schema"] = "vfx-harness.stop-target.publish-validated-amendment/v1"
+    with pytest.raises(ValueError, match="supported stop transaction target"):
+        StopAction.from_dict(stale_target_schema, "action")
+
+    stale_postcondition_schema = deepcopy(action.as_dict())
+    stale_postcondition_schema["postcondition"]["schema"] = (
+        "vfx-harness.stop-postcondition.selected-authority-amendment/v1"
+    )
+    with pytest.raises(ValueError, match="supported stop postcondition"):
+        StopAction.from_dict(stale_postcondition_schema, "action")
+
+    legacy_target_fields = deepcopy(action.as_dict())
+    target = legacy_target_fields["target"]
+    target.pop("base_authority")
+    target.update(
+        {
+            "base_bundle": _bundle("legacy").as_dict(),
+            "base_view": None,
+            "changes_hard_constraint": False,
+        }
+    )
+    with pytest.raises(ValueError, match="fields mismatch"):
+        StopAction.from_dict(legacy_target_fields, "action")
+
+    legacy_postcondition_fields = deepcopy(action.as_dict())
+    postcondition = legacy_postcondition_fields["postcondition"]
+    postcondition.pop("base_authority_digest")
+    postcondition.pop("required_after_source")
+    postcondition.update(
+        {
+            "base_bundle_digest": _digest("legacy-bundle"),
+            "base_view_digest": _digest("legacy-view"),
+        }
+    )
+    with pytest.raises(ValueError, match="fields mismatch"):
+        StopAction.from_dict(legacy_postcondition_fields, "action")
 
 
 def test_action_refuses_opaque_or_mismatched_postcondition() -> None:
@@ -366,22 +547,26 @@ def test_idempotency_key_binds_action_scope_not_human_detail() -> None:
     assert isinstance(target, PublishValidatedAmendmentTarget)
     global_target = PublishValidatedAmendmentTarget(
         "global_plan",
-        target.base_bundle,
-        target.base_view,
+        target.base_authority,
         None,
         target.findings,
         target.owner_authority_id,
-        False,
+        target.gate_policy_id,
+        target.gate_schema,
+        target.validation_scope,
     )
     global_action = StopAction(
         global_target,
         SelectedAuthorityAmendmentCommitted(
             "global_plan",
-            target.base_bundle.bundle_digest,
-            target.base_view.view_digest if target.base_view else None,
+            target.base_authority.digest,
             None,
             tuple(row.record_id for row in target.findings),
-            "structural-authority/runtime-falsification-v1",
+            target.owner_authority_id,
+            target.gate_policy_id,
+            target.gate_schema,
+            target.validation_scope,
+            "bundle",
         ),
     )
     before = _digest("before")
