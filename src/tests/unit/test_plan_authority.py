@@ -19,7 +19,9 @@ from vfx_harness.agents.plan_guardrails import (
 from vfx_harness.agents.planner import _phase_tools, plan_role_capabilities
 from vfx_harness.agents.prompts import verifier_user_prompt
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration import plan_authority, plan_bundle_integrity
 from vfx_harness.orchestration.jit_materialization.schema import OVERLAY_ARTIFACTS
+from vfx_harness.orchestration.jit_materialization.view_pointer import canonical_view_hash
 from vfx_harness.orchestration.layer_plans import (
     is_selected_bundle_member,
     read_work_unit_plan,
@@ -29,6 +31,7 @@ from vfx_harness.orchestration.layer_plans import (
 )
 from vfx_harness.orchestration.plan_authority import (
     PlanPublicationError,
+    PlanSelectionConflict,
     prepare_consumer_view,
     prepare_staging,
     promote_candidate,
@@ -104,7 +107,8 @@ def test_clean_plan_publishes_one_immutable_bundle_behind_atomic_pointer(
     pointer = json.loads((tmp_path / "plans" / "current.json").read_text(encoding="utf-8"))
     resolved = resolve_current(tmp_path)
 
-    assert pointer["schema"] == "vfx-harness.plan-pointer/v1"
+    assert pointer["schema"] == "vfx-harness.plan-pointer/v2"
+    assert pointer["revision"] == 1
     assert pointer["run_id"] == layout.run_id
     assert pointer["content_hash"] == published.content_hash
     assert resolved == published
@@ -127,6 +131,290 @@ def test_clean_plan_publishes_one_immutable_bundle_behind_atomic_pointer(
     assert (published.root / "global.md").read_text(encoding="utf-8") == "# plan one\n"
     assert selected_artifact_path(tmp_path, "global.md") == published.root / "global.md"
     assert resolve_current(tmp_path) == published
+
+
+def test_bundle_durability_barrier_has_deterministic_pre_pointer_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    evidence = tmp_path / "plans" / "evidence" / "durability.md"
+    evidence.parent.mkdir()
+    evidence.write_text("# durable bundle\n", encoding="utf-8")
+    layout = run_artifacts.create(tmp_path, "durable-plan")
+    bundle_parent = layout.checkpoints / "plans" / "bundles"
+    events: list[str] = []
+    original_file_fsync = plan_bundle_integrity._fsync_regular_file
+    original_directory_fsync = plan_bundle_integrity._fsync_directory
+    original_replace = plan_bundle_integrity.os.replace
+    original_pointer_parent = plan_authority.durably_ensure_real_directory
+    original_pointer_write = plan_authority.durable_replace_pointer_json
+
+    def temp_root(path: Path) -> Path:
+        relative = path.relative_to(bundle_parent)
+        return bundle_parent / relative.parts[0]
+
+    def recording_file_fsync(path: Path) -> None:
+        events.append(f"file:{path.relative_to(temp_root(path)).as_posix()}")
+        original_file_fsync(path)
+
+    def recording_directory_fsync(path: Path) -> None:
+        try:
+            temporary = temp_root(path)
+        except (ValueError, IndexError):
+            relative = path.relative_to(tmp_path)
+            label = "." if relative == Path(".") else relative.as_posix()
+            events.append(f"ancestor:{label}")
+        else:
+            relative = path.relative_to(temporary)
+            label = "." if relative == Path(".") else relative.as_posix()
+            events.append(f"tree:{label}")
+        original_directory_fsync(path)
+
+    def recording_replace(
+        source: str | Path,
+        target: str | Path,
+        **kwargs: object,
+    ) -> None:
+        if not kwargs and Path(target).parent == bundle_parent:
+            events.append("bundle-rename")
+        original_replace(source, target, **kwargs)  # type: ignore[arg-type]
+
+    def recording_pointer_write(*args: object, **kwargs: object) -> bytes:
+        events.append("pointer-write")
+        return original_pointer_write(*args, **kwargs)  # type: ignore[arg-type]
+
+    def recording_pointer_parent(*args: object, **kwargs: object) -> Path:
+        result = original_pointer_parent(*args, **kwargs)  # type: ignore[arg-type]
+        events.append("pointer-parent-durable")
+        return result
+
+    monkeypatch.setattr(
+        plan_bundle_integrity,
+        "_fsync_regular_file",
+        recording_file_fsync,
+    )
+    monkeypatch.setattr(
+        plan_bundle_integrity,
+        "_fsync_directory",
+        recording_directory_fsync,
+    )
+    monkeypatch.setattr(plan_bundle_integrity.os, "replace", recording_replace)
+    monkeypatch.setattr(
+        plan_authority,
+        "durably_ensure_real_directory",
+        recording_pointer_parent,
+    )
+    monkeypatch.setattr(
+        plan_authority,
+        "durable_replace_pointer_json",
+        recording_pointer_write,
+    )
+
+    publish_current(tmp_path, layout, outcome="clean")
+
+    assert events == [
+        "file:acceptance.json",
+        "file:assumptions.json",
+        "file:bundle.json",
+        "file:checks.json",
+        "file:critic_axes.json",
+        "file:global.md",
+        "file:layers.json",
+        "file:obligations.json",
+        "file:plan.provenance.json",
+        "file:plans/evidence/durability.md",
+        "file:requirements.json",
+        "file:scene_checks.json",
+        "tree:plans/evidence",
+        "tree:plans",
+        "tree:.",
+        "bundle-rename",
+        "ancestor:runs/durable-plan/checkpoints/plans/bundles",
+        "ancestor:runs/durable-plan/checkpoints/plans",
+        "ancestor:runs/durable-plan/checkpoints",
+        "ancestor:runs/durable-plan",
+        "ancestor:runs",
+        "ancestor:.",
+        "pointer-parent-durable",
+        "pointer-write",
+    ]
+
+
+def test_first_plan_pointer_parent_is_durable_before_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "first-pointer-parent")
+    original_write_bundle = plan_authority._write_bundle
+    original_pointer_parent = plan_authority.durably_ensure_real_directory
+    original_pointer_write = plan_authority.durable_replace_pointer_json
+    events: list[str] = []
+
+    def remove_source_parent_after_freeze(*args: object, **kwargs: object):
+        bundle = original_write_bundle(*args, **kwargs)  # type: ignore[arg-type]
+        source = tmp_path / "plans" / "global.md"
+        source.unlink()
+        source.parent.rmdir()
+        return bundle
+
+    def recording_pointer_parent(*args: object, **kwargs: object) -> Path:
+        result = original_pointer_parent(*args, **kwargs)  # type: ignore[arg-type]
+        events.append("pointer-parent-durable")
+        assert result == tmp_path / "plans"
+        assert result.is_dir()
+        return result
+
+    def recording_pointer(*args: object, **kwargs: object) -> bytes:
+        events.append("pointer-write")
+        return original_pointer_write(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(plan_authority, "_write_bundle", remove_source_parent_after_freeze)
+    monkeypatch.setattr(
+        plan_authority,
+        "durably_ensure_real_directory",
+        recording_pointer_parent,
+    )
+    monkeypatch.setattr(
+        plan_authority,
+        "durable_replace_pointer_json",
+        recording_pointer,
+    )
+
+    publish_current(tmp_path, layout, outcome="clean")
+
+    assert events == ["pointer-parent-durable", "pointer-write"]
+    assert (tmp_path / "plans" / "current.json").is_file()
+
+
+def test_crash_after_bundle_rename_cannot_select_until_orphan_is_reflushed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    layout = run_artifacts.create(tmp_path, "durability-retry")
+    bundle_parent = layout.checkpoints / "plans" / "bundles"
+    pointer = tmp_path / "plans" / "current.json"
+    original_directory_fsync = plan_bundle_integrity._fsync_directory
+    original_pointer_write = plan_authority.durable_replace_pointer_json
+
+    def crash_at_rename_parent(path: Path) -> None:
+        if path == bundle_parent:
+            raise OSError("injected crash after bundle rename")
+        original_directory_fsync(path)
+
+    def forbidden_pointer_write(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("pointer write crossed an incomplete bundle durability barrier")
+
+    monkeypatch.setattr(
+        plan_bundle_integrity,
+        "_fsync_directory",
+        crash_at_rename_parent,
+    )
+    monkeypatch.setattr(
+        plan_authority,
+        "durable_replace_pointer_json",
+        forbidden_pointer_write,
+    )
+
+    with pytest.raises(PlanPublicationError, match="durably install"):
+        publish_current(tmp_path, layout, outcome="clean")
+
+    assert not pointer.exists()
+    orphan_roots = tuple(
+        path
+        for path in bundle_parent.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    )
+    assert len(orphan_roots) == 1
+
+    reflushed: list[Path] = []
+    original_file_fsync = plan_bundle_integrity._fsync_regular_file
+
+    def recording_file_fsync(path: Path) -> None:
+        reflushed.append(path)
+        original_file_fsync(path)
+
+    monkeypatch.setattr(
+        plan_bundle_integrity,
+        "_fsync_directory",
+        original_directory_fsync,
+    )
+    monkeypatch.setattr(
+        plan_bundle_integrity,
+        "_fsync_regular_file",
+        recording_file_fsync,
+    )
+    monkeypatch.setattr(
+        plan_authority,
+        "durable_replace_pointer_json",
+        original_pointer_write,
+    )
+
+    published = publish_current(tmp_path, layout, outcome="clean")
+
+    assert pointer.is_file()
+    assert published.root == orphan_roots[0]
+    assert {path.relative_to(published.root).as_posix() for path in reflushed} == {
+        *published.artifacts,
+        "bundle.json",
+    }
+
+
+def test_semantically_identical_publication_is_a_true_pointer_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path)
+    first = run_artifacts.create(tmp_path, "plan-run-1")
+    selected = publish_current(tmp_path, first, outcome="clean")
+    pointer = tmp_path / "plans" / "current.json"
+    before = pointer.read_bytes()
+
+    second = run_artifacts.create(tmp_path, "plan-run-2")
+    replay = publish_current(tmp_path, second, outcome="clean")
+
+    assert replay == selected
+    assert pointer.read_bytes() == before
+    assert json.loads(before)["revision"] == 1
+
+
+def test_only_one_plan_workspace_can_publish_from_the_same_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    (tmp_path / "brief.md").write_text("# brief\n", encoding="utf-8")
+    (tmp_path / "refs").mkdir()
+    first_layout = run_artifacts.create(tmp_path, "plan-run-1")
+    second_layout = run_artifacts.create(tmp_path, "plan-run-2")
+    first_workspace = prepare_staging(first_layout)
+    second_workspace = prepare_staging(second_layout)
+    _write_plan(first_workspace, marker="first")
+    _write_plan(second_workspace, marker="second")
+
+    selected = publish_current(
+        tmp_path,
+        first_layout,
+        outcome="clean",
+        source_root=first_workspace,
+    )
+    pointer = tmp_path / "plans" / "current.json"
+    after_first = pointer.read_bytes()
+
+    with pytest.raises(PlanSelectionConflict, match="selection conflict"):
+        publish_current(
+            tmp_path,
+            second_layout,
+            outcome="clean",
+            source_root=second_workspace,
+        )
+
+    assert pointer.read_bytes() == after_first
+    assert resolve_current(tmp_path) == selected
 
 
 @pytest.mark.parametrize("damage", ["tamper", "missing", "symlink", "undeclared"])
@@ -384,6 +672,101 @@ def test_plan_bundle_can_publish_from_run_scoped_staging(
     assert (published.root / "global.md").read_text(encoding="utf-8") == "# plan fresh-run-plan\n"
     assert (tmp_path / "plans" / "global.md").read_text(encoding="utf-8") == "# plan old-shot-root\n"
     assert resolve_current(tmp_path) == published
+
+
+def test_workspace_publication_refuses_live_authored_input_change_before_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    (tmp_path / "brief.md").write_text("# old brief\n", encoding="utf-8")
+    (tmp_path / "refs").mkdir()
+    layout = run_artifacts.create(tmp_path, "stale-workspace")
+    workspace = prepare_staging(layout)
+    _write_plan(workspace, marker="stale-candidate")
+
+    (tmp_path / "brief.md").write_text("# new brief\n", encoding="utf-8")
+
+    with pytest.raises(PlanPublicationError, match="different authored inputs"):
+        publish_current(
+            tmp_path,
+            layout,
+            outcome="clean",
+            source_root=workspace,
+        )
+
+    assert not (tmp_path / "plans" / "current.json").exists()
+
+
+def test_workspace_publication_rolls_back_if_authored_input_changes_during_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    brief = tmp_path / "brief.md"
+    brief.write_text("# old brief\n", encoding="utf-8")
+    (tmp_path / "refs").mkdir()
+    layout = run_artifacts.create(tmp_path, "publication-input-race")
+    workspace = prepare_staging(layout)
+    _write_plan(workspace, marker="racing-candidate")
+    real_replace = plan_authority.durable_replace_pointer_json
+
+    def mutate_before_replace(*args, **kwargs):
+        brief.write_text("# new brief\n", encoding="utf-8")
+        return real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(
+        plan_authority,
+        "durable_replace_pointer_json",
+        mutate_before_replace,
+    )
+
+    with pytest.raises(PlanPublicationError, match="different authored inputs"):
+        publish_current(
+            tmp_path,
+            layout,
+            outcome="clean",
+            source_root=workspace,
+        )
+
+    assert not (tmp_path / "plans" / "current.json").exists()
+
+
+def test_failed_live_input_postcondition_restores_exact_prior_plan_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _write_plan(tmp_path, marker="selected")
+    first = run_artifacts.create(tmp_path, "selected-plan")
+    publish_current(tmp_path, first, outcome="clean")
+    pointer = tmp_path / "plans" / "current.json"
+    predecessor = pointer.read_bytes()
+
+    second = run_artifacts.create(tmp_path, "racing-successor")
+    workspace = prepare_staging(second)
+    _write_plan(workspace, marker="successor")
+    real_replace = plan_authority.durable_replace_pointer_json
+
+    def mutate_before_replace(*args, **kwargs):
+        (tmp_path / "brief.md").write_text("# changed intent\n", encoding="utf-8")
+        return real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(
+        plan_authority,
+        "durable_replace_pointer_json",
+        mutate_before_replace,
+    )
+
+    with pytest.raises(PlanPublicationError, match="different authored inputs"):
+        publish_current(
+            tmp_path,
+            second,
+            outcome="clean",
+            source_root=workspace,
+        )
+
+    assert pointer.read_bytes() == predecessor
 
 
 def test_bundle_preserves_nested_plan_evidence_and_ready_unit_plans(
@@ -661,7 +1044,7 @@ def test_selected_bundle_wraps_unreadable_authored_input_as_publication_error(
         resolve_current(tmp_path)
 
 
-def test_v1_plan_workspace_marker_is_rejected_after_prefix_provenance_migration(
+def test_v2_plan_workspace_marker_is_rejected_after_selection_token_migration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -671,7 +1054,7 @@ def test_v1_plan_workspace_marker_is_rejected_after_prefix_provenance_migration(
     workspace = prepare_staging(layout)
     marker_path = workspace / ".plan-workspace.json"
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
-    marker["schema"] = "vfx-harness.plan-workspace/v1"
+    marker["schema"] = "vfx-harness.plan-workspace/v2"
     marker_path.write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
 
     with pytest.raises(PlanPublicationError, match="workspace marker schema"):
@@ -713,7 +1096,7 @@ def test_existing_workspace_marker_rejects_duplicate_json_keys(
     workspace = prepare_staging(layout)
     marker = workspace / ".plan-workspace.json"
     raw = marker.read_text(encoding="utf-8")
-    schema = '"schema": "vfx-harness.plan-workspace/v2"'
+    schema = '"schema": "vfx-harness.plan-workspace/v3"'
     marker.write_text(raw.replace(schema, f"{schema},\n  {schema}", 1), encoding="utf-8")
 
     with pytest.raises(PlanPublicationError, match="duplicate JSON key 'schema'"):
@@ -729,8 +1112,8 @@ def test_publication_source_marker_rejects_duplicate_json_keys(
     marker = tmp_path / ".plan-workspace.json"
     marker.write_text(
         """{
-  "schema": "vfx-harness.plan-workspace/v2",
-  "schema": "vfx-harness.plan-workspace/v2",
+  "schema": "vfx-harness.plan-workspace/v3",
+  "schema": "vfx-harness.plan-workspace/v3",
   "run_id": "forged",
   "shot": "forged",
   "authored_inputs": {},
@@ -781,19 +1164,35 @@ def test_superseded_jit_view_is_inert_after_republication(
 
     view_pointer = tmp_path / "state" / "jit-layers" / "current.json"
     view_pointer.parent.mkdir(parents=True)
+    old_documents = {
+        name: json.loads((published.root / name).read_bytes())
+        for name in OVERLAY_ARTIFACTS
+    }
+    old_view_hash = canonical_view_hash(old_documents)
+    old_view = tmp_path / "state" / "jit-layers" / "views" / old_view_hash
+    old_view.mkdir(parents=True)
+    old_hashes = {}
+    for name in OVERLAY_ARTIFACTS:
+        payload = (published.root / name).read_bytes()
+        (old_view / name).write_bytes(payload)
+        old_hashes[name] = hashlib.sha256(payload).hexdigest()
     view_pointer.write_text(
         json.dumps(
             {
-                "schema": "vfx-harness.jit-layer-view/v1",
+                "schema": "vfx-harness.jit-layer-view/v2",
+                "revision": 1,
+                "plan_revision": 1,
                 "bundle_hash": "0" * 64,  # a superseded generation, not the selection
-                "view_hash": "1" * 64,
+                "view_hash": old_view_hash,
                 "materialized_layers": [],
                 "artifacts": {
-                    name: f"state/jit-layers/old/{name}"
+                    name: f"state/jit-layers/views/{old_view_hash}/{name}"
                     for name in OVERLAY_ARTIFACTS
                 },
-                "hashes": dict.fromkeys(OVERLAY_ARTIFACTS, "2" * 64),
-            }
+                "hashes": old_hashes,
+            },
+            indent=2,
+            sort_keys=True,
         )
         + "\n",
         encoding="utf-8",
@@ -803,7 +1202,7 @@ def test_superseded_jit_view_is_inert_after_republication(
     assert served == published.root / "layers.json"
 
     view_pointer.write_text(json.dumps({"schema": "wrong"}) + "\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="malformed"):
+    with pytest.raises(RuntimeError, match="selected JIT pointer is invalid"):
         selected_artifact_path(tmp_path, "layers.json")
 
 

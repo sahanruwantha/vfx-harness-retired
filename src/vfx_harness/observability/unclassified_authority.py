@@ -13,14 +13,49 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 _PLAN_POINTER = Path("plans/current.json")
-_PLAN_POINTER_SCHEMA = "vfx-harness.plan-pointer/v1"
+_PLAN_POINTER_SCHEMA = "vfx-harness.plan-pointer/v2"
 _PLAN_BUNDLE_SCHEMA = "vfx-harness.plan-bundle/v1"
 _JIT_POINTER = Path("state/jit-layers/current.json")
-_JIT_VIEW_SCHEMA = "vfx-harness.jit-layer-view/v1"
+_JIT_VIEW_SCHEMA = "vfx-harness.jit-layer-view/v2"
+_PLAN_POINTER_FIELDS = frozenset(
+    {
+        "schema",
+        "revision",
+        "run_id",
+        "bundle",
+        "content_hash",
+        "outcome",
+        "published_at",
+    }
+)
+_JIT_POINTER_FIELDS = frozenset(
+    {
+        "schema",
+        "revision",
+        "plan_revision",
+        "bundle_hash",
+        "view_hash",
+        "materialized_layers",
+        "artifacts",
+        "hashes",
+    }
+)
+_OVERLAY_ARTIFACTS = frozenset(
+    {
+        "layers.json",
+        "scene_checks.json",
+        "checks.json",
+        "requirements.json",
+        "acceptance.json",
+    }
+)
+_PUBLISHABLE_OUTCOMES = frozenset(
+    {"clean", "clean_with_assumptions", "clean_with_deferred"}
+)
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _TERMINAL_CAUSES = {
     "build_truncated",
@@ -40,6 +75,19 @@ _TERMINAL_CAUSES = {
     "terminal_service_error",
     "usage_limit",
 }
+
+
+class _DuplicateJsonKey(ValueError):
+    """A JSON object contains two values for one authority field."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _DuplicateJsonKey(key)
+        value[key] = item
+    return value
 
 
 def closed_terminal_cause(value: str) -> str:
@@ -79,7 +127,10 @@ def _read_json(root: Path, path: Path) -> tuple[dict[str, Any], object | None, s
     except UnicodeDecodeError:
         return audit, None, "non_utf8"
     try:
-        value = json.loads(text)
+        value = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except _DuplicateJsonKey:
+        audit["raw_text"] = text
+        return audit, None, "duplicate_json_key"
     except json.JSONDecodeError:
         audit["raw_text"] = text
         return audit, None, "malformed_json"
@@ -108,25 +159,49 @@ def _bundle_hash(artifacts: Mapping[str, str]) -> str:
     return digest.hexdigest()
 
 
-def _selected_bundle(shot: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def _selected_bundle(
+    shot: Path,
+) -> tuple[dict[str, Any], dict[str, Any], int | None]:
     pointer_audit, raw_pointer, read_issue = _read_json(shot, shot / _PLAN_POINTER)
     audit: dict[str, Any] = {"pointer": pointer_audit}
     if read_issue == "missing":
-        return {"selection": "absent"}, audit
+        return {"selection": "absent"}, audit, None
     if read_issue is not None:
-        return {"selection": "invalid", "issues": [f"pointer_{read_issue}"]}, audit
+        return (
+            {"selection": "invalid", "issues": [f"pointer_{read_issue}"]},
+            audit,
+            None,
+        )
     if not isinstance(raw_pointer, Mapping):
-        return {"selection": "invalid", "issues": ["pointer_not_object"]}, audit
+        return {"selection": "invalid", "issues": ["pointer_not_object"]}, audit, None
 
     issues: list[str] = []
+    if set(raw_pointer) != _PLAN_POINTER_FIELDS:
+        issues.append("pointer_fields_mismatch")
     if raw_pointer.get("schema") != _PLAN_POINTER_SCHEMA:
         issues.append("pointer_schema_unsupported")
+    revision = raw_pointer.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision <= 0:
+        issues.append("pointer_revision_invalid")
+        revision = None
     bundle_digest = raw_pointer.get("content_hash")
     if not _is_digest(bundle_digest):
         issues.append("pointer_bundle_digest_invalid")
     outcome = raw_pointer.get("outcome")
-    if not isinstance(outcome, str) or not outcome.strip():
+    if outcome not in _PUBLISHABLE_OUTCOMES:
         issues.append("pointer_outcome_invalid")
+    run_id = raw_pointer.get("run_id")
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or run_id in {".", ".."}
+        or "/" in run_id
+        or "\\" in run_id
+    ):
+        issues.append("pointer_publisher_identity_invalid")
+    published_at = raw_pointer.get("published_at")
+    if not isinstance(published_at, str) or not published_at.strip():
+        issues.append("pointer_published_at_invalid")
 
     bundle_root = _inside(shot, raw_pointer.get("bundle"))
     if bundle_root is None:
@@ -140,6 +215,7 @@ def _selected_bundle(shot: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             if (
                 len(relative.parts) != 5
                 or relative.parts[1:4] != ("checkpoints", "plans", "bundles")
+                or relative.parts[0] != run_id
                 or (_is_digest(bundle_digest) and relative.parts[4] != bundle_digest)
             ):
                 issues.append("pointer_bundle_shape_invalid")
@@ -160,6 +236,14 @@ def _selected_bundle(shot: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
     artifact_digests: dict[str, str] = {}
     if isinstance(raw_manifest, Mapping):
+        if set(raw_manifest) != {
+            "schema",
+            "run_id",
+            "content_hash",
+            "outcome",
+            "artifacts",
+        }:
+            issues.append("manifest_fields_mismatch")
         if raw_manifest.get("schema") != _PLAN_BUNDLE_SCHEMA:
             issues.append("manifest_schema_unsupported")
         if raw_manifest.get("content_hash") != bundle_digest:
@@ -210,18 +294,19 @@ def _selected_bundle(shot: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     semantic: dict[str, Any] = {
         "selection": "invalid" if issues else "verified",
         "bundle_digest": bundle_digest if _is_digest(bundle_digest) else None,
-        "outcome": outcome if isinstance(outcome, str) and outcome.strip() else None,
+        "outcome": outcome if outcome in _PUBLISHABLE_OUTCOMES else None,
     }
     if issues:
         semantic["issues"] = sorted(set(issues))
     else:
         semantic["artifacts"] = artifact_digests
-    return semantic, audit
+    return semantic, audit, revision
 
 
 def _selected_view(
     shot: Path,
     selected_bundle: Mapping[str, Any],
+    plan_revision: int | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     pointer_audit, raw_pointer, read_issue = _read_json(shot, shot / _JIT_POINTER)
     audit: dict[str, Any] = {"pointer": pointer_audit}
@@ -245,16 +330,21 @@ def _selected_view(
 
     observed_bundle = raw_pointer.get("bundle_hash")
     observed_view = raw_pointer.get("view_hash")
-    if _is_digest(bundle_digest) and observed_bundle != bundle_digest:
-        return {
-            "selection": "superseded",
-            "observed_bundle_digest": observed_bundle if _is_digest(observed_bundle) else None,
-            "observed_view_digest": observed_view if _is_digest(observed_view) else None,
-        }, audit
-
     issues: list[str] = []
+    if set(raw_pointer) != _JIT_POINTER_FIELDS:
+        issues.append("pointer_fields_mismatch")
     if raw_pointer.get("schema") != _JIT_VIEW_SCHEMA:
         issues.append("pointer_schema_unsupported")
+    revision = raw_pointer.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision <= 0:
+        issues.append("pointer_revision_invalid")
+    observed_plan_revision = raw_pointer.get("plan_revision")
+    if (
+        not isinstance(observed_plan_revision, int)
+        or isinstance(observed_plan_revision, bool)
+        or observed_plan_revision <= 0
+    ):
+        issues.append("pointer_plan_revision_invalid")
     if not _is_digest(observed_bundle):
         issues.append("pointer_bundle_digest_invalid")
     if not _is_digest(observed_view):
@@ -271,9 +361,9 @@ def _selected_view(
     raw_hashes = raw_pointer.get("hashes")
     if (
         not isinstance(raw_artifacts, Mapping)
-        or not raw_artifacts
+        or set(raw_artifacts) != _OVERLAY_ARTIFACTS
         or not isinstance(raw_hashes, Mapping)
-        or set(raw_artifacts) != set(raw_hashes)
+        or set(raw_hashes) != _OVERLAY_ARTIFACTS
     ):
         issues.append("pointer_artifacts_invalid")
         raw_artifacts = {}
@@ -286,6 +376,16 @@ def _selected_view(
         expected = raw_hashes.get(raw_name)
         if not isinstance(raw_name, str) or not _is_digest(expected):
             issues.append("view_artifact_identity_invalid")
+            continue
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or relative != relative.strip()
+            or PurePosixPath(relative).is_absolute()
+            or ".." in PurePosixPath(relative).parts
+            or PurePosixPath(relative).as_posix() != relative
+        ):
+            issues.append("view_artifact_locator_invalid")
             continue
         artifact = _inside(shot, relative)
         if artifact is None:
@@ -309,6 +409,30 @@ def _selected_view(
         if aggregate != observed_view:
             issues.append("view_aggregate_hash_mismatch")
 
+    layers_document = documents.get("layers.json")
+    derived_layers: list[str] = []
+    if isinstance(layers_document, Mapping) and layers_document.get("schema") in {4, 5}:
+        rows = layers_document.get("layers")
+        if isinstance(rows, list) and all(isinstance(row, Mapping) for row in rows):
+            for row in rows:
+                layer_id = row.get("id")
+                if not isinstance(layer_id, str) or not layer_id or layer_id != layer_id.strip():
+                    issues.append("view_layers_document_invalid")
+                    break
+                if row.get("execution") != "jit_deferred":
+                    derived_layers.append(layer_id)
+            if len(derived_layers) != len(set(derived_layers)):
+                issues.append("view_layers_document_invalid")
+        else:
+            issues.append("view_layers_document_invalid")
+    else:
+        issues.append("view_layers_document_invalid")
+    if not issues and materialized != sorted(derived_layers):
+        issues.append("pointer_materialized_layers_mismatch")
+
+    if selected_bundle.get("selection") != "verified" or plan_revision is None:
+        issues.append("selected_plan_unavailable")
+
     semantic = {
         "selection": "invalid" if issues else "verified",
         "bundle_digest": observed_bundle if _is_digest(observed_bundle) else None,
@@ -316,6 +440,12 @@ def _selected_view(
     }
     if issues:
         semantic["issues"] = sorted(set(issues))
+    elif observed_bundle != bundle_digest or observed_plan_revision != plan_revision:
+        semantic = {
+            "selection": "superseded",
+            "observed_bundle_digest": observed_bundle,
+            "observed_view_digest": observed_view,
+        }
     else:
         semantic["materialized_layers"] = materialized
         semantic["artifacts"] = artifact_digests
@@ -433,8 +563,12 @@ def snapshot(
         if isinstance(raw_manifest, Mapping) and isinstance(raw_manifest.get("shot_id"), str)
         else shot.name
     )
-    selected_bundle, bundle_audit = _selected_bundle(shot)
-    selected_view, view_audit = _selected_view(shot, selected_bundle)
+    selected_bundle, bundle_audit, plan_revision = _selected_bundle(shot)
+    selected_view, view_audit = _selected_view(
+        shot,
+        selected_bundle,
+        plan_revision,
+    )
     accepted_build, ledger_audit = _accepted_build(shot)
     authority = {
         "schema": "vfx-harness.unclassified-boundary-authority/v2",

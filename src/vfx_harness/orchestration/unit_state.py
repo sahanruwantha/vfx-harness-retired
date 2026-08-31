@@ -24,6 +24,11 @@ from vfx_harness.domain.work_units import (
     validate_unit_dag,
 )
 from vfx_harness.observability.provenance import atomic_write
+from vfx_harness.orchestration.unit_state_lock import (
+    STATE_DIR,
+    serialized_state_mutation,
+    unit_state_path,
+)
 
 SCHEMA = 1
 # Bump whenever WorkUnit gains or loses a field that is always present in `unit_digest`:
@@ -37,8 +42,6 @@ SCHEMA = 1
 # layer's durable state until the replan). The golden-digest test pins this pairing.
 # 4: MutationScope gained `dresses` (ADR-0007 appearance-assignment authority).
 DIGEST_SCHEMA = 4
-STATE_DIR = "state/work-units"
-
 _TRANSITIONS = {
     "pending": {"planning", "blocked", "superseded"},
     "planning": {"building", "blocked", "failed", "retryable", "superseded"},
@@ -60,10 +63,7 @@ def _now() -> str:
 
 
 def _path(folder: str | Path, layer_id: str) -> Path:
-    safe_layer = str(layer_id).strip()
-    if not safe_layer or "/" in safe_layer or "\\" in safe_layer or safe_layer in {".", ".."}:
-        raise ValueError(f"invalid layer id for work-unit state: {layer_id!r}")
-    return Path(folder) / STATE_DIR / f"layer_{safe_layer}.json"
+    return unit_state_path(folder, layer_id)
 
 
 def _write(path: Path, value: dict) -> None:
@@ -195,6 +195,7 @@ def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) ->
         )
 
 
+@serialized_state_mutation(_path)
 def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *, plan_hash: str) -> dict:
     validate_unit_dag(units, f"layer {layer_id} work units")
     current = load(folder, layer_id)
@@ -282,6 +283,7 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
     return value
 
 
+@serialized_state_mutation(_path)
 def supersede_layer_units(
     folder: str | Path,
     layer_id: str,
@@ -343,6 +345,7 @@ def supersede_layer_units(
     return value
 
 
+@serialized_state_mutation(_path)
 def transition(
     folder: str | Path,
     layer_id: str,
@@ -377,6 +380,7 @@ def transition(
     return value
 
 
+@serialized_state_mutation(_path)
 def freeze_checkpoint(
     folder: str | Path,
     layer_id: str,
@@ -421,6 +425,7 @@ def freeze_checkpoint(
     return value
 
 
+@serialized_state_mutation(_path)
 def block_dependents(
     folder: str | Path,
     layer_id: str,
@@ -453,6 +458,7 @@ def block_dependents(
     return value
 
 
+@serialized_state_mutation(_path)
 def invalidate_checkpoint(
     folder: str | Path,
     layer_id: str,
@@ -526,6 +532,7 @@ def invalidate_checkpoint(
     return record
 
 
+@serialized_state_mutation(_path)
 def record_hypothesis_falsification(
     folder: str | Path,
     layer_id: str,
@@ -697,6 +704,7 @@ def replan_effects(
     }
 
 
+@serialized_state_mutation(_path)
 def apply_replan(
     folder: str | Path,
     layer_id: str,

@@ -440,12 +440,20 @@ def _pixel_contract_gate(
     ref: str,
     render: str | Path,
     evidence_ids: set[str] | None = None,
+    selected_authority=None,
 ) -> tuple[bool, list[dict]]:
     """Is a scene-contract-complete candidate judgeable enough for a critic?"""
 
     if evidence_ids is not None and not evidence_ids:
         return True, []
-    rows = image_checks.layer_evidence(shot_dir, layer_id, frame=frame, ref=ref, render=render)
+    rows = image_checks.layer_evidence(
+        shot_dir,
+        layer_id,
+        frame=frame,
+        ref=ref,
+        render=render,
+        selected_authority=selected_authority,
+    )
     if evidence_ids is not None:
         rows = [row for row in rows if str(row.get("id")) in evidence_ids]
     if evidence_ids is not None:

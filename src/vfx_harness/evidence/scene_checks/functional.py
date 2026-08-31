@@ -13,25 +13,39 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PIL import Image, ImageChops, ImageStat
 
 from vfx_harness.domain.contracts import active_for, validate_lifecycle
 from vfx_harness.domain.evidence_kinds import PROJECTED_ORIGIN_KINDS as PROJECTED_ORIGIN_KINDS
-from vfx_harness.evidence.scene_checks.deferred_subject import deferred_subject_composition_activation_ids, load_rows
+from vfx_harness.evidence.scene_checks.deferred_subject import (
+    _scene_checks_path,
+    deferred_subject_composition_activation_ids,
+    load_rows,
+)
 from vfx_harness.evidence.scene_checks.kinds import FUNCTIONAL_KINDS, KIND_DEFINITIONS
 from vfx_harness.evidence.scene_checks.probe import _blender_probe, _evidence
 from vfx_harness.evidence.scene_checks.validate import _holds, _target, validate_row
-from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 
-def layer_evidence(shot_folder: str | Path, layer_id: str, *, frame: int, session) -> list[dict]:
+def layer_evidence(
+    shot_folder: str | Path,
+    layer_id: str,
+    *,
+    frame: int,
+    session,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[dict]:
     """Evaluate every lifecycle-active contract, including persistent prior interfaces."""
-    path = selected_artifact_path(shot_folder, "scene_checks.json")
+    path = _scene_checks_path(shot_folder, selected_authority)
     if not path.is_file():
         return []
     try:
-        all_rows = load_rows(shot_folder)
+        all_rows = load_rows(shot_folder, selected_authority)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return [
             {
@@ -143,7 +157,12 @@ RESULT={{'before':before,'after':float(socket.default_value),'node':nodes[0].nam
 
 
 def functional_evidence(
-    shot_folder: str | Path, layer_id: str, *, session, rows: list[dict] | None = None
+    shot_folder: str | Path,
+    layer_id: str,
+    *,
+    session,
+    rows: list[dict] | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> list[dict]:
     """Render transactional control sweeps or deterministic two-frame deltas."""
     selected = (
@@ -151,7 +170,7 @@ def functional_evidence(
         if rows is not None
         else [
             row
-            for row in load_rows(shot_folder)
+            for row in load_rows(shot_folder, selected_authority)
             if isinstance(row, dict)
             and row.get("kind") in FUNCTIONAL_KINDS
             and active_for(row, layer_id, int(row.get("frame", 1)))
@@ -273,7 +292,13 @@ def functional_evidence(
     return out
 
 
-def prior_interface_evidence(shot_folder: str | Path, layer_id: str, *, session) -> list[dict]:
+def prior_interface_evidence(
+    shot_folder: str | Path,
+    layer_id: str,
+    *,
+    session,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[dict]:
     """Revalidate every active interface owned by an earlier layer before mutation.
 
     Contracts retain their own judge frame, so this cannot accidentally validate a rest
@@ -281,10 +306,10 @@ def prior_interface_evidence(shot_folder: str | Path, layer_id: str, *, session)
     attributed to ``fault_owner`` and stops before a downstream builder is asked to work
     around corrupt input.
     """
-    path = selected_artifact_path(shot_folder, "scene_checks.json")
+    path = _scene_checks_path(shot_folder, selected_authority)
     if not path.is_file():
         return []
-    rows = load_rows(shot_folder)
+    rows = load_rows(shot_folder, selected_authority)
     selected = list(prior_interface_rows(rows, layer_id))
     out = []
     by_frame: dict[int, list[dict]] = {}
@@ -303,7 +328,15 @@ def prior_interface_evidence(shot_folder: str | Path, layer_id: str, *, session)
                 raw = []
         out.extend(_evidence(invalid, []))
         out.extend(_evidence(runnable, raw))
-        out.extend(functional_evidence(shot_folder, layer_id, session=session, rows=functional))
+        out.extend(
+            functional_evidence(
+                shot_folder,
+                layer_id,
+                session=session,
+                rows=functional,
+                selected_authority=selected_authority,
+            )
+        )
     return out
 
 

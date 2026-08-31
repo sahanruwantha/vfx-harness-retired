@@ -175,7 +175,7 @@ def _patch_authority(
     monkeypatch.setattr(
         judgment_debt_state,
         "_current_authority",
-        lambda _shot: (BUNDLE_DIGEST, (definition,), (activation,)),
+        lambda _shot, _selected: (BUNDLE_DIGEST, (definition,), (activation,)),
     )
 
 
@@ -210,6 +210,34 @@ def test_current_states_implicitly_start_pending_not_due(
     rows = judgment_debt_state.current_judgment_debt_states(tmp_path)
 
     assert rows == ((definition, activation, JudgmentDebtState.pending(definition)),)
+
+
+def test_current_state_wrapper_resolves_one_authority_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    definition, activation = _definition_and_activation()
+    selected = object()
+    calls: list[Path] = []
+
+    def resolve_once(shot: Path) -> object:
+        calls.append(Path(shot))
+        return selected
+
+    monkeypatch.setattr(judgment_debt_state, "resolve_selected_authority", resolve_once)
+    monkeypatch.setattr(
+        judgment_debt_state,
+        "_current_authority",
+        lambda _shot, authority: (
+            (BUNDLE_DIGEST, (definition,), (activation,))
+            if authority is selected
+            else pytest.fail("judgment debt state used another authority snapshot")
+        ),
+    )
+
+    judgment_debt_state.current_judgment_debt_states(tmp_path)
+
+    assert calls == [tmp_path]
 
 
 def test_exact_activation_transitions_due_then_satisfied(

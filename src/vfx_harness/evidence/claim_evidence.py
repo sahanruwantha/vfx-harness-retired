@@ -9,20 +9,27 @@ permission to edit the scene and not evidence that the critic is wrong.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from vfx_harness.domain.authority_head_records import (
+    decode_canonical_json_object,
+    parse_plan_consumer_view,
+)
 from vfx_harness.domain.contracts import load_document
 from vfx_harness.domain.image_debts import metric_matches_property, normalize_evidence_id
 from vfx_harness.domain.work_units import EXTRA_FRAME_BINDING_RULE
-from vfx_harness.evidence.checks import load_image_contract_payment_rows
+from vfx_harness.evidence.checks import valid_runtime_image_payment_rows
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 OBSERVATION_KINDS = {"measurable", "qualitative"}
 RECONCILIATION_STATES = {
@@ -279,14 +286,79 @@ class ClosureResult:
         return not self.findings
 
 
-def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> ClosureResult:
+def _consumer_view_contract_paths(root: Path) -> tuple[Path, Path] | None:
+    """Resolve the two catalogs from one strict v2 consumer-view marker."""
+
+    marker_path = root / ".plan-consumer-view.json"
+    if not marker_path.exists() and not marker_path.is_symlink():
+        return None
+    if marker_path.is_symlink() or not marker_path.is_file():
+        raise ValueError("plan consumer view marker must be a regular file")
+    try:
+        marker = parse_plan_consumer_view(
+            decode_canonical_json_object(
+                marker_path.read_bytes(),
+                "plan consumer view marker",
+            )
+        )
+    except OSError as exc:
+        raise ValueError("plan consumer view marker is unreadable") from exc
+    paths = (root / "scene_checks.json", root / "checks.json")
+    for path in paths:
+        if not path.is_file():
+            raise ValueError(f"plan consumer view omits {path.name}")
+        observed = hashlib.sha256(path.read_bytes()).hexdigest()
+        if observed != marker.artifact_hashes[path.name]:
+            raise ValueError(
+                f"plan consumer view {path.name} bytes do not match its marker"
+            )
+    return paths
+
+
+def validate_claim_closure(
+    folder: str | Path,
+    layers: Iterable[Any],
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> ClosureResult:
     """Prove that schema-4 required claims close over the plan's concrete contracts."""
 
 
     root = Path(folder)
+    selected = selected_authority
+    consumer_paths = (
+        _consumer_view_contract_paths(root)
+        if selected_authority is None
+        else None
+    )
+    plan_pointer = root / "plans" / "current.json"
+    has_selected_pointer = (
+        plan_pointer.exists()
+        or plan_pointer.is_symlink()
+        or plan_pointer.parent.is_symlink()
+    )
+    if selected is None and consumer_paths is None and has_selected_pointer:
+        # Authority selection imports the plan gate, which imports this closure validator.
+        from vfx_harness.orchestration.authority_selection import (  # noqa: PLC0415
+            resolve_selected_authority,
+        )
 
-    scene_rows = load_document(selected_artifact_path(root, "scene_checks.json"), "contracts")
-    image_rows = load_document(selected_artifact_path(root, "checks.json"), "checks")
+        selected = resolve_selected_authority(root)
+    if consumer_paths is not None:
+        scene_path, checks_path = consumer_paths
+    elif selected is None or selected.plan is None:
+        scene_path = root / "scene_checks.json"
+        checks_path = root / "checks.json"
+    else:
+        try:
+            scene_path = selected.artifact_paths["scene_checks.json"]
+            checks_path = selected.artifact_paths["checks.json"]
+        except KeyError as exc:
+            raise ValueError(
+                "selected claim-closure authority omits required contract artifacts"
+            ) from exc
+    scene_rows = load_document(scene_path, "contracts")
+    image_rows = load_document(checks_path, "checks")
     catalogs = {
         "scene_contract": {str(row.get("id")): row for row in scene_rows if row.get("id")},
         "image_contract": {str(row.get("id")): row for row in image_rows if row.get("id")},
@@ -294,7 +366,7 @@ def validate_claim_closure(folder: str | Path, layers: Iterable[Any]) -> Closure
 
     runtime_by_id = {
         normalize_evidence_id(row.get("id")): row
-        for row in load_image_contract_payment_rows(root)
+        for row in valid_runtime_image_payment_rows(root)
         if normalize_evidence_id(row.get("id"))
         and str(row.get("origin") or "") == "builder"
     }

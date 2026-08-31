@@ -531,13 +531,14 @@ async def _judge_unit_or_layer(
     evidence: list[dict],
     *,
     active_unit=None,
+    selected_authority=None,
     **kwargs,
 ) -> dict:
 
     try:
         contract_frames = {
             str(r.get("id")): int(r.get("frame"))
-            for r in scene_checks.load_rows(shot.folder)
+            for r in scene_checks.load_rows(shot.folder, selected_authority)
             if isinstance(r, dict) and r.get("id") and r.get("frame") is not None
         }
     except (OSError, ValueError):
@@ -554,8 +555,14 @@ async def _judge_unit_or_layer(
             extra_required = _scene_ids_active_at_declared_frames(
                 shot,
                 str(layer.id),
-                _geometry_protected_vis_ids(shot, layer, active_unit),
+                _geometry_protected_vis_ids(
+                    shot,
+                    layer,
+                    active_unit,
+                    selected_authority=selected_authority,
+                ),
                 [int(m.frame)],
+                selected_authority=selected_authority,
             )
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             extra_required = set()
@@ -565,7 +572,11 @@ async def _judge_unit_or_layer(
     if active_unit is not None and layer is not None:
         try:
             due = _scene_ids_active_on_layer(
-                shot, str(layer.id), bound_ids, [int(m.frame)]
+                shot,
+                str(layer.id),
+                bound_ids,
+                [int(m.frame)],
+                selected_authority=selected_authority,
             )
             inactive_ids = bound_ids - due
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
@@ -596,6 +607,7 @@ async def _judge_unit_or_layer(
             scope,
             evidence=evidence,
             active_unit=active_unit,
+            selected_authority=selected_authority,
             **kwargs,
         )
         provisional = tuple(

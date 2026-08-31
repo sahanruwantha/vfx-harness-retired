@@ -1,0 +1,374 @@
+"""Final replay is attributed to immutable accepted bytes and checkpoint state."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tests.architecture.test_staged_architecture import _unit
+from vfx_harness.application import final_render_snapshot
+from vfx_harness.domain.acceptance_outcomes import (
+    AcceptanceMomentOutcome,
+    AcceptanceOutcome,
+)
+from vfx_harness.domain.brief import Shot
+from vfx_harness.domain.refobs import PROMOTED_CONSTRUCTION_SCHEMA
+from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration import unit_state
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionToken,
+)
+from vfx_harness.orchestration.generate_construction import (
+    CONSTRUCTION_PIN,
+    FINAL_RENDER_CONSTRUCTION_POINTER_SCHEMA,
+    pin_for_script,
+)
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _shot(root: Path) -> Shot:
+    return Shot(
+        folder=root,
+        frontmatter={
+            "id": "final-render-snapshot",
+            "frames": 1,
+            "fps": 24,
+            "resolution": [16, 16],
+            "engine": "BLENDER_EEVEE_NEXT",
+        },
+        body="fixture",
+    )
+
+
+def _capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    with_construction: bool = False,
+) -> tuple[
+    final_render_snapshot.FinalRenderSnapshot,
+    Path,
+    Path | None,
+]:
+    shot = _shot(tmp_path)
+    (tmp_path / "brief.md").write_text("accepted brief\n", encoding="utf-8")
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    reference = refs / "moment.png"
+    reference.write_bytes(b"reference")
+    asset = tmp_path / "assets" / "hero" / "model.glb"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"glTFaccepted-asset")
+    (tmp_path / "assets" / "empty-library").mkdir()
+    render = tmp_path / "runs" / "acceptance" / "evidence" / "moment.png"
+    render.parent.mkdir(parents=True)
+    render.write_bytes(b"accepted render")
+
+    unit = _unit("form", script_span="build/units/1/form.py")
+    script = tmp_path / unit.mutates.script_spans[0]
+    script.parent.mkdir(parents=True)
+    script_bytes = b"print('accepted')\n"
+    script.write_bytes(script_bytes)
+    script_digest = _digest(script_bytes)
+    construction_glb = None
+    if with_construction:
+        construction_bytes = b"glTFaccepted-construction"
+        construction_digest = _digest(construction_bytes)
+        construction_glb = (
+            tmp_path / "build" / "construction" / f"{construction_digest}.glb"
+        )
+        construction_glb.parent.mkdir(parents=True)
+        construction_glb.write_bytes(construction_bytes)
+        script.with_suffix(".construction.json").write_text(
+            json.dumps(
+                {
+                    "schema": PROMOTED_CONSTRUCTION_SCHEMA,
+                    "unit_id": "form",
+                    "layer_id": "1",
+                    "unit_digest": unit_state.unit_digest(unit),
+                    "sha256": construction_digest,
+                    "glb": construction_glb.relative_to(tmp_path).as_posix(),
+                    "witnesses": [],
+                    "view_count": 1,
+                    "generator": "fixture",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    layer = SimpleNamespace(id="1", stages=(unit,))
+
+    unit_state.initialize(tmp_path, "1", (unit,), plan_hash="plan")
+    unit_state.transition(tmp_path, "1", unit.id, "planning", reason="fixture")
+    unit_state.transition(tmp_path, "1", unit.id, "building", reason="fixture")
+    unit_state.freeze_checkpoint(
+        tmp_path,
+        "1",
+        unit,
+        active_contract_ids=(),
+        candidate_hash=_digest(b"candidate"),
+        settings_hash=_digest(b"settings"),
+        script_hash=script_digest,
+        input_hash=_digest(b"inputs"),
+    )
+    unit_state.transition(tmp_path, "1", unit.id, "evaluating", reason="fixture")
+    unit_state.transition(tmp_path, "1", unit.id, "passed", reason="fixture")
+
+    chain = (
+        {
+            "layer_id": "1",
+            "status": "passed",
+            "script": unit.mutates.script_spans[0],
+            "script_sha256": script_digest,
+            "units": [
+                {
+                    "unit_id": unit.id,
+                    "unit_digest": unit_state.unit_digest(unit),
+                    "script": unit.mutates.script_spans[0],
+                    "script_sha256": script_digest,
+                }
+            ],
+        },
+    )
+    authority = final_render_snapshot.acceptance_stop.AcceptanceAuthoritySnapshot(
+        bundle_digest="a" * 64,
+        view_digest="b" * 64,
+        judgment_debt_state_digest="c" * 64,
+        acceptance_artifact_sha256="d" * 64,
+        layers_artifact_sha256="e" * 64,
+        selected_moments=(
+            {
+                "id": "M1",
+                "frame": 1,
+                "ref": "refs/moment.png",
+                "ref_sha256": _digest(reference.read_bytes()),
+                "fingerprint": {},
+            },
+        ),
+        chain=chain,
+    )
+    outcome = AcceptanceOutcome(
+        authority_digest=authority.digest,
+        bundle_digest=authority.bundle_digest,
+        view_digest=authority.view_digest,
+        chain_digest=authority.chain_digest,
+        moments=(
+            AcceptanceMomentOutcome(
+                moment_id="M1",
+                passed=True,
+                decided_by="critic",
+                evidence_digest="f" * 64,
+            ),
+        ),
+    )
+    ledger = {
+        "shot": shot.id,
+        "milestones": {"1": {"status": "passed"}},
+        "acceptance": {
+            "outcome": outcome.as_dict(),
+            "moments": {
+                "M1": {
+                    "render": render.relative_to(tmp_path).as_posix(),
+                    "ref": reference.relative_to(tmp_path).as_posix(),
+                }
+            },
+        },
+    }
+    (tmp_path / "shot.json").write_text(
+        json.dumps(ledger, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    selected_artifact = tmp_path / "selected" / "layers.json"
+    selected_artifact.parent.mkdir()
+    selected_artifact.write_text("{}\n", encoding="utf-8")
+    selected = SimpleNamespace(
+        selection_token=AuthoritySelectionToken(
+            plan_revision=1,
+            plan_pointer_sha256="1" * 64,
+            jit_revision=0,
+            jit_pointer_sha256=None,
+        ),
+        artifact_paths={"layers.json": selected_artifact},
+    )
+    monkeypatch.setattr(
+        final_render_snapshot,
+        "load_milestones",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        final_render_snapshot.acceptance_stop,
+        "capture_acceptance_authority",
+        lambda *_args, **_kwargs: authority,
+    )
+    monkeypatch.setattr(
+        final_render_snapshot,
+        "selected_layer_chain",
+        lambda *_args, **_kwargs: (layer,),
+    )
+    scratch = run_artifacts.create(tmp_path, "final-render-snapshot").scratch
+    snapshot = final_render_snapshot.capture_final_render_snapshot(
+        shot,
+        selected,
+        outcome,
+        (script,),
+        scratch=scratch,
+    )
+    return snapshot, script, construction_glb
+
+
+def test_replay_uses_immutable_accepted_script_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, script, _construction = _capture(tmp_path, monkeypatch)
+
+    script.write_bytes(b"print('changed while rendering')\n")
+
+    assert snapshot.replay_scripts[0].read_bytes() == b"print('accepted')\n"
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match=r"accepted source script .* changed during final render",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_checkpoint_invalidation_during_render_invalidates_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, _construction = _capture(tmp_path, monkeypatch)
+    layer = snapshot.layers[0]
+    unit_state.invalidate_checkpoint(
+        tmp_path,
+        "1",
+        "form",
+        layer.stages,
+        reason="injected final-render race",
+        evidence=["fixture"],
+    )
+
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match="no current passed checkpoint",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_ledger_mutation_during_render_invalidates_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, _construction = _capture(tmp_path, monkeypatch)
+    ledger_path = tmp_path / "shot.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["milestones"]["1"]["status"] = "in_progress"
+    ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match="acceptance ledger changed during final render",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_authored_input_mutation_during_render_invalidates_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, _construction = _capture(tmp_path, monkeypatch)
+    (tmp_path / "brief.md").write_text("changed brief\n", encoding="utf-8")
+
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match="authored plan inputs changed during final render",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_authored_snapshot_digest_is_derived_from_the_exact_copied_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = final_render_snapshot.authored_input_bytes
+    calls = 0
+
+    def read_then_mutate(root: Path) -> dict[str, bytes]:
+        nonlocal calls
+        inputs = original(root)
+        calls += 1
+        if calls == 1:
+            (root / "brief.md").write_text("changed after copy read\n", encoding="utf-8")
+        return inputs
+
+    monkeypatch.setattr(
+        final_render_snapshot,
+        "authored_input_bytes",
+        read_then_mutate,
+    )
+
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match="authored plan inputs changed during final render",
+    ):
+        _capture(tmp_path, monkeypatch)
+
+
+def test_asset_mutation_during_render_invalidates_snapshot_but_not_replay_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, _construction = _capture(tmp_path, monkeypatch)
+    source_asset = tmp_path / "assets" / "hero" / "model.glb"
+    replay_asset = snapshot.assets_dir / "hero" / "model.glb"
+
+    source_asset.write_bytes(b"glTFchanged-live-asset")
+
+    assert replay_asset.read_bytes() == b"glTFaccepted-asset"
+    assert (snapshot.assets_dir / "empty-library").is_dir()
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match="shot asset tree changed during final render",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_construction_replay_uses_snapshot_glb_not_live_promoted_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, construction = _capture(
+        tmp_path,
+        monkeypatch,
+        with_construction=True,
+    )
+    assert construction is not None
+    construction.write_bytes(b"glTFchanged-live-construction")
+
+    replay_pointer = snapshot.replay_scripts[0].with_suffix(".construction.json")
+    pointer = json.loads(replay_pointer.read_text(encoding="utf-8"))
+    assert pointer["schema"] == FINAL_RENDER_CONSTRUCTION_POINTER_SCHEMA
+    replay_glb = replay_pointer.parents[3] / pointer["glb"]
+    assert replay_glb.read_bytes() == b"glTFaccepted-construction"
+
+    artifacts = run_artifacts.active(tmp_path).scratch / "blender"
+    artifacts.mkdir(exist_ok=True)
+    session = SimpleNamespace(artifacts=artifacts, cwd=tmp_path)
+    pin_for_script(session, snapshot.replay_scripts[0])
+    pin = json.loads((artifacts / CONSTRUCTION_PIN).read_text(encoding="utf-8"))
+    assert Path(pin["snapshot_glb"]) == replay_glb
+    assert Path(pin["snapshot_glb"]).read_bytes() == b"glTFaccepted-construction"
+
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match=r"acceptance evidence dependency .* changed during final render",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)

@@ -26,20 +26,15 @@ from vfx_harness.domain.judgment_debts import (
     validate_judgment_debt_replay_prefix,
 )
 from vfx_harness.domain.refobs import PROMOTED_CONSTRUCTION_SCHEMA
-from vfx_harness.orchestration.jit_materialization.schema import (
-    CURRENT as JIT_CURRENT,
-)
-from vfx_harness.orchestration.jit_materialization.view_pointer import (
-    JitViewPointerError,
-    canonical_view_hash,
-    parse_jit_view_pointer,
-    require_materialized_layers_match,
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
 )
 from vfx_harness.orchestration.judgment_debt_state import (
     ReplayPrefixReceipt,
-    current_judgment_debt_states,
+    current_judgment_debt_states_for_authority,
 )
-from vfx_harness.orchestration.plan_authority import resolve_current
 
 
 def _digest_json(value: Any) -> str:
@@ -64,50 +59,27 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def selected_view_digest(shot: Path, bundle_digest: str) -> str:
-    """Return the exact selected cumulative consumer-view generation.
+def _selected_snapshot(shot: Path) -> tuple[ResolvedSelectedAuthority, str, str]:
+    """Return bundle/view identity from one completely verified selection snapshot."""
 
-    A stale JIT pointer belongs to a superseded global generation and is inert by
-    contract.  A current pointer is accepted only when all pinned artifacts still have
-    their declared hashes.  Fully materialized non-JIT bundles use the bundle digest as
-    their single consumer-view identity.
-    """
-    pointer_path = shot / JIT_CURRENT
-    if not pointer_path.is_file():
-        return bundle_digest
     try:
-        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"selected JIT consumer view is unreadable: {pointer_path}") from exc
-    try:
-        selected = parse_jit_view_pointer(pointer)
-    except JitViewPointerError as exc:
-        raise ValueError(f"selected JIT consumer view is invalid: {exc}") from exc
-    if selected.bundle_hash != bundle_digest:
-        return bundle_digest
-    documents: dict[str, Any] = {}
-    shot_root = shot.resolve()
-    for name, relative in selected.artifacts.items():
-        candidate = (shot_root / relative).resolve()
-        if not candidate.is_relative_to(shot_root):
-            raise ValueError(
-                f"selected JIT consumer view artifact {name!r} escapes the shot root"
-            )
-        if not candidate.is_file() or _sha256(candidate) != selected.hashes[name]:
-            raise ValueError(f"selected JIT consumer view artifact {name!r} is stale")
-        try:
-            documents[str(name)] = json.loads(candidate.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                f"selected JIT consumer view artifact {name!r} is not canonical JSON"
-            ) from exc
-    try:
-        require_materialized_layers_match(selected, documents["layers.json"])
-    except JitViewPointerError as exc:
+        selected = resolve_selected_authority(shot)
+    except SelectedAuthorityResolutionError as exc:
         raise ValueError(str(exc)) from exc
-    if canonical_view_hash(documents) != selected.view_hash:
-        raise ValueError("selected JIT consumer view_hash does not match its documents")
-    return selected.view_hash
+    bundle = selected.assertion.bundle
+    view = selected.assertion.effective_view
+    if selected.assertion.selection != "selected" or bundle is None or view is None:
+        raise ValueError("judgment observation requires selected plan authority")
+    return selected, bundle.digest, view.digest
+
+
+def selected_view_digest(shot: Path, bundle_digest: str) -> str:
+    """Return the view digest only when it belongs to the same verified snapshot."""
+
+    _selected, observed_bundle, observed_view = _selected_snapshot(shot)
+    if observed_bundle != bundle_digest:
+        raise ValueError("selected plan bundle changed before judgment observation")
+    return observed_view
 
 
 def _parent_chain_digest(receipt: ReplayPrefixReceipt) -> str:
@@ -250,11 +222,14 @@ def compile_current_judgment_observation_request(
     if not isinstance(replay_receipt, ReplayPrefixReceipt):
         raise ValueError("judgment observation requires a ReplayPrefixReceipt")
     shot = Path(shot_folder).resolve()
-    bundle = resolve_current(shot)
+    selected_authority, bundle_digest, selected_view = _selected_snapshot(shot)
     try:
         definition, activation, state = next(
             row
-            for row in current_judgment_debt_states(shot)
+            for row in current_judgment_debt_states_for_authority(
+                shot,
+                selected_authority,
+            )
             if row[0].digest == definition_digest
         )
     except StopIteration as exc:
@@ -270,7 +245,7 @@ def compile_current_judgment_observation_request(
             f"judgment debt {definition.debt_id} observation requires the exact due "
             f"activation; found {state.status}"
         )
-    if bundle.content_hash != definition.seed.bundle_digest:
+    if bundle_digest != definition.seed.bundle_digest:
         raise ValueError(
             f"judgment debt {definition.debt_id} belongs to another selected bundle"
         )
@@ -288,19 +263,18 @@ def compile_current_judgment_observation_request(
     if not reference.is_file():
         raise ValueError(f"judgment reference {ref!r} is missing")
 
-    selected_view = selected_view_digest(shot, bundle.content_hash)
     request = JudgmentObservationRequest(
         definition_digest=definition.digest,
         activation_digest=activation.digest,
         payment_generation_digest=_digest_json(
             {
                 "schema": "vfx-harness.judgment-payment-generation/v1",
-                "bundle_digest": bundle.content_hash,
+                "bundle_digest": bundle_digest,
                 "definition_digest": definition.digest,
                 "activation_digest": activation.digest,
             }
         ),
-        bundle_digest=bundle.content_hash,
+        bundle_digest=bundle_digest,
         owner_view_digest=_digest_json(
             {
                 "schema": "vfx-harness.judgment-owner-view/v1",

@@ -31,7 +31,7 @@ This note proposes four ordered seams, not a new pipeline philosophy:
 
 A supervisor that "does the least thing to remove the blocker" is rejected.
 
-## Implementation status — 2026-08-31
+## Implementation status — 2026-09-01
 
 HIR-0163 has promoted the first bounded mechanism from this proposal: strict
 requirements/JIT schemas, immutable typed debt definitions, relevant DAG-compiled
@@ -106,6 +106,21 @@ while corrupt global selection routes only to engineering as a harness defect. T
 classification and precondition authority, not an amendment transaction: no public amendment
 adapter, successor commit, receipt, evaluator, or dispatch permission has been added.
 
+Accepted HIR-0168 implements the revisioned selection seam. Strict plan-pointer v2 and JIT-view
+v2 heads carry monotone revisions; JIT also binds
+the selected plan revision. One `vfx-harness.authority-selection-token/v1` binds both revisions
+and both exact pointer-byte digests under a permanent shared/read and exclusive/write selection
+lock. Pointer replacement uses a same-directory temporary file, file `fsync`, atomic rename, and
+parent-directory `fsync`. Global plan workspace v3 and materialization candidate v3 preserve the
+exact base token; materialization finalization v3 additionally binds the candidate revision,
+proposed view digest, every proposed artifact byte digest, immutable consumer marker, exact full
+planning-input identity, and gate policy before exact CAS.
+Identical global bundle/outcome publication is a true pointer no-op. A verified JIT pointer is
+effective only when its bundle and `plan_revision` match, so an old view remains inert through a
+semantic plan A → B → A. Selection never unlinks the JIT head, run-scoped consumer views use one
+verified artifact snapshot, and equal-content unpublished revert overlays include their exact
+base token in storage identity rather than overwriting one another's metadata.
+
 This does **not** complete the program. Deterministic equivalence/successor handling for
 already-satisfied discharges, explicit same-bundle lineage/retirement, failure reasons
 beyond no-signal, cross-layer fault routing, the fresh real-model two-layer CLI eval, and
@@ -118,6 +133,11 @@ a legacy checkpoint-and-journal row does not establish the full authority, unit,
 phase, and write-ahead-log identity required by that transition. The motion chamber is
 not the next validation target; the remaining heterogeneous fixtures and real-model
 two-layer seal remain the required bridge.
+
+Revisioned selection also does not make authority publication and durable work-unit state one
+atomic move. That crash boundary still needs an explicit commit and reconciliation protocol.
+There is no amendment adapter binding successor authoring, gate attestation, finding consumption,
+selection, state move, receipt, and independent evaluation, and there is still no controller.
 
 ## Observed stop
 
@@ -1092,15 +1112,22 @@ amendment or human-decision actions dispatchable.
 
 ### Milestone 6 — Bounded dispatch driver
 
-**Implementation note (2026-08-31):** controller implementation has not started. HIR-0166
+**Implementation note (2026-09-01):** controller implementation has not started. HIR-0166
 lands the generic durable receipt protocol and one explicit key-consuming
 `recover_environment` transaction with independent evaluation. HIR-0167 lands the shared
-semantic before-state and strict amendment-v2 proposal, but not amendment execution. Plan/JIT
-pointers still lack a shared monotone revision, lock, and compare-and-swap commit; global planning
-does not yet bind the complete input/candidate gate attestation needed to name one exact successor;
-and there is no amendment adapter, commit record, receipt reconciliation, or independent evaluator.
-There is no controller command or persistent controller journal, and no other action is
-dispatchable.
+semantic before-state and strict amendment-v2 proposal, but not amendment execution. Accepted
+HIR-0168 closes the stale pointer gap with strict revisioned plan/JIT
+heads, one exact two-head selection token, a shared SH/EX lock, durable fsync-and-rename writes,
+and base-bound workspace/candidate/finalization/snapshot contracts. Stale JIT generations remain
+inert by exact plan revision, semantic global no-ops preserve pointer bytes, selection never uses
+unlink, and unpublished overlay identity includes its exact base token.
+
+The remaining transaction gap is no longer pointer ABA. Authority selection and durable
+work-unit state movement are not one atomic commit. Global planning still does not bind the
+complete amendment input/candidate operation needed to execute one exact successor, and there is
+no amendment adapter, finding-consumption commit, receipt reconciliation, or independent
+evaluator. There is no controller command or persistent controller journal, and no other action
+is dispatchable.
 
 **Work**
 

@@ -7,7 +7,9 @@ import fnmatch
 import json
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from vfx_harness.agents.builder.authority import commit_selected_authority
 from vfx_harness.agents.builder.evidence import (
     _forecast_blocker_ids,
     _geometry_protected_vis_ids,
@@ -34,6 +36,9 @@ from vfx_harness.observability.runlog import write as write_run
 from vfx_harness.orchestration.layer_plans import load_layer_outcome, record_revalidation
 from vfx_harness.orchestration.ledger import Ledger, Milestone, plan_strips
 from vfx_harness.orchestration.revalidation import eligibility, input_manifest
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 
 def _blender_version(session: BlenderSession) -> str:
@@ -103,6 +108,7 @@ def _try_revalidate(
     ledger: Ledger,
     t_layer: float,
     active_unit=None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> Ledger | None:
     """Replay an unchanged sealed layer without launching builder or critic models."""
     if layer is None:
@@ -110,7 +116,12 @@ def _try_revalidate(
 
     outcome = load_layer_outcome(shot.folder, str(layer.id))
     blender_version = _blender_version(session)
-    manifest = input_manifest(shot.folder, layer, blender_version=blender_version)
+    manifest = input_manifest(
+        shot.folder,
+        layer,
+        blender_version=blender_version,
+        selected_authority=selected_authority,
+    )
     eligible, reasons = eligibility(outcome, manifest, shot.folder)
     if not eligible:
         if outcome:
@@ -149,12 +160,16 @@ def _try_revalidate(
         return None
 
     sealed = {int(row["frame"]): row for row in outcome.get("canonical") or []}
-    raster_required = _unit_requires_raster(shot, active_unit)
+    raster_required = _unit_requires_raster(
+        shot,
+        active_unit,
+        selected_authority=selected_authority,
+    )
     try:
 
         contract_frames = {
             str(row.get("id")): int(row.get("frame"))
-            for row in _load_contract_rows(shot.folder)
+            for row in _load_contract_rows(shot.folder, selected_authority)
             if isinstance(row, dict)
             and row.get("id")
             and row.get("frame") is not None
@@ -165,7 +180,15 @@ def _try_revalidate(
     frame_results = []
     judges = list(layer.judges)
     for frame, ref in judges:
-        m_i = m if len(judges) == 1 else layer.milestone_at(frame, ref, plan_strips(shot))
+        m_i = (
+            m
+            if len(judges) == 1
+            else layer.milestone_at(
+                frame,
+                ref,
+                plan_strips(shot, selected_authority),
+            )
+        )
         if raster_required:
             render_rel = builder_package()._stash_render(
                 session,
@@ -175,7 +198,13 @@ def _try_revalidate(
                 mode=_unit_raster_mode(active_unit),
             )
             evidence = builder_package()._render_evidence(
-                shot, layer, m_i, render_rel, session, active_unit=active_unit
+                shot,
+                layer,
+                m_i,
+                render_rel,
+                session,
+                active_unit=active_unit,
+                selected_authority=selected_authority,
             )
             authoritative = [row for row in evidence if row.get("authoritative")]
             prior = sealed.get(int(frame)) or {}
@@ -201,7 +230,13 @@ def _try_revalidate(
         else:
             render_rel = ""
             evidence = builder_package()._render_evidence(
-                shot, layer, m_i, None, session, active_unit=active_unit
+                shot,
+                layer,
+                m_i,
+                None,
+                session,
+                active_unit=active_unit,
+                selected_authority=selected_authority,
             )
             extra_required: set[str] = set()
             inactive_ids: set[str] = set()
@@ -210,12 +245,22 @@ def _try_revalidate(
                     extra_required = _scene_ids_active_at_declared_frames(
                         shot,
                         str(layer.id),
-                        _geometry_protected_vis_ids(shot, layer, active_unit),
+                        _geometry_protected_vis_ids(
+                            shot,
+                            layer,
+                            active_unit,
+                            selected_authority=selected_authority,
+                        ),
                         [int(frame)],
+                        selected_authority=selected_authority,
                     )
                     bound_ids = set(_unit_evidence_ids(active_unit, int(frame)) or set())
                     due = _scene_ids_active_on_layer(
-                        shot, str(layer.id), bound_ids, [int(frame)]
+                        shot,
+                        str(layer.id),
+                        bound_ids,
+                        [int(frame)],
+                        selected_authority=selected_authority,
                     )
                     inactive_ids = bound_ids - due
             extra_required.update(_forecast_blocker_ids(evidence))
@@ -268,7 +313,27 @@ def _try_revalidate(
     ledger.record_round(m, kind="revalidate", index=0, render=canonical[0][1]["render"], verdict=canonical[0][1])
     ledger.mark(m, "passed", best=best)
     attempt = int(ledger._slot(m).get("attempt") or 0)
-    record_revalidation(shot.folder, str(layer.id), run_id=RUN_ID, attempt=attempt, evidence=frame_results)
+    if selected_authority is None:
+        record_revalidation(
+            shot.folder,
+            str(layer.id),
+            run_id=RUN_ID,
+            attempt=attempt,
+            evidence=frame_results,
+        )
+    else:
+        commit_selected_authority(
+            shot.folder,
+            selected_authority,
+            operation=f"record layer {layer.id} revalidation",
+            mutation=lambda: record_revalidation(
+                shot.folder,
+                str(layer.id),
+                run_id=RUN_ID,
+                attempt=attempt,
+                evidence=frame_results,
+            ),
+        )
     rec_path = write_run(
         shot.folder,
         layer,

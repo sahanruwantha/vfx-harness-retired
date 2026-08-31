@@ -9,8 +9,21 @@ from pathlib import Path
 
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.domain.unit_outcomes import load_hypothesis_falsification
+from vfx_harness.orchestration.authority_selection import resolve_selected_authority
+from vfx_harness.orchestration.authority_selection_heads import (
+    AuthoritySelectionHeadError,
+    read_authority_selection_heads,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    authority_selection_lock,
+    require_matching_authority_selection_token,
+)
 from vfx_harness.orchestration.ledger import load_layers, load_layers_from_path
-from vfx_harness.orchestration.plan_authority import active_plan_hash, resolve_current, resolve_published_bundle
+from vfx_harness.orchestration.plan_authority import resolve_published_bundle
+from vfx_harness.orchestration.selected_authority_guard import (
+    commit_selected_authority,
+)
 from vfx_harness.orchestration.unit_state import (
     apply_replan,
     invalidate_checkpoint,
@@ -24,21 +37,32 @@ from vfx_harness.orchestration.unit_state import load as load_unit_state
 
 def _invalidate(args: argparse.Namespace) -> int:
     shot = load_shot(args.folder)
-    layers = load_layers(shot)
+    selected = resolve_selected_authority(shot.folder)
+    layers = load_layers(shot, selected_authority=selected)
     try:
         layer = layers[str(args.layer)]
     except KeyError as exc:
         raise SystemExit(f"unknown layer {args.layer!r}") from exc
     if args.unit not in {unit.id for unit in layer.stages}:
         raise SystemExit(f"unknown work unit {args.unit!r} in layer {args.layer}")
-    record = invalidate_checkpoint(
-        shot.folder,
-        str(args.layer),
-        args.unit,
-        layer.stages,
-        reason=args.reason,
-        evidence=args.evidence,
-    )
+    try:
+        record = commit_selected_authority(
+            shot.folder,
+            selected,
+            operation="work-unit checkpoint invalidation",
+            mutation=lambda: invalidate_checkpoint(
+                shot.folder,
+                str(args.layer),
+                args.unit,
+                layer.stages,
+                reason=args.reason,
+                evidence=args.evidence,
+            ),
+        )
+    except AuthoritySelectionConflict as exc:
+        raise SystemExit(
+            "selected authority changed before durable checkpoint invalidation"
+        ) from exc
     affected = ", ".join(record["affected"])
     print(f"invalidated {args.unit}; affected: {affected}")
     return 0
@@ -128,13 +152,16 @@ def _unchanged_external_fault_owners(
 def _replan(args: argparse.Namespace) -> int:
     """Move durable unit state from one proven bundle DAG to current authority."""
     shot = load_shot(args.folder)
-    current = resolve_current(shot.folder)
+    selected = resolve_selected_authority(shot.folder)
+    if selected.plan is None:
+        raise SystemExit("replan requires selected global plan authority")
+    current = selected.plan.bundle
     base = resolve_published_bundle(
         shot.folder,
         run_id=args.base_run,
         content_hash=args.base_bundle,
     )
-    current_layers = load_layers(shot)
+    current_layers = load_layers_from_path(selected.artifact_paths["layers.json"])
     base_layers = load_layers_from_path(base.root / "layers.json")
     layer_id = str(args.layer)
     try:
@@ -150,7 +177,9 @@ def _replan(args: argparse.Namespace) -> int:
     # view's layers.json, not the bundle's sparse document (they differ by design once
     # a layer materializes).
 
-    new_plan_hash = active_plan_hash(shot.folder, fallback_root=current.root)
+    new_plan_hash = hashlib.sha256(
+        selected.artifact_paths["layers.json"].read_bytes()
+    ).hexdigest()
     evidence = list(getattr(args, "evidence", None) or [])
     falsification_id = None
     hard_approval = getattr(args, "hard_constraint_approval", None)
@@ -257,21 +286,32 @@ def _replan(args: argparse.Namespace) -> int:
             f"orphaned={','.join(orphaned) or '-'}"
         )
         return 0
-    record = apply_replan(
-        shot.folder,
-        layer_id,
-        old_units,
-        new_layer.stages,
-        old_plan_hash=old_plan_hash,
-        new_plan_hash=new_plan_hash,
-        owner=args.owner,
-        trigger=args.trigger,
-        evidence=evidence,
-        falsification_id=falsification_id,
-        hard_constraint_approval=hard_approval,
-        discard_accepted=bool(getattr(args, "discard_accepted", False)),
-        reopen=reopen,
-    )
+    try:
+        with authority_selection_lock(shot.folder, exclusive=False):
+            heads = read_authority_selection_heads(shot.folder)
+            require_matching_authority_selection_token(
+                selected.selection_token,
+                heads.token,
+            )
+            record = apply_replan(
+                shot.folder,
+                layer_id,
+                old_units,
+                new_layer.stages,
+                old_plan_hash=old_plan_hash,
+                new_plan_hash=new_plan_hash,
+                owner=args.owner,
+                trigger=args.trigger,
+                evidence=evidence,
+                falsification_id=falsification_id,
+                hard_constraint_approval=hard_approval,
+                discard_accepted=bool(getattr(args, "discard_accepted", False)),
+                reopen=reopen,
+            )
+    except (AuthoritySelectionConflict, AuthoritySelectionHeadError) as exc:
+        raise SystemExit(
+            "selected authority changed before durable replan state mutation"
+        ) from exc
     print(
         f"replanned layer {layer_id} from {base.content_hash[:16]} to "
         f"{current.content_hash[:16]}; "
@@ -287,7 +327,8 @@ def _replan(args: argparse.Namespace) -> int:
 def _retry(args: argparse.Namespace) -> int:
     """Reopen one failed/interrupted unit without erasing its history or dependency closure."""
     shot = load_shot(args.folder)
-    layers = load_layers(shot)
+    selected = resolve_selected_authority(shot.folder)
+    layers = load_layers(shot, selected_authority=selected)
     layer_id = str(args.layer)
     try:
         layer = layers[layer_id]
@@ -305,14 +346,24 @@ def _retry(args: argparse.Namespace) -> int:
             f"work unit {args.unit!r} is {current!r}; retry requires one of "
             f"{sorted(retryable_from)}"
         )
-    transition(
-        shot.folder,
-        layer_id,
-        args.unit,
-        "retryable",
-        reason=args.reason,
-        metadata={"evidence": list(args.evidence)},
-    )
+    try:
+        commit_selected_authority(
+            shot.folder,
+            selected,
+            operation="work-unit retry transition",
+            mutation=lambda: transition(
+                shot.folder,
+                layer_id,
+                args.unit,
+                "retryable",
+                reason=args.reason,
+                metadata={"evidence": list(args.evidence)},
+            ),
+        )
+    except AuthoritySelectionConflict as exc:
+        raise SystemExit(
+            "selected authority changed before durable retry transition"
+        ) from exc
     print(f"retryable: layer {layer_id} unit {args.unit}")
     return 0
 

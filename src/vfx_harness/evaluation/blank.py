@@ -19,6 +19,7 @@ from PIL import Image
 
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration import authority_selection
 from vfx_harness.orchestration.ledger import Milestone, load_axes, load_layers
 
 from ..agents.builder import _critique
@@ -46,13 +47,21 @@ def language_prior(axis: dict) -> bool:
 async def measure(shot: Shot, *, layer_id: str | None = None,
                   ref_rel: str | None = None, verbose: bool = True) -> dict:
 
-    axes = load_axes(shot)
+    selected_authority = authority_selection.resolve_selected_authority(shot.folder)
+    axes = load_axes(shot, selected_authority)
     scope = None
     reads = ""
     frame = 1
     if layer_id:
-        layer = load_layers(shot)[layer_id]
-        scope = layer_scope(shot, layer)
+        layer = load_layers(
+            shot,
+            selected_authority=selected_authority,
+        )[layer_id]
+        scope = layer_scope(
+            shot,
+            layer,
+            selected_authority=selected_authority,
+        )
         frame = layer.judge_frame
         reads = layer.reads
         ref_rel = ref_rel or layer.judge_ref
@@ -72,7 +81,16 @@ async def measure(shot: Shot, *, layer_id: str | None = None,
     m = Milestone("BLANK", frame, ref_rel, reads or "(blank-frame control)", ())
     log(f"blank-frame control: black {dest.name} vs {ref_rel}"
         + (f" under layer {layer_id} scope" if layer_id else " on the FULL rubric"))
-    verdict = await _critique(shot, m, cand_abs, axes, _NoSession(), verbose, scope)
+    verdict = await _critique(
+        shot,
+        m,
+        cand_abs,
+        axes,
+        _NoSession(),
+        verbose,
+        scope,
+        selected_authority=selected_authority,
+    )
 
     per_axis = {}
     for key, _desc in axes:

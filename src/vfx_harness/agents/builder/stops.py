@@ -41,13 +41,14 @@ from vfx_harness.domain.unit_outcomes import (
 )
 from vfx_harness.observability.run_artifacts import RunLayout
 from vfx_harness.orchestration import (
-    judgment_observation,
     layer_plans,
-    plan_authority,
     unit_state,
 )
 from vfx_harness.orchestration import ledger as ledger_runtime
-from vfx_harness.orchestration.authority_selection import resolve_selected_authority
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    resolve_selected_authority,
+)
 
 _FINDING_FIELDS = {
     "schema",
@@ -254,8 +255,12 @@ def _finding_artifact(shot_root: Path, record_id: str) -> Path:
 def _current_unit(
     shot: Shot,
     finding: HypothesisFalsification,
+    selected_authority: ResolvedSelectedAuthority,
 ):
-    layers = ledger_runtime.load_layers(shot)
+    layers = ledger_runtime.load_layers(
+        shot,
+        selected_authority=selected_authority,
+    )
     layer = layers.get(finding.layer)
     if layer is None:
         raise ValueError(
@@ -296,30 +301,25 @@ def compile_hypothesis_falsification_stop(
     _require_current_finding_shape(raw)
     finding = HypothesisFalsification.parse(raw, "builder terminal hypothesis falsification")
 
-    bundle = plan_authority.resolve_current(shot_root)
-    if bundle.content_hash != finding.bundle_hash:
-        raise ValueError(
-            "hypothesis falsification belongs to superseded bundle authority; "
-            f"current={bundle.content_hash}, finding={finding.bundle_hash}"
-        )
-    view_digest = judgment_observation.selected_view_digest(
-        shot_root,
-        bundle.content_hash,
-    )
     selected_authority = resolve_selected_authority(shot_root)
     selected_bundle = selected_authority.assertion.bundle
     selected_view = selected_authority.assertion.effective_view
     if (
         selected_authority.assertion.selection != "selected"
+        or selected_authority.plan is None
         or selected_bundle is None
         or selected_view is None
-        or selected_bundle.digest != finding.bundle_hash
-        or selected_view.digest != view_digest
     ):
         raise ValueError(
             "hypothesis falsification does not match the shared selected-authority state"
         )
-    layers_path = plan_authority.selected_artifact_path(shot_root, "layers.json")
+    if selected_bundle.digest != finding.bundle_hash:
+        raise ValueError(
+            "hypothesis falsification belongs to superseded bundle authority; "
+            f"current={selected_bundle.digest}, finding={finding.bundle_hash}"
+        )
+    view_digest = selected_view.digest
+    layers_path = selected_authority.artifact_paths["layers.json"]
     layers_digest = _sha256(layers_path)
     if layers_digest != finding.plan_hash:
         raise ValueError(
@@ -327,7 +327,7 @@ def compile_hypothesis_falsification_stop(
             f"current={layers_digest}, finding={finding.plan_hash}"
         )
 
-    layer, current_unit = _current_unit(shot, finding)
+    layer, current_unit = _current_unit(shot, finding, selected_authority)
     current_unit_digest = unit_state.unit_digest(current_unit)
     if current_unit_digest != finding.unit_hash:
         raise ValueError(
@@ -607,23 +607,18 @@ def compile_hypothesis_falsification_stop(
             ),
         )
     # Re-read every mutable input before granting even amendment authority.
-    bundle_after = plan_authority.resolve_current(shot_root)
-    view_after = judgment_observation.selected_view_digest(
-        shot_root,
-        bundle_after.content_hash,
-    )
     state_after = unit_state.load(shot_root, finding.layer)
     selected_authority_after = resolve_selected_authority(shot_root)
     if (
-        bundle_after.content_hash != finding.bundle_hash
-        or view_after != view_digest
+        selected_authority_after.selection_token
+        != selected_authority.selection_token
+        or selected_authority_after.assertion != selected_authority.assertion
         or _sha256(layers_path) != finding.plan_hash
         or _sha256(unit_plan) != finding.unit_plan_hash
         or _sha256(state_path) != state_file_sha256
         or _sha256(finding_path) != finding_file_sha256
         or state_after != state
         or _evidence_rows(shot_root, finding) != evidence_rows
-        or selected_authority_after != selected_authority
     ):
         raise ValueError("builder authority changed while its typed stop was compiled")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import sys
@@ -13,6 +14,9 @@ from vfx_harness.agents import planner
 from vfx_harness.agents.planner import kickoff as kickoff_runtime
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import revalidation
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionToken,
+)
 from vfx_harness.orchestration.layer_plans import write_layer_outcome
 
 
@@ -298,15 +302,54 @@ def _mark_passed(folder, layer_id: str, *unit_ids: str) -> None:
     path.write_text(_json.dumps(value), encoding="utf-8")
 
 
-def _patch_remat_design(monkeypatch, tmp_path, *, new_units, overlay_name="overlay"):
+def _patch_remat_design(
+    monkeypatch,
+    tmp_path,
+    *,
+    base_units,
+    new_units,
+    overlay_name="overlay",
+):
     """Skip model design; publish `new_units` as the replacement DAG."""
     overlay = tmp_path / overlay_name
     overlay.mkdir(exist_ok=True)
     called = {"materialize": False}
 
+    base_layers = tmp_path / "base-selected-layers.json"
+    published_layers = tmp_path / "published-selected-layers.json"
+    base_layers.write_text('{"generation":"base"}\n', encoding="utf-8")
+    published_layers.write_text('{"generation":"published"}\n', encoding="utf-8")
+    base_token = AuthoritySelectionToken(
+        plan_revision=1,
+        plan_pointer_sha256=hashlib.sha256(b"plan-head").hexdigest(),
+        jit_revision=1,
+        jit_pointer_sha256=hashlib.sha256(b"base-jit-head").hexdigest(),
+    )
+    published_token = AuthoritySelectionToken(
+        plan_revision=1,
+        plan_pointer_sha256=base_token.plan_pointer_sha256,
+        jit_revision=2,
+        jit_pointer_sha256=hashlib.sha256(b"published-jit-head").hexdigest(),
+    )
+    bundle = SimpleNamespace(root=tmp_path, content_hash="b" * 64)
+    base_authority = SimpleNamespace(
+        plan=SimpleNamespace(bundle=bundle),
+        artifact_paths={"layers.json": base_layers},
+        selection_token=base_token,
+    )
+    published_authority = SimpleNamespace(
+        plan=SimpleNamespace(bundle=bundle),
+        artifact_paths={"layers.json": published_layers},
+        selection_token=published_token,
+    )
+    selections = [base_authority, published_authority]
     monkeypatch.setattr(
-        "vfx_harness.orchestration.plan_authority.resolve_current",
-        lambda folder: SimpleNamespace(root=tmp_path, content_hash="b" * 64),
+        "vfx_harness.agents.planner.rematerialize.resolve_selected_authority",
+        lambda _folder: selections.pop(0),
+    )
+    monkeypatch.setattr(
+        "vfx_harness.agents.planner.rematerialize.read_authority_selection_heads",
+        lambda _folder: SimpleNamespace(token=published_token),
     )
     monkeypatch.setattr(
         planner,
@@ -314,7 +357,7 @@ def _patch_remat_design(monkeypatch, tmp_path, *, new_units, overlay_name="overl
         lambda path: {"2": SimpleNamespace(id="2", execution="jit_deferred", stages=())},
     )
     monkeypatch.setattr(
-        "vfx_harness.orchestration.jit_materialization.revert_materialization",
+        "vfx_harness.agents.planner.rematerialize.revert_materialization",
         lambda *a, **k: overlay,
     )
 
@@ -325,19 +368,19 @@ def _patch_remat_design(monkeypatch, tmp_path, *, new_units, overlay_name="overl
     monkeypatch.setattr(
         planner,
         "load_layers",
-        lambda shot: {"2": SimpleNamespace(id="2", stages=new_units)},
+        lambda shot, *, replacing_layer_id=None, selected_authority=None: {
+            "2": SimpleNamespace(
+                id="2",
+                execution="ready",
+                stages=(
+                    base_units
+                    if selected_authority is base_authority
+                    else new_units
+                ),
+            )
+        },
     )
-    hashes = ["old-hash"]
-
-    def fake_plan_hash(folder, **kwargs):
-        if hashes:
-            return hashes.pop(0)
-        return "new-hash"
-
-    monkeypatch.setattr(
-        "vfx_harness.orchestration.plan_authority.active_plan_hash",
-        fake_plan_hash,
-    )
+    called["new_plan_hash"] = hashlib.sha256(published_layers.read_bytes()).hexdigest()
     return called
 
 
@@ -360,7 +403,12 @@ def test_rematerialize_preserves_accepted_units_whose_digests_match(
     new_units = (materials, new_atmosphere, lighting)
     initialize(tmp_path, "2", old_units, plan_hash="old-hash")
     _mark_passed(tmp_path, "2", "materials", "atmosphere", "lighting")
-    called = _patch_remat_design(monkeypatch, tmp_path, new_units=new_units)
+    called = _patch_remat_design(
+        monkeypatch,
+        tmp_path,
+        base_units=old_units,
+        new_units=new_units,
+    )
     shot = SimpleNamespace(folder=tmp_path, id="shot")
     layer = SimpleNamespace(id="2", execution="ready", stages=old_units)
 
@@ -408,10 +456,11 @@ def test_rematerialize_uses_digest_bound_state_after_global_republication(
     new_units = (_unit("aim_target"), _unit("camera_rig", depends_on=["aim_target"]))
     initialize(tmp_path, "2", old_units, plan_hash="durable-old-hash")
     _mark_passed(tmp_path, "2", "old_camera", "old_proxies")
-    _patch_remat_design(monkeypatch, tmp_path, new_units=new_units)
-    monkeypatch.setattr(
-        "vfx_harness.orchestration.plan_authority.active_plan_hash",
-        lambda folder, **kwargs: "selected-new-hash",
+    called = _patch_remat_design(
+        monkeypatch,
+        tmp_path,
+        base_units=new_units,
+        new_units=new_units,
     )
     shot = SimpleNamespace(folder=tmp_path, id="shot")
     layer = SimpleNamespace(id="2", execution="ready", stages=new_units)
@@ -428,7 +477,7 @@ def test_rematerialize_uses_digest_bound_state_after_global_republication(
 
     anyio.run(invoke)
     state = load(tmp_path, "2")
-    assert state["plan_hash"] == "selected-new-hash"
+    assert state["plan_hash"] == called["new_plan_hash"]
     assert set(state["units"]) == {"aim_target", "camera_rig"}
     assert {row["status"] for row in state["units"].values()} == {"pending"}
     record = state["replans"][-1]
@@ -453,14 +502,14 @@ def test_direct_materialization_reconciles_prior_generation_state(
     new_units = (_unit("massing"), _unit("roof", depends_on=["massing"]))
     initialize(tmp_path, "2", old_units, plan_hash="old-generation")
     _mark_passed(tmp_path, "2", "facade", "windows")
-    monkeypatch.setattr(
-        "vfx_harness.orchestration.plan_authority.active_plan_hash",
-        lambda folder, **kwargs: "selected-materialized-view",
-    )
     shot = SimpleNamespace(folder=tmp_path, id="shot")
     layer = SimpleNamespace(id="2", stages=new_units)
 
-    changed = planner._reconcile_materialized_layer_state(shot, layer)
+    changed = planner._reconcile_materialized_layer_state(
+        shot,
+        layer,
+        new_plan_hash="selected-materialized-view",
+    )
 
     assert changed is True
     state = load(tmp_path, "2")
@@ -487,14 +536,10 @@ def test_direct_materialization_reconciliation_is_noop_for_matching_digests(
     units = (_unit("massing"),)
     initialize(tmp_path, "2", units, plan_hash="old-view-hash")
     before = load(tmp_path, "2")
-    monkeypatch.setattr(
-        "vfx_harness.orchestration.plan_authority.active_plan_hash",
-        lambda folder, **kwargs: "new-combined-view-hash",
-    )
-
     changed = planner._reconcile_materialized_layer_state(
         SimpleNamespace(folder=tmp_path, id="shot"),
         SimpleNamespace(id="2", stages=units),
+        new_plan_hash="new-combined-view-hash",
     )
 
     assert changed is False
@@ -512,7 +557,12 @@ def test_rematerialize_unusable_base_does_not_wipe_accepted_units(
     units = (_unit("materials"),)
     initialize(tmp_path, "2", units, plan_hash="old-hash")
     _mark_passed(tmp_path, "2", "materials")
-    _patch_remat_design(monkeypatch, tmp_path, new_units=units)
+    _patch_remat_design(
+        monkeypatch,
+        tmp_path,
+        base_units=units,
+        new_units=units,
+    )
     superseded = {"called": False}
 
     def boom(*args, **kwargs):
@@ -556,7 +606,12 @@ def test_rematerialize_unusable_base_wipes_only_with_discard_accepted(
     units = (_unit("materials"),)
     initialize(tmp_path, "2", units, plan_hash="old-hash")
     _mark_passed(tmp_path, "2", "materials")
-    _patch_remat_design(monkeypatch, tmp_path, new_units=units)
+    _patch_remat_design(
+        monkeypatch,
+        tmp_path,
+        base_units=units,
+        new_units=units,
+    )
 
     def boom(*args, **kwargs):
         raise ValueError("replan base layer/plan hash does not match active state")

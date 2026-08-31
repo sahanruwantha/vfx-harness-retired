@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions, query
@@ -21,14 +22,26 @@ from vfx_harness.knowledge.recipes import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import log, log_message
 from vfx_harness.orchestration import plan_authority, unit_state
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.authority_selection_heads import (
+    AuthoritySelectionHeadError,
+    read_authority_selection_heads,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    authority_selection_lock,
+    require_matching_authority_selection_token,
+)
 from vfx_harness.orchestration.jit_materialization import (
     MATERIALIZATION_SCHEMA,
     inspect_materialization,
-    materialization_finalization_attested,
+    materialization_finalization_current,
     publish_materialization,
     revert_materialization,
     seed_materialization_candidate,
-    selected_view_artifact,
 )
 from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 
@@ -42,6 +55,7 @@ async def _materialize_deferred_layer(
     max_turns: int,
     replacing: str | None = None,
     overlay_root: str | Path | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> None:
     """Close one layer's owned requirements with concrete authority, then select its view.
 
@@ -49,7 +63,14 @@ async def _materialize_deferred_layer(
     Publication is the only select; a crash must not have already moved the live pointer.
     """
 
-    bundle = plan_authority.resolve_current(shot.folder)
+    selected_authority = (
+        resolve_selected_authority(shot.folder)
+        if selected_authority is None
+        else selected_authority
+    )
+    if selected_authority.plan is None:
+        raise ValueError("cannot materialize without selected global plan authority")
+    bundle = selected_authority.plan.bundle
     layout = run_artifacts.ensure(shot.folder, command="plan-layer")
     identity_segment = layer_identity_segment(str(layer.id))
     target = layout.scratch / f"jit-{identity_segment}.json"
@@ -60,6 +81,7 @@ async def _materialize_deferred_layer(
         target,
         layer_id=str(layer.id),
         bundle_hash=bundle.content_hash,
+        base_selection=selected_authority.selection_token,
     )
 
     def _validate_target() -> list[str]:
@@ -69,33 +91,29 @@ async def _materialize_deferred_layer(
         # dressable grants) live only in their overlays, and the sparse base made the
         # write hook refuse dresses the publication path would accept (run bm9og09xw).
         try:
-            base_layers = selected_view_artifact(
-                shot.folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
-            ) or plan_authority.artifact_path(shot.folder, "layers.json")
-            base_scene_checks = selected_view_artifact(
-                shot.folder,
-                "scene_checks.json",
-                bundle.content_hash,
-                overlay_root=overlay_root,
-            ) or plan_authority.artifact_path(shot.folder, "scene_checks.json")
-            base_requirements = selected_view_artifact(
-                shot.folder,
-                "requirements.json",
-                bundle.content_hash,
-                overlay_root=overlay_root,
-            ) or plan_authority.artifact_path(shot.folder, "requirements.json")
+            def _base(name: str) -> Path:
+                if overlay_root is None:
+                    return selected_authority.artifact_paths[name]
+                path = Path(overlay_root) / name
+                if path.is_symlink() or not path.is_file():
+                    raise OSError(
+                        f"materialization overlay base is missing real artifact {name}"
+                    )
+                return path
+
             findings, _materialized = inspect_materialization(
                 bundle.root,
                 target,
                 expected_bundle_hash=bundle.content_hash,
-                base_layers_path=base_layers,
-                base_scene_checks_path=base_scene_checks,
+                base_layers_path=_base("layers.json"),
+                base_scene_checks_path=_base("scene_checks.json"),
                 resolutions_path=shot.folder / "state" / "plan-resolutions.jsonl",
-                base_requirements_path=base_requirements,
+                base_requirements_path=_base("requirements.json"),
             )
             return findings
         except OSError as exc:
             return [str(exc)]
+
     system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
 The harness has already seeded `{rel_target}` with schema `{MATERIALIZATION_SCHEMA}`, bundle
 identity, exact global layer structure, and empty collections. Do not generate or Write the whole
@@ -191,6 +209,7 @@ global authority, create unit state, write prose, or write another file."""
         rel_target,
         replacing,
         overlay_root=overlay_root,
+        selected_authority=selected_authority,
     )
     lab_dir = layout.scratch / "plan-lab" / f"{identity_segment}-materialize"
     pserver, pnames = build_plan_tools(
@@ -198,21 +217,38 @@ global authority, create unit state, write prose, or write another file."""
         blender=blender,
         lab_dir=lab_dir,
         measure_ref_paths=tuple(ref for _frame, ref in layer.judges),
-        enabled_tools=frozenset({
-            "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
-            "escalate_vocabulary_gap", "stage_materialization_unit",
-            "unstage_materialization_unit", "mint_refobs",
-            "materialization_status", "finalize_materialization", "patch_materialization",
-        }),
+        enabled_tools=frozenset(
+            {
+                "measure_ref",
+                "spike",
+                "ask_supervisor",
+                "evidence_vocabulary",
+                "escalate_vocabulary_gap",
+                "stage_materialization_unit",
+                "unstage_materialization_unit",
+                "mint_refobs",
+                "materialization_status",
+                "finalize_materialization",
+                "patch_materialization",
+            }
+        ),
         candidate_materialization=target,
         overlay_root=overlay_root,
     )
     rserver, rnames = build_recipe_tools()
     materialization_tools = _phase_tools(
-        pnames, "measure_ref", "spike", "ask_supervisor", "evidence_vocabulary",
-        "escalate_vocabulary_gap", "stage_materialization_unit",
-        "unstage_materialization_unit", "mint_refobs",
-        "materialization_status", "finalize_materialization", "patch_materialization",
+        pnames,
+        "measure_ref",
+        "spike",
+        "ask_supervisor",
+        "evidence_vocabulary",
+        "escalate_vocabulary_gap",
+        "stage_materialization_unit",
+        "unstage_materialization_unit",
+        "mint_refobs",
+        "materialization_status",
+        "finalize_materialization",
+        "patch_materialization",
     )
     options = ClaudeAgentOptions(
         model=model,
@@ -265,8 +301,10 @@ global authority, create unit state, write prose, or write another file."""
     try:
         await run_session(
             _attempt,
-            succeeded=lambda: materialization_finalization_attested(
-                target, bundle_hash=bundle.content_hash
+            succeeded=lambda: materialization_finalization_current(
+                shot.folder,
+                target,
+                bundle_hash=bundle.content_hash,
             ),
             label=f"materialize layer {layer.id}",
             accept_max_turns_if_succeeded=True,
@@ -298,6 +336,7 @@ global authority, create unit state, write prose, or write another file."""
         raise run_artifacts.TypedStop(3, envelope) from exc
     log(f"deferred layer {layer.id} materialized against bundle {bundle.content_hash[:12]}")
 
+
 DRAFT_MODEL = DEFAULT_EXECUTION_MODEL
 # Draft and verify deliberately share the configured planner model. Their independence
 # comes from distinct sessions and an adversarial contract, not from pretending two calls
@@ -307,10 +346,7 @@ VERIFY_MODEL = DEFAULT_EXECUTION_MODEL
 MODEL = VERIFY_MODEL  # single-pass default
 
 
-
-async def _rematerialize_layer(
-    shot, layer, authority: tuple[str, str, list[str], bool], *, model, blender, max_turns
-):
+async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str], bool], *, model, blender, max_turns):
     """Replace a materialized layer view and move durable unit state through apply_replan.
 
     Materialization is a decision, and a decision proven wrong must be replaceable —
@@ -326,12 +362,24 @@ async def _rematerialize_layer(
 
     owner, trigger, evidence, discard_accepted = authority
     layer_id = str(layer.id)
-    state = unit_state.load(shot.folder, layer_id)
-    accepted = sorted(
-        uid
-        for uid, row in (state.get("units") or {}).items()
-        if row.get("status") == "passed"
+    base_authority = resolve_selected_authority(shot.folder)
+    if base_authority.plan is None:
+        raise ValueError("cannot rematerialize without selected global plan authority")
+    selected_layers = planner_package().load_layers(
+        shot,
+        replacing_layer_id=layer_id,
+        selected_authority=base_authority,
     )
+    try:
+        selected_layer = selected_layers[layer_id]
+    except KeyError as exc:
+        raise ValueError(f"selected authority has no layer {layer_id!r}") from exc
+    if selected_layer != layer:
+        raise ValueError(
+            f"rematerialization layer {layer_id} is stale relative to selected authority"
+        )
+    state = unit_state.load(shot.folder, layer_id)
+    accepted = sorted(uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed")
     if accepted and discard_accepted:
         log(
             f"discard-accepted: accepted unit(s) {', '.join(accepted)} may retire "
@@ -340,16 +388,14 @@ async def _rematerialize_layer(
         )
     elif accepted:
         log(
-            f"accepted unit(s) {', '.join(accepted)} stay unless the replacement "
-            "DAG invalidates them",
+            f"accepted unit(s) {', '.join(accepted)} stay unless the replacement DAG invalidates them",
             1,
         )
 
-    def _plan_hash() -> str:
-
-        return plan_authority.active_plan_hash(shot.folder)
-
-    old_units, old_plan_hash = layer.stages, _plan_hash()
+    old_units = layer.stages
+    old_plan_hash = hashlib.sha256(
+        base_authority.artifact_paths["layers.json"].read_bytes()
+    ).hexdigest()
     state_backed_base = False
     if state:
         # Durable state is the accepted base identity. Global republication can make
@@ -365,11 +411,10 @@ async def _rematerialize_layer(
             old_units = ()
             state_backed_base = True
             log(
-                "selected layer no longer reconstructs the durable replan base; "
-                "using digest-bound work-unit state",
+                "selected layer no longer reconstructs the durable replan base; using digest-bound work-unit state",
                 1,
             )
-    bundle = plan_authority.resolve_current(shot.folder)
+    bundle = base_authority.plan.bundle
     deferred = planner_package().load_layers_from_path(bundle.root / "layers.json")[layer_id]
     log(
         f"re-materializing layer {layer_id}: replacing {len(old_units)} unit(s) "
@@ -379,11 +424,15 @@ async def _rematerialize_layer(
     # the discarded register (where this layer's owned requirements were already
     # resolved) is the base, and the replacement trips owned-means-owed.
 
-    overlay = revert_materialization(shot.folder, layer_id, select=False)
+    overlay = revert_materialization(
+        shot.folder,
+        layer_id,
+        select=False,
+        selected_authority=base_authority,
+    )
     if overlay is not None:
         log(
-            f"designing replacement against unpublished overlay {overlay.name}; "
-            "live pointer stays until publication",
+            f"designing replacement against unpublished overlay {overlay.name}; live pointer stays until publication",
             1,
         )
     await planner_package()._materialize_deferred_layer(
@@ -394,41 +443,60 @@ async def _rematerialize_layer(
         max_turns=max_turns,
         replacing=trigger,
         overlay_root=overlay,
+        selected_authority=base_authority,
     )
-    refreshed = planner_package().load_layers(shot)[layer_id]
+    published_authority = resolve_selected_authority(shot.folder)
+    refreshed = planner_package().load_layers(
+        shot,
+        selected_authority=published_authority,
+    )[layer_id]
+    new_plan_hash = hashlib.sha256(
+        published_authority.artifact_paths["layers.json"].read_bytes()
+    ).hexdigest()
     if state:
         try:
-            unit_state.apply_replan(
-                shot.folder,
-                layer_id,
-                old_units,
-                refreshed.stages,
-                old_plan_hash=old_plan_hash,
-                new_plan_hash=_plan_hash(),
-                owner=owner,
-                trigger=trigger,
-                evidence=evidence,
-                discard_accepted=discard_accepted,
-                state_backed_base=state_backed_base,
-            )
-        except ValueError as exc:
-            # The replan base can be unreconstructable — a prior partial transaction
-            # left state naming a DAG that no longer exists, or its digests predate a
-            # WorkUnit schema change. Wiping accepted checkpoints is --discard-accepted;
-            # otherwise fail closed with the view already published and state unmoved
-            # (HIR-0052).
-            if accepted and not discard_accepted:
-                raise
-            log(f"replan base unusable ({str(exc)[:90]}); superseding layer units", 1)
-            unit_state.supersede_layer_units(
-                shot.folder,
-                layer_id,
-                owner=owner,
-                trigger=trigger,
-                evidence=evidence,
-                plan_hash=_plan_hash(),
-                allow_accepted=discard_accepted,
-            )
+            with authority_selection_lock(shot.folder, exclusive=False):
+                require_matching_authority_selection_token(
+                    published_authority.selection_token,
+                    read_authority_selection_heads(shot.folder).token,
+                )
+                try:
+                    unit_state.apply_replan(
+                        shot.folder,
+                        layer_id,
+                        old_units,
+                        refreshed.stages,
+                        old_plan_hash=old_plan_hash,
+                        new_plan_hash=new_plan_hash,
+                        owner=owner,
+                        trigger=trigger,
+                        evidence=evidence,
+                        discard_accepted=discard_accepted,
+                        state_backed_base=state_backed_base,
+                    )
+                except ValueError as exc:
+                    # An unreconstructable replan base may be superseded only through
+                    # the existing explicit discard authority (HIR-0052).
+                    if accepted and not discard_accepted:
+                        raise
+                    log(
+                        f"replan base unusable ({str(exc)[:90]}); "
+                        "superseding layer units",
+                        1,
+                    )
+                    unit_state.supersede_layer_units(
+                        shot.folder,
+                        layer_id,
+                        owner=owner,
+                        trigger=trigger,
+                        evidence=evidence,
+                        plan_hash=new_plan_hash,
+                        allow_accepted=discard_accepted,
+                    )
+        except (AuthoritySelectionConflict, AuthoritySelectionHeadError) as exc:
+            raise ValueError(
+                "selected authority changed before rematerialization state reconciliation"
+            ) from exc
         log(
             f"work-unit state superseded → {', '.join(u.id for u in refreshed.stages)}",
             1,
@@ -436,7 +504,12 @@ async def _rematerialize_layer(
     return refreshed
 
 
-def _reconcile_materialized_layer_state(shot, layer) -> bool:
+def _reconcile_materialized_layer_state(
+    shot,
+    layer,
+    *,
+    new_plan_hash: str,
+) -> bool:
     """Move stale durable identity onto the selected materialized DAG (HIR-0133).
 
     A newly selected sparse bundle can make a layer ``jit_deferred`` while durable
@@ -457,7 +530,6 @@ def _reconcile_materialized_layer_state(shot, layer) -> bool:
         return False
     except ValueError:
         pass
-    new_plan_hash = plan_authority.active_plan_hash(shot.folder)
     old_plan_hash = str(state.get("plan_hash") or "")
     unit_state.apply_replan(
         shot.folder,
@@ -467,9 +539,7 @@ def _reconcile_materialized_layer_state(shot, layer) -> bool:
         old_plan_hash=old_plan_hash,
         new_plan_hash=new_plan_hash,
         owner="vfx-harness.plan-layer",
-        trigger=(
-            "selected JIT materialization replaced a prior-generation durable unit DAG"
-        ),
+        trigger=("selected JIT materialization replaced a prior-generation durable unit DAG"),
         evidence=[
             "state/jit-layers/current.json",
             f"state/work-units/layer_{layer_id}.json",
@@ -477,8 +547,7 @@ def _reconcile_materialized_layer_state(shot, layer) -> bool:
         state_backed_base=True,
     )
     log(
-        f"work-unit state reconciled from durable digests → "
-        f"{', '.join(unit.id for unit in layer.stages)}",
+        f"work-unit state reconciled from durable digests → {', '.join(unit.id for unit in layer.stages)}",
         1,
     )
     return True

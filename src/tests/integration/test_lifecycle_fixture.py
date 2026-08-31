@@ -19,10 +19,15 @@ import pytest
 
 from tests.unit.test_plan_records import _candidate, _declaring, _vis_rows, _write
 from vfx_harness.evaluation import plan_gate
+from vfx_harness.evaluation.plan_gate.types import Finding
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.jit_materialization import (
+    MATERIALIZATION_SCHEMA,
+    MaterializationSelectionConflict,
     finalize_materialization_candidate,
     materialization_finalization_attested,
+    materialization_finalization_path,
     publish_materialization,
     revert_materialization,
     stage_candidate_view,
@@ -205,8 +210,9 @@ def _root_materialization(root: Path, bundle_hash: str) -> Path:
     }]
     payload = root / "root-jit.json"
     _write(payload, {
-        "schema": "vfx-harness.jit-layer-materialization/v2",
+        "schema": MATERIALIZATION_SCHEMA,
         "bundle_hash": bundle_hash,
+        "base_selection": resolve_selected_authority(root).selection_token.to_dict(),
         "layer": _declaring(layer),
         "scene_contracts": [
             {
@@ -265,8 +271,16 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     assert any(row.get("id") == "comp-clearance" for row in staged_contracts["contracts"])
 
     # ── 2b · materialize the dependency-ready root, adopting the approved decision ──
+    finalized = finalize_materialization_candidate(
+        tmp_path,
+        payload,
+        prepare_consumer_view(layout_a),
+    )
+    assert finalized.clean, plan_gate.report(finalized)
     pointer = publish_materialization(tmp_path, payload)
     assert json.loads(pointer.read_text(encoding="utf-8"))["materialized_layers"] == ["1"]
+    with pytest.raises(MaterializationSelectionConflict, match="base selection is stale"):
+        publish_materialization(tmp_path, payload)
 
     # ── 3 · the gate accepts the post-materialization view (lifecycle seam) ──
     view = prepare_consumer_view(layout_a)
@@ -337,6 +351,9 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     replacement_unit["mutates"]["script_spans"] = ["build/units/01/lock_v2.py"]
     for claim in replacement_unit["evaluation"]["claims"]:
         claim["repair_owner"] = "lock_v2"
+    replacement["base_selection"] = resolve_selected_authority(
+        tmp_path
+    ).selection_token.to_dict()
     _write(payload, replacement)
     overlay = revert_materialization(tmp_path, "1", select=False)
     assert overlay is not None
@@ -392,3 +409,140 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     state = load(tmp_path, "1")
     assert state["units"] == {}
     assert any(row["id"] == "lock" and row["status"] == "superseded" for row in state["superseded"])
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("candidate", "candidate changed"),
+        ("artifact", "candidate view changed"),
+        ("marker", "consumer authority changed"),
+    ],
+)
+def test_terminal_gate_attests_no_mutated_candidate_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+) -> None:
+    """A clean verdict authorizes only the exact candidate snapshot the gate read."""
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _deferred_root(tmp_path)
+    layout = run_artifacts.create(tmp_path, f"gate-mutation-{mutation}")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    _approve_hold_decision(tmp_path, bundle.content_hash)
+    candidate = _root_materialization(tmp_path, bundle.content_hash)
+    consumer_view = prepare_consumer_view(layout)
+    real_gate = plan_gate.run
+
+    def mutate_after_gate(folder: Path, **kwargs):
+        result = real_gate(folder, **kwargs)
+        if mutation == "candidate":
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            payload["post_gate_mutation"] = True
+            _write(candidate, payload)
+        elif mutation == "artifact":
+            (folder / "layers.json").write_text("{}\n", encoding="utf-8")
+        else:
+            (folder / ".plan-consumer-view.json").write_text("{}\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(plan_gate, "run", mutate_after_gate)
+
+    with pytest.raises(MaterializationSelectionConflict, match=message):
+        finalize_materialization_candidate(tmp_path, candidate, consumer_view)
+
+    assert not materialization_finalization_path(candidate).exists()
+
+
+def test_dirty_regate_clears_an_earlier_clean_finalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A receipt belongs to one gate attempt; a later dirty attempt cannot inherit it."""
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _deferred_root(tmp_path)
+    layout = run_artifacts.create(tmp_path, "dirty-regate")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    _approve_hold_decision(tmp_path, bundle.content_hash)
+    candidate = _root_materialization(tmp_path, bundle.content_hash)
+    first = finalize_materialization_candidate(
+        tmp_path,
+        candidate,
+        prepare_consumer_view(layout),
+    )
+    assert first.clean
+    receipt = materialization_finalization_path(candidate)
+    assert receipt.is_file()
+    real_gate = plan_gate.run
+
+    def dirty_gate(folder: Path, **kwargs):
+        result = real_gate(folder, **kwargs)
+        result.findings.append(
+            Finding(
+                "injected-dirty-gate",
+                True,
+                "fixture",
+                "the later attempt is not clean",
+            )
+        )
+        return result
+
+    monkeypatch.setattr(plan_gate, "run", dirty_gate)
+    second = finalize_materialization_candidate(
+        tmp_path,
+        candidate,
+        prepare_consumer_view(layout),
+    )
+
+    assert not second.clean
+    assert not receipt.exists()
+
+
+def test_same_semantic_rematerialization_is_a_jit_pointer_noop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Revalidating the same cumulative view does not manufacture a head revision."""
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _deferred_root(tmp_path)
+    layout = run_artifacts.create(tmp_path, "jit-semantic-noop")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    _approve_hold_decision(tmp_path, bundle.content_hash)
+    candidate = _root_materialization(tmp_path, bundle.content_hash)
+    first = finalize_materialization_candidate(
+        tmp_path,
+        candidate,
+        prepare_consumer_view(layout),
+    )
+    assert first.clean
+    pointer = publish_materialization(tmp_path, candidate)
+    selected_bytes = pointer.read_bytes()
+
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    payload["base_selection"] = resolve_selected_authority(
+        tmp_path
+    ).selection_token.to_dict()
+    _write(candidate, payload)
+    overlay = revert_materialization(tmp_path, "1", select=False)
+    assert overlay is not None
+    second = finalize_materialization_candidate(
+        tmp_path,
+        candidate,
+        prepare_consumer_view(layout),
+        overlay_root=overlay,
+    )
+    assert second.clean
+
+    assert publish_materialization(
+        tmp_path,
+        candidate,
+        overlay_root=overlay,
+    ) == pointer
+    assert pointer.read_bytes() == selected_bytes

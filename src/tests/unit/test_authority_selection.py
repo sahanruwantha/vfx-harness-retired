@@ -105,6 +105,10 @@ def _write_jit_pointer(
         hashes[name] = hashlib.sha256(payload).hexdigest()
     pointer = {
         "schema": VIEW_SCHEMA,
+        "revision": 1,
+        "plan_revision": json.loads(
+            (root / "plans" / "current.json").read_text(encoding="utf-8")
+        )["revision"],
         "bundle_hash": bundle_digest,
         "view_hash": view_hash,
         "materialized_layers": ["form"],
@@ -204,6 +208,27 @@ def test_matching_jit_pointer_becomes_the_effective_verified_view(
     assert resolved.assertion.digest != bundle_selection.digest
 
 
+def test_live_jit_head_rejects_a_normalized_nonproducer_locator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _publish_plan(tmp_path, run_id="plan-run")
+    selected = resolve_selected_authority(tmp_path).assertion
+    assert selected.bundle is not None
+    _write_jit_pointer(
+        tmp_path,
+        bundle_digest=selected.bundle.digest,
+        storage="normalized-alias",
+    )
+
+    with pytest.raises(
+        SelectedAuthorityResolutionError,
+        match="exact producer locator",
+    ):
+        resolve_selected_authority(tmp_path)
+
+
 def test_valid_stale_jit_pointer_is_verified_but_semantically_inert(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -218,6 +243,65 @@ def test_valid_stale_jit_pointer_is_verified_but_semantically_inert(
     assert after == before
     assert after.effective_view is not None
     assert after.effective_view.source == "bundle"
+
+
+def test_old_jit_view_stays_inert_after_plan_semantic_aba(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _publish_plan(tmp_path, run_id="plan-run-a1")
+    first = resolve_selected_authority(tmp_path)
+    assert first.assertion.bundle is not None
+    _write_jit_pointer(tmp_path, bundle_digest=first.assertion.bundle.digest)
+    assert resolve_selected_authority(tmp_path).assertion.effective_view.source == "jit"
+
+    _write_plan(tmp_path, marker="different")
+    publish_current(
+        tmp_path,
+        run_artifacts.create(tmp_path, "plan-run-b"),
+        outcome="clean_with_deferred",
+    )
+    _write_plan(tmp_path, marker="fixture")
+    publish_current(
+        tmp_path,
+        run_artifacts.create(tmp_path, "plan-run-a2"),
+        outcome="clean_with_deferred",
+    )
+
+    resolved = resolve_selected_authority(tmp_path)
+    pointer = json.loads(
+        (tmp_path / "plans" / "current.json").read_text(encoding="utf-8")
+    )
+    assert pointer["revision"] == 3
+    assert resolved.assertion.bundle.digest == first.assertion.bundle.digest
+    assert resolved.assertion.effective_view is not None
+    assert resolved.assertion.effective_view.source == "bundle"
+
+
+@pytest.mark.parametrize("head", ["plan", "jit"])
+def test_selected_pointer_bytes_must_use_the_canonical_producer_encoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    head: str,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _publish_plan(tmp_path, run_id="plan-run")
+    if head == "plan":
+        pointer_path = tmp_path / "plans" / "current.json"
+    else:
+        selected = resolve_selected_authority(tmp_path).assertion
+        assert selected.bundle is not None
+        _write_jit_pointer(tmp_path, bundle_digest=selected.bundle.digest)
+        pointer_path = tmp_path / CURRENT
+    value = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer_path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        SelectedAuthorityResolutionError,
+        match="pointer bytes are not canonical",
+    ):
+        resolve_selected_authority(tmp_path)
 
 
 def test_malformed_or_symlinked_jit_authority_never_falls_back_to_bundle(
@@ -303,8 +387,8 @@ def test_jit_selection_identity_excludes_artifact_locators(
     first_bundle = resolve_selected_authority(first).assertion.bundle
     second_bundle = resolve_selected_authority(second).assertion.bundle
     assert first_bundle is not None and second_bundle is not None
-    _write_jit_pointer(first, bundle_digest=first_bundle.digest, storage="views-a")
-    _write_jit_pointer(second, bundle_digest=second_bundle.digest, storage="views-b")
+    _write_jit_pointer(first, bundle_digest=first_bundle.digest)
+    _write_jit_pointer(second, bundle_digest=second_bundle.digest)
 
     first_selection = resolve_selected_authority(first).assertion
     second_selection = resolve_selected_authority(second).assertion

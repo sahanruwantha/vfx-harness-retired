@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 
 import anyio
@@ -21,18 +22,131 @@ from vfx_harness.domain.judgment_debts import (
 from vfx_harness.domain.work_units import compile_clustered_mutation_roles, work_unit_authoring_schema
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.evidence.checks import METRICS
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.authority_selection_heads import (
+    AuthoritySelectionHeadError,
+    read_authority_selection_heads,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    authority_selection_lock,
+    require_matching_authority_selection_token,
+)
 from vfx_harness.orchestration.jit_materialization import (
     apply_materialization_patches,
     finalize_materialization_candidate,
     inspect_materialization,
     materialization_candidate_revision,
     materialization_finalization_path,
-    selected_view_artifact,
     stage_materialization_unit,
     unstage_materialization_unit,
 )
-from vfx_harness.orchestration.plan_authority import artifact_path, prepare_consumer_view, resolve_current
+from vfx_harness.orchestration.jit_materialization.candidate import (
+    load_materialization_candidate,
+)
+from vfx_harness.orchestration.jit_materialization.overlay_base import read_overlay_base
+from vfx_harness.orchestration.jit_materialization.schema import (
+    materialization_base_selection,
+)
+from vfx_harness.orchestration.plan_authority import prepare_consumer_view
 from vfx_harness.orchestration.refobs import mint_refobs
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterializationAuthorityInputs:
+    selected: ResolvedSelectedAuthority
+    bundle_root: Path
+    bundle_hash: str
+    base_layers: Path
+    base_scene_checks: Path
+    base_requirements: Path
+
+
+def _require_same_selection(expected, observed, *, boundary: str) -> None:
+    try:
+        require_matching_authority_selection_token(expected, observed)
+    except AuthoritySelectionConflict as exc:
+        raise ValueError(f"{boundary}: {exc}") from exc
+
+
+def _materialization_authority_inputs(
+    shot_folder: Path,
+    candidate: Path,
+    *,
+    overlay_root: str | Path | None,
+) -> _MaterializationAuthorityInputs:
+    """Resolve every local-validation input from one exact selected generation."""
+
+    try:
+        selected = resolve_selected_authority(shot_folder)
+    except SelectedAuthorityResolutionError as exc:
+        raise ValueError(str(exc)) from exc
+    if selected.plan is None or selected.assertion.effective_view is None:
+        raise ValueError("materialization requires selected global plan authority")
+    bundle = selected.plan.bundle
+    payload = load_materialization_candidate(
+        candidate,
+        expected_bundle_hash=bundle.content_hash,
+    )
+    candidate_base = materialization_base_selection(payload)
+    _require_same_selection(
+        candidate_base,
+        selected.selection_token,
+        boundary="materialization candidate base selection is stale",
+    )
+
+    if overlay_root is None:
+        try:
+            layers = selected.artifact_paths["layers.json"]
+            scene_checks = selected.artifact_paths["scene_checks.json"]
+            requirements = selected.artifact_paths["requirements.json"]
+        except KeyError as exc:
+            raise ValueError(f"selected materialization authority omits {exc.args[0]!r}") from exc
+    else:
+        overlay = Path(overlay_root).resolve()
+        overlay_bundle, overlay_base = read_overlay_base(overlay)
+        if overlay_bundle != bundle.content_hash:
+            raise ValueError("materialization overlay belongs to another global bundle")
+        _require_same_selection(
+            candidate_base,
+            overlay_base,
+            boundary="materialization overlay base selection is stale",
+        )
+        layers = overlay / "layers.json"
+        scene_checks = overlay / "scene_checks.json"
+        requirements = overlay / "requirements.json"
+
+    return _MaterializationAuthorityInputs(
+        selected=selected,
+        bundle_root=bundle.root,
+        bundle_hash=bundle.content_hash,
+        base_layers=layers,
+        base_scene_checks=scene_checks,
+        base_requirements=requirements,
+    )
+
+
+@contextmanager
+def _current_selection_guard(
+    shot_folder: Path,
+    selected: ResolvedSelectedAuthority,
+) -> None:
+    """Hold the shared head lock only across one candidate's durable replace."""
+
+    with authority_selection_lock(shot_folder, exclusive=False):
+        try:
+            observed = read_authority_selection_heads(shot_folder)
+            require_matching_authority_selection_token(
+                selected.selection_token,
+                observed.token,
+            )
+        except (AuthoritySelectionConflict, AuthoritySelectionHeadError) as exc:
+            raise ValueError(f"materialization selection changed before candidate mutation: {exc}") from exc
+        yield
 
 
 def register_materialize_tools(**closed):
@@ -224,6 +338,11 @@ def register_materialize_tools(**closed):
         try:
             compiled_unit = compile_clustered_mutation_roles(args.get("unit") or {})
             async with materialization_write_lock:
+                authority = _materialization_authority_inputs(
+                    shot_folder,
+                    candidate,
+                    overlay_root=overlay_root,
+                )
                 await anyio.to_thread.run_sync(
                     lambda: stage_materialization_unit(
                         candidate,
@@ -234,6 +353,10 @@ def register_materialize_tools(**closed):
                         allowed_provides=materialization_allowed_provides,
                         expected_revision=materialization_revision_token,
                         shot_folder=layout.shot,
+                        candidate_write_guard=lambda: _current_selection_guard(
+                            shot_folder,
+                            authority.selected,
+                        ),
                     )
                 )
                 materialization_revision_token = materialization_candidate_revision(candidate)
@@ -275,12 +398,21 @@ def register_materialize_tools(**closed):
 
         try:
             async with materialization_write_lock:
+                authority = _materialization_authority_inputs(
+                    shot_folder,
+                    candidate,
+                    overlay_root=overlay_root,
+                )
                 result = await anyio.to_thread.run_sync(
                     lambda: unstage_materialization_unit(
                         candidate,
                         unit_id=args.get("unit_id"),
                         expected_revision=materialization_revision_token,
                         shot_folder=layout.shot,
+                        candidate_write_guard=lambda: _current_selection_guard(
+                            shot_folder,
+                            authority.selected,
+                        ),
                     )
                 )
                 materialization_revision_token = materialization_candidate_revision(candidate)
@@ -400,44 +532,39 @@ def register_materialize_tools(**closed):
             )
 
         try:
-            bundle = resolve_current(shot_folder)
-            base_layers = selected_view_artifact(
-                shot_folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
-            ) or artifact_path(shot_folder, "layers.json")
-            base_scene_checks = selected_view_artifact(
+            authority = _materialization_authority_inputs(
                 shot_folder,
-                "scene_checks.json",
-                bundle.content_hash,
+                candidate,
                 overlay_root=overlay_root,
-            ) or artifact_path(shot_folder, "scene_checks.json")
-            base_requirements = selected_view_artifact(
-                shot_folder,
-                "requirements.json",
-                bundle.content_hash,
-                overlay_root=overlay_root,
-            ) or artifact_path(shot_folder, "requirements.json")
+            )
             findings, _materialized = await anyio.to_thread.run_sync(
                 lambda: inspect_materialization(
-                    bundle.root,
+                    authority.bundle_root,
                     candidate,
-                    expected_bundle_hash=bundle.content_hash,
-                    base_layers_path=base_layers,
-                    base_scene_checks_path=base_scene_checks,
+                    expected_bundle_hash=authority.bundle_hash,
+                    base_layers_path=authority.base_layers,
+                    base_scene_checks_path=authority.base_scene_checks,
                     resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
-                    base_requirements_path=base_requirements,
+                    base_requirements_path=authority.base_requirements,
                 )
             )
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             return _text(str(exc), is_error=True)
         if not findings:
             try:
-                view = await anyio.to_thread.run_sync(lambda: prepare_consumer_view(layout))
+                view = await anyio.to_thread.run_sync(
+                    lambda: prepare_consumer_view(
+                        layout,
+                        selected_authority=authority.selected,
+                    )
+                )
                 result = await anyio.to_thread.run_sync(
                     lambda: finalize_materialization_candidate(
                         shot_folder,
                         candidate,
                         view,
                         overlay_root=overlay_root,
+                        selected_authority=authority.selected,
                     )
                 )
             except (ValueError, OSError, json.JSONDecodeError) as exc:
@@ -448,7 +575,7 @@ def register_materialize_tools(**closed):
                     gate_evidence.write_materialization_gate_evidence(
                         layout,
                         candidate=candidate,
-                        bundle_digest=bundle.content_hash,
+                        bundle_digest=authority.bundle_hash,
                         layer_id=str(materialization_layer_id),
                         gate_issue="terminal_gate_execution_failed",
                     )
@@ -457,7 +584,7 @@ def register_materialize_tools(**closed):
             gate_evidence.write_materialization_gate_evidence(
                 layout,
                 candidate=candidate,
-                bundle_digest=bundle.content_hash,
+                bundle_digest=authority.bundle_hash,
                 layer_id=str(materialization_layer_id),
                 gate_result=result,
             )
@@ -477,7 +604,7 @@ def register_materialize_tools(**closed):
         gate_evidence.write_materialization_gate_evidence(
             layout,
             candidate=candidate,
-            bundle_digest=bundle.content_hash,
+            bundle_digest=authority.bundle_hash,
             layer_id=str(materialization_layer_id),
             local_findings=findings,
         )
@@ -550,35 +677,28 @@ def register_materialize_tools(**closed):
             return _text(f"value must be JSON-encoded: {exc}", is_error=True)
 
         try:
-            bundle = resolve_current(shot_folder)
-            base_layers = selected_view_artifact(
-                shot_folder, "layers.json", bundle.content_hash, overlay_root=overlay_root
-            ) or artifact_path(shot_folder, "layers.json")
-            base_scene_checks = selected_view_artifact(
-                shot_folder,
-                "scene_checks.json",
-                bundle.content_hash,
-                overlay_root=overlay_root,
-            ) or artifact_path(shot_folder, "scene_checks.json")
-            base_requirements = selected_view_artifact(
-                shot_folder,
-                "requirements.json",
-                bundle.content_hash,
-                overlay_root=overlay_root,
-            ) or artifact_path(shot_folder, "requirements.json")
             async with materialization_write_lock:
+                authority = _materialization_authority_inputs(
+                    shot_folder,
+                    candidate,
+                    overlay_root=overlay_root,
+                )
                 findings = await anyio.to_thread.run_sync(
                     lambda: apply_materialization_patches(
-                        bundle.root,
+                        authority.bundle_root,
                         candidate,
                         patches,
-                        expected_bundle_hash=bundle.content_hash,
-                        base_layers_path=base_layers,
-                        base_scene_checks_path=base_scene_checks,
-                        resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
-                        base_requirements_path=base_requirements,
+                        expected_bundle_hash=authority.bundle_hash,
+                        base_layers_path=authority.base_layers,
+                        base_scene_checks_path=authority.base_scene_checks,
+                        resolutions_path=(shot_folder / "state" / "plan-resolutions.jsonl"),
+                        base_requirements_path=authority.base_requirements,
                         expected_revision=materialization_revision_token,
                         shot_folder=layout.shot,
+                        candidate_write_guard=lambda: _current_selection_guard(
+                            shot_folder,
+                            authority.selected,
+                        ),
                     )
                 )
                 materialization_revision_token = materialization_candidate_revision(candidate)

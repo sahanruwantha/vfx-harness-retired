@@ -9,14 +9,18 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
-from vfx_harness.orchestration.jit_materialization.schema import (
+from vfx_harness.domain.authority_head_records import (
+    JIT_VIEW_POINTER_SCHEMA,
     OVERLAY_ARTIFACTS,
-    VIEW_SCHEMA,
 )
+
+VIEW_SCHEMA = JIT_VIEW_POINTER_SCHEMA
 
 _POINTER_FIELDS = frozenset(
     {
         "schema",
+        "revision",
+        "plan_revision",
         "bundle_hash",
         "view_hash",
         "materialized_layers",
@@ -27,7 +31,7 @@ _POINTER_FIELDS = frozenset(
 
 
 class JitViewPointerError(ValueError):
-    """The selected-view pointer is not a producer-valid v1 record."""
+    """The selected-view pointer is not a producer-valid v2 record."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -36,13 +40,27 @@ class JitViewPointerError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class JitViewPointer:
-    """Validated immutable projection of ``state/jit-layers/current.json``."""
+    """Validated v2 projection of ``state/jit-layers/current.json``."""
 
+    revision: int
+    plan_revision: int
     bundle_hash: str
     view_hash: str
     materialized_layers: tuple[str, ...]
     artifacts: dict[str, str]
     hashes: dict[str, str]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema": VIEW_SCHEMA,
+            "revision": self.revision,
+            "plan_revision": self.plan_revision,
+            "bundle_hash": self.bundle_hash,
+            "view_hash": self.view_hash,
+            "materialized_layers": list(self.materialized_layers),
+            "artifacts": dict(self.artifacts),
+            "hashes": dict(self.hashes),
+        }
 
 
 def is_sha256(value: object) -> bool:
@@ -61,17 +79,33 @@ def canonical_view_hash(documents: Mapping[str, Any]) -> str:
 
 
 def parse_jit_view_pointer(value: object) -> JitViewPointer:
-    """Validate the exact producer-owned pointer shape, independent of generation."""
+    """Validate the exact producer-owned v2 pointer shape and revisions."""
 
     if not isinstance(value, Mapping) or set(value) != _POINTER_FIELDS:
         raise JitViewPointerError(
             "shape",
-            "selected JIT consumer view fields do not match the v1 producer schema",
+            "selected JIT consumer view fields do not match the v2 producer schema",
         )
     if value.get("schema") != VIEW_SCHEMA:
         raise JitViewPointerError(
             "schema",
             "selected JIT consumer view has an unsupported schema",
+        )
+    revision = value.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision <= 0:
+        raise JitViewPointerError(
+            "revision",
+            "selected JIT consumer view revision must be a positive integer",
+        )
+    plan_revision = value.get("plan_revision")
+    if (
+        not isinstance(plan_revision, int)
+        or isinstance(plan_revision, bool)
+        or plan_revision <= 0
+    ):
+        raise JitViewPointerError(
+            "plan_revision",
+            "selected JIT consumer view plan_revision must be a positive integer",
         )
     bundle_hash = value.get("bundle_hash")
     view_hash = value.get("view_hash")
@@ -139,12 +173,34 @@ def parse_jit_view_pointer(value: object) -> JitViewPointer:
         hashes[name] = expected
 
     return JitViewPointer(
+        revision=revision,
+        plan_revision=plan_revision,
         bundle_hash=str(bundle_hash),
         view_hash=str(view_hash),
         materialized_layers=tuple(raw_layers),
         artifacts=artifacts,
         hashes=hashes,
     )
+
+
+def require_live_jit_artifact_locators(pointer: JitViewPointer) -> None:
+    """Require the exact content-addressed producer paths of a selected live head.
+
+    Candidate consumer views intentionally use local artifact names in their synthetic pointer.
+    That pointer is parsed only inside the isolated evaluation boundary.  A live shot head has
+    exactly one producer-owned store, so accepting another normalized in-shot path would let the
+    pointer redirect verified hashes to an unowned alias.
+    """
+
+    root = PurePosixPath("state/jit-layers/views") / pointer.view_hash
+    for name in OVERLAY_ARTIFACTS:
+        expected = (root / name).as_posix()
+        if pointer.artifacts[name] != expected:
+            raise JitViewPointerError(
+                "artifact_locator",
+                f"selected live JIT artifact {name!r} must use exact producer locator "
+                f"{expected!r}",
+            )
 
 
 def materialized_layers_from_document(value: object) -> tuple[str, ...]:

@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vfx_harness.domain.contracts import active_for, load_document
 from vfx_harness.domain.evidence_kinds import PROJECTED_ORIGIN_KINDS as PROJECTED_ORIGIN_KINDS
@@ -20,9 +21,33 @@ from vfx_harness.domain.work_units import plan_selector_declared
 from vfx_harness.evidence.scene_checks.kinds import BBOX_KINDS
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
-def load_rows(shot_folder: str | Path) -> list[dict]:
-    return load_document(selected_artifact_path(shot_folder, "scene_checks.json"), "contracts")
+
+def _scene_checks_path(
+    shot_folder: str | Path,
+    selected_authority: ResolvedSelectedAuthority | None,
+) -> Path:
+    shot = Path(shot_folder)
+    if selected_authority is None:
+        return selected_artifact_path(shot, "scene_checks.json")
+    if selected_authority.plan is None:
+        return shot / "scene_checks.json"
+    try:
+        return selected_authority.artifact_paths["scene_checks.json"]
+    except KeyError as exc:
+        raise ValueError("selected authority omits scene_checks.json") from exc
+
+
+def load_rows(
+    shot_folder: str | Path,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[dict]:
+    return load_document(
+        _scene_checks_path(shot_folder, selected_authority),
+        "contracts",
+    )
 
 
 def deferred_subject_composition_ids(

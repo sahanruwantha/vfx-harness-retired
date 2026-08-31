@@ -34,6 +34,7 @@ from vfx_harness.observability import costlog, transcript
 from vfx_harness.observability.log import (
     log,
 )
+from vfx_harness.orchestration import authority_selection
 from vfx_harness.orchestration.ledger import Milestone
 
 
@@ -54,7 +55,12 @@ async def _critique(
     allow_motion: bool | None = None,
     focus_frames: list[int] | tuple[int, ...] | set[int] | None = None,
     active_unit=None,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
 ) -> dict:
+    if selected_authority is None:
+        selected_authority = authority_selection.resolve_selected_authority(
+            shot.folder
+        )
     motion_rel, motion_frames = motion_evidence or (None, None)
     wants_motion = _axes_need_motion(axes) if allow_motion is None else allow_motion
     if motion_rel is None and shot.frontmatter.get("type") == "motion" and shot.frames > 1 and wants_motion:
@@ -63,9 +69,18 @@ async def _critique(
             motion_rel, motion_frames = builder_package()._stash_motion_strip(session, shot, m, stem)
         except Exception as e:
             log(f"motion strip skipped: {str(e)[:80]}", 1)
-    focus_references = _focus_references(shot, m, focus_frames)
+    focus_references = _focus_references(
+        shot,
+        m,
+        focus_frames,
+        selected_authority=selected_authority,
+    )
     claim_manifest, claim_bindings, qualified_claims = _claim_context(
-        shot, m, enabled=scope is not None, active_unit=active_unit
+        shot,
+        m,
+        enabled=scope is not None,
+        active_unit=active_unit,
+        selected_authority=selected_authority,
     )
     log(
         f"critic[{critic_model()}]: scoring {candidate_rel} vs {m.ref}"
@@ -451,6 +466,12 @@ async def _judge(
     motion_frames_override = critic_kw.pop("motion_frames_override", None)
     focus_frames_override = critic_kw.pop("focus_frames_override", None)
     active_unit = critic_kw.pop("active_unit", None)
+    selected_authority = critic_kw.get("selected_authority")
+    if selected_authority is None:
+        selected_authority = authority_selection.resolve_selected_authority(
+            shot.folder
+        )
+        critic_kw["selected_authority"] = selected_authority
     if (
         motion_evidence is None
         and shot.frontmatter.get("type") == "motion"
@@ -464,8 +485,19 @@ async def _judge(
             )
         except Exception as exc:
             log(f"motion strip skipped: {str(exc)[:80]}", 1)
-    focus_references = _focus_references(shot, m, focus_frames_override)
-    required = _required_focus_requests(shot, str(m.id).split("@", 1)[0], int(m.frame), axes)
+    focus_references = _focus_references(
+        shot,
+        m,
+        focus_frames_override,
+        selected_authority=selected_authority,
+    )
+    required = _required_focus_requests(
+        shot,
+        str(m.id).split("@", 1)[0],
+        int(m.frame),
+        axes,
+        selected_authority=selected_authority,
+    )
     signal = _image_optical_signal(shot.folder / candidate_rel)
     if signal is not None and not signal["has_signal"]:
         log(

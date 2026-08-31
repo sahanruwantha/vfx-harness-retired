@@ -38,10 +38,22 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
 )
 from vfx_harness.observability.run_artifacts import RunLayout
-from vfx_harness.orchestration import judgment_observation, plan_authority
-from vfx_harness.orchestration.jit_materialization import selected_view_artifact
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.authority_selection_heads import (
+    AuthoritySelectionHeadError,
+    read_authority_selection_heads,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    authority_selection_lock,
+    require_matching_authority_selection_token,
+)
 from vfx_harness.orchestration.judgment_debt_state import (
-    current_judgment_debt_state_digest,
+    current_judgment_debt_state_digest_for_authority,
     require_judgment_debts_satisfied,
 )
 from vfx_harness.orchestration.ledger import Milestone, load_milestones
@@ -168,28 +180,35 @@ def _semantic_selected_capture(
 def capture_acceptance_authority(
     shot: Shot,
     moments: Mapping[str, Milestone],
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> AcceptanceAuthoritySnapshot:
     """Resolve one strict before-state and reject a mixed authority generation."""
 
     shot_root = shot.folder.resolve()
-    bundle_before = plan_authority.resolve_current(shot_root)
-    # This is the shared strict consumer-view resolver used by qualitative payment.
-    # It verifies the content-addressed JIT documents, not merely current.json text.
-    view_before = judgment_observation.selected_view_digest(shot_root, bundle_before.content_hash)
-    acceptance_path = selected_view_artifact(
-        shot_root,
-        "acceptance.json",
-        bundle_before.content_hash,
-    ) or (bundle_before.root / "acceptance.json")
-    layers_path = selected_view_artifact(
-        shot_root,
-        "layers.json",
-        bundle_before.content_hash,
-    ) or (bundle_before.root / "layers.json")
+    if selected_authority is None:
+        try:
+            selected = resolve_selected_authority(shot_root)
+        except SelectedAuthorityResolutionError as exc:
+            raise ValueError(str(exc)) from exc
+    else:
+        selected = selected_authority
+    if selected.plan is None or selected.assertion.effective_view is None:
+        raise ValueError("acceptance requires selected plan authority")
+    bundle_before = selected.plan.bundle
+    view_before = selected.assertion.effective_view.digest
+    try:
+        acceptance_path = selected.artifact_paths["acceptance.json"]
+        layers_path = selected.artifact_paths["layers.json"]
+    except KeyError as exc:
+        raise ValueError("selected acceptance authority omits a required artifact") from exc
     statuses = _ledger_statuses(shot)
 
     chain: list[dict[str, Any]] = []
-    for layer in selected_layer_chain(shot, bundle=bundle_before):
+    for layer in selected_layer_chain(
+        shot,
+        bundle=bundle_before,
+        selected_authority=selected,
+    ):
         layer_script = _inside(shot_root, layer.script, f"layer {layer.id} script")
         units = []
         for unit in layer.stages:
@@ -238,19 +257,27 @@ def capture_acceptance_authority(
     snapshot = AcceptanceAuthoritySnapshot(
         bundle_digest=bundle_before.content_hash,
         view_digest=view_before,
-        judgment_debt_state_digest=current_judgment_debt_state_digest(shot_root),
+        judgment_debt_state_digest=current_judgment_debt_state_digest_for_authority(
+            shot_root,
+            selected,
+        ),
         acceptance_artifact_sha256=_sha256(acceptance_path),
         layers_artifact_sha256=_sha256(layers_path),
         selected_moments=selected_moments,
         chain=tuple(chain),
     )
 
-    bundle_after = plan_authority.resolve_current(shot_root)
-    view_after = judgment_observation.selected_view_digest(shot_root, bundle_after.content_hash)
+    try:
+        with authority_selection_lock(shot_root, exclusive=False):
+            heads = read_authority_selection_heads(shot_root)
+            require_matching_authority_selection_token(
+                selected.selection_token,
+                heads.token,
+            )
+    except (AuthoritySelectionConflict, AuthoritySelectionHeadError) as exc:
+        raise ValueError("selected acceptance authority changed while it was read") from exc
     if (
-        bundle_after.content_hash != snapshot.bundle_digest
-        or view_after != snapshot.view_digest
-        or current_judgment_debt_state_digest(shot_root)
+        current_judgment_debt_state_digest_for_authority(shot_root, selected)
         != snapshot.judgment_debt_state_digest
         or _sha256(acceptance_path) != snapshot.acceptance_artifact_sha256
         or _sha256(layers_path) != snapshot.layers_artifact_sha256
@@ -397,7 +424,10 @@ def compile_acceptance_outcome(
     )
 
 
-def require_current_accepted_outcome(shot: Shot) -> AcceptanceOutcome:
+def require_current_accepted_outcome(
+    shot: Shot,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> AcceptanceOutcome:
     """Require a passing full-chain outcome for the exact current authority.
 
     The ledger is not trusted merely because it contains ``passed == total``.  Every
@@ -405,6 +435,11 @@ def require_current_accepted_outcome(shot: Shot) -> AcceptanceOutcome:
     script chain must still equal the before-state that acceptance judged.
     """
 
+    if selected_authority is None:
+        try:
+            selected_authority = resolve_selected_authority(shot.folder)
+        except SelectedAuthorityResolutionError as exc:
+            raise ValueError(str(exc)) from exc
     ledger_path = shot.folder / "shot.json"
     try:
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -415,8 +450,12 @@ def require_current_accepted_outcome(shot: Shot) -> AcceptanceOutcome:
     if raw_outcome is None:
         raise ValueError("final render requires a complete typed acceptance outcome")
     outcome = AcceptanceOutcome.from_dict(raw_outcome, "shot.json.acceptance.outcome")
-    moments = load_milestones(shot)
-    authority = capture_acceptance_authority(shot, moments)
+    moments = load_milestones(shot, selected_authority)
+    authority = capture_acceptance_authority(
+        shot,
+        moments,
+        selected_authority,
+    )
     if (
         outcome.authority_digest != authority.digest
         or outcome.bundle_digest != authority.bundle_digest
@@ -456,11 +495,15 @@ def require_current_accepted_outcome(shot: Shot) -> AcceptanceOutcome:
             moment.moment_id for moment in outcome.moments if not moment.passed
         )
         raise ValueError(f"final render requires passing acceptance; failed moments: {failed}")
-    require_judgment_debts_satisfied(shot.folder)
+    require_judgment_debts_satisfied(
+        shot.folder,
+        selected_authority,
+    )
     require_due_clear(
         shot.folder,
         acceptance=True,
         expected_bundle_digest=authority.bundle_digest,
+        selected_authority=selected_authority,
     )
     return outcome
 

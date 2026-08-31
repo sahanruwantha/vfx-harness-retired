@@ -76,6 +76,15 @@ topological order. Acceptance and final rendering share that resolver, and every
 script crosses the evaluated-current-frame replay barrier instead of being concatenated
 into Blender.
 
+The deliverable renderer snapshots the exact accepted replay chain before launching Blender.
+It copies every replay script and bound construction GLB into an immutable run-local tree,
+pins the assets and authored/decision inputs, and records the selected artifacts, acceptance
+evidence, ledger, and digest-bound work-unit checkpoint state. Blender imports construction
+only through the verified snapshot sidecar and replays only those copied bytes. After encoding,
+publication holds the selected-authority, work-unit, and ledger locks, revalidates the complete
+snapshot and acceptance outcome, then tentatively renames the MP4. A failed postcondition restores
+the exact predecessor bytes or exact absence; another writer's replacement is never deleted.
+
 JIT materialization overlays all consumer artifacts, including `acceptance.json`; selected
 moment loading, acceptance authority capture, and staged consumer views therefore read the
 same content-addressed moment generation. Acceptance pins the selected bundle before
@@ -111,9 +120,11 @@ audit-only prose and locators do not, malformed evidence fails closed, changed a
 evidence is refused, no-signal evidence invokes no critic, changed debt/due state is refused,
 forced acceptance cannot mutate authority, and current unchanged evidence is accepted.
 JIT fixtures prove a materialized moment reaches every consumer and a forged view digest is
-rejected. Shared-chain fixtures prove dependency order and the replay barrier. Render-boundary tests
-prove a normal full render requires that verifier while forced and partial renders bypass
-it only as previews and default to run scratch rather than deliverables.
+rejected. Shared-chain fixtures prove dependency order and the replay barrier. Render-boundary
+tests prove a normal full render requires that verifier while forced and partial renders bypass
+it only as previews and default to run scratch rather than deliverables. Snapshot race fixtures
+cover script, construction, asset, authored-input, checkpoint, ledger, and rename-seam mutation
+plus exact predecessor/absence restoration.
 
 This validation is deterministic and fixture-based. It does not claim a fresh chamber run
 or end-to-end real-model acceptance/render evaluation.
@@ -128,9 +139,9 @@ operational fallback.
 
 ## Remaining limitations
 
-The acceptance outcome authenticates the evidence and accepted chain that authorize the
-render, not the encoded MP4 as a new accepted artifact; encoding provenance and immutable
-deliverable receipts, post-render authority revalidation, and atomic final-media promotion
-remain separate work. Acceptance diagnostics still do not produce an
+The acceptance outcome authenticates the evidence and accepted chain that authorize the render,
+and final-media publication now revalidates that authority and promotes atomically. The encoded
+MP4 still has no immutable deliverable receipt that binds encoder provenance and output digest.
+Acceptance diagnostics still do not produce an
 exact revision-checked unit repair transaction, and HIR-0164 has no controller or automatic
 dispatch. Fresh real-model CLI and chamber validation remain outstanding.

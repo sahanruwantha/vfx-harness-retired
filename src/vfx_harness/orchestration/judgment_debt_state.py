@@ -22,8 +22,13 @@ from vfx_harness.domain.judgment_debts import (
 from vfx_harness.domain.plan_records import load_judgment_debt_catalog
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.observability.run_artifacts import shot_state_dir
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
 from vfx_harness.orchestration.ledger import load_layers_from_path
-from vfx_harness.orchestration.plan_authority import resolve_current, selected_artifact_path
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 from vfx_harness.orchestration.unit_state import unit_digest, validate_current
 
@@ -167,6 +172,7 @@ def replay_prefix_receipt(
     shot_folder: str | Path,
     *,
     replayed_layer_scripts: Sequence[str | Path],
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> ReplayPrefixReceipt:
     """Issue a canonical receipt for layer scripts replayed from the empty scene.
 
@@ -180,7 +186,16 @@ def replay_prefix_receipt(
     ):
         raise ValueError("replayed_layer_scripts must be a sequence of layer script paths")
     shot = Path(shot_folder).resolve()
-    layers = load_layers_from_path(selected_artifact_path(shot, "layers.json"))
+    layers_path = (
+        selected_artifact_path(shot, "layers.json")
+        if selected_authority is None
+        else (
+            shot / "layers.json"
+            if selected_authority.plan is None
+            else selected_authority.artifact_paths["layers.json"]
+        )
+    )
+    layers = load_layers_from_path(layers_path)
     by_script = {Path(layer.script).as_posix(): layer for layer in layers.values()}
     replayed: list[ReplayPrefixLayerReceipt] = []
     seen_layers: set[str] = set()
@@ -296,18 +311,31 @@ def _event_lock(path: Path):
 
 def _current_authority(
     shot_folder: str | Path,
+    selected_authority: ResolvedSelectedAuthority,
 ) -> tuple[
     str,
     tuple[JudgmentDebtDefinition, ...],
     tuple[JudgmentDebtActivation, ...],
 ]:
-    shot = Path(shot_folder)
-    bundle = resolve_current(shot)
+    selected_bundle = selected_authority.assertion.bundle
+    if (
+        selected_authority.assertion.selection != "selected"
+        or selected_authority.plan is None
+        or selected_bundle is None
+        or selected_authority.assertion.effective_view is None
+        or selected_authority.plan.bundle.content_hash != selected_bundle.digest
+    ):
+        raise ValueError("judgment debt state requires selected plan authority")
+    try:
+        requirements_path = selected_authority.artifact_paths["requirements.json"]
+        layers_path = selected_authority.artifact_paths["layers.json"]
+    except KeyError as exc:
+        raise ValueError("selected judgment debt authority omits required artifacts") from exc
     definitions, activations = load_judgment_debt_catalog(
-        selected_artifact_path(shot, "requirements.json"),
-        selected_bundle_digest=bundle.content_hash,
+        requirements_path,
+        selected_bundle_digest=selected_bundle.digest,
     )
-    layers = load_layers_from_path(selected_artifact_path(shot, "layers.json"))
+    layers = load_layers_from_path(layers_path)
     selected_units = {
         f"{layer_id}:{unit.id}": unit_digest(unit)
         for layer_id, layer in layers.items()
@@ -320,7 +348,18 @@ def _current_authority(
             raise ValueError(
                 f"judgment debt activation {activation.digest} names stale or absent payer units: {', '.join(stale)}"
             )
-    return bundle.content_hash, definitions, activations
+    return selected_bundle.digest, definitions, activations
+
+
+def _resolve_current_authority_snapshot(
+    shot_folder: str | Path,
+) -> ResolvedSelectedAuthority:
+    """Resolve one fail-closed selected-authority snapshot for a state operation."""
+
+    try:
+        return resolve_selected_authority(shot_folder)
+    except SelectedAuthorityResolutionError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _event_rows(path: Path) -> tuple[dict[str, Any], ...]:
@@ -357,7 +396,26 @@ def current_judgment_debt_states(
     ...,
 ]:
     """Replay append-only events for exactly the selected definition generations."""
-    bundle_digest, definitions, activations = _current_authority(shot_folder)
+    selected = _resolve_current_authority_snapshot(shot_folder)
+    return current_judgment_debt_states_for_authority(
+        shot_folder,
+        selected,
+    )
+
+
+def current_judgment_debt_states_for_authority(
+    shot_folder: str | Path,
+    selected_authority: ResolvedSelectedAuthority,
+) -> tuple[
+    tuple[JudgmentDebtDefinition, JudgmentDebtActivation | None, JudgmentDebtState],
+    ...,
+]:
+    """Replay debt state against one caller-resolved plan/JIT snapshot."""
+
+    bundle_digest, definitions, activations = _current_authority(
+        shot_folder,
+        selected_authority,
+    )
     return _states_for_authority(
         shot_folder,
         bundle_digest=bundle_digest,
@@ -369,6 +427,19 @@ def current_judgment_debt_states(
 def current_judgment_debt_state_digest(shot_folder: str | Path) -> str:
     """Digest the exact selected debt definitions, activations, and lifecycle states."""
 
+    selected = _resolve_current_authority_snapshot(shot_folder)
+    return current_judgment_debt_state_digest_for_authority(
+        shot_folder,
+        selected,
+    )
+
+
+def current_judgment_debt_state_digest_for_authority(
+    shot_folder: str | Path,
+    selected_authority: ResolvedSelectedAuthority,
+) -> str:
+    """Digest lifecycle state using the caller's exact selected snapshot."""
+
     rows = [
         {
             "debt_id": definition.debt_id,
@@ -377,7 +448,10 @@ def current_judgment_debt_state_digest(shot_folder: str | Path) -> str:
             "state_digest": state.digest,
             "status": state.status,
         }
-        for definition, activation, state in current_judgment_debt_states(shot_folder)
+        for definition, activation, state in current_judgment_debt_states_for_authority(
+            shot_folder,
+            selected_authority,
+        )
     ]
     payload = {
         "schema": "vfx-harness.current-judgment-debt-state/v1",
@@ -472,8 +546,13 @@ def mark_judgment_debt_due(
     *,
     layer_id: str,
     replayed_unit_digests: Sequence[tuple[str, str]],
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> JudgmentDebtState:
-    bundle_digest, definitions, activations = _current_authority(shot_folder)
+    selected = selected_authority or _resolve_current_authority_snapshot(shot_folder)
+    bundle_digest, definitions, activations = _current_authority(
+        shot_folder,
+        selected,
+    )
     event_path = shot_state_dir(shot_folder) / EVENTS
     with _event_lock(event_path):
         rows = _states_for_authority(
@@ -530,8 +609,13 @@ def resolve_current_judgment_debt(
     *,
     outcome: str,
     evidence_digest: str,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> JudgmentDebtState:
-    bundle_digest, definitions, activations = _current_authority(shot_folder)
+    selected = selected_authority or _resolve_current_authority_snapshot(shot_folder)
+    bundle_digest, definitions, activations = _current_authority(
+        shot_folder,
+        selected,
+    )
     event_path = shot_state_dir(shot_folder) / EVENTS
     with _event_lock(event_path):
         rows = _states_for_authority(
@@ -560,10 +644,21 @@ def resolve_current_judgment_debt(
         return resolved
 
 
-def require_judgment_debts_satisfied(shot_folder: str | Path) -> None:
+def require_judgment_debts_satisfied(
+    shot_folder: str | Path,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> None:
+    rows = (
+        current_judgment_debt_states(shot_folder)
+        if selected_authority is None
+        else current_judgment_debt_states_for_authority(
+            shot_folder,
+            selected_authority,
+        )
+    )
     unresolved = [
         (definition.debt_id, state.status)
-        for definition, _activation, state in current_judgment_debt_states(shot_folder)
+        for definition, _activation, state in rows
         if state.status != "satisfied"
     ]
     if unresolved:

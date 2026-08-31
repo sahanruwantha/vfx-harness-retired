@@ -6,6 +6,7 @@ import contextlib
 import json
 import shutil
 import time
+from functools import partial
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -20,6 +21,10 @@ from vfx_harness.agents.build_prompts import (
     capability_feedback_groups,
     recurring_complaints,
     revision_prompt,
+)
+from vfx_harness.agents.builder.authority import (
+    AuthorityBoundLedger,
+    commit_selected_authority,
 )
 from vfx_harness.agents.builder.axes import (
     _builder_ticket_context,
@@ -95,6 +100,10 @@ from vfx_harness.observability.log import (
 from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.observability.runlog import reset_counts
 from vfx_harness.orchestration import generate_construction as generate_construction
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    resolve_selected_authority,
+)
 from vfx_harness.orchestration.layer_state import record_round as state_round
 from vfx_harness.orchestration.layer_state import start as state_start
 from vfx_harness.orchestration.ledger import Ledger, Milestone
@@ -120,10 +129,21 @@ async def build_unit(
     report_layer=None,
     resume_ok: bool = False,
     layer_units=None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> Ledger:
     """The build+critic engine for ONE unit of work. Iteration is judged at m.frame vs
     m.ref; the canonical check covers every frame `layer` claims (see _verify_script)."""
-    ledger = Ledger(shot)
+    selected_authority = selected_authority or resolve_selected_authority(shot.folder)
+
+    def publish(operation, mutation):
+        return commit_selected_authority(
+            shot.folder,
+            selected_authority,
+            operation=operation,
+            mutation=mutation,
+        )
+
+    ledger = AuthorityBoundLedger(shot, selected_authority)
     previous_slot = dict(ledger._slot(m))
     previous_status = str(previous_slot.get("status") or "")
     retry_script = shot.folder / script_rel
@@ -154,12 +174,13 @@ async def build_unit(
     revalidated = _try_revalidate(
         shot, m, script_rel, prior_paths, session, layer=layer, ledger=ledger,
         t_layer=t_layer, active_unit=active_unit,
+        selected_authority=selected_authority,
     )
     if revalidated is not None:
         return revalidated
 
-    all_axes = await ensure_axes(shot, verbose)  # per-shot critic rubric (from the plan)
-    _warn_unowned_axes(shot, all_axes)
+    all_axes = await ensure_axes(shot, verbose, selected_authority)
+    _warn_unowned_axes(shot, all_axes, selected_authority)
     # A layer's ownership is already deterministic in layers.json. Passing every rubric
     # axis and asking the critic to decide which were n/a made the denominator move between
     # identical repeats. Filter before the builder prompt, critic prompt, and JSON schema.
@@ -186,7 +207,12 @@ async def build_unit(
     diagnostic_evidence_ids: set[str] = set()
     if active_evidence_ids is not None and layer is not None:
         try:
-            extra_vis = _geometry_protected_vis_ids(shot, layer, active_unit)
+            extra_vis = _geometry_protected_vis_ids(
+                shot,
+                layer,
+                active_unit,
+                selected_authority=selected_authority,
+            )
         except (OSError, ValueError, KeyError):
             extra_vis = set()
         active_evidence_ids = set(active_evidence_ids) | extra_vis
@@ -194,13 +220,17 @@ async def build_unit(
         frames.extend(int(frame) for frame, _ref in (getattr(layer, "judges", None) or ()))
         with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
             active_evidence_ids = _scene_ids_active_at_declared_frames(
-                shot, str(layer.id), active_evidence_ids, frames
+                shot,
+                str(layer.id),
+                active_evidence_ids,
+                frames,
+                selected_authority=selected_authority,
             )
         with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
 
             diagnostic_evidence_ids = set(
                 deferred_subject_composition_forecast_ids_for_unit(
-                    load_rows(shot.folder),
+                    load_rows(shot.folder, selected_authority),
                     tuple(layer_units or getattr(layer, "stages", ()) or ()),
                     active_unit,
                     str(layer.id),
@@ -226,7 +256,12 @@ async def build_unit(
         else []
     )
 
-    fault_owner_options = _fault_owner_options_for_unit(shot, layer, active_unit)
+    fault_owner_options = _fault_owner_options_for_unit(
+        shot,
+        layer,
+        active_unit,
+        selected_authority=selected_authority,
+    )
 
     phase = {
         "mode": "live",
@@ -264,6 +299,7 @@ async def build_unit(
             str(getattr(layer, "id", m.id)),
             units=layer_units,
             durable_state=durable_state,
+            selected_authority=selected_authority,
         )
         unit_scope_card["fault_owner_options"] = fault_owner_options
     bserver, bnames = build_blender_tools(
@@ -284,6 +320,7 @@ async def build_unit(
         # unit to delete the previous layers' sealed work
         scope_baseline=scope_baseline,
         unit_scope=unit_scope_card,
+        selected_authority=selected_authority,
     )
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names)),
@@ -328,7 +365,12 @@ async def build_unit(
 
     if layer is not None and int(layer.id) > 1:
 
-        interfaces = prior_interface_evidence(shot.folder, str(layer.id), session=session)
+        interfaces = prior_interface_evidence(
+            shot.folder,
+            str(layer.id),
+            session=session,
+            selected_authority=selected_authority,
+        )
         failed_interfaces = [row for row in interfaces if not row.get("pass")]
         if failed_interfaces:
             detail = "; ".join(
@@ -391,7 +433,14 @@ async def build_unit(
         log(f"transcript → {_tpath.relative_to(shot.folder)}", 1)
     # Conclusions that outlive the transcript: a compaction or a crash-resume costs the
     # conversation, not the measured state of each judge frame or what has been ruled out.
-    state_start(shot.folder, getattr(layer, "id", m.id), list(getattr(layer, "judges", None) or [(m.frame, m.ref)]))
+    publish(
+        f"start layer {getattr(layer, 'id', m.id)} builder state",
+        lambda: state_start(
+            shot.folder,
+            getattr(layer, "id", m.id),
+            list(getattr(layer, "judges", None) or [(m.frame, m.ref)]),
+        ),
+    )
     canon_verdicts: list = []
     passed = False
     reviewed = False  # one approach review per layer; a second plateau stops
@@ -407,6 +456,7 @@ async def build_unit(
         script_rel=script_rel,
         phase=phase,
         ticket_context=ticket_context,
+        selected_authority=selected_authority,
     )
     if resume and resume.get("session_id"):
         opts.resume = resume["session_id"]  # SDK restores the CONVERSATION
@@ -502,7 +552,11 @@ async def build_unit(
             )
 
         live_rounds = _live_round_budget(rounds, comparison_state)
-        raster_required = _unit_requires_raster(shot, active_unit)
+        raster_required = _unit_requires_raster(
+            shot,
+            active_unit,
+            selected_authority=selected_authority,
+        )
         if not raster_required:
             log(
                 "executable-only unit: evaluating typed scene/interface evidence "
@@ -553,7 +607,13 @@ async def build_unit(
             # image is nearly free now that images are attached rather than fetched.
             prior = best.get("render") if best.get("render") and best["render"] != render_rel else None
             evidence = builder_package()._render_evidence(
-                shot, layer, m, render_rel, session, active_unit=active_unit
+                shot,
+                layer,
+                m,
+                render_rel,
+                session,
+                active_unit=active_unit,
+                selected_authority=selected_authority,
             )
             verdict = await _judge_unit_or_layer(
                 shot,
@@ -570,20 +630,25 @@ async def build_unit(
                 motion_frames_override=_layer_motion_frames(layer, m, shot.frames),
                 allow_motion=_layer_needs_motion(layer),
                 layer=layer,
+                selected_authority=selected_authority,
             )
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             convergence_stop = _evidence_convergence_stop(layer, verdict)
             if convergence_stop:
                 verdict["convergence_stop"] = "authoritative_owned_evidence"
             ledger.record_round(m, kind="iter", index=rnd, render=render_rel, verdict=verdict)
-            state_round(
-                shot.folder,
-                frame=m.frame,
-                mean=verdict["mean"],
-                passed=verdict["pass"],
-                scores=verdict.get("scores"),
-                issues=verdict.get("issues"),
-                approach=_APPROACH.get("text"),
+            publish(
+                f"record layer {getattr(layer, 'id', m.id)} round {rnd}",
+                partial(
+                    state_round,
+                    shot.folder,
+                    frame=m.frame,
+                    mean=verdict["mean"],
+                    passed=verdict["pass"],
+                    scores=verdict.get("scores"),
+                    issues=verdict.get("issues"),
+                    approach=_APPROACH.get("text"),
+                ),
             )
             # best-of-N: a valid round outranks an invalid round before aesthetic mean.
             # In particular, do not restore a contract-failing 4.0 over a later passing
@@ -725,6 +790,7 @@ async def build_unit(
             ledger,
             comparison_state,
             phase,
+            selected_authority=selected_authority,
         )
 
 
@@ -732,7 +798,10 @@ async def build_unit(
         if active_unit is not None:
             unpaid_cards = unpaid_image_contract_debts(
                 image_contract_debt_cards(active_unit),
-                load_image_contract_payment_rows(shot.folder),
+                load_image_contract_payment_rows(
+                    shot.folder,
+                    selected_authority=selected_authority,
+                ),
             )
             refusal = freeze_refusal(unpaid_cards, comparison_state.get("cannot_express"))
             if refusal:
@@ -776,6 +845,7 @@ async def build_unit(
                 layer=layer,
                 active_unit=active_unit,
                 out_verdicts=canon_verdicts,
+                selected_authority=selected_authority,
             )
 
         canonical = await _run_canonical_repairs(
@@ -799,6 +869,7 @@ async def build_unit(
             raster_required,
             phase,
             passed,
+            selected_authority=selected_authority,
         )
     return await _publish_unit_outcome(
         shot,
@@ -822,4 +893,5 @@ async def build_unit(
         last_info,
         _look_actions,
         scope,
+        selected_authority=selected_authority,
     )

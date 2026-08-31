@@ -26,9 +26,9 @@ from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.provenance import check as provenance_check
+from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.escalate import unanswered_for_layer
 from vfx_harness.orchestration.ledger import load_layers
-from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
 from vfx_harness.orchestration.plan_due import require_due_clear
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 
@@ -45,8 +45,8 @@ async def _run(
     # no longer exists. An edited INPUT refuses; an edited artifact only warns, since
     # hand-tuning layers.json is a legitimate thing to do mid-build.
 
-    if (shot.folder / POINTER).exists():
-        resolve_current(shot.folder)
+    selected_authority = resolve_selected_authority(shot.folder)
+    if selected_authority.plan is not None:
         stale = []
     else:
         stale = provenance_check(shot.folder)
@@ -60,12 +60,16 @@ async def _run(
     # on an unanswered assumption is how barrel_roll ended up 16:9 against 2:1 references
     # — by the time a later layer could notice, the camera had been committed three layers
     # earlier and every composition score was measured against the wrong crop.
-    layers = load_layers(shot)
+    layers = load_layers(shot, selected_authority=selected_authority)
     g = layers.get(layer_id) or layers.get(layer_id.upper())
     if g is None:
         raise SystemExit(f"unknown layer {layer_id!r}; known: {', '.join(layers)}")
 
-    require_due_clear(shot.folder, layer=str(g.id))
+    require_due_clear(
+        shot.folder,
+        layer=str(g.id),
+        selected_authority=selected_authority,
+    )
     unanswered = unanswered_for_layer(shot.folder, g)
     if unanswered and not force:
         log(
@@ -93,7 +97,13 @@ async def _run(
             f"(judges: {judged}) → {g.script}, builder {builder_model()}, critic {critic_model()}"
         )
         ledger = await builder_package().build_layer(
-            shot, g, session, rounds=rounds, resume_ok=resume_ok, force=force
+            shot,
+            g,
+            session,
+            rounds=rounds,
+            resume_ok=resume_ok,
+            force=force,
+            selected_authority=selected_authority,
         )
         status = ledger.status(g.as_milestone())
         log(f"{g.id}: {status}  →  {ledger.path}")

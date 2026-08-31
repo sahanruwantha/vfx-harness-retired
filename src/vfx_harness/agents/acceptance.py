@@ -24,9 +24,18 @@ from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration import plan_due
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
 from vfx_harness.orchestration.judgment_debt_state import require_judgment_debts_satisfied
 from vfx_harness.orchestration.ledger import Ledger, load_layers, load_milestones
 from vfx_harness.orchestration.plan_due import require_due_clear, resolve_acceptance_completion
+from vfx_harness.orchestration.selected_authority_guard import (
+    commit_selected_authority,
+)
 from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
 
 from ..blender.session import BlenderSession
@@ -53,6 +62,7 @@ def _chain(
     *,
     force: bool = False,
     expected_bundle_digest: str | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> list[str]:
     """Run every layer script from an empty scene — the deliverable, start to finish.
 
@@ -63,9 +73,10 @@ def _chain(
     """
     layers = selected_layer_chain(
         shot,
+        selected_authority=selected_authority,
         expected_bundle_digest=expected_bundle_digest,
     )
-    ledger = Ledger(shot)
+    ledger = Ledger(shot, selected_authority=selected_authority)
     missing = [f"layer {g.id} ({g.script}) has no script"
                for g in layers if not (shot.folder / g.script).is_file()]
     unpassed = [f"layer {g.id} is '{ledger.status(g.as_milestone())}'"
@@ -96,16 +107,33 @@ def _chain(
 async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
                  verbose: bool = True, force: bool = False,
                  repair: bool = False) -> dict:
+    try:
+        selected_authority = resolve_selected_authority(shot.folder)
+    except SelectedAuthorityResolutionError as exc:
+        raise IncompleteChain(str(exc)) from exc
+    plan_due.require_due_clear(
+        shot.folder,
+        acceptance=True,
+        record_kinds=frozenset({"assumption"}),
+        selected_authority=selected_authority,
+    )
     if only is None:
         try:
-            require_judgment_debts_satisfied(shot.folder)
+            require_judgment_debts_satisfied(
+                shot.folder,
+                selected_authority,
+            )
         except ValueError as exc:
             raise IncompleteChain(str(exc)) from exc
-    moments = load_milestones(shot)
+    moments = load_milestones(shot, selected_authority)
     if only:
         moments = {k: v for k, v in moments.items() if k == only} or moments
-    authority_before = acceptance_stop.capture_acceptance_authority(shot, moments)
-    axes = await ensure_axes(shot, verbose)
+    authority_before = acceptance_stop.capture_acceptance_authority(
+        shot,
+        moments,
+        selected_authority,
+    )
+    axes = await ensure_axes(shot, verbose, selected_authority)
     tpath = transcript.bind(shot.folder, "accept")
     if tpath:
         log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
@@ -114,12 +142,13 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         shot,
         force=force,
         expected_bundle_digest=authority_before.bundle_digest,
+        selected_authority=selected_authority,
     )
     log(f"chain rebuilt from empty: {len(ran)} scripts — judging {len(moments)} moment(s)")
     transcript.event("accept_start", moments=list(moments), chained=ran,
                      axes=[k for k, _ in axes])
 
-    ledger = Ledger(shot)
+    ledger = Ledger(shot, selected_authority=selected_authority)
     results: dict[str, dict] = {}
     contract_verdicts: dict[tuple[str, str], list[bool]] = {}
     for mid, m in moments.items():
@@ -156,7 +185,8 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             # borderline call here is the worst place to trust a single noisy score.
             verdict = await _judge(shot, m, render_rel, axes, session, verbose,
                                    ("MEASURED GAPS vs the reference (objective, already "
-                                    "computed — treat as fact):\n" + extra) if extra else None)
+                                    "computed — treat as fact):\n" + extra) if extra else None,
+                                   selected_authority=selected_authority)
             # `_judge` deterministically rejects an empty/black plate before any model
             # call. Preserve that provenance; labelling it "critic" would claim a paid
             # qualitative judgment that never happened.
@@ -181,6 +211,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             frame=m.frame,
             ref=m.ref,
             render=render_rel,
+            selected_authority=selected_authority,
         )
         failed_authoritative_contracts = [
             row
@@ -224,13 +255,26 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         if not only and publishable
         else None
     )
-    authority_after = acceptance_stop.capture_acceptance_authority(shot, moments)
+    authority_after = acceptance_stop.capture_acceptance_authority(
+        shot,
+        moments,
+        selected_authority,
+    )
     if authority_after != authority_before:
         raise ValueError(
             "selected acceptance authority, judgment debt, or accepted build changed "
             "during judgment; the verdict is not attributable to one before-state"
         )
     failed = {mid: result for mid, result in results.items() if not result["pass"]}
+
+    def publish(operation, mutation):
+        return commit_selected_authority(
+            shot.folder,
+            selected_authority,
+            operation=operation,
+            mutation=mutation,
+        )
+
     if not only and publishable:
         # A frame-unspecified contract is evaluated at every acceptance moment.  One
         # passing reading cannot permanently satisfy the obligation when another
@@ -240,16 +284,21 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             for binding, verdicts in contract_verdicts.items()
             if verdicts and all(verdicts)
         }
-        resolve_acceptance_completion(
-            shot.folder,
-            passed_evidence=passed_contract_evidence,
-            expected_bundle_digest=authority_before.bundle_digest,
+        publish(
+            "resolve acceptance completion authority",
+            lambda: resolve_acceptance_completion(
+                shot.folder,
+                passed_evidence=passed_contract_evidence,
+                expected_bundle_digest=authority_before.bundle_digest,
+                selected_authority=selected_authority,
+            ),
         )
     if not failed and not only and publishable:
         require_due_clear(
             shot.folder,
             acceptance=True,
             expected_bundle_digest=authority_before.bundle_digest,
+            selected_authority=selected_authority,
         )
 
     acceptance_record = {
@@ -267,13 +316,21 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             log("! --repair is ignored for a forced debugging preview")
     else:
         ledger.data["acceptance"] = acceptance_record
-        ledger.save()
+        publish("publish acceptance outcome", ledger.save)
         if not only:                  # a partial run cannot judge the whole chain
-            acceptance_record["superseded"] = reconcile(shot, results, ledger)
-            plan = repair_plan(shot, results)
+            acceptance_record["superseded"] = publish(
+                "reconcile accepted layer outcomes",
+                lambda: reconcile(
+                    shot,
+                    results,
+                    ledger,
+                    selected_authority,
+                ),
+            )
+            plan = repair_plan(shot, results, selected_authority)
             acceptance_record["repair_plan"] = plan
             ledger.data["acceptance"] = acceptance_record
-            ledger.save()
+            publish("publish acceptance repair diagnosis", ledger.save)
             if plan:
                 log(
                     f"! {len(plan)} failing moment group(s) diagnose layer(s) "
@@ -285,7 +342,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
                     "unit-state mutation")
             acceptance_record["repaired"] = []
             ledger.data["acceptance"] = acceptance_record
-            ledger.save()
+            publish("publish terminal acceptance record", ledger.save)
     destination = "run-scoped debug preview" if force else str(ledger.path)
     log(f"acceptance: {acceptance_record['passed']}/{len(results)} moments passed "
         f"→ {destination}")
@@ -312,7 +369,12 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
     return acceptance_record
 
 
-def reconcile(shot: Shot, results: dict, ledger: Ledger) -> list[str]:
+def reconcile(
+    shot: Shot,
+    results: dict,
+    ledger: Ledger,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[str]:
     """Correct the record: a layer that PASSED while the moments it answers for FAILED.
 
     Nothing linked these before, so both verdicts sat in shot.json contradicting each
@@ -322,7 +384,7 @@ def reconcile(shot: Shot, results: dict, ledger: Ledger) -> list[str]:
     that layer is responsible for. When they disagree, acceptance wins — it judged the
     finished chain.
     """
-    layers = load_layers(shot)
+    layers = load_layers(shot, selected_authority=selected_authority)
     failed_frames = {r["frame"] for r in results.values() if not r["pass"]}
     notes = []
     for g in layers.values():
@@ -347,7 +409,11 @@ def _now_str() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def repair_plan(shot: Shot, results: dict) -> list[dict]:
+def repair_plan(
+    shot: Shot,
+    results: dict,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[dict]:
     """Which layers must be rebuilt to fix the failing moments, earliest first.
 
     Acceptance used to END here: it wrote the verdict, marked contradicting layer
@@ -357,7 +423,7 @@ def repair_plan(shot: Shot, results: dict) -> list[dict]:
     routing was available all along; nothing consumed it.
     """
 
-    layers = load_layers(shot)
+    layers = load_layers(shot, selected_authority=selected_authority)
     axis_owner: dict[str, str] = {}
     for g in layers.values():
         for ax in (g.owns or ()):
@@ -403,17 +469,6 @@ def _order(layers: dict, layer_id: str) -> int:
 async def _run(folder: str, only: str | None, blender: str, force: bool = False,
                repair: bool = False) -> None:
     shot = load_shot(folder)
-
-    if only is None:
-        try:
-            require_judgment_debts_satisfied(shot.folder)
-        except ValueError as exc:
-            raise IncompleteChain(str(exc)) from exc
-    require_due_clear(
-        shot.folder,
-        acceptance=True,
-        record_kinds=frozenset({"assumption"}),
-    )
     session = BlenderSession(blender=blender, blend_file=None,
                              assets_dir=shot.folder / "assets",
                              cwd=shot.folder).start()

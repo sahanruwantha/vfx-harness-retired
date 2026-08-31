@@ -623,7 +623,28 @@ def _bvfx_import_construction() -> "list[str]":
             f"construction pin names illegal path {rel!r}; replay imports only "
             "build/construction/<sha256>.glb"
         )
-    glb = os.path.abspath(rel)
+    snapshot_glb = payload.get("snapshot_glb")
+    if snapshot_glb is None:
+        glb = os.path.abspath(rel)
+    else:
+        if not isinstance(snapshot_glb, str) or not os.path.isabs(snapshot_glb):
+            raise RuntimeError("construction snapshot path must be absolute")
+        glb = os.path.abspath(snapshot_glb)
+        if os.path.realpath(glb) != glb:
+            raise RuntimeError("construction snapshot path must contain no symlinks")
+        scratch = os.path.realpath(os.path.dirname(ARTIFACTS))
+        try:
+            relative_snapshot = os.path.relpath(glb, scratch)
+        except ValueError as exc:
+            raise RuntimeError("construction snapshot is outside run scratch") from exc
+        parts = relative_snapshot.split(os.sep)
+        if (
+            not parts
+            or not parts[0].startswith("final-render-chain-")
+            or relative_snapshot == os.pardir
+            or relative_snapshot.startswith(os.pardir + os.sep)
+        ):
+            raise RuntimeError("construction snapshot is outside final-render replay authority")
     if not os.path.isfile(glb):
         raise FileNotFoundError(f"promoted construction {rel} is missing")
     with open(glb, "rb") as handle:

@@ -10,6 +10,7 @@ import anyio
 import pytest
 from PIL import Image
 
+from tests.materialization_support import attest_exact_materialization_view
 from tests.unit.test_judgment_debt_materialization import (
     _camera_payload,
     _fixture_root,
@@ -29,7 +30,11 @@ from vfx_harness.blender.observation_environment import (
 )
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration.jit_materialization import publish_materialization
+from vfx_harness.orchestration.authority_selection import resolve_selected_authority
+from vfx_harness.orchestration.jit_materialization import (
+    MATERIALIZATION_SCHEMA,
+    publish_materialization,
+)
 from vfx_harness.orchestration.judgment_debt_state import (
     current_judgment_debt_states,
     mark_judgment_debt_due,
@@ -83,8 +88,17 @@ def _public_fixture_root(tmp_path: Path) -> Path:
 
 def _payload_for_bundle(root: Path, name: str, payload: dict, bundle_hash: str) -> Path:
     document = json.loads(json.dumps(payload))
+    document["schema"] = MATERIALIZATION_SCHEMA
     document["bundle_hash"] = bundle_hash
+    document["base_selection"] = resolve_selected_authority(
+        root
+    ).selection_token.to_dict()
     return _write_payload(root, name, document)
+
+
+def _publish_payload(root: Path, payload: Path) -> Path:
+    attest_exact_materialization_view(root, payload)
+    return publish_materialization(root, payload)
 
 
 def _pass_layer_unit(root: Path, layer_id: str, unit_id: str) -> None:
@@ -273,7 +287,7 @@ def test_public_jit_pipeline_defers_then_settles_matching_form_debt_once(
         outcome="clean_with_deferred",
     )
 
-    publish_materialization(
+    _publish_payload(
         root,
         _payload_for_bundle(root, "camera-jit.json", _camera_payload(), bundle.content_hash),
     )
@@ -285,7 +299,7 @@ def test_public_jit_pipeline_defers_then_settles_matching_form_debt_once(
     assert state.status == "pending_not_due"
 
     _publish_captured_outcome(root, "1", outcomes[-1])
-    publish_materialization(
+    _publish_payload(
         root,
         _payload_for_bundle(root, "form-jit.json", _form_payload(), bundle.content_hash),
     )
@@ -419,7 +433,7 @@ def test_public_pipeline_suppresses_unchanged_no_signal_payment_attempt(
         run_artifacts.create(root, "judgment-debt-no-signal-ratchet"),
         outcome="clean_with_deferred",
     )
-    publish_materialization(
+    _publish_payload(
         root,
         _payload_for_bundle(root, "camera-jit.json", _camera_payload(), bundle.content_hash),
     )
@@ -427,7 +441,7 @@ def test_public_pipeline_suppresses_unchanged_no_signal_payment_attempt(
     session = _ReplaySession()
     anyio.run(_build_prepassed_layer, root, "1", session)
     _publish_captured_outcome(root, "1", outcomes[-1])
-    publish_materialization(
+    _publish_payload(
         root,
         _payload_for_bundle(root, "form-jit.json", _form_payload(), bundle.content_hash),
     )

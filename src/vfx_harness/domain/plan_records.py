@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.authority_head_records import (
+    decode_canonical_json_object,
+    parse_plan_consumer_view,
+    parse_plan_pointer,
+)
 from vfx_harness.domain.judgment_debt_catalog import (
     JUDGMENT_DEBT_ACTIVATIONS_KEY,
     JUDGMENT_DEBT_DEFINITIONS_KEY,
@@ -645,30 +650,45 @@ def read_selected_bundle_hash(folder: str | Path) -> str | None:
 
     A consumer view carries ``.plan-consumer-view.json``; a shot folder carries
     ``plans/current.json``. Either is enough to key the append-only ledger.
-    Missing or unreadable markers leave the ledger inert rather than adopting
-    every generation's structured decisions.
+    True absence leaves the ledger inert. Any present legacy, malformed, ambiguous,
+    or producer-invalid selected head fails closed rather than adopting decisions for
+    an unverified generation.
     """
     root = Path(folder)
-    marker = root / CONSUMER_VIEW_MARKER
-    if marker.is_file():
+
+    def _read_present(path: Path, where: str) -> bytes | None:
+        if path.is_symlink():
+            raise ValueError(f"{where} must be a real regular file")
         try:
-            payload = json.loads(marker.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = None
-        if isinstance(payload, dict):
-            digest = payload.get("content_hash")
-            if isinstance(digest, str) and digest.strip():
-                return digest.strip()
-    pointer = root / PLAN_POINTER
-    if pointer.is_file():
+            if not path.exists():
+                return None
+            if not path.is_file():
+                raise ValueError(f"{where} must be a real regular file")
+            return path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"{where} is unreadable") from exc
+
+    marker_payload = _read_present(
+        root / CONSUMER_VIEW_MARKER,
+        "plan consumer view marker",
+    )
+    if marker_payload is not None:
+        marker = decode_canonical_json_object(
+            marker_payload,
+            "plan consumer view marker",
+        )
+        return parse_plan_consumer_view(marker).content_hash
+
+    pointer_payload = _read_present(root / PLAN_POINTER, "selected plan pointer")
+    if pointer_payload is not None:
         try:
-            payload = json.loads(pointer.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = None
-        if isinstance(payload, dict):
-            digest = payload.get("content_hash")
-            if isinstance(digest, str) and digest.strip():
-                return digest.strip()
+            pointer = decode_canonical_json_object(
+                pointer_payload,
+                "selected plan pointer",
+            )
+            return parse_plan_pointer(pointer).content_hash
+        except ValueError as exc:
+            raise ValueError(f"selected plan pointer is invalid: {exc}") from exc
     return None
 
 

@@ -228,7 +228,14 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
         )
         return "failed"
 
-    def mark_due(_folder, digest, *, layer_id, replayed_unit_digests) -> None:
+    def mark_due(
+        _folder,
+        digest,
+        *,
+        layer_id,
+        replayed_unit_digests,
+        **_kwargs,
+    ) -> None:
         nonlocal debt_state
         marked.append((digest, layer_id))
         assert replayed_unit_digests == (("2:hall_form", "1" * 64),)
@@ -243,10 +250,14 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
         "load_unit_state",
         lambda *_args, **_kwargs: {"units": {unit.id: {"status": "passed"} for unit in layer.stages}},
     )
-    monkeypatch.setattr(layer_runtime, "load_layers", lambda _shot: {"2": layer})
-    monkeypatch.setattr(layer_runtime, "plan_strips", lambda _shot: {})
+    monkeypatch.setattr(layer_runtime, "load_layers", lambda *_args, **_kwargs: {"2": layer})
+    monkeypatch.setattr(layer_runtime, "plan_strips", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(layer_runtime, "ensure_axes", axes)
-    monkeypatch.setattr(layer_runtime, "_load_provisional_decisions", lambda *_args: (decision,))
+    monkeypatch.setattr(
+        layer_runtime,
+        "_load_provisional_decisions",
+        lambda *_args, **_kwargs: (decision,),
+    )
     monkeypatch.setattr(layer_runtime, "_unit_raster_mode", lambda _unit: "solid")
     monkeypatch.setattr(
         layer_runtime,
@@ -294,7 +305,9 @@ def test_acceptance_refuses_unresolved_judgment_debt_before_chain_work(
     monkeypatch.setattr(
         acceptance,
         "require_judgment_debts_satisfied",
-        lambda _folder: (_ for _ in ()).throw(ValueError("R-hall-read=pending_not_due")),
+        lambda _folder, _selected=None: (_ for _ in ()).throw(
+            ValueError("R-hall-read=pending_not_due")
+        ),
     )
 
     async def run() -> None:

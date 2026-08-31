@@ -32,6 +32,9 @@ from vfx_harness.orchestration.unit_state import unit_digest as digest_of
 _GLB_MAGIC = b"glTF"
 _EXTRA_CAMERAS = ("three_quarter", "left", "right")
 CONSTRUCTION_PIN = "construction_import.json"
+FINAL_RENDER_CONSTRUCTION_POINTER_SCHEMA = (
+    "vfx-harness.final-render-construction-pointer/v1"
+)
 
 IsolateFn = Callable[..., Path]
 OrbitFn = Callable[..., Path]
@@ -50,6 +53,7 @@ class PromotedConstruction:
     unit_digest: str
     view_count: int
     reused: bool = False
+    snapshot_path: str | None = None
 
 
 def _qualify_glb(path: Path) -> str:
@@ -267,14 +271,74 @@ def pin_construction_import(session, promoted: PromotedConstruction | None) -> N
     if promoted is None:
         pin.unlink(missing_ok=True)
         return
+    payload = {"glb": promoted.glb_relpath, "sha256": promoted.sha256}
+    if promoted.snapshot_path is not None:
+        payload["snapshot_glb"] = promoted.snapshot_path
     pin.write_text(
-        json.dumps(
-            {"glb": promoted.glb_relpath, "sha256": promoted.sha256},
-            indent=2,
-            sort_keys=True,
-        )
+        json.dumps(payload, indent=2, sort_keys=True)
         + "\n",
         encoding="utf-8",
+    )
+
+
+def _final_render_snapshot_root(shot: Path, pointer: Path) -> Path:
+    layout = active_run(shot)
+    if layout is None:
+        raise GenerateConstructionError(
+            "final-render construction replay requires the active producing run"
+        )
+    scratch = layout.scratch.resolve()
+    current = pointer.resolve().parent
+    while current.parent != scratch:
+        if current == scratch or scratch not in current.parents:
+            raise GenerateConstructionError(
+                "final-render construction pointer is outside active run scratch"
+            )
+        current = current.parent
+    if not current.name.startswith("final-render-chain-"):
+        raise GenerateConstructionError(
+            "final-render construction pointer is outside an immutable replay snapshot"
+        )
+    return current
+
+
+def _pin_final_render_snapshot(session, pointer: Path, payload: dict) -> None:
+    cwd = getattr(session, "cwd", None)
+    if not cwd:
+        raise GenerateConstructionError(
+            "final-render construction replay requires the shot working directory"
+        )
+    shot = Path(cwd).resolve()
+    snapshot_root = _final_render_snapshot_root(shot, pointer)
+    rel = str(payload.get("glb") or "")
+    digest = str(payload.get("sha256") or "")
+    if not legal_promoted_relpath(rel):
+        raise GenerateConstructionError(
+            f"final-render construction pointer {pointer} names illegal path {rel!r}. "
+            + PROMOTED_PATH_RULE
+        )
+    glb = (snapshot_root / rel).resolve()
+    try:
+        glb.relative_to(snapshot_root)
+    except ValueError as exc:
+        raise GenerateConstructionError(
+            "final-render construction snapshot escapes its immutable replay root"
+        ) from exc
+    actual = _qualify_glb(glb)
+    if actual != digest:
+        raise GenerateConstructionError(
+            f"final-render construction snapshot hash mismatch: pointer {digest} file {actual}"
+        )
+    pin_construction_import(
+        session,
+        PromotedConstruction(
+            glb_relpath=rel,
+            sha256=digest,
+            unit_digest=str(payload.get("unit_digest") or ""),
+            view_count=int(payload.get("view_count") or 0),
+            reused=True,
+            snapshot_path=str(glb),
+        ),
     )
 
 
@@ -288,6 +352,9 @@ def pin_for_script(session, script_path: str | Path) -> None:
         payload = json.loads(pointer.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         pin_construction_import(session, None)
+        return
+    if payload.get("schema") == FINAL_RENDER_CONSTRUCTION_POINTER_SCHEMA:
+        _pin_final_render_snapshot(session, pointer, payload)
         return
     if payload.get("schema") != PROMOTED_CONSTRUCTION_SCHEMA:
         pin_construction_import(session, None)

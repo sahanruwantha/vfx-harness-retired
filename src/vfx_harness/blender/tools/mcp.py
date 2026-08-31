@@ -33,6 +33,7 @@ def build_blender_tools(
     mutation_roles: tuple[str, ...] | None = None,
     scope_baseline: set[str] | None = None,
     unit_scope: dict | None = None,
+    selected_authority=None,
 ):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
     `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…).
@@ -188,14 +189,21 @@ def build_blender_tools(
         "_black_search_stop": _black_search_stop,
         "_register_candidate": _register_candidate,
     }
-    run_bpy = register_mutate(**closed)
+    run_bpy = register_mutate(**closed, selected_authority=selected_authority)
     unit_scope_tool, inspect_scene, inspect_nodes, list_keyframes = register_inspect(**closed)
     render_frame, inspect_view, render_pass = register_render(**closed)
-    check_scene, contract_result = register_contracts(**closed)
-    diff_frames, verify_change, compare_frame, render_frames, import_asset = register_compare(**closed)
+    check_scene, contract_result = register_contracts(
+        **closed,
+        selected_authority=selected_authority,
+    )
+    diff_frames, verify_change, compare_frame, render_frames, import_asset = register_compare(
+        **closed,
+        selected_authority=selected_authority,
+    )
     probe_control = register_probe(**closed)
     script_map, find_in_script, worklist, cannot_express_in_scope, measure_regions, propose_checks = register_misc(
-        **closed
+        **closed,
+        selected_authority=selected_authority,
     )
     tools = [
         run_bpy,

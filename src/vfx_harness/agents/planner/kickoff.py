@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from vfx_harness.agents.plan_guardrails import target_validation_feedback
@@ -18,12 +19,123 @@ from vfx_harness.domain.work_units import (
     compile_deferred_subject_activation,
     compile_frame_authority,
 )
-from vfx_harness.orchestration.jit_materialization import selected_view_artifact
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    require_matching_authority_selection_token,
+)
+from vfx_harness.orchestration.jit_materialization.candidate import (
+    load_materialization_candidate,
+)
+from vfx_harness.orchestration.jit_materialization.overlay_base import read_overlay_base
+from vfx_harness.orchestration.jit_materialization.schema import (
+    materialization_base_selection,
+)
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_authoring import expand_mapping, validate_mapping
-from vfx_harness.orchestration.plan_authority import resolve_current
 from vfx_harness.orchestration.revalidation import current_outcome_eligibility
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterializationKickoffAuthority:
+    selected: ResolvedSelectedAuthority
+    bundle_root: Path
+    bundle_hash: str
+    selected_layers: Path
+
+
+def _require_same_selection(expected, observed, *, boundary: str) -> None:
+    try:
+        require_matching_authority_selection_token(expected, observed)
+    except AuthoritySelectionConflict as exc:
+        raise ValueError(f"{boundary}: {exc}") from exc
+
+
+def _materialization_kickoff_authority(
+    shot_folder: Path,
+    bundle,
+    rel_target: str,
+    *,
+    overlay_root: str | Path | None,
+    selected_authority: ResolvedSelectedAuthority | None,
+) -> _MaterializationKickoffAuthority:
+    """Bind one kickoff card to the exact candidate, plan, and effective view."""
+
+    shot = Path(shot_folder).resolve()
+    try:
+        selected = resolve_selected_authority(shot) if selected_authority is None else selected_authority
+    except SelectedAuthorityResolutionError as exc:
+        raise ValueError(str(exc)) from exc
+
+    # Pointerless test/legacy authoring has no selected generation to mix. Production
+    # materialization always enters the strict branch below after candidate seeding.
+    if selected.plan is None:
+        bundle_root = Path(bundle.root).resolve()
+        selected_layers = (
+            Path(overlay_root).resolve() / "layers.json" if overlay_root is not None else bundle_root / "layers.json"
+        )
+        return _MaterializationKickoffAuthority(
+            selected=selected,
+            bundle_root=bundle_root,
+            bundle_hash=str(bundle.content_hash),
+            selected_layers=selected_layers,
+        )
+
+    selected_bundle = selected.plan.bundle
+    if (
+        Path(bundle.root).resolve() != selected_bundle.root.resolve()
+        or str(bundle.content_hash) != selected_bundle.content_hash
+    ):
+        raise ValueError("materialization kickoff bundle is not the selected global plan")
+    try:
+        selected_bundle.root.relative_to(shot)
+    except ValueError as exc:
+        raise ValueError("materialization kickoff snapshot belongs to another shot") from exc
+
+    candidate = (shot / rel_target).resolve()
+    try:
+        candidate.relative_to(shot)
+    except ValueError as exc:
+        raise ValueError("materialization kickoff target escapes the shot root") from exc
+    payload = load_materialization_candidate(
+        candidate,
+        expected_bundle_hash=selected_bundle.content_hash,
+    )
+    candidate_base = materialization_base_selection(payload)
+    _require_same_selection(
+        candidate_base,
+        selected.selection_token,
+        boundary="materialization kickoff candidate base selection is stale",
+    )
+
+    if overlay_root is None:
+        try:
+            selected_layers = selected.artifact_paths["layers.json"]
+        except KeyError as exc:
+            raise ValueError("selected materialization authority omits 'layers.json'") from exc
+    else:
+        overlay = Path(overlay_root).resolve()
+        overlay_bundle, overlay_base = read_overlay_base(overlay)
+        if overlay_bundle != selected_bundle.content_hash:
+            raise ValueError("materialization kickoff overlay belongs to another global bundle")
+        _require_same_selection(
+            overlay_base,
+            selected.selection_token,
+            boundary="materialization kickoff overlay base selection is stale",
+        )
+        selected_layers = overlay / "layers.json"
+
+    return _MaterializationKickoffAuthority(
+        selected=selected,
+        bundle_root=selected_bundle.root,
+        bundle_hash=selected_bundle.content_hash,
+        selected_layers=selected_layers,
+    )
 
 
 def mapping_expander(workspace: Path, registry, mapping_path: Path):
@@ -135,10 +247,7 @@ def _binding_decisions_block(shot_folder: Path, layer, bundle_hash: str) -> str:
     generations are inert (HIR-0028).
     """
 
-    reserved = tuple(
-        str(pattern)
-        for pattern in (getattr(getattr(layer, "jit", None), "reserved_roles", None) or [])
-    )
+    reserved = tuple(str(pattern) for pattern in (getattr(getattr(layer, "jit", None), "reserved_roles", None) or []))
     active = load_active_structured_decisions(
         shot_folder / "state" / "plan-resolutions.jsonl",
         bundle_hash=bundle_hash,
@@ -220,9 +329,9 @@ def _sealed_outcomes_block(
     shot_folder: Path,
     layer,
     global_row: dict,
-    bundle_hash: str,
     *,
-    overlay_root: str | Path | None = None,
+    selected_layers_path: Path,
+    selected_authority: ResolvedSelectedAuthority,
 ) -> str:
     """Compile only dependency status and explicitly required evidence (HIR-0054)."""
     jit_row = global_row.get("jit") if isinstance(global_row.get("jit"), dict) else {}
@@ -232,8 +341,7 @@ def _sealed_outcomes_block(
     if layer_jit is not None:
         depends = [str(item) for item in (getattr(layer_jit, "depends_on_layers", None) or [])]
         required = [
-            {"kind": str(kind), "id": str(oid)}
-            for kind, oid in (getattr(layer_jit, "required_outcomes", None) or [])
+            {"kind": str(kind), "id": str(oid)} for kind, oid in (getattr(layer_jit, "required_outcomes", None) or [])
         ]
     if not depends:
         depends = [str(item) for item in (jit_row.get("depends_on_layers") or [])]
@@ -246,14 +354,6 @@ def _sealed_outcomes_block(
             "Sealed upstream outcomes: none. This layer is a dependency root "
             "(empty depends_on_layers and required_outcomes).\n"
         )
-    selected_layers_path = selected_view_artifact(
-        shot_folder,
-        "layers.json",
-        bundle_hash,
-        overlay_root=overlay_root,
-    )
-    if selected_layers_path is None:
-        selected_layers_path = resolve_current(shot_folder).root / "layers.json"
     available_layers = load_layers_from_path(selected_layers_path)
     required_bindings = frozenset((row["kind"], row["id"]) for row in required)
     outcomes: list[dict] = []
@@ -266,29 +366,26 @@ def _sealed_outcomes_block(
         try:
             sealed = parse_sealed_layer_outcome(value, expected_layer_id=dep)
         except LayerOutcomeContractError as exc:
-            raise ValueError(
-                f"dependency {dep} has an invalid sealed outcome: {exc}"
-            ) from exc
+            raise ValueError(f"dependency {dep} has an invalid sealed outcome: {exc}") from exc
         dependency_layer = available_layers.get(dep)
         if dependency_layer is None:
-            raise ValueError(
-                f"dependency {dep} is absent from the selected executable consumer view"
-            )
+            raise ValueError(f"dependency {dep} is absent from the selected executable consumer view")
         eligible, reasons = current_outcome_eligibility(
             shot_folder,
             dependency_layer,
             value,
+            selected_authority=selected_authority,
         )
         if not eligible:
-            raise ValueError(
-                f"dependency {dep} sealed outcome is stale: " + "; ".join(reasons)
-            )
-        outcomes.append({
-            "layer": dep,
-            "status": sealed.status,
-            "script": sealed.script,
-            "required_evidence": list(sealed.required_evidence(required_bindings)),
-        })
+            raise ValueError(f"dependency {dep} sealed outcome is stale: " + "; ".join(reasons))
+        outcomes.append(
+            {
+                "layer": dep,
+                "status": sealed.status,
+                "script": sealed.script,
+                "required_evidence": list(sealed.required_evidence(required_bindings)),
+            }
+        )
     card = {
         "depends_on_layers": depends,
         "required_outcomes": required,
@@ -302,17 +399,12 @@ def _sealed_outcomes_block(
 
 
 def _owned_requirements_block(bundle_root: Path, global_row: dict) -> str:
-    owned = {
-        str(value)
-        for value in ((global_row.get("jit") or {}).get("owned_requirements") or [])
-    }
+    owned = {str(value) for value in ((global_row.get("jit") or {}).get("owned_requirements") or [])}
     if not owned:
         return "Compiled requirements owned by this layer: none.\n"
     document = json.loads((bundle_root / "requirements.json").read_text(encoding="utf-8"))
     rows = [
-        row
-        for row in document.get("requirements") or []
-        if isinstance(row, dict) and str(row.get("id") or "") in owned
+        row for row in document.get("requirements") or [] if isinstance(row, dict) and str(row.get("id") or "") in owned
     ]
     return (
         "Compiled requirements owned by this layer (complete; do not read the global "
@@ -321,46 +413,37 @@ def _owned_requirements_block(bundle_root: Path, global_row: dict) -> str:
 
 
 def _upstream_interfaces_block(
-    shot_folder: Path,
     global_row: dict,
-    bundle_hash: str,
     *,
-    overlay_root: str | Path | None = None,
+    selected_layers_path: Path,
 ) -> str:
     """Compile dependency grants without exposing all selected layer claims."""
 
-    dependencies = {
-        str(value)
-        for value in ((global_row.get("jit") or {}).get("depends_on_layers") or [])
-    }
+    dependencies = {str(value) for value in ((global_row.get("jit") or {}).get("depends_on_layers") or [])}
     if not dependencies:
         return "Compiled upstream semantic interfaces: none (dependency root).\n"
-    path = selected_view_artifact(
-        shot_folder, "layers.json", bundle_hash, overlay_root=overlay_root
-    )
-    if path is None:
-
-        path = resolve_current(shot_folder).root / "layers.json"
-    document = json.loads(path.read_text(encoding="utf-8"))
+    document = json.loads(selected_layers_path.read_text(encoding="utf-8"))
     interfaces: list[dict] = []
     for row in document.get("layers") or []:
         if not isinstance(row, dict) or str(row.get("id") or "") not in dependencies:
             continue
-        interfaces.append({
-            "id": str(row.get("id")),
-            "title": row.get("title"),
-            "dressable": list(row.get("dressable") or []),
-            "units": [
-                {
-                    "id": unit.get("id"),
-                    "provides": list(unit.get("provides") or []),
-                    "roles": list((unit.get("mutates") or {}).get("roles") or []),
-                    "dressable": list(unit.get("dressable") or []),
-                }
-                for unit in row.get("stages") or []
-                if isinstance(unit, dict)
-            ],
-        })
+        interfaces.append(
+            {
+                "id": str(row.get("id")),
+                "title": row.get("title"),
+                "dressable": list(row.get("dressable") or []),
+                "units": [
+                    {
+                        "id": unit.get("id"),
+                        "provides": list(unit.get("provides") or []),
+                        "roles": list((unit.get("mutates") or {}).get("roles") or []),
+                        "dressable": list(unit.get("dressable") or []),
+                    }
+                    for unit in row.get("stages") or []
+                    if isinstance(unit, dict)
+                ],
+            }
+        )
     return (
         "Compiled upstream semantic interfaces and owner-granted dressable selectors "
         f"(complete; do not read the layer catalog):\n{json.dumps(interfaces, indent=1)}\n"
@@ -386,16 +469,22 @@ def _materialization_kickoff(
     replacing: str | None = None,
     *,
     overlay_root: str | Path | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> str:
     """The session must copy its global layer row exactly and close owned requirements,
     so the kickoff carries the row verbatim and the READABLE paths that hold the rest.
     Run 20260823T125746Z-9cd0b8 got only the bundle hash: it probed six plausible bundle
     locations, was denied by the path scope, reconstructed the row from prose, and
     failed structural validation on every field."""
-    rows = json.loads((bundle.root / "layers.json").read_text(encoding="utf-8"))
-    global_row = next(
-        row for row in rows.get("layers", []) if str(row.get("id")) == str(layer.id)
+    authority = _materialization_kickoff_authority(
+        shot_folder,
+        bundle,
+        rel_target,
+        overlay_root=overlay_root,
+        selected_authority=selected_authority,
     )
+    rows = json.loads((authority.bundle_root / "layers.json").read_text(encoding="utf-8"))
+    global_row = next(row for row in rows.get("layers", []) if str(row.get("id")) == str(layer.id))
     # A replacement designed in ignorance of why its predecessor was discarded repeats
     # the predecessor's mistakes: the first re-materialization of layer 1 put the camera
     # last and left the faceted housing unowned, both defects the operator was replacing.
@@ -407,23 +496,34 @@ def _materialization_kickoff(
         if replacing
         else ""
     )
+    upstream_interfaces = _upstream_interfaces_block(
+        global_row,
+        selected_layers_path=authority.selected_layers,
+    )
+    sealed_outcomes = _sealed_outcomes_block(
+        shot_folder,
+        layer,
+        global_row,
+        selected_layers_path=authority.selected_layers,
+        selected_authority=authority.selected,
+    )
     return (
         f"{replacement}"
         f"Materialize deferred layer {layer.id} ({layer.title}).\n"
-        f"Selected bundle hash: {bundle.content_hash}\n"
+        f"Selected bundle hash: {authority.bundle_hash}\n"
         f"This kickoff is the complete compiled authority card. Do not read the brief, "
         f"global registers, layer catalogs, decision ledger, or prior materializations.\n"
         f"Your exact global layer row — copy the structural fields verbatim into the "
         f"replacement layer:\n{json.dumps(global_row, indent=1)}\n"
-        f"{_owned_requirements_block(bundle.root, global_row)}"
-        f"{_upstream_interfaces_block(shot_folder, global_row, bundle.content_hash, overlay_root=overlay_root)}"
+        f"{_owned_requirements_block(authority.bundle_root, global_row)}"
+        f"{upstream_interfaces}"
         f"{_frame_authority_block(global_row)}"
         f"{_unit_capability_authority_block(global_row)}"
         f"{_deferred_subject_activation_block(rows.get('layers') or [], str(layer.id))}"
         f"{_CONSTRUCTION_ROUTE_BLOCK}"
         f"{_TWO_SIDED_CONTRACT_BINDING}"
-        f"{_binding_decisions_block(shot_folder, layer, bundle.content_hash)}"
-        f"{_sealed_outcomes_block(shot_folder, layer, global_row, bundle.content_hash, overlay_root=overlay_root)}"
+        f"{_binding_decisions_block(shot_folder, layer, authority.bundle_hash)}"
+        f"{sealed_outcomes}"
         f"{_PUBLISH_CONSUME_EXAMPLE}"
         f"Document shape (generic minimal-valid example — replace every placeholder, "
         f"add stages/contracts/claims as the layer needs):\n{_MATERIALIZATION_EXAMPLE}\n"

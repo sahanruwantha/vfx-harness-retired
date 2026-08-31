@@ -5,7 +5,9 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+from typing import TYPE_CHECKING
 
+from vfx_harness.agents.builder.authority import commit_selected_authority
 from vfx_harness.agents.builder.critic_focus import _unsatisfiable_pair_findings
 from vfx_harness.domain import plan_records
 from vfx_harness.domain.brief import Shot
@@ -21,6 +23,17 @@ from vfx_harness.orchestration import layer_plans, plan_authority
 from vfx_harness.orchestration.ledger import Milestone
 from vfx_harness.orchestration.unit_state import record_hypothesis_falsification
 
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
+
+
+def _selected_bundle(shot: Shot, selected_authority: ResolvedSelectedAuthority | None):
+    if selected_authority is None:
+        return plan_authority.resolve_current(shot.folder)
+    if selected_authority.plan is None:
+        raise ValueError("hypothesis falsification requires selected plan authority")
+    return selected_authority.plan.bundle
+
 
 def _persist_contract_gaps(
     shot: Shot,
@@ -30,6 +43,7 @@ def _persist_contract_gaps(
     verdict: dict,
     *,
     mode: str = "eevee",
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> None:
     """Pin a coverage defect to the exact canonical pixels and comparison boundary."""
     rows = list(verdict.get("observation_reconciliation") or [])
@@ -53,19 +67,39 @@ def _persist_contract_gaps(
         "reference": str(m.ref),
         "reference_sha256": hashlib.sha256((shot.folder / m.ref).read_bytes()).hexdigest(),
     }
-    append_gap_record(
-        shot.folder,
-        layer=str(getattr(layer, "id", m.id)),
-        unit=unit_id,
-        candidate_hash=hashlib.sha256(candidate.read_bytes()).hexdigest(),
-        settings_hash=hashlib.sha256(
-            json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest(),
-        rows=rows,
-    )
+    def mutation():
+        return append_gap_record(
+            shot.folder,
+            layer=str(getattr(layer, "id", m.id)),
+            unit=unit_id,
+            candidate_hash=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            settings_hash=hashlib.sha256(
+                json.dumps(settings, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
+            rows=rows,
+        )
+    if selected_authority is None:
+        mutation()
+    else:
+        commit_selected_authority(
+            shot.folder,
+            selected_authority,
+            operation=f"record contract gap for {getattr(layer, 'id', m.id)}.{unit_id}",
+            mutation=mutation,
+        )
 
 
-def _record_unsatisfiable_pair_falsification(shot: Shot, layer, unit, milestone, ledger) -> dict | None:
+def _record_unsatisfiable_pair_falsification(
+    shot: Shot,
+    layer,
+    unit,
+    milestone,
+    ledger,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict | None:
     """Escalate a published schedule/smoothness pair (or cannot_express) as a plan defect.
 
     Classification is arithmetic plus an explicit in-scope abstention, not a named
@@ -83,7 +117,11 @@ def _record_unsatisfiable_pair_falsification(shot: Shot, layer, unit, milestone,
         for item in (row.get("evidence") or [])
         if isinstance(item, dict) and item.get("id") and not item.get("pass")
     }
-    pairs = _unsatisfiable_pair_findings(shot, failing)
+    pairs = _unsatisfiable_pair_findings(
+        shot,
+        failing,
+        selected_authority=selected_authority,
+    )
     contract_ids = list(declared.get("contract_ids") or [])
     reason = str(declared.get("reason") or "")
     if pairs:
@@ -95,7 +133,7 @@ def _record_unsatisfiable_pair_falsification(shot: Shot, layer, unit, milestone,
         reason = reason or pairs[0]["message"]
     if not contract_ids or not reason:
         return None
-    bundle = plan_authority.resolve_current(shot.folder)
+    bundle = _selected_bundle(shot, selected_authority)
     script_rel = slot.get("script")
     if not script_rel:
         raise ValueError("terminal canonical verdict has no recorded build script")
@@ -111,7 +149,11 @@ def _record_unsatisfiable_pair_falsification(shot: Shot, layer, unit, milestone,
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    unit_plan = layer_plans.work_unit_plan_path(shot.folder, unit)
+    unit_plan = layer_plans.work_unit_plan_path(
+        shot.folder,
+        unit,
+        selected_authority=selected_authority,
+    )
     classification = str(declared.get("classification") or "unsatisfiable_in_scope")
 
     return record_hypothesis_falsification(
@@ -141,7 +183,13 @@ def _record_unsatisfiable_pair_falsification(shot: Shot, layer, unit, milestone,
     )
 
 
-def _record_contract_gap_falsification(shot: Shot, layer, unit) -> dict:
+def _record_contract_gap_falsification(
+    shot: Shot,
+    layer,
+    unit,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict:
     """Promote the latest verified coverage gap into typed replan authority.
 
     ``contract_gap`` is narrower than a failed contract: it means a measurable observation
@@ -174,7 +222,7 @@ def _record_contract_gap_falsification(shot: Shot, layer, unit) -> dict:
     observations = list(gap.get("gaps") or [])
     if not observations:
         raise ValueError("latest contract-gap record has no observations")
-    bundle = plan_authority.resolve_current(shot.folder)
+    bundle = _selected_bundle(shot, selected_authority)
     cited_contracts = sorted({
         str(contract_id)
         for finding in observations
@@ -188,7 +236,11 @@ def _record_contract_gap_falsification(shot: Shot, layer, unit) -> dict:
         if assumption.falsification_owner == owner
         or set(assumption.falsification_contract_ids) & set(cited_contracts)
     ]
-    unit_plan = layer_plans.work_unit_plan_path(shot.folder, unit)
+    unit_plan = layer_plans.work_unit_plan_path(
+        shot.folder,
+        unit,
+        selected_authority=selected_authority,
+    )
     return record_hypothesis_falsification(
         shot.folder,
         str(layer.id),
@@ -214,7 +266,11 @@ def _record_contract_gap_falsification(shot: Shot, layer, unit) -> dict:
 
 
 def _record_composed_contract_gap_falsification(
-    shot: Shot, layer, composition_unit
+    shot: Shot,
+    layer,
+    composition_unit,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> dict:
     """Publish a replan-consumable finding after all producer units have passed.
 
@@ -284,8 +340,12 @@ def _record_composed_contract_gap_falsification(
         {"id": str(row["id"]), "strength": str(row["decision_strength"])}
         for row in tuple(getattr(composition_unit, "provisional_decisions", ()) or ())
     ]
-    bundle = plan_authority.resolve_current(shot.folder)
-    unit_plan = layer_plans.work_unit_plan_path(shot.folder, source)
+    bundle = _selected_bundle(shot, selected_authority)
+    unit_plan = layer_plans.work_unit_plan_path(
+        shot.folder,
+        source,
+        selected_authority=selected_authority,
+    )
     return record_hypothesis_falsification(
         shot.folder,
         str(layer.id),
@@ -319,7 +379,15 @@ def _record_composed_contract_gap_falsification(
     )
 
 
-def _record_bound_contract_falsification(shot: Shot, layer, unit, milestone, ledger) -> dict | None:
+def _record_bound_contract_falsification(
+    shot: Shot,
+    layer,
+    unit,
+    milestone,
+    ledger,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict | None:
     """Escalate terminal failing contracts that sit on a declared decision falsification path.
 
     Classification is by declared authority: a decision names the exact contracts that can
@@ -341,7 +409,7 @@ def _record_bound_contract_falsification(shot: Shot, layer, unit, milestone, led
     if not failing:
         return None
     try:
-        bundle = plan_authority.resolve_current(shot.folder)
+        bundle = _selected_bundle(shot, selected_authority)
         assumptions = plan_records.load_assumptions(bundle.root)
     except (OSError, ValueError, KeyError) as exc:
         log(f"! falsification classification skipped (unreadable selected authority): {str(exc)[:90]}", 1)
@@ -367,7 +435,11 @@ def _record_bound_contract_falsification(shot: Shot, layer, unit, milestone, led
     settings_hash = hashlib.sha256(
         json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    unit_plan = layer_plans.work_unit_plan_path(shot.folder, unit)
+    unit_plan = layer_plans.work_unit_plan_path(
+        shot.folder,
+        unit,
+        selected_authority=selected_authority,
+    )
     evidence = [f"artifact:{script_rel}#sha256={candidate_hash}"]
     render_rel = final.get("render")
     if render_rel and (shot.folder / str(render_rel)).is_file():

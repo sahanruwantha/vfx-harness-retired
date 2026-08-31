@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
 
@@ -30,6 +31,9 @@ from vfx_harness.observability.log import (
     log,
 )
 from vfx_harness.orchestration.ledger import Ledger, Milestone, plan_strips
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 
 def _bind_canonical_evidence(
@@ -71,6 +75,7 @@ async def _verify_script(
     active_unit=None,
     out_verdicts: list | None = None,
     on_replay_ready: Callable[[], JudgmentDebtPayment | None] | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> str:
     """-> passed | reproduced | contract_gap | judge_conflict | failed.
 
@@ -139,7 +144,11 @@ async def _verify_script(
     # Render serially (one Blender session), then score CONCURRENTLY — the critic calls
     # are independent judgements of already-written PNGs, and multi-frame judging tripled
     # the pass count on server_to_hansa (8 -> 18).
-    raster_required = _unit_requires_raster(shot, active_unit)
+    raster_required = _unit_requires_raster(
+        shot,
+        active_unit,
+        selected_authority=selected_authority,
+    )
     if not raster_required:
         log(
             "canonical replay owes only executable scene/interface evidence — "
@@ -169,10 +178,14 @@ async def _verify_script(
                     frame,
                     ref,
                     m.reads,
-                    plan_strips(shot).get(frame, ()),
+                    plan_strips(shot, selected_authority).get(frame, ()),
                 )
                 if unit_tag
-                else layer.milestone_at(frame, ref, plan_strips(shot))
+                else layer.milestone_at(
+                    frame,
+                    ref,
+                    plan_strips(shot, selected_authority),
+                )
             )
         prepared = (
             judgment_payment.prepare(
@@ -225,7 +238,13 @@ async def _verify_script(
         reproduction = _image_reproduction(shot.folder / live_best_render, shot.folder / render_rel)
         if reproduction.get("match"):
             evidence = builder_package()._render_evidence(
-                shot, layer, m_i, render_rel, session, active_unit=active_unit
+                shot,
+                layer,
+                m_i,
+                render_rel,
+                session,
+                active_unit=active_unit,
+                selected_authority=selected_authority,
             )
             blocking = [item for item in evidence if item.get("authoritative") and not item.get("pass")]
             if blocking:
@@ -276,6 +295,7 @@ async def _verify_script(
                         render_rel,
                         verdict,
                         mode=_unit_raster_mode(active_unit),
+                        selected_authority=selected_authority,
                     )
                     return "contract_gap"
                 return "reproduced"
@@ -287,7 +307,13 @@ async def _verify_script(
             results[i] = judgment_payment.cached_verdict(prepared)
             return
         evidence = builder_package()._render_evidence(
-            shot, layer, m_i, render_rel, session, active_unit=active_unit
+            shot,
+            layer,
+            m_i,
+            render_rel,
+            session,
+            active_unit=active_unit,
+            selected_authority=selected_authority,
         )
         results[i] = await _judge_unit_or_layer(
             shot,
@@ -303,6 +329,7 @@ async def _verify_script(
             allow_motion=_layer_needs_motion(layer),
             focus_frames_override=[int(m_i.frame)],
             layer=layer,
+            selected_authority=selected_authority,
         )
 
     if not raster_required:
@@ -372,6 +399,7 @@ async def _verify_script(
             render_rel,
             v,
             mode=_unit_raster_mode(active_unit),
+            selected_authority=selected_authority,
         )
         ledger.record_round(m, kind="canonical", index=i, render=render_rel, verdict=v)
         verdicts.append(((frame, ref), v))

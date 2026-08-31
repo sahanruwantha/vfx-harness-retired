@@ -19,13 +19,17 @@ from pathlib import Path
 
 from vfx_harness.domain.brief import Shot
 from vfx_harness.observability.provenance import check as provenance_check
+from vfx_harness.orchestration import authority_selection
 from vfx_harness.orchestration.ledger import load_layers
-from vfx_harness.orchestration.plan_authority import POINTER, resolve_current
 
 from .determinism import Result
 
 
-def _problems(shot: Shot) -> tuple[list[str], list[str], dict]:
+def _problems(
+    shot: Shot,
+    *,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
+) -> tuple[list[str], list[str], dict]:
     """-> (errors, warnings, data). Errors break a downstream stage; warnings are
     inconsistencies that currently happen to be harmless."""
     errors: list[str] = []
@@ -42,12 +46,23 @@ def _problems(shot: Shot) -> tuple[list[str], list[str], dict]:
                 f"either crashes or, worse, treats the shot as having no layers"], [], data
 
     slots = record.get("milestones", {})
+    selected = selected_authority
+    selection_error: Exception | None = None
     try:
-        layers = load_layers(shot)
+        if selected is None:
+            selected = authority_selection.resolve_selected_authority(shot.folder)
     except Exception as e:
+        selection_error = e
         layers = {}
         errors.append(f"layers.json unusable ({str(e)[:120]}) — the accepted chain is "
                       f"defined by it, so nothing below can be verified against a plan")
+    else:
+        try:
+            layers = load_layers(shot, selected_authority=selected)
+        except Exception as e:
+            layers = {}
+            errors.append(f"layers.json unusable ({str(e)[:120]}) — the accepted chain is "
+                          f"defined by it, so nothing below can be verified against a plan")
 
     # 1. every layer the ledger says PASSED has a script on disk ------------------
     passed = [lid for lid, s in slots.items() if s.get("status") == "passed"]
@@ -124,12 +139,11 @@ def _problems(shot: Shot) -> tuple[list[str], list[str], dict]:
 
     # 5. plan artifacts still match the brief they were derived from -------------
     try:
-
-        if (shot.folder / POINTER).exists():
-            resolve_current(shot.folder)
+        if selection_error is not None:
+            raise selection_error
+        if selected is not None and selected.plan is not None:
             prov = []
         else:
-
             prov = provenance_check(shot.folder)
     except Exception as e:
         prov = [f"provenance check unavailable: {str(e)[:100]}"]

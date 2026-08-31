@@ -48,6 +48,7 @@ def register_compare(
     _black_frame_note,
     _black_search_stop,
     _register_candidate,
+    selected_authority=None,
 ):
     @tool(
         "diff_frames",
@@ -280,6 +281,7 @@ def register_compare(
                         ref=str(ref),
                         render=r["image_path"],
                         evidence_ids=_image_evidence_ids_at_frame(comparison_state, int(args["frame"])),
+                        selected_authority=selected_authority,
                     )
                 )
                 passed_rows = sum(bool(row.get("pass")) for row in gate_rows)

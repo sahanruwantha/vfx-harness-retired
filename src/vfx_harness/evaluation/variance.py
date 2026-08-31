@@ -38,6 +38,7 @@ import anyio
 
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration import authority_selection
 from vfx_harness.orchestration.ledger import Milestone, load_axes, load_layers
 
 from ..agents.builder import (
@@ -71,7 +72,12 @@ class _NoSession:
                            "still, so no motion strip is attached")
 
 
-def layer_scope(shot: Shot, layer) -> str:
+def layer_scope(
+    shot: Shot,
+    layer,
+    *,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
+) -> str:
     """Rebuild the scope block `build_agent.build_layer` sends with a layer's verdict.
 
     Mirrored, not imported: the block is constructed inline inside `build_layer`, and
@@ -82,7 +88,11 @@ def layer_scope(shot: Shot, layer) -> str:
     src/tests/integration/test_harness.py carries a tripwire on the distinctive markers.
     """
 
-    excerpt = _plan_layer_excerpt(shot, layer)
+    excerpt = _plan_layer_excerpt(
+        shot,
+        layer,
+        selected_authority=selected_authority,
+    )
     done = "\n".join(ln for ln in excerpt.splitlines()
                      if ln.startswith(("**Scope", "**Judge artifact", "**Done")))
     owned = (f"  THIS LAYER OWNS: {', '.join(layer.owns)}.\n"
@@ -122,11 +132,19 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
     # axis count THIS sample was actually scored on; a single number would be the same
     # mistake the flat constant was.
 
-    axes = load_axes(shot)
+    selected_authority = authority_selection.resolve_selected_authority(shot.folder)
+    axes = load_axes(shot, selected_authority)
     scope = None
     if layer_id:
-        layer = load_layers(shot)[layer_id]
-        scope = layer_scope(shot, layer)
+        layer = load_layers(
+            shot,
+            selected_authority=selected_authority,
+        )[layer_id]
+        scope = layer_scope(
+            shot,
+            layer,
+            selected_authority=selected_authority,
+        )
         if not frame:
             frame = layer.judge_frame
         reads = reads or layer.reads
@@ -148,7 +166,16 @@ async def measure(shot: Shot, *, render_rel: str, ref_rel: str, n: int = 3,
     slots: list[dict | None] = [None] * n
 
     async def _one(i: int) -> None:
-        slots[i] = await _critique(shot, m, render_rel, axes, _NoSession(), verbose, scope)
+        slots[i] = await _critique(
+            shot,
+            m,
+            render_rel,
+            axes,
+            _NoSession(),
+            verbose,
+            scope,
+            selected_authority=selected_authority,
+        )
 
     limiter = anyio.CapacityLimiter(max(1, concurrency))
 

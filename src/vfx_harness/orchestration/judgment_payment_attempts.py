@@ -19,7 +19,19 @@ from vfx_harness.domain.judgment_debts import (
 )
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.observability.run_artifacts import shot_state_dir
-from vfx_harness.orchestration import judgment_debt_state, plan_authority
+from vfx_harness.orchestration import judgment_debt_state
+from vfx_harness.orchestration.authority_selection import (
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.authority_selection_heads import (
+    read_authority_selection_heads,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionToken,
+    authority_selection_lock,
+    require_matching_authority_selection_token,
+)
 
 EVENT_SCHEMA = "vfx-harness.judgment-payment-attempt-event/v1"
 EVENTS = "judgment-payment-attempts.jsonl"
@@ -122,16 +134,23 @@ def _current_due_request(
     JudgmentDebtDefinition,
     JudgmentDebtActivation,
     tuple[tuple[JudgmentDebtDefinition, JudgmentDebtActivation | None, JudgmentDebtState], ...],
+    AuthoritySelectionToken,
 ]:
     if not isinstance(request, JudgmentObservationRequest):
         raise ValueError("request must be a JudgmentObservationRequest")
     shot = Path(shot_folder)
-    selected_before = plan_authority.resolve_current(shot).content_hash
-    states = judgment_debt_state.current_judgment_debt_states(shot)
-    selected_after = plan_authority.resolve_current(shot).content_hash
-    if selected_before != selected_after:
-        raise ValueError("selected plan authority changed while resolving payment-attempt request")
-    if request.bundle_digest != selected_after:
+    try:
+        selected = resolve_selected_authority(shot)
+    except SelectedAuthorityResolutionError as exc:
+        raise ValueError(str(exc)) from exc
+    bundle = selected.assertion.bundle
+    if selected.assertion.selection != "selected" or bundle is None:
+        raise ValueError("payment-attempt request requires selected plan authority")
+    states = judgment_debt_state.current_judgment_debt_states_for_authority(
+        shot,
+        selected,
+    )
+    if request.bundle_digest != bundle.digest:
         raise ValueError("JudgmentObservationRequest.bundle_digest is not the selected bundle")
     try:
         definition, activation, state = next(
@@ -149,7 +168,7 @@ def _current_due_request(
         raise ValueError(
             f"judgment debt {definition.debt_id} payment attempt requires due state, not {state.status}"
         )
-    return selected_after, definition, activation, states
+    return bundle.digest, definition, activation, states, selected.selection_token
 
 
 def _failure_for_current_request(
@@ -192,7 +211,10 @@ def current_payment_attempt_failure(
     request: JudgmentObservationRequest,
 ) -> JudgmentPaymentAttemptFailure | None:
     """Return the exact current-generation failure suppressing ``request``, if any."""
-    bundle_digest, definition, activation, states = _current_due_request(shot_folder, request)
+    bundle_digest, definition, activation, states, _selection_token = _current_due_request(
+        shot_folder,
+        request,
+    )
     return _failure_for_current_request(
         _event_rows(shot_state_dir(shot_folder) / EVENTS),
         bundle_digest=bundle_digest,
@@ -214,7 +236,10 @@ def record_payment_attempt_failure(
     failure.assert_matches_request(request)
     path = shot_state_dir(shot_folder) / EVENTS
     with _event_lock(path):
-        bundle_digest, definition, activation, states = _current_due_request(shot_folder, request)
+        bundle_digest, definition, activation, states, selection_token = _current_due_request(
+            shot_folder,
+            request,
+        )
         existing = _failure_for_current_request(
             _event_rows(path),
             bundle_digest=bundle_digest,
@@ -239,5 +264,10 @@ def record_payment_attempt_failure(
         )
         serialized = json.dumps(event.as_dict(), sort_keys=True) + "\n"
         prior = path.read_text(encoding="utf-8") if path.is_file() else ""
-        atomic_write(path, prior + serialized)
+        with authority_selection_lock(shot_folder, exclusive=False):
+            require_matching_authority_selection_token(
+                selection_token,
+                read_authority_selection_heads(shot_folder).token,
+            )
+            atomic_write(path, prior + serialized)
         return failure

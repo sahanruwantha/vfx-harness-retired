@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ import pytest
 import vfx_harness.agents.builder.cli as builder_cli
 import vfx_harness.agents.builder.layer as builder_layer
 import vfx_harness.agents.builder.stops as builder_stops
+import vfx_harness.agents.builder.unit_failure as builder_unit_failure
 from tests.architecture.test_staged_architecture import _unit
 from vfx_harness.agents.builder.models import BuildAuthorityDefect
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
@@ -35,6 +37,9 @@ from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.authority_selection import (
     AuthorityPointerObservation,
     ResolvedSelectedAuthority,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionToken,
 )
 from vfx_harness.orchestration.ledger import Layer
 from vfx_harness.orchestration.unit_state import (
@@ -150,23 +155,6 @@ def _fixture(
 
     bundle = SimpleNamespace(content_hash=bundle_digest)
     view_digest = hashlib.sha256(b"selected view").hexdigest()
-    monkeypatch.setattr(
-        builder_stops.plan_authority,
-        "resolve_current",
-        lambda _folder: bundle,
-    )
-    monkeypatch.setattr(
-        builder_stops.plan_authority,
-        "selected_artifact_path",
-        lambda _folder, name: layers_path
-        if name == "layers.json"
-        else pytest.fail(f"unexpected selected artifact {name}"),
-    )
-    monkeypatch.setattr(
-        builder_stops.judgment_observation,
-        "selected_view_digest",
-        lambda _folder, _bundle: view_digest,
-    )
     selected_authority = ResolvedSelectedAuthority(
         assertion=SelectedAuthorityAssertionV2(
             "selected",
@@ -185,6 +173,14 @@ def _fixture(
             hashlib.sha256(b"plan pointer").hexdigest(),
             hashlib.sha256(b"jit pointer").hexdigest(),
         ),
+        selection_token=AuthoritySelectionToken(
+            plan_revision=1,
+            plan_pointer_sha256=hashlib.sha256(b"plan pointer").hexdigest(),
+            jit_revision=1,
+            jit_pointer_sha256=hashlib.sha256(b"jit pointer").hexdigest(),
+        ),
+        plan=SimpleNamespace(revision=1, bundle=bundle),
+        artifact_paths={"layers.json": layers_path},
     )
     monkeypatch.setattr(
         builder_stops,
@@ -194,7 +190,7 @@ def _fixture(
     monkeypatch.setattr(
         builder_stops.ledger_runtime,
         "load_layers",
-        lambda _shot: {"1": layer},
+        lambda _shot, *, selected_authority=None: {"1": layer},
     )
     monkeypatch.setattr(
         builder_stops.layer_plans,
@@ -388,11 +384,20 @@ def test_builder_stop_rejects_stale_or_untyped_finding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shot, layout, finding, _unit_record = _fixture(tmp_path, monkeypatch)
+    selected = builder_stops.resolve_selected_authority(tmp_path)
+    assert selected.assertion.bundle is not None
     monkeypatch.setattr(
-        builder_stops.plan_authority,
-        "resolve_current",
-        lambda _folder: SimpleNamespace(
-            content_hash=hashlib.sha256(b"replacement bundle").hexdigest()
+        builder_stops,
+        "resolve_selected_authority",
+        lambda _folder: replace(
+            selected,
+            assertion=replace(
+                selected.assertion,
+                bundle=replace(
+                    selected.assertion.bundle,
+                    digest=hashlib.sha256(b"replacement bundle").hexdigest(),
+                ),
+            ),
         ),
     )
 
@@ -549,16 +554,20 @@ def test_layer_runtime_carries_only_a_sealed_falsification_to_public_boundary(
     monkeypatch.setattr(builder_layer, "initialize", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(builder_layer, "_prior_layer_paths", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(builder_layer, "load_unit_state", lambda *_args: load_unit_state(tmp_path, "1"))
-    monkeypatch.setattr(builder_layer, "load_layers", lambda _shot: {"1": layer})
-    monkeypatch.setattr(builder_layer, "plan_strips", lambda _shot: {})
+    monkeypatch.setattr(builder_layer, "load_layers", lambda *_args, **_kwargs: {"1": layer})
+    monkeypatch.setattr(builder_layer, "plan_strips", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(builder_layer, "ready_from_durable_state", lambda *_args, **_kwargs: (unit,))
     monkeypatch.setattr(builder_layer, "require_due_clear", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(builder_layer, "transition", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(builder_layer, "block_dependents", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(builder_layer, "work_unit_plan_path", lambda *_args: unit_plan)
-    monkeypatch.setattr(builder_layer, "validate_work_unit_plan_authority", lambda *_args: None)
-    monkeypatch.setattr(builder_layer, "_plan_layer_excerpt", lambda *_args: "unit plan")
-    monkeypatch.setattr(builder_layer, "load_milestones", lambda _shot: {})
+    monkeypatch.setattr(
+        builder_unit_failure,
+        "block_dependents",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(builder_layer, "work_unit_plan_path", lambda *_args, **_kwargs: unit_plan)
+    monkeypatch.setattr(builder_layer, "validate_work_unit_plan_authority", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(builder_layer, "_plan_layer_excerpt", lambda *_args, **_kwargs: "unit plan")
+    monkeypatch.setattr(builder_layer, "load_milestones", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(builder_layer, "write_layer_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(
         builder_layer,
@@ -566,9 +575,9 @@ def test_layer_runtime_carries_only_a_sealed_falsification_to_public_boundary(
         lambda: SimpleNamespace(build_unit=build_unit),
     )
     monkeypatch.setattr(
-        builder_layer,
+        builder_unit_failure,
         "_record_contract_gap_falsification",
-        lambda *_args: finding,
+        lambda *_args, **_kwargs: finding,
     )
 
     async def run() -> None:
@@ -614,19 +623,19 @@ def test_unclassified_builder_exception_preserves_in_flight_unit_state(
     monkeypatch.setattr(builder_layer, "active_plan_hash", lambda _folder: "0" * 64)
     monkeypatch.setattr(builder_layer, "initialize", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(builder_layer, "_prior_layer_paths", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(builder_layer, "load_layers", lambda _shot: {"1": layer})
-    monkeypatch.setattr(builder_layer, "plan_strips", lambda _shot: {})
+    monkeypatch.setattr(builder_layer, "load_layers", lambda *_args, **_kwargs: {"1": layer})
+    monkeypatch.setattr(builder_layer, "plan_strips", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(builder_layer, "ready_from_durable_state", lambda *_args, **_kwargs: (unit,))
     monkeypatch.setattr(builder_layer, "require_due_clear", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        builder_layer,
+        builder_unit_failure,
         "block_dependents",
         lambda *_args, **_kwargs: blocked.append(unit.id),
     )
-    monkeypatch.setattr(builder_layer, "work_unit_plan_path", lambda *_args: unit_plan)
-    monkeypatch.setattr(builder_layer, "validate_work_unit_plan_authority", lambda *_args: None)
-    monkeypatch.setattr(builder_layer, "_plan_layer_excerpt", lambda *_args: "unit plan")
-    monkeypatch.setattr(builder_layer, "load_milestones", lambda _shot: {})
+    monkeypatch.setattr(builder_layer, "work_unit_plan_path", lambda *_args, **_kwargs: unit_plan)
+    monkeypatch.setattr(builder_layer, "validate_work_unit_plan_authority", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(builder_layer, "_plan_layer_excerpt", lambda *_args, **_kwargs: "unit plan")
+    monkeypatch.setattr(builder_layer, "load_milestones", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(builder_layer, "write_layer_context", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(
         builder_layer,
@@ -697,14 +706,14 @@ def test_composition_runtime_preserves_outcome_then_carries_sealed_finding(
         "load_unit_state",
         lambda *_args: {"units": {unit.id: {"status": "passed"}}},
     )
-    monkeypatch.setattr(builder_layer, "load_layers", lambda _shot: {"1": layer})
-    monkeypatch.setattr(builder_layer, "plan_strips", lambda _shot: {})
+    monkeypatch.setattr(builder_layer, "load_layers", lambda *_args, **_kwargs: {"1": layer})
+    monkeypatch.setattr(builder_layer, "plan_strips", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(builder_layer, "Ledger", _Ledger)
     monkeypatch.setattr(builder_layer, "ensure_axes", axes)
     monkeypatch.setattr(
         builder_layer,
         "_load_provisional_decisions",
-        lambda *_args: ({"id": "R-proxy"},),
+        lambda *_args, **_kwargs: ({"id": "R-proxy"},),
     )
     monkeypatch.setattr(
         builder_layer,
@@ -715,7 +724,7 @@ def test_composition_runtime_preserves_outcome_then_carries_sealed_finding(
     monkeypatch.setattr(
         builder_layer,
         "_record_composed_contract_gap_falsification",
-        lambda *_args: finding,
+        lambda *_args, **_kwargs: finding,
     )
     monkeypatch.setattr(builder_layer, "write_layer_outcome", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(builder_layer, "_blender_version", lambda _session: "test")
@@ -733,3 +742,109 @@ def test_composition_runtime_preserves_outcome_then_carries_sealed_finding(
 
     anyio.run(run)
     assert recorded_outcomes == ["contract_gap"]
+
+
+def test_build_layer_resolves_once_and_rejects_a_hybrid_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unit = _unit("proxy")
+    authoritative = Layer(
+        id="1",
+        script=unit.mutates.script_spans[0],
+        title="authoritative",
+        judges=((unit.evaluation.primary_judge, unit.evaluation.judges[0].ref),),
+        reads="proxy",
+        owns=(unit.evaluation.claims[0].axis,),
+        primary_judge=unit.evaluation.primary_judge,
+        stages=(unit,),
+    )
+    stale = replace(authoritative, title="stale caller layer")
+    selected = ResolvedSelectedAuthority(
+        assertion=SelectedAuthorityAssertionV2("absent", None, None),
+        pointer_observation=AuthorityPointerObservation(None, None),
+        selection_token=AuthoritySelectionToken(0, None, 0, None),
+        plan=None,
+        artifact_paths={},
+    )
+    resolutions = 0
+
+    def resolve(_folder):
+        nonlocal resolutions
+        resolutions += 1
+        return selected
+
+    monkeypatch.setattr(builder_layer, "resolve_selected_authority", resolve)
+    monkeypatch.setattr(
+        builder_layer,
+        "load_layers",
+        lambda *_args, **_kwargs: {"1": authoritative},
+    )
+
+    async def run() -> None:
+        with pytest.raises(ValueError, match="does not exactly match"):
+            await builder_layer.build_layer(
+                SimpleNamespace(folder=tmp_path),
+                stale,
+                session=None,
+                verbose=False,
+            )
+
+    anyio.run(run)
+    assert resolutions == 1
+
+
+def test_build_layer_aba_token_change_refuses_first_durable_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unit = _unit("proxy")
+    layer = Layer(
+        id="1",
+        script=unit.mutates.script_spans[0],
+        title="proxy",
+        judges=((unit.evaluation.primary_judge, unit.evaluation.judges[0].ref),),
+        reads="proxy",
+        owns=(unit.evaluation.claims[0].axis,),
+        primary_judge=unit.evaluation.primary_judge,
+        stages=(unit,),
+    )
+    layers_path = tmp_path / "selected" / "layers.json"
+    layers_path.parent.mkdir(parents=True)
+    layers_path.write_text('{"schema":5,"layers":[]}\n', encoding="utf-8")
+    selected = ResolvedSelectedAuthority(
+        assertion=SelectedAuthorityAssertionV2(
+            "selected",
+            SelectedAuthorityBundle("a" * 64, "clean", "b" * 64),
+            SelectedAuthorityView("bundle", "a" * 64, "c" * 64),
+        ),
+        pointer_observation=AuthorityPointerObservation("d" * 64, None),
+        selection_token=AuthoritySelectionToken(1, "d" * 64, 0, None),
+        plan=SimpleNamespace(bundle=SimpleNamespace(content_hash="a" * 64)),
+        artifact_paths={"layers.json": layers_path},
+    )
+    initialized = False
+
+    def initialize_state(*_args, **_kwargs):
+        nonlocal initialized
+        initialized = True
+
+    monkeypatch.setattr(
+        builder_layer,
+        "load_layers",
+        lambda *_args, **_kwargs: {"1": layer},
+    )
+    monkeypatch.setattr(builder_layer, "initialize", initialize_state)
+
+    async def run() -> None:
+        with pytest.raises(ValueError, match="selected authority changed"):
+            await builder_layer.build_layer(
+                SimpleNamespace(folder=tmp_path),
+                layer,
+                session=None,
+                verbose=False,
+                selected_authority=selected,
+            )
+
+    anyio.run(run)
+    assert initialized is False

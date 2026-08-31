@@ -33,8 +33,8 @@ from vfx_harness.infrastructure.sandbox import path_sandbox
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
 from vfx_harness.observability.runlog import bump
+from vfx_harness.orchestration import authority_selection
 from vfx_harness.orchestration.layer_state import as_prompt_block, checkpoint, path_for
-from vfx_harness.orchestration.plan_authority import resolve_current, selected_artifact_path
 
 # pattern -> what to do instead. Each of these was hit for real during a build.
 _BANNED: list[tuple[re.Pattern, str]] = [
@@ -802,7 +802,9 @@ def execution_authority_guard(shot_folder: str | Path,
 
 
 def bounded_unit_context_guard(
-    shot_folder: str | Path, phase: dict[str, Any]
+    shot_folder: str | Path,
+    phase: dict[str, Any],
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
 ) -> HookMatcher:
     """A declared unit consumes its compiled card, not monolithic raw authority.
 
@@ -812,6 +814,43 @@ def bounded_unit_context_guard(
     prompt preference.
     """
     root = Path(shot_folder).resolve()
+    selection = selected_authority
+    protected_snapshot: frozenset[Path] | None = None
+
+    def _protected_paths() -> frozenset[Path]:
+        nonlocal protected_snapshot, selection
+        if protected_snapshot is not None:
+            return protected_snapshot
+        if selection is None:
+            selection = authority_selection.resolve_selected_authority(root)
+        names = (
+            "global.md",
+            "layers.json",
+            "acceptance.json",
+            "critic_axes.json",
+            "checks.json",
+            "scene_checks.json",
+            "requirements.json",
+            "obligations.json",
+            "assumptions.json",
+        )
+        if selection.plan is None:
+            artifact_paths = {
+                name: root / "plans" / name if name == "global.md" else root / name
+                for name in names
+            }
+        else:
+            missing = sorted(set(names) - set(selection.artifact_paths))
+            if missing:
+                raise ValueError(
+                    "selected unit-context authority omits required artifacts: "
+                    + ", ".join(missing)
+                )
+            artifact_paths = {name: selection.artifact_paths[name] for name in names}
+        protected_snapshot = frozenset(
+            {root / "brief.md", *(path.resolve() for path in artifact_paths.values())}
+        )
+        return protected_snapshot
 
     async def _check(inp, tool_use_id, ctx) -> dict:
         if phase.get("mode", "live") != "live" or not phase.get("unit_id"):
@@ -824,19 +863,7 @@ def bounded_unit_context_guard(
         candidate = Path(str(raw or ".")).expanduser()
         candidate = (candidate if candidate.is_absolute() else root / candidate).resolve()
 
-        protected = {root / "brief.md"}
-        for name in (
-            "global.md",
-            "layers.json",
-            "acceptance.json",
-            "critic_axes.json",
-            "checks.json",
-            "scene_checks.json",
-            "requirements.json",
-            "obligations.json",
-            "assumptions.json",
-        ):
-            protected.add(selected_artifact_path(root, name).resolve())
+        protected = _protected_paths()
         direct = candidate in protected
         broad = tool == "Grep" and any(
             path == candidate or candidate in path.parents for path in protected
@@ -864,18 +891,30 @@ def bounded_unit_context_guard(
     return HookMatcher(matcher=None, hooks=[_check])
 
 
-def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = None,
-                  script_rel: str | None = None,
-                  phase: dict[str, Any] | None = None) -> dict:
+def builder_hooks(
+    shot_folder: str | Path,
+    roots: list,
+    ref_rel: str | None = None,
+    script_rel: str | None = None,
+    phase: dict[str, Any] | None = None,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
+) -> dict:
     """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback.
     PostToolUseFailure: durable failure log. Stop: the artifacts must exist."""
     active_phase = phase or {"mode": "live"}
     return {
         "PreToolUse": [path_sandbox(*roots, cwd=shot_folder),
-                       selected_plan_read_guard(shot_folder), api_guardrails(),
+                       selected_plan_read_guard(
+                           shot_folder,
+                           selected_authority,
+                       ), api_guardrails(),
                        script_sanity(), web_allowlist(),
                        execution_authority_guard(shot_folder, active_phase),
-                       bounded_unit_context_guard(shot_folder, active_phase),
+                       bounded_unit_context_guard(
+                           shot_folder,
+                           active_phase,
+                           selected_authority,
+                       ),
                        builder_phase_guard(active_phase, script_rel)],
         "PostToolUse": [metrics_feedback(
             shot_folder, ref_rel,
@@ -886,7 +925,10 @@ def builder_hooks(shot_folder: str | Path, roots: list, ref_rel: str | None = No
     }
 
 
-def selected_plan_read_guard(shot_folder: str | Path) -> HookMatcher:
+def selected_plan_read_guard(
+    shot_folder: str | Path,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
+) -> HookMatcher:
     """Prevent build sessions from discovering authority in historical runs.
 
     Builders receive exact selected-bundle paths in their context. Broad shot-root searches can
@@ -895,6 +937,9 @@ def selected_plan_read_guard(shot_folder: str | Path) -> HookMatcher:
     bundle and the active run's own journals/evidence. Pathless recursive searches are refused.
     """
     root = Path(shot_folder).resolve()
+    selection = selected_authority
+    bundle_root: Path | None = None
+    selection_loaded = selected_authority is not None
     legacy_plan_artifacts = {
         root / name
         for name in (
@@ -923,6 +968,15 @@ def selected_plan_read_guard(shot_folder: str | Path) -> HookMatcher:
             ),
         }}
 
+    def _selected_bundle_root() -> Path | None:
+        nonlocal selection, bundle_root, selection_loaded
+        if not selection_loaded:
+            selection = authority_selection.resolve_selected_authority(root)
+            selection_loaded = True
+        if bundle_root is None and selection is not None and selection.plan is not None:
+            bundle_root = selection.plan.bundle.root.resolve()
+        return bundle_root
+
     async def _check(inp: Any, tool_use_id: str | None, ctx: Any) -> dict:
         tool = inp.get("tool_name") if isinstance(inp, dict) else getattr(inp, "tool_name", "")
         if tool not in {"Read", "Glob", "Grep", "LSP"}:
@@ -930,7 +984,7 @@ def selected_plan_read_guard(shot_folder: str | Path) -> HookMatcher:
         args = (inp.get("tool_input") if isinstance(inp, dict)
                 else getattr(inp, "tool_input", {})) or {}
 
-        bundle = resolve_current(root)
+        selected_bundle = _selected_bundle_root()
         active = run_artifacts.active(root)
         active_root = active.root if active is not None else None
         raw = args.get({"Read": "file_path", "Glob": "path", "Grep": "path", "LSP": "path"}[tool])
@@ -940,7 +994,9 @@ def selected_plan_read_guard(shot_folder: str | Path) -> HookMatcher:
             if candidate in legacy_plan_artifacts:
                 return _deny(tool, str(candidate))
             if candidate == root / "runs" or root / "runs" in candidate.parents:
-                selected_member = candidate == bundle.root or bundle.root in candidate.parents
+                selected_member = selected_bundle is not None and (
+                    candidate == selected_bundle or selected_bundle in candidate.parents
+                )
                 current_run_member = active_root is not None and (
                     candidate == active_root or active_root in candidate.parents
                 )

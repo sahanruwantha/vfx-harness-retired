@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import vfx_harness.agents.planner.materialization_stop_evidence as stop_evidence
 import vfx_harness.orchestration.jit_materialization.gate_evidence as gate_evidence
-import vfx_harness.orchestration.jit_materialization.publish as jit_publish
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
 from vfx_harness.domain.stop_transaction_state import (
@@ -29,14 +29,23 @@ from vfx_harness.domain.stop_transactions import (
     SelectedAuthorityAmendmentCommitted,
     StopAction,
 )
-from vfx_harness.orchestration import plan_authority
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
     resolve_selected_authority,
 )
-from vfx_harness.orchestration.jit_materialization.schema import materialization_finalization_path
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    require_matching_authority_selection_token,
+)
+from vfx_harness.orchestration.jit_materialization.overlay_base import read_overlay_base
+from vfx_harness.orchestration.jit_materialization.schema import (
+    materialization_base_selection,
+    materialization_candidate_lock,
+    materialization_finalization_path,
+)
 from vfx_harness.orchestration.jit_materialization.staging import inspect_materialization
+from vfx_harness.orchestration.selected_authority_guard import commit_selected_authority
 
 if TYPE_CHECKING:
     from vfx_harness.observability.run_artifacts import RunLayout
@@ -107,6 +116,7 @@ def _publish_stop_evidence(
 def _harness_defect(
     layout: RunLayout,
     *,
+    selected_authority: ResolvedSelectedAuthority | None,
     bundle_digest: str,
     view_digest: str | None,
     layer_id: str,
@@ -145,9 +155,7 @@ def _harness_defect(
     attempt_digest = canonical_digest(attempt)
     classification_digest = canonical_digest(classification)
     artifact_digest = canonical_digest(artifact_state)
-    evidence = _publish_stop_evidence(
-        layout,
-        {
+    evidence_document = {
             "schema": _STOP_EVIDENCE_SCHEMA,
             "evidence_kind": "harness_defect",
             "bundle_digest": bundle_digest,
@@ -162,8 +170,22 @@ def _harness_defect(
             "classification_evidence_digest": classification_digest,
             "artifact_state_digest": artifact_digest,
             "authoritative_before_digest": authoritative_before_digest,
-        },
-        audit={**audit, "candidate_record": candidate_record},
+        }
+    def publish() -> StopEvidenceRef:
+        return _publish_stop_evidence(
+            layout,
+            evidence_document,
+            audit={**audit, "candidate_record": candidate_record},
+        )
+    evidence = (
+        publish()
+        if selected_authority is None
+        else commit_selected_authority(
+            layout.shot,
+            selected_authority,
+            operation="publish materialization harness-defect evidence",
+            mutation=publish,
+        )
     )
     defect_record = EvidenceRecordAssertion(
         record_kind="defect",
@@ -276,9 +298,7 @@ def _authority_defect(
     attempt_digest = canonical_digest(attempt)
     classification_digest = canonical_digest(classification)
     artifact_digest = canonical_digest(artifact_state)
-    evidence = _publish_stop_evidence(
-        layout,
-        {
+    evidence_document = {
             "schema": _STOP_EVIDENCE_SCHEMA,
             "evidence_kind": "authority_defect",
             "bundle_digest": bundle_digest,
@@ -293,12 +313,22 @@ def _authority_defect(
             "classification_evidence_digest": classification_digest,
             "artifact_state_digest": artifact_digest,
             "authoritative_before_digest": authoritative_before_digest,
-        },
-        audit={
-            **audit,
-            "candidate_record": candidate_record,
-            "blocking_findings": list(finding_records),
-        },
+        }
+    def publish() -> StopEvidenceRef:
+        return _publish_stop_evidence(
+            layout,
+            evidence_document,
+            audit={
+                **audit,
+                "candidate_record": candidate_record,
+                "blocking_findings": list(finding_records),
+            },
+        )
+    evidence = commit_selected_authority(
+        layout.shot,
+        selected_authority,
+        operation="publish materialization authority-defect evidence",
+        mutation=publish,
     )
     findings = tuple(
         EvidenceRecordAssertion(
@@ -332,10 +362,6 @@ def _authority_defect(
             required_after_source="jit",
         ),
     )
-    if resolve_selected_authority(layout.shot) != selected_authority:
-        raise RuntimeError(
-            "selected authority changed while its materialization stop was compiled"
-        )
     return StopEnvelope(
         stage="materialization",
         stop_class="authority_defect",
@@ -382,11 +408,32 @@ def publish_materialization_stop(
     candidate: str | Path,
     overlay_root: str | Path | None = None,
 ) -> StopEnvelope:
+    """Compile one stop while the exact candidate revision is immutable."""
+
+    candidate_path = Path(candidate).expanduser().resolve()
+    with materialization_candidate_lock(candidate_path):
+        return _publish_materialization_stop_locked(
+            layout,
+            bundle=bundle,
+            layer_id=layer_id,
+            candidate=candidate_path,
+            overlay_root=overlay_root,
+        )
+
+
+def _publish_materialization_stop_locked(
+    layout: RunLayout,
+    *,
+    bundle: PlanBundle,
+    layer_id: str,
+    candidate: str | Path,
+    overlay_root: str | Path | None = None,
+) -> StopEnvelope:
     """Compile and persist the only legal stop for the current candidate bytes."""
 
     layer_id = str(layer_id)
     candidate_path = Path(candidate).expanduser().resolve()
-    candidate_record, candidate_bytes, _document, candidate_issues = (
+    candidate_record, candidate_bytes, candidate_document, candidate_issues = (
         stop_evidence.candidate_state(
             layout,
             candidate_path,
@@ -395,6 +442,46 @@ def publish_materialization_stop(
         )
     )
     overlay_path = Path(overlay_root).resolve() if overlay_root is not None else None
+    selected_authority: ResolvedSelectedAuthority | None = None
+    with suppress(SelectedAuthorityResolutionError):
+        selected_authority = resolve_selected_authority(layout.shot)
+    candidate_base = None
+    if candidate_document is not None:
+        try:
+            candidate_base = materialization_base_selection(candidate_document)
+        except ValueError:
+            candidate_issues = (*candidate_issues, "candidate_base_selection_invalid")
+    if selected_authority is not None and candidate_base is not None:
+        try:
+            require_matching_authority_selection_token(
+                candidate_base,
+                selected_authority.selection_token,
+            )
+        except AuthoritySelectionConflict as exc:
+            raise AuthoritySelectionConflict(
+                "materialization stop refused a stale candidate base selection"
+            ) from exc
+    overlay_issues: tuple[str, ...] = ()
+    if overlay_path is not None:
+        try:
+            overlay_bundle, overlay_selection = read_overlay_base(overlay_path)
+        except ValueError:
+            overlay_issues = ("rematerialization_overlay_base_invalid",)
+        else:
+            if overlay_bundle != bundle.content_hash:
+                raise AuthoritySelectionConflict(
+                    "materialization stop overlay names another global bundle"
+                )
+            if candidate_base is not None:
+                try:
+                    require_matching_authority_selection_token(
+                        candidate_base,
+                        overlay_selection,
+                    )
+                except AuthoritySelectionConflict as exc:
+                    raise AuthoritySelectionConflict(
+                        "materialization stop candidate and overlay name different bases"
+                    ) from exc
     (
         authority_before,
         before_digest,
@@ -407,11 +494,9 @@ def publish_materialization_stop(
         bundle,
         layer_id=layer_id,
         overlay_root=overlay_path,
+        selected_authority=selected_authority,
     )
-    selected_authority: ResolvedSelectedAuthority | None = None
-    try:
-        selected_authority = resolve_selected_authority(layout.shot)
-    except SelectedAuthorityResolutionError:
+    if selected_authority is None:
         authority_issues = (*authority_issues, "selected_authority_resolution_failed")
     else:
         selected_bundle = selected_authority.assertion.bundle
@@ -450,10 +535,20 @@ def publish_materialization_stop(
         "finalization": materialization_finalization_path(candidate_path).name,
         "authority_before": authority_audit,
     }
-    issues = tuple(sorted({*candidate_issues, *authority_issues, *finalization_issues}))
+    issues = tuple(
+        sorted(
+            {
+                *candidate_issues,
+                *authority_issues,
+                *finalization_issues,
+                *overlay_issues,
+            }
+        )
+    )
     if issues or candidate_bytes is None:
         return _harness_defect(
             layout,
+            selected_authority=selected_authority,
             bundle_digest=bundle.content_hash,
             view_digest=view_digest,
             layer_id=layer_id,
@@ -466,24 +561,23 @@ def publish_materialization_stop(
         )
 
     try:
-        base_layers = jit_publish.selected_view_artifact(
-            layout.shot,
-            "layers.json",
-            bundle.content_hash,
-            overlay_root=overlay_path,
-        ) or plan_authority.artifact_path(layout.shot, "layers.json")
-        base_scene = jit_publish.selected_view_artifact(
-            layout.shot,
-            "scene_checks.json",
-            bundle.content_hash,
-            overlay_root=overlay_path,
-        ) or plan_authority.artifact_path(layout.shot, "scene_checks.json")
-        base_requirements = jit_publish.selected_view_artifact(
-            layout.shot,
-            "requirements.json",
-            bundle.content_hash,
-            overlay_root=overlay_path,
-        ) or plan_authority.artifact_path(layout.shot, "requirements.json")
+        assert selected_authority is not None
+        base_root = overlay_path
+        base_layers = (
+            base_root / "layers.json"
+            if base_root is not None
+            else selected_authority.artifact_paths["layers.json"]
+        )
+        base_scene = (
+            base_root / "scene_checks.json"
+            if base_root is not None
+            else selected_authority.artifact_paths["scene_checks.json"]
+        )
+        base_requirements = (
+            base_root / "requirements.json"
+            if base_root is not None
+            else selected_authority.artifact_paths["requirements.json"]
+        )
         local_findings, _materialized = inspect_materialization(
             bundle.root,
             candidate_path,
@@ -496,6 +590,7 @@ def publish_materialization_stop(
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return _harness_defect(
             layout,
+            selected_authority=selected_authority,
             bundle_digest=bundle.content_hash,
             view_digest=view_digest,
             layer_id=layer_id,
@@ -545,6 +640,7 @@ def publish_materialization_stop(
     if gate_issues:
         return _harness_defect(
             layout,
+            selected_authority=selected_authority,
             bundle_digest=bundle.content_hash,
             view_digest=view_digest,
             layer_id=layer_id,
@@ -559,6 +655,7 @@ def publish_materialization_stop(
         if finalization_current:
             return _harness_defect(
                 layout,
+                selected_authority=selected_authority,
                 bundle_digest=bundle.content_hash,
                 view_digest=view_digest,
                 layer_id=layer_id,
@@ -599,6 +696,7 @@ def publish_materialization_stop(
     )
     return _harness_defect(
         layout,
+        selected_authority=selected_authority,
         bundle_digest=bundle.content_hash,
         view_digest=view_digest,
         layer_id=layer_id,

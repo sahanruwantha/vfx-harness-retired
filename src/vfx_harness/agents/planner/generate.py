@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions, query
@@ -34,15 +35,24 @@ from vfx_harness.agents.prompts import (
 )
 from vfx_harness.agents.resilience import result_signal, run_session
 from vfx_harness.agents.unit_scope import compile_scope_with_predecessors
+from vfx_harness.domain.contracts import load_document
 from vfx_harness.domain.work_units import ready_units
 from vfx_harness.evaluation.plan_gate import report as gate_report
 from vfx_harness.evaluation.plan_gate import run as run_plan_gate
-from vfx_harness.evidence.scene_checks import load_rows
 from vfx_harness.infrastructure.config import Settings
 from vfx_harness.knowledge.recipes import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import log, log_message
-from vfx_harness.observability.provenance import atomic_write
+from vfx_harness.orchestration.authority_selection import resolve_selected_authority
+from vfx_harness.orchestration.authority_selection_heads import (
+    AuthoritySelectionHeadError,
+    read_authority_selection_heads,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    authority_selection_lock,
+    require_matching_authority_selection_token,
+)
 from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 from vfx_harness.orchestration.layer_plans import (
     amendment_block,
@@ -57,9 +67,13 @@ from vfx_harness.orchestration.layer_plans import (
 )
 from vfx_harness.orchestration.ledger import load_layers
 from vfx_harness.orchestration.plan_authoring import clause_registry, registry_prompt_block
-from vfx_harness.orchestration.plan_authority import active_plan_hash, prepare_consumer_view, prepare_staging
+from vfx_harness.orchestration.plan_authority import prepare_consumer_view, prepare_staging
 from vfx_harness.orchestration.unit_state import digest_matched_passed
 from vfx_harness.orchestration.unit_state import initialize as initialize_unit_state
+from vfx_harness.orchestration.work_unit_plan_transaction import (
+    WorkUnitPlanTransactionConflict,
+    work_unit_plan_transaction,
+)
 
 _KICKOFF_MAX_PX = 1568  # same budget the critic uses; ~1600 tokens per still
 
@@ -248,12 +262,16 @@ async def generate_layer_plan(
     """
     shot = planner_package().load_shot(folder)
     model = model or Settings.from_environment(load_dotenv_file=False).planner_model
-    global_path = global_plan_path(shot.folder)
+    selected_authority = resolve_selected_authority(shot.folder)
+    if selected_authority.plan is None:
+        raise ValueError("layer planning requires selected global plan authority")
+    global_path = selected_authority.artifact_paths["global.md"]
     if not global_path.is_file():
         raise FileNotFoundError(f"{global_path} missing — generate and gate the strict global plan first")
     layers = load_layers(
         shot,
         replacing_layer_id=str(layer_id) if rematerialize is not None else None,
+        selected_authority=selected_authority,
     )
     try:
         layer = layers[str(layer_id)]
@@ -275,15 +293,43 @@ async def generate_layer_plan(
             model=model,
             blender=blender,
             max_turns=max_turns,
+            selected_authority=selected_authority,
         )
-        layers = load_layers(shot)
-        layer = layers[str(layer_id)]
 
-    _reconcile_materialized_layer_state(shot, layer)
-    layers_hash = active_plan_hash(shot.folder)
-    state = initialize_unit_state(
-        shot.folder, str(layer.id), layer.stages, plan_hash=layers_hash
+    # Materialization is an authority transition, so the selected snapshot after that
+    # boundary is the sole base for unit state, plan context, and terminal gating.
+    selected_authority = resolve_selected_authority(shot.folder)
+    if selected_authority.plan is None:
+        raise ValueError("layer planning lost selected global plan authority")
+    layers = load_layers(
+        shot,
+        selected_authority=selected_authority,
     )
+    layer = layers[str(layer_id)]
+    layers_hash = hashlib.sha256(
+        selected_authority.artifact_paths["layers.json"].read_bytes()
+    ).hexdigest()
+    try:
+        with authority_selection_lock(shot.folder, exclusive=False):
+            require_matching_authority_selection_token(
+                selected_authority.selection_token,
+                read_authority_selection_heads(shot.folder).token,
+            )
+            _reconcile_materialized_layer_state(
+                shot,
+                layer,
+                new_plan_hash=layers_hash,
+            )
+            state = initialize_unit_state(
+                shot.folder,
+                str(layer.id),
+                layer.stages,
+                plan_hash=layers_hash,
+            )
+    except (AuthoritySelectionConflict, AuthoritySelectionHeadError) as exc:
+        raise ValueError(
+            "selected authority changed before layer-plan state initialization"
+        ) from exc
     passed = {
         uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
     }
@@ -309,9 +355,21 @@ async def generate_layer_plan(
                 f"layer {layer.id} has no plannable unit; all units passed or dependencies are blocked"
             )
         selected = ready[0]
-    target = work_unit_plan_path(shot.folder, selected)
-    if is_selected_bundle_member(shot.folder, target):
-        validate_work_unit_plan_authority(shot.folder, target)
+    target = work_unit_plan_path(
+        shot.folder,
+        selected,
+        selected_authority=selected_authority,
+    )
+    if is_selected_bundle_member(
+        shot.folder,
+        target,
+        selected_authority=selected_authority,
+    ):
+        validate_work_unit_plan_authority(
+            shot.folder,
+            target,
+            selected_authority=selected_authority,
+        )
         log(
             f"unit plan already frozen in selected bundle; model-free reuse: "
             f"{target.relative_to(shot.folder)}"
@@ -322,7 +380,11 @@ async def generate_layer_plan(
     feedback = "\n\n".join(
         x
         for x in (
-            prior_outcomes_block(shot.folder, str(layer.id)),
+            prior_outcomes_block(
+                shot.folder,
+                str(layer.id),
+                selected_authority=selected_authority,
+            ),
             amendment_block(shot.folder, str(layer.id)),
             contract_gaps_block(shot.folder, str(layer.id), selected.id),
         )
@@ -338,7 +400,10 @@ async def generate_layer_plan(
         target=rel_target,
     )
 
-    contract_rows = load_rows(shot.folder)
+    contract_rows = load_document(
+        selected_authority.artifact_paths["scene_checks.json"],
+        "contracts",
+    )
     unit_card = compile_scope_with_predecessors(
         unit=selected,
         layer_id=str(layer.id),
@@ -400,19 +465,10 @@ async def generate_layer_plan(
             completion_gate=False,
         ),
     )
-    before = target.stat().st_mtime_ns if target.is_file() else -1
     judge_names = {Path(ref).name for _frame, ref in layer.judges}
     blocks = _kickoff_blocks(
         kickoff, shot, refs=tuple(ref for ref in shot.refs if ref.name in judge_names)
     )
-    costlog.bind(shot.folder, role="plan:layer", model=model, tag=str(layer.id))
-    tpath = transcript.bind(shot.folder, "plan", label=f"layer-{layer.id}")
-    if tpath:
-        log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
-    transcript.prompt(
-        kickoff, role="kickoff", mode="PLAN_LAYER", model=model, layer=layer.id, refs=[p.name for p in shot.refs]
-    )
-
     async def _attempt() -> str:
         said: list[str] = []
         async for message in query(prompt=_one_user_message(blocks), options=options):
@@ -424,59 +480,115 @@ async def generate_layer_plan(
                 said.append(signal)
         return "\n".join(said)[-4000:]
 
-    def _wrote() -> bool:
-        return target.is_file() and target.stat().st_mtime_ns != before
-
     # Materialization is a transaction: the shot may keep this plan ONLY if the
     # deterministic gate accepts the resulting consumer view. Run 20260824T103842Z-afec73
     # wrote its generated plan, failed the gate in the caller, and left the file behind —
     # the next build trusted its existence and built a unit on gate-failed authority.
 
     authority_path = work_unit_plan_authority_path(target)
-    prior_plan = target.read_text(encoding="utf-8") if target.is_file() else None
-    prior_authority = authority_path.read_text(encoding="utf-8") if authority_path.is_file() else None
+    async with work_unit_plan_transaction(target, authority_path) as plan_transaction:
+        before = target.stat().st_mtime_ns if target.is_file() else -1
 
-    def _rollback() -> None:
-        for path, prior in ((target, prior_plan), (authority_path, prior_authority)):
-            if prior is None:
-                path.unlink(missing_ok=True)
-            else:
-                atomic_write(path, prior)
+        def _wrote() -> bool:
+            return target.is_file() and target.stat().st_mtime_ns != before
 
-    try:
-        log(f"plan agent [LAYER {layer.id} · UNIT {selected.id}]: {selected.title} → {rel_target}")
-        await run_session(_attempt, succeeded=_wrote, label=f"plan layer {layer.id} unit {selected.id}")
-    finally:
-        transcript.unbind()
-        costlog.unbind()
-    try:
-        text = target.read_text(encoding="utf-8")
-        if len(text.strip()) < 200:
-            raise ValueError(f"{target} is too small to be an executable layer plan")
-        if text.count("\n") + 1 > 160:
-            raise ValueError(
-                f"{target} has {text.count(chr(10)) + 1} lines; layer plans are capped at 160. "
-                "Keep evidence in machine contracts/outcomes and rewrite this as an execution index"
-            )
-        # integrity stamp first — the gate validates it, then a clean result earns the
-        # gate attestation consumers require
-        stamp_work_unit_plan(shot.folder, target)
-
-        gated = run_plan_gate(prepare_consumer_view(layout))
-        # scoped: another layer's stuck STATE belongs to that layer's own transaction
-        # and must not block this layer's plan (run bwng97m5n: layer 1's amendment died
-        # on layer 2's 'no ready unit' finding)
-        if not gated.clean_for(str(layer.id)):
-            raise RuntimeError(
-                f"generated unit plan {layer.id}.{selected.id} failed the deterministic gate:\n"
-                + gate_report(gated)
-            )
-        stamp_work_unit_plan(
-            shot.folder, target, gate={"clean": True, "blocking": 0, "run_id": layout.run_id}
+        costlog.bind(shot.folder, role="plan:layer", model=model, tag=str(layer.id))
+        tpath = transcript.bind(shot.folder, "plan", label=f"layer-{layer.id}")
+        if tpath:
+            log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
+        transcript.prompt(
+            kickoff,
+            role="kickoff",
+            mode="PLAN_LAYER",
+            model=model,
+            layer=layer.id,
+            refs=[p.name for p in shot.refs],
         )
-    except BaseException:
-        _rollback()
-        log(f"unit plan retracted: {rel_target} did not pass the deterministic gate")
-        raise
+        try:
+            try:
+                log(
+                    f"plan agent [LAYER {layer.id} · UNIT {selected.id}]: "
+                    f"{selected.title} → {rel_target}"
+                )
+                await run_session(
+                    _attempt,
+                    succeeded=_wrote,
+                    label=f"plan layer {layer.id} unit {selected.id}",
+                )
+            finally:
+                # The MCP write is complete at this boundary.  Capture its exact bytes
+                # even when the model session terminates abnormally so a legal rollback
+                # can retract only this attempt.
+                try:
+                    plan_transaction.claim_current()
+                finally:
+                    try:
+                        transcript.unbind()
+                    finally:
+                        costlog.unbind()
+
+            text = target.read_text(encoding="utf-8")
+            if len(text.strip()) < 200:
+                raise ValueError(f"{target} is too small to be an executable layer plan")
+            if text.count("\n") + 1 > 160:
+                raise ValueError(
+                    f"{target} has {text.count(chr(10)) + 1} lines; layer plans are capped at 160. "
+                    "Keep evidence in machine contracts/outcomes and rewrite this as an "
+                    "execution index"
+                )
+            # Integrity stamp first — the gate validates it, then a clean result earns
+            # the gate attestation consumers require.  Each phase proves that the pair
+            # still has the exact revision owned by this attempt.
+            with authority_selection_lock(shot.folder, exclusive=False):
+                require_matching_authority_selection_token(
+                    selected_authority.selection_token,
+                    read_authority_selection_heads(shot.folder).token,
+                )
+                plan_transaction.require_owned_current()
+                stamp_work_unit_plan(
+                    shot.folder,
+                    target,
+                    selected_authority=selected_authority,
+                )
+                plan_transaction.claim_current()
+
+            gated = run_plan_gate(
+                prepare_consumer_view(
+                    layout,
+                    selected_authority=selected_authority,
+                )
+            )
+            # Scoped: another layer's stuck STATE belongs to that layer's own transaction
+            # and must not block this layer's plan (run bwng97m5n: layer 1's amendment died
+            # on layer 2's 'no ready unit' finding).
+            if not gated.clean_for(str(layer.id)):
+                raise RuntimeError(
+                    f"generated unit plan {layer.id}.{selected.id} failed the "
+                    "deterministic gate:\n" + gate_report(gated)
+                )
+            with authority_selection_lock(shot.folder, exclusive=False):
+                require_matching_authority_selection_token(
+                    selected_authority.selection_token,
+                    read_authority_selection_heads(shot.folder).token,
+                )
+                plan_transaction.require_owned_current()
+                stamp_work_unit_plan(
+                    shot.folder,
+                    target,
+                    gate={"clean": True, "blocking": 0, "run_id": layout.run_id},
+                    selected_authority=selected_authority,
+                )
+                plan_transaction.claim_current()
+        except BaseException as exc:
+            try:
+                plan_transaction.rollback()
+            except WorkUnitPlanTransactionConflict as rollback_exc:
+                log(
+                    f"unit plan rollback refused: {rel_target} was replaced by a "
+                    "newer writer"
+                )
+                raise rollback_exc from exc
+            log(f"unit plan retracted: {rel_target} did not pass the deterministic gate")
+            raise
     log(f"unit plan published through a clean gate: {rel_target} ({text.count(chr(10))} lines)")
     return target

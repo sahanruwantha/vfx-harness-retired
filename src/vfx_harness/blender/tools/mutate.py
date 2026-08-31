@@ -48,6 +48,7 @@ def register_mutate(
     _black_frame_note,
     _black_search_stop,
     _register_candidate,
+    selected_authority=None,
 ):
     @tool(
         "run_bpy",
@@ -93,7 +94,7 @@ def register_mutate(
             active_ids = comparison_state.get("active_evidence_ids")
             schedule_rows = [
                 row
-                for row in load_rows(shot_dir)
+                for row in load_rows(shot_dir, selected_authority)
                 if row.get("kind") == "keyframe_schedule" and (active_ids is None or str(row.get("id")) in active_ids)
             ]
             protected_paths = {
@@ -216,7 +217,7 @@ def register_mutate(
                 diagnostic_ids = set(comparison_state.get("diagnostic_evidence_ids") or [])
                 scheduled_ids = None if active_ids is None else set(active_ids) | diagnostic_ids
 
-                contract_rows = load_rows(shot_dir)
+                contract_rows = load_rows(shot_dir, selected_authority)
                 frames = _bound_static_frames(
                     contract_rows,
                     scheduled_ids,
@@ -227,7 +228,11 @@ def register_mutate(
                     evidence.extend(
                         await anyio.to_thread.run_sync(
                             lambda frame=evidence_frame: layer_evidence(
-                                shot_dir, str(layer_id), frame=frame, session=session
+                                shot_dir,
+                                str(layer_id),
+                                frame=frame,
+                                session=session,
+                                selected_authority=selected_authority,
                             )
                         )
                     )
@@ -241,7 +246,12 @@ def register_mutate(
 
                     active_evidence.extend(
                         await anyio.to_thread.run_sync(
-                            lambda: functional_evidence(shot_dir, str(layer_id), session=session)
+                            lambda: functional_evidence(
+                                shot_dir,
+                                str(layer_id),
+                                session=session,
+                                selected_authority=selected_authority,
+                            )
                         )
                     )
                     if active_ids is not None:
@@ -249,7 +259,11 @@ def register_mutate(
                     active_evidence = list({str(row.get("id")): row for row in active_evidence}.values())
                     authoritative = [row for row in active_evidence if row.get("authoritative")]
                 state = _scene_completion_state(active_evidence, str(layer_id), active_ids)
-                _refresh_unpaid_image_debts(comparison_state, shot_dir)
+                _refresh_unpaid_image_debts(
+                    comparison_state,
+                    shot_dir,
+                    selected_authority=selected_authority,
+                )
                 authoritative = state["authoritative"]
                 passed = [row for row in authoritative if row.get("pass")]
                 failed = state["failures"]

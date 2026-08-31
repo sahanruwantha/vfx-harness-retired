@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import anyio
@@ -17,8 +18,14 @@ from vfx_harness.agents.planner import (
     rematerialize,
 )
 from vfx_harness.agents.resilience import AgentSessionFailure
+from vfx_harness.domain.authority_head_records import canonical_json_bytes
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopEnvelope
+from vfx_harness.domain.stop_transaction_state import (
+    SelectedAuthorityAssertionV2,
+    SelectedAuthorityBundle,
+    SelectedAuthorityView,
+)
 from vfx_harness.domain.stop_transactions import (
     EngineeringRouteCommitted,
     PublishValidatedAmendmentTarget,
@@ -28,14 +35,28 @@ from vfx_harness.domain.stop_transactions import (
 from vfx_harness.evaluation.plan_gate import Finding, GateResult
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import revalidation
+from vfx_harness.orchestration.authority_selection import (
+    SelectedAuthorityResolutionError,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    AuthoritySelectionToken,
+)
 from vfx_harness.orchestration.jit_materialization import gate_evidence
 from vfx_harness.orchestration.jit_materialization import publish as jit_publish
+from vfx_harness.orchestration.jit_materialization.overlay_base import write_overlay_base
 from vfx_harness.orchestration.jit_materialization.schema import (
     CURRENT,
+    MATERIALIZATION_SCHEMA,
     OVERLAY_ARTIFACTS,
     VIEW_SCHEMA,
     _require_upstream_outcomes,
     attest_materialization_finalization,
+    materialization_candidate_lock,
+)
+from vfx_harness.orchestration.jit_materialization.view_pointer import (
+    JitViewPointerError,
+    parse_jit_view_pointer,
 )
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.plan_authority import PlanBundle
@@ -112,9 +133,19 @@ def _fixture(
         encoding="utf-8",
     )
     (shot / "plans").mkdir(parents=True)
-    (shot / "plans" / "current.json").write_text(
-        json.dumps({"schema": "fixture", "content_hash": BUNDLE_DIGEST}),
-        encoding="utf-8",
+    plan_pointer = shot / "plans" / "current.json"
+    plan_pointer.write_bytes(
+        canonical_json_bytes(
+            {
+                "schema": "vfx-harness.plan-pointer/v2",
+                "revision": 1,
+                "run_id": "publisher",
+                "bundle": bundle_root.relative_to(shot).as_posix(),
+                "content_hash": BUNDLE_DIGEST,
+                "outcome": "clean_with_deferred",
+                "published_at": "2026-08-30T00:00:00+00:00",
+            }
+        )
     )
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     layout = run_artifacts.create(shot, run_id, shot_id=shot.name)
@@ -126,23 +157,101 @@ def _fixture(
         artifacts=artifact_names,
         outcome="clean_with_deferred",
     )
-    monkeypatch.setattr(materialization_stop.plan_authority, "resolve_current", lambda _shot: bundle)
+    base_selection = AuthoritySelectionToken(
+        plan_revision=1,
+        plan_pointer_sha256=_sha(plan_pointer),
+        jit_revision=0,
+        jit_pointer_sha256=None,
+    )
+
+    def selected_authority() -> SimpleNamespace:
+        artifact_hashes = {
+            name: _sha(bundle_root / name) for name in OVERLAY_ARTIFACTS
+        }
+        semantic_digest = canonical_digest(
+            {
+                "schema": "vfx-harness.test-selected-authority/v1",
+                "artifacts": artifact_hashes,
+            }
+        )
+        jit_pointer = shot / CURRENT
+        jit_revision = 0
+        jit_pointer_sha256 = None
+        effective_view = SelectedAuthorityView(
+            source="bundle",
+            digest=BUNDLE_DIGEST,
+            semantic_manifest_digest=semantic_digest,
+        )
+        selected_paths = {
+            name: bundle_root / name for name in OVERLAY_ARTIFACTS
+        }
+        if jit_pointer.is_file():
+            try:
+                jit_value = json.loads(jit_pointer.read_text(encoding="utf-8"))
+                parsed_jit = parse_jit_view_pointer(jit_value)
+                selected_paths = {
+                    name: shot / parsed_jit.artifacts[name]
+                    for name in OVERLAY_ARTIFACTS
+                }
+                if any(
+                    not path.is_file() or _sha(path) != parsed_jit.hashes[name]
+                    for name, path in selected_paths.items()
+                ):
+                    raise ValueError("selected JIT fixture artifact hash mismatch")
+            except (OSError, ValueError, json.JSONDecodeError, JitViewPointerError) as exc:
+                raise SelectedAuthorityResolutionError(
+                    "selected JIT fixture is invalid"
+                ) from exc
+            jit_revision = parsed_jit.revision
+            jit_pointer_sha256 = _sha(jit_pointer)
+            effective_view = SelectedAuthorityView(
+                source="jit",
+                digest=parsed_jit.view_hash,
+                semantic_manifest_digest=canonical_digest(
+                    {
+                        "schema": "vfx-harness.test-selected-view/v1",
+                        "hashes": parsed_jit.hashes,
+                    }
+                ),
+            )
+        selection_token = AuthoritySelectionToken(
+            plan_revision=1,
+            plan_pointer_sha256=_sha(plan_pointer),
+            jit_revision=jit_revision,
+            jit_pointer_sha256=jit_pointer_sha256,
+        )
+        return SimpleNamespace(
+            assertion=SelectedAuthorityAssertionV2(
+                selection="selected",
+                bundle=SelectedAuthorityBundle(
+                    digest=BUNDLE_DIGEST,
+                    outcome="clean_with_deferred",
+                    semantic_manifest_digest=semantic_digest,
+                ),
+                effective_view=effective_view,
+            ),
+            selection_token=selection_token,
+            plan=SimpleNamespace(revision=1, bundle=bundle),
+            artifact_paths=selected_paths,
+        )
+
     monkeypatch.setattr(
-        materialization_stop.plan_authority,
-        "artifact_path",
-        lambda _shot, name: bundle_root / name,
+        materialization_stop,
+        "resolve_selected_authority",
+        lambda _shot: selected_authority(),
     )
     monkeypatch.setattr(
-        materialization_stop.jit_publish,
-        "selected_view_artifact",
-        lambda *_args, **_kwargs: None,
+        rematerialize,
+        "resolve_selected_authority",
+        lambda _shot: selected_authority(),
     )
     candidate = layout.scratch / "jit-layer-1.json"
     candidate.write_text(
         json.dumps(
             {
-                "schema": "vfx-harness.jit-layer-materialization/v2",
+                "schema": MATERIALIZATION_SCHEMA,
                 "bundle_hash": BUNDLE_DIGEST,
+                "base_selection": base_selection.to_dict(),
                 "layer": {"id": "1", "execution": "ready", "stages": []},
                 "scene_contracts": [],
                 "image_contracts": [],
@@ -169,6 +278,12 @@ def _dirty_gate(shot_id: str, *, where: str = "layers.json#/layers/0/stages") ->
             )
         ],
     )
+
+
+def _rebase_candidate(candidate: Path, token: AuthoritySelectionToken) -> None:
+    value = json.loads(candidate.read_text(encoding="utf-8"))
+    value["base_selection"] = token.to_dict()
+    candidate.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
 
 
 def test_invalid_durable_inputs_do_not_promote_opaque_bytes_into_authority() -> None:
@@ -241,9 +356,7 @@ def test_invalid_authority_bytes_change_audit_not_stop_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unresolvable(_shot: Path) -> PlanBundle:
-        raise materialization_stop.plan_authority.PlanPublicationError(
-            "fixture authority is invalid"
-        )
+        raise SelectedAuthorityResolutionError("fixture authority is invalid")
 
     def unexpected_inspection(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("invalid authority must stop before candidate inspection")
@@ -286,8 +399,8 @@ def test_invalid_authority_bytes_change_audit_not_stop_identity(
             f'{{"opaque_manifest":"{marker}"'.encode()
         )
         monkeypatch.setattr(
-            materialization_stop.plan_authority,
-            "resolve_current",
+            materialization_stop,
+            "resolve_selected_authority",
             unresolvable,
         )
 
@@ -378,6 +491,8 @@ def test_invalid_selected_view_artifact_bytes_are_audit_only(
             json.dumps(
                 {
                     "schema": VIEW_SCHEMA,
+                    "revision": 1,
+                    "plan_revision": 1,
                     "bundle_hash": BUNDLE_DIGEST,
                     "view_hash": view_digest,
                     "materialized_layers": [],
@@ -960,7 +1075,22 @@ def test_clean_attested_candidate_that_failed_to_publish_is_a_harness_defect(
         "inspect_materialization",
         lambda *_args, **_kwargs: ([], object()),
     )
-    attest_materialization_finalization(candidate, bundle_hash=BUNDLE_DIGEST)
+    candidate_value = json.loads(candidate.read_text(encoding="utf-8"))
+    attest_materialization_finalization(
+        candidate,
+        bundle_hash=BUNDLE_DIGEST,
+        base_selection=AuthoritySelectionToken.from_dict(
+            candidate_value["base_selection"],
+            "test candidate.base_selection",
+        ),
+        proposed_view_hash=hashlib.sha256(b"unpublished-proposed-view").hexdigest(),
+        proposed_artifact_hashes={
+            name: hashlib.sha256(f"unpublished:{name}".encode()).hexdigest()
+            for name in OVERLAY_ARTIFACTS
+        },
+        planning_inputs_digest="f" * 64,
+        consumer_marker_sha256="0" * 64,
+    )
     gate_evidence.write_materialization_gate_evidence(
         layout,
         candidate=candidate,
@@ -981,6 +1111,129 @@ def test_clean_attested_candidate_that_failed_to_publish_is_a_harness_defect(
         "materialization-evidence:attested_candidate_failed_to_publish",
     )
     assert [action.transaction_id for action in envelope.actions] == ["route_engineering"]
+
+
+def test_stop_publication_refuses_a_head_change_after_snapshot_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot, layout, bundle, candidate = _fixture(
+        tmp_path,
+        monkeypatch,
+        run_id="materialization-selection-race",
+    )
+    pointer = shot / "plans" / "current.json"
+
+    def change_head(*_args: object, **_kwargs: object) -> tuple[list, object]:
+        value = json.loads(pointer.read_text(encoding="utf-8"))
+        value["revision"] = 2
+        value["published_at"] = "2026-08-30T00:00:01+00:00"
+        pointer.write_bytes(canonical_json_bytes(value))
+        return [], object()
+
+    monkeypatch.setattr(materialization_stop, "inspect_materialization", change_head)
+
+    with pytest.raises(AuthoritySelectionConflict, match="selected authority changed"):
+        materialization_stop.publish_materialization_stop(
+            layout,
+            bundle=bundle,
+            layer_id="1",
+            candidate=candidate,
+        )
+
+    assert not (layout.reports / "materialization-stop-evidence.json").exists()
+
+
+def test_stop_publication_refuses_a_stale_candidate_base_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _shot, layout, bundle, candidate = _fixture(
+        tmp_path,
+        monkeypatch,
+        run_id="materialization-stale-candidate-base",
+    )
+    value = json.loads(candidate.read_text(encoding="utf-8"))
+    value["base_selection"]["plan_revision"] = 2
+    candidate.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(AuthoritySelectionConflict, match="stale candidate base"):
+        materialization_stop.publish_materialization_stop(
+            layout,
+            bundle=bundle,
+            layer_id="1",
+            candidate=candidate,
+        )
+
+    assert not (layout.reports / "materialization-stop-evidence.json").exists()
+
+
+def test_stop_compilation_serializes_the_candidate_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _shot, layout, bundle, candidate = _fixture(
+        tmp_path,
+        monkeypatch,
+        run_id="materialization-candidate-lock",
+    )
+    compilation_started = Event()
+    release_compilation = Event()
+    mutation_attempted = Event()
+    mutation_finished = Event()
+    sentinel = object()
+    results: list[object] = []
+    failures: list[BaseException] = []
+
+    def compile_locked(*_args: object, **_kwargs: object) -> object:
+        compilation_started.set()
+        assert release_compilation.wait(2)
+        return sentinel
+
+    monkeypatch.setattr(
+        materialization_stop,
+        "_publish_materialization_stop_locked",
+        compile_locked,
+    )
+
+    def publish() -> None:
+        try:
+            results.append(
+                materialization_stop.publish_materialization_stop(
+                    layout,
+                    bundle=bundle,
+                    layer_id="1",
+                    candidate=candidate,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced by the assertion
+            failures.append(exc)
+
+    def mutate() -> None:
+        mutation_attempted.set()
+        with materialization_candidate_lock(candidate):
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+            value["acceptance"] = [{"id": "later-revision"}]
+            candidate.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+        mutation_finished.set()
+
+    publisher = Thread(target=publish)
+    writer = Thread(target=mutate)
+    publisher.start()
+    assert compilation_started.wait(2), repr(failures)
+    writer.start()
+    assert mutation_attempted.wait(2)
+    assert not mutation_finished.wait(0.05)
+    release_compilation.set()
+    publisher.join(2)
+    writer.join(2)
+
+    assert not failures
+    assert results == [sentinel]
+    assert mutation_finished.is_set()
+    assert json.loads(candidate.read_text(encoding="utf-8"))["acceptance"] == [
+        {"id": "later-revision"}
+    ]
 
 
 def test_verified_current_view_digest_is_pinned_in_stop_identity(
@@ -1008,10 +1261,12 @@ def test_verified_current_view_digest_is_pinned_in_stop_identity(
             encoding="utf-8",
         )
     pointer = shot / "state" / "jit-layers" / "current.json"
-    pointer.write_text(
-        json.dumps(
+    pointer.write_bytes(
+        canonical_json_bytes(
             {
                 "schema": VIEW_SCHEMA,
+                "revision": 1,
+                "plan_revision": 1,
                 "bundle_hash": BUNDLE_DIGEST,
                 "view_hash": view_digest,
                 "materialized_layers": [],
@@ -1021,8 +1276,11 @@ def test_verified_current_view_digest_is_pinned_in_stop_identity(
                 },
                 "hashes": {name: _sha(view / name) for name in OVERLAY_ARTIFACTS},
             }
-        ),
-        encoding="utf-8",
+        )
+    )
+    _rebase_candidate(
+        candidate,
+        materialization_stop.resolve_selected_authority(shot).selection_token,
     )
     monkeypatch.setattr(
         materialization_stop,
@@ -1156,55 +1414,20 @@ def test_cited_stop_evidence_identity_ignores_run_local_locators(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     results = []
-    for run_id, attempt_path, published_at in (
+    for run_id, attempt_path in (
         (
             "materialization-evidence-a",
             "/tmp/run-a/jit-layer-1.json",
-            "2026-08-30T01:02:03+00:00",
         ),
         (
             "materialization-evidence-b",
             "/var/tmp/run-b/materialized.json",
-            "2026-08-31T04:05:06+00:00",
         ),
     ):
-        shot, layout, bundle, candidate = _fixture(
+        _shot, layout, bundle, candidate = _fixture(
             tmp_path,
             monkeypatch,
             run_id=run_id,
-        )
-        (shot / "plans" / "current.json").write_text(
-            json.dumps(
-                {
-                    "schema": "vfx-harness.plan-pointer/v1",
-                    "run_id": f"publisher-{run_id}",
-                    "bundle": (
-                        f"runs/publisher-{run_id}/checkpoints/plans/bundles/"
-                        f"{BUNDLE_DIGEST}"
-                    ),
-                    "content_hash": BUNDLE_DIGEST,
-                    "outcome": "clean_with_deferred",
-                    "published_at": published_at,
-                },
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        (bundle.root / "bundle.json").write_text(
-            json.dumps(
-                {
-                    "schema": "vfx-harness.plan-bundle/v1",
-                    "run_id": f"publisher-{run_id}",
-                    "content_hash": BUNDLE_DIGEST,
-                    "outcome": "clean_with_deferred",
-                    "artifacts": {
-                        name: _sha(bundle.root / name)
-                        for name in bundle.artifacts
-                    },
-                },
-                sort_keys=True,
-            ),
-            encoding="utf-8",
         )
         monkeypatch.setattr(
             materialization_stop,
@@ -1241,13 +1464,10 @@ def test_cited_stop_evidence_identity_ignores_run_local_locators(
     assert first_target.base_authority.digest == (
         second_target.base_authority.digest
     )
-    first_authority_audit = results[0][2]["audit_locators"]["authority_before"]
-    second_authority_audit = results[1][2]["audit_locators"]["authority_before"]
-    assert first_authority_audit["selected_bundle"]["pointer_record"]["sha256"] != (
-        second_authority_audit["selected_bundle"]["pointer_record"]["sha256"]
-    )
-    assert first_authority_audit["selected_bundle"]["manifest_record"]["sha256"] != (
-        second_authority_audit["selected_bundle"]["manifest_record"]["sha256"]
+    first_audit = results[0][2]["audit_locators"]
+    second_audit = results[1][2]["audit_locators"]
+    assert first_audit["candidate_record"]["locator"] != (
+        second_audit["candidate_record"]["locator"]
     )
 
 
@@ -1448,6 +1668,12 @@ def test_rematerialization_overlay_changes_attempt_not_authority(
         )
         overlay = layout.scratch / "replacement-base"
         overlay.mkdir()
+        selected = materialization_stop.resolve_selected_authority(layout.shot)
+        write_overlay_base(
+            overlay,
+            bundle_hash=bundle.content_hash,
+            base_selection=selected.selection_token,
+        )
         for name in OVERLAY_ARTIFACTS:
             payload = {"name": name, "revision": 2 if changed and name == "layers.json" else 1}
             (overlay / name).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")

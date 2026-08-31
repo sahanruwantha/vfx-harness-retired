@@ -55,7 +55,12 @@ def layer_plan_path(folder: str | Path, layer) -> Path:
     return Path(folder) / PLAN_DIR / f"{_slug(layer.script)}.md"
 
 
-def work_unit_plan_path(folder: str | Path, unit) -> Path:
+def work_unit_plan_path(
+    folder: str | Path,
+    unit,
+    *,
+    selected_authority=None,
+) -> Path:
     """Resolve the schema-declared unit plan inside the shot root."""
     root = Path(folder).resolve()
     path = Path(os.path.abspath(root / unit.plan))
@@ -65,17 +70,28 @@ def work_unit_plan_path(folder: str | Path, unit) -> Path:
         raise ValueError(f"work-unit plan escapes the shot root: {unit.plan!r}") from exc
     if path.relative_to(root).parts[:1] != (PLAN_DIR,):
         raise ValueError(f"work-unit plan must live under {PLAN_DIR}/: {unit.plan!r}")
-    from vfx_harness.orchestration.plan_authority import POINTER, resolve_current  # noqa: PLC0415
+    if selected_authority is not None:
+        bundle = None if selected_authority.plan is None else selected_authority.plan.bundle
+    else:
+        from vfx_harness.orchestration.plan_authority import (  # noqa: PLC0415
+            POINTER,
+            resolve_current,
+        )
 
-    if (root / POINTER).exists():
-        bundle = resolve_current(root)
+        bundle = resolve_current(root) if (root / POINTER).exists() else None
+    if bundle is not None:
         name = path.relative_to(root).as_posix()
         if name in bundle.artifacts:
             return bundle.root / name
     return path
 
 
-def is_selected_bundle_member(folder: str | Path, path: str | Path) -> bool:
+def is_selected_bundle_member(
+    folder: str | Path,
+    path: str | Path,
+    *,
+    selected_authority=None,
+) -> bool:
     """Return whether a plan path is frozen in the currently selected bundle.
 
     Resolving current authority verifies every member hash, so this predicate also refuses a
@@ -84,9 +100,19 @@ def is_selected_bundle_member(folder: str | Path, path: str | Path) -> bool:
     from vfx_harness.orchestration.plan_authority import POINTER, resolve_current  # noqa: PLC0415
 
     root = Path(folder).resolve()
-    if not (root / POINTER).exists():
+    if selected_authority is None and not (root / POINTER).exists():
         return False
-    bundle = resolve_current(root)
+    if selected_authority is None:
+        bundle = resolve_current(root)
+    else:
+        selected_plan = getattr(selected_authority, "plan", None)
+        if selected_plan is None:
+            return False
+        bundle = selected_plan.bundle
+        try:
+            bundle.root.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("bundle membership snapshot belongs to another shot") from exc
     candidate = Path(path).resolve()
     try:
         name = candidate.relative_to(bundle.root).as_posix()
@@ -104,7 +130,13 @@ def work_unit_plan_authority_path(path: str | Path) -> Path:
     return _unit_authority_path(Path(path))
 
 
-def stamp_work_unit_plan(folder: str | Path, path: str | Path, *, gate: dict | None = None) -> Path | None:
+def stamp_work_unit_plan(
+    folder: str | Path,
+    path: str | Path,
+    *,
+    gate: dict | None = None,
+    selected_authority=None,
+) -> Path | None:
     """Pin one JIT plan to the selected global bundle and its exact bytes.
 
     Without `gate`, the stamp asserts integrity only — enough for the deterministic gate
@@ -116,9 +148,19 @@ def stamp_work_unit_plan(folder: str | Path, path: str | Path, *, gate: dict | N
 
     root = Path(folder).resolve()
     plan = Path(path).resolve()
-    if not (root / POINTER).exists():
+    if selected_authority is None and not (root / POINTER).exists():
         return None
-    bundle = resolve_current(root)
+    if selected_authority is None:
+        bundle = resolve_current(root)
+    else:
+        selected_plan = getattr(selected_authority, "plan", None)
+        if selected_plan is None:
+            raise ValueError("unit-plan stamp requires selected global plan authority")
+        bundle = selected_plan.bundle
+        try:
+            bundle.root.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("unit-plan stamp snapshot belongs to another shot") from exc
     record = {
         "schema": UNIT_PLAN_AUTHORITY_SCHEMA,
         "bundle_hash": bundle.content_hash,
@@ -139,11 +181,7 @@ def stamp_work_unit_plan(folder: str | Path, path: str | Path, *, gate: dict | N
 
 
 def _require_gate_attestation(record: dict, plan: Path) -> None:
-    if (
-        record.get("gate_clean") is True
-        and record.get("gate_blocking") == 0
-        and str(record.get("gate_run_id") or "")
-    ):
+    if record.get("gate_clean") is True and record.get("gate_blocking") == 0 and str(record.get("gate_run_id") or ""):
         return
     raise ValueError(
         f"{plan} has no clean-gate attestation — it was never published through a "
@@ -157,7 +195,11 @@ def _base_record(record: dict) -> dict:
 
 
 def validate_work_unit_plan_authority(
-    folder: str | Path, path: str | Path, *, require_gate: bool = True
+    folder: str | Path,
+    path: str | Path,
+    *,
+    require_gate: bool = True,
+    selected_authority=None,
 ) -> None:
     """Fail closed when a JIT plan belongs to another global generation or was never
     published through a clean deterministic gate.
@@ -167,9 +209,12 @@ def validate_work_unit_plan_authority(
     Every build-time consumer takes the default and refuses unattested plans."""
     from vfx_harness.orchestration.plan_authority import (  # noqa: PLC0415
         BUNDLE_SCHEMA,
-        CONSUMER_VIEW_SCHEMA,
         POINTER,
         resolve_current,
+        resolve_published_bundle,
+    )
+    from vfx_harness.orchestration.plan_consumer_view import (  # noqa: PLC0415
+        PlanConsumerViewMarker,
     )
 
     root = Path(folder).resolve()
@@ -178,14 +223,14 @@ def validate_work_unit_plan_authority(
     marker = root / ".plan-consumer-view.json"
     if marker.is_file():
         try:
-            view = json.loads(marker.read_text(encoding="utf-8"))
-            if view.get("schema") != CONSUMER_VIEW_SCHEMA:
-                raise ValueError("unsupported plan consumer view")
-            bundle = resolve_current(view["shot"])
-            if bundle.root != Path(view["bundle"]).resolve():
-                raise ValueError("plan consumer view points at a non-selected bundle")
-            if bundle.content_hash != view.get("content_hash"):
-                raise ValueError("plan consumer view bundle hash is stale")
+            view = PlanConsumerViewMarker.from_bytes(marker.read_bytes())
+            bundle = resolve_published_bundle(
+                view.shot,
+                run_id=view.bundle_run_id,
+                content_hash=view.content_hash,
+            )
+            if bundle.root != view.bundle:
+                raise ValueError("plan consumer view bundle root is stale")
             name = lexical_plan.relative_to(root).as_posix()
             manifest = json.loads((bundle.root / "bundle.json").read_text(encoding="utf-8"))
             if manifest.get("schema") != BUNDLE_SCHEMA:
@@ -199,7 +244,7 @@ def validate_work_unit_plan_authority(
                 if hashlib.sha256(plan.read_bytes()).hexdigest() != expected:
                     raise ValueError("work-unit plan bundle member hash does not match authority")
             else:
-                shot = Path(str(view["shot"])).resolve()
+                shot = view.shot
                 source = (shot / name).resolve()
                 if plan != source:
                     raise ValueError("JIT unit plan view points outside its shot-root authority")
@@ -221,9 +266,19 @@ def validate_work_unit_plan_authority(
         except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError(f"{lexical_plan} has invalid selected-bundle authority") from exc
         return
-    if not (root / POINTER).exists():
+    if selected_authority is None and not (root / POINTER).exists():
         return
-    bundle = resolve_current(root)
+    if selected_authority is None:
+        bundle = resolve_current(root)
+    else:
+        selected_plan = getattr(selected_authority, "plan", None)
+        if selected_plan is None:
+            raise ValueError("work-unit plan snapshot has no selected global plan authority")
+        bundle = selected_plan.bundle
+        try:
+            bundle.root.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("work-unit plan snapshot belongs to another shot") from exc
     try:
         bundled_name = plan.relative_to(bundle.root).as_posix()
     except ValueError:
@@ -247,15 +302,29 @@ def validate_work_unit_plan_authority(
         _require_gate_attestation(record, plan)
 
 
-def read_work_unit_plan(folder: str | Path, layer, unit) -> str:
+def read_work_unit_plan(
+    folder: str | Path,
+    layer,
+    unit,
+    *,
+    selected_authority=None,
+) -> str:
     """Read exactly the execution plan named by a schema-4 work unit."""
-    path = work_unit_plan_path(folder, unit)
+    path = work_unit_plan_path(
+        folder,
+        unit,
+        selected_authority=selected_authority,
+    )
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} missing — monolithic plan fallback has been removed. Generate and "
             f"gate the just-in-time plan for layer {layer.id} unit {unit.id} before building it"
         )
-    validate_work_unit_plan_authority(folder, path)
+    validate_work_unit_plan_authority(
+        folder,
+        path,
+        selected_authority=selected_authority,
+    )
     text = path.read_text(encoding="utf-8").strip()
     if len(text) < 200:
         raise ValueError(f"{path} is too small to be an executable layer plan")
@@ -268,14 +337,19 @@ def read_work_unit_plan(folder: str | Path, layer, unit) -> str:
     return text
 
 
-def read_layer_plan(folder: str | Path, layer) -> str:
+def read_layer_plan(folder: str | Path, layer, *, selected_authority=None) -> str:
     """Single-unit vertical-slice adapter; never collapse a unit DAG implicitly."""
     if len(layer.stages) != 1:
         raise ValueError(
             f"layer {layer.id} declares {len(layer.stages)} work units; layer-level plan "
             "retrieval cannot choose or combine them. Use staged work-unit execution"
         )
-    return read_work_unit_plan(folder, layer, layer.stages[0])
+    return read_work_unit_plan(
+        folder,
+        layer,
+        layer.stages[0],
+        selected_authority=selected_authority,
+    )
 
 
 def load_amendments(folder: str | Path) -> list[dict]:
@@ -354,8 +428,7 @@ def contract_gaps_block(folder: str | Path, layer_id: str, unit_id: str | None =
     latest = records[-1]
     lines = [
         "## Verified contract gaps — plan defects, not builder instructions",
-        f"Candidate `{latest.get('candidate_hash')}` under settings "
-        f"`{latest.get('settings_hash')}` exposed:",
+        f"Candidate `{latest.get('candidate_hash')}` under settings `{latest.get('settings_hash')}` exposed:",
     ]
     seen = set()
     for gap in latest.get("gaps") or []:
@@ -377,8 +450,13 @@ def contract_gaps_block(folder: str | Path, layer_id: str, unit_id: str | None =
     return "\n".join(lines)
 
 
-def prior_outcomes_block(folder: str | Path, layer_id: str) -> str:
-    root = Path(folder)
+def prior_outcomes_block(
+    folder: str | Path,
+    layer_id: str,
+    *,
+    selected_authority=None,
+) -> str:
+    root = Path(folder).resolve()
     try:
         # A layer prefix is authority from the selected document, never integer order or
         # whatever filenames happen to exist in the outcomes directory.
@@ -388,25 +466,23 @@ def prior_outcomes_block(folder: str | Path, layer_id: str) -> str:
             selected_artifact_path,
         )
 
-        selected_document = json.loads(
-            selected_artifact_path(root, "layers.json").read_text(encoding="utf-8")
-        )
-        global_path = (
-            resolve_current(root).root / "layers.json"
-            if (root / POINTER).exists()
-            else selected_artifact_path(root, "layers.json")
-        )
+        if selected_authority is None:
+            selected_path = selected_artifact_path(root, "layers.json")
+            global_path = resolve_current(root).root / "layers.json" if (root / POINTER).exists() else selected_path
+        else:
+            selected_plan = getattr(selected_authority, "plan", None)
+            if selected_plan is None:
+                raise ValueError("prior outcomes require selected global plan authority")
+            try:
+                selected_plan.bundle.root.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("prior-outcome snapshot belongs to another shot") from exc
+            selected_path = selected_authority.artifact_paths["layers.json"]
+            global_path = selected_plan.bundle.root / "layers.json"
+        selected_document = json.loads(selected_path.read_text(encoding="utf-8"))
         global_document = json.loads(global_path.read_text(encoding="utf-8"))
-        selected_rows = (
-            selected_document.get("layers")
-            if isinstance(selected_document, dict)
-            else None
-        )
-        global_rows = (
-            global_document.get("layers")
-            if isinstance(global_document, dict)
-            else None
-        )
+        selected_rows = selected_document.get("layers") if isinstance(selected_document, dict) else None
+        global_rows = global_document.get("layers") if isinstance(global_document, dict) else None
         if (
             not isinstance(selected_rows, list)
             or any(not isinstance(row, dict) for row in selected_rows)
@@ -429,10 +505,7 @@ def prior_outcomes_block(folder: str | Path, layer_id: str) -> str:
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
             if str(row.get("layer") or "") != prior_id:
-                raise ValueError(
-                    f"sealed outcome at {path} names layer {row.get('layer')!r}, "
-                    f"expected {prior_id!r}"
-                )
+                raise ValueError(f"sealed outcome at {path} names layer {row.get('layer')!r}, expected {prior_id!r}")
             if row.get("status") == "passed":
                 rows.append(row)
         except (OSError, json.JSONDecodeError) as exc:

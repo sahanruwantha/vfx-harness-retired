@@ -87,7 +87,11 @@ def _verified_canonical(
         lambda *_args, **_kwargs: [dict(_AUTHORITATIVE)],
     )
     monkeypatch.setattr(verify, "_run_artifact_script", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(verify, "_unit_requires_raster", lambda *_args: raster_required)
+    monkeypatch.setattr(
+        verify,
+        "_unit_requires_raster",
+        lambda *_args, **_kwargs: raster_required,
+    )
     monkeypatch.setattr(verify, "_unit_raster_mode", lambda _unit: "eevee")
     monkeypatch.setattr(verify, "_layer_needs_motion", lambda _layer: False)
     monkeypatch.setattr(verify, "_persist_contract_gaps", lambda *_args, **_kwargs: None)

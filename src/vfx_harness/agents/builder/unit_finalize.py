@@ -7,10 +7,15 @@ import json as _json
 import shutil
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vfx_harness.agents.build_prompts import (
     canonical_repair_prompt,
     finalize_prompt,
+)
+from vfx_harness.agents.builder.authority import (
+    commit_selected_authority,
+    require_selected_authority_unchanged,
 )
 from vfx_harness.agents.builder.axes import _layer_needs_motion, distill_recipe
 from vfx_harness.agents.builder.critic_focus import (
@@ -49,6 +54,9 @@ from vfx_harness.observability.runlog import summary as run_summary
 from vfx_harness.observability.runlog import write as write_run
 from vfx_harness.orchestration.layer_plans import write_layer_outcome
 
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
+
 
 def _metric_report(shot, render_rel: str, ref_rel: str) -> str:
     """Objective ref-deltas for the reviewer — technique problems show up as structural
@@ -78,6 +86,8 @@ async def _persist_journal_and_finalize_script(
     ledger,
     comparison_state,
     phase,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ):
     # Persist the deterministic recipe regardless — it's the artifact of record.
     journal_rel = None
@@ -89,6 +99,12 @@ async def _persist_journal_and_finalize_script(
         # The finalizer must see the SELECTED checkpoint's prefix, not every call
         # ever accepted: the scene was just restored to the best round, so later
         # rounds' calls describe a world that no longer exists.
+        if selected_authority is not None:
+            require_selected_authority_unchanged(
+                shot.folder,
+                selected_authority,
+                operation=f"capture unit {m.id} journal",
+            )
         info = session.journal(
             path=str(journal),
             start=unit_journal_start,
@@ -112,7 +128,11 @@ async def _persist_journal_and_finalize_script(
         layer.judges if layer is not None else [(m.frame, m.ref)]
     )
     evidence_ids_by_frame = _unit_evidence_ids_by_frame(
-        shot, layer, active_unit, probe_judges
+        shot,
+        layer,
+        active_unit,
+        probe_judges,
+        selected_authority=selected_authority,
     )
     probe_ctx = {
         "blender": session.blender,
@@ -140,6 +160,7 @@ async def _persist_journal_and_finalize_script(
             else "pre_grade"
         ),
         "comparison_state": comparison_state,
+        "selected_authority": selected_authority,
     }
     with costlog.scoped(role="finalizer", phase="finalize_script", model=script_model()):
         fin = await _run_script_agent(
@@ -214,6 +235,8 @@ async def _publish_unit_outcome(
     last_info,
     _look_actions,
     scope,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ):
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with
@@ -236,8 +259,22 @@ async def _publish_unit_outcome(
         # even when a noisy critic disagrees with it.
         try:
 
-            rv = revalidate_layer(
-                shot.folder, str(getattr(layer, "id", m.id)), lambda c: _builder_render(shot.folder, c)
+            def revalidate():
+                return revalidate_layer(
+                    shot.folder,
+                    str(getattr(layer, "id", m.id)),
+                    lambda c: _builder_render(shot.folder, c),
+                    selected_authority=selected_authority,
+                )
+            rv = (
+                revalidate()
+                if selected_authority is None
+                else commit_selected_authority(
+                    shot.folder,
+                    selected_authority,
+                    operation=f"revalidate layer {layer.id} image checks",
+                    mutation=revalidate,
+                )
             )
             if rv["dropped"]:
                 log(
@@ -252,15 +289,26 @@ async def _publish_unit_outcome(
         except Exception as e:
             log(f"! builder-check revalidation skipped: {str(e)[:120]}", 1)
 
-        outcome = write_layer_outcome(
-            shot.folder,
-            layer,
-            status=status,
-            best=best,
-            canonical=canon_verdicts,
-            run_id=RUN_ID,
-            attempt=ledger._slot(m).get("attempt"),
-            blender_version=_blender_version(session),
+        def publish_outcome():
+            return write_layer_outcome(
+                shot.folder,
+                layer,
+                status=status,
+                best=best,
+                canonical=canon_verdicts,
+                run_id=RUN_ID,
+                attempt=ledger._slot(m).get("attempt"),
+                blender_version=_blender_version(session),
+            )
+        outcome = (
+            publish_outcome()
+            if selected_authority is None
+            else commit_selected_authority(
+                shot.folder,
+                selected_authority,
+                operation=f"publish layer {layer.id} outcome",
+                mutation=publish_outcome,
+            )
         )
         log(f"layer outcome → {outcome.relative_to(shot.folder)}", 1)
     # Publishing the sealed outcome is part of completion. Marking the ledger first could
@@ -430,6 +478,8 @@ async def _run_canonical_repairs(
     raster_required,
     phase,
     passed,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ):
     # Repair rounds, bounded. The target here is the SCRIPT's output from an empty
     # scene — not the live scene the builder has been tuning, which is why it must be
@@ -452,7 +502,11 @@ async def _run_canonical_repairs(
         holding = [(f, v) for (f, _r), v in (canon_verdicts or []) if v.get("pass")]
         if not failed:
             break
-        unsat = _unsatisfiable_pair_findings(shot, _canonical_failing_ids(canon_verdicts or []))
+        unsat = _unsatisfiable_pair_findings(
+            shot,
+            _canonical_failing_ids(canon_verdicts or []),
+            selected_authority=selected_authority,
+        )
         if unsat and not comparison_state.get("cannot_express"):
             comparison_state["cannot_express"] = {
                 "contract_ids": sorted({
@@ -572,6 +626,7 @@ async def _run_canonical_repairs(
             layer=layer,
             active_unit=active_unit,
             out_verdicts=canon_verdicts,
+            selected_authority=selected_authority,
         )
         delta = _repair_delta(pre_verdicts, canon_verdicts or [])
         was, now, broke = delta["was"], delta["now"], delta["broke"]

@@ -25,11 +25,13 @@ from vfx_harness.domain.work_units import (
     strict_topological_sparse_layer_ids,
 )
 from vfx_harness.infrastructure.config import Settings
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    resolve_selected_authority,
+)
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
-from vfx_harness.orchestration.layer_plans import global_plan_path, work_unit_plan_path
+from vfx_harness.orchestration.layer_plans import work_unit_plan_path
 from vfx_harness.orchestration.plan_authority import (
-    POINTER,
-    resolve_current,
     selected_artifact_path,
 )
 
@@ -160,20 +162,27 @@ def _receipt_reasons(
     return reasons
 
 
-def _layers(folder: Path) -> list[dict]:
+def _layers(folder: Path, selected_authority=None) -> list[dict]:
+    if selected_authority is None:
+        path = selected_artifact_path(folder, "layers.json")
+    elif selected_authority.plan is None:
+        path = folder / "layers.json"
+    else:
+        path = selected_authority.artifact_paths["layers.json"]
     try:
-        rows = read_document(selected_artifact_path(folder, "layers.json"))
+        rows = read_document(path)
     except (OSError, ValueError):
         return []
     return rows
 
 
-def _global_layers(folder: Path) -> list[dict]:
-    path = (
-        resolve_current(folder).root / "layers.json"
-        if (folder / POINTER).exists()
-        else selected_artifact_path(folder, "layers.json")
-    )
+def _global_layers(folder: Path, selected_authority=None) -> list[dict]:
+    if selected_authority is None:
+        path = selected_artifact_path(folder, "layers.json")
+    elif selected_authority.plan is None:
+        path = folder / "layers.json"
+    else:
+        path = selected_authority.plan.bundle.root / "layers.json"
     rows = read_document(path)
     if any(not isinstance(row, dict) for row in rows):
         raise ValueError("selected global layer DAG must contain layer objects")
@@ -267,13 +276,24 @@ def _harness_identity_paths(package: Path) -> tuple[Path, ...]:
 
 
 def input_manifest(
-    folder: str | Path, layer, *, blender_version: str, comparison_mode: str = "eevee", comparison_scale: float = 0.5
+    folder: str | Path,
+    layer,
+    *,
+    blender_version: str,
+    comparison_mode: str = "eevee",
+    comparison_scale: float = 0.5,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> dict:
     """Hash the complete deterministic boundary for one layer."""
     root = Path(folder)
+    selected_authority = (
+        resolve_selected_authority(root)
+        if selected_authority is None
+        else selected_authority
+    )
     current_id = str(layer.id)
-    global_layers = _global_layers(root)
-    selected_layers = _layers(root)
+    global_layers = _global_layers(root, selected_authority)
+    selected_layers = _layers(root, selected_authority)
     order = strict_topological_sparse_layer_ids(global_layers)
     selected_by_id = {
         str(row.get("id") or "").strip(): row
@@ -295,16 +315,29 @@ def input_manifest(
     prior_ids = prefix_ids[:-1]
     paths = [
         root / "brief.md",
-        global_plan_path(root),
+        (
+            selected_authority.plan.bundle.root / "global.md"
+            if selected_authority.plan is not None
+            else root / "plans" / "global.md"
+        ),
         root / "plan_amendments.jsonl",
     ]
-    paths.extend(
-        selected_artifact_path(root, name)
-        for name in ("layers.json", "acceptance.json", "critic_axes.json", "checks.json", "scene_checks.json")
+    selected_names = (
+        "layers.json",
+        "acceptance.json",
+        "critic_axes.json",
+        "checks.json",
+        "scene_checks.json",
     )
-    if (root / POINTER).exists():
+    paths.extend(
+        selected_authority.artifact_paths[name]
+        if selected_authority.plan is not None
+        else root / name
+        for name in selected_names
+    )
+    if selected_authority.plan is not None:
         paths.extend(
-            selected_artifact_path(root, name)
+            selected_authority.artifact_paths[name]
             for name in (
                 "requirements.json",
                 "obligations.json",
@@ -312,7 +345,14 @@ def input_manifest(
                 "plan.provenance.json",
             )
         )
-    paths.extend(work_unit_plan_path(root, unit) for unit in layer.stages)
+    paths.extend(
+        work_unit_plan_path(
+            root,
+            unit,
+            selected_authority=selected_authority,
+        )
+        for unit in layer.stages
+    )
     for row in prefix_rows:
         script = row.get("script")
         if not isinstance(script, str) or not script.strip():
@@ -537,6 +577,8 @@ def current_outcome_eligibility(
     folder: str | Path,
     layer,
     outcome: object,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> tuple[bool, tuple[str, ...]]:
     """Evaluate one sealed outcome against freshly derived current input authority.
 
@@ -571,12 +613,17 @@ def current_outcome_eligibility(
     ):
         return False, ("sealed revalidation manifest is invalid",)
     try:
+        manifest_kwargs = {
+            "blender_version": blender_version,
+            "comparison_mode": comparison_mode,
+            "comparison_scale": float(comparison_scale),
+        }
+        if selected_authority is not None:
+            manifest_kwargs["selected_authority"] = selected_authority
         current_manifest = input_manifest(
             folder,
             layer,
-            blender_version=blender_version,
-            comparison_mode=comparison_mode,
-            comparison_scale=float(comparison_scale),
+            **manifest_kwargs,
         )
     except (OSError, TypeError, ValueError):
         return False, ("current input manifest is unavailable",)

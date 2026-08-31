@@ -286,10 +286,18 @@ def test_unsatisfiable_pair_findings_require_a_failing_member(monkeypatch) -> No
     }
     rows = [schedule, smooth]
     assert schedule_smoothness_contradictions(rows)
-    monkeypatch.setattr("vfx_harness.evidence.scene_checks.load_rows", lambda _folder: rows)
+    monkeypatch.setattr(
+        "vfx_harness.agents.builder.critic_focus.load_document",
+        lambda _path, _key: rows,
+    )
     shot = type("Shot", (), {"folder": Path("/unused")})()
     assert _unsatisfiable_pair_findings(shot, set()) == []
-    hits = _unsatisfiable_pair_findings(shot, {"cam-location-smoothness"})
+    selected = type("SelectedAuthority", (), {"plan": None})()
+    hits = _unsatisfiable_pair_findings(
+        shot,
+        {"cam-location-smoothness"},
+        selected_authority=selected,
+    )
     assert len(hits) == 1
     assert hits[0]["schedule_id"] == "cam-spine-schedule"
 
@@ -752,7 +760,15 @@ def test_deferred_bbox_is_measured_at_owner_frame_without_becoming_a_judge(
 
     measured_frames: list[int] = []
 
-    def fake_layer_evidence(_folder, _layer_id, *, frame, session):
+    def fake_layer_evidence(
+        _folder,
+        _layer_id,
+        *,
+        frame,
+        session,
+        selected_authority=None,
+    ):
+        del selected_authority
         measured_frames.append(frame)
         return [
             {

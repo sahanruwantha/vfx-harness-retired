@@ -7,16 +7,24 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PIL import Image, ImageChops, ImageStat
 
 from vfx_harness.agents.build_prompts import (
     capability_feedback_groups,
 )
+from vfx_harness.agents.builder.evidence_scope import (
+    _scene_contract_path,
+    _scene_ids_active_at_declared_frames,
+)
+from vfx_harness.agents.builder.evidence_scope import (
+    _scene_ids_active_on_layer as _scene_ids_active_on_layer,
+)
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
-from vfx_harness.domain.contracts import active_for, load_document
+from vfx_harness.domain.contracts import load_document
 from vfx_harness.domain.work_units import (
     geometry_vis_protection_ids,
     geometry_vis_protection_ids_for_unit,
@@ -38,7 +46,9 @@ from vfx_harness.observability.log import (
     log,
 )
 from vfx_harness.orchestration.ledger import Milestone, load_layers
-from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 RENDER_CAPTURE_SCHEMA = "vfx-harness.canonical-render-capture/v1"
 
@@ -177,12 +187,22 @@ def _image_reproduction(live: str | Path, canonical: str | Path) -> dict:
     return result
 
 
-def _geometry_protected_vis_ids(shot: Shot, layer, unit, frame: int | None = None) -> set[str]:
+def _geometry_protected_vis_ids(
+    shot: Shot,
+    layer,
+    unit,
+    frame: int | None = None,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> set[str]:
     """Lifecycle-active vis and deferred subject-composition ids a geometry unit must re-evaluate."""
 
     if unit is None or "geometry" not in getattr(unit, "provides", ()):
         return set()
-    rows = load_document(selected_artifact_path(shot.folder, "scene_checks.json"), "contracts")
+    rows = load_document(
+        _scene_contract_path(shot, selected_authority),
+        "contracts",
+    )
     stages = tuple(getattr(layer, "stages", ()) or ())
     if stages and any(getattr(item, "id", None) == getattr(unit, "id", None) for item in stages):
         protected = set(
@@ -227,77 +247,6 @@ def _geometry_protected_vis_ids(shot: Shot, layer, unit, frame: int | None = Non
     return protected
 
 
-def _scene_ids_active_on_layer(
-    shot: Shot, layer_id: str, ids: set[str], frames: tuple[int, ...] | list[int]
-) -> set[str]:
-    """Keep bound ids that are due on this layer; drop later-activating composition debts."""
-
-    path = selected_artifact_path(shot.folder, "scene_checks.json")
-    if not path.is_file():
-        return set(ids)
-    try:
-        rows = {
-            str(row.get("id")): row
-            for row in load_document(path, "contracts")
-            if isinstance(row, dict) and row.get("id")
-        }
-    except (OSError, ValueError, json.JSONDecodeError):
-        return set(ids)
-    due: set[str] = set()
-    frame_list = tuple(int(frame) for frame in frames)
-    for cid in ids:
-        row = rows.get(cid)
-        if row is None:
-            due.add(cid)
-            continue
-        if row.get("frame") is None:
-            if active_for(row, layer_id):
-                due.add(cid)
-            continue
-        if any(active_for(row, layer_id, frame) for frame in frame_list):
-            due.add(cid)
-    return due
-
-
-def _scene_ids_active_at_declared_frames(
-    shot: Shot,
-    layer_id: str,
-    ids: set[str],
-    fallback_frames: tuple[int, ...] | list[int],
-) -> set[str]:
-    """Keep bound ids due at their own evidence frames, not only judge frames.
-
-    A future-active contract keeps the author's frame authority and is paid by the
-    activation layer as extra-frame evidence (HIR-0130).  Filtering the compiled
-    boundary through the activation layer's judge list erases exactly that debt.
-    """
-
-    path = selected_artifact_path(shot.folder, "scene_checks.json")
-    if not path.is_file():
-        return set(ids)
-    try:
-        rows = {
-            str(row.get("id")): row
-            for row in load_document(path, "contracts")
-            if isinstance(row, dict) and row.get("id")
-        }
-    except (OSError, ValueError, json.JSONDecodeError):
-        return set(ids)
-    fallbacks = tuple(int(frame) for frame in fallback_frames)
-    due: set[str] = set()
-    for cid in ids:
-        row = rows.get(cid)
-        if row is None:
-            due.add(cid)
-            continue
-        declared = row.get("frames")
-        if not isinstance(declared, (list, tuple)) or not declared:
-            declared = [row.get("frame")] if row.get("frame") is not None else fallbacks
-        if any(active_for(row, layer_id, int(frame)) for frame in declared):
-            due.add(cid)
-    return due
-
-
 def _geometry_protected_evidence(
     shot: Shot,
     layer,
@@ -305,6 +254,7 @@ def _geometry_protected_evidence(
     session: BlenderSession,
     *,
     fallback_frame: int,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> tuple[set[str], list[dict]]:
     """Measure geometry-protected contracts at each contract's declared frame.
 
@@ -313,18 +263,27 @@ def _geometry_protected_evidence(
     """
     if unit is None or layer is None:
         return set(), []
-    protected = _geometry_protected_vis_ids(shot, layer, unit)
+    protected = _geometry_protected_vis_ids(
+        shot,
+        layer,
+        unit,
+        selected_authority=selected_authority,
+    )
     if not protected:
         return set(), []
     due = _scene_ids_active_at_declared_frames(
-        shot, str(layer.id), protected, [int(fallback_frame)]
+        shot,
+        str(layer.id),
+        protected,
+        [int(fallback_frame)],
+        selected_authority=selected_authority,
     )
     if not due:
         return set(), []
 
     rows = {
         str(row.get("id")): row
-        for row in scene_checks.load_rows(shot.folder)
+        for row in scene_checks.load_rows(shot.folder, selected_authority)
         if isinstance(row, dict) and row.get("id")
     }
     scheduled: dict[int, set[str]] = {}
@@ -338,7 +297,11 @@ def _geometry_protected_evidence(
     evidence: list[dict] = []
     for frame, frame_ids in sorted(scheduled.items()):
         measured = scene_checks.layer_evidence(
-            shot.folder, str(layer.id), frame=frame, session=session
+            shot.folder,
+            str(layer.id),
+            frame=frame,
+            session=session,
+            selected_authority=selected_authority,
         )
         evidence.extend(
             {**row, "evidence_frame": int(frame)}
@@ -356,12 +319,13 @@ def _geometry_forecast_blocking_evidence(
     session: BlenderSession,
     *,
     fallback_frame: int,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> tuple[set[str], list[dict]]:
     """Return only partial-union misses no successor geometry can repair."""
     if unit is None or layer is None:
         return set(), []
 
-    rows = scene_checks.load_rows(shot.folder)
+    rows = scene_checks.load_rows(shot.folder, selected_authority)
     forecast_ids = set(
         deferred_subject_composition_forecast_ids_for_unit(
             rows, tuple(units or ()), unit, str(layer.id)
@@ -387,7 +351,11 @@ def _geometry_forecast_blocking_evidence(
         measured.extend(
             {**row, "evidence_frame": int(frame)}
             for row in scene_checks.layer_evidence(
-                shot.folder, str(layer.id), frame=frame, session=session
+                shot.folder,
+                str(layer.id),
+                frame=frame,
+                session=session,
+                selected_authority=selected_authority,
             )
             if str(row.get("id")) in frame_ids
         )
@@ -395,7 +363,13 @@ def _geometry_forecast_blocking_evidence(
     return {str(row["id"]) for row in blockers}, blockers
 
 
-def _fault_owner_options_for_unit(shot: Shot | None, layer, active_unit) -> list[dict]:
+def _fault_owner_options_for_unit(
+    shot: Shot | None,
+    layer,
+    active_unit,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[dict]:
     """Same-layer ancestors plus earlier-layer camera providers (HIR-0127)."""
     fault_owner_options: list[dict] = []
     if active_unit is None or layer is None:
@@ -427,7 +401,7 @@ def _fault_owner_options_for_unit(shot: Shot | None, layer, active_unit) -> list
         return fault_owner_options
     try:
 
-        all_layers = load_layers(shot)
+        all_layers = load_layers(shot, selected_authority=selected_authority)
     except (OSError, ValueError, KeyError, FileNotFoundError, json.JSONDecodeError):
         return fault_owner_options
     try:
@@ -492,7 +466,12 @@ def look_unsettled_for(image_bindings, capabilities) -> bool:
     return bool(capability_feedback_groups(capabilities or ())) and not bool(image_bindings)
 
 
-def _unit_requires_raster(shot: Shot, unit) -> bool:
+def _unit_requires_raster(
+    shot: Shot,
+    unit,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> bool:
     """Whether a bounded unit needs pixels to earn its verdict.
 
     Empty ``look_capabilities`` already keeps the critic off executable-only units,
@@ -532,7 +511,7 @@ def _unit_requires_raster(shot: Shot, unit) -> bool:
         bound = {str(binding.id) for binding in bindings}
         return any(
             str(row.get("id")) in bound and row.get("kind") in FUNCTIONAL_KINDS
-            for row in scene_checks.load_rows(shot.folder)
+            for row in scene_checks.load_rows(shot.folder, selected_authority)
             if isinstance(row, dict)
         )
     except (OSError, ValueError, KeyError, TypeError):
@@ -622,7 +601,14 @@ def _scope_bound_evidence(
     ]
 
 
-def _unit_evidence_ids_by_frame(shot: Shot, layer, unit, judges) -> dict[str, list[str]] | None:
+def _unit_evidence_ids_by_frame(
+    shot: Shot,
+    layer,
+    unit,
+    judges,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict[str, list[str]] | None:
     """Compile the exact candidate read-back boundary for each judged frame."""
     if unit is None:
         return None
@@ -635,13 +621,23 @@ def _unit_evidence_ids_by_frame(shot: Shot, layer, unit, judges) -> dict[str, li
                     _scene_ids_active_at_declared_frames(
                         shot,
                         str(layer.id),
-                        _geometry_protected_vis_ids(shot, layer, unit),
+                        _geometry_protected_vis_ids(
+                            shot,
+                            layer,
+                            unit,
+                            selected_authority=selected_authority,
+                        ),
                         [int(frame)],
+                        selected_authority=selected_authority,
                     )
                 )
             with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
                 ids = _scene_ids_active_at_declared_frames(
-                    shot, str(layer.id), ids, [int(frame)]
+                    shot,
+                    str(layer.id),
+                    ids,
+                    [int(frame)],
+                    selected_authority=selected_authority,
                 )
         compiled[str(int(frame))] = sorted(ids)
     return compiled
@@ -655,6 +651,7 @@ def _render_evidence(
     session: BlenderSession,
     *,
     active_unit=None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> list[dict]:
     if layer is None:
         return []
@@ -668,15 +665,38 @@ def _render_evidence(
         try:
 
             evidence.extend(
-                layer_evidence(shot.folder, str(layer.id), frame=m.frame, ref=m.ref, render=render_rel, stage=stage)
+                layer_evidence(
+                    shot.folder,
+                    str(layer.id),
+                    frame=m.frame,
+                    ref=m.ref,
+                    render=render_rel,
+                    stage=stage,
+                    selected_authority=selected_authority,
+                )
             )
         except Exception as exc:
             log(f"! image evidence unavailable: {str(exc)[:90]}", 1)
     try:
 
-        evidence.extend(scene_checks.layer_evidence(shot.folder, str(layer.id), frame=m.frame, session=session))
+        evidence.extend(
+            scene_checks.layer_evidence(
+                shot.folder,
+                str(layer.id),
+                frame=m.frame,
+                session=session,
+                selected_authority=selected_authority,
+            )
+        )
         if render_rel:
-            evidence.extend(functional_evidence(shot.folder, str(layer.id), session=session))
+            evidence.extend(
+                functional_evidence(
+                    shot.folder,
+                    str(layer.id),
+                    session=session,
+                    selected_authority=selected_authority,
+                )
+            )
     except Exception as exc:
         log(f"! live-scene evidence unavailable: {str(exc)[:90]}", 1)
     evidence.extend(builder_package()._worklist_evidence(shot.folder, str(layer.id), active_unit))
@@ -689,6 +709,7 @@ def _render_evidence(
                 active_unit,
                 session,
                 fallback_frame=int(m.frame),
+                selected_authority=selected_authority,
             )
             evidence.extend(protected_evidence)
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
@@ -700,6 +721,7 @@ def _render_evidence(
             getattr(layer, "stages", ()),
             session,
             fallback_frame=int(m.frame),
+            selected_authority=selected_authority,
         )
         extra.update(blocker_ids)
         evidence.extend(blocker_evidence)

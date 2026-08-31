@@ -10,8 +10,12 @@ from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.work_units import (
     strict_topological_sparse_layer_ids,
 )
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
 from vfx_harness.orchestration.ledger import Layer, load_layers_from_path
-from vfx_harness.orchestration.plan_authority import resolve_current
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.plan_authority import PlanBundle
@@ -33,11 +37,20 @@ def selected_layer_chain(
     shot: Shot,
     *,
     bundle: PlanBundle | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
     expected_bundle_digest: str | None = None,
 ) -> tuple[Layer, ...]:
     """Return current executable layers in the selected global DAG's stable order."""
 
-    selected_bundle = bundle or resolve_current(shot.folder)
+    try:
+        selected = selected_authority or resolve_selected_authority(shot.folder)
+    except SelectedAuthorityResolutionError as exc:
+        raise ValueError(str(exc)) from exc
+    if selected.plan is None or selected.assertion.effective_view is None:
+        raise ValueError("selected layer chain requires selected plan authority")
+    selected_bundle = selected.plan.bundle
+    if bundle is not None and bundle != selected_bundle:
+        raise ValueError("selected layer chain bundle disagrees with its authority snapshot")
     if (
         expected_bundle_digest is not None
         and selected_bundle.content_hash != expected_bundle_digest
@@ -50,20 +63,10 @@ def selected_layer_chain(
 
     order = strict_topological_sparse_layer_ids(global_rows)
 
-    # Resolve the materialized member against the already-selected bundle.  Calling
-    # selected_artifact_path here would resolve plans/current.json a second time and
-    # could mix bundle A's DAG with bundle B's scripts.
-    from vfx_harness.orchestration.jit_materialization import (  # noqa: PLC0415
-        selected_view_artifact,
-    )
-
-    selected_path = selected_view_artifact(
-        shot.folder,
-        "layers.json",
-        selected_bundle.content_hash,
-    )
-    if selected_path is None:
-        selected_path = selected_bundle.root / "layers.json"
+    try:
+        selected_path = selected.artifact_paths["layers.json"]
+    except KeyError as exc:
+        raise ValueError("selected authority omits layers.json") from exc
     selected = load_layers_from_path(selected_path)
     if set(selected) != set(global_ids):
         raise ValueError(

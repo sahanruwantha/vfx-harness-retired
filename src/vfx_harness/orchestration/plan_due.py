@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vfx_harness.domain.plan_records import (
     load_assumptions,
@@ -18,6 +19,9 @@ from vfx_harness.domain.plan_records import (
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.observability.run_artifacts import shot_state_dir
 from vfx_harness.orchestration.plan_authority import resolve_current
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 RESOLUTIONS = "plan-resolutions.jsonl"
 
@@ -61,8 +65,19 @@ def unresolved_due(
     completion: bool = False,
     record_kinds: frozenset[str] | None = None,
     expected_bundle_digest: str | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> tuple[DueRecord, ...]:
-    bundle = resolve_current(shot_folder)
+    bundle = (
+        resolve_current(shot_folder)
+        if selected_authority is None
+        else (
+            None
+            if selected_authority.plan is None
+            else selected_authority.plan.bundle
+        )
+    )
+    if bundle is None:
+        return ()
     if (
         expected_bundle_digest is not None
         and bundle.content_hash != expected_bundle_digest
@@ -117,6 +132,7 @@ def require_due_clear(
     completion: bool = False,
     record_kinds: frozenset[str] | None = None,
     expected_bundle_digest: str | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> None:
     records = unresolved_due(
         shot_folder,
@@ -126,6 +142,7 @@ def require_due_clear(
         completion=completion,
         record_kinds=record_kinds,
         expected_bundle_digest=expected_bundle_digest,
+        selected_authority=selected_authority,
     )
     if records:
         boundary = "shot acceptance" if acceptance else (
@@ -142,6 +159,7 @@ def resolve_unit_completion(
     unit: str,
     passed_evidence: Iterable[tuple[str, str]],
     checkpoint_hash: str | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> tuple[str, ...]:
     """Discharge machine-verifiable obligations at an accepted unit boundary.
 
@@ -149,12 +167,25 @@ def resolve_unit_completion(
     this unit may advance to ``confirmed_outcome`` only when every declared falsification
     contract passed and the frozen candidate checkpoint is hash-pinned.
     """
-    bundle = resolve_current(shot_folder)
+    bundle = (
+        resolve_current(shot_folder)
+        if selected_authority is None
+        else (
+            None
+            if selected_authority.plan is None
+            else selected_authority.plan.bundle
+        )
+    )
+    if bundle is None:
+        return ()
     selected_digest = bundle.content_hash
     evidence = frozenset((str(kind), str(identifier)) for kind, identifier in passed_evidence)
     resolutions_path = shot_state_dir(shot_folder) / RESOLUTIONS
     with _locked_resolutions(resolutions_path):
-        if resolve_current(shot_folder).content_hash != selected_digest:
+        if (
+            selected_authority is None
+            and resolve_current(shot_folder).content_hash != selected_digest
+        ):
             raise ValueError(
                 "plan authority changed before unit completion evidence could be resolved"
             )
@@ -226,7 +257,10 @@ def resolve_unit_completion(
             })
         if not rows:
             return ()
-        if resolve_current(shot_folder).content_hash != selected_digest:
+        if (
+            selected_authority is None
+            and resolve_current(shot_folder).content_hash != selected_digest
+        ):
             raise ValueError(
                 "plan authority changed before unit completion resolutions could be published"
             )
@@ -245,9 +279,20 @@ def resolve_acceptance_completion(
     *,
     passed_evidence: Iterable[tuple[str, str]],
     expected_bundle_digest: str,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> tuple[str, ...]:
     """Discharge acceptance-due obligations from finished-chain evidence."""
-    bundle = resolve_current(shot_folder)
+    bundle = (
+        resolve_current(shot_folder)
+        if selected_authority is None
+        else (
+            None
+            if selected_authority.plan is None
+            else selected_authority.plan.bundle
+        )
+    )
+    if bundle is None:
+        return ()
     if bundle.content_hash != expected_bundle_digest:
         raise ValueError(
             "plan authority changed before acceptance evidence could be resolved"
@@ -255,7 +300,10 @@ def resolve_acceptance_completion(
     evidence = frozenset((str(kind), str(identifier)) for kind, identifier in passed_evidence)
     resolutions_path = shot_state_dir(shot_folder) / RESOLUTIONS
     with _locked_resolutions(resolutions_path):
-        if resolve_current(shot_folder).content_hash != expected_bundle_digest:
+        if (
+            selected_authority is None
+            and resolve_current(shot_folder).content_hash != expected_bundle_digest
+        ):
             raise ValueError(
                 "plan authority changed before acceptance evidence could be resolved"
             )
@@ -287,7 +335,10 @@ def resolve_acceptance_completion(
             })
         if not rows:
             return ()
-        if resolve_current(shot_folder).content_hash != expected_bundle_digest:
+        if (
+            selected_authority is None
+            and resolve_current(shot_folder).content_hash != expected_bundle_digest
+        ):
             raise ValueError(
                 "plan authority changed before acceptance resolutions could be published"
             )

@@ -8,12 +8,56 @@ import pytest
 
 from tests.architecture.test_staged_architecture import _unit
 from vfx_harness.application import unit_admin
+from vfx_harness.orchestration import selected_authority_guard
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionToken,
+)
 from vfx_harness.orchestration.unit_state import (
+    freeze_checkpoint,
     initialize,
     load,
     record_hypothesis_falsification,
     transition,
 )
+
+
+def _select_replan_authority(
+    monkeypatch,
+    bundle_root,
+    *,
+    layers_path=None,
+    token: AuthoritySelectionToken | None = None,
+):
+    """Install one exact current-selection snapshot and its unchanged CAS head."""
+
+    selected_token = token or AuthoritySelectionToken(
+        plan_revision=1,
+        plan_pointer_sha256="9" * 64,
+        jit_revision=0,
+        jit_pointer_sha256=None,
+    )
+    snapshot = SimpleNamespace(
+        plan=SimpleNamespace(
+            bundle=SimpleNamespace(
+                root=bundle_root,
+                content_hash="b" * 64,
+            )
+        ),
+        artifact_paths={"layers.json": layers_path or bundle_root / "layers.json"},
+        selection_token=selected_token,
+    )
+    monkeypatch.setattr(unit_admin, "resolve_selected_authority", lambda folder: snapshot)
+    monkeypatch.setattr(
+        unit_admin,
+        "read_authority_selection_heads",
+        lambda folder: SimpleNamespace(token=selected_token),
+    )
+    monkeypatch.setattr(
+        selected_authority_guard,
+        "read_authority_selection_heads",
+        lambda folder: SimpleNamespace(token=selected_token),
+    )
+    return snapshot
 
 
 def test_emptied_state_seeds_pending_units_and_preserves_history(tmp_path) -> None:
@@ -114,11 +158,7 @@ def test_public_replan_moves_state_between_explicit_and_current_bundles(
         "load_shot",
         lambda folder: SimpleNamespace(folder=tmp_path),
     )
-    monkeypatch.setattr(
-        unit_admin,
-        "resolve_current",
-        lambda folder: SimpleNamespace(root=new_root, content_hash="b" * 64),
-    )
+    _select_replan_authority(monkeypatch, new_root)
     monkeypatch.setattr(
         unit_admin,
         "resolve_published_bundle",
@@ -126,13 +166,12 @@ def test_public_replan_moves_state_between_explicit_and_current_bundles(
     )
     monkeypatch.setattr(
         unit_admin,
-        "load_layers",
-        lambda shot: {"1": SimpleNamespace(stages=new_units)},
-    )
-    monkeypatch.setattr(
-        unit_admin,
         "load_layers_from_path",
-        lambda path: {"1": SimpleNamespace(stages=old_units)},
+        lambda path: {
+            "1": SimpleNamespace(
+                stages=new_units if path == new_root / "layers.json" else old_units
+            )
+        },
     )
     args = SimpleNamespace(
         folder=str(tmp_path),
@@ -153,6 +192,84 @@ def test_public_replan_moves_state_between_explicit_and_current_bundles(
     assert "replanned layer 1" in capsys.readouterr().out
 
 
+def test_public_replan_rejects_aba_selection_before_mutating_state(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    old_root = tmp_path / "old-bundle"
+    current_root = tmp_path / "current-bundle"
+    old_root.mkdir()
+    current_root.mkdir()
+    (old_root / "layers.json").write_bytes(b"old layers\n")
+    (current_root / "layers.json").write_bytes(b"current layers\n")
+    old_units = (_unit("blockout"),)
+    current_units = (_unit("blockout", proposition_suffix=" amended"),)
+    old_plan_hash = hashlib.sha256((old_root / "layers.json").read_bytes()).hexdigest()
+    initialize(tmp_path, "1", old_units, plan_hash=old_plan_hash)
+    state_path = tmp_path / "state" / "work-units" / "layer_1.json"
+    state_before = state_path.read_bytes()
+
+    monkeypatch.setattr(
+        unit_admin,
+        "load_shot",
+        lambda folder: SimpleNamespace(folder=tmp_path),
+    )
+    selected = _select_replan_authority(monkeypatch, current_root)
+    monkeypatch.setattr(
+        unit_admin,
+        "resolve_published_bundle",
+        lambda folder, **kwargs: SimpleNamespace(
+            root=old_root,
+            content_hash="a" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers_from_path",
+        lambda path: {
+            "1": SimpleNamespace(
+                stages=(
+                    current_units
+                    if path == current_root / "layers.json"
+                    else old_units
+                )
+            )
+        },
+    )
+    aba_token = AuthoritySelectionToken(
+        plan_revision=selected.selection_token.plan_revision + 2,
+        plan_pointer_sha256="8" * 64,
+        jit_revision=0,
+        jit_pointer_sha256=None,
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "read_authority_selection_heads",
+        lambda folder: SimpleNamespace(token=aba_token),
+    )
+
+    def unexpected_apply(*args, **kwargs):
+        raise AssertionError("replan state mutated before exact selection-token CAS")
+
+    monkeypatch.setattr(unit_admin, "apply_replan", unexpected_apply)
+    args = SimpleNamespace(
+        folder=str(tmp_path),
+        layer="1",
+        base_run="old-run",
+        base_bundle="a" * 64,
+        owner="operator",
+        trigger="semantic A-to-B-to-A authority replacement",
+        evidence=["gate:current-clean"],
+        preview=False,
+        discard_accepted=False,
+    )
+
+    with pytest.raises(SystemExit, match="selected authority changed"):
+        unit_admin._replan(args)
+
+    assert state_path.read_bytes() == state_before
+
+
 def _generation_supersession_args(tmp_path, monkeypatch, *, discard_accepted=False, preview=False):
     """Both generations are unit-first (bundle layer DAGs empty); the old units live
     only in durable state, seeded by the superseded generation's materialization."""
@@ -171,15 +288,12 @@ def _generation_supersession_args(tmp_path, monkeypatch, *, discard_accepted=Fal
     transition(tmp_path, "1", "iris_bootstrap", "passed", reason="t")
 
     monkeypatch.setattr(unit_admin, "load_shot", lambda folder: SimpleNamespace(folder=tmp_path))
-    monkeypatch.setattr(
-        unit_admin, "resolve_current", lambda folder: SimpleNamespace(root=new_root, content_hash="b" * 64)
-    )
+    _select_replan_authority(monkeypatch, new_root)
     monkeypatch.setattr(
         unit_admin,
         "resolve_published_bundle",
         lambda folder, **kwargs: SimpleNamespace(root=old_root, content_hash="a" * 64),
     )
-    monkeypatch.setattr(unit_admin, "load_layers", lambda shot: {"1": SimpleNamespace(stages=())})
     monkeypatch.setattr(unit_admin, "load_layers_from_path", lambda path: {"1": SimpleNamespace(stages=())})
     return SimpleNamespace(
         folder=str(tmp_path),
@@ -232,8 +346,9 @@ def test_public_retry_preserves_failed_history_and_reopens_unit(tmp_path, monkey
     monkeypatch.setattr(
         unit_admin,
         "load_layers",
-        lambda shot: {"1": SimpleNamespace(stages=units)},
+        lambda shot, *, selected_authority=None: {"1": SimpleNamespace(stages=units)},
     )
+    _select_replan_authority(monkeypatch, tmp_path)
     args = SimpleNamespace(
         folder=str(tmp_path),
         layer="1",
@@ -264,8 +379,9 @@ def test_public_retry_reopens_an_interrupted_building_unit(tmp_path, monkeypatch
     monkeypatch.setattr(
         unit_admin,
         "load_layers",
-        lambda shot: {"1": SimpleNamespace(stages=units)},
+        lambda shot, *, selected_authority=None: {"1": SimpleNamespace(stages=units)},
     )
+    _select_replan_authority(monkeypatch, tmp_path)
     args = SimpleNamespace(
         folder=str(tmp_path),
         layer="1",
@@ -276,6 +392,154 @@ def test_public_retry_reopens_an_interrupted_building_unit(tmp_path, monkeypatch
 
     assert unit_admin._retry(args) == 0
     assert load(tmp_path, "1")["units"]["blockout"]["status"] == "retryable"
+
+
+def test_public_retry_refuses_exact_head_change_before_state_mutation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    units = (_unit("blockout"),)
+    initialize(tmp_path, "1", units, plan_hash="plan")
+    transition(tmp_path, "1", "blockout", "planning", reason="ready")
+    transition(tmp_path, "1", "blockout", "building", reason="started")
+    transition(tmp_path, "1", "blockout", "failed", reason="scope audit")
+    monkeypatch.setattr(
+        unit_admin,
+        "load_shot",
+        lambda folder: SimpleNamespace(folder=tmp_path),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers",
+        lambda shot, *, selected_authority=None: {"1": SimpleNamespace(stages=units)},
+    )
+    selected = _select_replan_authority(monkeypatch, tmp_path)
+    changed = AuthoritySelectionToken(
+        plan_revision=selected.selection_token.plan_revision + 2,
+        plan_pointer_sha256=selected.selection_token.plan_pointer_sha256,
+        jit_revision=selected.selection_token.jit_revision,
+        jit_pointer_sha256=selected.selection_token.jit_pointer_sha256,
+    )
+    monkeypatch.setattr(
+        selected_authority_guard,
+        "read_authority_selection_heads",
+        lambda folder: SimpleNamespace(token=changed),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "transition",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("retry state mutated after selection changed")
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="selected authority changed"):
+        unit_admin._retry(
+            SimpleNamespace(
+                folder=str(tmp_path),
+                layer="1",
+                unit="blockout",
+                reason="retry",
+                evidence=["run:failed"],
+            )
+        )
+    assert load(tmp_path, "1")["units"]["blockout"]["status"] == "failed"
+
+
+def test_public_invalidate_refuses_exact_head_change_before_state_mutation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    units = (_unit("blockout"),)
+    monkeypatch.setattr(
+        unit_admin,
+        "load_shot",
+        lambda folder: SimpleNamespace(folder=tmp_path),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers",
+        lambda shot, *, selected_authority=None: {"1": SimpleNamespace(stages=units)},
+    )
+    selected = _select_replan_authority(monkeypatch, tmp_path)
+    changed = AuthoritySelectionToken(
+        plan_revision=selected.selection_token.plan_revision + 2,
+        plan_pointer_sha256=selected.selection_token.plan_pointer_sha256,
+        jit_revision=selected.selection_token.jit_revision,
+        jit_pointer_sha256=selected.selection_token.jit_pointer_sha256,
+    )
+    monkeypatch.setattr(
+        selected_authority_guard,
+        "read_authority_selection_heads",
+        lambda folder: SimpleNamespace(token=changed),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "invalidate_checkpoint",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("checkpoint invalidated after selection changed")
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="selected authority changed"):
+        unit_admin._invalidate(
+            SimpleNamespace(
+                folder=str(tmp_path),
+                layer="1",
+                unit="blockout",
+                reason="invalid authority",
+                evidence=["run:failed"],
+            )
+        )
+
+
+def test_public_invalidate_revokes_checkpoint_under_exact_selection(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    units = (_unit("blockout"),)
+    initialize(tmp_path, "1", units, plan_hash="plan")
+    transition(tmp_path, "1", "blockout", "planning", reason="ready")
+    transition(tmp_path, "1", "blockout", "building", reason="started")
+    freeze_checkpoint(
+        tmp_path,
+        "1",
+        units[0],
+        active_contract_ids=(),
+        candidate_hash="candidate",
+        settings_hash="settings",
+        script_hash="script",
+        input_hash="input",
+    )
+    transition(tmp_path, "1", "blockout", "evaluating", reason="judge")
+    transition(tmp_path, "1", "blockout", "passed", reason="accepted")
+    monkeypatch.setattr(
+        unit_admin,
+        "load_shot",
+        lambda folder: SimpleNamespace(folder=tmp_path),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers",
+        lambda shot, *, selected_authority=None: {"1": SimpleNamespace(stages=units)},
+    )
+    _select_replan_authority(monkeypatch, tmp_path)
+
+    result = unit_admin._invalidate(
+        SimpleNamespace(
+            folder=str(tmp_path),
+            layer="1",
+            unit="blockout",
+            reason="checkpoint contract was invalid",
+            evidence=["run:failed"],
+        )
+    )
+
+    assert result == 0
+    slot = load(tmp_path, "1")["units"]["blockout"]
+    assert slot["status"] == "retryable"
+    assert "checkpoint" not in slot
+    assert slot["invalidated_checkpoints"][-1]["evidence"] == ["run:failed"]
 
 
 def _falsified_replan_fixture(tmp_path, monkeypatch, *, strength: str):
@@ -316,11 +580,7 @@ def _falsified_replan_fixture(tmp_path, monkeypatch, *, strength: str):
         "load_shot",
         lambda folder: SimpleNamespace(folder=tmp_path),
     )
-    monkeypatch.setattr(
-        unit_admin,
-        "resolve_current",
-        lambda folder: SimpleNamespace(root=new_root, content_hash="b" * 64),
-    )
+    _select_replan_authority(monkeypatch, new_root)
     monkeypatch.setattr(
         unit_admin,
         "resolve_published_bundle",
@@ -328,13 +588,12 @@ def _falsified_replan_fixture(tmp_path, monkeypatch, *, strength: str):
     )
     monkeypatch.setattr(
         unit_admin,
-        "load_layers",
-        lambda shot: {"1": SimpleNamespace(stages=new_units)},
-    )
-    monkeypatch.setattr(
-        unit_admin,
         "load_layers_from_path",
-        lambda path: {"1": SimpleNamespace(stages=old_units)},
+        lambda path: {
+            "1": SimpleNamespace(
+                stages=new_units if path == new_root / "layers.json" else old_units
+            )
+        },
     )
     relative = (
         "state/work-units/hypothesis-falsifications/"
@@ -393,11 +652,6 @@ def test_public_replan_reopens_falsified_unit_when_dag_bytes_are_unchanged(
     units = (_unit("blockout"),)
     monkeypatch.setattr(
         unit_admin,
-        "load_layers",
-        lambda shot: {"1": SimpleNamespace(stages=units)},
-    )
-    monkeypatch.setattr(
-        unit_admin,
         "load_layers_from_path",
         lambda path: {"1": SimpleNamespace(stages=units)},
     )
@@ -427,19 +681,18 @@ def test_public_replan_refuses_unchanged_out_of_layer_fault_owner(
     new_mass = _unit("blockout", proposition_suffix=" amended")
     monkeypatch.setattr(
         unit_admin,
-        "load_layers",
-        lambda shot: {
-            "0": SimpleNamespace(stages=(camera,)),
-            "1": SimpleNamespace(stages=(new_mass,)),
-        },
-    )
-    monkeypatch.setattr(
-        unit_admin,
         "load_layers_from_path",
-        lambda path: {
-            "0": SimpleNamespace(stages=(camera,)),
-            "1": SimpleNamespace(stages=(old_mass,)),
-        },
+        lambda path: (
+            {
+                "0": SimpleNamespace(stages=(camera,)),
+                "1": SimpleNamespace(stages=(new_mass,)),
+            }
+            if path == tmp_path / "new-bundle" / "layers.json"
+            else {
+                "0": SimpleNamespace(stages=(camera,)),
+                "1": SimpleNamespace(stages=(old_mass,)),
+            }
+        ),
     )
 
     with pytest.raises(SystemExit, match="out-of-layer fault owner units") as exc:
@@ -468,22 +721,21 @@ def test_public_replan_accepts_audited_external_owner_supersession(
     )
     old_mass = _unit("blockout")
     new_mass = _unit("blockout", proposition_suffix=" amended")
-    monkeypatch.setattr(
-        unit_admin,
-        "load_layers",
-        lambda shot: {
-            "0": SimpleNamespace(stages=(new_camera,)),
-            "1": SimpleNamespace(stages=(new_mass,)),
-        },
-    )
     # The explicit sparse base omits the materialized external camera unit.
     monkeypatch.setattr(
         unit_admin,
         "load_layers_from_path",
-        lambda path: {
-            "0": SimpleNamespace(stages=()),
-            "1": SimpleNamespace(stages=(old_mass,)),
-        },
+        lambda path: (
+            {
+                "0": SimpleNamespace(stages=(new_camera,)),
+                "1": SimpleNamespace(stages=(new_mass,)),
+            }
+            if path == tmp_path / "new-bundle" / "layers.json"
+            else {
+                "0": SimpleNamespace(stages=()),
+                "1": SimpleNamespace(stages=(old_mass,)),
+            }
+        ),
     )
     original_load_state = unit_admin.load_unit_state
     new_camera_hash = unit_admin.unit_digest(new_camera)
@@ -565,11 +817,7 @@ def test_public_replan_consumes_jit_falsification_against_view_identity(
         "load_shot",
         lambda folder: SimpleNamespace(folder=tmp_path),
     )
-    monkeypatch.setattr(
-        unit_admin,
-        "resolve_current",
-        lambda folder: SimpleNamespace(root=new_root, content_hash="b" * 64),
-    )
+    _select_replan_authority(monkeypatch, new_root)
     monkeypatch.setattr(
         unit_admin,
         "resolve_published_bundle",
@@ -577,13 +825,12 @@ def test_public_replan_consumes_jit_falsification_against_view_identity(
     )
     monkeypatch.setattr(
         unit_admin,
-        "load_layers",
-        lambda shot: {"2": SimpleNamespace(stages=current_units)},
-    )
-    monkeypatch.setattr(
-        unit_admin,
         "load_layers_from_path",
-        lambda path: {"2": SimpleNamespace(stages=())},
+        lambda path: {
+            "2": SimpleNamespace(
+                stages=current_units if path == new_root / "layers.json" else ()
+            )
+        },
     )
     relative = (
         "state/work-units/hypothesis-falsifications/"

@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import vfx_harness.orchestration.jit_materialization as jit_materialization
 import vfx_harness.orchestration.selected_layer_chain as selected_chain
 from vfx_harness.agents import acceptance, acceptance_stop
 from vfx_harness.application import render_shot
 from vfx_harness.domain.brief import Shot
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionToken,
+)
 from vfx_harness.orchestration.ledger import Milestone
 
 
@@ -165,16 +168,14 @@ def _selected_dag_fixture(
     )
     _write(root / "acceptance.json", [])
 
+    bundle = SimpleNamespace(root=global_root, content_hash="a" * 64)
     monkeypatch.setattr(
         selected_chain,
-        "resolve_current",
-        lambda _root: SimpleNamespace(root=global_root, content_hash="a" * 64),
-    )
-    monkeypatch.setattr(
-        jit_materialization,
-        "selected_view_artifact",
-        lambda _root, name, _bundle: (
-            executable if name == "layers.json" else root / name
+        "resolve_selected_authority",
+        lambda _root: SimpleNamespace(
+            plan=SimpleNamespace(bundle=bundle),
+            assertion=SimpleNamespace(effective_view=SimpleNamespace(digest="b" * 64)),
+            artifact_paths={"layers.json": executable},
         ),
     )
     return shot
@@ -219,31 +220,55 @@ def test_finished_chain_consumers_share_selected_global_dag_order(
         content_hash=_digest("bundle"),
         root=tmp_path / "selected-global",
     )
-    monkeypatch.setattr(acceptance_stop.plan_authority, "resolve_current", lambda _root: bundle)
+    token = AuthoritySelectionToken(
+        plan_revision=1,
+        plan_pointer_sha256=_digest("plan pointer"),
+        jit_revision=1,
+        jit_pointer_sha256=_digest("jit pointer"),
+    )
+    selected = SimpleNamespace(
+        plan=SimpleNamespace(bundle=bundle),
+        assertion=SimpleNamespace(
+            effective_view=SimpleNamespace(digest=_digest("view")),
+        ),
+        artifact_paths={
+            "layers.json": tmp_path / "selected-executable-layers.json",
+            "acceptance.json": tmp_path / "acceptance.json",
+        },
+        selection_token=token,
+    )
+    resolution_calls: list[Path] = []
+
+    def resolve_once(root: Path) -> SimpleNamespace:
+        resolution_calls.append(root)
+        return selected
+
+    monkeypatch.setattr(acceptance_stop, "resolve_selected_authority", resolve_once)
     monkeypatch.setattr(
         acceptance_stop,
-        "selected_view_artifact",
-        lambda root, name, _bundle: (
-            tmp_path / "selected-executable-layers.json"
-            if name == "layers.json"
-            else root / name
+        "current_judgment_debt_state_digest_for_authority",
+        lambda _root, authority: (
+            _digest("judgment-debt-state")
+            if authority is selected
+            else pytest.fail("acceptance used another authority snapshot")
         ),
     )
     monkeypatch.setattr(
-        acceptance_stop.judgment_observation,
-        "selected_view_digest",
-        lambda _root, _bundle: _digest("view"),
+        acceptance_stop,
+        "authority_selection_lock",
+        lambda *_args, **_kwargs: nullcontext(),
     )
     monkeypatch.setattr(
         acceptance_stop,
-        "current_judgment_debt_state_digest",
-        lambda _root: _digest("judgment-debt-state"),
+        "read_authority_selection_heads",
+        lambda _root: SimpleNamespace(token=token),
     )
     snapshot = acceptance_stop.capture_acceptance_authority(
         shot,
         {"M1": Milestone("M1", 1, "refs/M1.png", "finished frame")},
     )
     assert [row["script"] for row in snapshot.chain] == expected
+    assert resolution_calls == [shot.folder.resolve()]
 
     assert [path.relative_to(shot.folder).as_posix() for path in render_shot._chain_scripts(shot)] == expected
 
@@ -299,7 +324,7 @@ def test_render_mp4_replays_selected_scripts_through_evaluated_frame_barrier(
     monkeypatch.setattr(render_shot.subprocess, "run", ffmpeg)
     output = tmp_path / "final.mp4"
 
-    result = render_shot.render_mp4(shot, out=output)
+    result = render_shot.render_mp4(shot, out=output, force=True)
 
     assert result == output
     assert barrier_calls == expected

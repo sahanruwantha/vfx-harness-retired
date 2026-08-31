@@ -13,10 +13,12 @@ import fnmatch
 import hashlib
 import json
 import os
+import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.work_units import (
@@ -32,6 +34,9 @@ from vfx_harness.domain.work_units import (
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 
 @dataclass(frozen=True)
@@ -59,10 +64,28 @@ DEFAULT_AXES: list[tuple[str, str]] = [
 ]
 
 
-def load_axes(shot: Shot) -> list[tuple[str, str]]:
+def _selected_snapshot_artifact(
+    shot: Shot,
+    name: str,
+    selected_authority: ResolvedSelectedAuthority | None,
+) -> Path:
+    if selected_authority is None:
+        return selected_artifact_path(shot.folder, name)
+    if selected_authority.plan is None:
+        return shot.folder / name
+    try:
+        return selected_authority.artifact_paths[name]
+    except KeyError as exc:
+        raise ValueError(f"selected authority omits {name}") from exc
+
+
+def load_axes(
+    shot: Shot,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[tuple[str, str]]:
     """The critic rubric for this shot: shot/critic_axes.json if present, else defaults.
     Stored as a list of {"key","desc"} objects."""
-    path = selected_artifact_path(shot.folder, "critic_axes.json")
+    path = _selected_snapshot_artifact(shot, "critic_axes.json", selected_authority)
     if path.is_file():
         try:
             data = json.loads(path.read_text())
@@ -433,15 +456,23 @@ def load_layers_from_path(
     return out
 
 
-def load_layers(shot: Shot, *, replacing_layer_id: str | None = None) -> dict[str, Layer]:
+def load_layers(
+    shot: Shot,
+    *,
+    replacing_layer_id: str | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict[str, Layer]:
     """Per-shot build layers from the singular selected plan generation."""
     return load_layers_from_path(
-        selected_artifact_path(shot.folder, "layers.json"),
+        _selected_snapshot_artifact(shot, "layers.json", selected_authority),
         replacing_layer_id=replacing_layer_id,
     )
 
 
-def load_milestones(shot: Shot) -> dict[str, Milestone]:
+def load_milestones(
+    shot: Shot,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict[str, Milestone]:
     """The acceptance suite (plan §4), in TIME order — judged ONCE over the finished
     chain by the accept stage.
 
@@ -450,7 +481,11 @@ def load_milestones(shot: Shot) -> dict[str, Milestone]:
     typography (M2 @ f184) before studio light (M1 @ f72). Attributing a whole-frame
     moment to one additive layer is what made layers get judged on work they don't own.
     """
-    path = selected_artifact_path(shot.folder, "acceptance.json")
+    path = _selected_snapshot_artifact(
+        shot,
+        "acceptance.json",
+        selected_authority,
+    )
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} missing — run the plan agent (it writes layers.json for the build "
@@ -462,10 +497,17 @@ def load_milestones(shot: Shot) -> dict[str, Milestone]:
     return dict(sorted(out.items(), key=lambda kv: out[kv[0]].frame))
 
 
-def plan_strips(shot: Shot) -> dict[int, tuple[int, ...]]:
+def plan_strips(
+    shot: Shot,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict[int, tuple[int, ...]]:
     """frame -> the plan's strip for the acceptance moment at that frame (if any)."""
     try:
-        return {m.frame: m.strip for m in load_milestones(shot).values() if m.strip}
+        return {
+            m.frame: m.strip
+            for m in load_milestones(shot, selected_authority).values()
+            if m.strip
+        }
     except Exception as e:
         # the default strip only looks FORWARD, which is precisely how barrel_roll
         # judged f20 and never saw the broken f16-f18 beside it
@@ -479,16 +521,34 @@ def _now() -> str:
 
 
 @contextmanager
-def _locked(path: Path):
-    """Exclusive lock on a sidecar, so two processes cannot interleave a read-merge-write."""
+def ledger_lock(path: str | Path, *, exclusive: bool):
+    """Hold the ledger sidecar lock for a complete read or write transaction."""
+
+    if not isinstance(exclusive, bool):
+        raise ValueError("ledger lock mode must be boolean")
+    path = Path(path)
     lock = path.with_name(path.name + ".lock")
     lock.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock, "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(lock, flags, 0o600)
+    except OSError as exc:
+        raise ValueError(f"ledger lock must be a real regular file: {lock}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError(f"ledger lock must be a regular file: {lock}")
+        fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         try:
             yield
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -501,8 +561,13 @@ def _atomic_write(path: Path, text: str) -> None:
 class Ledger:
     """Read/modify/write `shot.json` for one shot."""
 
-    def __init__(self, shot: Shot):
+    def __init__(
+        self,
+        shot: Shot,
+        selected_authority: ResolvedSelectedAuthority | None = None,
+    ):
         self.shot = shot
+        self.selected_authority = selected_authority
         self.path = shot.folder / "shot.json"
         if self.path.is_file():
             self.data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -536,7 +601,10 @@ class Ledger:
         script = slot.get("script")
         if not script:
             try:
-                script = load_layers(self.shot)[m.id].script
+                script = load_layers(
+                    self.shot,
+                    selected_authority=self.selected_authority,
+                )[m.id].script
             except (KeyError, FileNotFoundError, json.JSONDecodeError):
                 script = f"build/{m.id.lower()}.py"   # milestone with no plan layer
         previous_attempt = int(slot.get("attempt", 0))
@@ -601,7 +669,10 @@ class Ledger:
     def script_digest(self, m: Milestone) -> str | None:
         """Hash of this layer's build script as it stands on disk right now."""
         try:
-            rel = self._slot(m).get("script") or load_layers(self.shot)[m.id].script
+            rel = self._slot(m).get("script") or load_layers(
+                self.shot,
+                selected_authority=self.selected_authority,
+            )[m.id].script
         except Exception:
             return None
         p = self.shot.folder / rel
@@ -713,7 +784,7 @@ class Ledger:
         crash mid-write could leave a truncated shot.json that later stages parse as a
         shot with no recorded layers.
         """
-        with _locked(self.path):
+        with ledger_lock(self.path, exclusive=True):
             on_disk = {}
             if self.path.is_file():
                 try:

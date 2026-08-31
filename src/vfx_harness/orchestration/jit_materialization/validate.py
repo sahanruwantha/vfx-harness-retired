@@ -59,8 +59,10 @@ from vfx_harness.evidence.scene_checks import (
     validate_row,
     validate_row_set,
 )
+from vfx_harness.orchestration.jit_materialization.candidate import (
+    load_materialization_candidate,
+)
 from vfx_harness.orchestration.jit_materialization.schema import (
-    MATERIALIZATION_SCHEMA,
     ROLE_SELECTOR_CLOSURE_RULE,
     TWO_SIDED_MEASUREMENT_KINDS,
     MaterializedLayer,
@@ -92,11 +94,10 @@ def validate_materialization(
     """
     root = Path(global_root)
     source = Path(materialization_path)
-    payload = _document(source)
-    if payload.get("schema") != MATERIALIZATION_SCHEMA:
-        raise ValueError(f"{source} has unsupported JIT materialization schema")
-    if payload.get("bundle_hash") != expected_bundle_hash:
-        raise ValueError("JIT materialization is pinned to another global bundle")
+    payload = load_materialization_candidate(
+        source,
+        expected_bundle_hash=expected_bundle_hash,
+    )
     layer_row = payload.get("layer")
     if not isinstance(layer_row, dict):
         raise ValueError("JIT materialization.layer must be an object")

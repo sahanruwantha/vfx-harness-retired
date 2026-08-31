@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from vfx_harness.infrastructure.config import (
     PROJECT_ROOT,
     Settings,
 )
+from vfx_harness.orchestration import revalidation
 from vfx_harness.orchestration.revalidation import input_manifest
 
 MODEL_VARIABLES = (
@@ -110,3 +112,125 @@ def test_model_lane_is_part_of_revalidation_boundary(monkeypatch, tmp_path):
     assert baseline["models"]["builder"] == "claude-sonnet-5"
     assert changed["models"]["builder"] == "builder-experiment"
     assert baseline != changed
+
+
+def test_input_manifest_uses_one_selected_snapshot_without_hybrid_reads(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    bundle_root = tmp_path / "runs" / "bundle-a" / "plan_gate"
+    effective_root = tmp_path / "state" / "jit" / "view-a"
+    bundle_plan = bundle_root / "plans" / "01_layout.md"
+    effective_layers = effective_root / "layers.json"
+    bundle_plan.parent.mkdir(parents=True)
+    effective_root.mkdir(parents=True)
+    (tmp_path / "build").mkdir()
+    bundle_plan.write_text("bundle A unit plan\n", encoding="utf-8")
+    (bundle_root / "global.md").write_text("bundle A global plan\n", encoding="utf-8")
+    (bundle_root / "layers.json").write_text(
+        json.dumps(
+            {
+                "schema": 5,
+                "layers": [
+                    {
+                        "id": "1",
+                        "script": "build/sparse-must-not-run.py",
+                        "depends_on": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    effective_layers.write_text(
+        json.dumps(
+            {
+                "schema": 4,
+                "layers": [
+                    {
+                        "id": "1",
+                        "script": "build/effective-a.py",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "build" / "effective-a.py").write_text(
+        "# accepted effective script A\n",
+        encoding="utf-8",
+    )
+
+    effective_names = (
+        "acceptance.json",
+        "critic_axes.json",
+        "checks.json",
+        "scene_checks.json",
+    )
+    for name in effective_names:
+        (effective_root / name).write_text(f"effective A {name}\n", encoding="utf-8")
+    bundle_names = (
+        "requirements.json",
+        "obligations.json",
+        "assumptions.json",
+        "plan.provenance.json",
+    )
+    for name in bundle_names:
+        (bundle_root / name).write_text(f"bundle A {name}\n", encoding="utf-8")
+
+    artifacts = (
+        "global.md",
+        "layers.json",
+        *effective_names,
+        *bundle_names,
+        "plans/01_layout.md",
+    )
+    artifact_paths = {name: bundle_root / name for name in artifacts}
+    artifact_paths.update(
+        {name: effective_root / name for name in ("layers.json", *effective_names)}
+    )
+    snapshot = SimpleNamespace(
+        plan=SimpleNamespace(
+            bundle=SimpleNamespace(
+                root=bundle_root,
+                artifacts=artifacts,
+                content_hash="a" * 64,
+            )
+        ),
+        artifact_paths=artifact_paths,
+    )
+    resolver_calls = []
+
+    def selected_once(folder):
+        resolver_calls.append(Path(folder))
+        if len(resolver_calls) != 1:
+            raise AssertionError("input manifest re-resolved selected authority")
+        return snapshot
+
+    def stale_resolver(*args, **kwargs):
+        raise AssertionError("input manifest used a per-artifact selection resolver")
+
+    monkeypatch.setattr(revalidation, "resolve_selected_authority", selected_once)
+    monkeypatch.setattr(revalidation, "selected_artifact_path", stale_resolver)
+    unit = SimpleNamespace(plan="plans/01_layout.md")
+    layer = SimpleNamespace(
+        id="1",
+        script="build/effective-a.py",
+        judges=(),
+        stages=(unit,),
+    )
+
+    manifest = input_manifest(tmp_path, layer, blender_version="5.2")
+
+    assert resolver_calls == [tmp_path]
+    assert manifest["files"]["state/jit/view-a/layers.json"] == hashlib.sha256(
+        effective_layers.read_bytes()
+    ).hexdigest()
+    assert manifest["files"]["runs/bundle-a/plan_gate/global.md"] == hashlib.sha256(
+        (bundle_root / "global.md").read_bytes()
+    ).hexdigest()
+    assert manifest["files"][
+        "runs/bundle-a/plan_gate/plans/01_layout.md"
+    ] == hashlib.sha256(bundle_plan.read_bytes()).hexdigest()
+    assert "build/effective-a.py" in manifest["files"]
+    assert "build/sparse-must-not-run.py" not in manifest["files"]

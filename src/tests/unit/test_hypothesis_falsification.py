@@ -290,7 +290,11 @@ def _terminal_failure_fixture(tmp_path: Path, monkeypatch, *, failing_id: str):
         lambda folder: SimpleNamespace(root=tmp_path, content_hash="b" * 64),
     )
     monkeypatch.setattr(plan_records, "load_assumptions", lambda root: (assumption,))
-    monkeypatch.setattr(layer_plans, "work_unit_plan_path", lambda folder, unit: plan)
+    monkeypatch.setattr(
+        layer_plans,
+        "work_unit_plan_path",
+        lambda folder, unit, **_kwargs: plan,
+    )
 
     slot = {
         "script": "build/unit.py",

@@ -5,16 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
+from vfx_harness.agents.builder.authority import (
+    AuthorityBoundLedger,
+    commit_selected_authority,
+    require_selected_authority_unchanged,
+)
 from vfx_harness.agents.builder.axes import _owned_axes, ensure_axes
 from vfx_harness.agents.builder.evidence import _unit_raster_mode
-from vfx_harness.agents.builder.falsify import (
-    _record_bound_contract_falsification,
-    _record_composed_contract_gap_falsification,
-    _record_contract_gap_falsification,
-    _record_unsatisfiable_pair_falsification,
-)
+from vfx_harness.agents.builder.falsify import _record_composed_contract_gap_falsification
 from vfx_harness.agents.builder.judgment_payment import JudgmentDebtPayment
 from vfx_harness.agents.builder.models import _RESET, BuildAuthorityDefect, critic_model
 from vfx_harness.agents.builder.pkg import builder_package
@@ -29,6 +30,7 @@ from vfx_harness.agents.builder.provisional_judgment import (
     _load_provisional_decisions,
 )
 from vfx_harness.agents.builder.revalidate import _blender_version
+from vfx_harness.agents.builder.unit_failure import handle_unpassed_unit
 from vfx_harness.agents.builder.verify import _verify_script
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.shot_context import write_layer_context
@@ -43,6 +45,10 @@ from vfx_harness.observability.log import (
 )
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.observability.runid import RUN_ID
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    resolve_selected_authority,
+)
 from vfx_harness.orchestration.judgment_debt_state import (
     mark_judgment_debt_due,
     replay_prefix_receipt,
@@ -54,16 +60,10 @@ from vfx_harness.orchestration.layer_plans import (
     write_layer_outcome,
 )
 from vfx_harness.orchestration.ledger import Ledger, Milestone, load_axes, load_layers, load_milestones, plan_strips
-from vfx_harness.orchestration.plan_authority import active_plan_hash, selected_artifact_path
+from vfx_harness.orchestration.plan_authority import active_plan_hash
 from vfx_harness.orchestration.plan_due import require_due_clear, resolve_unit_completion
 from vfx_harness.orchestration.revalidation import digest
-from vfx_harness.orchestration.unit_state import (
-    block_dependents,
-    freeze_checkpoint,
-    initialize,
-    ready_from_durable_state,
-    transition,
-)
+from vfx_harness.orchestration.unit_state import freeze_checkpoint, initialize, ready_from_durable_state, transition
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 
 
@@ -109,6 +109,7 @@ async def build_layer(
     verbose: bool = True,
     resume_ok: bool = False,
     force: bool = False,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> Ledger:
     """Execute one layer as its declared dependency-ordered work-unit DAG.
 
@@ -116,6 +117,31 @@ async def build_layer(
     artifact, and is judged only on its own claims/moments.  Multi-unit layers publish the
     layer script only after every unit has sealed and the composed artifact replays cleanly.
     """
+    selected_authority = selected_authority or resolve_selected_authority(shot.folder)
+    selected_layers = load_layers(shot, selected_authority=selected_authority)
+    selected_layer = selected_layers.get(str(layer.id))
+    if selected_layer is None or selected_layer != layer:
+        raise ValueError(
+            f"supplied layer {getattr(layer, 'id', None)!r} does not exactly match "
+            "the selected authority snapshot"
+        )
+    layer = selected_layer
+    def publish(operation, mutation):
+        return commit_selected_authority(
+            shot.folder,
+            selected_authority,
+            operation=operation,
+            mutation=mutation,
+        )
+
+    def selected_artifact(name: str) -> Path:
+        if selected_authority.plan is None:
+            return shot.folder / name
+        try:
+            return selected_authority.artifact_paths[name]
+        except KeyError as exc:
+            raise ValueError(f"selected authority omits {name}") from exc
+
     if layer.execution == "jit_deferred":
         raise ValueError(
             f"layer {layer.id} is jit_deferred and has no executable unit DAG; "
@@ -132,11 +158,31 @@ async def build_layer(
                 f"layer {layer.id} reserves {layer.script} for the composed layer artifact; "
                 "multi-unit stages must write distinct unit scripts"
             )
-
-
-    layers_hash = active_plan_hash(shot.folder)
-    initialize(shot.folder, str(layer.id), layer.stages, plan_hash=layers_hash)
-    prior_layers = _prior_layer_paths(shot, layer, force=force)
+    layers_path = (
+        shot.folder / "layers.json"
+        if selected_authority.plan is None
+        else selected_authority.artifact_paths["layers.json"]
+    )
+    layers_hash = (
+        active_plan_hash(shot.folder)
+        if selected_authority.plan is None
+        else hashlib.sha256(layers_path.read_bytes()).hexdigest()
+    )
+    publish(
+        f"initialize builder state for layer {layer.id}",
+        lambda: initialize(
+            shot.folder,
+            str(layer.id),
+            layer.stages,
+            plan_hash=layers_hash,
+        ),
+    )
+    prior_layers = _prior_layer_paths(
+        shot,
+        layer,
+        force=force,
+        selected_authority=selected_authority,
+    )
     state = load_unit_state(shot.folder, str(layer.id))
     passed_units = {
         uid
@@ -177,7 +223,7 @@ async def build_layer(
     # still have parts of its subject produced elsewhere.
     later = [
         f"layer {g.id} ({g.title})"
-        for g in sorted(load_layers(shot).values(), key=lambda g: str(g.script))
+        for g in sorted(selected_layers.values(), key=lambda g: str(g.script))
         if str(g.script) > str(layer.script)
     ]
     not_yet = (
@@ -199,7 +245,7 @@ async def build_layer(
             f"layer {layer.id} answers for {len(layer.judges)} frames: "
             + ", ".join(f"f{f} vs {r}" for f, r in layer.judges)
         )
-    strips = plan_strips(shot)
+    strips = plan_strips(shot, selected_authority)
     while len(passed_units) < len(layer.stages):
         ready = ready_from_durable_state(
             shot.folder,
@@ -214,8 +260,17 @@ async def build_layer(
             )
         unit = pending[0]
 
-        require_due_clear(shot.folder, layer=str(layer.id), unit=unit.id)
-        unit_plan_path = work_unit_plan_path(shot.folder, unit)
+        require_due_clear(
+            shot.folder,
+            layer=str(layer.id),
+            unit=unit.id,
+            selected_authority=selected_authority,
+        )
+        unit_plan_path = work_unit_plan_path(
+            shot.folder,
+            unit,
+            selected_authority=selected_authority,
+        )
         # A plan file's EXISTENCE is not authority: run 20260824T103842Z-afec73 failed
         # its gate and left the generated plan behind, and the next build built a unit
         # on it. Consumption requires a clean-gate attestation; anything less is treated
@@ -224,7 +279,11 @@ async def build_layer(
         if not needs_plan:
 
             try:
-                validate_work_unit_plan_authority(shot.folder, unit_plan_path)
+                validate_work_unit_plan_authority(
+                    shot.folder,
+                    unit_plan_path,
+                    selected_authority=selected_authority,
+                )
             except ValueError as exc:
                 log(f"existing unit plan is not gated authority ({str(exc)[:160]}) — regenerating")
                 needs_plan = True
@@ -238,7 +297,17 @@ async def build_layer(
                 unit_id=unit.id,
                 blender=builder_package().Settings.from_environment().blender_bin,
             )
-        unit_excerpt = _plan_layer_excerpt(shot, layer, unit)
+            require_selected_authority_unchanged(
+                shot.folder,
+                selected_authority,
+                operation=f"continue builder after planning {layer.id}.{unit.id}",
+            )
+        unit_excerpt = _plan_layer_excerpt(
+            shot,
+            layer,
+            unit,
+            selected_authority=selected_authority,
+        )
         unit_layer = _active_unit_layer_view(layer, unit)
         unit_judges = unit_layer.judges
         unit_ref = next(ref for frame, ref in unit_judges if frame == unit.evaluation.primary_judge)
@@ -255,17 +324,57 @@ async def build_layer(
         )
         current = (load_unit_state(shot.folder, str(layer.id)).get("units") or {}).get(unit.id, {})
         if current.get("status") == "blocked":
-            transition(shot.folder, str(layer.id), unit.id, "planning", reason="dependency closure is now passed")
+            publish(
+                f"mark unit {layer.id}.{unit.id} planning",
+                partial(
+                    transition,
+                    shot.folder,
+                    str(layer.id),
+                    unit.id,
+                    "planning",
+                    reason="dependency closure is now passed",
+                ),
+            )
         elif current.get("status") == "pending":
-            transition(shot.folder, str(layer.id), unit.id, "planning", reason="unit became dependency-ready")
-        transition(shot.folder, str(layer.id), unit.id, "building", reason="builder transaction started")
+            publish(
+                f"mark unit {layer.id}.{unit.id} planning",
+                partial(
+                    transition,
+                    shot.folder,
+                    str(layer.id),
+                    unit.id,
+                    "planning",
+                    reason="unit became dependency-ready",
+                ),
+            )
+        publish(
+            f"mark unit {layer.id}.{unit.id} building",
+            partial(
+                transition,
+                shot.folder,
+                str(layer.id),
+                unit.id,
+                "building",
+                reason="builder transaction started",
+            ),
+        )
         fps = {}
         try:
-            fps = {m.frame: m.fingerprint for m in load_milestones(shot).values() if m.fingerprint}
+            fps = {
+                m.frame: m.fingerprint
+                for m in load_milestones(shot, selected_authority).values()
+                if m.fingerprint
+            }
         except Exception as exc:
             log(f"! no measured fingerprints in the unit contract: {str(exc)[:60]}", 1)
         context_path = write_layer_context(
-            shot, unit_layer, load_axes(shot), fps, unit=unit, layer_units=layer.stages
+            shot,
+            unit_layer,
+            load_axes(shot, selected_authority),
+            fps,
+            unit=unit,
+            layer_units=layer.stages,
+            selected_authority=selected_authority,
         )
         log(f"unit context → {context_path.relative_to(shot.folder)} (loaded every request)", 1)
         # A raised boundary error is not evidence that this unit's implementation
@@ -290,125 +399,73 @@ async def build_layer(
             ),
             resume_ok=resume_ok,
             layer_units=layer.stages,
+            selected_authority=selected_authority,
         )
         unit_status = ledger.status(milestone)
         if unit_status != "passed":
-            finding = None
-            if unit_status == "contract_gap":
-                try:
-                    finding = _record_contract_gap_falsification(shot, layer, unit)
-                    log(
-                        "plan hypothesis falsified by executable evidence → "
-                        f"{finding['record_id']} (transactional replan required)",
-                        1,
-                    )
-                except (OSError, ValueError, KeyError) as exc:
-                    transition(
-                        shot.folder,
-                        str(layer.id),
-                        unit.id,
-                        "failed",
-                        reason="contract gap could not produce typed falsification evidence",
-                        metadata={"error": str(exc)},
-                    )
-                    unit_status = "failed_unrecorded_plan_finding"
-            elif unit_status == "failed":
-                try:
-                    finding = (
-                        _record_unsatisfiable_pair_falsification(shot, layer, unit, milestone, ledger)
-                        or _record_bound_contract_falsification(shot, layer, unit, milestone, ledger)
-                    )
-                except (OSError, ValueError, KeyError) as exc:
-                    transition(
-                        shot.folder,
-                        str(layer.id),
-                        unit.id,
-                        "failed",
-                        reason="falsified bound contracts could not produce typed evidence",
-                        metadata={"error": str(exc)},
-                    )
-                    unit_status = "failed_unrecorded_plan_finding"
-                else:
-                    if finding is None:
-                        transition(
-                            shot.folder,
-                            str(layer.id),
-                            unit.id,
-                            "failed",
-                            reason=unit_status,
-                        )
-                    else:
-                        log(
-                            "plan hypothesis falsified by executable evidence → "
-                            f"{finding['record_id']} (transactional replan required)",
-                            1,
-                        )
-            else:
-                transition(
-                    shot.folder,
-                    str(layer.id),
-                    unit.id,
-                    "failed",
-                    reason=unit_status,
-                )
-            block_dependents(
-                shot.folder,
-                str(layer.id),
-                unit.id,
-                layer.stages,
-                reason=f"dependency {unit.id} ended {unit_status}",
+            handle_unpassed_unit(
+                shot,
+                layer,
+                unit,
+                milestone,
+                ledger,
+                unit_status,
+                selected_authority=selected_authority,
+                publish=publish,
             )
-            if finding is not None:
-                state_after = load_unit_state(shot.folder, str(layer.id))
-                unpassed = [
-                    f"{uid}={row.get('status')}"
-                    for uid, row in (state_after.get("units") or {}).items()
-                    if row.get("status") != "passed"
-                ]
-                raise BuildAuthorityDefect(
-                    finding,
-                    stage="builder",
-                    exit_code=7,
-                    legacy_detail=(
-                        f"layer {layer.id} did not accept every work unit: "
-                        + ", ".join(unpassed)
-                    ),
-                )
             return ledger
 
         if unit.protects.ids:
             active_ids = {
                 str(row["id"])
                 for name, key in (("scene_checks.json", "contracts"), ("checks.json", "checks"))
-                for row in load_document(selected_artifact_path(shot.folder, name), key)
+                for row in load_document(selected_artifact(name), key)
                 if active_for(row, layer.id)
             }
         else:
             active_ids = {
                 str(row["id"])
-                for row in load_document(selected_artifact_path(shot.folder, "scene_checks.json"), "contracts")
+                for row in load_document(
+                    selected_artifact("scene_checks.json"),
+                    "contracts",
+                )
                 if active_for(row, layer.id) and int(row.get("owner_layer")) < int(layer.id)
             }
 
         scene_rows = load_document(
-            selected_artifact_path(shot.folder, "scene_checks.json"), "contracts"
+            selected_artifact("scene_checks.json"),
+            "contracts",
         )
         vis_ids = layer_active_visible_fraction_ids(scene_rows, layer.id)
         artifact = shot.folder / _unit_artifact_path(layer, unit)
         slot = ledger._slot(milestone)
         best_render = shot.folder / str((slot.get("best") or {}).get("render") or "")
-        frozen_state = freeze_checkpoint(
-            shot.folder,
-            str(layer.id),
-            unit,
-            active_contract_ids=active_ids,
-            candidate_hash=digest(best_render) or "missing",
-            settings_hash=hashlib.sha256(b"eevee:0.5").hexdigest(),
-            script_hash=digest(artifact) or "missing",
-            input_hash=layers_hash,
-            layer_active_vis_ids=vis_ids,
+        frozen_state = publish(
+            f"freeze unit {layer.id}.{unit.id} checkpoint",
+            partial(
+                freeze_checkpoint,
+                shot.folder,
+                str(layer.id),
+                unit,
+                active_contract_ids=active_ids,
+                candidate_hash=digest(best_render) or "missing",
+                settings_hash=hashlib.sha256(b"eevee:0.5").hexdigest(),
+                script_hash=digest(artifact) or "missing",
+                input_hash=layers_hash,
+                layer_active_vis_ids=vis_ids,
+            ),
         )
-        transition(shot.folder, str(layer.id), unit.id, "evaluating", reason="canonical evaluation sealed")
+        publish(
+            f"mark unit {layer.id}.{unit.id} evaluating",
+            partial(
+                transition,
+                shot.folder,
+                str(layer.id),
+                unit.id,
+                "evaluating",
+                reason="canonical evaluation sealed",
+            ),
+        )
 
         passed_evidence = {
             (binding.kind, binding.id)
@@ -418,13 +475,18 @@ async def build_layer(
             if binding.kind in {"scene_contract", "image_contract"}
         }
         passed_evidence.add(("replay", f"{layer.id}.{unit.id}"))
-        resolve_unit_completion(
-            shot.folder,
-            layer=str(layer.id),
-            unit=unit.id,
-            passed_evidence=passed_evidence,
-            checkpoint_hash=str(
-                frozen_state["units"][unit.id]["checkpoint"]["candidate_hash"]
+        publish(
+            f"resolve unit {layer.id}.{unit.id} completion debts",
+            partial(
+                resolve_unit_completion,
+                shot.folder,
+                layer=str(layer.id),
+                unit=unit.id,
+                passed_evidence=passed_evidence,
+                checkpoint_hash=str(
+                    frozen_state["units"][unit.id]["checkpoint"]["candidate_hash"]
+                ),
+                selected_authority=selected_authority,
             ),
         )
         require_due_clear(
@@ -432,8 +494,19 @@ async def build_layer(
             layer=str(layer.id),
             unit=unit.id,
             completion=True,
+            selected_authority=selected_authority,
         )
-        transition(shot.folder, str(layer.id), unit.id, "passed", reason="all required unit claims passed")
+        publish(
+            f"mark unit {layer.id}.{unit.id} passed",
+            partial(
+                transition,
+                shot.folder,
+                str(layer.id),
+                unit.id,
+                "passed",
+                reason="all required unit claims passed",
+            ),
+        )
         passed_units.add(unit.id)
         # Reconstruct rather than append: after an interrupted run, a newly completed
         # independent unit may sort before an already passed sibling.  Stable replay is
@@ -445,7 +518,11 @@ async def build_layer(
         ]
 
     if len(layer.stages) == 1 and unit_artifacts[0] == layer.script:
-        return Ledger(shot)
+        return (
+            Ledger(shot)
+            if selected_authority.plan is None
+            else AuthorityBoundLedger(shot, selected_authority)
+        )
 
     parts = [
         (
@@ -455,10 +532,20 @@ async def build_layer(
         )
         for unit in ordered_units
     ]
-    atomic_write(shot.folder / layer.script, _compose_unit_artifact_source(parts))
+    publish(
+        f"publish composed layer {layer.id} artifact",
+        lambda: atomic_write(
+            shot.folder / layer.script,
+            _compose_unit_artifact_source(parts),
+        ),
+    )
     log(f"published composed layer artifact → {layer.script}")
 
-    ledger = Ledger(shot)
+    ledger = (
+        Ledger(shot)
+        if selected_authority.plan is None
+        else AuthorityBoundLedger(shot, selected_authority)
+    )
     milestone = layer.as_milestone(strips)
     ledger._slot(milestone)["script"] = layer.script
     ledger.begin(milestone)
@@ -478,9 +565,13 @@ async def build_layer(
         label=f"layer{layer.id}-composition",
         run_id=RUN_ID,
     )
-    all_axes = await ensure_axes(shot, verbose)
+    all_axes = await ensure_axes(shot, verbose, selected_authority)
     canonical: list = []
-    provisional_decisions = _load_provisional_decisions(shot, str(layer.id))
+    provisional_decisions = _load_provisional_decisions(
+        shot,
+        str(layer.id),
+        selected_authority=selected_authority,
+    )
     decision_groups = (
         tuple((decision,) for decision in provisional_decisions)
         if provisional_decisions
@@ -542,12 +633,17 @@ async def build_layer(
                 receipt = replay_prefix_receipt(
                     shot.folder,
                     replayed_layer_scripts=(*prior_layers, shot.folder / layer.script),
+                    selected_authority=selected_authority,
                 )
-                mark_judgment_debt_due(
-                    shot.folder,
-                    decision["definition_digest"],
-                    layer_id=str(layer.id),
-                    replayed_unit_digests=receipt.unit_digests,
+                publish(
+                    f"activate judgment debt {decision['debt_id']}",
+                    lambda: mark_judgment_debt_due(
+                        shot.folder,
+                        decision["definition_digest"],
+                        layer_id=str(layer.id),
+                        replayed_unit_digests=receipt.unit_digests,
+                        selected_authority=selected_authority,
+                    ),
                 )
                 return JudgmentDebtPayment(
                     shot=shot,
@@ -573,6 +669,7 @@ async def build_layer(
             active_unit=composition_unit,
             out_verdicts=canonical,
             on_replay_ready=on_replay_ready,
+            selected_authority=selected_authority,
         )
         finding_record_id = None
         if (
@@ -582,8 +679,15 @@ async def build_layer(
                 getattr(composition_unit, "provisional_requirement_ids", ()) or ()
             )
         ):
-            finding = _record_composed_contract_gap_falsification(
-                shot, layer, composition_unit
+            finding = publish(
+                f"record composed layer {layer.id} falsification",
+                partial(
+                    _record_composed_contract_gap_falsification,
+                    shot,
+                    layer,
+                    composition_unit,
+                    selected_authority=selected_authority,
+                ),
             )
             terminal_finding = finding
             finding_record_id = str(finding["record_id"])
@@ -594,32 +698,41 @@ async def build_layer(
             )
         if typed_decisions and result in {"passed", "reproduced", "contract_gap"}:
             decision = typed_decisions[0]
-            resolve_current_judgment_debt(
-                shot.folder,
-                decision["definition_digest"],
-                outcome=(
-                    "falsified" if result == "contract_gap" else "satisfied"
-                ),
-                evidence_digest=_judgment_payment_evidence_digest(
-                    decision,
-                    result=result,
-                    verdicts=canonical[canonical_start:],
-                    finding_record_id=finding_record_id,
+            debt_evidence_digest = _judgment_payment_evidence_digest(
+                decision,
+                result=result,
+                verdicts=canonical[canonical_start:],
+                finding_record_id=finding_record_id,
+            )
+            publish(
+                f"resolve judgment debt {decision['debt_id']}",
+                partial(
+                    resolve_current_judgment_debt,
+                    shot.folder,
+                    decision["definition_digest"],
+                    outcome=(
+                        "falsified" if result == "contract_gap" else "satisfied"
+                    ),
+                    evidence_digest=debt_evidence_digest,
+                    selected_authority=selected_authority,
                 ),
             )
         if result not in {"passed", "reproduced"}:
             break
     status = "passed" if result == "passed" else result
     best = {"round": 0, "mean": min((v.get("mean", 0) for _fr, v in canonical), default=0), "render": None}
-    write_layer_outcome(
-        shot.folder,
-        layer,
-        status=status,
-        best=best,
-        canonical=canonical,
-        run_id=RUN_ID,
-        attempt=ledger._slot(milestone).get("attempt"),
-        blender_version=_blender_version(session),
+    publish(
+        f"publish composed layer {layer.id} outcome",
+        lambda: write_layer_outcome(
+            shot.folder,
+            layer,
+            status=status,
+            best=best,
+            canonical=canonical,
+            run_id=RUN_ID,
+            attempt=ledger._slot(milestone).get("attempt"),
+            blender_version=_blender_version(session),
+        ),
     )
     ledger.mark(milestone, status, best=best)
     transcript.unbind()

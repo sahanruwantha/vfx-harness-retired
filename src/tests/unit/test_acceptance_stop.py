@@ -7,6 +7,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import anyio
 import pytest
@@ -20,6 +21,9 @@ from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+)
 from vfx_harness.orchestration.ledger import Milestone
 
 
@@ -241,15 +245,34 @@ def _patch_acceptance(
     passed: bool,
 ) -> list[str]:
     authority = _authority()
+    selected_authority = SimpleNamespace(plan=None, artifact_paths={})
     moments = {"M1": Milestone("M1", 1, "refs/M1.png", "finished frame")}
     transcript_events: list[str] = []
 
-    monkeypatch.setattr(acceptance, "require_judgment_debts_satisfied", lambda _folder: None)
-    monkeypatch.setattr(acceptance, "load_milestones", lambda _shot: moments)
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_selected_authority",
+        lambda _folder: selected_authority,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "commit_selected_authority",
+        lambda _folder, _selected, *, operation, mutation: mutation(),
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "require_judgment_debts_satisfied",
+        lambda _folder, _selected=None: None,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "load_milestones",
+        lambda _shot, _selected=None: moments,
+    )
     monkeypatch.setattr(
         acceptance.acceptance_stop,
         "capture_acceptance_authority",
-        lambda _shot, _moments: authority,
+        lambda _shot, _moments, _selected=None: authority,
     )
 
     async def axes(*_args, **_kwargs):
@@ -467,12 +490,14 @@ def test_passed_acceptance_returns_success_and_clears_final_due_records(
     monkeypatch.setattr(
         acceptance_stop,
         "load_milestones",
-        lambda _shot: {"M1": Milestone("M1", 1, "refs/M1.png", "finished frame")},
+        lambda _shot, _selected=None: {
+            "M1": Milestone("M1", 1, "refs/M1.png", "finished frame")
+        },
     )
     monkeypatch.setattr(
         acceptance_stop,
         "require_judgment_debts_satisfied",
-        lambda _folder: None,
+        lambda _folder, _selected=None: None,
     )
     monkeypatch.setattr(
         acceptance_stop,
@@ -480,18 +505,33 @@ def test_passed_acceptance_returns_success_and_clears_final_due_records(
         lambda *_args, **_kwargs: None,
     )
     assert acceptance_stop.require_current_accepted_outcome(shot) == stored
+    selected_authority = SimpleNamespace(selection_token=object())
+    monkeypatch.setattr(
+        acceptance_stop,
+        "resolve_selected_authority",
+        lambda _root: pytest.fail("supplied final-render snapshot was re-resolved"),
+    )
+    assert (
+        acceptance_stop.require_current_accepted_outcome(
+            shot,
+            selected_authority,
+        )
+        == stored
+    )
 
     monkeypatch.setattr(
         acceptance_stop,
         "require_judgment_debts_satisfied",
-        lambda _folder: (_ for _ in ()).throw(ValueError("judgment debt became due")),
+        lambda _folder, _selected=None: (_ for _ in ()).throw(
+            ValueError("judgment debt became due")
+        ),
     )
     with pytest.raises(ValueError, match="judgment debt became due"):
-        acceptance_stop.require_current_accepted_outcome(shot)
+        acceptance_stop.require_current_accepted_outcome(shot, selected_authority)
     monkeypatch.setattr(
         acceptance_stop,
         "require_judgment_debts_satisfied",
-        lambda _folder: None,
+        lambda _folder, _selected=None: None,
     )
     monkeypatch.setattr(
         acceptance_stop,
@@ -501,7 +541,7 @@ def test_passed_acceptance_returns_success_and_clears_final_due_records(
         ),
     )
     with pytest.raises(ValueError, match="acceptance obligation became due"):
-        acceptance_stop.require_current_accepted_outcome(shot)
+        acceptance_stop.require_current_accepted_outcome(shot, selected_authority)
     monkeypatch.setattr(
         acceptance_stop,
         "require_due_clear",
@@ -511,7 +551,7 @@ def test_passed_acceptance_returns_success_and_clears_final_due_records(
     render = layout.evidence / "renders" / "M1_accept.png"
     render.write_bytes(b"substituted after acceptance")
     with pytest.raises(ValueError, match="png_sha256 is stale"):
-        acceptance_stop.require_current_accepted_outcome(shot)
+        acceptance_stop.require_current_accepted_outcome(shot, selected_authority)
 
 
 def test_forced_acceptance_is_run_scoped_and_cannot_promote_or_resolve(
@@ -588,7 +628,7 @@ def test_authority_change_before_commit_prevents_resolution_and_ledger_write(
     monkeypatch.setattr(
         acceptance.acceptance_stop,
         "capture_acceptance_authority",
-        lambda _shot, _moments: next(snapshots),
+        lambda _shot, _moments, _selected=None: next(snapshots),
     )
     monkeypatch.setattr(
         acceptance,
@@ -609,6 +649,166 @@ def test_authority_change_before_commit_prevents_resolution_and_ledger_write(
         anyio.run(acceptance.accept, shot, None, None, False, False, False)
 
     assert not (tmp_path / "shot.json").exists()
+
+
+def test_exact_head_change_before_resolution_commit_leaves_no_durable_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _shot(tmp_path)
+    layout = run_artifacts.create(tmp_path, "acceptance-resolution-head-race")
+    _patch_acceptance(monkeypatch, shot, layout, passed=True)
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_acceptance_completion",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a stale acceptance must not publish completion evidence"
+        ),
+    )
+
+    def reject(_folder, _selected, *, operation, mutation):
+        del mutation
+        assert operation == "resolve acceptance completion authority"
+        raise AuthoritySelectionConflict("injected exact-head change")
+
+    monkeypatch.setattr(acceptance, "commit_selected_authority", reject)
+
+    with pytest.raises(AuthoritySelectionConflict, match="exact-head change"):
+        anyio.run(acceptance.accept, shot, None, None, False, False, False)
+
+    assert not (tmp_path / "shot.json").exists()
+
+
+def test_exact_head_change_before_ledger_commit_does_not_publish_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _shot(tmp_path)
+    layout = run_artifacts.create(tmp_path, "acceptance-ledger-head-race")
+    _patch_acceptance(monkeypatch, shot, layout, passed=True)
+    resolved: list[str] = []
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_acceptance_completion",
+        lambda *_args, **_kwargs: resolved.append("resolved"),
+    )
+    monkeypatch.setattr(acceptance, "require_due_clear", lambda *_args, **_kwargs: None)
+    commits: list[str] = []
+
+    def change_after_resolution(_folder, _selected, *, operation, mutation):
+        commits.append(operation)
+        if len(commits) == 1:
+            return mutation()
+        raise AuthoritySelectionConflict("injected exact-head change")
+
+    monkeypatch.setattr(
+        acceptance,
+        "commit_selected_authority",
+        change_after_resolution,
+    )
+
+    with pytest.raises(AuthoritySelectionConflict, match="exact-head change"):
+        anyio.run(acceptance.accept, shot, None, None, False, False, False)
+
+    assert resolved == ["resolved"]
+    assert commits == [
+        "resolve acceptance completion authority",
+        "publish acceptance outcome",
+    ]
+    assert not (tmp_path / "shot.json").exists()
+
+
+def test_acceptance_keeps_one_snapshot_across_same_semantic_aba(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A returned semantic view cannot substitute for the entry selection token."""
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    shot = _shot(tmp_path)
+    layout = run_artifacts.create(tmp_path, "acceptance-selection-aba")
+    _patch_acceptance(monkeypatch, shot, layout, passed=True)
+    semantic = SimpleNamespace(bundle_digest=_digest("bundle"), view_digest=_digest("view"))
+    entry = SimpleNamespace(selection_token=(1, 1), assertion=semantic)
+    returned = SimpleNamespace(selection_token=(3, 3), assertion=semantic)
+    resolution_calls: list[Path] = []
+    observed: list[tuple[str, object]] = []
+
+    def resolve(root: Path) -> object:
+        resolution_calls.append(Path(root))
+        return entry if len(resolution_calls) == 1 else returned
+
+    def require_debts(_root: Path, selected: object) -> None:
+        observed.append(("debts", selected))
+
+    moments = {"M1": Milestone("M1", 1, "refs/M1.png", "finished frame")}
+
+    def load_selected_moments(_shot: Shot, selected: object) -> dict[str, Milestone]:
+        observed.append(("moments", selected))
+        return moments
+
+    def capture(_shot: Shot, _moments: object, selected: object):
+        observed.append(("capture", selected))
+        return _authority()
+
+    async def axes(_shot: Shot, _verbose: bool, selected: object):
+        observed.append(("axes", selected))
+        return [("composition", "composition match")]
+
+    def chain(*_args, selected_authority: object, **_kwargs) -> list[str]:
+        observed.append(("chain", selected_authority))
+        return ["build/L1.py"]
+
+    def contract_evidence(
+        _folder: Path,
+        *,
+        selected_authority: object,
+        **_kwargs,
+    ) -> list[dict]:
+        observed.append(("checks", selected_authority))
+        return []
+
+    def reconcile(_shot: Shot, _results: dict, _ledger: object, selected: object) -> list[str]:
+        observed.append(("reconcile", selected))
+        return []
+
+    def repair_plan(_shot: Shot, _results: dict, selected: object) -> list[dict]:
+        observed.append(("repair", selected))
+        return []
+
+    monkeypatch.setattr(acceptance, "resolve_selected_authority", resolve)
+    monkeypatch.setattr(acceptance, "require_judgment_debts_satisfied", require_debts)
+    monkeypatch.setattr(acceptance, "load_milestones", load_selected_moments)
+    monkeypatch.setattr(acceptance.acceptance_stop, "capture_acceptance_authority", capture)
+    monkeypatch.setattr(acceptance, "ensure_axes", axes)
+    monkeypatch.setattr(acceptance, "_chain", chain)
+    monkeypatch.setattr(acceptance, "acceptance_evidence", contract_evidence)
+    monkeypatch.setattr(acceptance, "reconcile", reconcile)
+    monkeypatch.setattr(acceptance, "repair_plan", repair_plan)
+    monkeypatch.setattr(acceptance, "resolve_acceptance_completion", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(acceptance, "require_due_clear", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        acceptance.plan_due,
+        "require_due_clear",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = anyio.run(acceptance.accept, shot, None, None, False, False, False)
+
+    assert result["passed"] == result["total"] == 1
+    assert resolution_calls == [shot.folder]
+    assert [name for name, _selected in observed] == [
+        "debts",
+        "moments",
+        "capture",
+        "axes",
+        "chain",
+        "checks",
+        "capture",
+        "reconcile",
+        "repair",
+    ]
+    assert all(selected is entry for _name, selected in observed)
 
 
 def test_failed_partial_moment_is_still_terminal(
@@ -824,11 +1024,15 @@ def test_contract_binding_must_pass_every_acceptance_moment_before_resolution(
         ),
         chain=base.chain,
     )
-    monkeypatch.setattr(acceptance, "load_milestones", lambda _shot: moments)
+    monkeypatch.setattr(
+        acceptance,
+        "load_milestones",
+        lambda _shot, _selected=None: moments,
+    )
     monkeypatch.setattr(
         acceptance.acceptance_stop,
         "capture_acceptance_authority",
-        lambda _shot, _moments: authority,
+        lambda _shot, _moments, _selected=None: authority,
     )
 
     def stash(_session, _shot, milestone: Milestone, _suffix: str):
@@ -841,8 +1045,16 @@ def test_contract_binding_must_pass_every_acceptance_moment_before_resolution(
 
     monkeypatch.setattr(acceptance, "_stash_render_with_receipt", stash)
 
-    def contract_evidence(_folder, *, frame: int, ref: str, render: str):
+    def contract_evidence(
+        _folder,
+        *,
+        frame: int,
+        ref: str,
+        render: str,
+        selected_authority: object,
+    ):
         del render
+        assert selected_authority is not None
         assert ref == f"refs/M{frame}.png"
         passed = frame == 1
         return [
@@ -855,8 +1067,15 @@ def test_contract_binding_must_pass_every_acceptance_moment_before_resolution(
     monkeypatch.setattr(acceptance, "acceptance_evidence", contract_evidence)
     resolution_inputs: list[frozenset[tuple[str, str]]] = []
 
-    def resolve(_folder, *, passed_evidence, expected_bundle_digest):
+    def resolve(
+        _folder,
+        *,
+        passed_evidence,
+        expected_bundle_digest,
+        selected_authority,
+    ):
         assert expected_bundle_digest == authority.bundle_digest
+        assert selected_authority is not None
         resolution_inputs.append(frozenset(passed_evidence))
         return ()
 

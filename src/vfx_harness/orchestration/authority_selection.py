@@ -1,10 +1,9 @@
 """Resolve one semantic selected-authority state from verified plan and JIT pointers.
 
-The returned assertion deliberately excludes run ids, paths, timestamps, and pointer bytes.
-Those values are audit and future compare-and-swap inputs, not semantic progress.  This module
-still reads both pointers before and after verification so one assertion never joins two
-ordinary concurrent generations.  Pointer v1 has no monotone revision, so this resolver is not
-itself an ABA-safe publication primitive and grants no transaction dispatch authority.
+The returned semantic assertion deliberately excludes run ids, paths, timestamps, and pointer
+bytes.  Its companion selection token binds both monotone v2 head revisions to the exact bytes
+read under the shared shot lock.  Consumers use the immutable paths from this snapshot; writers
+compare the token under the same lock immediately before mutation.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
@@ -24,8 +24,15 @@ from vfx_harness.domain.stop_transaction_state import (
     SelectedAuthorityView,
 )
 from vfx_harness.orchestration import plan_authority
-from vfx_harness.orchestration.jit_materialization.schema import (
-    CURRENT as JIT_CURRENT,
+from vfx_harness.orchestration.authority_selection_heads import (
+    AuthoritySelectionHeadError,
+    AuthoritySelectionHeads,
+    read_authority_selection_heads,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    AuthoritySelectionToken,
+    authority_selection_lock,
 )
 from vfx_harness.orchestration.jit_materialization.schema import OVERLAY_ARTIFACTS
 from vfx_harness.orchestration.jit_materialization.view_pointer import (
@@ -43,7 +50,6 @@ _BUNDLE_MANIFEST_FIELDS = frozenset(
 _PUBLISHABLE_OUTCOMES = frozenset(
     {"clean", "clean_with_assumptions", "clean_with_deferred"}
 )
-_MAX_SNAPSHOT_ATTEMPTS = 3
 
 
 class SelectedAuthorityResolutionError(RuntimeError):
@@ -56,11 +62,7 @@ class _DuplicateJsonKey(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class AuthorityPointerObservation:
-    """Exact non-semantic pointer observations made while deriving an assertion.
-
-    These hashes are useful for audit and a future versioned selection CAS.  They are not a
-    semantic progress digest and current v1 pointer bytes cannot prevent an A -> B -> A race.
-    """
+    """Exact non-semantic pointer observations made while deriving an assertion."""
 
     plan_pointer_sha256: str | None
     jit_pointer_sha256: str | None
@@ -80,6 +82,9 @@ class AuthorityPointerObservation:
 class ResolvedSelectedAuthority:
     assertion: SelectedAuthorityAssertionV2
     pointer_observation: AuthorityPointerObservation
+    selection_token: AuthoritySelectionToken
+    plan: plan_authority.SelectedPlanAuthority | None
+    artifact_paths: Mapping[str, Path]
 
 
 def _sha256(data: bytes) -> str:
@@ -263,7 +268,7 @@ def _bundle_components(
 def _verified_jit_view(
     shot: Path,
     payload: bytes,
-) -> tuple[JitViewPointer, SelectedAuthorityView]:
+) -> tuple[JitViewPointer, SelectedAuthorityView, dict[str, Path]]:
     value = _json_value(payload, label="selected JIT pointer")
     try:
         pointer = parse_jit_view_pointer(value)
@@ -272,10 +277,12 @@ def _verified_jit_view(
             f"selected JIT pointer is invalid: {exc}"
         ) from exc
     documents: dict[str, Any] = {}
+    paths: dict[str, Path] = {}
     for name in OVERLAY_ARTIFACTS:
+        path = shot / pointer.artifacts[name]
         artifact_payload = _read_file(
             shot,
-            shot / pointer.artifacts[name],
+            path,
             label=f"selected JIT artifact {name!r}",
             optional=False,
         )
@@ -288,6 +295,7 @@ def _verified_jit_view(
             artifact_payload,
             label=f"selected JIT artifact {name!r}",
         )
+        paths[name] = path
     try:
         require_materialized_layers_match(pointer, documents["layers.json"])
     except JitViewPointerError as exc:
@@ -306,10 +314,14 @@ def _verified_jit_view(
             "artifact_hashes": pointer.hashes,
         }
     )
-    return pointer, SelectedAuthorityView(
-        source="jit",
-        digest=pointer.view_hash,
-        semantic_manifest_digest=semantic_manifest_digest,
+    return (
+        pointer,
+        SelectedAuthorityView(
+            source="jit",
+            digest=pointer.view_hash,
+            semantic_manifest_digest=semantic_manifest_digest,
+        ),
+        paths,
     )
 
 
@@ -320,10 +332,80 @@ def _observation(plan_pointer: bytes | None, jit_pointer: bytes | None) -> Autho
     )
 
 
+def resolve_selected_authority_from_heads(
+    shot_folder: str | Path,
+    heads: AuthoritySelectionHeads,
+) -> ResolvedSelectedAuthority:
+    """Verify semantic authority from heads read under a caller-owned lock.
+
+    Writers use this after tentatively replacing one head while retaining the
+    exclusive selection lock.  Calling :func:`resolve_selected_authority` there would
+    recursively acquire the lock and could deadlock; accepting the exact already-read
+    heads also makes the postcondition explicit.  The caller must keep the shared or
+    exclusive authority-selection lock for this entire call.
+    """
+
+    if not isinstance(heads, AuthoritySelectionHeads):
+        raise SelectedAuthorityResolutionError(
+            "selected authority verification requires typed heads read under the selection lock"
+        )
+    shot = Path(shot_folder).expanduser().resolve()
+    plan_pointer = heads.plan_pointer_bytes
+    jit_pointer = heads.jit_pointer_bytes
+    verified_jit = (
+        None if jit_pointer is None else _verified_jit_view(shot, jit_pointer)
+    )
+    plan_selection = None
+    artifact_paths: dict[str, Path] = {}
+    if plan_pointer is None:
+        assertion = SelectedAuthorityAssertionV2(
+            selection="absent",
+            bundle=None,
+            effective_view=None,
+        )
+    else:
+        assert heads.plan is not None
+        try:
+            plan_selection = plan_authority._resolve_pointer(
+                shot,
+                heads.plan.as_dict(),
+            )
+        except plan_authority.PlanPublicationError as exc:
+            raise SelectedAuthorityResolutionError(
+                f"selected plan authority is invalid: {exc}"
+            ) from exc
+        bundle = plan_selection.bundle
+        artifact_paths = {
+            name: bundle.root / name for name in bundle.artifacts
+        }
+        bundle_assertion, bundle_view = _bundle_components(shot, bundle)
+        effective_view = bundle_view
+        if verified_jit is not None:
+            selected_jit, jit_view, jit_paths = verified_jit
+            if (
+                selected_jit.bundle_hash == bundle.content_hash
+                and selected_jit.plan_revision == plan_selection.revision
+            ):
+                effective_view = jit_view
+                artifact_paths.update(jit_paths)
+        assertion = SelectedAuthorityAssertionV2(
+            selection="selected",
+            bundle=bundle_assertion,
+            effective_view=effective_view,
+        )
+    return ResolvedSelectedAuthority(
+        assertion=assertion,
+        pointer_observation=_observation(plan_pointer, jit_pointer),
+        selection_token=heads.token,
+        plan=plan_selection,
+        artifact_paths=MappingProxyType(artifact_paths),
+    )
+
+
 def resolve_selected_authority(
     shot_folder: str | Path,
 ) -> ResolvedSelectedAuthority:
-    """Resolve one verified semantic selection and its exact pointer observation.
+    """Resolve one verified semantic selection and exact versioned CAS token.
 
     An absent global pointer is the only absent authority state.  Existing malformed,
     unreadable, stale, or symlinked plan/JIT authority fails closed.  A valid JIT pointer for a
@@ -331,64 +413,19 @@ def resolve_selected_authority(
     """
 
     shot = Path(shot_folder).expanduser().resolve()
-    plan_pointer_path = shot / plan_authority.POINTER
-    jit_pointer_path = shot / JIT_CURRENT
-    for _attempt in range(_MAX_SNAPSHOT_ATTEMPTS):
-        plan_before = _read_file(
-            shot,
-            plan_pointer_path,
-            label="selected plan pointer",
-            optional=True,
+    try:
+        lock = authority_selection_lock(shot, exclusive=False)
+        with lock:
+            heads = read_authority_selection_heads(shot)
+            return resolve_selected_authority_from_heads(shot, heads)
+    except AuthoritySelectionHeadError as exc:
+        label = (
+            "selected plan authority is invalid"
+            if exc.head == "plan"
+            else "selected JIT pointer is invalid"
         )
-        jit_before = _read_file(
-            shot,
-            jit_pointer_path,
-            label="selected JIT pointer",
-            optional=True,
-        )
-        verified_jit = None if jit_before is None else _verified_jit_view(shot, jit_before)
-        if plan_before is None:
-            assertion = SelectedAuthorityAssertionV2(
-                selection="absent",
-                bundle=None,
-                effective_view=None,
-            )
-        else:
-            try:
-                bundle = plan_authority.resolve_current(shot)
-            except plan_authority.PlanPublicationError as exc:
-                raise SelectedAuthorityResolutionError(
-                    f"selected plan authority is invalid: {exc}"
-                ) from exc
-            bundle_assertion, bundle_view = _bundle_components(shot, bundle)
-            effective_view = bundle_view
-            if verified_jit is not None:
-                jit_pointer, jit_view = verified_jit
-                if jit_pointer.bundle_hash == bundle.content_hash:
-                    effective_view = jit_view
-            assertion = SelectedAuthorityAssertionV2(
-                selection="selected",
-                bundle=bundle_assertion,
-                effective_view=effective_view,
-            )
-
-        plan_after = _read_file(
-            shot,
-            plan_pointer_path,
-            label="selected plan pointer",
-            optional=True,
-        )
-        jit_after = _read_file(
-            shot,
-            jit_pointer_path,
-            label="selected JIT pointer",
-            optional=True,
-        )
-        if plan_after == plan_before and jit_after == jit_before:
-            return ResolvedSelectedAuthority(
-                assertion=assertion,
-                pointer_observation=_observation(plan_before, jit_before),
-            )
-    raise SelectedAuthorityResolutionError(
-        "selected plan/JIT pointers changed repeatedly while authority was resolved"
-    )
+        raise SelectedAuthorityResolutionError(f"{label}: {exc}") from exc
+    except AuthoritySelectionConflict as exc:
+        raise SelectedAuthorityResolutionError(
+            f"selected authority lock/storage is invalid: {exc}"
+        ) from exc

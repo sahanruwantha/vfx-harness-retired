@@ -37,6 +37,7 @@ from vfx_harness.orchestration.escalate import ask as _ask
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 from vfx_harness.orchestration.script_map import find_lines as _find_lines
 from vfx_harness.orchestration.script_map import outline as _outline
+from vfx_harness.orchestration.selected_authority_guard import commit_selected_authority
 
 
 def register_misc(
@@ -54,7 +55,18 @@ def register_misc(
     _black_frame_note,
     _black_search_stop,
     _register_candidate,
+    selected_authority=None,
 ):
+    def publish(operation, mutation):
+        if selected_authority is None:
+            return mutation()
+        return commit_selected_authority(
+            shot_dir,
+            selected_authority,
+            operation=operation,
+            mutation=mutation,
+        )
+
     @tool(
         "script_map",
         "STRUCTURAL INDEX of a build script — functions, sections, and which lines create "
@@ -109,15 +121,21 @@ def register_misc(
     async def ask_supervisor(args):
         if not shot_dir:
             return {"content": [{"type": "text", "text": "no shot folder — cannot ask"}]}
-        qid = _ask(
-            shot_dir,
-            layer=layer_id or "?",
-            question=args["question"],
-            assumption=args["assumption"],
-            why_it_matters=args.get("why_it_matters", ""),
-            affected_layers=args.get("affected_layers") or [],
-            affected_axes=args.get("affected_axes") or [],
-            global_decision=bool(args.get("global_decision")),
+        def ask():
+            return _ask(
+                shot_dir,
+                layer=layer_id or "?",
+                question=args["question"],
+                assumption=args["assumption"],
+                why_it_matters=args.get("why_it_matters", ""),
+                affected_layers=args.get("affected_layers") or [],
+                affected_axes=args.get("affected_axes") or [],
+                global_decision=bool(args.get("global_decision")),
+            )
+
+        qid = publish(
+            f"record builder question for layer {layer_id}",
+            ask,
         )
         return {
             "content": [
@@ -178,7 +196,10 @@ def register_misc(
                 state["done"].append(d)
         if args.get("note"):
             state["notes"].append(args["note"])
-        write_unit_worklist(wl, state)
+        publish(
+            f"write unit {layer_part}.{active_unit_id} worklist",
+            lambda: write_unit_worklist(wl, state),
+        )
         left = [i for i in state["items"] if i not in state["done"]]
         body = (
             "\n".join(f"  [x] {i}" for i in state["items"] if i in state["done"])
@@ -387,7 +408,16 @@ def register_misc(
         first_ref = ""
         try:
 
-            for lay in read_document(selected_artifact_path(root, "layers.json")):
+            layers_path = (
+                selected_artifact_path(root, "layers.json")
+                if selected_authority is None
+                else (
+                    root / "layers.json"
+                    if selected_authority.plan is None
+                    else selected_authority.artifact_paths["layers.json"]
+                )
+            )
+            for lay in read_document(layers_path):
                 if str(lay.get("id")) != str(layer_id):
                     continue
                 js = lay.get("judge") or []
@@ -401,7 +431,17 @@ def register_misc(
             )
         kept, lines = [], []
         debts = debts_from_dicts(comparison_state.get("image_debts"))
-        unpaid = unpaid_image_contract_debts(debts, load_image_contract_payment_rows(root)) if debts else ()
+        unpaid = (
+            unpaid_image_contract_debts(
+                debts,
+                load_image_contract_payment_rows(
+                    root,
+                    selected_authority=selected_authority,
+                ),
+            )
+            if debts
+            else ()
+        )
         for d in list(args.get("checks") or [])[:20]:
             cid = normalize_evidence_id(d.get("id", "?"))
             debt_reject = reject_proposed_image_check(
@@ -534,8 +574,15 @@ def register_misc(
             cur = [row for row in cur if (row.get("layer"), row.get("id")) not in replacement_keys]
             cur.extend(kept)
 
-            atomic_write(spec, json.dumps(cur, indent=1) + "\n")
-        _refresh_unpaid_image_debts(comparison_state, root)
+            publish(
+                f"publish layer {layer_id} runtime image checks",
+                lambda: atomic_write(spec, json.dumps(cur, indent=1) + "\n"),
+            )
+        _refresh_unpaid_image_debts(
+            comparison_state,
+            root,
+            selected_authority=selected_authority,
+        )
         remaining = comparison_state.get("unpaid_image_debts") or []
         tail = ""
         if remaining:

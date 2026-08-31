@@ -5,18 +5,21 @@ from pathlib import Path
 
 import pytest
 
+from tests.materialization_support import attest_exact_materialization_view
 from tests.unit.test_plan_records import (
     _add_deferred_layer,
     _candidate,
     _jit_payload,
     _passed_layer_one_outcome,
     _write,
+    _write_authority_record,
 )
 from vfx_harness.domain.brief import Shot
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.jit_materialization import publish_materialization
 from vfx_harness.orchestration.ledger import load_milestones
 from vfx_harness.orchestration.plan_authority import (
+    PlanPublicationError,
     prepare_consumer_view,
     publish_current,
     selected_artifact_path,
@@ -46,6 +49,7 @@ def _publish_materialized_acceptance_view(root: Path) -> Path:
     document["acceptance"] = [_MATERIALIZED_MOMENT]
     _write(payload, document)
     _passed_layer_one_outcome(root)
+    attest_exact_materialization_view(root, payload)
     return publish_materialization(root, payload)
 
 
@@ -95,7 +99,10 @@ def test_selected_jit_acceptance_rejects_forged_view_hash(
     pointer_path = _publish_materialized_acceptance_view(tmp_path)
     pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
     pointer["view_hash"] = "0" * 64 if pointer["view_hash"] != "0" * 64 else "1" * 64
-    _write(pointer_path, pointer)
+    _write_authority_record(pointer_path, pointer)
 
-    with pytest.raises(ValueError, match="view_hash does not match its documents"):
+    with pytest.raises(
+        PlanPublicationError,
+        match="must use exact producer locator",
+    ):
         selected_artifact_path(tmp_path, "acceptance.json")

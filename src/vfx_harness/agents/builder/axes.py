@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import TYPE_CHECKING
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -31,6 +32,9 @@ from vfx_harness.observability.log import (
 from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.orchestration.ledger import Milestone, load_axes, load_layers
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 
 def _axes_options(shot: Shot) -> ClaudeAgentOptions:
@@ -238,7 +242,11 @@ def _extract_json_list(text: str) -> list:
     raise ValueError("no parseable JSON array")
 
 
-async def ensure_axes(shot: Shot, verbose: bool = True) -> list[tuple[str, str]]:
+async def ensure_axes(
+    shot: Shot,
+    verbose: bool = True,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[tuple[str, str]]:
     """The critic rubric for this shot.
 
     Written by the PLAN stage (critic_axes.json): the planner has the deepest scene read
@@ -247,16 +255,28 @@ async def ensure_axes(shot: Shot, verbose: bool = True) -> list[tuple[str, str]]
     builder to invent a different rubric.
     """
 
-    path = selected_artifact_path(shot.folder, "critic_axes.json")
+    if selected_authority is None:
+        path = selected_artifact_path(shot.folder, "critic_axes.json")
+    elif selected_authority.plan is None:
+        path = shot.folder / "critic_axes.json"
+    else:
+        try:
+            path = selected_authority.artifact_paths["critic_axes.json"]
+        except KeyError as exc:
+            raise ValueError("selected authority omits critic_axes.json") from exc
     if path.is_file():
-        return load_axes(shot)
+        return load_axes(shot, selected_authority)
     raise FileNotFoundError(
         f"{path} missing — legacy builder-side rubric derivation has been removed; "
         "generate and gate the strict global plan"
     )
 
 
-def _warn_unowned_axes(shot: Shot, axes: list[tuple[str, str]]) -> None:
+def _warn_unowned_axes(
+    shot: Shot,
+    axes: list[tuple[str, str]],
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> None:
     """Audit the axis↔layer mapping in BOTH directions — each catches a real bug we hit.
 
     axis with no layer  → unearnable: nobody can ever score it.
@@ -268,7 +288,7 @@ def _warn_unowned_axes(shot: Shot, axes: list[tuple[str, str]]) -> None:
     An axis owned only by the LAST layer is fine and deliberately NOT flagged: with
     `owns` in force the earlier layers simply aren't judged on it, which is the point.
     """
-    layers = load_layers(shot)
+    layers = load_layers(shot, selected_authority=selected_authority)
     if not any(g.owns for g in layers.values()):
         raise ValueError("strict layers.json contract requires owned axes; legacy unscoped judging is not supported")
     keys = {k for k, _ in axes}

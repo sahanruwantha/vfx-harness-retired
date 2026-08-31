@@ -8,11 +8,26 @@ from pathlib import Path
 
 import pytest
 
-from vfx_harness.orchestration.jit_materialization import validate_materialization
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionToken,
+)
+from vfx_harness.orchestration.jit_materialization import (
+    MATERIALIZATION_SCHEMA,
+    validate_materialization,
+)
 from vfx_harness.orchestration.jit_materialization.publish import _overlay_documents
 from vfx_harness.orchestration.unit_state import unit_digest
 
 BUNDLE_HASH = hashlib.sha256(b"judgment-debt-materialization").hexdigest()
+
+
+def _fixture_base_selection() -> dict:
+    return AuthoritySelectionToken(
+        plan_revision=1,
+        plan_pointer_sha256=hashlib.sha256(b"fixture-plan-pointer").hexdigest(),
+        jit_revision=0,
+        jit_pointer_sha256=None,
+    ).to_dict()
 
 
 def _write(path: Path, value: object) -> None:
@@ -196,8 +211,9 @@ def _camera_payload(*, judgment_property: str = "camera_framing") -> dict:
         )
     ]
     return {
-        "schema": "vfx-harness.jit-layer-materialization/v2",
+        "schema": MATERIALIZATION_SCHEMA,
         "bundle_hash": BUNDLE_HASH,
+        "base_selection": _fixture_base_selection(),
         "layer": layer,
         "scene_contracts": [
             _scene_contract(
@@ -247,8 +263,9 @@ def _form_payload() -> dict:
         )
     ]
     return {
-        "schema": "vfx-harness.jit-layer-materialization/v2",
+        "schema": MATERIALIZATION_SCHEMA,
         "bundle_hash": BUNDLE_HASH,
+        "base_selection": _fixture_base_selection(),
         "layer": layer,
         "scene_contracts": [
             _scene_contract(

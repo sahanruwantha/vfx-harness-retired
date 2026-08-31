@@ -173,13 +173,27 @@ def _merge_worklist_items(state: dict, new_items: list[str]) -> dict:
     return state
 
 
-def _refresh_unpaid_image_debts(comparison_state: dict, shot_dir: str | Path | None) -> list[dict]:
+def _refresh_unpaid_image_debts(
+    comparison_state: dict,
+    shot_dir: str | Path | None,
+    *,
+    selected_authority=None,
+) -> list[dict]:
     """Recompute unpaid image-contract debts from disk after propose_checks / mutation."""
 
     cards = debts_from_dicts(comparison_state.get("image_debts"))
     if not cards or not shot_dir:
         comparison_state["unpaid_image_debts"] = []
         return []
-    unpaid = [card.as_dict() for card in unpaid_image_contract_debts(cards, load_image_contract_payment_rows(shot_dir))]
+    unpaid = [
+        card.as_dict()
+        for card in unpaid_image_contract_debts(
+            cards,
+            load_image_contract_payment_rows(
+                shot_dir,
+                selected_authority=selected_authority,
+            ),
+        )
+    ]
     comparison_state["unpaid_image_debts"] = unpaid
     return unpaid

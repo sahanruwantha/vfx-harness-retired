@@ -22,6 +22,9 @@ from vfx_harness.domain.stop_transactions import (
     action_idempotency_key,
 )
 from vfx_harness.observability import run_artifacts, transcript
+from vfx_harness.orchestration.jit_materialization.view_pointer import (
+    canonical_view_hash,
+)
 
 
 def _digest(label: str) -> str:
@@ -45,7 +48,25 @@ def _write_selected_authority(
     published_at: str,
     plan_payload: bytes,
 ) -> str:
-    payloads = {"global.md": plan_payload}
+    view_documents = {
+        "layers.json": {"schema": 5, "layers": []},
+        "scene_checks.json": {"schema": 2, "contracts": []},
+        "checks.json": {"schema": 2, "checks": []},
+        "requirements.json": {
+            "schema": "vfx-harness.requirements/v2",
+            "requirements": [],
+            "judgment_debt_definitions": [],
+            "judgment_debt_activations": [],
+        },
+        "acceptance.json": [],
+    }
+    payloads = {
+        "global.md": plan_payload,
+        **{
+            name: (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
+            for name, document in view_documents.items()
+        },
+    }
     bundle_digest = _bundle_digest(payloads)
     bundle_root = (
         shot
@@ -82,7 +103,8 @@ def _write_selected_authority(
     pointer.write_text(
         json.dumps(
             {
-                "schema": "vfx-harness.plan-pointer/v1",
+                "schema": "vfx-harness.plan-pointer/v2",
+                "revision": 1,
                 "run_id": publisher,
                 "bundle": bundle_root.relative_to(shot).as_posix(),
                 "content_hash": bundle_digest,
@@ -96,34 +118,35 @@ def _write_selected_authority(
         encoding="utf-8",
     )
 
-    view_document = {"schema": 5, "layers": []}
-    view_digest = hashlib.sha256(
-        json.dumps(
-            {"layers.json": view_document},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    view_artifact = shot / "state" / "view-sources" / publisher / "layers.json"
-    view_artifact.parent.mkdir(parents=True, exist_ok=True)
-    view_artifact.write_text(
-        json.dumps(view_document, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    view_digest = canonical_view_hash(view_documents)
+    view_root = shot / "state" / "view-sources" / publisher
+    view_root.mkdir(parents=True, exist_ok=True)
+    view_artifacts: dict[str, Path] = {}
+    for name, document in view_documents.items():
+        artifact = view_root / name
+        artifact.write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        view_artifacts[name] = artifact
     view_pointer = shot / "state" / "jit-layers" / "current.json"
     view_pointer.parent.mkdir(parents=True, exist_ok=True)
     view_pointer.write_text(
         json.dumps(
             {
-                "schema": "vfx-harness.jit-layer-view/v1",
+                "schema": "vfx-harness.jit-layer-view/v2",
+                "revision": 1,
+                "plan_revision": 1,
                 "bundle_hash": bundle_digest,
                 "view_hash": view_digest,
-                "materialized_layers": ["form"],
+                "materialized_layers": [],
                 "artifacts": {
-                    "layers.json": view_artifact.relative_to(shot).as_posix(),
+                    name: artifact.relative_to(shot).as_posix()
+                    for name, artifact in view_artifacts.items()
                 },
                 "hashes": {
-                    "layers.json": hashlib.sha256(view_artifact.read_bytes()).hexdigest(),
+                    name: hashlib.sha256(artifact.read_bytes()).hexdigest()
+                    for name, artifact in view_artifacts.items()
                 },
             },
             indent=2,

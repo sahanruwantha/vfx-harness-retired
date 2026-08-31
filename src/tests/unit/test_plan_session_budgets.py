@@ -6,7 +6,27 @@ from pathlib import Path
 import pytest
 
 from vfx_harness.agents.plan_tools import _SpikeBudget
+from vfx_harness.domain.authority_head_records import (
+    PLAN_POINTER_SCHEMA,
+    canonical_json_bytes,
+)
 from vfx_harness.infrastructure.config import Settings
+
+
+def _write_selected_plan_pointer(root: Path, content_hash: str) -> None:
+    run_id = "fixture-plan"
+    pointer = {
+        "schema": PLAN_POINTER_SCHEMA,
+        "revision": 1,
+        "run_id": run_id,
+        "bundle": f"runs/{run_id}/checkpoints/plans/bundles/{content_hash}",
+        "content_hash": content_hash,
+        "outcome": "clean_with_deferred",
+        "published_at": "2026-09-01T00:00:00+00:00",
+    }
+    path = root / "plans" / "current.json"
+    path.parent.mkdir()
+    path.write_bytes(canonical_json_bytes(pointer))
 
 
 def test_spike_budget_allows_initial_attempt_and_one_failed_retry() -> None:
@@ -156,10 +176,7 @@ def test_spike_refuses_adopted_decision_and_falsification_hypotheses(tmp_path) -
     state = tmp_path / "state"
     state.mkdir()
     selected = "a" * 64
-    (tmp_path / "plans").mkdir()
-    (tmp_path / "plans" / "current.json").write_text(
-        json.dumps({"content_hash": selected}) + "\n", encoding="utf-8"
-    )
+    _write_selected_plan_pointer(tmp_path, selected)
     (state / "plan-resolutions.jsonl").write_text(
         json.dumps({
             "schema": "vfx-harness.plan-resolutions/v1",
@@ -208,10 +225,7 @@ def test_spike_refuses_check_prefixed_falsification_ids(tmp_path) -> None:
     state = tmp_path / "state"
     state.mkdir()
     selected = "b" * 64
-    (tmp_path / "plans").mkdir()
-    (tmp_path / "plans" / "current.json").write_text(
-        json.dumps({"content_hash": selected}) + "\n", encoding="utf-8"
-    )
+    _write_selected_plan_pointer(tmp_path, selected)
     (state / "plan-resolutions.jsonl").write_text(
         json.dumps({
             "schema": "vfx-harness.plan-resolutions/v1",
@@ -370,6 +384,6 @@ def test_materializer_denies_generic_write_and_requires_valid_staged_candidate()
     assert "stage_materialization_unit" in source
     assert "unstage_materialization_unit" in source
     assert "mint_refobs" in source
-    assert "materialization_finalization_attested" in source
+    assert "materialization_finalization_current" in source
     assert "accept_max_turns_if_succeeded=True" in source
     assert '"gate_preview"' not in source

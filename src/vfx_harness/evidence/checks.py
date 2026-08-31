@@ -49,12 +49,16 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PIL import Image
 
 from vfx_harness.domain.contracts import active_for, load_document, validate_lifecycle
 from vfx_harness.evidence.metrics import _prep, look_vector
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 # Where in the pipeline a measurement is valid. Both independent reviewers of the current
 # plan flagged the same defect: absolute band means measured off GRADED reference JPEGs,
@@ -491,7 +495,11 @@ def load(path: Path) -> list[Check]:
     return checks
 
 
-def load_image_contract_payment_rows(shot_folder: str | Path) -> list[dict]:
+def load_image_contract_payment_rows(
+    shot_folder: str | Path,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[dict]:
     """Planner ``checks.json`` rows plus builder ``runtime_checks.json`` payments.
 
     An image-contract debt is paid only when a row here matches the compiled card
@@ -500,8 +508,18 @@ def load_image_contract_payment_rows(shot_folder: str | Path) -> list[dict]:
     """
     root = Path(shot_folder)
     rows: list[dict] = []
-    try:
+    if selected_authority is None:
         planner_spec = selected_artifact_path(root, "checks.json")
+    elif selected_authority.plan is None:
+        planner_spec = root / "checks.json"
+    else:
+        try:
+            planner_spec = selected_authority.artifact_paths["checks.json"]
+        except KeyError as exc:
+            raise ValueError(
+                "selected image-payment authority omits checks.json"
+            ) from exc
+    try:
         for row in load_document(planner_spec, "checks"):
             if isinstance(row, dict) and row.get("id"):
                 rows.append(row)
@@ -523,7 +541,14 @@ def _matches_image_moment(row: dict, *, frame: int, ref: str) -> bool:
 
 
 def layer_evidence(
-    shot_folder: str | Path, layer_id: str, *, frame: int, ref: str, render: str | Path, stage: str = "pre_grade"
+    shot_folder: str | Path,
+    layer_id: str,
+    *,
+    frame: int,
+    ref: str,
+    render: str | Path,
+    stage: str = "pre_grade",
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> list[dict]:
     """Evaluate this layer's executable checks on the image being judged.
 
@@ -544,8 +569,16 @@ def layer_evidence(
     if not image.is_file():
         return []
     planner_rows, runtime_rows = [], []
-    try:
+    if selected_authority is None:
         planner_spec = selected_artifact_path(root, "checks.json")
+    elif selected_authority.plan is None:
+        planner_spec = root / "checks.json"
+    else:
+        try:
+            planner_spec = selected_authority.artifact_paths["checks.json"]
+        except KeyError as exc:
+            raise ValueError("selected layer-evidence authority omits checks.json") from exc
+    try:
         load(planner_spec)  # validates lifecycle and required focus metadata
         planner_rows = [
             row
@@ -614,7 +647,12 @@ def layer_evidence(
 
 
 def acceptance_evidence(
-    shot_folder: str | Path, *, frame: int, ref: str, render: str | Path
+    shot_folder: str | Path,
+    *,
+    frame: int,
+    ref: str,
+    render: str | Path,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> list[dict]:
     """Evaluate finished-chain image contracts regardless of their build lifecycle.
 
@@ -629,7 +667,14 @@ def acceptance_evidence(
         image = root / image
     if not image.is_file():
         return []
-    rows = load_document(selected_artifact_path(root, "checks.json"), "checks")
+    if selected_authority is None:
+        checks_path = selected_artifact_path(root, "checks.json")
+    else:
+        try:
+            checks_path = selected_authority.artifact_paths["checks.json"]
+        except KeyError as exc:
+            raise ValueError("selected acceptance authority omits checks.json") from exc
+    rows = load_document(checks_path, "checks")
     out = []
     for row in rows:
         if not _matches_image_moment(row, frame=frame, ref=ref):
@@ -745,7 +790,13 @@ def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
     return v
 
 
-def revalidate_layer(shot_folder: Path, layer_id: str, render_for: Callable[[Check], Path | None]) -> dict:
+def revalidate_layer(
+    shot_folder: Path,
+    layer_id: str,
+    render_for: Callable[[Check], Path | None],
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict:
     """Re-run this layer's BUILDER checks against the renders that actually shipped, and
     drop the ones that no longer hold.
 
@@ -761,6 +812,8 @@ def revalidate_layer(shot_folder: Path, layer_id: str, render_for: Callable[[Che
     longer builds, and inventing a new threshold for it here would be authoring a check
     nobody ran.
     """
+    if selected_authority is not None and selected_authority.plan is None:
+        raise ValueError("image-contract revalidation requires selected plan authority")
     spec = Path(shot_folder) / "runtime_checks.json"
     if not spec.is_file():
         return {"kept": 0, "dropped": []}

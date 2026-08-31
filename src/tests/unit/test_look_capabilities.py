@@ -261,7 +261,7 @@ def test_executable_scene_unit_does_not_require_raster(tmp_path, monkeypatch) ->
     unit = _unit("control_target")
     monkeypatch.setattr(
         "vfx_harness.evidence.scene_checks.load_rows",
-        lambda _folder: [
+        lambda _folder, _selected=None: [
             {
                 "id": "contract.control_target",
                 "kind": "object_property",
@@ -283,7 +283,7 @@ def test_functional_scene_contract_still_requires_raster(tmp_path, monkeypatch) 
     unit = _unit("response")
     monkeypatch.setattr(
         "vfx_harness.evidence.scene_checks.load_rows",
-        lambda _folder: [
+        lambda _folder, _selected=None: [
             {
                 "id": "contract.response",
                 "kind": "render_region_stat",
@@ -326,7 +326,7 @@ def test_executable_canonical_replay_never_calls_render(tmp_path, monkeypatch) -
     )
     monkeypatch.setattr(
         "vfx_harness.evidence.scene_checks.load_rows",
-        lambda _folder: [
+        lambda _folder, _selected=None: [
             {
                 "id": "contract.control_target",
                 "kind": "object_property",
@@ -399,11 +399,13 @@ def test_live_unit_render_is_guarded_by_typed_raster_need() -> None:
     from vfx_harness.agents import builder
 
     source = inspect.getsource(builder.build_unit)
-    assert "raster_required = _unit_requires_raster(shot, active_unit)" in source
+    assert "raster_required = _unit_requires_raster(" in source
+    assert "selected_authority=selected_authority" in source
     assert "if raster_required" in source
     assert "mode=_unit_raster_mode(active_unit)" in source
     revalidate_source = inspect.getsource(builder._try_revalidate)
-    assert "raster_required = _unit_requires_raster(shot, active_unit)" in revalidate_source
+    assert "raster_required = _unit_requires_raster(" in revalidate_source
+    assert "selected_authority=selected_authority" in revalidate_source
     assert "deterministic_executable_revalidation" in revalidate_source
     probe_source = inspect.getsource(builder._build_probe_candidate_server)
     assert 'raster_required = bool(probe_ctx.get("raster_required", True))' in probe_source
@@ -460,7 +462,8 @@ def test_lookless_uncovered_frame_is_contract_gap(monkeypatch) -> None:
 
     monkeypatch.setattr("vfx_harness.agents.builder._judge", _boom)
     monkeypatch.setattr(
-        "vfx_harness.evidence.scene_checks.load_rows", lambda _folder: []
+        "vfx_harness.evidence.scene_checks.load_rows",
+        lambda _folder, _selected=None: [],
     )
     unit = SimpleNamespace(
         id="cam_path_core",
@@ -504,7 +507,8 @@ def test_lookless_nonexecutable_claim_still_skips_critic(monkeypatch) -> None:
 
     monkeypatch.setattr("vfx_harness.agents.builder._judge", _boom)
     monkeypatch.setattr(
-        "vfx_harness.evidence.scene_checks.load_rows", lambda _folder: []
+        "vfx_harness.evidence.scene_checks.load_rows",
+        lambda _folder, _selected=None: [],
     )
     unit = SimpleNamespace(
         id="cam_path_core",
@@ -558,7 +562,8 @@ def test_uncovered_judge_frame_does_not_call_the_critic(monkeypatch) -> None:
 
     monkeypatch.setattr("vfx_harness.agents.builder._judge", _boom)
     monkeypatch.setattr(
-        "vfx_harness.evidence.scene_checks.load_rows", lambda _folder: []
+        "vfx_harness.evidence.scene_checks.load_rows",
+        lambda _folder, _selected=None: [],
     )
     row = {
         "id": "atmosphere",
@@ -630,7 +635,8 @@ def test_look_owning_scene_only_claims_do_not_seal_or_call_the_critic(monkeypatc
 
     monkeypatch.setattr("vfx_harness.agents.builder._judge", _boom)
     monkeypatch.setattr(
-        "vfx_harness.evidence.scene_checks.load_rows", lambda _folder: []
+        "vfx_harness.evidence.scene_checks.load_rows",
+        lambda _folder, _selected=None: [],
     )
     row = {
         "id": "materials_energy",

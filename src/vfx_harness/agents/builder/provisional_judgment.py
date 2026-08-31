@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
 
 from vfx_harness.domain.work_units import MutationScope
@@ -13,10 +14,19 @@ def _load_provisional_decisions(
     layer_id: str,
     *,
     state_loader=None,
+    selected_authority=None,
 ) -> tuple[dict, ...]:
     """Return exact current-generation debts due at one replay boundary."""
     rows: list[dict] = []
-    loader = state_loader or judgment_debt_state.current_judgment_debt_states
+    if state_loader is not None:
+        loader = state_loader
+    elif selected_authority is None:
+        loader = judgment_debt_state.current_judgment_debt_states
+    else:
+        loader = partial(
+            judgment_debt_state.current_judgment_debt_states_for_authority,
+            selected_authority=selected_authority,
+        )
     for definition, activation, state in loader(shot.folder):
         if definition.binding.activates_at != str(layer_id):
             continue

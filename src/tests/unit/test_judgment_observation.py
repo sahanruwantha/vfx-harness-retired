@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -120,13 +119,13 @@ def _patch_current_due(
 ) -> None:
     monkeypatch.setattr(
         judgment_observation,
-        "resolve_current",
-        lambda _shot: SimpleNamespace(content_hash=BUNDLE_DIGEST),
+        "_selected_snapshot",
+        lambda _shot: (object(), BUNDLE_DIGEST, BUNDLE_DIGEST),
     )
     monkeypatch.setattr(
         judgment_observation,
-        "current_judgment_debt_states",
-        lambda _shot: ((definition, activation, due),),
+        "current_judgment_debt_states_for_authority",
+        lambda _shot, _selected: ((definition, activation, due),),
     )
 
 
@@ -210,7 +209,11 @@ def test_changed_reference_environment_replay_or_view_changes_request_digest(
         receipt=_receipt(script_bytes=b"changed unit script"),
         environment=_environment(),
     )
-    monkeypatch.setattr(judgment_observation, "selected_view_digest", lambda _shot, _bundle: _digest("view-two"))
+    monkeypatch.setattr(
+        judgment_observation,
+        "_selected_snapshot",
+        lambda _shot: (object(), BUNDLE_DIGEST, _digest("view-two")),
+    )
     changed_view = _compile(tmp_path, definition, receipt=receipt, environment=_environment())
 
     assert changed_reference.digest != baseline.digest

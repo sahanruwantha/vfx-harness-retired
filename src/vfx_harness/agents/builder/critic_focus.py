@@ -27,14 +27,29 @@ from vfx_harness.evidence import scene_checks
 from vfx_harness.evidence.claim_evidence import Observation, reconcile_observations
 from vfx_harness.evidence.compare_panels import focus_signal, save_focus_sheet, validate_crop
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration.ledger import Milestone, load_layers
-from vfx_harness.orchestration.plan_authority import selected_artifact_path
+from vfx_harness.orchestration import authority_selection
+from vfx_harness.orchestration.ledger import Milestone, load_layers, load_layers_from_path
+
+
+def _snapshot_artifact(
+    shot: Shot,
+    selected_authority: authority_selection.ResolvedSelectedAuthority,
+    name: str,
+) -> Path:
+    if selected_authority.plan is None:
+        return shot.folder / name
+    try:
+        return selected_authority.artifact_paths[name]
+    except KeyError as exc:
+        raise ValueError(f"selected critic authority omits {name}") from exc
 
 
 def _focus_references(
     shot: Shot,
     m: Milestone,
     allowed_frames: list[int] | tuple[int, ...] | set[int] | None = None,
+    *,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
 ) -> dict[int, str]:
     """Reference-bearing frames that can produce an aligned optical focus panel.
 
@@ -46,7 +61,12 @@ def _focus_references(
     references = {int(m.frame): str(m.ref)}
     layer_id = str(m.id).split("@", 1)[0]
     try:
-        layer = load_layers(shot).get(layer_id)
+        selected = selected_authority or authority_selection.resolve_selected_authority(
+            shot.folder
+        )
+        layer = load_layers_from_path(
+            _snapshot_artifact(shot, selected, "layers.json")
+        ).get(layer_id)
     except (FileNotFoundError, ValueError, json.JSONDecodeError):
         layer = None
     if layer is not None:
@@ -218,6 +238,7 @@ def _required_focus_requests(
     axes: list[tuple[str, str]],
     *,
     layers: dict | None = None,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
 ) -> list[dict]:
     """Load planner-declared optical evidence that must reach the first judge.
 
@@ -226,11 +247,20 @@ def _required_focus_requests(
     path into deterministic evidence acquisition for every shot.
     """
 
-    path = selected_artifact_path(shot.folder, "checks.json")
+    selected = selected_authority or authority_selection.resolve_selected_authority(
+        shot.folder
+    )
+    path = _snapshot_artifact(shot, selected, "checks.json")
     if not path.is_file():
         return []
     try:
-        loaded = layers if layers is not None else load_layers(shot)
+        loaded = (
+            layers
+            if layers is not None
+            else load_layers_from_path(
+                _snapshot_artifact(shot, selected, "layers.json")
+            )
+        )
         reference_by_frame = {
             int(judge_frame): str(ref) for judge_frame, ref in loaded[str(layer_id)].judges
         }
@@ -275,7 +305,12 @@ def _required_focus_requests(
 
 
 def _claim_context(
-    shot: Shot, m: Milestone, *, enabled: bool, active_unit=None
+    shot: Shot,
+    m: Milestone,
+    *,
+    enabled: bool,
+    active_unit=None,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
 ) -> tuple[list[dict], dict[str, frozenset[str]], set[str]]:
     """Return only claims that are active at this exact judge moment.
 
@@ -291,7 +326,14 @@ def _claim_context(
         units = (active_unit,)
     else:
         try:
-            units = load_layers(shot)[layer_id].stages
+            if selected_authority is not None and selected_authority.plan is None:
+                loaded_layers = load_layers_from_path(shot.folder / "layers.json")
+            else:
+                loaded_layers = load_layers(
+                    shot,
+                    selected_authority=selected_authority,
+                )
+            units = loaded_layers[layer_id].stages
         except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
             return [], {}, set()
     claims, bindings, qualified = [], {}, set()
@@ -517,13 +559,24 @@ def _canonical_failing_ids(verdicts: list) -> set[str]:
     return ids
 
 
-def _unsatisfiable_pair_findings(shot: Shot, failing_ids: set[str]) -> list[dict]:
+def _unsatisfiable_pair_findings(
+    shot: Shot,
+    failing_ids: set[str],
+    *,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
+) -> list[dict]:
     """Schedule vs smoothness pairs that failing evidence has already proved unsatisfiable."""
 
     if not failing_ids:
         return []
     try:
-        rows = scene_checks.load_rows(shot.folder)
+        selected = selected_authority or authority_selection.resolve_selected_authority(
+            shot.folder
+        )
+        rows = load_document(
+            _snapshot_artifact(shot, selected, "scene_checks.json"),
+            "contracts",
+        )
     except (OSError, ValueError, KeyError):
         return []
     return [

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
 from claude_agent_sdk import (
@@ -48,8 +49,17 @@ from vfx_harness.orchestration import generate_construction as generate_construc
 from vfx_harness.orchestration.layer_plans import read_layer_plan, read_work_unit_plan
 from vfx_harness.orchestration.ledger import Ledger, load_layers
 
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
-def _prior_layer_paths(shot: Shot, layer, *, force: bool = False) -> list[Path]:
+
+def _prior_layer_paths(
+    shot: Shot,
+    layer,
+    *,
+    force: bool = False,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> list[Path]:
     """Layer scripts that must run before this layer: all EXISTING build/NN_*.py with a
     lower numeric prefix, in order. Each layer stacks on the ones before it.
 
@@ -68,7 +78,8 @@ def _prior_layer_paths(shot: Shot, layer, *, force: bool = False) -> list[Path]:
     # interrupted layer leaves a script that would silently join the chain (a killed
     # seam layer left an un-critiqued 40_seam.py queued for the two after it).
     try:
-        ledger, layers = Ledger(shot), load_layers(shot)
+        ledger = Ledger(shot, selected_authority=selected_authority)
+        layers = load_layers(shot, selected_authority=selected_authority)
     except Exception as e:
         log(f"! chaining WITHOUT the ledger cross-check: {str(e)[:70]}")
         return found
@@ -155,10 +166,27 @@ def _run_prior_paths(session: BlenderSession, paths: list[Path]) -> list[str]:
     return names
 
 
-def _plan_layer_excerpt(shot: Shot, layer, unit=None) -> str:
+def _plan_layer_excerpt(
+    shot: Shot,
+    layer,
+    unit=None,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> str:
     """The layer's just-in-time execution plan; giant-plan fallback is forbidden."""
 
-    return read_work_unit_plan(shot.folder, layer, unit) if unit is not None else read_layer_plan(shot.folder, layer)
+    if unit is not None:
+        return read_work_unit_plan(
+            shot.folder,
+            layer,
+            unit,
+            selected_authority=selected_authority,
+        )
+    return read_layer_plan(
+        shot.folder,
+        layer,
+        selected_authority=selected_authority,
+    )
 
 
 def _preamble(shot: Shot) -> str:
@@ -191,6 +219,7 @@ def _builder_options(
     script_rel: str | None = None,
     phase: dict[str, str] | None = None,
     ticket_context: str | None = None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         model=builder_model(),
@@ -201,7 +230,12 @@ def _builder_options(
         ),
         cwd=str(shot.folder),
         hooks=builder_hooks(
-            shot.folder, [shot.folder, RECIPES_DIR], ref_rel=ref_rel, script_rel=script_rel, phase=phase
+            shot.folder,
+            [shot.folder, RECIPES_DIR],
+            ref_rel=ref_rel,
+            script_rel=script_rel,
+            phase=phase,
+            selected_authority=selected_authority,
         ),
         mcp_servers=mcp_servers,
         # LIVE_BUILD owns the warm Blender scene, never the artifact on disk.  Write/Edit
@@ -304,7 +338,11 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
             frames_out = []
             for frame, ref in probe_ctx["judges"]:
                 rows = scene_layer_evidence(
-                    shot.folder, str(probe_ctx["layer_id"]), frame=int(frame), session=verify
+                    shot.folder,
+                    str(probe_ctx["layer_id"]),
+                    frame=int(frame),
+                    session=verify,
+                    selected_authority=probe_ctx.get("selected_authority"),
                 )
                 image_render = None
                 image_rows = []
@@ -317,6 +355,7 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
                         ref=str(ref),
                         render=image_render,
                         stage=str(probe_ctx.get("image_stage") or "pre_grade"),
+                        selected_authority=probe_ctx.get("selected_authority"),
                     )
                 evidence_ids_by_frame = probe_ctx.get("evidence_ids_by_frame")
                 allowed_evidence_ids = (
@@ -464,7 +503,13 @@ def _script_options(
         model=script_model(),
         system_prompt=_SCRIPT_SYSTEM,
         cwd=str(shot.folder),
-        hooks=builder_hooks(shot.folder, [shot.folder], script_rel=script_rel, phase=phase),
+        hooks=builder_hooks(
+            shot.folder,
+            [shot.folder],
+            script_rel=script_rel,
+            phase=phase,
+            selected_authority=(probe_ctx or {}).get("selected_authority"),
+        ),
         mcp_servers=mcp_servers,
         allowed_tools=(
             [*(["Read", "Write", "Glob"] if finalize else ["Read", "Edit", "Grep"]), *probe_tools]

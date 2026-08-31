@@ -17,6 +17,7 @@ frame it answers for, measured targets) plus the rules that must never be summar
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vfx_harness.agents.unit_scope import compile_scope_with_predecessors, format_unit_scope_card, helper_inventory
 from vfx_harness.domain.brief import Shot
@@ -25,6 +26,9 @@ from vfx_harness.orchestration.escalate import answers_block, open_block
 from vfx_harness.orchestration.layer_plans import amendment_block, prior_outcomes_block, work_unit_plan_path
 from vfx_harness.orchestration.layer_state import as_prompt_block
 from vfx_harness.orchestration.unit_state import load as load_unit_state
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 _HEADER = "<!-- generated per layer run by vfx_harness.agents.shot_context — safe to overwrite -->"
 
@@ -37,6 +41,7 @@ def write_layer_context(
     *,
     unit=None,
     layer_units=None,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> Path:
     """Write shots/<id>/CLAUDE.md for this layer. Returns the path."""
     fingerprints = fingerprints or {}
@@ -65,7 +70,11 @@ def write_layer_context(
         hierarchical = "\n\n".join(
             block for block in (
                 amendment_block(shot.folder, str(layer.id)),
-                prior_outcomes_block(shot.folder, str(layer.id)),
+                prior_outcomes_block(
+                    shot.folder,
+                    str(layer.id),
+                    selected_authority=selected_authority,
+                ),
             ) if block
         )
         if hierarchical:
@@ -79,7 +88,11 @@ def write_layer_context(
                 "requires the active unit explicitly"
             )
         unit = layer.stages[0]
-    plan_path = work_unit_plan_path(shot.folder, unit)
+    plan_path = work_unit_plan_path(
+        shot.folder,
+        unit,
+        selected_authority=selected_authority,
+    )
     plan_rel = plan_path.relative_to(shot.folder).as_posix()
     dependency_rows = ", ".join(unit.depends_on) or "none"
     mutation_rows = "\n".join(
@@ -94,7 +107,7 @@ def write_layer_context(
         for claim in unit.evaluation.claims
     )
     try:
-        contracts = load_rows(shot.folder)
+        contracts = load_rows(shot.folder, selected_authority)
     except (OSError, ValueError):
         contracts = []
     try:

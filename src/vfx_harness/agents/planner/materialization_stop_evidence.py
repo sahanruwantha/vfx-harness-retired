@@ -20,10 +20,11 @@ from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.orchestration import plan_authority
 from vfx_harness.orchestration.jit_materialization.schema import (
     CURRENT,
-    FINALIZATION_SCHEMA,
     MATERIALIZATION_SCHEMA,
     OVERLAY_ARTIFACTS,
+    materialization_finalization_attested,
     materialization_finalization_path,
+    read_materialization_finalization,
 )
 from vfx_harness.orchestration.jit_materialization.view_pointer import (
     JitViewPointerError,
@@ -38,6 +39,7 @@ from vfx_harness.orchestration.layer_outcome_paths import (
 
 if TYPE_CHECKING:
     from vfx_harness.observability.run_artifacts import RunLayout
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
     from vfx_harness.orchestration.plan_authority import PlanBundle
 
 
@@ -172,6 +174,7 @@ def _selected_view_state(
     layout: RunLayout,
     *,
     bundle_digest: str,
+    selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> tuple[dict[str, Any], str | None, tuple[str, ...], dict[str, Any]]:
     pointer, payload = read_file(
         layout.shot / CURRENT,
@@ -179,6 +182,15 @@ def _selected_view_state(
     )
     audit: dict[str, Any] = {"pointer_record": pointer}
     if payload is None:
+        if (
+            selected_authority is not None
+            and selected_authority.selection_token.jit_revision != 0
+        ):
+            return {
+                "selection": "invalid",
+                "pointer": _presence_record(pointer),
+                "reason": "changed_after_snapshot",
+            }, None, ("selected_view_pointer_changed_after_snapshot",), audit
         if pointer["state"] == "missing":
             return {
                 "selection": "absent",
@@ -197,6 +209,16 @@ def _selected_view_state(
             "pointer": _presence_record(pointer),
             "reason": "malformed",
         }, None, ("selected_view_pointer_malformed",), audit
+    if (
+        selected_authority is not None
+        and pointer.get("sha256")
+        != selected_authority.selection_token.jit_pointer_sha256
+    ):
+        return {
+            "selection": "invalid",
+            "pointer": _presence_record(pointer),
+            "reason": "changed_after_snapshot",
+        }, None, ("selected_view_pointer_changed_after_snapshot",), audit
     try:
         selected = parse_jit_view_pointer(value)
     except JitViewPointerError as exc:
@@ -206,15 +228,6 @@ def _selected_view_state(
             "reason": exc.code,
         }, None, (f"selected_view_pointer_{exc.code}_invalid",), audit
     audit["pointer_document"] = value
-
-    if selected.bundle_hash != bundle_digest:
-        state = {
-            "selection": "superseded",
-            "pointer": _presence_record(pointer),
-            "observed_bundle_digest": selected.bundle_hash,
-            "observed_view_digest": selected.view_hash,
-        }
-        return state, None, (), audit
 
     documents: dict[str, Any] = {}
     artifact_state: dict[str, Any] = {}
@@ -250,10 +263,6 @@ def _selected_view_state(
         issues.append("selected_view_aggregate_mismatch")
     audit["artifact_records"] = artifact_audit
     if issues:
-        # The selected pointer fields are semantic authority, while bytes that fail
-        # their declared content identities are merely observations of a broken
-        # harness input.  Keep those raw records in the audit sidecar so run-local
-        # metadata cannot manufacture a new recovery attempt.
         state = {
             "selection": "invalid",
             "pointer": _presence_record(pointer),
@@ -263,6 +272,22 @@ def _selected_view_state(
             "reason_codes": sorted(set(issues)),
         }
         return state, None, tuple(sorted(set(issues))), audit
+    expected_plan_revision = (
+        selected_authority.plan.revision
+        if selected_authority is not None and selected_authority.plan is not None
+        else selected.plan_revision
+    )
+    if (
+        selected.bundle_hash != bundle_digest
+        or selected.plan_revision != expected_plan_revision
+    ):
+        state = {
+            "selection": "superseded",
+            "pointer": _presence_record(pointer),
+            "observed_bundle_digest": selected.bundle_hash,
+            "observed_view_digest": selected.view_hash,
+        }
+        return state, None, (), audit
     state = {
         "selection": "verified",
         "pointer": _presence_record(pointer),
@@ -280,6 +305,7 @@ def authority_before(
     *,
     layer_id: str,
     overlay_root: Path | None,
+    selected_authority: ResolvedSelectedAuthority | None,
 ) -> tuple[
     dict[str, Any],
     str,
@@ -297,11 +323,14 @@ def authority_before(
         bundle.root / "bundle.json",
         locator="selected-bundle/bundle.json",
     )
-    try:
-        current = plan_authority.resolve_current(layout.shot)
-    except (OSError, TypeError, ValueError, plan_authority.PlanPublicationError):
-        current = None
+    current = selected_authority.plan.bundle if (
+        selected_authority is not None and selected_authority.plan is not None
+    ) else None
+    if selected_authority is None:
         issues.append("selected_bundle_unresolvable")
+    elif pointer.get("sha256") != selected_authority.selection_token.plan_pointer_sha256:
+        current = None
+        issues.append("selected_bundle_changed_after_snapshot")
     if pointer_bytes is None:
         issues.append(f"selected_bundle_pointer_{pointer['state']}")
     if manifest_bytes is None:
@@ -373,13 +402,16 @@ def authority_before(
     view_state, view_digest, view_issues, view_audit = _selected_view_state(
         layout,
         bundle_digest=bundle.content_hash,
+        selected_authority=selected_authority,
     )
     issues.extend(view_issues)
     dependency_layers: dict[str, Any] = {}
     if dependencies:
         try:
+            if selected_authority is None:
+                raise ValueError("selected authority snapshot is unavailable")
             dependency_layers = ledger.load_layers_from_path(
-                plan_authority.selected_artifact_path(layout.shot, "layers.json")
+                selected_authority.artifact_paths["layers.json"]
             )
         except (
             OSError,
@@ -538,24 +570,20 @@ def current_finalization(
         return content_record(record), False, ()
     issues: list[str] = []
     try:
-        value = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return content_record(record), False, ("finalization_malformed",)
-    if not isinstance(value, dict) or set(value) != {
-        "schema",
-        "bundle_hash",
-        "candidate_revision",
-    }:
-        issues.append("finalization_shape_invalid")
-        value = {}
-    if value.get("schema") != FINALIZATION_SCHEMA:
-        issues.append("finalization_schema_unsupported")
-    if value.get("bundle_hash") != bundle_digest:
+        finalization = read_materialization_finalization(candidate)
+    except (OSError, ValueError):
+        return content_record(record), False, ("finalization_invalid",)
+    if finalization.bundle_hash != bundle_digest:
         issues.append("finalization_bundle_mismatch")
-    revision = value.get("candidate_revision")
-    if not _is_digest(revision):
-        issues.append("finalization_revision_invalid")
-    current = not issues and candidate_digest is not None and revision == candidate_digest
+    current = (
+        not issues
+        and candidate_digest is not None
+        and finalization.candidate_revision == candidate_digest
+        and materialization_finalization_attested(
+            candidate,
+            bundle_hash=bundle_digest,
+        )
+    )
     return content_record(record), current, tuple(sorted(set(issues)))
 
 

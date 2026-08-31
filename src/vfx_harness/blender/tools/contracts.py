@@ -35,6 +35,7 @@ def register_contracts(
     _black_frame_note,
     _black_search_stop,
     _register_candidate,
+    selected_authority=None,
 ):
     @tool(
         "check_scene",
@@ -163,12 +164,22 @@ def register_contracts(
         if cid in scene_ids | diagnostic_ids:
             try:
 
-                source = next(row for row in load_rows(shot_dir) if str(row.get("id")) == cid)
+                source = next(
+                    row
+                    for row in load_rows(shot_dir, selected_authority)
+                    if str(row.get("id")) == cid
+                )
                 frames = source.get("frames") or [source.get("frame", comparison_state.get("frame", 1))]
                 rows: list[dict] = []
                 for frame in frames:
                     measured = await anyio.to_thread.run_sync(
-                        lambda f=int(frame): layer_evidence(shot_dir, str(layer_id), frame=f, session=session)
+                        lambda f=int(frame): layer_evidence(
+                            shot_dir,
+                            str(layer_id),
+                            frame=f,
+                            session=session,
+                            selected_authority=selected_authority,
+                        )
                     )
                     rows.extend(row for row in measured if str(row.get("id")) == cid)
             except (StopIteration, OSError, ValueError, BlenderError) as exc:
@@ -199,7 +210,10 @@ def register_contracts(
             )
         try:
 
-            layer = load_layers(type("ShotRef", (), {"folder": shot_dir})())[str(layer_id)]
+            layer = load_layers(
+                type("ShotRef", (), {"folder": shot_dir})(),
+                selected_authority=selected_authority,
+            )[str(layer_id)]
             ref = dict(layer.judges).get(int(record["frame"]), "")
             rows = image_layer_evidence(
                 shot_dir,
@@ -208,6 +222,7 @@ def register_contracts(
                 ref=str(ref),
                 render=str(record["path"]),
                 stage=("post_grade" if any("grade" in axis.lower() for axis in layer.owns) else "pre_grade"),
+                selected_authority=selected_authority,
             )
         except (OSError, ValueError, KeyError) as exc:
             return _text(f"could not evaluate image contract {cid}: {exc}", is_error=True)

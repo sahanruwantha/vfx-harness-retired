@@ -190,11 +190,20 @@ future amendment dispatch while retaining strict read verification remains the s
 
 ## Remaining limitations
 
-Plan and JIT pointer schemas still have no monotone revision, shared selection lock, or
-compare-and-swap token. Read/verify/reread is not ABA protection, durable multi-pointer commit,
-or proof against concurrent publication. Pointer replacement also does not yet claim the full
-fsync/commit protocol required by an amendment transaction. Cryptographic authenticity,
-signatures, and hard-link substitution defense are separate concerns.
+Supersession note (2026-09-01): accepted HIR-0168 implements the monotone plan/JIT revisions,
+shared selection lock, exact two-head
+compare-and-swap token, durable pointer replacement, and snapshot-bound publication that
+supersede the pointer/ABA limitation recorded in the next paragraph. That paragraph remains the
+historical boundary of HIR-0167 when it was accepted; HIR-0168 does not change this record's
+semantic selected-authority or amendment-classification mechanism. The amendment-adapter and
+controller limitations below remain current.
+
+At HIR-0167 acceptance time, plan and JIT pointer schemas had no monotone revision, shared
+selection lock, or compare-and-swap token. Its read/verify/reread mechanism was therefore not ABA
+protection, durable multi-pointer commit, or proof against concurrent publication. HIR-0168
+supersedes that historical limitation with revisioned heads, exact two-head CAS, and durable
+replacement; cryptographic authenticity, signatures, and hard-link substitution defense remain
+separate concerns.
 
 The current global planning stop does not yet authenticate the complete planning-input and
 rejected-candidate authority surface needed to reconstruct or promote one exact successor.

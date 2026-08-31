@@ -23,6 +23,9 @@ from vfx_harness.domain.judgment_debts import (
     compile_judgment_debt,
 )
 from vfx_harness.orchestration import judgment_payment_attempts
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionToken,
+)
 
 
 def _digest(label: str) -> str:
@@ -110,15 +113,27 @@ def _patch_current_due(
     activation: JudgmentDebtActivation,
     state: JudgmentDebtState,
 ) -> None:
+    selected = SimpleNamespace(
+        assertion=SimpleNamespace(
+            selection="selected",
+            bundle=SimpleNamespace(digest=BUNDLE_DIGEST),
+        ),
+        selection_token=AuthoritySelectionToken(
+            plan_revision=0,
+            plan_pointer_sha256=None,
+            jit_revision=0,
+            jit_pointer_sha256=None,
+        ),
+    )
     monkeypatch.setattr(
-        judgment_payment_attempts.plan_authority,
-        "resolve_current",
-        lambda _shot: SimpleNamespace(content_hash=BUNDLE_DIGEST),
+        judgment_payment_attempts,
+        "resolve_selected_authority",
+        lambda _shot: selected,
     )
     monkeypatch.setattr(
         judgment_payment_attempts.judgment_debt_state,
-        "current_judgment_debt_states",
-        lambda _shot: ((definition, activation, state),),
+        "current_judgment_debt_states_for_authority",
+        lambda _shot, _selected: ((definition, activation, state),),
     )
 
 
@@ -174,6 +189,35 @@ def test_rejects_conflicting_failure_for_the_same_current_request(
         judgment_payment_attempts.record_payment_attempt_failure(
             tmp_path, request, _failure(request, label="conflict")
         )
+
+
+def test_record_refuses_selection_change_before_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    definition, activation, due = _due_authority()
+    _patch_current_due(monkeypatch, definition, activation, due)
+    request = _request(definition, activation)
+    changed = AuthoritySelectionToken(
+        plan_revision=1,
+        plan_pointer_sha256=_digest("changed-plan-pointer"),
+        jit_revision=0,
+        jit_pointer_sha256=None,
+    )
+    monkeypatch.setattr(
+        judgment_payment_attempts,
+        "read_authority_selection_heads",
+        lambda _shot: SimpleNamespace(token=changed),
+    )
+
+    with pytest.raises(ValueError, match="authority selection changed"):
+        judgment_payment_attempts.record_payment_attempt_failure(
+            tmp_path,
+            request,
+            _failure(request),
+        )
+
+    assert not (tmp_path / "state" / judgment_payment_attempts.EVENTS).exists()
 
 
 def test_ignores_valid_superseded_bundle_or_activation_rows(

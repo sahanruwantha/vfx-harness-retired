@@ -59,15 +59,21 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vfx_harness.domain.authority_head_records import decode_canonical_json_object
 from vfx_harness.domain.work_units import read_document
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.jit_materialization.view_pointer import (
     JitViewPointerError,
     canonical_view_hash,
+    materialized_layers_from_document,
     parse_jit_view_pointer,
     require_materialized_layers_match,
 )
-from vfx_harness.orchestration.plan_authority import CONSUMER_VIEW_SCHEMA, resolve_current
+from vfx_harness.orchestration.plan_authority import resolve_published_bundle
+from vfx_harness.orchestration.plan_consumer_view import (
+    OVERLAY_ARTIFACTS,
+    PlanConsumerViewMarker,
+)
 
 # A path-looking token in the plan prose. Two shapes, because plans cite both ways and a
 # checker blind to one of them is worse than no checker: it reports "citations resolve"
@@ -122,18 +128,47 @@ def _materialized_view(folder: Path) -> tuple[set[str], set[str]]:
     for another bundle, or whose pinned hash does not match the staged bytes grants
     NOTHING, so the strict pre-materialization reading always remains the fallback.
     """
+    marker_path = folder / ".plan-consumer-view.json"
+    if marker_path.is_file():
+        try:
+            marker = PlanConsumerViewMarker.from_bytes(marker_path.read_bytes())
+            documents: dict[str, object] = {}
+            for name in OVERLAY_ARTIFACTS:
+                staged = folder / name
+                if (
+                    not staged.is_file()
+                    or hashlib.sha256(staged.read_bytes()).hexdigest()
+                    != marker.artifact_hashes[name]
+                ):
+                    return set(), set()
+                documents[name] = json.loads(staged.read_text(encoding="utf-8"))
+            if marker.view_source != "jit":
+                return set(), set()
+            if canonical_view_hash(documents) != marker.view_digest:
+                return set(), set()
+            return (
+                set(materialized_layers_from_document(documents["layers.json"])),
+                set(marker.artifact_hashes),
+            )
+        except (
+            JitViewPointerError,
+            OSError,
+            UnicodeDecodeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return set(), set()
+
     pointer_path = folder / "state" / "jit-layers" / "current.json"
     if not pointer_path.is_file():
         return set(), set()
     try:
         selected = parse_jit_view_pointer(
-            json.loads(pointer_path.read_text(encoding="utf-8"))
+            decode_canonical_json_object(
+                pointer_path.read_bytes(),
+                "selected JIT pointer",
+            )
         )
-        marker_path = folder / ".plan-consumer-view.json"
-        if marker_path.is_file():
-            marker = json.loads(marker_path.read_text(encoding="utf-8"))
-            if selected.bundle_hash != marker.get("content_hash"):
-                return set(), set()
         documents: dict[str, object] = {}
         for name, expected in selected.hashes.items():
             staged = folder / name
@@ -163,23 +198,21 @@ def _global_authority_layers(folder: Path, consumer_layers: list[dict]) -> list[
     bundle. Reading those predicates from the overlaid execution row forgets exactly
     the interfaces that made the materialization legal.
 
-    The marker is not trusted by path alone: resolve the shot's selected bundle and
-    require the marker's root and digest to match it. Any malformed or stale marker
-    falls back to the consumer rows, which preserves the existing fail-closed result.
+    The marker is not trusted by path alone: resolve and fully verify the exact immutable
+    bundle named by the snapshot. A later global selection is irrelevant to this gate
+    attempt; the publication CAS decides whether this snapshot may still commit.
     """
     marker_path = folder / ".plan-consumer-view.json"
     if not marker_path.is_file():
         return consumer_layers
     try:
-        marker = json.loads(marker_path.read_text(encoding="utf-8"))
-
-        if marker.get("schema") != CONSUMER_VIEW_SCHEMA:
-            return consumer_layers
-        bundle = resolve_current(Path(str(marker["shot"])).resolve())
-        if (
-            bundle.root != Path(str(marker["bundle"])).resolve()
-            or bundle.content_hash != marker.get("content_hash")
-        ):
+        marker = PlanConsumerViewMarker.from_bytes(marker_path.read_bytes())
+        bundle = resolve_published_bundle(
+            marker.shot,
+            run_id=marker.bundle_run_id,
+            content_hash=marker.content_hash,
+        )
+        if bundle.root != marker.bundle:
             return consumer_layers
         document = json.loads((bundle.root / "layers.json").read_text(encoding="utf-8"))
         rows = document.get("layers") if document.get("schema") == 5 else None

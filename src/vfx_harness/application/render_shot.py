@@ -10,23 +10,65 @@ a module so the `vfx_harness` package imports resolve:
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
+import os
 import re
+import stat
 import subprocess
+import tempfile
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 
 from vfx_harness.agents.acceptance_stop import require_current_accepted_outcome
 from vfx_harness.agents.builder import _RESET, _preamble, _run_artifact_script
+from vfx_harness.application.final_render_snapshot import (
+    FinalRenderSnapshot,
+    FinalRenderSnapshotError,
+    capture_final_render_snapshot,
+    final_render_state_locks,
+    require_snapshot_inputs_current,
+)
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration import authority_selection
+from vfx_harness.orchestration.authority_selection_heads import (
+    AuthoritySelectionHeadError,
+    read_authority_selection_heads,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    authority_selection_lock,
+    require_matching_authority_selection_token,
+)
 from vfx_harness.orchestration.ledger import Ledger
 from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
 
 
 class IncompleteRender(RuntimeError):
     """The deliverable was asked for before the chain that produces it is accepted."""
+
+
+class FinalRenderPublicationError(RuntimeError):
+    """The tentative final-media publication could not commit or roll back exactly."""
+
+
+@dataclass(frozen=True, slots=True)
+class _MediaRevision:
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedMediaRevision:
+    device: int
+    inode: int
+    content: _MediaRevision
 
 
 def _render_output_path(
@@ -58,6 +100,7 @@ def _chain_scripts(
     *,
     force: bool = False,
     expected_bundle_digest: str | None = None,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
 ) -> list[Path]:
     """The layer delta scripts to run, in order, taken from the LEDGER's manifest.
 
@@ -74,6 +117,7 @@ def _chain_scripts(
     layers = list(
         selected_layer_chain(
             shot,
+            selected_authority=selected_authority,
             expected_bundle_digest=expected_bundle_digest,
         )
     )
@@ -89,7 +133,7 @@ def _chain_scripts(
             raise FileNotFoundError(f"no layer matching {upto!r} in the plan")
         layers = layers[: matching[-1] + 1]
 
-    ledger = Ledger(shot)
+    ledger = Ledger(shot, selected_authority=selected_authority)
     scripts, problems = [], []
     for g in layers:
         p = shot.folder / g.script
@@ -118,14 +162,358 @@ def _chain_scripts(
     return scripts
 
 
+def _staged_render_path(output: Path) -> Path:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.stem}.pending-",
+        suffix=output.suffix or ".mp4",
+        dir=output.parent,
+    )
+    os.close(descriptor)
+    return Path(temporary_name)
+
+
+def _fsync_parent(path: Path) -> None:
+    descriptor = os.open(
+        path.parent,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _digest_descriptor(descriptor: int) -> _MediaRevision:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    size = 0
+    while chunk := os.read(descriptor, 1024 * 1024):
+        digest.update(chunk)
+        size += len(chunk)
+    return _MediaRevision(size=size, sha256=digest.hexdigest())
+
+
+def _read_owned_media(
+    path: Path,
+    *,
+    where: str,
+    sync: bool = False,
+) -> _OwnedMediaRevision:
+    flags = (
+        (os.O_RDWR if sync else os.O_RDONLY)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise FinalRenderPublicationError(
+            f"{where} must be a readable real regular file: {path}"
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise FinalRenderPublicationError(
+                f"{where} must be a regular file: {path}"
+            )
+        if sync:
+            os.fsync(descriptor)
+        content = _digest_descriptor(descriptor)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) or content.size != after.st_size:
+            raise FinalRenderPublicationError(f"{where} changed while it was read")
+        return _OwnedMediaRevision(
+            device=after.st_dev,
+            inode=after.st_ino,
+            content=content,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _copy_output_predecessor(
+    output: Path,
+) -> tuple[Path | None, _MediaRevision | None]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source = os.open(output, flags)
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        raise FinalRenderPublicationError(
+            f"existing final render must be a readable real regular file: {output}"
+        ) from exc
+
+    backup_descriptor: int | None = None
+    backup: Path | None = None
+    try:
+        before = os.fstat(source)
+        if not stat.S_ISREG(before.st_mode):
+            raise FinalRenderPublicationError(
+                f"existing final render must be a regular file: {output}"
+            )
+        backup_descriptor, backup_name = tempfile.mkstemp(
+            prefix=f".{output.name}.predecessor-",
+            suffix=".mp4",
+            dir=output.parent,
+        )
+        backup = Path(backup_name)
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := os.read(source, 1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(backup_descriptor, view)
+                view = view[written:]
+        os.fsync(backup_descriptor)
+        after = os.fstat(source)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) or size != after.st_size:
+            raise FinalRenderPublicationError(
+                "existing final render changed while its exact predecessor was preserved"
+            )
+        revision = _MediaRevision(size=size, sha256=digest.hexdigest())
+        os.close(backup_descriptor)
+        backup_descriptor = None
+        _fsync_parent(backup)
+        return backup, revision
+    except BaseException:
+        if backup_descriptor is not None:
+            os.close(backup_descriptor)
+        if backup is not None:
+            with suppress(FileNotFoundError):
+                backup.unlink()
+        raise
+    finally:
+        os.close(source)
+
+
+def _require_owned_output(output: Path, expected: _OwnedMediaRevision) -> None:
+    observed = _read_owned_media(output, where="tentative final render")
+    if observed != expected:
+        raise FinalRenderPublicationError(
+            "final-render rollback refused because another writer replaced or changed "
+            "the tentative output"
+        )
+
+
+def _restore_output_predecessor(
+    output: Path,
+    tentative: _OwnedMediaRevision,
+    backup: Path | None,
+    predecessor: _MediaRevision | None,
+) -> None:
+    _require_owned_output(output, tentative)
+    if backup is None:
+        if predecessor is not None:
+            raise FinalRenderPublicationError(
+                "final-render predecessor state is internally inconsistent"
+            )
+        output.unlink()
+        _fsync_parent(output)
+        if output.exists() or output.is_symlink():
+            raise FinalRenderPublicationError(
+                "final-render rollback did not restore output absence"
+            )
+        return
+    if predecessor is None:
+        raise FinalRenderPublicationError(
+            "final-render predecessor state is internally inconsistent"
+        )
+    backup_revision = _read_owned_media(
+        backup,
+        where="preserved final-render predecessor",
+    )
+    if backup_revision.content != predecessor:
+        raise FinalRenderPublicationError(
+            "preserved final-render predecessor changed before rollback"
+        )
+    os.replace(backup, output)
+    _fsync_parent(output)
+    restored = _read_owned_media(output, where="restored final render")
+    if restored.content != predecessor:
+        raise FinalRenderPublicationError(
+            "final-render rollback did not restore the exact predecessor bytes"
+        )
+
+
+def _publish_media_transaction(
+    staged: Path,
+    output: Path,
+    *,
+    postcondition: Callable[[], None],
+) -> None:
+    tentative = _read_owned_media(
+        staged,
+        where="completed staged final render",
+        sync=True,
+    )
+    backup, predecessor = _copy_output_predecessor(output)
+    published = False
+    retain_backup = False
+    try:
+        os.replace(staged, output)
+        published = True
+        _fsync_parent(output)
+        postcondition()
+    except BaseException:
+        if published:
+            try:
+                _restore_output_predecessor(
+                    output,
+                    tentative,
+                    backup,
+                    predecessor,
+                )
+                backup = None
+            except BaseException as rollback_error:
+                retain_backup = backup is not None and backup.exists()
+                raise FinalRenderPublicationError(
+                    "final-render postcondition failed and exact predecessor rollback failed; "
+                    f"preserved predecessor={backup if retain_backup else None}"
+                ) from rollback_error
+        raise
+    finally:
+        if backup is not None and not retain_backup:
+            with suppress(FileNotFoundError):
+                backup.unlink()
+    _fsync_parent(output)
+
+
+@contextmanager
+def _final_render_output_lock(output: Path) -> Iterator[None]:
+    lock = output.with_name(f".{output.name}.publish.lock")
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(lock, flags, 0o600)
+    except OSError as exc:
+        raise FinalRenderPublicationError(
+            f"final-render publication lock must be a real regular file: {lock}"
+        ) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise FinalRenderPublicationError(
+                f"final-render publication lock must be a regular file: {lock}"
+            )
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            os.fsync(descriptor)
+            _fsync_parent(lock)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def _require_final_render_authority_current(
+    shot: Shot,
+    snapshot: FinalRenderSnapshot,
+) -> None:
+    current_selected = authority_selection.resolve_selected_authority(shot.folder)
+    if (
+        current_selected.selection_token
+        != snapshot.selected_authority.selection_token
+        or current_selected.assertion != snapshot.selected_authority.assertion
+    ):
+        raise FinalRenderSnapshotError("selected authority changed during final render")
+    current_outcome = require_current_accepted_outcome(shot, current_selected)
+    if current_outcome.digest != snapshot.outcome_digest:
+        raise FinalRenderSnapshotError("accepted outcome changed during final render")
+    require_snapshot_inputs_current(shot, snapshot)
+
+
+def _publish_final_render(
+    shot: Shot,
+    staged: Path,
+    output: Path,
+    snapshot: FinalRenderSnapshot,
+) -> None:
+    """Tentatively publish, postverify, and restore the predecessor on conflict."""
+
+    try:
+        with _final_render_output_lock(output), authority_selection_lock(
+            shot.folder,
+            exclusive=False,
+        ):
+            observed = read_authority_selection_heads(shot.folder)
+            require_matching_authority_selection_token(
+                snapshot.selected_authority.selection_token,
+                observed.token,
+            )
+            with final_render_state_locks(shot, snapshot):
+                _require_final_render_authority_current(shot, snapshot)
+                _publish_media_transaction(
+                    staged,
+                    output,
+                    postcondition=lambda: _require_final_render_authority_current(
+                        shot,
+                        snapshot,
+                    ),
+                )
+    except (
+        AuthoritySelectionConflict,
+        AuthoritySelectionHeadError,
+        FinalRenderSnapshotError,
+        FinalRenderPublicationError,
+        authority_selection.SelectedAuthorityResolutionError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise IncompleteRender(
+            "accepted authority or replay inputs changed during final render; "
+            "refusing publication"
+        ) from exc
+
+
 def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
                blender: str = "blender", out: str | Path | None = None,
                force: bool = False) -> Path:
     acceptance_outcome = None
+    selected_authority = None
     if upto is None and not force:
         try:
-            acceptance_outcome = require_current_accepted_outcome(shot)
-        except ValueError as exc:
+            selected_authority = authority_selection.resolve_selected_authority(
+                shot.folder
+            )
+            acceptance_outcome = require_current_accepted_outcome(
+                shot,
+                selected_authority,
+            )
+        except (authority_selection.SelectedAuthorityResolutionError, ValueError) as exc:
             raise IncompleteRender(str(exc)) from exc
     elif force:
         log("! --force: final acceptance is not being used as publication authority")
@@ -140,30 +528,70 @@ def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
             if acceptance_outcome is not None
             else None
         ),
+        selected_authority=selected_authority,
     )
     out = _render_output_path(shot, upto=upto, force=force, out=out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    staged_out = _staged_render_path(out) if selected_authority is not None else out
+    render_snapshot = None
+    if selected_authority is not None:
+        assert acceptance_outcome is not None
+        try:
+            render_snapshot = capture_final_render_snapshot(
+                shot,
+                selected_authority,
+                acceptance_outcome,
+                scripts,
+                scratch=run_artifacts.ensure(shot.folder, command="render").scratch,
+            )
+        except (FinalRenderSnapshotError, ValueError) as exc:
+            staged_out.unlink(missing_ok=True)
+            raise IncompleteRender(str(exc)) from exc
+        scripts = list(render_snapshot.replay_scripts)
 
-    s = BlenderSession(blender=blender, blend_file=None,
-                       assets_dir=shot.folder / "assets", cwd=shot.folder).start()
     try:
-        s.run(_RESET)
-        s.run(_preamble(shot))
-        for p in scripts:
-            log(f"running {p.name}")
-            _run_artifact_script(s, p)
-        log(f"rendering {shot.frames} frames @ scale {scale}…")
-        t0 = time.monotonic()
-        for f in range(1, shot.frames + 1):
-            s.render(frame=f, mode="eevee", scale=scale)
-            if f % 8 == 0:
-                log(f"  {f}/{shot.frames} ({time.monotonic() - t0:.0f}s)")
-        seq = str(s.artifacts / "eevee_f%04d.png")
-        subprocess.run(["ffmpeg", "-y", "-framerate", str(shot.fps), "-i", seq,
-                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(out)],
-                       check=True, capture_output=True, text=True)
-    finally:
-        s.close()
+        s = BlenderSession(
+            blender=blender,
+            blend_file=None,
+            assets_dir=(
+                render_snapshot.assets_dir
+                if render_snapshot is not None
+                else shot.folder / "assets"
+            ),
+            cwd=shot.folder,
+        ).start()
+        try:
+            s.run(_RESET)
+            s.run(_preamble(shot))
+            if render_snapshot is not None:
+                s.run(
+                    "import os\n"
+                    f"os.chdir({str(render_snapshot.replay_root)!r})\n"
+                )
+            for p in scripts:
+                log(f"running {p.name}")
+                _run_artifact_script(s, p)
+            log(f"rendering {shot.frames} frames @ scale {scale}…")
+            t0 = time.monotonic()
+            for f in range(1, shot.frames + 1):
+                s.render(frame=f, mode="eevee", scale=scale)
+                if f % 8 == 0:
+                    log(f"  {f}/{shot.frames} ({time.monotonic() - t0:.0f}s)")
+            seq = str(s.artifacts / "eevee_f%04d.png")
+            subprocess.run(
+                ["ffmpeg", "-y", "-framerate", str(shot.fps), "-i", seq,
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+                 str(staged_out)],
+                check=True, capture_output=True, text=True,
+            )
+        finally:
+            s.close()
+        if render_snapshot is not None:
+            _publish_final_render(shot, staged_out, out, render_snapshot)
+    except BaseException:
+        if staged_out != out:
+            staged_out.unlink(missing_ok=True)
+        raise
     log(f"wrote {out} ({out.stat().st_size // 1024} KB)")
     return out
 
