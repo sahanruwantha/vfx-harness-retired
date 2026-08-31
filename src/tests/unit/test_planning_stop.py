@@ -280,6 +280,42 @@ def test_missing_or_inconsistent_gate_evidence_routes_to_engineering_without_rep
     assert envelope.cause.invariant_id == "planning_gate_requires_typed_evidence"
 
 
+@pytest.mark.parametrize("pointer_state", ["malformed", "invalid", "unreadable"])
+def test_corrupt_selected_authority_routes_to_engineering_without_amendment_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pointer_state: str,
+) -> None:
+    layout, result = _rejected_candidate(
+        tmp_path,
+        monkeypatch,
+        run_id=f"plan-stop-pointer-{pointer_state}",
+    )
+    pointer = layout.shot / "plans" / "current.json"
+    pointer.parent.mkdir(parents=True)
+    if pointer_state == "malformed":
+        pointer.write_text("{", encoding="utf-8")
+    elif pointer_state == "invalid":
+        pointer.write_text("{}\n", encoding="utf-8")
+    else:
+        pointer.mkdir()
+
+    envelope = publish_global_plan_gate_stop(layout, result)
+
+    assert envelope.stop_class == "harness_defect"
+    assert [action.transaction_id for action in envelope.actions] == ["route_engineering"]
+    assert isinstance(envelope.actions[0].target, RouteEngineeringTarget)
+    assert all(
+        action.transaction_id != "publish_validated_amendment"
+        for action in envelope.actions
+    )
+    packet = json.loads(
+        (layout.reports / "plan-stop-evidence.json").read_text(encoding="utf-8")
+    )
+    assert packet["authoritative_before"]["selection"] == pointer_state
+    assert f"selected_authority_{pointer_state}" in packet["issues"]
+
+
 def test_harness_defect_action_identity_is_stable_across_run_audit_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

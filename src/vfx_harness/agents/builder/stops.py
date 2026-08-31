@@ -31,6 +31,8 @@ from vfx_harness.domain.stop_transaction_state import (
     StopEvidenceRef,
 )
 from vfx_harness.domain.stop_transactions import (
+    EscalateQuestionTarget,
+    HumanDecisionCommitted,
     PublishValidatedAmendmentTarget,
     SelectedAuthorityAmendmentCommitted,
     StopAction,
@@ -73,6 +75,14 @@ _IDENTITY_FIELDS = {
 }
 _OWNER_AUTHORITY_ID = "layer-plan-authority"
 _AMENDMENT_GATE_POLICY_ID = "structural-authority/runtime-falsification-v1"
+_HARD_CONSTRAINT_DECISION_AUTHORITY = "human-plan-authority"
+_HARD_CONSTRAINT_DECISION_SCHEMA = (
+    "vfx-harness.hard-constraint-amendment-decision/v1"
+)
+_HARD_CONSTRAINT_ANSWER_IDS = (
+    "approve-hard-constraint-amendment",
+    "reject-hard-constraint-amendment",
+)
 _STOP_EVIDENCE_SCHEMA = "vfx-harness.builder-authority-stop-evidence/v1"
 _STOP_AUDIT_SCHEMA = "vfx-harness.builder-authority-stop-audit/v1"
 
@@ -470,6 +480,12 @@ def compile_hypothesis_falsification_stop(
             "fault_owner_units": sorted(finding.fault_owner_units),
         }
     )
+    requires_human_decision = finding.changes_hard_constraint
+    required_transition = (
+        "escalate_question"
+        if requires_human_decision
+        else "publish_validated_amendment"
+    )
     classification_evidence_digest = canonical_digest(
         {
             "schema": "vfx-harness.builder-authority-stop-classification/v1",
@@ -477,14 +493,29 @@ def compile_hypothesis_falsification_stop(
             "finding_identity_digest": finding_identity_digest,
             "attempt_evidence_digest": attempt_evidence_digest,
             "conflict_kind": finding.conflict.kind,
-            "required_transition": "publish_validated_amendment",
+            "required_transition": required_transition,
         }
     )
+    question_payload = {
+        "schema": "vfx-harness.hard-constraint-amendment-question/v1",
+        "finding_identity_digest": finding_identity_digest,
+        "layer_id": finding.layer,
+        "unit_id": finding.unit,
+        "decision_authority_id": _HARD_CONSTRAINT_DECISION_AUTHORITY,
+        "decision_schema": _HARD_CONSTRAINT_DECISION_SCHEMA,
+        "allowed_answer_ids": list(_HARD_CONSTRAINT_ANSWER_IDS),
+    }
+    question_digest = canonical_digest(question_payload)
+    question_id = f"hard-constraint-question-{question_digest[:20]}"
     evidence_record = _publish_stop_evidence(
         layout,
         {
             "schema": _STOP_EVIDENCE_SCHEMA,
-            "evidence_kind": "authority_defect",
+            "evidence_kind": (
+                "human_decision_required"
+                if requires_human_decision
+                else "authority_defect"
+            ),
             "authority": {
                 "bundle_digest": finding.bundle_hash,
                 "view_digest": view_digest,
@@ -513,6 +544,17 @@ def compile_hypothesis_falsification_stop(
             "attempt_evidence_digest": attempt_evidence_digest,
             "classification_evidence_digest": classification_evidence_digest,
             "artifact_state_digest": artifact_state_digest,
+            **(
+                {
+                    "decision_question": {
+                        "record_id": question_id,
+                        "question_digest": question_digest,
+                        "payload": question_payload,
+                    }
+                }
+                if requires_human_decision
+                else {}
+            ),
         },
         audit={
             "source_finding": {
@@ -534,25 +576,48 @@ def compile_hypothesis_falsification_stop(
         record_id=finding_identity_id,
         evidence=evidence_record,
     )
-    action = StopAction(
-        target=PublishValidatedAmendmentTarget(
-            scope="layer_view",
-            base_bundle=selected_bundle,
-            base_view=selected_view,
-            layer_id=finding.layer,
-            findings=(finding_assertion,),
-            owner_authority_id=_OWNER_AUTHORITY_ID,
-            changes_hard_constraint=False,
-        ),
-        postcondition=SelectedAuthorityAmendmentCommitted(
-            scope="layer_view",
-            base_bundle_digest=finding.bundle_hash,
-            base_view_digest=view_digest,
-            layer_id=finding.layer,
-            finding_ids=(finding_identity_id,),
-            gate_policy_id=_AMENDMENT_GATE_POLICY_ID,
-        ),
-    )
+    if requires_human_decision:
+        question_assertion = EvidenceRecordAssertion(
+            record_kind="question",
+            record_id=question_id,
+            evidence=evidence_record,
+        )
+        action = StopAction(
+            target=EscalateQuestionTarget(
+                question_record=question_assertion,
+                question_digest=question_digest,
+                decision_authority_id=_HARD_CONSTRAINT_DECISION_AUTHORITY,
+                decision_schema=_HARD_CONSTRAINT_DECISION_SCHEMA,
+                allowed_answer_ids=_HARD_CONSTRAINT_ANSWER_IDS,
+                evidence=(evidence_record,),
+            ),
+            postcondition=HumanDecisionCommitted(
+                question_digest=question_digest,
+                decision_authority_id=_HARD_CONSTRAINT_DECISION_AUTHORITY,
+                decision_schema=_HARD_CONSTRAINT_DECISION_SCHEMA,
+                allowed_answer_ids=_HARD_CONSTRAINT_ANSWER_IDS,
+            ),
+        )
+    else:
+        action = StopAction(
+            target=PublishValidatedAmendmentTarget(
+                scope="layer_view",
+                base_bundle=selected_bundle,
+                base_view=selected_view,
+                layer_id=finding.layer,
+                findings=(finding_assertion,),
+                owner_authority_id=_OWNER_AUTHORITY_ID,
+                changes_hard_constraint=False,
+            ),
+            postcondition=SelectedAuthorityAmendmentCommitted(
+                scope="layer_view",
+                base_bundle_digest=finding.bundle_hash,
+                base_view_digest=view_digest,
+                layer_id=finding.layer,
+                finding_ids=(finding_identity_id,),
+                gate_policy_id=_AMENDMENT_GATE_POLICY_ID,
+            ),
+        )
     # Re-read every mutable input before granting even amendment authority.
     bundle_after = plan_authority.resolve_current(shot_root)
     view_after = judgment_observation.selected_view_digest(
@@ -578,7 +643,11 @@ def compile_hypothesis_falsification_stop(
     )
     candidate = StopEnvelope(
         stage=stage,
-        stop_class="authority_defect",
+        stop_class=(
+            "human_decision_required"
+            if requires_human_decision
+            else "authority_defect"
+        ),
         identity=StopIdentity(
             run_id=layout.run_id,
             bundle_digest=finding.bundle_hash,
@@ -593,7 +662,11 @@ def compile_hypothesis_falsification_stop(
             debt_state_digest=None,
         ),
         cause=StopCause(
-            invariant_id="executable_hypothesis_requires_authority_change",
+            invariant_id=(
+                "hard_constraint_amendment_requires_human_decision"
+                if requires_human_decision
+                else "executable_hypothesis_requires_authority_change"
+            ),
             finding_ids=(f"hf-cause-{finding_identity_digest[:20]}",),
             owner_scope_ids=owner_scope_ids,
             normalized_facts_digest=normalized_facts_digest,
@@ -604,7 +677,11 @@ def compile_hypothesis_falsification_stop(
         authoritative_before_digest=authoritative_before_digest,
         actions=(action,),
         evidence_refs=(evidence_record,),
-        budget_key="builder-authority-amendment",
+        budget_key=(
+            "builder-hard-constraint-decision"
+            if requires_human_decision
+            else "builder-authority-amendment"
+        ),
         expected=(
             "The selected unit authority can express and satisfy its declared executable "
             "contracts without changing plan authority."
@@ -615,8 +692,12 @@ def compile_hypothesis_falsification_stop(
             f"{finding.conflict.required_authority}."
         ),
         next_action=(
-            "Publish a validated amendment that consumes this exact finding. Only after "
-            "the selected bundle or view changes may a revision-checked replan become legal."
+            "Obtain the named human decision before changing the hard constraint."
+            if requires_human_decision
+            else (
+                "Publish a validated amendment that consumes this exact finding. Only after "
+                "the selected bundle or view changes may a revision-checked replan become legal."
+            )
         ),
     )
     classified = classify_stop(candidate)

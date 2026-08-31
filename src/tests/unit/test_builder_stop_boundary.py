@@ -24,6 +24,8 @@ from vfx_harness.domain.stop_transaction_state import (
     StopEvidenceRef,
 )
 from vfx_harness.domain.stop_transactions import (
+    EscalateQuestionTarget,
+    HumanDecisionCommitted,
     PublishValidatedAmendmentTarget,
     SelectedAuthorityAmendmentCommitted,
 )
@@ -51,6 +53,7 @@ def _replace_current_finding(
     recorded_at: str,
     evidence_relative: str,
     observation_value: float | None = None,
+    decision_strength: str | None = None,
 ) -> dict:
     """Replace only test authority needed to model a newly sealed finding record."""
 
@@ -64,6 +67,8 @@ def _replace_current_finding(
     variant["evidence"] = [evidence_relative]
     if observation_value is not None:
         variant["observations"][0]["value"] = observation_value
+    if decision_strength is not None:
+        variant["decisions"][0]["strength"] = decision_strength
 
     state_path = root / STATE_DIR / "layer_1.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -297,6 +302,56 @@ def test_exact_current_falsification_compiles_one_amendment_action(
     )
     assert composition.stage == "composition"
     assert composition.cause_fingerprint == envelope.cause_fingerprint
+
+
+def test_hard_constraint_falsification_requires_a_typed_human_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot, layout, finding, _unit_record = _fixture(tmp_path, monkeypatch)
+    hard = _replace_current_finding(
+        tmp_path,
+        finding,
+        record_id="hf-hard-constraint",
+        recorded_at="2026-08-31T02:00:00+00:00",
+        evidence_relative="evidence/hard-constraint.json",
+        decision_strength="hard_constraint",
+    )
+
+    envelope = builder_stops.compile_hypothesis_falsification_stop(
+        shot,
+        layout,
+        hard,
+    )
+
+    assert envelope.stop_class == "human_decision_required"
+    assert envelope.cause.invariant_id == (
+        "hard_constraint_amendment_requires_human_decision"
+    )
+    assert envelope.budget_key == "builder-hard-constraint-decision"
+    assert [action.transaction_id for action in envelope.actions] == [
+        "escalate_question"
+    ]
+    action = envelope.actions[0]
+    assert isinstance(action.target, EscalateQuestionTarget)
+    assert isinstance(action.postcondition, HumanDecisionCommitted)
+    assert action.target.allowed_answer_ids == (
+        "approve-hard-constraint-amendment",
+        "reject-hard-constraint-amendment",
+    )
+    assert action.target.question_record.record_kind == "question"
+    assert action.target.question_record.evidence == envelope.evidence_refs[0]
+    assert action.postcondition.question_digest == action.target.question_digest
+
+    report = json.loads(
+        (layout.reports / "builder-authority-stop-evidence.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["evidence_kind"] == "human_decision_required"
+    question = report["decision_question"]
+    assert question["record_id"] == action.target.question_record.record_id
+    assert question["question_digest"] == canonical_digest(question["payload"])
 
 
 def test_builder_stop_rejects_stale_or_untyped_finding(

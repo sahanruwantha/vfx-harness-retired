@@ -513,6 +513,9 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
     report_record, report_bytes, report_issue = _report_record(layout)
     authority_before, before_digest, selected_bundle_digest = _authority_before(layout)
     issues = tuple(issue for issue in (candidate_issue, report_issue) if issue is not None)
+    authority_selection = authority_before["selection"]
+    if authority_selection not in {"absent", "verified"}:
+        issues = (*issues, f"selected_authority_{authority_selection}")
     report: dict[str, Any] | None = None
     blocking: tuple[dict[str, Any], ...] = ()
     if report_bytes is not None:
