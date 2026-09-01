@@ -766,11 +766,11 @@ def finalize_prompt(
         f"artifact from empty and returns {probe_evidence} — confirm the distillation reproduces the "
         f"accepted state before you finish instead of leaving that discovery to the "
         f"canonical gate.\n\n"
-        f"Now persist your work. Write `{script}` — {scope}. Assume the "
+        f"Now persist your work to the harness-bound scratch candidate `{script}` — {scope}. Assume the "
         f"frame range (1–{shot.frames}), fps ({shot.fps}) and motion blur are already set "
         f"by the harness. To bring in a committed hero mesh, call "
-        f"{import_line}. Use your Write tool. Write only that "
-        f"file."
+        f"{import_line}. Call `write_candidate_script` with the complete Python content; "
+        f"it has no path argument and can write only that scratch candidate."
         + (
             f"\n\nSTART FROM THE TRANSCRIPT, don't rewrite from memory: `{journal_rel}` "
             f"holds every run_bpy call you made this session that succeeded, in order. "
@@ -1070,8 +1070,8 @@ def canonical_repair_prompt(
         )
     )
     return (
-        f"MODE: REPAIR_SCRIPT — edit the canonical artifact, not the warm scene.\n"
-        f"Use Grep → Read the smallest span → Edit. Write must not "
+        f"MODE: REPAIR_SCRIPT — edit the scratch candidate, not build authority or the warm scene.\n"
+        f"Use Grep → Read the smallest span → `edit_candidate_script`. Full replacement must not "
         f"replace the whole file for a local repair. All verdict evidence needed for "
         f"this repair is embedded below: inspect `{script_rel}` only; do not search "
         f"plans, checks, runtime evidence, logs, journals, or unrelated build scripts.\n"
@@ -1098,7 +1098,7 @@ def canonical_repair_prompt(
         f"verified evidence/checks supplied with the verdict. If the claimed defect is "
         f"not present, say so and leave that property unchanged. Do NOT start a new "
         f"approach, and do NOT re-tune the live scene and declare it fixed. Use "
-        f"Grep / Read that span / Edit — never rewrite the whole "
+        f"Grep / Read that span / `edit_candidate_script` — never rewrite the whole "
         f"file for a few values. If the failing contracts cannot both pass inside this "
         f"unit (a sealed schedule vs a smoothness cap whose linear floor is already "
         f"above `hi`, or a critic look axis with no in-scope lever that moves the "

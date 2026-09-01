@@ -8,29 +8,19 @@ from typing import TYPE_CHECKING
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
-    query,
 )
 
 from vfx_harness.agents.build_prompts import (
     CRITIC_SYSTEM,
 )
 from vfx_harness.agents.builder.critic_focus import CRITIC_EFFORT
-from vfx_harness.agents.builder.models import AXES_SYSTEM, DISTILL_SYSTEM, builder_model, critic_model, distiller_model
-from vfx_harness.agents.builder.pkg import builder_package
-from vfx_harness.agents.guardrails import distiller_hooks
+from vfx_harness.agents.builder.models import AXES_SYSTEM, builder_model, critic_model
 from vfx_harness.domain.brief import Shot
-from vfx_harness.infrastructure.config import (
-    PROJECT_ROOT,
-)
 from vfx_harness.infrastructure.sandbox import sandbox_hooks
-from vfx_harness.knowledge.recipes import RECIPES_DIR
-from vfx_harness.observability import costlog
 from vfx_harness.observability.log import (
     log,
-    log_message,
 )
-from vfx_harness.observability.runid import RUN_ID
-from vfx_harness.orchestration.ledger import Milestone, load_axes, load_layers
+from vfx_harness.orchestration.ledger import load_axes, load_layers
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 if TYPE_CHECKING:
@@ -378,73 +368,3 @@ def _builder_ticket_context(plan_excerpt: str, scope: str | None, axes: list[tup
     layer_bits = [str(getattr(layer, key, "") or "") for key in ("title", "reads", "script")]
     axis_bits = [f"{name}: {description}" for name, description in axes]
     return "\n".join(x for x in ("\n".join(ticket_lines), scope or "", *layer_bits, *axis_bits) if x)
-
-
-async def distill_recipe(
-    shot: Shot, m: Milestone, verbose: bool = True, script_rel: str | None = None, errors: list[str] | None = None
-) -> None:
-    """Harvest reusable recipes into the cookbook (best-effort).
-
-    Two sources, either of which is enough to be worth a pass: a build script that
-    PASSED (proven technique) and API errors the builder hit and worked around (proven
-    gotcha). The second used to be discarded entirely.
-    """
-    script_path = shot.folder / (script_rel or f"build/{m.id.lower()}.py")
-    if not script_path.is_file() and not errors:
-        return
-    what = []
-    if script_path.is_file():
-        what.append("the passing build")
-    if errors:
-        what.append(f"{len(errors)} self-corrected error(s)")
-    log(f"distilling reusable recipes from {' + '.join(what)}…")
-    repo = PROJECT_ROOT
-    options = ClaudeAgentOptions(
-        model=distiller_model(),
-        system_prompt=DISTILL_SYSTEM,
-        cwd=str(repo),
-        hooks=distiller_hooks(RECIPES_DIR, shot.folder, cwd=repo),
-        allowed_tools=["Read", "Write", "Glob"],
-        # Grep is why the distiller walked out to ~/.claude and read this session's
-        # transcript looking for context on an error message.
-        disallowed_tools=["Bash", "Grep", "WebFetch", "WebSearch", "Task", "Agent"],
-        permission_mode="bypassPermissions",
-        max_buffer_size=32 * 1024 * 1024,
-        setting_sources=[],
-        max_turns=16,
-        effort="medium",
-    )
-    parts = [
-        f"Layer {m.id} of shot '{shot.id}' just finished. Existing recipes are in "
-        f"`{RECIPES_DIR}` — improve one rather than duplicating it."
-    ]
-    if script_path.is_file():
-        parts.append(f"It PASSED: read its build script `{script_path}` and harvest 0-2 general, reusable techniques.")
-    if errors:
-        joined = "\n".join(f"  - {e}" for e in errors[:8])
-        parts.append(
-            f"It also hit these API errors and worked around them:\n{joined}\n"
-            f"Each cost the builder turns and will cost the next builder the same. For "
-            f"any that is a GENERAL Blender-5 gotcha (not a shot-specific typo), record "
-            f"the correct usage. VERIFY the correct form against the recipes or the "
-            f"script before writing it — a confidently wrong recipe is worse than none, "
-            f"so if you cannot confirm the fix, write nothing for that error."
-        )
-    prompt = " ".join(parts)
-
-    async def _run_distiller():
-        async for message in query(prompt=prompt, options=options):
-            if verbose:
-                log_message(message)
-            elif isinstance(message, builder_package().ResultMessage):
-                costlog.record(message)
-
-    if costlog.is_bound():
-        with costlog.scoped(role="distiller", phase="distill"):
-            await _run_distiller()
-    else:
-        costlog.bind(shot.folder, role="distiller", phase="distill", layer=m.id, run_id=RUN_ID)
-        try:
-            await _run_distiller()
-        finally:
-            costlog.unbind()

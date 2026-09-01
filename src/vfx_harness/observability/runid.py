@@ -15,6 +15,8 @@ import os
 import uuid
 from datetime import UTC, datetime
 
+from vfx_harness.domain.run_ids import require_run_id
+
 _ENV = "VFXH_RUN_ID"
 
 
@@ -23,7 +25,7 @@ def _mint() -> str:
             + "-" + uuid.uuid4().hex[:6])
 
 
-RUN_ID: str = os.environ.get(_ENV) or _mint()
+RUN_ID: str = require_run_id(os.environ.get(_ENV) or _mint(), _ENV)
 os.environ[_ENV] = RUN_ID          # children inherit it
 
 

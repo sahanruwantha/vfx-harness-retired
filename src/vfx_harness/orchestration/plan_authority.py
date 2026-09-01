@@ -24,7 +24,7 @@ from typing import Any
 from vfx_harness.domain.authority_head_records import canonical_json_bytes
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.run_artifacts import RunLayout
-from vfx_harness.orchestration import plan_bundle_integrity
+from vfx_harness.orchestration import plan_bundle_integrity, plan_consumer_state_snapshot
 from vfx_harness.orchestration.authority_selection_transaction import (
     authority_selection_lock,
     durable_remove_pointer,
@@ -768,27 +768,23 @@ def prepare_consumer_view(
         (temp / ".plan-consumer-view.json").write_bytes(
             canonical_json_bytes(marker.to_dict()),
         )
-        source = layout.shot / "shot.json"
-        if source.is_file():
-            (temp / "shot.json").symlink_to(source)
-        state = layout.shot / "state"
-        if state.is_dir():
-            target_state = temp / "state"
-            target_state.mkdir(exist_ok=True)
-            for child in state.iterdir():
-                if child.name in {"jit-layers", "plan-resolutions.jsonl"}:
-                    continue
-                (target_state / child.name).symlink_to(
-                    child,
-                    target_is_directory=child.is_dir(),
-                )
-        outcomes = layout.shot / "plans" / "outcomes"
-        if outcomes.is_dir():
-            (temp / "plans" / "outcomes").symlink_to(outcomes, target_is_directory=True)
         try:
-            layers = json.loads(selected.artifact_paths["layers.json"].read_text(encoding="utf-8"))["layers"]
+            layers = json.loads(
+                selected.artifact_paths["layers.json"].read_text(encoding="utf-8")
+            )["layers"]
+            if not isinstance(layers, list) or any(
+                not isinstance(layer, dict) for layer in layers
+            ):
+                raise TypeError("layers must be a list of objects")
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
             raise PlanPublicationError("published layers.json is unreadable") from exc
+        # Mutable execution authority is captured into the same isolated generation;
+        # the view never follows live ledger, work-unit, or outcome names afterward.
+        plan_consumer_state_snapshot.snapshot_consumer_execution_authority(
+            layout,
+            temp,
+            layers,
+        )
         # This import is delayed to avoid the plan-authority/layer-plans module cycle,
         # but resolved once per consumer view rather than once per staged unit.
         from vfx_harness.orchestration.layer_plans import (  # noqa: PLC0415

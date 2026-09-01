@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import signal
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,6 +68,11 @@ def _patch_render_runtime(
     )
     monkeypatch.setattr(render_shot, "_run_artifact_script", lambda *_args: None)
     monkeypatch.setattr(
+        render_shot,
+        "_prepared_snapshot_replay_input",
+        lambda _snapshot, _index: object(),
+    )
+    monkeypatch.setattr(
         render_shot.subprocess,
         "run",
         lambda arguments, **_kwargs: Path(arguments[-1]).write_bytes(b"new mp4"),
@@ -82,6 +88,8 @@ def _patch_render_runtime(
             unit_state_digests=(),
             assets_dir=_shot.folder / "assets",
             replay_root=_shot.folder,
+            replay_root_binding=object(),
+            worker_file_bindings=(),
         ),
     )
     monkeypatch.setattr(
@@ -192,16 +200,67 @@ def test_final_render_reuses_one_snapshot_and_rechecks_it_before_publication(
         "read_authority_selection_heads",
         lambda _root: SimpleNamespace(token=token),
     )
+    monkeypatch.setattr(
+        render_shot.authority_selection,
+        "resolve_selected_authority_from_heads",
+        lambda _root, _heads: selected,
+    )
     output = tmp_path / "deliverable.mp4"
 
     result = render_shot.render_mp4(shot, out=output)
 
     assert result == output
     assert output.read_bytes() == b"new mp4"
-    assert resolutions == [shot.folder, shot.folder, shot.folder]
+    assert resolutions == [shot.folder]
     assert acceptance_inputs == [selected, selected, selected]
     assert chain_inputs == [selected]
     assert not list(tmp_path.glob(".deliverable.pending-*.mp4"))
+
+
+def test_final_render_publication_does_not_reenter_selection_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _shot(tmp_path)
+    selected = render_shot.authority_selection.resolve_selected_authority(tmp_path)
+    snapshot = SimpleNamespace(
+        selected_authority=selected,
+        outcome_digest="b" * 64,
+        unit_state_digests=(),
+    )
+    staged = tmp_path / ".deliverable.pending.mp4"
+    staged.write_bytes(b"new mp4")
+    output = tmp_path / "deliverable.mp4"
+    monkeypatch.setattr(
+        render_shot,
+        "require_current_accepted_outcome",
+        lambda *_args, **_kwargs: SimpleNamespace(digest=snapshot.outcome_digest),
+    )
+    monkeypatch.setattr(
+        render_shot,
+        "require_snapshot_inputs_current",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        render_shot,
+        "final_render_state_locks",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+
+    prior_handler = signal.getsignal(signal.SIGALRM)
+
+    def timeout(_signum, _frame) -> None:
+        raise TimeoutError("final-render publication re-entered its selection lock")
+
+    signal.signal(signal.SIGALRM, timeout)
+    signal.setitimer(signal.ITIMER_REAL, 3.0)
+    try:
+        render_shot._publish_final_render(shot, staged, output, snapshot)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, prior_handler)
+
+    assert output.read_bytes() == b"new mp4"
 
 
 def test_final_render_postverify_conflict_restores_exact_predecessor(
@@ -248,6 +307,11 @@ def test_final_render_postverify_conflict_restores_exact_predecessor(
         render_shot,
         "read_authority_selection_heads",
         lambda _root: SimpleNamespace(token=token),
+    )
+    monkeypatch.setattr(
+        render_shot.authority_selection,
+        "resolve_selected_authority_from_heads",
+        lambda _root, _heads: selected,
     )
 
     with pytest.raises(render_shot.IncompleteRender, match="changed during final render"):
@@ -357,6 +421,8 @@ def test_final_render_refuses_live_accepted_input_mutation_and_keeps_old_output(
             unit_state_digests=(),
             assets_dir=tmp_path / "assets",
             replay_root=snapshot_script.parents[3],
+            replay_root_binding=object(),
+            worker_file_bindings=(),
         )
 
     class MutatingSession:
@@ -397,7 +463,7 @@ def test_final_render_refuses_live_accepted_input_mutation_and_keeps_old_output(
     monkeypatch.setattr(
         render_shot,
         "_run_artifact_script",
-        lambda _session, path: executed.append(path.read_bytes()),
+        lambda _session, path, _prepared: executed.append(path.read_bytes()),
     )
     monkeypatch.setattr(render_shot, "require_snapshot_inputs_current", require_current)
     monkeypatch.setattr(
@@ -409,6 +475,11 @@ def test_final_render_refuses_live_accepted_input_mutation_and_keeps_old_output(
         render_shot,
         "read_authority_selection_heads",
         lambda _root: SimpleNamespace(token=token),
+    )
+    monkeypatch.setattr(
+        render_shot.authority_selection,
+        "resolve_selected_authority_from_heads",
+        lambda _root, _heads: selected,
     )
     output = tmp_path / "deliverable.mp4"
     output.write_bytes(b"old mp4")

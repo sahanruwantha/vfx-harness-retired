@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
+from tests.layer_outcome_fixtures import write_test_layer_outcome
+from tests.unit_attempt_fixtures import synthetic_completion_receipt
 from vfx_harness.domain.judgment_debts import (
     JudgmentDebtActivation,
     JudgmentDebtSeed,
@@ -40,7 +43,6 @@ from vfx_harness.orchestration.jit_materialization.errors import (
     MaterializationSelectionConflict,
 )
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
-from vfx_harness.orchestration.layer_plans import write_layer_outcome
 from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_authority import publish_current, selected_artifact_path
 from vfx_harness.orchestration.plan_due import (
@@ -705,7 +707,7 @@ def _passed_layer_one_outcome(root: Path) -> None:
         reference = root / ref
         if not reference.is_file():
             raise AssertionError(f"fixture reference was not published before plan selection: {ref}")
-    write_layer_outcome(
+    write_test_layer_outcome(
         root,
         layer,
         status="passed",
@@ -3654,6 +3656,17 @@ def test_unit_completion_obligation_is_discharged_only_by_declared_evidence(
     assert findings == []
     layout = run_artifacts.create(tmp_path, "plan-run")
     publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    wrong_receipt = synthetic_completion_receipt(
+        "1", "lock", {("scene_contract", "wrong-contract")}
+    )
+    receipt = synthetic_completion_receipt(
+        "1", "lock", {("scene_contract", "final-lock")}
+    )
+    receipt_digest = receipt.receipt_digest
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.plan_due.current_completion_receipt_digests",
+        lambda _shot: nullcontext({("1", "lock"): receipt_digest}),
+    )
 
     require_due_clear(tmp_path, layer="1", unit="lock")
     with pytest.raises(PlanDueError, match=r"completion.*O-final-lock"):
@@ -3663,15 +3676,22 @@ def test_unit_completion_obligation_is_discharged_only_by_declared_evidence(
         tmp_path,
         layer="1",
         unit="lock",
-        passed_evidence={("scene_contract", "wrong-contract")},
+        completion_receipt=wrong_receipt,
     ) == ()
     assert resolve_unit_completion(
         tmp_path,
         layer="1",
         unit="lock",
-        passed_evidence={("scene_contract", "final-lock")},
+        completion_receipt=receipt,
     ) == ("O-final-lock",)
     require_due_clear(tmp_path, layer="1", unit="lock", completion=True)
+
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.plan_due.current_completion_receipt_digests",
+        lambda _shot: nullcontext({}),
+    )
+    with pytest.raises(PlanDueError, match=r"completion.*O-final-lock"):
+        require_due_clear(tmp_path, layer="1", unit="lock", completion=True)
 
 
 def test_assumption_cannot_use_machine_completion_gate(tmp_path: Path) -> None:

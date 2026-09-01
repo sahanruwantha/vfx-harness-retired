@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from tests.unit.test_plan_improvements import _layer_doc, _write
 from tests.unit.test_plan_records import _add_deferred_layer, _candidate, _jit_payload
 from tests.unit.test_plan_records import _write as _write_plan
+from tests.unit_attempt_fixtures import claim_for_build, freeze_unit
 from vfx_harness.agents.builder import (
     _active_unit_layer_view,
     _composition_judge_unit,
@@ -40,7 +41,7 @@ from vfx_harness.evidence.scene_checks import (
     visible_fraction_min,
 )
 from vfx_harness.orchestration.ledger import Layer
-from vfx_harness.orchestration.unit_state import freeze_checkpoint, initialize, load, transition
+from vfx_harness.orchestration.unit_state import initialize, load
 
 
 def _vis_row(*, row_id: str = "vis", roles: list[str] | None = None) -> dict:
@@ -655,18 +656,24 @@ def test_geometry_sibling_freeze_protects_layer_vis(tmp_path: Path) -> None:
     assert geometry_vis_protection_ids(fog.provides, ["vis.core"]) == ()
     assert geometry_vis_protection_ids(("camera",), ["vis.core"]) == ()
 
-    initialize(tmp_path, "2", (geo, fog), plan_hash="plan-v1")
+    plan_hash = "a" * 64
+    initialize(tmp_path, "2", (geo, fog), plan_hash=plan_hash)
     for unit in (geo, fog):
-        transition(tmp_path, "2", unit.id, "planning", reason="test")
-        transition(tmp_path, "2", unit.id, "building", reason="test")
-        freeze_checkpoint(
+        attempt = claim_for_build(
+            tmp_path,
+            "2",
+            (geo, fog),
+            unit.id,
+            plan_hash=plan_hash,
+        )
+        freeze_unit(
             tmp_path,
             "2",
             unit,
+            attempt,
             active_contract_ids=["upstream.a"],
             candidate_hash=f"candidate-{unit.id}",
             settings_hash="settings",
-            script_hash="script",
             input_hash="inputs",
             layer_active_vis_ids=["vis.core"],
         )

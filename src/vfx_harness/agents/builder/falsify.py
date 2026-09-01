@@ -24,6 +24,7 @@ from vfx_harness.orchestration.ledger import Milestone
 from vfx_harness.orchestration.unit_state import record_hypothesis_falsification
 
 if TYPE_CHECKING:
+    from vfx_harness.domain.unit_attempts import UnitAttemptClaim
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 
@@ -98,6 +99,7 @@ def _record_unsatisfiable_pair_falsification(
     milestone,
     ledger,
     *,
+    attempt: UnitAttemptClaim | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> dict | None:
     """Escalate a published schedule/smoothness pair (or cannot_express) as a plan defect.
@@ -180,6 +182,12 @@ def _record_unsatisfiable_pair_falsification(
         },
         evidence=[str(script_rel)],
         affected_seed_ids={unit.id, *declared.get("fault_owner_units", [])},
+        attempt=attempt,
+        selection_token=(
+            selected_authority.selection_token
+            if attempt is not None and selected_authority is not None
+            else None
+        ),
     )
 
 
@@ -188,6 +196,7 @@ def _record_contract_gap_falsification(
     layer,
     unit,
     *,
+    attempt: UnitAttemptClaim | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> dict:
     """Promote the latest verified coverage gap into typed replan authority.
@@ -262,6 +271,12 @@ def _record_contract_gap_falsification(
             "controls": list(unit.mutates.controls),
         },
         evidence=["state/contract-gaps.jsonl"],
+        attempt=attempt,
+        selection_token=(
+            selected_authority.selection_token
+            if attempt is not None and selected_authority is not None
+            else None
+        ),
     )
 
 
@@ -279,6 +294,11 @@ def _record_composed_contract_gap_falsification(
     checkpoint, and name the full role-derived producer/downstream closure for the
     transaction that consumes it.
     """
+
+    if selected_authority is None:
+        raise ValueError(
+            "composition falsification requires the exact selected authority snapshot"
+        )
 
     gaps_path = shot_state_dir(shot.folder) / "contract-gaps.jsonl"
     records = []
@@ -376,6 +396,7 @@ def _record_composed_contract_gap_falsification(
         evidence=["state/contract-gaps.jsonl"],
         affected_seed_ids={unit.id for unit in implicated},
         preserve_accepted_source=True,
+        selection_token=selected_authority.selection_token,
     )
 
 
@@ -386,6 +407,7 @@ def _record_bound_contract_falsification(
     milestone,
     ledger,
     *,
+    attempt: UnitAttemptClaim | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> dict | None:
     """Escalate terminal failing contracts that sit on a declared decision falsification path.
@@ -470,4 +492,10 @@ def _record_bound_contract_falsification(
             "controls": list(unit.mutates.controls),
         },
         evidence=evidence,
+        attempt=attempt,
+        selection_token=(
+            selected_authority.selection_token
+            if attempt is not None and selected_authority is not None
+            else None
+        ),
     )

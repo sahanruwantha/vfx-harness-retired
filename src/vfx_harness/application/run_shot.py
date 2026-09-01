@@ -42,7 +42,11 @@ from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.runid import RUN_ID
+from vfx_harness.orchestration import unit_state
 from vfx_harness.orchestration.ledger import Ledger, load_layers
+from vfx_harness.orchestration.unit_completion_state import (
+    current_completion_receipt_digests,
+)
 
 _MEANING = {
     0: "ok", 1: "crashed", 3: "TRUNCATED — raise the budget or split the layer",
@@ -62,6 +66,26 @@ def _can_advance(status: str, *, dry_run: bool) -> bool:
     made ``--dry-run`` stop after its first unbuilt layer instead of previewing the run.
     """
     return dry_run or status == "passed"
+
+
+def _receipt_backed_passed_layers(shot, layers, ledger: Ledger) -> set[str]:
+    """Return only ledger-passed layers whose unit causal inputs remain current."""
+
+    completed: set[str] = set()
+    with current_completion_receipt_digests(shot.folder) as verified_receipts:
+        for layer_id, layer in layers.items():
+            if ledger.status(layer.as_milestone()) != "passed":
+                continue
+            state = unit_state.load(shot.folder, str(layer_id))
+            unit_state.validate_current(state, str(layer_id), layer.stages)
+            sealed = unit_state.digest_matched_passed(state, layer.stages)
+            if all(
+                unit.id in sealed
+                and (str(layer_id), unit.id) in verified_receipts
+                for unit in layer.stages
+            ):
+                completed.add(str(layer_id))
+    return completed
 
 
 def _publish_summary(layout: run_artifacts.RunLayout) -> None:
@@ -234,7 +258,8 @@ def main() -> None:
 
     atexit.register(_mark_interrupted, layout)
     ledger = Ledger(shot)
-    done = [i for i in ids if ledger.status(layers[i].as_milestone()) == "passed"]
+    verified_passed = _receipt_backed_passed_layers(shot, layers, ledger)
+    done = [i for i in ids if i in verified_passed]
     py = sys.executable
     console = layout.logs / "console.log"
     log(f"run {RUN_ID} · shot '{shot.id}' · layers {ids[0]}–{ids[-1]} "
@@ -248,7 +273,13 @@ def main() -> None:
 
     t0 = time.monotonic()
     for lid in ids:
-        if lid in done:
+        # The initial summary is not skip authority.  Reverify the receipt and
+        # its causal source closure at the actual dispatch boundary.
+        if lid in done and lid in _receipt_backed_passed_layers(
+            shot,
+            {lid: layers[lid]},
+            ledger,
+        ):
             continue
         log(f"════ LAYER {lid} — {layers[lid].title} ════")
         log(f"──── just-in-time plan · layer {lid} ────")
@@ -308,11 +339,14 @@ def main() -> None:
             log(f"✗ render exited {rc}: {_MEANING.get(rc, 'unknown')}")
             _stop_after_stage(layout, rc, "render")
 
-    # Harvest recipes only now — nothing in this run consumes them, and doing it between
-    # layers made the run wait on a model writing prose.
+    # Legacy queue rows are deliberately inert: they do not bind an immutable unit
+    # completion receipt, canonical script digest, or selected authority.  Never invoke
+    # the retired consumer from a successful run.
     if (layout.logs / "distill_queue.jsonl").is_file():
-        log("════ DISTILL (queued during the run) ════")
-        _run([py, "-m", "vfx_harness.agents.distill", str(shot.folder)], dry=a.dry_run, tee=console)
+        log(
+            "↷ ignoring unsupported legacy distillation queue; recipe publication "
+            "requires a receipt-bound staged diff"
+        )
 
     log(f"run {RUN_ID} finished in {(time.monotonic() - t0) / 60:.0f} min")
     terminal_state = "dry-run" if a.dry_run else "passed"

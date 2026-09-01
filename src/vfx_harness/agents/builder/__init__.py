@@ -13,7 +13,6 @@ from vfx_harness.agents.builder.axes import _extract_json_list as _extract_json_
 from vfx_harness.agents.builder.axes import _layer_needs_motion as _layer_needs_motion
 from vfx_harness.agents.builder.axes import _owned_axes as _owned_axes
 from vfx_harness.agents.builder.axes import _warn_unowned_axes as _warn_unowned_axes
-from vfx_harness.agents.builder.axes import distill_recipe as distill_recipe
 from vfx_harness.agents.builder.axes import ensure_axes as ensure_axes
 from vfx_harness.agents.builder.cli import _run as _run
 from vfx_harness.agents.builder.cli import main as main
@@ -97,6 +96,7 @@ from vfx_harness.agents.builder.layer import _active_unit_layer_view as _active_
 from vfx_harness.agents.builder.layer import _compose_unit_artifact_source as _compose_unit_artifact_source
 from vfx_harness.agents.builder.layer import _unit_artifact_path as _unit_artifact_path
 from vfx_harness.agents.builder.layer import build_layer as build_layer
+from vfx_harness.agents.builder.layer import build_layer_already_fenced as build_layer_already_fenced
 from vfx_harness.agents.builder.models import _REPO as _REPO
 from vfx_harness.agents.builder.models import _RESET as _RESET
 from vfx_harness.agents.builder.models import _TRUNCATED as _TRUNCATED

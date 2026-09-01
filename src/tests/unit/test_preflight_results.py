@@ -31,6 +31,18 @@ def _failed_raw() -> dict:
             "resolved": "/usr/bin/blender",
             "problems": [],
         },
+        "blender_confinement": {
+            "ok": True,
+            "bwrap": "/usr/bin/bwrap",
+            "libseccomp": "libseccomp.so.2",
+            "worker_blender": "5.2.1 LTS",
+            "problems": [],
+        },
+        "builder_execution_fence": {
+            "ok": True,
+            "mechanism": "sysv-sem-undo+descriptor-flock",
+            "problems": [],
+        },
     }
 
 
@@ -38,7 +50,7 @@ def test_environment_result_round_trips_and_rejects_stale_summary() -> None:
     result = preflight.environment_result(_failed_raw())
 
     assert result.ok is False
-    assert result.as_dict()["probe_spec"]["probe_revision"] == 1
+    assert result.as_dict()["probe_spec"]["probe_revision"] == 3
     assert EnvironmentResult.from_dict(result.as_dict(), "result") == result
 
     stale = deepcopy(result.as_dict())
@@ -53,7 +65,7 @@ def test_environment_result_round_trips_and_rejects_stale_summary() -> None:
         EnvironmentResult.from_dict(legacy, "result")
 
     changed_probe = deepcopy(result.as_dict())
-    changed_probe["probe_spec"]["probe_revision"] = 2
+    changed_probe["probe_spec"]["probe_revision"] = 4
     with pytest.raises(ValueError, match="probe_spec_digest is stale"):
         EnvironmentResult.from_dict(changed_probe, "result")
 
@@ -92,6 +104,8 @@ def test_strict_preflight_emits_typed_result_and_optional_output(
     assert stdout["schema"] == "vfx-harness.environment-result/v2"
     assert stdout["ok"] is False
     assert {check["check_id"] for check in stdout["checks"]} == {
+        "builder_execution_fence",
+        "blender_confinement",
         "blender_executable",
         "credential_configuration",
         "runtime_configuration",
@@ -120,7 +134,72 @@ def test_preflight_result_never_serializes_credential_values() -> None:
                 "resolved": "/usr/bin/blender",
                 "problems": [],
             },
+            "blender_confinement": {
+                "ok": True,
+                "bwrap": "/usr/bin/bwrap",
+                "libseccomp": "libseccomp.so.2",
+                "worker_blender": "5.2.1 LTS",
+                "problems": [],
+            },
+            "builder_execution_fence": {
+                "ok": True,
+                "mechanism": "sysv-sem-undo+descriptor-flock",
+                "problems": [],
+            },
         }
     )
 
     assert secret not in json.dumps(result.as_dict())
+
+
+def test_confinement_failure_is_a_typed_preflight_failure() -> None:
+    raw = _failed_raw()
+    raw["auth"]["ok"] = True
+    raw["auth"]["using"] = "ANTHROPIC_API_KEY"
+    raw["auth"]["problems"] = []
+    raw["blender_confinement"] = {
+        "ok": False,
+        "bwrap": None,
+        "libseccomp": "libseccomp.so.2",
+        "worker_blender": None,
+        "problems": ["bubblewrap (`bwrap`) is unavailable."],
+    }
+
+    result = preflight.environment_result(raw)
+
+    assert result.ok is False
+    failed = [check for check in result.checks if not check.passed]
+    assert [check.check_id for check in failed] == ["blender_confinement"]
+    assert result.probe_spec is not None
+    assert result.probe_spec.probe_revision == 3
+
+
+def test_builder_fence_failure_is_a_typed_preflight_failure() -> None:
+    raw = _failed_raw()
+    raw["auth"]["ok"] = True
+    raw["auth"]["using"] = "ANTHROPIC_API_KEY"
+    raw["auth"]["problems"] = []
+    raw["builder_execution_fence"] = {
+        "ok": False,
+        "mechanism": "sysv-sem-undo+descriptor-flock",
+        "problems": ["System V semaphores are unavailable."],
+    }
+
+    result = preflight.environment_result(raw)
+
+    assert result.ok is False
+    failed = [check for check in result.checks if not check.passed]
+    assert [check.check_id for check in failed] == ["builder_execution_fence"]
+    assert "System V semaphore" in failed[0].next_action
+
+
+def test_builder_fence_probe_exercises_live_exclusion() -> None:
+    preflight._probe_builder_execution_fence.cache_clear()
+
+    result = preflight._probe_builder_execution_fence()
+
+    assert result == {
+        "ok": True,
+        "mechanism": "sysv-sem-undo+descriptor-flock",
+        "problems": [],
+    }

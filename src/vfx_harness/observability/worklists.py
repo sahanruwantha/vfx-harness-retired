@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from vfx_harness.observability import run_artifacts
+from vfx_harness.observability import prepared_publication, run_artifacts
 from vfx_harness.observability.provenance import atomic_write
 
 SCHEMA = "vfx-harness.builder-worklist/v2"
@@ -76,7 +77,25 @@ def load_unit_worklist(
         return path, empty_worklist(
             layer_id=layer_id, unit_id=unit_id, unit_hash=unit_hash
         )
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = _parse_unit_worklist(
+        path.read_bytes(),
+        path=path,
+        layer_id=layer_id,
+        unit_id=unit_id,
+        unit_hash=unit_hash,
+    )
+    return path, payload
+
+
+def _parse_unit_worklist(
+    raw: bytes,
+    *,
+    path: Path,
+    layer_id: str,
+    unit_id: str,
+    unit_hash: str,
+) -> dict[str, Any]:
+    payload = json.loads(raw)
     if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
         raise ValueError(f"unsupported builder worklist schema at {path}")
     expected = {
@@ -94,7 +113,53 @@ def load_unit_worklist(
     for field in ("items", "done", "notes"):
         if not isinstance(payload.get(field), list):
             raise ValueError(f"builder worklist {field} must be an array")
-    return path, payload
+    return payload
+
+
+def prepare_unit_worklist_update(
+    shot_folder: str | Path,
+    *,
+    layer_id: str,
+    unit_id: str,
+    unit_hash: str,
+    update: Callable[[dict[str, Any]], None],
+    authority_binding: str,
+) -> prepared_publication.PreparedFileUpdate[dict[str, Any]]:
+    """Stage one exact generation's complete worklist outside attempt locks."""
+
+    path = unit_worklist_path(
+        shot_folder,
+        layer_id=layer_id,
+        unit_id=unit_id,
+        unit_hash=unit_hash,
+    )
+
+    def build(raw: bytes | None) -> tuple[bytes, dict[str, Any]]:
+        state = (
+            empty_worklist(
+                layer_id=layer_id,
+                unit_id=unit_id,
+                unit_hash=unit_hash,
+            )
+            if raw is None
+            else _parse_unit_worklist(
+                raw,
+                path=path,
+                layer_id=layer_id,
+                unit_id=unit_id,
+                unit_hash=unit_hash,
+            )
+        )
+        update(state)
+        payload = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode()
+        return payload, state
+
+    return prepared_publication.prepare_file_update(
+        shot_folder,
+        path,
+        build,
+        authority_binding=authority_binding,
+    )
 
 
 def write_unit_worklist(path: Path, payload: dict[str, Any]) -> None:

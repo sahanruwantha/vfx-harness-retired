@@ -14,12 +14,25 @@ import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vfx_harness.domain.layer_outcomes import OUTCOME_SCHEMA
+from vfx_harness.domain.unit_attempts import UnitAttemptClaim
 from vfx_harness.domain.work_units import strict_topological_sparse_layer_ids
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
+from vfx_harness.orchestration.layer_outcome_publication import (
+    LayerOutcomePublicationAuthority,
+    PreparedLayerOutcomePublication,
+    capture_layer_outcome_source_identities,
+    commit_layer_outcome_publication,
+    discard_layer_outcome_publication,
+    prepare_layer_outcome_publication,
+)
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 
 PLAN_DIR = "plans"
 GLOBAL_PLAN = "global.md"
@@ -524,7 +537,51 @@ def prior_outcomes_block(
     return "\n".join(lines)
 
 
-def write_layer_outcome(
+def _layer_outcome_digest(layer) -> str:
+    return hashlib.sha256(repr(layer).encode("utf-8")).hexdigest()
+
+
+def unit_attempt_layer_outcome_authority(
+    layer,
+    selected_authority: ResolvedSelectedAuthority,
+    claim: UnitAttemptClaim,
+    *,
+    run_id: str,
+    ledger_attempt: int,
+) -> LayerOutcomePublicationAuthority:
+    """Bind outcome preparation to one exact selected work-unit attempt."""
+
+    return LayerOutcomePublicationAuthority(
+        kind="unit_attempt",
+        layer_id=str(layer.id),
+        layer_digest=_layer_outcome_digest(layer),
+        run_id=str(run_id),
+        ledger_attempt=ledger_attempt,
+        selection_token=selected_authority.selection_token,
+        claim=claim,
+    )
+
+
+def composition_layer_outcome_authority(
+    layer,
+    selected_authority: ResolvedSelectedAuthority,
+    *,
+    run_id: str,
+    ledger_attempt: int,
+) -> LayerOutcomePublicationAuthority:
+    """Bind a synthetic composed outcome to its exact selected run/attempt."""
+
+    return LayerOutcomePublicationAuthority(
+        kind="composition",
+        layer_id=str(layer.id),
+        layer_digest=_layer_outcome_digest(layer),
+        run_id=str(run_id),
+        ledger_attempt=ledger_attempt,
+        selection_token=selected_authority.selection_token,
+    )
+
+
+def build_layer_outcome_record(
     folder: str | Path,
     layer,
     *,
@@ -534,8 +591,10 @@ def write_layer_outcome(
     run_id: str,
     attempt: int | None = None,
     blender_version: str,
-) -> Path:
-    """Seal measured state for the next layer's just-in-time planning input."""
+    selected_authority: ResolvedSelectedAuthority | None = None,
+    sealed_at: str | None = None,
+) -> dict:
+    """Assemble and hash a layer outcome without publishing it."""
     # revalidation imports the path helpers above; outcome sealing is the reverse edge.
     from vfx_harness.orchestration.revalidation import (  # noqa: PLC0415
         canonical_records,
@@ -567,11 +626,10 @@ def write_layer_outcome(
         if item.get("source") == "interface_contract" and str(item.get("owner_layer")) == str(layer.id)
     ]
     decisions = [verdict.get("decided_by", "critic") for _fr, verdict in canonical]
-    revalidation_manifest = input_manifest(
-        folder,
-        layer,
-        blender_version=blender_version,
-    )
+    manifest_kwargs = {"blender_version": blender_version}
+    if selected_authority is not None:
+        manifest_kwargs["selected_authority"] = selected_authority
+    revalidation_manifest = input_manifest(folder, layer, **manifest_kwargs)
     manifest_sha256 = hashlib.sha256(
         json.dumps(
             revalidation_manifest,
@@ -581,9 +639,9 @@ def write_layer_outcome(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
-    record = {
+    return {
         "schema": OUTCOME_SCHEMA,
-        "at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "at": sealed_at or datetime.now(UTC).isoformat(timespec="seconds"),
         "layer": str(layer.id),
         "title": layer.title,
         "script": layer.script,
@@ -604,9 +662,115 @@ def write_layer_outcome(
             input_manifest_sha256=manifest_sha256,
         ),
     }
-    path = layer_outcome_path(folder, str(layer.id))
-    atomic_write(path, json.dumps(record, indent=2) + "\n")
-    return path
+
+
+def _layer_outcome_source_paths(folder: str | Path, record: dict) -> tuple[Path, ...]:
+    """Recover every file whose bytes the prepared outcome just hashed."""
+
+    root = Path(folder).expanduser().resolve()
+    manifest = record["revalidation_manifest"]
+    paths: set[Path] = {root / "runtime_checks.json"}
+    for value in manifest.get("files", {}):
+        path = Path(value)
+        paths.add(path if path.is_absolute() else root / path)
+    package = Path(__file__).resolve().parents[1]
+    paths.update(package / value for value in manifest.get("harness_files", {}))
+    paths.update(
+        layer_outcome_path(root, str(layer_id))
+        for layer_id in manifest.get("prior_outcomes", {})
+    )
+    for row in record.get("canonical", []):
+        for field in ("ref", "render"):
+            value = row.get(field)
+            if isinstance(value, str) and value:
+                paths.add(root / value)
+    best_render = (record.get("best") or {}).get("render")
+    if isinstance(best_render, str) and best_render:
+        paths.add(root / best_render)
+    return tuple(sorted(paths, key=lambda value: str(value)))
+
+
+def prepare_layer_outcome(
+    folder: str | Path,
+    layer,
+    *,
+    status: str,
+    best: dict,
+    canonical: list,
+    run_id: str,
+    attempt: int,
+    blender_version: str,
+    selected_authority: ResolvedSelectedAuthority,
+    authority: LayerOutcomePublicationAuthority,
+) -> PreparedLayerOutcomePublication:
+    """Hash causal inputs and fsync inert outcome bytes before authority locks."""
+
+    if authority.layer_id != str(layer.id) or authority.layer_digest != _layer_outcome_digest(
+        layer
+    ):
+        raise ValueError("layer-outcome publication authority belongs to another layer")
+    if (
+        authority.run_id != str(run_id)
+        or authority.ledger_attempt != attempt
+        or authority.selection_token != selected_authority.selection_token
+    ):
+        raise ValueError("layer-outcome publication authority belongs to another generation")
+    sealed_at = datetime.now(UTC).isoformat(timespec="seconds")
+    discovered = build_layer_outcome_record(
+        folder,
+        layer,
+        status=status,
+        best=best,
+        canonical=canonical,
+        run_id=run_id,
+        attempt=attempt,
+        blender_version=blender_version,
+        selected_authority=selected_authority,
+        sealed_at=sealed_at,
+    )
+    source_paths = _layer_outcome_source_paths(folder, discovered)
+    before = capture_layer_outcome_source_identities(source_paths)
+    record = build_layer_outcome_record(
+        folder,
+        layer,
+        status=status,
+        best=best,
+        canonical=canonical,
+        run_id=run_id,
+        attempt=attempt,
+        blender_version=blender_version,
+        selected_authority=selected_authority,
+        sealed_at=sealed_at,
+    )
+    if _layer_outcome_source_paths(folder, record) != source_paths:
+        raise ValueError("layer-outcome causal source closure changed during preparation")
+    after = capture_layer_outcome_source_identities(source_paths)
+    if after != before:
+        raise ValueError("layer-outcome causal inputs changed during preparation")
+    payload = (json.dumps(record, indent=2) + "\n").encode("utf-8")
+    return prepare_layer_outcome_publication(
+        folder,
+        layer_outcome_path(folder, str(layer.id)),
+        payload,
+        authority=authority,
+        sources=after,
+    )
+
+
+def commit_layer_outcome(
+    prepared: PreparedLayerOutcomePublication,
+    *,
+    authority: LayerOutcomePublicationAuthority,
+) -> Path:
+    """Publish one prepared outcome inside its exact short authority guard."""
+
+    return commit_layer_outcome_publication(prepared, authority=authority)
+
+
+def discard_layer_outcome(prepared: PreparedLayerOutcomePublication) -> None:
+    """Discard an uncommitted prepared layer-outcome temp."""
+
+    discard_layer_outcome_publication(prepared)
 
 
 def load_layer_outcome(folder: str | Path, layer_id: str) -> dict:
@@ -616,20 +780,3 @@ def load_layer_outcome(folder: str | Path, layer_id: str) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return row if isinstance(row, dict) else {}
-
-
-def record_revalidation(folder: str | Path, layer_id: str, *, run_id: str, attempt: int, evidence: list[dict]) -> Path:
-    """Append the latest replay result without changing the sealed pass boundary."""
-    path = layer_outcome_path(folder, str(layer_id))
-    row = load_layer_outcome(folder, layer_id)
-    if not row:
-        raise FileNotFoundError(path)
-    row["last_revalidation"] = {
-        "at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "run_id": run_id,
-        "attempt": attempt,
-        "status": "passed",
-        "frames": evidence,
-    }
-    atomic_write(path, json.dumps(row, indent=2) + "\n")
-    return path

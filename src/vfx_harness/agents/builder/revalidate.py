@@ -9,7 +9,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from vfx_harness.agents.builder.authority import commit_selected_authority
+from vfx_harness.agents.builder.attempt_guard import (
+    UnitAttemptAuthorityLost,
+    UnitAttemptGuard,
+)
 from vfx_harness.agents.builder.evidence import (
     _forecast_blocker_ids,
     _geometry_protected_vis_ids,
@@ -22,7 +25,11 @@ from vfx_harness.agents.builder.evidence import (
 )
 from vfx_harness.agents.builder.models import _RESET
 from vfx_harness.agents.builder.pkg import builder_package
-from vfx_harness.agents.builder.prior import _run_artifact_script
+from vfx_harness.agents.builder.prior import (
+    _prepare_artifact_replay_inputs,
+    _run_artifact_script,
+)
+from vfx_harness.agents.builder.unit_evaluation import publish_unit_evaluation_outcome
 from vfx_harness.agents.builder.verdicts import _executable_unit_verdict, _lookless_without_executable_verdict
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
@@ -33,7 +40,7 @@ from vfx_harness.observability.log import (
 from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.observability.runlog import summary as run_summary
 from vfx_harness.observability.runlog import write as write_run
-from vfx_harness.orchestration.layer_plans import load_layer_outcome, record_revalidation
+from vfx_harness.orchestration.layer_plans import load_layer_outcome
 from vfx_harness.orchestration.ledger import Ledger, Milestone, plan_strips
 from vfx_harness.orchestration.revalidation import eligibility, input_manifest
 
@@ -45,6 +52,8 @@ def _blender_version(session: BlenderSession) -> str:
     try:
         row = session.run("RESULT = bpy.app.version_string", journal=False)
         return str(row.get("result") or row.get("RESULT") or "unknown")
+    except UnitAttemptAuthorityLost:
+        raise
     except Exception:
         return "unknown"
 
@@ -107,8 +116,9 @@ def _try_revalidate(
     layer,
     ledger: Ledger,
     t_layer: float,
-    active_unit=None,
-    selected_authority: ResolvedSelectedAuthority | None = None,
+    active_unit,
+    attempt_guard: UnitAttemptGuard,
+    selected_authority: ResolvedSelectedAuthority,
 ) -> Ledger | None:
     """Replay an unchanged sealed layer without launching builder or critic models."""
     if layer is None:
@@ -129,12 +139,30 @@ def _try_revalidate(
         return None
 
     log("REVALIDATE: sealed inputs are unchanged; replaying scripts and authoritative evidence before any model launch")
+    replay_inputs = []
     try:
+        root = shot.folder.expanduser().absolute()
+        prepared_replay = _prepare_artifact_replay_inputs(
+            root,
+            [
+                (
+                    path.expanduser().absolute().relative_to(root).as_posix(),
+                    path,
+                )
+                for path in prior_paths
+            ]
+            + [(script_rel, shot.folder / script_rel)],
+        )
+        replay_inputs.extend(item.executed for item in prepared_replay)
         session.run(_RESET)
         session.run(builder_package()._preamble(shot))
-        builder_package()._run_prior_paths(session, prior_paths)
+        builder_package()._run_prior_paths(session, prior_paths, prepared_replay[:-1])
         before_objects = builder_package()._scene_object_manifest(session)
-        _run_artifact_script(session, shot.folder / script_rel)
+        _run_artifact_script(
+            session,
+            shot.folder / script_rel,
+            prepared_replay[-1],
+        )
         # The unit whose script just replayed owns the scope being checked. Falling back
         # to "the only stage" silently SKIPPED scope entirely for every multi-unit
         # layer — a fast path that cannot verify scope must not be taken at all.
@@ -155,6 +183,8 @@ def _try_revalidate(
                 1,
             )
             return None
+    except UnitAttemptAuthorityLost:
+        raise
     except Exception as exc:
         log(f"REVALIDATE miss: deterministic replay failed ({str(exc)[:120]})", 1)
         return None
@@ -177,7 +207,6 @@ def _try_revalidate(
     except (OSError, ValueError, TypeError):
         contract_frames = {}
     canonical = []
-    frame_results = []
     judges = list(layer.judges)
     for frame, ref in judges:
         m_i = (
@@ -277,7 +306,6 @@ def _try_revalidate(
                 int(frame),
                 [(str(axis), str(axis)) for axis in getattr(layer, "owns", ())],
             )
-            passed = bool(verdict.get("pass"))
             reproduction = {
                 "required": False,
                 "reason": "executable_only_scene_evidence",
@@ -288,17 +316,7 @@ def _try_revalidate(
                 "reproduction": reproduction,
                 "render": render_rel,
             }
-            authoritative = [row for row in evidence if row.get("authoritative")]
         canonical.append(((frame, ref), verdict))
-        frame_results.append(
-            {
-                "frame": frame,
-                "pass": passed,
-                "authoritative_total": len(authoritative),
-                "authoritative_passed": sum(bool(row.get("pass")) for row in authoritative),
-                "reproduction": reproduction,
-            }
-        )
     if not all(row[1]["pass"] for row in canonical):
         bad = [str(frame) for (frame, _ref), verdict in canonical if not verdict["pass"]]
         changed = "evidence or canonical pixels" if raster_required else "executable evidence"
@@ -310,30 +328,28 @@ def _try_revalidate(
         return None
 
     best = dict(outcome.get("best") or {})
-    ledger.record_round(m, kind="revalidate", index=0, render=canonical[0][1]["render"], verdict=canonical[0][1])
+    for index, ((_frame, _ref), verdict) in enumerate(canonical):
+        ledger.record_round(
+            m,
+            kind="canonical",
+            index=index,
+            render=str(verdict.get("render") or ""),
+            verdict=verdict,
+        )
     ledger.mark(m, "passed", best=best)
     attempt = int(ledger._slot(m).get("attempt") or 0)
-    if selected_authority is None:
-        record_revalidation(
-            shot.folder,
-            str(layer.id),
-            run_id=RUN_ID,
-            attempt=attempt,
-            evidence=frame_results,
-        )
-    else:
-        commit_selected_authority(
-            shot.folder,
-            selected_authority,
-            operation=f"record layer {layer.id} revalidation",
-            mutation=lambda: record_revalidation(
-                shot.folder,
-                str(layer.id),
-                run_id=RUN_ID,
-                attempt=attempt,
-                evidence=frame_results,
-            ),
-        )
+    candidate_path = str((best or {}).get("render") or "") or None
+    publish_unit_evaluation_outcome(
+        shot.folder,
+        str(layer.id),
+        active_unit,
+        attempt_guard,
+        result="reproduced",
+        canonical_verdicts=canonical,
+        ledger_slot=ledger._slot(m),
+        replay_inputs=replay_inputs,
+        candidate_path=candidate_path,
+    )
     rec_path = write_run(
         shot.folder,
         layer,

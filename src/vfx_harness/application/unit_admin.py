@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 from vfx_harness.domain.brief import load_shot
-from vfx_harness.domain.unit_outcomes import load_hypothesis_falsification
+from vfx_harness.domain.unit_attempts import UnitAttemptClaim
+from vfx_harness.domain.unit_outcomes import HypothesisFalsification
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.authority_selection_heads import (
     AuthoritySelectionHeadError,
@@ -19,6 +20,14 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     authority_selection_lock,
     require_matching_authority_selection_token,
 )
+from vfx_harness.orchestration.builder_execution_fence import (
+    BuilderExecutionFenceActive,
+    BuilderExecutionFenceError,
+    builder_execution_fence,
+)
+from vfx_harness.orchestration.hypothesis_falsification_state import (
+    load_state_backed_falsification,
+)
 from vfx_harness.orchestration.ledger import load_layers, load_layers_from_path
 from vfx_harness.orchestration.plan_authority import resolve_published_bundle
 from vfx_harness.orchestration.selected_authority_guard import (
@@ -28,11 +37,15 @@ from vfx_harness.orchestration.unit_state import (
     apply_replan,
     invalidate_checkpoint,
     replan_effects,
-    transition,
     unit_digest,
     validate_current,
 )
 from vfx_harness.orchestration.unit_state import load as load_unit_state
+from vfx_harness.orchestration.unit_state_claims import (
+    UnitAttemptConflict,
+    release_unclaimed_unit_for_retry,
+    release_unit_attempt,
+)
 
 
 def _invalidate(args: argparse.Namespace) -> int:
@@ -182,8 +195,9 @@ def _replan(args: argparse.Namespace) -> int:
     ).hexdigest()
     evidence = list(getattr(args, "evidence", None) or [])
     falsification_id = None
+    falsification_payload = None
     hard_approval = getattr(args, "hard_constraint_approval", None)
-    falsification_path = getattr(args, "falsification", None)
+    falsification_record_id = getattr(args, "falsification", None)
     reopen: set[str] = set()
     # Under unit-first authority the base bundle carries no unit DAG — the layer's units
     # live only in its materialized view and durable state, and the state's recorded
@@ -195,20 +209,23 @@ def _replan(args: argparse.Namespace) -> int:
     deferred_base = not old_layer.stages and bool(state_unit_ids)
     if deferred_base:
         old_plan_hash = str((state or {}).get("plan_hash") or old_plan_hash)
-    if falsification_path:
-        target = Path(falsification_path)
-        if not target.is_absolute():
-            target = shot.folder / target
-        target = target.resolve()
+    if falsification_record_id:
         try:
-            relative = target.relative_to(Path(shot.folder).resolve()).as_posix()
-        except ValueError as exc:
-            raise SystemExit("falsification record must live inside the shot folder") from exc
-        if not relative.startswith("state/work-units/hypothesis-falsifications/"):
-            raise SystemExit(
-                "falsification record must be a harness-authored state/work-units artifact"
+            state_payload = load_state_backed_falsification(
+                shot.folder,
+                layer_id,
+                str(falsification_record_id),
             )
-        finding = load_hypothesis_falsification(target)
+            finding = HypothesisFalsification.parse(
+                state_payload,
+                "state-backed hypothesis falsification",
+            )
+            falsification_payload = state_payload
+        except ValueError as exc:
+            raise SystemExit(
+                "falsification must name one exact authoritative state record id: "
+                f"{exc}"
+            ) from exc
         if finding.layer != layer_id:
             raise SystemExit(
                 f"falsification belongs to layer {finding.layer}, not requested layer {layer_id}"
@@ -250,7 +267,7 @@ def _replan(args: argparse.Namespace) -> int:
             )
         falsification_id = finding.record_id
         reopen = {finding.unit, *finding.affected}
-        evidence.append(relative)
+        evidence.append(f"hypothesis-falsification:{finding.record_id}")
         if hard_approval:
             evidence.append(str(hard_approval))
     if not evidence:
@@ -304,6 +321,7 @@ def _replan(args: argparse.Namespace) -> int:
                 trigger=args.trigger,
                 evidence=evidence,
                 falsification_id=falsification_id,
+                falsification_payload=falsification_payload,
                 hard_constraint_approval=hard_approval,
                 discard_accepted=bool(getattr(args, "discard_accepted", False)),
                 reopen=reopen,
@@ -327,43 +345,91 @@ def _replan(args: argparse.Namespace) -> int:
 def _retry(args: argparse.Namespace) -> int:
     """Reopen one failed/interrupted unit without erasing its history or dependency closure."""
     shot = load_shot(args.folder)
-    selected = resolve_selected_authority(shot.folder)
-    layers = load_layers(shot, selected_authority=selected)
     layer_id = str(args.layer)
     try:
-        layer = layers[layer_id]
-    except KeyError as exc:
-        raise SystemExit(f"unknown layer {args.layer!r}") from exc
-    units = {unit.id: unit for unit in layer.stages}
-    if args.unit not in units:
-        raise SystemExit(f"unknown work unit {args.unit!r} in layer {args.layer}")
-    state = load_unit_state(shot.folder, layer_id)
-    validate_current(state, layer_id, layer.stages)
-    current = (state.get("units") or {}).get(args.unit, {}).get("status")
-    retryable_from = {"failed", "planning", "building", "frozen", "repairing"}
-    if current not in retryable_from:
+        with builder_execution_fence(shot.folder):
+            selected = resolve_selected_authority(shot.folder)
+            layers = load_layers(shot, selected_authority=selected)
+            try:
+                layer = layers[layer_id]
+            except KeyError as exc:
+                raise SystemExit(f"unknown layer {args.layer!r}") from exc
+            units = {unit.id: unit for unit in layer.stages}
+            if args.unit not in units:
+                raise SystemExit(
+                    f"unknown work unit {args.unit!r} in layer {args.layer}"
+                )
+            try:
+                selected_layers_path = selected.artifact_paths["layers.json"]
+            except KeyError as exc:
+                raise SystemExit(
+                    "selected authority omits layers.json required for reviewed retry"
+                ) from exc
+            selected_plan_hash = hashlib.sha256(
+                selected_layers_path.read_bytes()
+            ).hexdigest()
+            state = load_unit_state(shot.folder, layer_id)
+            validate_current(state, layer_id, layer.stages)
+            slot = (state.get("units") or {}).get(args.unit, {})
+            current = slot.get("status")
+            retryable_from = {
+                "failed",
+                "planning",
+                "building",
+                "frozen",
+                "evaluating",
+                "repairing",
+            }
+            if current not in retryable_from:
+                raise SystemExit(
+                    f"work unit {args.unit!r} is {current!r}; retry requires one of "
+                    f"{sorted(retryable_from)}"
+                )
+            raw_attempt = slot.get("active_attempt")
+            attempt = (
+                None
+                if raw_attempt is None
+                else UnitAttemptClaim.parse(raw_attempt, "reviewed retry active attempt")
+            )
+            # Both typed release operations acquire selection-SH then state-EX and
+            # validate this exact token themselves.  A generic outer selection guard
+            # would self-deadlock on a second descriptor for the same lock inode.
+            if attempt is None:
+                release_unclaimed_unit_for_retry(
+                    shot.folder,
+                    layer_id,
+                    args.unit,
+                    layer.stages,
+                    expected_plan_hash=selected_plan_hash,
+                    selection_token=selected.selection_token,
+                    reason=args.reason,
+                    evidence=list(args.evidence),
+                )
+            else:
+                release_unit_attempt(
+                    shot.folder,
+                    layer_id,
+                    args.unit,
+                    layer.stages,
+                    attempt,
+                    expected_plan_hash=selected_plan_hash,
+                    selection_token=selected.selection_token,
+                    reason=args.reason,
+                    evidence=list(args.evidence),
+                )
+    except BuilderExecutionFenceActive as exc:
         raise SystemExit(
-            f"work unit {args.unit!r} is {current!r}; retry requires one of "
-            f"{sorted(retryable_from)}"
-        )
-    try:
-        commit_selected_authority(
-            shot.folder,
-            selected,
-            operation="work-unit retry transition",
-            mutation=lambda: transition(
-                shot.folder,
-                layer_id,
-                args.unit,
-                "retryable",
-                reason=args.reason,
-                metadata={"evidence": list(args.evidence)},
-            ),
-        )
+            "work-unit retry refused because a live builder execution fence still owns "
+            "the shot; stop the owning builder before reviewed recovery"
+        ) from exc
+    except BuilderExecutionFenceError as exc:
+        raise SystemExit(f"work-unit retry could not prove an exclusive execution fence: {exc}") from exc
     except AuthoritySelectionConflict as exc:
         raise SystemExit(
             "selected authority changed before durable retry transition"
         ) from exc
+    except UnitAttemptConflict as exc:
+        raise SystemExit(f"work-unit attempt changed before reviewed retry: {exc}") from exc
     print(f"retryable: layer {layer_id} unit {args.unit}")
     return 0
 
@@ -408,7 +474,8 @@ def main() -> int:
     )
     replan.add_argument(
         "--falsification",
-        help="typed state/work-units hypothesis-falsification record to consume",
+        metavar="RECORD_ID",
+        help="exact authoritative work-unit-state falsification record id to consume",
     )
     replan.add_argument(
         "--hard-constraint-approval",

@@ -45,6 +45,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
+import stat
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -632,6 +634,7 @@ def layer_evidence(
                 "target": check.target(),
                 "pass": passed,
                 "origin": origin,
+                "source": "image_contract",
                 # Planner checks earn authority by naming and rejecting a known-bad image.
                 # Builder checks remain useful evidence, but do not silently become an
                 # independent acceptance oracle by marking their own homework.
@@ -790,13 +793,118 @@ def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
     return v
 
 
-def revalidate_layer(
+@dataclass(frozen=True, slots=True)
+class PreparedLayerRevalidation:
+    """Fully evaluated runtime-check replacement awaiting a short CAS commit."""
+
+    shot_folder: Path
+    layer_id: str
+    source_sha256: str | None
+    source_identity: _RevalidationFileIdentity | None
+    parent_identity: _RevalidationFileIdentity
+    replacement_path: Path | None
+    replacement_identity: _RevalidationFileIdentity | None
+    result: dict
+
+
+@dataclass(frozen=True, slots=True)
+class _RevalidationFileIdentity:
+    device: int
+    inode: int
+    mode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+
+
+def _revalidation_identity(observed: os.stat_result) -> _RevalidationFileIdentity:
+    return _RevalidationFileIdentity(
+        device=observed.st_dev,
+        inode=observed.st_ino,
+        mode=observed.st_mode,
+        size=observed.st_size,
+        modified_ns=observed.st_mtime_ns,
+        changed_ns=observed.st_ctime_ns,
+    )
+
+
+def _same_revalidation_directory(
+    observed: os.stat_result,
+    expected: _RevalidationFileIdentity,
+) -> bool:
+    return (
+        stat.S_ISDIR(observed.st_mode)
+        and observed.st_dev == expected.device
+        and observed.st_ino == expected.inode
+    )
+
+
+def _read_revalidation_source(
+    path: Path,
+) -> tuple[bytes | None, _RevalidationFileIdentity | None]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        raise ValueError("runtime image checks must be a real regular file") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("runtime image checks must be a real regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            source = handle.read()
+        after = os.fstat(descriptor)
+        identity = _revalidation_identity(after)
+        if _revalidation_identity(before) != identity:
+            raise ValueError("runtime image checks changed while revalidation read them")
+        try:
+            current = path.lstat()
+        except OSError as exc:
+            raise ValueError(
+                "runtime image checks changed while revalidation read them"
+            ) from exc
+        if _revalidation_identity(current) != identity:
+            raise ValueError("runtime image checks changed while revalidation read them")
+        return source, identity
+    finally:
+        os.close(descriptor)
+
+
+def _stage_revalidation_replacement(
+    path: Path,
+    replacement: bytes | None,
+) -> tuple[Path | None, _RevalidationFileIdentity | None]:
+    if replacement is None:
+        return None, None
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{path.name}.revalidation.",
+        dir=path.parent,
+    )
+    staged = Path(raw_path)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as handle:
+            handle.write(replacement)
+            handle.flush()
+            os.fsync(handle.fileno())
+        identity = _revalidation_identity(os.fstat(descriptor))
+        return staged, identity
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            staged.unlink()
+        raise
+    finally:
+        os.close(descriptor)
+
+
+def prepare_layer_revalidation(
     shot_folder: Path,
     layer_id: str,
     render_for: Callable[[Check], Path | None],
     *,
     selected_authority: ResolvedSelectedAuthority | None = None,
-) -> dict:
+) -> PreparedLayerRevalidation:
     """Re-run this layer's BUILDER checks against the renders that actually shipped, and
     drop the ones that no longer hold.
 
@@ -814,10 +922,27 @@ def revalidate_layer(
     """
     if selected_authority is not None and selected_authority.plan is None:
         raise ValueError("image-contract revalidation requires selected plan authority")
-    spec = Path(shot_folder) / "runtime_checks.json"
-    if not spec.is_file():
-        return {"kept": 0, "dropped": []}
-    rows = json.loads(spec.read_text())
+    shot_folder = Path(shot_folder)
+    spec = shot_folder / "runtime_checks.json"
+    parent_identity = _revalidation_identity(spec.parent.lstat())
+    if not stat.S_ISDIR(parent_identity.mode):
+        raise ValueError("runtime image-check parent must be a real directory")
+    source, source_identity = _read_revalidation_source(spec)
+    if source is None:
+        return PreparedLayerRevalidation(
+            shot_folder=shot_folder,
+            layer_id=str(layer_id),
+            source_sha256=None,
+            source_identity=None,
+            parent_identity=parent_identity,
+            replacement_path=None,
+            replacement_identity=None,
+            result={"kept": 0, "dropped": []},
+        )
+    source_sha256 = hashlib.sha256(source).hexdigest()
+    rows = json.loads(source)
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("runtime image checks must be a list of objects")
     keep, dropped = [], []
     for d in rows:
         if d.get("origin") != "builder" or str(d.get("layer")) != str(layer_id):
@@ -851,12 +976,144 @@ def revalidate_layer(
                 f"reads {v:.4g} against {c.target()} on the final render"
             )
             dropped.append((c.id, reason))
-    if dropped:
-        spec.write_text(json.dumps(keep, indent=1) + "\n", encoding="utf-8")
-    return {
+    result = {
         "kept": sum(1 for d in keep if d.get("origin") == "builder" and str(d.get("layer")) == str(layer_id)),
         "dropped": dropped,
     }
+    replacement = (
+        (json.dumps(keep, indent=1) + "\n").encode("utf-8")
+        if dropped
+        else None
+    )
+    replacement_path, replacement_identity = _stage_revalidation_replacement(
+        spec,
+        replacement,
+    )
+    return PreparedLayerRevalidation(
+        shot_folder=shot_folder,
+        layer_id=str(layer_id),
+        source_sha256=source_sha256,
+        source_identity=source_identity,
+        parent_identity=parent_identity,
+        replacement_path=replacement_path,
+        replacement_identity=replacement_identity,
+        result=result,
+    )
+
+
+def commit_layer_revalidation(candidate: PreparedLayerRevalidation) -> dict:
+    """CAS-publish only the already evaluated runtime-check projection."""
+
+    if not isinstance(candidate, PreparedLayerRevalidation):
+        raise ValueError("runtime-check publication requires a prepared revalidation")
+    spec = candidate.shot_folder / "runtime_checks.json"
+    directory = os.open(
+        spec.parent,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not _same_revalidation_directory(
+            os.fstat(directory),
+            candidate.parent_identity,
+        ):
+            raise ValueError("runtime image-check parent changed before publication")
+        try:
+            source_stat = os.stat(
+                spec.name,
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            source_identity = None
+        else:
+            source_identity = _revalidation_identity(source_stat)
+        if source_identity != candidate.source_identity:
+            raise ValueError(
+                "runtime image checks changed after revalidation; evaluate the new bytes"
+            )
+        if candidate.replacement_path is None:
+            return dict(candidate.result)
+        if candidate.replacement_identity is None:
+            raise ValueError("prepared runtime-check replacement lacks an exact identity")
+        if candidate.replacement_path.parent != spec.parent:
+            raise ValueError("prepared runtime-check replacement belongs to another parent")
+        try:
+            replacement_stat = os.stat(
+                candidate.replacement_path.name,
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise ValueError("prepared runtime-check replacement disappeared") from exc
+        if _revalidation_identity(replacement_stat) != candidate.replacement_identity:
+            raise ValueError("prepared runtime-check replacement changed")
+        os.replace(
+            candidate.replacement_path.name,
+            spec.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        current_directory = os.open(
+            spec.parent,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            if not _same_revalidation_directory(
+                os.fstat(current_directory),
+                candidate.parent_identity,
+            ):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(spec.name, dir_fd=directory)
+                os.fsync(directory)
+                raise ValueError(
+                    "runtime image-check parent changed during guarded publication"
+                )
+        finally:
+            os.close(current_directory)
+        os.fsync(directory)
+        return dict(candidate.result)
+    finally:
+        os.close(directory)
+
+
+def discard_layer_revalidation(candidate: PreparedLayerRevalidation) -> None:
+    """Remove an uncommitted staged replacement without deleting foreign bytes."""
+
+    if candidate.replacement_path is None or candidate.replacement_identity is None:
+        return
+    try:
+        observed = candidate.replacement_path.lstat()
+    except FileNotFoundError:
+        return
+    if _revalidation_identity(observed) == candidate.replacement_identity:
+        candidate.replacement_path.unlink()
+
+
+def revalidate_layer(
+    shot_folder: Path,
+    layer_id: str,
+    render_for: Callable[[Check], Path | None],
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict:
+    """Prepare then publish for legacy non-attempt callers."""
+
+    prepared = prepare_layer_revalidation(
+        shot_folder,
+        layer_id,
+        render_for,
+        selected_authority=selected_authority,
+    )
+    try:
+        return commit_layer_revalidation(prepared)
+    finally:
+        discard_layer_revalidation(prepared)
 IMAGE_PAYMENT_SCHEMA = "vfx-harness.image-payment/v2"
 
 

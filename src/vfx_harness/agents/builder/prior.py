@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +18,10 @@ from claude_agent_sdk import (
 from vfx_harness.agents.build_prompts import (
     builder_system,
     capability_feedback_groups,
+)
+from vfx_harness.agents.builder.candidate_script import (
+    edit_scratch_candidate,
+    write_scratch_candidate,
 )
 from vfx_harness.agents.builder.drain import _drain_once
 from vfx_harness.agents.builder.evidence import _scope_bound_evidence
@@ -39,6 +43,12 @@ from vfx_harness.blender.tools import CANNOT_EXPRESS_DESCRIPTION, CANNOT_EXPRESS
 from vfx_harness.domain.brief import Shot
 from vfx_harness.evidence.checks import layer_evidence as image_layer_evidence
 from vfx_harness.evidence.scene_checks import layer_evidence as scene_layer_evidence
+from vfx_harness.infrastructure.trusted_files import (
+    TrustedFileBinding,
+    TrustedFileError,
+    read_trusted_file,
+    require_trusted_file_unchanged,
+)
 from vfx_harness.knowledge.recipes import RECIPES_DIR, build_recipe_tools, recipe_index
 from vfx_harness.observability import transcript
 from vfx_harness.observability.log import (
@@ -46,8 +56,17 @@ from vfx_harness.observability.log import (
     log,
 )
 from vfx_harness.orchestration import generate_construction as generate_construction
+from vfx_harness.orchestration import unit_state
 from vfx_harness.orchestration.layer_plans import read_layer_plan, read_work_unit_plan
-from vfx_harness.orchestration.ledger import Ledger, load_layers
+from vfx_harness.orchestration.ledger import Ledger
+from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
+from vfx_harness.orchestration.unit_completion_state import (
+    current_completion_receipt_digests,
+)
+from vfx_harness.orchestration.unit_evaluation_receipts import (
+    ExecutedReplayDependency,
+    ExecutedReplayInput,
+)
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
@@ -60,48 +79,61 @@ def _prior_layer_paths(
     force: bool = False,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> list[Path]:
-    """Layer scripts that must run before this layer: all EXISTING build/NN_*.py with a
-    lower numeric prefix, in order. Each layer stacks on the ones before it.
+    """Return the exact accepted selected-DAG prefix before this layer.
 
     Raises UnpassedPrior unless every one of them is recorded 'passed'."""
 
-    def num(p: Path) -> int:
-        m = re.match(r"(\d+)", p.name)
-        return int(m.group(1)) if m else 10_000
-
-    mine = num(Path(layer.script))
-    build_dir = shot.folder / "build"
-    if not build_dir.is_dir():
-        return []
-    found = sorted((p for p in build_dir.glob("[0-9]*.py") if num(p) < mine), key=num)
-    # The build dir is a glob, the ledger is the record of what was ACCEPTED. An
-    # interrupted layer leaves a script that would silently join the chain (a killed
-    # seam layer left an un-critiqued 40_seam.py queued for the two after it).
-    try:
-        ledger = Ledger(shot, selected_authority=selected_authority)
-        layers = load_layers(shot, selected_authority=selected_authority)
-    except Exception as e:
-        log(f"! chaining WITHOUT the ledger cross-check: {str(e)[:70]}")
-        return found
-    by_script = {Path(g.script).name: g for g in layers.values()}
-    keep, unpassed = [], []
-    for p in found:
-        g = by_script.get(p.name)
-        if g is None:
-            log(f"! {p.name} matches no layer in layers.json — SKIPPING (orphan)")
-            continue
-        st = ledger.status(g.as_milestone())
-        if st != "passed":
-            unpassed.append(f"layer {g.id} ({p.name}) is '{st}'")
-        else:
-            # 'passed' is a verdict on a SCRIPT, not on a layer id. Editing the script
-            # afterwards leaves the pass in place describing code that no longer exists,
-            # and every layer above then builds on renders of the old version. Treated
-            # exactly like an unpassed prior, because that is what it is.
+    chain = selected_layer_chain(
+        shot,
+        selected_authority=selected_authority,
+    )
+    matches = [index for index, candidate in enumerate(chain) if candidate.id == layer.id]
+    if len(matches) != 1 or chain[matches[0]] != layer:
+        raise ValueError(
+            f"layer {getattr(layer, 'id', None)!r} is not the exact selected-DAG layer"
+        )
+    prior_layers = chain[: matches[0]]
+    # A replay prefix without readable acceptance authority is not a degraded mode.
+    # Propagate malformed/missing selected-layer or ledger state before any prior bytes
+    # can reach Blender; otherwise an unaccepted artifact becomes the successor's base.
+    ledger = Ledger(shot, selected_authority=selected_authority)
+    keep: list[Path] = []
+    unpassed: list[str] = []
+    with current_completion_receipt_digests(shot.folder) as verified_receipts:
+        for g in prior_layers:
+            p = shot.folder / g.script
+            if not p.is_file():
+                unpassed.append(f"layer {g.id} ({g.script}) has no replay script")
+                continue
+            keep.append(p)
+            try:
+                state = unit_state.load(shot.folder, str(g.id))
+                unit_state.validate_current(state, str(g.id), g.stages)
+            except ValueError as exc:
+                unpassed.append(f"layer {g.id} work-unit state is invalid: {exc}")
+                continue
+            sealed = unit_state.digest_matched_passed(state, g.stages)
+            missing_units = [
+                unit.id
+                for unit in g.stages
+                if unit.id not in sealed
+                or (str(g.id), unit.id) not in verified_receipts
+            ]
+            if missing_units:
+                unpassed.append(
+                    f"layer {g.id} has no source-verified completion for "
+                    + ", ".join(missing_units)
+                )
+                continue
+            st = ledger.status(g.as_milestone())
+            if st != "passed":
+                unpassed.append(f"layer {g.id} ({p.name}) is '{st}'")
+                continue
+            # 'passed' is a verdict on a SCRIPT, not on a layer id. Editing the
+            # composed script afterwards leaves the pass describing obsolete bytes.
             why = ledger.stale(g.as_milestone())
             if why:
                 unpassed.append(why)
-        keep.append(p)
     # FAIL CLOSED. This used to warn and chain anyway, so a layer could be built on top of
     # a predecessor whose content was never accepted — every judgement above it then rests
     # on unreviewed geometry. The protection previously lived in the shell script that
@@ -129,8 +161,98 @@ _ARTIFACT_EVALUATION_BARRIER = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedArtifactReplayInput:
+    """Exact descriptor-read source bytes plus their canonical replay locator."""
+
+    executed: ExecutedReplayInput
+    source_path: Path
+    payload: bytes
+    construction: generate_construction.PreparedConstructionReplayInput | None = None
+    construction_prepared: bool = False
+
+
+def require_prepared_artifact_replay_input_unchanged(
+    prepared: PreparedArtifactReplayInput,
+) -> None:
+    """Retain script plus optional pointer/GLB identity through publication."""
+
+    try:
+        require_trusted_file_unchanged(
+            prepared.executed.source_binding,
+            "canonical artifact replay input",
+        )
+        if prepared.construction is not None:
+            generate_construction.require_prepared_construction_replay_current(
+                prepared.construction
+            )
+    except (TrustedFileError, generate_construction.GenerateConstructionError) as exc:
+        raise BlenderError(str(exc)) from exc
+
+
+def _prepare_artifact_replay_inputs(
+    shot_root: str | Path,
+    entries: list[tuple[str, Path]],
+) -> tuple[PreparedArtifactReplayInput, ...]:
+    """Read the complete ordered replay prefix before any byte reaches Blender."""
+
+    root = Path(shot_root).expanduser().absolute()
+    prepared: list[PreparedArtifactReplayInput] = []
+    for index, (locator, source_path) in enumerate(entries):
+        try:
+            snapshot = read_trusted_file(
+                root,
+                source_path,
+                f"canonical artifact replay input {index}",
+                require_nonempty=True,
+            )
+        except TrustedFileError as exc:
+            raise BlenderError(str(exc)) from exc
+        try:
+            construction = generate_construction.prepare_construction_replay_input(
+                root,
+                source_path,
+            )
+        except generate_construction.GenerateConstructionError as exc:
+            raise BlenderError(str(exc)) from exc
+        dependencies = (
+            ()
+            if construction is None
+            else tuple(
+                ExecutedReplayDependency(
+                    kind=dependency.kind,
+                    path=dependency.path,
+                    sha256=dependency.sha256,
+                    source_binding=dependency.binding,
+                )
+                for dependency in construction.dependencies
+            )
+        )
+        prepared.append(
+            PreparedArtifactReplayInput(
+                executed=ExecutedReplayInput(
+                    script_path=locator,
+                    script_sha256=snapshot.sha256,
+                    source_binding=snapshot.binding,
+                    dependencies=dependencies,
+                ),
+                source_path=snapshot.binding.path,
+                payload=snapshot.payload,
+                construction=construction,
+                construction_prepared=True,
+            )
+        )
+    for item in prepared:
+        require_prepared_artifact_replay_input_unchanged(item)
+    return tuple(prepared)
+
+
 def _run_artifact_script(
-    session: BlenderSession, path: Path, *, journal: bool = True
+    session: BlenderSession,
+    path: Path,
+    prepared_input: PreparedArtifactReplayInput | None = None,
+    *,
+    journal: bool = True,
 ) -> dict:
     """Replay one artifact and publish its evaluated state to the next consumer.
 
@@ -138,22 +260,72 @@ def _run_artifact_script(
     Successors may legally consume producer world transforms immediately, so every
     artifact replay ends with an unjournalled current-frame evaluation (HIR-0117).
     """
-    generate_construction.pin_for_script(session, path)
-    result = session.run(path.read_text(encoding="utf-8"), journal=journal)
+    source: str
+    source_binding: TrustedFileBinding | None = None
+    if prepared_input is None:
+        source = path.read_text(encoding="utf-8")
+    else:
+        expected = Path(path).expanduser().absolute()
+        if prepared_input.source_path != expected:
+            raise BlenderError(
+                "prepared artifact replay input belongs to another source path: "
+                f"expected {expected}, found {prepared_input.source_path}"
+            )
+        source_binding = prepared_input.executed.source_binding
+        try:
+            require_trusted_file_unchanged(
+                source_binding,
+                "canonical artifact replay input",
+            )
+        except TrustedFileError as exc:
+            raise BlenderError(str(exc)) from exc
+        try:
+            source = prepared_input.payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise BlenderError(f"artifact replay script is not UTF-8: {path}") from exc
+    if prepared_input is not None and prepared_input.construction_prepared:
+        try:
+            generate_construction.pin_prepared_construction_replay(
+                session,
+                prepared_input.construction,
+            )
+        except generate_construction.GenerateConstructionError as exc:
+            raise BlenderError(str(exc)) from exc
+    else:
+        generate_construction.pin_for_script(session, path)
+    result = session.run(
+        source,
+        journal=journal,
+        execution_policy="artifact",
+    )
     session.run(_ARTIFACT_EVALUATION_BARRIER, journal=False)
+    if source_binding is not None:
+        require_prepared_artifact_replay_input_unchanged(prepared_input)
     return result
 
 
-def _run_prior_paths(session: BlenderSession, paths: list[Path]) -> list[str]:
+def _run_prior_paths(
+    session: BlenderSession,
+    paths: list[Path],
+    prepared_inputs: tuple[PreparedArtifactReplayInput, ...] | None = None,
+) -> list[str]:
     """Replay the accepted chain. A failure here is NOT this layer's fault: layer scripts
     reference each other's objects by name (30_purple.py does D.objects['tower_dot']
     from 20_green.py), so re-running an early layer can invalidate every later one and
     the break only surfaces now. Say so plainly instead of leaking a raw bpy KeyError."""
+    if prepared_inputs is not None and len(prepared_inputs) != len(paths):
+        raise ChainBroken(
+            "canonical prior replay input count does not match the selected prefix"
+        )
     names = []
-    for p in paths:
+    for index, p in enumerate(paths):
         log(f"running prior layer script {p.name}")
         try:
-            _run_artifact_script(session, p)
+            _run_artifact_script(
+                session,
+                p,
+                None if prepared_inputs is None else prepared_inputs[index],
+            )
         except BlenderError as e:
             first = str(e).strip().splitlines()[0]
             raise ChainBroken(
@@ -220,6 +392,7 @@ def _builder_options(
     phase: dict[str, str] | None = None,
     ticket_context: str | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
+    attempt_guard=None,
 ) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         model=builder_model(),
@@ -236,6 +409,7 @@ def _builder_options(
             script_rel=script_rel,
             phase=phase,
             selected_authority=selected_authority,
+            attempt_guard=attempt_guard,
         ),
         mcp_servers=mcp_servers,
         # LIVE_BUILD owns the warm Blender scene, never the artifact on disk.  Write/Edit
@@ -271,8 +445,8 @@ def _builder_options(
 _SCRIPT_SYSTEM = """\
 You are a narrow build-artifact agent. Follow the requested MODE exactly. You do not have
 Blender scene tools and must not redesign the warm scene. In FINALIZE_SCRIPT, publish the
-complete requested script once with Write and never Edit it. In REPAIR_SCRIPT, make only
-the stated local correction with Edit and never replace the whole file. Repair binds
+complete requested script once with write_candidate_script. In REPAIR_SCRIPT, make only
+the stated local correction with edit_candidate_script and never replace the whole file. Repair binds
 `cannot_express_in_scope` on the candidate server — call it when no in-scope edit can
 satisfy the failing ids; ToolSearch for a blender tool will miss it. Read only the named
 script, journal, plan, and verdict evidence needed for that operation. Your working
@@ -288,7 +462,13 @@ def probe_preview_modes(look_capabilities) -> tuple[str, ...]:
     return ("solid",)
 
 
-def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
+def _build_probe_candidate_server(
+    shot: Shot,
+    script_rel: str,
+    probe_ctx: dict,
+    *,
+    mode: str,
+):
     """One tool that lets a script session SEE the scene its artifact rebuilds.
 
     Run 20260824T103842Z-afec73's canonical repairs reasoned soundly from text findings
@@ -301,12 +481,15 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
     calls = 0
     comparison_state = probe_ctx.get("comparison_state")
     raster_required = bool(probe_ctx.get("raster_required", True))
+    attempt_guard = probe_ctx.get("attempt_guard")
+    shot_root = Path(shot.folder).resolve()
+    candidate_path = shot_root / script_rel
 
     def _probe() -> dict:
         probe_dir = Path(probe_ctx["scratch_dir"])
         probe_dir.mkdir(parents=True, exist_ok=True)
         verify = BlenderSession(
-            blender=probe_ctx["blender"], artifacts_dir=probe_dir, cwd=None
+            blender=probe_ctx["blender"], artifacts_dir=probe_dir, cwd=shot.folder
         ).start()
         try:
             verify.run(_RESET, journal=False)
@@ -463,6 +646,86 @@ def _build_probe_candidate_server(shot: Shot, script_rel: str, probe_ctx: dict):
 
     tools = [probe_candidate]
     names = ["mcp__candidate__probe_candidate"]
+    if attempt_guard is None:
+        raise ValueError("candidate script tools require an exact work-unit attempt guard")
+    if mode == "finalize":
+
+        @tool(
+            "write_candidate_script",
+            "Publish the complete active-attempt scratch candidate. The target is fixed "
+            "by the harness; this tool accepts no path and cannot write build authority.",
+            {
+                "type": "object",
+                "properties": {"content": {"type": "string"}},
+                "required": ["content"],
+                "additionalProperties": False,
+            },
+        )
+        async def write_candidate_script(args):
+            content = str(args.get("content") or "")
+            if not content.strip():
+                return {"content": [{"type": "text", "text": "candidate script cannot be empty"}], "is_error": True}
+            write_scratch_candidate(
+                shot.folder,
+                candidate_path,
+                content,
+                attempt_guard,
+            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"wrote {len(content)} characters to the active scratch candidate",
+                    }
+                ]
+            }
+
+        tools.append(write_candidate_script)
+        names.append("mcp__candidate__write_candidate_script")
+    elif mode == "repair":
+
+        @tool(
+            "edit_candidate_script",
+            "Replace one exact string in the active-attempt scratch candidate. The "
+            "target is fixed by the harness; this tool accepts no path and cannot edit "
+            "build authority or a sibling candidate.",
+            {
+                "type": "object",
+                "properties": {
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                    "replace_all": {"type": "boolean"},
+                },
+                "required": ["old_string", "new_string"],
+                "additionalProperties": False,
+            },
+        )
+        async def edit_candidate_script(args):
+            old = str(args.get("old_string") or "")
+            new = str(args.get("new_string") or "")
+            replace_all = bool(args.get("replace_all", False))
+            if not old:
+                return {"content": [{"type": "text", "text": "old_string cannot be empty"}], "is_error": True}
+
+            changed = edit_scratch_candidate(
+                shot.folder,
+                candidate_path,
+                old,
+                new,
+                replace_all=replace_all,
+                attempt_guard=attempt_guard,
+            )
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"edited {changed} occurrence(s) in the active scratch candidate",
+                    }
+                ]
+            }
+
+        tools.append(edit_candidate_script)
+        names.append("mcp__candidate__edit_candidate_script")
     if comparison_state is not None:
 
         @tool(
@@ -490,7 +753,12 @@ def _script_options(
         ctx = probe_ctx
         if finalize:
             ctx = {key: value for key, value in probe_ctx.items() if key != "comparison_state"}
-        server, probe_tools = _build_probe_candidate_server(shot, script_rel, ctx)
+        server, probe_tools = _build_probe_candidate_server(
+            shot,
+            script_rel,
+            ctx,
+            mode=mode,
+        )
         mcp_servers["candidate"] = server
     if not finalize:
         # repairs design mechanisms; the cookbook's harness lessons (rig aim ownership,
@@ -509,16 +777,21 @@ def _script_options(
             script_rel=script_rel,
             phase=phase,
             selected_authority=(probe_ctx or {}).get("selected_authority"),
+            attempt_guard=(probe_ctx or {}).get("attempt_guard"),
         ),
         mcp_servers=mcp_servers,
-        allowed_tools=(
-            [*(["Read", "Write", "Glob"] if finalize else ["Read", "Edit", "Grep"]), *probe_tools]
-        ),
-        disallowed_tools=(
-            ["Edit", "Bash", "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"]
-            if finalize
-            else ["Write", "Glob", "Bash", "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"]
-        ),
+        allowed_tools=[*(["Read", "Glob"] if finalize else ["Read", "Grep"]), *probe_tools],
+        disallowed_tools=[
+            "Write",
+            "Edit",
+            "Bash",
+            "WebFetch",
+            "WebSearch",
+            "Task",
+            "Agent",
+            "NotebookEdit",
+            *([] if finalize else ["Glob"]),
+        ],
         permission_mode="bypassPermissions",
         setting_sources=[],
         max_turns=20,
@@ -544,12 +817,19 @@ async def _run_script_agent(
     transaction after Edit had already mutated the artifact.  A streaming client keeps
     the same narrow session alive across the checkpoint, just as the live builder does.
     """
+    attempt_guard = (probe_ctx or {}).get("attempt_guard")
+    if attempt_guard is not None:
+        attempt_guard.check(f"start {mode} script agent")
     async with ClaudeSDKClient(
         options=_script_options(shot, mode=mode, script_rel=script_rel, probe_ctx=probe_ctx)
     ) as agent:
         tools_before = sum(TOOL_USE.values())
+        if attempt_guard is not None:
+            attempt_guard.check(f"query {mode} script agent")
         await agent.query(prompt)
         info = await _drain_once(agent, verbose)
+        if attempt_guard is not None:
+            attempt_guard.check(f"complete {mode} script agent")
         if info["subtype"] == "error_max_turns":
             log(
                 f"⏸ {mode} agent hit its turn checkpoint ({info['turns']} turns) — "
@@ -558,12 +838,16 @@ async def _run_script_agent(
             )
             continuation_tools_before = sum(TOOL_USE.values())
             continuation_prior_cost = float(info.get("cost") or 0.0)
+            if attempt_guard is not None:
+                attempt_guard.check(f"continue {mode} script agent")
             await agent.query(
                 f"MODE remains {mode.upper()}_SCRIPT. Continue from the exact file state "
                 "you just left. Do not discover more files or broaden the repair. Finish "
                 f"the smallest necessary operation on `{script_rel}`, summarize it, and stop."
             )
             info = await _drain_once(agent, verbose)
+            if attempt_guard is not None:
+                attempt_guard.check(f"complete {mode} script continuation")
             continuation_why = model_phase_failure(
                 info,
                 sum(TOOL_USE.values()) - continuation_tools_before,

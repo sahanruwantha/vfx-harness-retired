@@ -33,6 +33,15 @@ from vfx_harness.domain.work_units import (
 )
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.runid import RUN_ID
+from vfx_harness.orchestration.ledger_publication import (
+    LedgerSaveConflict as LedgerSaveConflict,
+)
+from vfx_harness.orchestration.ledger_publication import (
+    PreparedLedgerPublication,
+    commit_ledger_publication_locked,
+    discard_prepared_ledger_publication,
+    prepare_ledger_publication_locked,
+)
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 if TYPE_CHECKING:
@@ -521,11 +530,17 @@ def _now() -> str:
 
 
 @contextmanager
-def ledger_lock(path: str | Path, *, exclusive: bool):
-    """Hold the ledger sidecar lock for a complete read or write transaction."""
+def ledger_lock(path: str | Path, *, exclusive: bool, blocking: bool = True):
+    """Hold the ledger sidecar lock for a complete read or write transaction.
+
+    Short outer authority guards use ``blocking=False`` so a large ledger-only
+    preparation cannot make those narrower locks wait behind ledger I/O.
+    """
 
     if not isinstance(exclusive, bool):
         raise ValueError("ledger lock mode must be boolean")
+    if not isinstance(blocking, bool):
+        raise ValueError("ledger lock blocking mode must be boolean")
     path = Path(path)
     lock = path.with_name(path.name + ".lock")
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -542,20 +557,21 @@ def ledger_lock(path: str | Path, *, exclusive: bool):
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError(f"ledger lock must be a regular file: {lock}")
-        fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not blocking:
+            operation |= fcntl.LOCK_NB
+        try:
+            fcntl.flock(descriptor, operation)
+        except BlockingIOError as exc:
+            raise LedgerSaveConflict(
+                f"ledger lock is busy: {lock}; retry from current shot.json"
+            ) from exc
         try:
             yield
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    """Publish by rename: a reader sees the old file or the new one, never a half file."""
-    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
 
 
 class Ledger:
@@ -771,6 +787,49 @@ class Ledger:
              "text": out.get("text", "")[:1200], "at": _now()})
         self.save()
 
+    def prepare_save(
+        self,
+        *,
+        authority_binding: str | None = None,
+    ) -> PreparedLedgerPublication:
+        """Prepare one exact-generation merge while holding ledger EX only."""
+
+        with ledger_lock(self.path, exclusive=True):
+            try:
+                return prepare_ledger_publication_locked(
+                    self.path,
+                    self.data,
+                    self._loaded,
+                    frozenset(self._touched),
+                    run_id=RUN_ID,
+                    authority_binding=authority_binding,
+                )
+            except json.JSONDecodeError as exc:
+                # Treating a corrupt ledger as empty would clobber every accepted row.
+                print(
+                    f"! shot.json unreadable on merge, NOT clobbering ({exc})",
+                    flush=True,
+                )
+                raise
+
+    def commit_prepared_save(
+        self,
+        prepared: PreparedLedgerPublication,
+        *,
+        authority_binding: str | None = None,
+    ) -> str:
+        """CAS-publish prepared bytes under a fresh ledger EX transaction."""
+
+        with ledger_lock(self.path, exclusive=True):
+            return commit_ledger_publication_locked(
+                prepared,
+                authority_binding=authority_binding,
+            )
+
+    @staticmethod
+    def discard_prepared_save(prepared: PreparedLedgerPublication) -> None:
+        discard_prepared_ledger_publication(prepared)
+
     def save(self) -> None:
         """Write back only the layers this instance touched.
 
@@ -778,37 +837,13 @@ class Ledger:
         edit), each holding a snapshot taken at construction. Rewriting the whole
         snapshot would silently revert everyone else's work, so re-read and splice.
 
-        The read-merge-write is done under an exclusive file lock and published with an
-        atomic rename. The merge alone only protects concurrent writers WITHIN a process:
-        two processes could still interleave between the re-read and the write, and a
-        crash mid-write could leave a truncated shot.json that later stages parse as a
-        shot with no recorded layers.
+        Preparation rereads and merges under ledger EX, then fsyncs an unreferenced
+        same-parent inode. Commit reacquires ledger EX and compares the exact prior
+        target identity before one atomic rename. A racing writer therefore produces an
+        explicit ``LedgerSaveConflict`` instead of a lost update or invisible retry.
         """
-        with ledger_lock(self.path, exclusive=True):
-            on_disk = {}
-            if self.path.is_file():
-                try:
-                    on_disk = json.loads(self.path.read_text(encoding="utf-8"))
-                except json.JSONDecodeError as e:
-                    # treating a corrupt ledger as empty would let this write clobber
-                    # every layer recorded so far
-                    print(f"! shot.json unreadable on merge, NOT clobbering ({e})",
-                          flush=True)
-                    raise
-            # Disk wins for top-level keys we never modified; ours wins where we did.
-            # (Plain `{**self.data, **on_disk}` let disk clobber our own new keys, so a
-            # second acceptance run silently kept the first run's block.)
-            merged = dict(on_disk)
-            for k, v in self.data.items():
-                if k == "milestones":
-                    continue
-                if k not in on_disk or v != self._loaded.get(k):
-                    merged[k] = v
-            slots = dict(on_disk.get("milestones", {}))
-            for gid in self._touched:
-                slots[gid] = self.data.get("milestones", {}).get(gid, {})
-            merged["milestones"] = slots
-            merged.setdefault("runs", [])
-            if RUN_ID not in merged["runs"]:
-                merged["runs"] = (merged["runs"] + [RUN_ID])[-20:]
-            _atomic_write(self.path, json.dumps(merged, indent=2) + "\n")
+        prepared = self.prepare_save()
+        try:
+            self.commit_prepared_save(prepared)
+        finally:
+            self.discard_prepared_save(prepared)

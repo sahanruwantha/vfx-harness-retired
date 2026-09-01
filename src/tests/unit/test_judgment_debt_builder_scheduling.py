@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
+from tests.unit_attempt_fixtures import pass_unit
 from vfx_harness.agents import acceptance
 from vfx_harness.agents.builder import layer as layer_runtime
 from vfx_harness.agents.builder.verdicts import (
@@ -22,7 +23,11 @@ from vfx_harness.domain.judgment_debts import (
     JudgmentProvider,
     compile_judgment_debt,
 )
+from vfx_harness.domain.work_units import WorkUnit
 from vfx_harness.orchestration.ledger import Layer
+from vfx_harness.orchestration.unit_state import initialize
+
+_PLAN_HASH = "1" * 64
 
 
 def _due_debt(
@@ -185,6 +190,15 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
     monkeypatch,
 ) -> None:
     layer = _composition_layer(tmp_path)
+    initialize(tmp_path, "2", layer.stages, plan_hash=_PLAN_HASH)
+    for unit in layer.stages:
+        pass_unit(
+            tmp_path,
+            "2",
+            unit,
+            layer.stages,
+            plan_hash=_PLAN_HASH,
+        )
     decision = _load_one_due_decision("R-hall-read", "hall", 40)
     marked: list[tuple[str, str]] = []
     debt_state = "pending_not_due"
@@ -196,8 +210,8 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
         def _slot(self, milestone) -> dict:
             return self.slots.setdefault(milestone.id, {})
 
-        def begin(self, _milestone) -> None:
-            return None
+        def begin(self, milestone) -> None:
+            self._slot(milestone)["attempt"] = 1
 
         def mark(self, _milestone, _status, *, best) -> None:
             return None
@@ -214,7 +228,7 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
     ) -> str:
         assert active_unit.provisional_debt_ids == (decision["debt_id"],)
         assert on_replay_ready is not None
-        on_replay_ready()
+        on_replay_ready(())
         out_verdicts.append(
             (
                 (40, "refs/hall.png"),
@@ -242,14 +256,8 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
         debt_state = "due"
 
     monkeypatch.setattr(layer_runtime, "Ledger", FakeLedger)
-    monkeypatch.setattr(layer_runtime, "active_plan_hash", lambda _folder: "plan")
-    monkeypatch.setattr(layer_runtime, "initialize", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(layer_runtime, "active_plan_hash", lambda _folder: _PLAN_HASH)
     monkeypatch.setattr(layer_runtime, "_prior_layer_paths", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        layer_runtime,
-        "load_unit_state",
-        lambda *_args, **_kwargs: {"units": {unit.id: {"status": "passed"} for unit in layer.stages}},
-    )
     monkeypatch.setattr(layer_runtime, "load_layers", lambda *_args, **_kwargs: {"2": layer})
     monkeypatch.setattr(layer_runtime, "plan_strips", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(layer_runtime, "ensure_axes", axes)
@@ -273,11 +281,20 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
     )
     monkeypatch.setattr(
         layer_runtime,
+        "require_replay_inputs_unchanged",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        layer_runtime,
         "resolve_current_judgment_debt",
         lambda *_args, **_kwargs: pytest.fail("no-signal debt must stay due"),
     )
     monkeypatch.setattr(layer_runtime, "_verify_script", no_signal_verify)
-    monkeypatch.setattr(layer_runtime, "write_layer_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        layer_runtime,
+        "publish_composed_layer_outcome",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(layer_runtime, "_blender_version", lambda _session: "test")
     monkeypatch.setattr(layer_runtime.costlog, "bind", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(layer_runtime.costlog, "unbind", lambda: None)
@@ -328,27 +345,53 @@ def _composition_layer(root) -> Layer:
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text("pass\n", encoding="utf-8")
         stages.append(
-            SimpleNamespace(
-                id=unit_id,
-                depends_on=(),
-                title=unit_id,
-                look_capabilities=(),
-                mutates=SimpleNamespace(
-                    roles=(role,),
-                    controls=(),
-                    script_spans=(artifact.relative_to(root).as_posix(),),
-                ),
-                evaluation=SimpleNamespace(
-                    claims=(
-                        SimpleNamespace(
-                            id=f"{unit_id}-exists",
-                            required=True,
-                            moments=(40,),
-                            authority="executable_required",
-                            axis="form",
-                        ),
-                    ),
-                ),
+            WorkUnit.parse(
+                {
+                    "id": unit_id,
+                    "title": unit_id,
+                    "plan": f"plans/02_form/{unit_id}.md",
+                    "depends_on": [],
+                    "mutates": {
+                        "mode": "scoped",
+                        "roles": [role],
+                        "controls": [],
+                        "script_spans": [artifact.relative_to(root).as_posix()],
+                    },
+                    "protects": {
+                        "selector": "all_active_upstream_interfaces",
+                        "resolve_to_explicit_ids_at": "freeze",
+                    },
+                    "look_capabilities": [],
+                    "evaluation": {
+                        "primary_judge": 40,
+                        "judge": [{"frame": 40, "ref": "refs/hall.png"}],
+                        "temporal_evidence": "none",
+                        "claims": [
+                            {
+                                "id": f"{unit_id}-exists",
+                                "proposition": f"{unit_id} exists",
+                                "axis": "form",
+                                "property": f"state.{unit_id}",
+                                "subject_roles": [role],
+                                "subject_controls": [],
+                                "moments": [40],
+                                "kind": "atomic",
+                                "required": True,
+                                "authority": "executable_required",
+                                "repair_owner": unit_id,
+                                "asserts": "scene",
+                                "evidence": [
+                                    {
+                                        "kind": "scene_contract",
+                                        "id": f"contract.{unit_id}",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    "completion": "all required claims pass",
+                },
+                f"composition.{unit_id}",
             )
         )
     return Layer(

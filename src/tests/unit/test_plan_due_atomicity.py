@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from tests.unit_attempt_fixtures import synthetic_completion_receipt
 from vfx_harness.orchestration import plan_due
 from vfx_harness.orchestration.plan_authority import PlanBundle
 
@@ -182,7 +183,9 @@ def test_concurrent_unit_and_acceptance_writers_preserve_distinct_rows(
             tmp_path,
             layer="1",
             unit="lock",
-            passed_evidence={("scene_contract", "unit-proof")},
+            completion_receipt=synthetic_completion_receipt(
+                "1", "lock", {("scene_contract", "unit-proof")}
+            ),
         ),
         acceptance_writer=lambda: plan_due.resolve_acceptance_completion(
             tmp_path,
@@ -223,7 +226,9 @@ def test_concurrent_writers_reread_under_lock_and_emit_no_duplicate(
             tmp_path,
             layer="1",
             unit="lock",
-            passed_evidence={("scene_contract", "shared-proof")},
+            completion_receipt=synthetic_completion_receipt(
+                "1", "lock", {("scene_contract", "shared-proof")}
+            ),
         ),
         acceptance_writer=lambda: plan_due.resolve_acceptance_completion(
             tmp_path,
@@ -274,7 +279,9 @@ def test_bundle_change_at_final_compare_prevents_resolution_publication(
                 tmp_path,
                 layer="1",
                 unit="lock",
-                passed_evidence={("scene_contract", "proof")},
+                completion_receipt=synthetic_completion_receipt(
+                    "1", "lock", {("scene_contract", "proof")}
+                ),
             )
         else:
             plan_due.resolve_acceptance_completion(

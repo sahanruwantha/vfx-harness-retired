@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 
+from vfx_harness.agents.builder.attempt_guard import UnitAttemptGuard
 from vfx_harness.agents.builder.axes import _layer_needs_motion
 from vfx_harness.agents.builder.drain import _verdict
 from vfx_harness.agents.builder.evidence import (
@@ -22,7 +23,10 @@ from vfx_harness.agents.builder.judgment_payment import (
 )
 from vfx_harness.agents.builder.models import _RESET
 from vfx_harness.agents.builder.pkg import builder_package
-from vfx_harness.agents.builder.prior import _run_artifact_script
+from vfx_harness.agents.builder.prior import (
+    _prepare_artifact_replay_inputs,
+    _run_artifact_script,
+)
 from vfx_harness.agents.builder.revalidate import _scope_added_object_errors
 from vfx_harness.agents.builder.verdicts import _judge_unit_or_layer, _layer_motion_frames, _stash_motion_strip
 from vfx_harness.blender.session import BlenderError, BlenderSession
@@ -31,6 +35,7 @@ from vfx_harness.observability.log import (
     log,
 )
 from vfx_harness.orchestration.ledger import Ledger, Milestone, plan_strips
+from vfx_harness.orchestration.unit_evaluation_receipts import ExecutedReplayInput
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
@@ -74,8 +79,13 @@ async def _verify_script(
     layer=None,
     active_unit=None,
     out_verdicts: list | None = None,
-    on_replay_ready: Callable[[], JudgmentDebtPayment | None] | None = None,
+    out_replay_inputs: list[ExecutedReplayInput] | None = None,
+    authority_script_rel: str | None = None,
+    on_replay_ready: Callable[
+        [tuple[ExecutedReplayInput, ...]], JudgmentDebtPayment | None
+    ] | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
+    attempt_guard: UnitAttemptGuard | None = None,
 ) -> str:
     """-> passed | reproduced | contract_gap | judge_conflict | failed.
 
@@ -90,11 +100,32 @@ async def _verify_script(
     log(f"verifying {script_path.name} reproduces from an empty scene…")
     judgment_payment = None
     try:
+        prepared_replay = _prepare_artifact_replay_inputs(
+            shot.folder,
+            [
+                (
+                    path.expanduser()
+                    .absolute()
+                    .relative_to(shot.folder.expanduser().absolute())
+                    .as_posix(),
+                    path,
+                )
+                for path in prior_paths
+            ]
+            + [(authority_script_rel or script_rel, script_path)],
+        )
+        if out_replay_inputs is not None:
+            out_replay_inputs.clear()
+            out_replay_inputs.extend(item.executed for item in prepared_replay)
         session.run(_RESET)
         session.run(builder_package()._preamble(shot))
-        builder_package()._run_prior_paths(session, prior_paths)  # deltas assume priors ran first
+        builder_package()._run_prior_paths(
+            session,
+            prior_paths,
+            prepared_replay[:-1],
+        )  # deltas assume priors ran first
         before_objects = builder_package()._scene_object_manifest(session)
-        _run_artifact_script(session, script_path)
+        _run_artifact_script(session, script_path, prepared_replay[-1])
         if active_unit is not None and active_unit.mutates.mode == "scoped":
             scope_errors = _scope_added_object_errors(
                 before_objects,
@@ -125,7 +156,9 @@ async def _verify_script(
             # selected plan rows. Invoke the harness callback only after every prior and
             # the current artifact executed and the scoped-mutation check stayed clean,
             # but before any raster or critic work can spend against that prefix.
-            judgment_payment = on_replay_ready()
+            judgment_payment = on_replay_ready(
+                tuple(item.executed for item in prepared_replay)
+            )
     except BlenderError as e:
         log(f"! build script failed: {str(e)[:200]}")
         verdict = _verdict({"scores": {}, "issues": [f"script error: {e}"]})
@@ -315,7 +348,11 @@ async def _verify_script(
             active_unit=active_unit,
             selected_authority=selected_authority,
         )
-        results[i] = await _judge_unit_or_layer(
+        if attempt_guard is not None:
+            attempt_guard.check(
+                f"score canonical unit {attempt_guard.unit.id} at frame {m_i.frame}"
+            )
+        verdict = await _judge_unit_or_layer(
             shot,
             m_i,
             render_rel,
@@ -330,7 +367,13 @@ async def _verify_script(
             focus_frames_override=[int(m_i.frame)],
             layer=layer,
             selected_authority=selected_authority,
+            attempt_guard=attempt_guard,
         )
+        if attempt_guard is not None:
+            attempt_guard.check(
+                f"consume canonical unit {attempt_guard.unit.id} score at frame {m_i.frame}"
+            )
+        results[i] = verdict
 
     if not raster_required:
         for i, (_f, _r, m_i, rr, prepared, _render_receipt) in enumerate(shots_):

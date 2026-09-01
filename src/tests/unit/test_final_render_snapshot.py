@@ -4,13 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
-from vfx_harness.application import final_render_snapshot
+from tests.unit_attempt_fixtures import (
+    ABSENT_SELECTION_TOKEN,
+    claim_for_build,
+    freeze_unit,
+    publish_passed_evaluation,
+)
+from vfx_harness.agents.builder.prior import _run_artifact_script
+from vfx_harness.application import final_render_snapshot, render_shot
+from vfx_harness.blender.filesystem_confinement import prepared_worker_command
+from vfx_harness.blender.session import BlenderError
 from vfx_harness.domain.acceptance_outcomes import (
     AcceptanceMomentOutcome,
     AcceptanceOutcome,
@@ -18,7 +30,7 @@ from vfx_harness.domain.acceptance_outcomes import (
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.refobs import PROMOTED_CONSTRUCTION_SCHEMA
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration import unit_state
+from vfx_harness.orchestration import unit_state, unit_state_claims
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
@@ -71,7 +83,7 @@ def _capture(
     render.parent.mkdir(parents=True)
     render.write_bytes(b"accepted render")
 
-    unit = _unit("form", script_span="build/units/1/form.py")
+    unit = _unit("form", script_span="build/units/01/form.py")
     script = tmp_path / unit.mutates.script_spans[0]
     script.parent.mkdir(parents=True)
     script_bytes = b"print('accepted')\n"
@@ -107,21 +119,47 @@ def _capture(
         )
     layer = SimpleNamespace(id="1", stages=(unit,))
 
-    unit_state.initialize(tmp_path, "1", (unit,), plan_hash="plan")
-    unit_state.transition(tmp_path, "1", unit.id, "planning", reason="fixture")
-    unit_state.transition(tmp_path, "1", unit.id, "building", reason="fixture")
-    unit_state.freeze_checkpoint(
+    plan_hash = "1" * 64
+    unit_state.initialize(tmp_path, "1", (unit,), plan_hash=plan_hash)
+    attempt = claim_for_build(
+        tmp_path,
+        "1",
+        (unit,),
+        unit.id,
+        plan_hash=plan_hash,
+    )
+    freeze_unit(
         tmp_path,
         "1",
         unit,
+        attempt,
         active_contract_ids=(),
-        candidate_hash=_digest(b"candidate"),
+        candidate_hash="missing",
         settings_hash=_digest(b"settings"),
         script_hash=script_digest,
         input_hash=_digest(b"inputs"),
     )
-    unit_state.transition(tmp_path, "1", unit.id, "evaluating", reason="fixture")
-    unit_state.transition(tmp_path, "1", unit.id, "passed", reason="fixture")
+    unit_state.transition(
+        tmp_path,
+        "1",
+        unit.id,
+        "evaluating",
+        reason="fixture",
+        attempt=attempt,
+        selection_token=ABSENT_SELECTION_TOKEN,
+    )
+    publish_passed_evaluation(tmp_path, "1", unit, attempt)
+    unit_state_claims.complete_unit_attempt(
+        tmp_path,
+        "1",
+        unit.id,
+        (unit,),
+        attempt,
+        expected_plan_hash=plan_hash,
+        selection_token=ABSENT_SELECTION_TOKEN,
+        reason="fixture",
+        evidence=["fixture:accepted"],
+    )
 
     chain = (
         {
@@ -239,6 +277,151 @@ def test_replay_uses_immutable_accepted_script_bytes(
         match=r"accepted source script .* changed during final render",
     ):
         final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_recreated_replay_root_cannot_bless_detached_worker_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, _construction = _capture(tmp_path, monkeypatch)
+    retired = snapshot.replay_root.with_name(f"{snapshot.replay_root.name}-retired")
+    snapshot.replay_root.rename(retired)
+    shutil.copytree(retired, snapshot.replay_root)
+
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match=r"final-render replay root.*changed before publication",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_transient_replay_script_swap_executes_prebound_snapshot_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, _construction = _capture(tmp_path, monkeypatch)
+    replay = snapshot.replay_scripts[0]
+    prepared = render_shot._prepared_snapshot_replay_input(snapshot, 0)
+    retired = replay.with_name(f".{replay.name}.captured")
+    executed: list[tuple[str, str]] = []
+
+    class RecordingSession:
+        artifacts = None
+        cwd = None
+
+        def run(self, code: str, **kwargs):
+            executed.append((code, str(kwargs.get("execution_policy") or "live")))
+            if len(executed) == 1:
+                replay.rename(retired)
+                replay.write_bytes(b"print('transient replacement')\n")
+                replay.unlink()
+                retired.rename(replay)
+            return {}
+
+    with pytest.raises(BlenderError, match="trusted path changed"):
+        _run_artifact_script(RecordingSession(), replay, prepared)
+
+    assert executed[0] == ("print('accepted')\n", "artifact")
+    assert replay.read_bytes() == b"print('accepted')\n"
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match="immutable replay script 0 changed during final render",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_transient_worker_dependency_swap_reads_descriptor_pinned_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, _construction = _capture(tmp_path, monkeypatch)
+    dependency = snapshot.assets_dir / "hero" / "model.glb"
+    member = next(
+        binding
+        for binding in snapshot.worker_file_bindings
+        if binding.path == dependency
+    )
+    layout = run_artifacts.active(tmp_path)
+    worker_scratch = layout.scratch / "blender"
+    worker_scratch.mkdir(exist_ok=True)
+    retired = dependency.with_name(f".{dependency.name}.captured")
+    source = (
+        "from pathlib import Path\n"
+        f"print(Path({str(dependency)!r}).read_bytes().decode('ascii'))\n"
+    )
+
+    with prepared_worker_command(
+        ["/usr/bin/python3", "-c", source],
+        writable_roots=(worker_scratch,),
+        readable_roots=(snapshot.replay_root,),
+        readable_root_bindings=(snapshot.replay_root_binding,),
+        readable_file_bindings=(member,),
+        authority_root=tmp_path,
+        current_run_root=layout.root,
+    ) as command:
+        dependency.rename(retired)
+        dependency.write_bytes(b"glTFtransient-replacement")
+        try:
+            completed = subprocess.run(
+                command.argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                pass_fds=command.pass_fds,
+            )
+        finally:
+            dependency.unlink()
+            retired.rename(dependency)
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "glTFaccepted-asset"
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match="immutable replay dependency 0 changed during final render",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_final_render_locks_reverse_topology_in_canonical_location_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    @contextmanager
+    def state_lock(_folder: Path, layer_id: str, *, exclusive: bool):
+        assert exclusive is False
+        events.append(f"enter:{layer_id}")
+        try:
+            yield
+        finally:
+            events.append(f"exit:{layer_id}")
+
+    @contextmanager
+    def shot_lock(_path: Path, *, exclusive: bool):
+        assert exclusive is False
+        events.append("enter:ledger")
+        try:
+            yield
+        finally:
+            events.append("exit:ledger")
+
+    monkeypatch.setattr(final_render_snapshot, "unit_state_lock", state_lock)
+    monkeypatch.setattr(final_render_snapshot, "ledger_lock", shot_lock)
+    snapshot = SimpleNamespace(unit_state_digests=(("z", "1"), ("a", "2")))
+
+    with final_render_snapshot.final_render_state_locks(_shot(tmp_path), snapshot):
+        events.append("held")
+
+    assert events == [
+        "enter:a",
+        "enter:z",
+        "enter:ledger",
+        "held",
+        "exit:ledger",
+        "exit:z",
+        "exit:a",
+    ]
 
 
 def test_checkpoint_invalidation_during_render_invalidates_snapshot(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 
 import anyio
 
@@ -21,21 +22,44 @@ from vfx_harness.agents.builder.prior import ChainBroken
 from vfx_harness.agents.shot_context import clear_layer_context
 from vfx_harness.application.preflight import warn_if_broken
 from vfx_harness.blender.session import BlenderSession
-from vfx_harness.domain.brief import load_shot
+from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.provenance import check as provenance_check
-from vfx_harness.orchestration.authority_selection import resolve_selected_authority
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.builder_execution_fence import (
+    BuilderExecutionFenceLease,
+    builder_execution_fence,
+    require_builder_execution_lease,
+)
 from vfx_harness.orchestration.escalate import unanswered_for_layer
-from vfx_harness.orchestration.ledger import load_layers
+from vfx_harness.orchestration.generate_construction import (
+    ensure_construction_read_namespace,
+)
+from vfx_harness.orchestration.ledger import Layer, load_layers
 from vfx_harness.orchestration.plan_due import require_due_clear
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 
 
-async def _run(
-    folder: str, layer_id: str, rounds: int, blender: str, resume_ok: bool = False, force: bool = False
-) -> None:
+@dataclass(frozen=True, slots=True)
+class PreparedBuildRequest:
+    shot: Shot
+    layer: Layer
+    selected_authority: ResolvedSelectedAuthority
+
+
+def _prepare_build_request(
+    folder: str,
+    layer_id: str,
+    *,
+    force: bool,
+) -> PreparedBuildRequest:
+    """Resolve read-only build authority before claiming the live execution fence."""
+
     # Cheapest possible check, first: a credential in a variable nothing reads costs a
     # whole layer to discover otherwise, and it does not fail loudly when it happens.
     warn_if_broken()
@@ -83,6 +107,37 @@ async def _run(
         raise SystemExit(5)
     if unanswered:
         log(f"! building with {len(unanswered)} question(s) unanswered (--force)")
+    return PreparedBuildRequest(
+        shot=shot,
+        layer=g,
+        selected_authority=selected_authority,
+    )
+
+
+async def _run_already_fenced(
+    request: PreparedBuildRequest,
+    rounds: int,
+    blender: str,
+    resume_ok: bool = False,
+    force: bool = False,
+    fence_lease: BuilderExecutionFenceLease | None = None,
+) -> None:
+    """Start Blender and build while the caller owns the one shot-wide fence."""
+
+    # Reject the internal entry point before construction namespace creation or
+    # Blender startup.  The deeper layer entry point repeats this capability check,
+    # but that is too late for these shared shot mutations.
+    require_builder_execution_lease(fence_lease, request.shot.folder)
+    if resume_ok:
+        raise ValueError(
+            "builder resume refused: legacy ledger checkpoint/session rows are not "
+            "bound to an exact work-unit attempt receipt; reviewed `vfx units retry` "
+            "starts a new attempt from current authority"
+        )
+    shot = request.shot
+    g = request.layer
+    selected_authority = request.selected_authority
+    ensure_construction_read_namespace(shot.folder)
     session = BlenderSession(
         blender=blender, blend_file=None, assets_dir=shot.folder / "assets", cwd=shot.folder
     ).start()
@@ -96,7 +151,7 @@ async def _run(
             f"build agent: shot '{shot.id}' LAYER {g.id} — {g.title} "
             f"(judges: {judged}) → {g.script}, builder {builder_model()}, critic {critic_model()}"
         )
-        ledger = await builder_package().build_layer(
+        ledger = await builder_package().build_layer_already_fenced(
             shot,
             g,
             session,
@@ -104,6 +159,7 @@ async def _run(
             resume_ok=resume_ok,
             force=force,
             selected_authority=selected_authority,
+            fence_lease=fence_lease,
         )
         status = ledger.status(g.as_milestone())
         log(f"{g.id}: {status}  →  {ledger.path}")
@@ -133,6 +189,28 @@ async def _run(
         clear_layer_context(shot)
 
 
+async def _run(
+    folder: str,
+    layer_id: str,
+    rounds: int,
+    blender: str,
+    resume_ok: bool = False,
+    force: bool = False,
+) -> None:
+    """Safe direct adapter; the CLI uses its already-fenced inner boundary below."""
+
+    request = _prepare_build_request(folder, layer_id, force=force)
+    with builder_execution_fence(request.shot.folder) as fence_lease:
+        await _run_already_fenced(
+            request,
+            rounds,
+            blender,
+            resume_ok,
+            force,
+            fence_lease,
+        )
+
+
 def _authority_defect_exit(shot, failure: BuildAuthorityDefect) -> run_artifacts.TypedStop:
     """Seal one exact finding while preserving the builder's established exit UX."""
     layout = run_artifacts.active(shot.folder)
@@ -157,8 +235,6 @@ def _authority_defect_exit(shot, failure: BuildAuthorityDefect) -> run_artifacts
     # envelope, not prose or exit code, becomes dispatch authority.
     stopped.detail = detail
     return stopped
-
-
 def main() -> None:
     load_environment()
     ap = argparse.ArgumentParser(description="Build one plan layer with the critic loop.")
@@ -176,19 +252,30 @@ def main() -> None:
     ap.add_argument(
         "--resume",
         action="store_true",
-        help="continue a crashed/truncated run: restore its scene checkpoint, "
-        "replay the journal, and resume the same SDK session",
+        help="retired compatibility flag; always refuses because legacy checkpoint, "
+        "journal, and SDK-session rows are not bound to an exact work-unit attempt receipt",
     )
     args = ap.parse_args()
-    shot = load_shot(args.folder)
-    with run_artifacts.invocation(shot.folder, "build", shot_id=shot.id,
-                                  parameters={"layer": args.layer, "rounds": args.rounds}):
+    request = _prepare_build_request(args.folder, args.layer, force=args.force)
+    shot = request.shot
+    with builder_execution_fence(shot.folder) as fence_lease, run_artifacts.invocation(
+        shot.folder,
+        "build",
+        shot_id=shot.id,
+        parameters={"layer": args.layer, "rounds": args.rounds},
+    ):
         try:
-            anyio.run(_run, args.folder, args.layer, args.rounds, args.blender,
-                      args.resume, args.force)
-        # `from None` on all three: the handler has already logged a message written for a
-        # human, and the exit code carries the meaning for the driver. Chaining the original
-        # traceback on top would bury both under a stack nobody needs.
+            anyio.run(
+                _run_already_fenced,
+                request,
+                args.rounds,
+                args.blender,
+                args.resume,
+                args.force,
+                fence_lease,
+            )
+        # `from None`: the handler has already logged a human-facing message, and
+        # the exit code carries the meaning. A chained traceback would bury both.
         except BuildAuthorityDefect as e:
             raise _authority_defect_exit(shot, e) from None
         except BuildTruncated as e:

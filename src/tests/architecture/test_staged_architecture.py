@@ -8,6 +8,11 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from tests.unit_attempt_fixtures import (
+    ABSENT_SELECTION_TOKEN,
+    claim_for_build,
+    pass_unit,
+)
 from vfx_harness.agents.builder import _executable_unit_verdict, _scope_unit_evidence
 from vfx_harness.blender.tools import _image_evidence_ids_at_frame, _pixel_contract_gate
 from vfx_harness.domain.work_units import Claim, ProtectionSpec, WorkUnit, read_document
@@ -21,12 +26,15 @@ from vfx_harness.orchestration.ledger import load_layers
 from vfx_harness.orchestration.unit_state import (
     apply_replan,
     block_dependents,
-    freeze_checkpoint,
     initialize,
     invalidate_checkpoint,
     load,
-    transition,
 )
+from vfx_harness.orchestration.unit_state_claims import claim_ready_unit_for_planning
+
+_PLAN = "0" * 64
+_PLAN_V1 = "1" * 64
+_PLAN_V2 = "2" * 64
 
 
 def _claim(uid: str, *, cid: str | None = None, frame: int = 40) -> dict:
@@ -119,21 +127,22 @@ def _unit(
     return WorkUnit.parse(row, f"unit.{uid}")
 
 
-def _pass_unit(folder, layer_id: str, unit: WorkUnit) -> None:
-    transition(folder, layer_id, unit.id, "planning", reason="test")
-    transition(folder, layer_id, unit.id, "building", reason="test")
-    freeze_checkpoint(
+def _pass_unit(
+    folder,
+    layer_id: str,
+    unit: WorkUnit,
+    units: tuple[WorkUnit, ...],
+    *,
+    plan_hash: str,
+) -> None:
+    pass_unit(
         folder,
         layer_id,
         unit,
-        active_contract_ids=["upstream.z", "upstream.a"],
-        candidate_hash=f"candidate-{unit.id}",
-        settings_hash="settings",
-        script_hash="script",
-        input_hash="inputs",
+        units,
+        plan_hash=plan_hash,
+        active_contract_ids=("upstream.z", "upstream.a"),
     )
-    transition(folder, layer_id, unit.id, "evaluating", reason="test")
-    transition(folder, layer_id, unit.id, "passed", reason="test")
 
 
 def test_unit_evidence_scope_excludes_sibling_contracts():
@@ -914,11 +923,11 @@ def test_protection_selector_freezes_to_explicit_sorted_ids():
     assert spec.resolve(["contract.z", "contract.a", "contract.z"]) == ("contract.a", "contract.z")
 
 
-def test_checkpoint_and_replan_preserve_only_unaffected_units(tmp_path):
+def test_checkpoint_and_replan_preserve_identity_but_reopen_plan_bound_receipts(tmp_path):
     old = (_unit("rig"), _unit("form", depends_on=["rig"]), _unit("independent"))
-    initialize(tmp_path, "4", old, plan_hash="plan-v1")
+    initialize(tmp_path, "4", old, plan_hash=_PLAN_V1)
     for unit in old:
-        _pass_unit(tmp_path, "4", unit)
+        _pass_unit(tmp_path, "4", unit, old, plan_hash=_PLAN_V1)
 
     frozen = load(tmp_path, "4")["units"]["rig"]["checkpoint"]
     assert frozen["protected_contract_ids"] == ["upstream.a", "upstream.z"]
@@ -934,8 +943,8 @@ def test_checkpoint_and_replan_preserve_only_unaffected_units(tmp_path):
         "4",
         old,
         new,
-        old_plan_hash="plan-v1",
-        new_plan_hash="plan-v2",
+        old_plan_hash=_PLAN_V1,
+        new_plan_hash=_PLAN_V2,
         owner="planner",
         trigger="form unit needs a distinct finish dependency",
         evidence=["verdict:form-flat"],
@@ -943,8 +952,10 @@ def test_checkpoint_and_replan_preserve_only_unaffected_units(tmp_path):
     state = load(tmp_path, "4")
     assert record["invalidated"] == ["finish", "form"]
     assert record["preserved"] == ["independent", "rig"]
-    assert state["units"]["rig"]["status"] == "passed"
-    assert state["units"]["independent"]["status"] == "passed"
+    assert state["units"]["rig"]["status"] == "retryable"
+    assert state["units"]["independent"]["status"] == "retryable"
+    assert "completion_receipt" not in state["units"]["rig"]
+    assert "completion_receipt" not in state["units"]["independent"]
     assert state["units"]["form"]["status"] == "pending"
     assert state["units"]["finish"]["status"] == "pending"
     assert state["superseded"][-1]["id"] == "form"
@@ -955,16 +966,17 @@ def test_digest_bound_state_replan_preserves_matches_without_old_view(tmp_path):
     """Global republication can make the old materialized view inert before remat.
 
     Current-schema durable unit hashes are still a closed old identity: matching units
-    remain accepted, changed/new closure reopens, and removed accepted units are retired
-    by the amendment rather than misclassified as unauthorised orphans.
+    retain their checkpoint lineage, but plan-bound completion receipts reopen until a
+    typed reconciliation exists. Changed/new closure reopens, and removed accepted units
+    are retired by the amendment rather than misclassified as unauthorised orphans.
     """
     rig = _unit("rig")
     form = _unit("form", depends_on=["rig"])
     obsolete = _unit("obsolete")
     old = (rig, form, obsolete)
-    initialize(tmp_path, "4", old, plan_hash="plan-v1")
+    initialize(tmp_path, "4", old, plan_hash=_PLAN_V1)
     for unit in old:
-        _pass_unit(tmp_path, "4", unit)
+        _pass_unit(tmp_path, "4", unit, old, plan_hash=_PLAN_V1)
 
     changed_form = _unit("form", depends_on=["rig"], proposition_suffix="-changed")
     finish = _unit("finish", depends_on=["form"])
@@ -974,8 +986,8 @@ def test_digest_bound_state_replan_preserves_matches_without_old_view(tmp_path):
         "4",
         (),
         new,
-        old_plan_hash="plan-v1",
-        new_plan_hash="plan-v2",
+        old_plan_hash=_PLAN_V1,
+        new_plan_hash=_PLAN_V2,
         owner="planner",
         trigger="selected global generation superseded the old JIT view",
         evidence=["run:republished-plan"],
@@ -989,7 +1001,8 @@ def test_digest_bound_state_replan_preserves_matches_without_old_view(tmp_path):
     assert record["invalidated"] == ["finish", "form"]
     assert record["preserved"] == ["rig"]
     assert record.get("orphaned") is None
-    assert state["units"]["rig"]["status"] == "passed"
+    assert state["units"]["rig"]["status"] == "retryable"
+    assert "completion_receipt" not in state["units"]["rig"]
     assert state["units"]["form"]["status"] == "pending"
     assert state["units"]["finish"]["status"] == "pending"
     assert {row["id"] for row in state["superseded"][-2:]} == {"form", "obsolete"}
@@ -1012,10 +1025,16 @@ def test_failed_dependency_blocks_transitive_units_without_failing_them(tmp_path
 
 def test_checkpoint_invalidation_revokes_authority_and_blocks_consumers_atomically(tmp_path):
     units = (_unit("a"), _unit("b", depends_on=["a"]), _unit("c", depends_on=["b"]))
-    initialize(tmp_path, "1", units, plan_hash="plan")
-    _pass_unit(tmp_path, "1", units[0])
-    transition(tmp_path, "1", "b", "planning", reason="test")
-    transition(tmp_path, "1", "b", "building", reason="test")
+    initialize(tmp_path, "1", units, plan_hash=_PLAN)
+    _pass_unit(tmp_path, "1", units[0], units, plan_hash=_PLAN)
+    claim_for_build(
+        tmp_path,
+        "1",
+        units,
+        "b",
+        plan_hash=_PLAN,
+        eligible_passed={"a"},
+    )
 
     record = invalidate_checkpoint(
         tmp_path,
@@ -1028,7 +1047,7 @@ def test_checkpoint_invalidation_revokes_authority_and_blocks_consumers_atomical
 
     state = load(tmp_path, "1")
     assert record["affected"] == ["a", "b", "c"]
-    assert record["archived_checkpoints"]["a"]["candidate_hash"] == "candidate-a"
+    assert record["archived_checkpoints"]["a"]["candidate_hash"] == "missing"
     assert state["units"]["a"]["status"] == "retryable"
     assert "checkpoint" not in state["units"]["a"]
     assert state["units"]["a"]["invalidated_checkpoints"][-1]["checkpoint"] == record[
@@ -1047,9 +1066,21 @@ def test_checkpoint_invalidation_requires_auditable_evidence(tmp_path):
 
 
 def test_work_unit_state_is_isolated_per_layer(tmp_path):
-    initialize(tmp_path, "1", (_unit("layout"),), plan_hash="layout-plan")
-    initialize(tmp_path, "2", (_unit("form"),), plan_hash="form-plan")
-    transition(tmp_path, "1", "layout", "planning", reason="test")
+    layout_units = (_unit("layout"),)
+    form_units = (_unit("form"),)
+    initialize(tmp_path, "1", layout_units, plan_hash="a" * 64)
+    initialize(tmp_path, "2", form_units, plan_hash="b" * 64)
+    claim_ready_unit_for_planning(
+        tmp_path,
+        "1",
+        "layout",
+        layout_units,
+        expected_plan_hash="a" * 64,
+        eligible_passed=set(),
+        run_id="fixture-layer-isolation",
+        selection_token=ABSENT_SELECTION_TOKEN,
+        reason="fixture layer is dependency-ready",
+    )
 
     assert load(tmp_path, "1")["units"]["layout"]["status"] == "planning"
     assert load(tmp_path, "2")["units"]["form"]["status"] == "pending"

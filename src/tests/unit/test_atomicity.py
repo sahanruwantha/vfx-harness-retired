@@ -11,6 +11,7 @@ import pytest
 from tests.unit.test_plan_improvements import _layer_doc, _write
 from tests.unit.test_plan_records import _add_deferred_layer, _candidate, _jit_payload
 from tests.unit.test_plan_records import _write as _write_plan
+from tests.unit_attempt_fixtures import pass_unit
 from vfx_harness.agents.unit_scope import (
     compile_predecessor_interface,
     compile_scope_with_predecessors,
@@ -1133,11 +1134,11 @@ def test_assembly_is_unready_until_producer_digest_and_interface_match(tmp_path:
         consumes=_consume("iris_blade_master", "iris.blade.instance_interface"),
         provides=["geometry"],
     )
-    initialize(tmp_path, "3", (blade, assembly), plan_hash="plan-v1")
-    from vfx_harness.orchestration.unit_state import load, transition
+    plan_hash = "a" * 64
+    initialize(tmp_path, "3", (blade, assembly), plan_hash=plan_hash)
+    from vfx_harness.orchestration.unit_state import load
 
-    for status in ("planning", "building", "frozen", "evaluating", "passed"):
-        transition(tmp_path, "3", blade.id, status, reason="test")
+    pass_unit(tmp_path, "3", blade, (blade, assembly), plan_hash=plan_hash)
     state = load(tmp_path, "3")
     passed = {uid for uid, row in state["units"].items() if row["status"] == "passed"}
     sealed = digest_matched_passed(state, (blade, assembly))
@@ -1219,12 +1220,18 @@ def test_ready_query_refreshes_state_after_producer_passes(
         contract_id=f"{successor_id}.contract",
         depends_on=[producer_id],
     )
-    initialize(tmp_path, "1", (producer, successor), plan_hash="plan-v1")
-    from vfx_harness.orchestration.unit_state import load, transition
+    plan_hash = "a" * 64
+    initialize(tmp_path, "1", (producer, successor), plan_hash=plan_hash)
+    from vfx_harness.orchestration.unit_state import load
 
     stale = load(tmp_path, "1")
-    for status in ("planning", "building", "frozen", "evaluating", "passed"):
-        transition(tmp_path, "1", producer_id, status, reason="test")
+    pass_unit(
+        tmp_path,
+        "1",
+        producer,
+        (producer, successor),
+        plan_hash=plan_hash,
+    )
 
     assert digest_matched_passed(stale, (producer, successor)) == set()
     ready = ready_from_durable_state(

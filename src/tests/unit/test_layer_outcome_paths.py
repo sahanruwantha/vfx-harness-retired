@@ -5,16 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.layer_outcome_fixtures import write_test_layer_outcome
 from vfx_harness.orchestration import revalidation
 from vfx_harness.orchestration.layer_outcome_paths import (
     layer_outcome_locator,
     layer_outcome_path,
 )
-from vfx_harness.orchestration.layer_plans import (
-    load_layer_outcome,
-    record_revalidation,
-    write_layer_outcome,
-)
+from vfx_harness.orchestration.layer_plans import load_layer_outcome
 
 
 def test_layer_outcome_locators_are_injective_and_cannot_traverse(tmp_path: Path) -> None:
@@ -56,7 +53,7 @@ def test_named_layer_outcome_round_trips_through_all_layer_plan_writers(
         script="build/camera.py",
     )
 
-    path = write_layer_outcome(
+    path = write_test_layer_outcome(
         tmp_path,
         layer,
         status="passed",
@@ -68,15 +65,6 @@ def test_named_layer_outcome_round_trips_through_all_layer_plan_writers(
 
     assert path == layer_outcome_path(tmp_path, "camera.hero")
     assert load_layer_outcome(tmp_path, "camera.hero")["layer"] == "camera.hero"
-    updated = record_revalidation(
-        tmp_path,
-        "camera.hero",
-        run_id="run-2",
-        attempt=2,
-        evidence=[{"frame": 1, "pass": True}],
-    )
-    assert updated == path
-    assert load_layer_outcome(tmp_path, "camera.hero")["last_revalidation"]["run_id"] == "run-2"
 
 
 def test_current_outcome_eligibility_uses_sealed_comparison_settings(

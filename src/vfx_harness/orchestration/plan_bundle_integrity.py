@@ -16,6 +16,12 @@ from collections.abc import Callable, Collection
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from vfx_harness.infrastructure.trusted_files import (
+    TrustedFileError,
+    TrustedFileSnapshot,
+    read_trusted_file,
+)
+
 _BUNDLE_FIELDS = frozenset({"schema", "run_id", "content_hash", "outcome", "artifacts"})
 _READ_FILE_FLAGS = (
     os.O_RDONLY
@@ -103,14 +109,21 @@ def _reject_symlink_components(anchor: Path, path: Path, where: str) -> None:
             raise PlanPublicationError(f"{where} must not use symlink path components: {current}")
 
 
-def read_real_file(anchor: Path, path: Path, where: str) -> bytes:
-    _reject_symlink_components(anchor, path, where)
-    if not path.is_file():
-        raise PlanPublicationError(f"{where} is missing or not a regular file: {path}")
+def read_real_file_snapshot(
+    anchor: Path,
+    path: Path,
+    where: str,
+) -> TrustedFileSnapshot:
+    """Read and hash through one descriptor rooted at exact trusted authority."""
+
     try:
-        return path.read_bytes()
-    except OSError as exc:
-        raise PlanPublicationError(f"{where} is unreadable: {path}") from exc
+        return read_trusted_file(anchor, path, where)
+    except TrustedFileError as exc:
+        raise PlanPublicationError(str(exc)) from exc
+
+
+def read_real_file(anchor: Path, path: Path, where: str) -> bytes:
+    return read_real_file_snapshot(anchor, path, where).payload
 
 
 def require_real_directory(anchor: Path, path: Path, where: str) -> None:

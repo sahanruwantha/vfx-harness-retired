@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import stat
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
@@ -18,6 +17,16 @@ from vfx_harness.domain.acceptance_outcomes import AcceptanceOutcome
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.refobs import PROMOTED_CONSTRUCTION_SCHEMA
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest, require_digest
+from vfx_harness.infrastructure.trusted_files import (
+    TrustedDirectoryBinding,
+    TrustedFileBinding,
+    TrustedFileError,
+    TrustedFileNotFound,
+    bind_trusted_directory,
+    read_trusted_file,
+    require_trusted_directory_unchanged,
+    require_trusted_file_unchanged,
+)
 from vfx_harness.orchestration import unit_state
 from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 from vfx_harness.orchestration.generate_construction import (
@@ -29,7 +38,7 @@ from vfx_harness.orchestration.plan_inputs import (
     decision_input_bytes,
 )
 from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
-from vfx_harness.orchestration.unit_state_lock import unit_state_lock
+from vfx_harness.orchestration.unit_state_lock import unit_state_lock, unit_state_path
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.ledger import Layer
@@ -43,12 +52,14 @@ class FinalRenderSnapshotError(ValueError):
 class _FileBinding:
     path: Path
     sha256: str | None
+    trusted: TrustedFileBinding | None
 
 
 @dataclass(frozen=True, slots=True)
 class _ReplayBinding:
     source: _FileBinding
     snapshot: _FileBinding
+    payload: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +91,7 @@ class FinalRenderSnapshot:
     replay: tuple[_ReplayBinding, ...]
     replay_dependencies: tuple[_FileBinding, ...]
     replay_root: Path
+    replay_root_binding: TrustedDirectoryBinding
     assets_dir: Path
     manifest: Path
 
@@ -87,38 +99,61 @@ class FinalRenderSnapshot:
     def replay_scripts(self) -> tuple[Path, ...]:
         return tuple(binding.snapshot.path for binding in self.replay)
 
+    @property
+    def worker_file_bindings(self) -> tuple[TrustedFileBinding, ...]:
+        """Exact snapshot members mounted into the confined worker by descriptor."""
 
-def _read_regular(path: Path, *, required: bool, where: str) -> bytes | None:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except FileNotFoundError:
-        if not required:
-            return None
-        raise FinalRenderSnapshotError(f"{where} is missing: {path}") from None
-    except OSError as exc:
-        raise FinalRenderSnapshotError(f"{where} is not a readable regular file: {path}") from exc
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise FinalRenderSnapshotError(f"{where} must be a regular file: {path}")
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        return b"".join(chunks)
-    finally:
-        os.close(descriptor)
+        rows = (
+            *(row.snapshot for row in self.replay),
+            *self.replay_dependencies,
+        )
+        bindings: list[TrustedFileBinding] = []
+        seen: set[Path] = set()
+        for row in rows:
+            if row.sha256 is None or row.trusted is None:
+                raise FinalRenderSnapshotError(
+                    f"worker-readable snapshot member has no trusted binding: {row.path}"
+                )
+            if row.path not in seen:
+                bindings.append(row.trusted)
+                seen.add(row.path)
+        return tuple(bindings)
 
 
 def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _binding(path: Path, *, required: bool, where: str) -> tuple[_FileBinding, bytes | None]:
-    data = _read_regular(path, required=required, where=where)
-    return _FileBinding(path=path, sha256=None if data is None else _digest(data)), data
+def _binding(
+    root: Path,
+    path: Path,
+    *,
+    required: bool,
+    where: str,
+) -> tuple[_FileBinding, bytes | None]:
+    """Read one exact leaf and retain its complete named ancestor lineage."""
+
+    try:
+        snapshot = read_trusted_file(
+            root,
+            path,
+            where,
+            require_nonempty=False,
+        )
+    except TrustedFileNotFound:
+        if not required:
+            return _FileBinding(path=path, sha256=None, trusted=None), None
+        raise FinalRenderSnapshotError(f"{where} is missing: {path}") from None
+    except TrustedFileError as exc:
+        raise FinalRenderSnapshotError(str(exc)) from exc
+    return (
+        _FileBinding(
+            path=snapshot.binding.path,
+            sha256=snapshot.sha256,
+            trusted=snapshot.binding,
+        ),
+        snapshot.payload,
+    )
 
 
 def _inside(root: Path, relative: object, where: str) -> tuple[str, Path]:
@@ -212,7 +247,12 @@ def _capture_source_files(
     construction: dict[str, _ConstructionCapture] = {}
     for relative, expected_digest in expected.items():
         _relative, path = _inside(root, relative, f"accepted script {relative}")
-        binding, data = _binding(path, required=True, where=f"accepted script {relative}")
+        binding, data = _binding(
+            root,
+            path,
+            required=True,
+            where=f"accepted script {relative}",
+        )
         assert data is not None
         if binding.sha256 != expected_digest:
             raise FinalRenderSnapshotError(
@@ -224,6 +264,7 @@ def _capture_source_files(
 
         pointer = path.with_suffix(".construction.json")
         pointer_binding, pointer_data = _binding(
+            root,
             pointer,
             required=False,
             where=f"construction pointer for {relative}",
@@ -251,6 +292,7 @@ def _capture_source_files(
             f"construction GLB for {relative}",
         )
         glb_binding, _glb_data = _binding(
+            root,
             glb,
             required=True,
             where=f"construction GLB for {relative}",
@@ -300,6 +342,7 @@ def _capture_evidence_files(root: Path, ledger_data: bytes) -> tuple[_FileBindin
                 f"acceptance moment {moment_id}.{field}",
             )
             binding, _data = _binding(
+                root,
                 path,
                 required=True,
                 where=f"acceptance moment {moment_id}.{field}",
@@ -339,7 +382,7 @@ def _tree_identity(
 ) -> tuple[str, tuple[_FileBinding, ...], bool, tuple[Path, ...]]:
     exists, directories, files = _tree_entries(root, relative, where)
     bindings = tuple(
-        _binding(path, required=True, where=f"{where} file")[0]
+        _binding(root, path, required=True, where=f"{where} file")[0]
         for path in files
     )
     digest = canonical_digest(
@@ -377,12 +420,17 @@ def _snapshot_tree(
         (snapshot_root / directory.relative_to(root)).mkdir(parents=True, exist_ok=True)
     snapshots: list[_FileBinding] = []
     for binding in source:
-        data = _read_regular(binding.path, required=True, where=f"{where} file")
+        copied, data = _binding(
+            root,
+            binding.path,
+            required=True,
+            where=f"{where} file",
+        )
         assert data is not None
-        if _digest(data) != binding.sha256:
+        if copied.trusted != binding.trusted or copied.sha256 != binding.sha256:
             raise FinalRenderSnapshotError(f"{where} changed while its snapshot was copied")
         target = snapshot_root / binding.path.relative_to(root)
-        snapshots.append(_write_snapshot_file(target, data))
+        snapshots.append(_write_snapshot_file(root, target, data))
     return digest, source, tuple(snapshots)
 
 
@@ -405,7 +453,7 @@ def _snapshot_authored_inputs(
     inputs = authored_input_bytes(root)
     snapshots: list[_FileBinding] = []
     for relative, data in sorted(inputs.items()):
-        snapshots.append(_write_snapshot_file(snapshot_root / relative, data))
+        snapshots.append(_write_snapshot_file(root, snapshot_root / relative, data))
     return _authored_inputs_digest(inputs), tuple(snapshots)
 
 
@@ -472,7 +520,7 @@ def _unit_state_projection(
     return tuple(rows)
 
 
-def _write_snapshot_file(path: Path, data: bytes) -> _FileBinding:
+def _write_snapshot_file(root: Path, path: Path, data: bytes) -> _FileBinding:
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = (
         os.O_WRONLY
@@ -489,7 +537,17 @@ def _write_snapshot_file(path: Path, data: bytes) -> _FileBinding:
             os.fsync(handle.fileno())
     finally:
         os.close(descriptor)
-    return _FileBinding(path=path, sha256=_digest(data))
+    binding, observed = _binding(
+        root,
+        path,
+        required=True,
+        where="immutable final-render snapshot member",
+    )
+    if observed != data:
+        raise FinalRenderSnapshotError(
+            f"immutable final-render snapshot member changed after write: {path}"
+        )
+    return binding
 
 
 def _snapshot_replay_files(
@@ -504,9 +562,18 @@ def _snapshot_replay_files(
     for relative in replay_relatives:
         _relative, source = _inside(root, relative, f"replay script {relative}")
         source_data = data_by_relative[relative]
-        source_binding = _FileBinding(source, _digest(source_data))
+        source_binding, observed_source = _binding(
+            root,
+            source,
+            required=True,
+            where=f"replay source {relative}",
+        )
+        if observed_source != source_data:
+            raise FinalRenderSnapshotError(
+                f"replay source {relative} changed before snapshot publication"
+            )
         snapshot_path = snapshot_root / relative
-        snapshot_binding = _write_snapshot_file(snapshot_path, source_data)
+        snapshot_binding = _write_snapshot_file(root, snapshot_path, source_data)
 
         captured_construction = construction.get(relative)
         if captured_construction is not None:
@@ -514,6 +581,7 @@ def _snapshot_replay_files(
             glb_snapshot = snapshot_root / glb_relative
             if glb_snapshot not in dependencies:
                 dependencies[glb_snapshot] = _write_snapshot_file(
+                    root,
                     glb_snapshot,
                     captured_construction.glb_data,
                 )
@@ -536,20 +604,40 @@ def _snapshot_replay_files(
             ).encode("utf-8")
             pointer_snapshot = snapshot_path.with_suffix(".construction.json")
             dependencies[pointer_snapshot] = _write_snapshot_file(
+                root,
                 pointer_snapshot,
                 pointer_payload,
             )
-        replay.append(_ReplayBinding(source=source_binding, snapshot=snapshot_binding))
+        replay.append(
+            _ReplayBinding(
+                source=source_binding,
+                snapshot=snapshot_binding,
+                payload=source_data,
+            )
+        )
     return tuple(replay), tuple(dependencies.values())
 
 
 def _assert_binding_current(binding: _FileBinding, where: str) -> None:
-    current = _read_regular(binding.path, required=binding.sha256 is not None, where=where)
-    observed = None if current is None else _digest(current)
-    if observed != binding.sha256:
+    if binding.sha256 is None:
+        try:
+            current = read_trusted_file(binding.path.parent, binding.path, where)
+        except TrustedFileNotFound:
+            return
+        except TrustedFileError as exc:
+            raise FinalRenderSnapshotError(str(exc)) from exc
         raise FinalRenderSnapshotError(
-            f"{where} changed during final render; expected={binding.sha256}, found={observed}"
+            f"{where} changed during final render; expected absence, "
+            f"found={current.sha256}"
         )
+    if binding.trusted is None:
+        raise FinalRenderSnapshotError(f"{where} has no trusted filesystem binding")
+    try:
+        require_trusted_file_unchanged(binding.trusted, where)
+    except TrustedFileError as exc:
+        raise FinalRenderSnapshotError(
+            f"{where} changed during final render; expected={binding.sha256}"
+        ) from exc
 
 
 def _manifest_payload(snapshot: FinalRenderSnapshot, root: Path) -> dict[str, Any]:
@@ -640,6 +728,7 @@ def capture_final_render_snapshot(
     unit_states = _unit_state_projection(shot, layers, expected_scripts)
 
     ledger_binding, ledger_data = _binding(
+        root,
         root / "shot.json",
         required=True,
         where="final-render acceptance ledger",
@@ -647,7 +736,12 @@ def capture_final_render_snapshot(
     assert ledger_data is not None
     evidence_files = _capture_evidence_files(root, ledger_data)
     selected_artifacts = tuple(
-        _binding(path, required=True, where=f"selected artifact {name}")[0]
+        _binding(
+            root,
+            path,
+            required=True,
+            where=f"selected artifact {name}",
+        )[0]
         for name, path in sorted(selected_authority.artifact_paths.items())
     )
 
@@ -669,6 +763,14 @@ def capture_final_render_snapshot(
         source_data,
         construction,
     )
+    try:
+        replay_root_binding = bind_trusted_directory(
+            root,
+            snapshot_root,
+            "final-render replay root",
+        )
+    except TrustedFileError as exc:
+        raise FinalRenderSnapshotError(str(exc)) from exc
     provisional = FinalRenderSnapshot(
         selected_authority=selected_authority,
         outcome_digest=outcome.digest,
@@ -690,6 +792,7 @@ def capture_final_render_snapshot(
             *authored_snapshots,
         ),
         replay_root=snapshot_root,
+        replay_root_binding=replay_root_binding,
         assets_dir=snapshot_root / "assets",
         manifest=snapshot_root / "manifest.json",
     )
@@ -699,7 +802,7 @@ def capture_final_render_snapshot(
         indent=2,
         sort_keys=True,
     ).encode("utf-8") + b"\n"
-    _write_snapshot_file(provisional.manifest, payload)
+    _write_snapshot_file(root, provisional.manifest, payload)
     require_snapshot_inputs_current(shot, provisional)
     return provisional
 
@@ -707,6 +810,13 @@ def capture_final_render_snapshot(
 def require_snapshot_inputs_current(shot: Shot, snapshot: FinalRenderSnapshot) -> None:
     """Revalidate every mutable byte/state projection bound by the replay snapshot."""
 
+    try:
+        require_trusted_directory_unchanged(
+            snapshot.replay_root_binding,
+            "final-render replay root",
+        )
+    except TrustedFileError as exc:
+        raise FinalRenderSnapshotError(str(exc)) from exc
     current_authored_inputs_digest = _authored_inputs_digest(
         authored_input_bytes(shot.folder.resolve())
     )
@@ -747,6 +857,13 @@ def require_snapshot_inputs_current(shot: Shot, snapshot: FinalRenderSnapshot) -
         raise FinalRenderSnapshotError(
             "durable work-unit checkpoint state changed during final render"
         )
+    try:
+        require_trusted_directory_unchanged(
+            snapshot.replay_root_binding,
+            "final-render replay root",
+        )
+    except TrustedFileError as exc:
+        raise FinalRenderSnapshotError(str(exc)) from exc
 
 
 @contextmanager
@@ -757,7 +874,11 @@ def final_render_state_locks(
     """Hold all mutable accepted-build locks through final validation and rename."""
 
     with ExitStack() as stack:
-        for layer_id, _digest_value in snapshot.unit_state_digests:
+        layer_ids = sorted(
+            (layer_id for layer_id, _digest_value in snapshot.unit_state_digests),
+            key=lambda layer_id: str(unit_state_path(shot.folder, layer_id).absolute()),
+        )
+        for layer_id in layer_ids:
             stack.enter_context(unit_state_lock(shot.folder, layer_id, exclusive=False))
         stack.enter_context(ledger_lock(shot.folder / "shot.json", exclusive=False))
         yield

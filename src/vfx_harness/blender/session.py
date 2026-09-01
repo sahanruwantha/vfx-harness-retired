@@ -3,27 +3,340 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import itertools
 import json
 import os
 import queue
+import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from vfx_harness.blender.filesystem_confinement import (
+    BlenderError,
+    open_real_directory,
+    prepared_worker_command,
+)
 from vfx_harness.blender.observation_environment import validate_observation_request
+from vfx_harness.infrastructure.trusted_files import (
+    PinnedTrustedFile,
+    TrustedDirectoryBinding,
+    TrustedFileBinding,
+    TrustedFileError,
+    open_pinned_trusted_file,
+)
 from vfx_harness.observability import run_artifacts
 
 SENT = "@@VFXH@@"
 _WORKER = Path(__file__).with_name("worker.py")
 
 
-class BlenderError(RuntimeError):
-    pass
+@dataclass(frozen=True, slots=True)
+class PreparedParentPublication:
+    """Parent-owned immutable temp ready for one metadata-only commit."""
+
+    temporary: Path
+    destination: Path
+    sha256: str
+    device: int
+    inode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+    descriptor: int
+    directory_descriptor: int
+    temporary_name: str
+    destination_name: str
+    directory_device: int
+    directory_inode: int
+    source: PinnedTrustedFile
+    source_binding: TrustedFileBinding
+
+
+def _publication_identity(observed: os.stat_result) -> tuple[int, ...]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _expected_publication_identity(
+    prepared: PreparedParentPublication,
+) -> tuple[int, ...]:
+    return (
+        prepared.device,
+        prepared.inode,
+        prepared.size,
+        prepared.modified_ns,
+        prepared.changed_ns,
+    )
+
+
+def _publication_entry_names_prepared_inode(
+    prepared: PreparedParentPublication,
+) -> bool:
+    """Whether the live temp name still resolves to the descriptor-held inode."""
+
+    try:
+        observed = os.stat(
+            prepared.temporary_name,
+            dir_fd=prepared.directory_descriptor,
+            follow_symlinks=False,
+        )
+    except (FileNotFoundError, OSError):
+        return False
+    return stat.S_ISREG(observed.st_mode) and (observed.st_dev, observed.st_ino) == (
+        prepared.device,
+        prepared.inode,
+    )
+
+
+def _unlink_prepared_entry_if_owned(prepared: PreparedParentPublication) -> bool:
+    """Remove only the directory entry that still names the prepared inode."""
+
+    if not _publication_entry_names_prepared_inode(prepared):
+        return False
+    try:
+        os.unlink(
+            prepared.temporary_name,
+            dir_fd=prepared.directory_descriptor,
+        )
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _prepare_durable_parent_publish(
+    source: Path,
+    destination: Path,
+    *,
+    source_root: Path,
+) -> PreparedParentPublication:
+    """Copy/hash/fsync outside state locks into an unreferenced parent temp."""
+
+    directory_descriptor = open_real_directory(
+        destination.parent,
+        "worker publication destination parent",
+    )
+    directory_stat = os.fstat(directory_descriptor)
+    try:
+        pinned_source = open_pinned_trusted_file(
+            source_root,
+            source,
+            "worker publication source",
+        )
+    except TrustedFileError as exc:
+        os.close(directory_descriptor)
+        raise BlenderError(str(exc)) from exc
+    temporary_name = f".{destination.name}.prepared.{secrets.token_hex(12)}"
+    try:
+        temporary_descriptor = os.open(
+            temporary_name,
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+    except BaseException:
+        pinned_source.close()
+        os.close(directory_descriptor)
+        raise
+    temporary = destination.parent / temporary_name
+    try:
+        expected_digest = pinned_source.copy_and_hash_to(temporary_descriptor)
+        os.fsync(temporary_descriptor)
+        os.lseek(temporary_descriptor, 0, os.SEEK_SET)
+        observed_digest = hashlib.sha256()
+        with os.fdopen(temporary_descriptor, "rb", closefd=False) as prepared_handle:
+            while chunk := prepared_handle.read(1024 * 1024):
+                observed_digest.update(chunk)
+        if observed_digest.hexdigest() != expected_digest:
+            raise BlenderError(f"worker publication prepared copy changed: {temporary}")
+        read_descriptor = os.open(
+            temporary_name,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_descriptor,
+        )
+        os.close(temporary_descriptor)
+        temporary_descriptor = -1
+        observed = os.fstat(read_descriptor)
+        return PreparedParentPublication(
+            temporary=temporary,
+            destination=destination,
+            sha256=expected_digest,
+            device=observed.st_dev,
+            inode=observed.st_ino,
+            size=observed.st_size,
+            modified_ns=observed.st_mtime_ns,
+            changed_ns=observed.st_ctime_ns,
+            descriptor=read_descriptor,
+            directory_descriptor=directory_descriptor,
+            temporary_name=temporary_name,
+            destination_name=destination.name,
+            directory_device=directory_stat.st_dev,
+            directory_inode=directory_stat.st_ino,
+            source=pinned_source,
+            source_binding=pinned_source.binding,
+        )
+    except TrustedFileError as exc:
+        if temporary_descriptor >= 0:
+            os.close(temporary_descriptor)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary_name, dir_fd=directory_descriptor)
+        pinned_source.close()
+        os.close(directory_descriptor)
+        raise BlenderError(str(exc)) from exc
+    except BaseException:
+        if temporary_descriptor >= 0:
+            os.close(temporary_descriptor)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary_name, dir_fd=directory_descriptor)
+        pinned_source.close()
+        os.close(directory_descriptor)
+        raise
+
+
+def _commit_durable_parent_publish(prepared: PreparedParentPublication) -> str:
+    """Atomically expose a prepared inode; no content I/O occurs in this commit."""
+
+    installed = False
+    try:
+        try:
+            prepared.source.require_current()
+        except TrustedFileError as exc:
+            raise BlenderError(str(exc)) from exc
+        try:
+            observed = os.fstat(prepared.descriptor)
+        except OSError as exc:
+            raise BlenderError(
+                f"prepared worker publication disappeared: {prepared.temporary}"
+            ) from exc
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or _publication_identity(observed) != _expected_publication_identity(prepared)
+        ):
+            raise BlenderError(
+                f"prepared worker publication identity changed: {prepared.temporary}"
+            )
+        current_directory = open_real_directory(
+            prepared.destination.parent,
+            "worker publication destination parent",
+        )
+        try:
+            current_stat = os.fstat(current_directory)
+        finally:
+            os.close(current_directory)
+        if (current_stat.st_dev, current_stat.st_ino) != (
+            prepared.directory_device,
+            prepared.directory_inode,
+        ):
+            raise BlenderError(
+                f"worker publication destination directory changed: {prepared.destination.parent}"
+            )
+        if not _publication_entry_names_prepared_inode(prepared):
+            raise BlenderError(
+                "prepared worker publication directory entry changed: "
+                f"{prepared.temporary}"
+            )
+        os.replace(
+            prepared.temporary_name,
+            prepared.destination_name,
+            src_dir_fd=prepared.directory_descriptor,
+            dst_dir_fd=prepared.directory_descriptor,
+        )
+        installed = True
+        current_directory = open_real_directory(
+            prepared.destination.parent,
+            "worker publication destination parent",
+        )
+        try:
+            current_stat = os.fstat(current_directory)
+        finally:
+            os.close(current_directory)
+        if (current_stat.st_dev, current_stat.st_ino) != (
+            prepared.directory_device,
+            prepared.directory_inode,
+        ):
+            os.unlink(
+                prepared.destination_name,
+                dir_fd=prepared.directory_descriptor,
+            )
+            os.fsync(prepared.directory_descriptor)
+            raise BlenderError(
+                "worker publication destination directory changed during commit: "
+                f"{prepared.destination.parent}"
+            )
+        os.fsync(prepared.directory_descriptor)
+    finally:
+        if not installed:
+            _unlink_prepared_entry_if_owned(prepared)
+            with contextlib.suppress(OSError):
+                os.fsync(prepared.directory_descriptor)
+        prepared.source.close()
+        os.close(prepared.descriptor)
+        os.close(prepared.directory_descriptor)
+    return prepared.sha256
+
+
+def _discard_prepared_parent_publish(prepared: PreparedParentPublication) -> None:
+    """Remove an uncommitted temp only while it retains the prepared identity."""
+
+    try:
+        try:
+            observed = os.fstat(prepared.descriptor)
+        except OSError:
+            return
+        if stat.S_ISREG(observed.st_mode) and (observed.st_dev, observed.st_ino) == (
+            prepared.device,
+            prepared.inode,
+        ):
+            _unlink_prepared_entry_if_owned(prepared)
+    finally:
+        prepared.source.close()
+        with contextlib.suppress(OSError):
+            os.close(prepared.descriptor)
+        with contextlib.suppress(OSError):
+            os.close(prepared.directory_descriptor)
+
+
+def prepare_durable_parent_publish(
+    source: Path,
+    destination: Path,
+    *,
+    source_root: Path,
+) -> PreparedParentPublication:
+    """Public parent-owned staging boundary for a later metadata-only commit."""
+
+    return _prepare_durable_parent_publish(
+        source,
+        destination,
+        source_root=source_root,
+    )
+
+
+def commit_durable_parent_publish(prepared: PreparedParentPublication) -> str:
+    """Public metadata-only commit for parent-owned prepared bytes."""
+
+    return _commit_durable_parent_publish(prepared)
+
+
+def discard_prepared_parent_publish(prepared: PreparedParentPublication) -> None:
+    """Public cleanup for a prepared publication that did not commit."""
+
+    _discard_prepared_parent_publish(prepared)
 
 
 @lru_cache(maxsize=8)
@@ -79,11 +392,17 @@ class BlenderSession:
         boot_timeout: float = 60.0,
         assets_dir: str | Path | None = None,
         cwd: str | Path | None = None,
+        readable_roots: tuple[str | Path, ...] = (),
+        readable_root_bindings: tuple[TrustedDirectoryBinding, ...] = (),
+        readable_file_bindings: tuple[TrustedFileBinding, ...] = (),
     ):
         self.blender = blender
         self.blend_file = str(blend_file) if blend_file else None
         self.boot_timeout = boot_timeout
         self.assets_dir = str(assets_dir) if assets_dir else None
+        self.readable_roots = tuple(Path(path) for path in readable_roots)
+        self.readable_root_bindings = readable_root_bindings
+        self.readable_file_bindings = readable_file_bindings
         # the worker must run FROM the shot folder: agents are configured with
         # cwd=shot.folder, so relative paths inside run_bpy ("refs/…", "build/…") have
         # to resolve the same way — otherwise the builder reads the repo root and
@@ -103,8 +422,11 @@ class BlenderSession:
         self.artifacts = Path(artifacts_dir)
         self.artifacts.mkdir(parents=True, exist_ok=True)
         layout = run_artifacts.ensure(cwd, command="blender-session") if cwd else None
+        self._run_root = layout.root if layout else None
         self.snapshots = layout.checkpoints / "blender" if layout else self.artifacts
         self.snapshots.mkdir(parents=True, exist_ok=True)
+        self._worker_publications = self.artifacts / "parent-publications"
+        self._worker_publications.mkdir(parents=True, exist_ok=True)
         self.proc: subprocess.Popen | None = None
         self._stdout_queue: queue.Queue[str | None] = queue.Queue()
         self._ids = itertools.count(1)
@@ -112,21 +434,38 @@ class BlenderSession:
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> BlenderSession:
         self.blender = resolve_blender(self.blender)
-        argv = [self.blender, "--background", "--factory-startup"]
+        blender_argv = [self.blender, "--background", "--factory-startup"]
         if self.blend_file:
-            argv.append(self.blend_file)
-        argv += ["--python", str(_WORKER), "--", "--artifacts", str(self.artifacts)]
+            blender_argv.append(self.blend_file)
+        blender_argv += [
+            "--python",
+            str(_WORKER),
+            "--",
+            "--artifacts",
+            str(self.artifacts),
+        ]
         if self.assets_dir:
-            argv += ["--assets", self.assets_dir]
-        self.proc = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            cwd=self.cwd,
-        )
+            blender_argv += ["--assets", self.assets_dir]
+        authority = Path(self.cwd).expanduser().absolute() if self.cwd else None
+        with prepared_worker_command(
+            blender_argv,
+            writable_roots=(self.artifacts,),
+            readable_roots=self.readable_roots,
+            readable_root_bindings=self.readable_root_bindings,
+            readable_file_bindings=self.readable_file_bindings,
+            authority_root=authority,
+            current_run_root=self._run_root,
+        ) as command:
+            self.proc = subprocess.Popen(
+                command.argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                cwd=self.cwd,
+                pass_fds=command.pass_fds,
+            )
         self._stdout_queue = queue.Queue()
         threading.Thread(target=self._pump_stdout, daemon=True).start()
         deadline = time.monotonic() + self.boot_timeout
@@ -229,9 +568,29 @@ class BlenderSession:
     def ping(self) -> dict:
         return self.call("ping")
 
-    def run(self, code: str, *, journal: bool = True, transactional: bool = False) -> dict:
+    def pin_construction_replay(self, payload: dict | None) -> dict:
+        """Load one verified GLB snapshot into worker memory, or clear the pin."""
+
+        return self.call("pin_construction_replay", payload=payload)
+
+    def run(
+        self,
+        code: str,
+        *,
+        journal: bool = True,
+        transactional: bool = False,
+        execution_policy: str = "live",
+    ) -> dict:
         """Execute Blender Python; read-only probes can opt out of the replay journal."""
-        return self.call("run", code=code, journal=journal, transactional=transactional)
+        if execution_policy not in {"live", "artifact"}:
+            raise ValueError(f"unknown Blender execution policy {execution_policy!r}")
+        return self.call(
+            "run",
+            code=code,
+            journal=journal,
+            transactional=transactional,
+            execution_policy=execution_policy,
+        )
 
     def inspect(self, section: str = "all") -> str:
         return self.call("inspect", section=section)["text"]
@@ -286,11 +645,158 @@ class BlenderSession:
 
         return subtract_png(a, b, dest or str(self.artifacts / "diff.png"))
 
+    def stage_snapshot(self, tag: str) -> dict:
+        """Write a non-authoritative checkpoint candidate into worker scratch."""
+
+        scratch = self._worker_publications / "snapshots"
+        scratch.mkdir(parents=True, exist_ok=True)
+        return self.call("snapshot", tag=tag, dir=str(scratch))
+
+    def publish_snapshot(self, result: dict) -> dict:
+        """Prepare and commit one snapshot for callers without attempt authority."""
+
+        prepared = self.prepare_snapshot_publication(result)
+        try:
+            return self.commit_snapshot_publication(prepared)
+        except BaseException:
+            self.discard_snapshot_publication(prepared)
+            raise
+
+    def prepare_snapshot_publication(
+        self,
+        result: dict,
+    ) -> tuple[dict, PreparedParentPublication]:
+        """Copy a worker snapshot into an unreferenced parent-owned temp."""
+
+        result = dict(result)
+        scratch = self._worker_publications / "snapshots"
+        source = Path(str(result["blend"]))
+        try:
+            source.resolve(strict=True).relative_to(scratch.resolve(strict=True))
+        except (OSError, ValueError) as exc:
+            raise BlenderError(
+                f"worker snapshot escaped publication scratch: {source}"
+            ) from exc
+        destination = self.snapshots / source.name
+        prepared = _prepare_durable_parent_publish(
+            source,
+            destination,
+            source_root=scratch,
+        )
+        result["sha256"] = prepared.sha256
+        result["blend"] = str(destination)
+        return result, prepared
+
+    def commit_snapshot_publication(
+        self,
+        prepared: tuple[dict, PreparedParentPublication],
+    ) -> dict:
+        """Expose a prepared snapshot with one metadata-only durable commit."""
+
+        result, publication = prepared
+        _commit_durable_parent_publish(publication)
+        return dict(result)
+
+    def discard_snapshot_publication(
+        self,
+        prepared: tuple[dict, PreparedParentPublication],
+    ) -> None:
+        """Discard an uncommitted parent snapshot temp."""
+
+        _discard_prepared_parent_publish(prepared[1])
+
     def snapshot(self, tag: str) -> dict:
-        """Checkpoint the scene. Returns {blend, journal_index} — the journal index is
-        the write-ahead position, so replaying entries after it reconstructs any work
-        done between this checkpoint and a crash."""
-        return self.call("snapshot", tag=tag, dir=str(self.snapshots))
+        """Stage then parent-publish a checkpoint for non-attempt callers."""
+
+        return self.publish_snapshot(self.stage_snapshot(tag))
+
+    def stage_journal(
+        self,
+        path: str | None = None,
+        clear: bool = False,
+        limit: int | None = None,
+        start: int = 0,
+    ) -> tuple[dict, Path | None]:
+        """Dump the journal into worker scratch without checkpoint publication.
+
+        `start` excludes inherited reset/prior replay; `limit` truncates to a snapshot's
+        `journal_index`. The finalizer therefore sees only the active unit calls behind
+        the restored checkpoint."""
+        worker_path = None
+        destination = None
+        if path is not None:
+            destination = Path(path).absolute()
+            try:
+                destination.relative_to(self.snapshots.absolute())
+            except ValueError as exc:
+                raise BlenderError(
+                    f"journal publication must stay under {self.snapshots}, found {destination}"
+                ) from exc
+            scratch = self._worker_publications / "journals"
+            scratch.mkdir(parents=True, exist_ok=True)
+            worker_path = scratch / destination.name
+        result = self.call(
+            "journal",
+            path=str(worker_path) if worker_path is not None else None,
+            clear=clear,
+            limit=limit,
+            start=start,
+        )
+        return result, destination
+
+    def publish_journal(
+        self,
+        staged: tuple[dict, Path | None],
+    ) -> dict:
+        """Prepare and commit one journal for callers without attempt authority."""
+
+        prepared = self.prepare_journal_publication(staged)
+        try:
+            return self.commit_journal_publication(prepared)
+        except BaseException:
+            self.discard_journal_publication(prepared)
+            raise
+
+    def prepare_journal_publication(
+        self,
+        staged: tuple[dict, Path | None],
+    ) -> tuple[dict, PreparedParentPublication | None]:
+        """Copy a worker journal into an unreferenced parent-owned temp."""
+
+        result, destination = staged
+        result = dict(result)
+        publication = None
+        if destination is not None:
+            worker_path = self._worker_publications / "journals" / destination.name
+            publication = _prepare_durable_parent_publish(
+                worker_path,
+                destination,
+                source_root=self._worker_publications / "journals",
+            )
+            result["sha256"] = publication.sha256
+            result["path"] = str(destination)
+        return result, publication
+
+    def commit_journal_publication(
+        self,
+        prepared: tuple[dict, PreparedParentPublication | None],
+    ) -> dict:
+        """Expose a prepared journal with one metadata-only durable commit."""
+
+        result, publication = prepared
+        if publication is not None:
+            _commit_durable_parent_publish(publication)
+        return dict(result)
+
+    def discard_journal_publication(
+        self,
+        prepared: tuple[dict, PreparedParentPublication | None],
+    ) -> None:
+        """Discard an uncommitted parent journal temp."""
+
+        publication = prepared[1]
+        if publication is not None:
+            _discard_prepared_parent_publish(publication)
 
     def journal(
         self,
@@ -299,12 +805,19 @@ class BlenderSession:
         limit: int | None = None,
         start: int = 0,
     ) -> dict:
-        """Dump/clear the accepted-run_bpy transcript (see worker.h_journal).
+        """Stage then parent-publish a journal for non-attempt callers."""
 
-        `start` excludes inherited reset/prior replay; `limit` truncates to a snapshot's
-        `journal_index`. The finalizer therefore sees only the active unit calls behind
-        the restored checkpoint."""
-        return self.call("journal", path=path, clear=clear, limit=limit, start=start)
+        if not hasattr(self, "_worker_publications"):
+            return self.call(
+                "journal",
+                path=path,
+                clear=clear,
+                limit=limit,
+                start=start,
+            )
+        return self.publish_journal(
+            self.stage_journal(path=path, clear=clear, limit=limit, start=start)
+        )
 
     def replay(self, start: int = 0) -> dict:
         """Re-exec journalled run_bpy calls from `start` (use after restore)."""

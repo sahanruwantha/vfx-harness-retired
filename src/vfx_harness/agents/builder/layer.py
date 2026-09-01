@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
+from vfx_harness.agents.builder.attempt_guard import UnitAttemptGuard
 from vfx_harness.agents.builder.authority import (
     AuthorityBoundLedger,
     commit_selected_authority,
     require_selected_authority_unchanged,
 )
 from vfx_harness.agents.builder.axes import _owned_axes, ensure_axes
+from vfx_harness.agents.builder.composition_helpers import (
+    compose_unit_artifact_source,
+)
+from vfx_harness.agents.builder.composition_helpers import (
+    judgment_payment_evidence_digest as _judgment_payment_evidence_digest,
+)
 from vfx_harness.agents.builder.evidence import _unit_raster_mode
 from vfx_harness.agents.builder.falsify import _record_composed_contract_gap_falsification
 from vfx_harness.agents.builder.judgment_payment import JudgmentDebtPayment
+from vfx_harness.agents.builder.layer_outcome import publish_composed_layer_outcome
 from vfx_harness.agents.builder.models import _RESET, BuildAuthorityDefect, critic_model
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import (
@@ -30,13 +37,25 @@ from vfx_harness.agents.builder.provisional_judgment import (
     _load_provisional_decisions,
 )
 from vfx_harness.agents.builder.revalidate import _blender_version
+from vfx_harness.agents.builder.unit_completion import (
+    complete_and_resolve_unit,
+    resolve_completed_unit,
+)
+from vfx_harness.agents.builder.unit_context import (
+    _active_unit_layer_view as _active_unit_layer_view,
+)
+from vfx_harness.agents.builder.unit_context import (
+    _unit_artifact_path as _unit_artifact_path,
+)
+from vfx_harness.agents.builder.unit_context import write_attempt_bound_unit_context
 from vfx_harness.agents.builder.unit_failure import handle_unpassed_unit
 from vfx_harness.agents.builder.verify import _verify_script
 from vfx_harness.agents.planner.pkg import planner_package
-from vfx_harness.agents.shot_context import write_layer_context
+from vfx_harness.agents.shot_context import clear_layer_context, write_layer_context
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.contracts import active_for, load_document
+from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.domain.work_units import dependency_ordered_units, layer_active_visible_fraction_ids
 from vfx_harness.evidence.metrics import look_vector
 from vfx_harness.observability import costlog, transcript
@@ -49,58 +68,34 @@ from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     resolve_selected_authority,
 )
+from vfx_harness.orchestration.builder_execution_fence import (
+    BuilderExecutionFenceLease,
+    builder_execution_fence,
+    require_builder_execution_lease,
+)
 from vfx_harness.orchestration.judgment_debt_state import (
     mark_judgment_debt_due,
     replay_prefix_receipt,
+    require_replay_inputs_unchanged,
     resolve_current_judgment_debt,
 )
 from vfx_harness.orchestration.layer_plans import (
     validate_work_unit_plan_authority,
     work_unit_plan_path,
-    write_layer_outcome,
 )
 from vfx_harness.orchestration.ledger import Ledger, Milestone, load_axes, load_layers, load_milestones, plan_strips
 from vfx_harness.orchestration.plan_authority import active_plan_hash
-from vfx_harness.orchestration.plan_due import require_due_clear, resolve_unit_completion
+from vfx_harness.orchestration.plan_due import require_due_clear
 from vfx_harness.orchestration.revalidation import digest
 from vfx_harness.orchestration.unit_state import freeze_checkpoint, initialize, ready_from_durable_state, transition
 from vfx_harness.orchestration.unit_state import load as load_unit_state
+from vfx_harness.orchestration.unit_state_claims import (
+    claim_ready_unit_for_build,
+    claim_ready_unit_for_planning,
+)
 
 
-def _unit_artifact_path(layer, unit) -> str:
-    spans = tuple(unit.mutates.script_spans)
-    if len(spans) != 1:
-        raise ValueError(
-            f"layer {layer.id} unit {unit.id} must own exactly one replayable script span; "
-            f"got {list(spans)}"
-        )
-    return spans[0]
-
-
-def _active_unit_layer_view(layer, unit):
-    """Compile unit-local judgment without discarding the parent unit DAG.
-
-    ``active_unit`` is the mutation and claim boundary.  ``layer.stages`` remains
-    dependency/repair-owner authority: pruning it to the active row makes later
-    typed visibility owners look unbound, which conservatively charges their rows
-    to the current geometry unit (HIR-0135).
-    """
-    unit_axes = tuple(dict.fromkeys(claim.axis for claim in unit.evaluation.claims))
-    unit_judges = tuple((point.frame, point.ref) for point in unit.evaluation.judges)
-    return replace(
-        layer,
-        script=_unit_artifact_path(layer, unit),
-        title=(layer.title if len(layer.stages) == 1 else f"{layer.title} · {unit.title}"),
-        judges=unit_judges,
-        reads=f"Work unit {unit.id}: "
-        + " ".join(claim.proposition for claim in unit.evaluation.claims),
-        owns=unit_axes,
-        primary_judge=unit.evaluation.primary_judge,
-        stages=layer.stages,
-    )
-
-
-async def build_layer(
+async def _build_layer_under_execution_fence(
     shot: Shot,
     layer,
     session: BlenderSession,
@@ -110,6 +105,7 @@ async def build_layer(
     resume_ok: bool = False,
     force: bool = False,
     selected_authority: ResolvedSelectedAuthority | None = None,
+    fence_lease: BuilderExecutionFenceLease,
 ) -> Ledger:
     """Execute one layer as its declared dependency-ordered work-unit DAG.
 
@@ -184,17 +180,25 @@ async def build_layer(
         selected_authority=selected_authority,
     )
     state = load_unit_state(shot.folder, str(layer.id))
-    passed_units = {
-        uid
-        for uid, row in (state.get("units") or {}).items()
-        if row.get("status") == "passed"
-        and (
-            shot.folder
-            / _unit_artifact_path(
-                layer, next(unit for unit in layer.stages if unit.id == uid)
-            )
-        ).is_file()
-    }
+    passed_units: set[str] = set()
+    for completed in ordered_units:
+        slot = (state.get("units") or {}).get(completed.id, {})
+        if slot.get("status") != "passed":
+            continue
+        receipt = UnitCompletionReceipt.parse(
+            slot.get("completion_receipt"),
+            f"work-unit state {layer.id}.{completed.id}.completion_receipt",
+        )
+        resolve_completed_unit(
+            shot.folder,
+            str(layer.id),
+            completed,
+            layer.stages,
+            receipt,
+            expected_plan_hash=layers_hash,
+            selected_authority=selected_authority,
+        )
+        passed_units.add(completed.id)
     unit_artifacts = [
         _unit_artifact_path(layer, unit)
         for unit in ordered_units
@@ -266,6 +270,29 @@ async def build_layer(
             unit=unit.id,
             selected_authority=selected_authority,
         )
+        # The typed claim transaction owns selection-SH -> state-EX itself.  Wrapping
+        # it in ``commit_selected_authority`` would open the selection lock through a
+        # second descriptor and deadlock against this process's outer flock.
+        planning_claim = claim_ready_unit_for_planning(
+            shot.folder,
+            str(layer.id),
+            unit.id,
+            layer.stages,
+            expected_plan_hash=layers_hash,
+            eligible_passed=passed_units,
+            run_id=RUN_ID,
+            selection_token=selected_authority.selection_token,
+            reason="unit selected from the dependency-ready durable state",
+        )
+        planning_guard = UnitAttemptGuard.bind(
+            shot.folder,
+            str(layer.id),
+            unit,
+            layer.stages,
+            planning_claim,
+            expected_plan_hash=layers_hash,
+            selected_authority=selected_authority,
+        )
         unit_plan_path = work_unit_plan_path(
             shot.folder,
             unit,
@@ -296,6 +323,8 @@ async def build_layer(
                 str(layer.id),
                 unit_id=unit.id,
                 blender=builder_package().Settings.from_environment().blender_bin,
+                attempt_guard=planning_guard,
+                fence_lease=fence_lease,
             )
             require_selected_authority_unchanged(
                 shot.folder,
@@ -322,59 +351,30 @@ async def build_layer(
                 strips.get(unit.evaluation.primary_judge, ()),
             )
         )
-        current = (load_unit_state(shot.folder, str(layer.id)).get("units") or {}).get(unit.id, {})
-        if current.get("status") == "blocked":
-            publish(
-                f"mark unit {layer.id}.{unit.id} planning",
-                partial(
-                    transition,
-                    shot.folder,
-                    str(layer.id),
-                    unit.id,
-                    "planning",
-                    reason="dependency closure is now passed",
-                ),
-            )
-        elif current.get("status") == "pending":
-            publish(
-                f"mark unit {layer.id}.{unit.id} planning",
-                partial(
-                    transition,
-                    shot.folder,
-                    str(layer.id),
-                    unit.id,
-                    "planning",
-                    reason="unit became dependency-ready",
-                ),
-            )
-        publish(
-            f"mark unit {layer.id}.{unit.id} building",
-            partial(
-                transition,
-                shot.folder,
-                str(layer.id),
-                unit.id,
-                "building",
-                reason="builder transaction started",
-            ),
+        attempt = claim_ready_unit_for_build(
+            shot.folder,
+            str(layer.id),
+            unit.id,
+            layer.stages,
+            planning_claim,
+            expected_plan_hash=layers_hash,
+            eligible_passed=passed_units,
+            run_id=RUN_ID,
+            selection_token=selected_authority.selection_token,
+            reason="builder transaction started",
         )
-        fps = {}
-        try:
-            fps = {
-                m.frame: m.fingerprint
-                for m in load_milestones(shot, selected_authority).values()
-                if m.fingerprint
-            }
-        except Exception as exc:
-            log(f"! no measured fingerprints in the unit contract: {str(exc)[:60]}", 1)
-        context_path = write_layer_context(
+        attempt_guard = planning_guard.promoted(attempt)
+        context_path = write_attempt_bound_unit_context(
             shot,
+            layer,
             unit_layer,
-            load_axes(shot, selected_authority),
-            fps,
-            unit=unit,
-            layer_units=layer.stages,
-            selected_authority=selected_authority,
+            unit,
+            attempt_guard,
+            selected_authority,
+            load_milestones=load_milestones,
+            load_axes=load_axes,
+            write_context=write_layer_context,
+            clear_context=clear_layer_context,
         )
         log(f"unit context → {context_path.relative_to(shot.folder)} (loaded every request)", 1)
         # A raised boundary error is not evidence that this unit's implementation
@@ -400,6 +400,8 @@ async def build_layer(
             resume_ok=resume_ok,
             layer_units=layer.stages,
             selected_authority=selected_authority,
+            attempt_guard=attempt_guard,
+            fence_lease=fence_lease,
         )
         unit_status = ledger.status(milestone)
         if unit_status != "passed":
@@ -410,8 +412,9 @@ async def build_layer(
                 milestone,
                 ledger,
                 unit_status,
+                attempt=attempt,
                 selected_authority=selected_authority,
-                publish=publish,
+                publish_external=publish,
             )
             return ledger
 
@@ -440,71 +443,39 @@ async def build_layer(
         artifact = shot.folder / _unit_artifact_path(layer, unit)
         slot = ledger._slot(milestone)
         best_render = shot.folder / str((slot.get("best") or {}).get("render") or "")
-        frozen_state = publish(
-            f"freeze unit {layer.id}.{unit.id} checkpoint",
-            partial(
-                freeze_checkpoint,
-                shot.folder,
-                str(layer.id),
-                unit,
-                active_contract_ids=active_ids,
-                candidate_hash=digest(best_render) or "missing",
-                settings_hash=hashlib.sha256(b"eevee:0.5").hexdigest(),
-                script_hash=digest(artifact) or "missing",
-                input_hash=layers_hash,
-                layer_active_vis_ids=vis_ids,
-            ),
+        frozen_state = freeze_checkpoint(
+            shot.folder,
+            str(layer.id),
+            unit,
+            active_contract_ids=active_ids,
+            candidate_hash=digest(best_render) or "missing",
+            settings_hash=hashlib.sha256(b"eevee:0.5").hexdigest(),
+            script_hash=digest(artifact) or "missing",
+            input_hash=layers_hash,
+            layer_active_vis_ids=vis_ids,
+            attempt=attempt,
+            selection_token=selected_authority.selection_token,
         )
-        publish(
-            f"mark unit {layer.id}.{unit.id} evaluating",
-            partial(
-                transition,
-                shot.folder,
-                str(layer.id),
-                unit.id,
-                "evaluating",
-                reason="canonical evaluation sealed",
-            ),
+        transition(
+            shot.folder,
+            str(layer.id),
+            unit.id,
+            "evaluating",
+            reason="canonical evaluation sealed",
+            attempt=attempt,
+            selection_token=selected_authority.selection_token,
         )
 
-        passed_evidence = {
-            (binding.kind, binding.id)
-            for claim in unit.evaluation.claims
-            if claim.required
-            for binding in claim.evidence
-            if binding.kind in {"scene_contract", "image_contract"}
-        }
-        passed_evidence.add(("replay", f"{layer.id}.{unit.id}"))
-        publish(
-            f"resolve unit {layer.id}.{unit.id} completion debts",
-            partial(
-                resolve_unit_completion,
-                shot.folder,
-                layer=str(layer.id),
-                unit=unit.id,
-                passed_evidence=passed_evidence,
-                checkpoint_hash=str(
-                    frozen_state["units"][unit.id]["checkpoint"]["candidate_hash"]
-                ),
-                selected_authority=selected_authority,
-            ),
-        )
-        require_due_clear(
+        complete_and_resolve_unit(
             shot.folder,
-            layer=str(layer.id),
-            unit=unit.id,
-            completion=True,
+            str(layer.id),
+            unit,
+            layer.stages,
+            attempt,
+            expected_plan_hash=attempt.plan_hash,
             selected_authority=selected_authority,
-        )
-        publish(
-            f"mark unit {layer.id}.{unit.id} passed",
-            partial(
-                transition,
-                shot.folder,
-                str(layer.id),
-                unit.id,
-                "passed",
-                reason="all required unit claims passed",
+            checkpoint_hash=str(
+                frozen_state["units"][unit.id]["checkpoint"]["candidate_hash"]
             ),
         )
         passed_units.add(unit.id)
@@ -627,12 +598,14 @@ async def build_layer(
             decision = typed_decisions[0]
 
             def _activate_after_replay(
+                replay_inputs,
                 decision=decision,
                 axes=axes,
             ) -> JudgmentDebtPayment:
                 receipt = replay_prefix_receipt(
                     shot.folder,
                     replayed_layer_scripts=(*prior_layers, shot.folder / layer.script),
+                    replay_inputs=replay_inputs,
                     selected_authority=selected_authority,
                 )
                 publish(
@@ -644,6 +617,11 @@ async def build_layer(
                         replayed_unit_digests=receipt.unit_digests,
                         selected_authority=selected_authority,
                     ),
+                )
+                require_replay_inputs_unchanged(
+                    shot.folder,
+                    replay_inputs,
+                    where="judgment-debt replay input after activation publication",
                 )
                 return JudgmentDebtPayment(
                     shot=shot,
@@ -679,15 +657,14 @@ async def build_layer(
                 getattr(composition_unit, "provisional_requirement_ids", ()) or ()
             )
         ):
-            finding = publish(
-                f"record composed layer {layer.id} falsification",
-                partial(
-                    _record_composed_contract_gap_falsification,
-                    shot,
-                    layer,
-                    composition_unit,
-                    selected_authority=selected_authority,
-                ),
+            # The state-native falsification transaction owns selection-SH ->
+            # state-EX because preserving accepted source is selection-bound.  Do not
+            # wrap it in the generic selection publisher and self-deadlock.
+            finding = _record_composed_contract_gap_falsification(
+                shot,
+                layer,
+                composition_unit,
+                selected_authority=selected_authority,
             )
             terminal_finding = finding
             finding_record_id = str(finding["record_id"])
@@ -721,18 +698,17 @@ async def build_layer(
             break
     status = "passed" if result == "passed" else result
     best = {"round": 0, "mean": min((v.get("mean", 0) for _fr, v in canonical), default=0), "render": None}
-    publish(
-        f"publish composed layer {layer.id} outcome",
-        lambda: write_layer_outcome(
-            shot.folder,
-            layer,
-            status=status,
-            best=best,
-            canonical=canonical,
-            run_id=RUN_ID,
-            attempt=ledger._slot(milestone).get("attempt"),
-            blender_version=_blender_version(session),
-        ),
+    composition_attempt = int(ledger._slot(milestone).get("attempt") or 0)
+    publish_composed_layer_outcome(
+        shot.folder,
+        layer,
+        status=status,
+        best=best,
+        canonical=canonical,
+        run_id=RUN_ID,
+        ledger_attempt=composition_attempt,
+        blender_version=_blender_version(session),
+        selected_authority=selected_authority,
     )
     ledger.mark(milestone, status, best=best)
     transcript.unbind()
@@ -749,43 +725,81 @@ async def build_layer(
     return ledger
 
 
-def _judgment_payment_evidence_digest(
-    decision: dict,
+async def build_layer(
+    shot: Shot,
+    layer,
+    session: BlenderSession,
     *,
-    result: str,
-    verdicts: list,
-    finding_record_id: str | None = None,
-) -> str:
-    """Bind a debt outcome to the exact canonical verdict slice that produced it."""
-    payload = {
-        "schema": "vfx-harness.judgment-debt-payment-evidence/v1",
-        "debt_id": decision["debt_id"],
-        "definition_digest": decision["definition_digest"],
-        "activation_digest": decision["activation_digest"],
-        "result": result,
-        "verdicts": verdicts,
-        "finding_record_id": finding_record_id,
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    rounds: int = 2,
+    verbose: bool = True,
+    resume_ok: bool = False,
+    force: bool = False,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> Ledger:
+    """Serialize all shared shot and Blender state for one complete layer build."""
+
+    if resume_ok:
+        raise ValueError(
+            "builder resume refused: legacy ledger checkpoint/session rows are not "
+            "bound to an exact work-unit attempt receipt; reviewed `vfx units retry` "
+            "starts a new attempt from current authority"
+        )
+    with builder_execution_fence(shot.folder) as fence_lease:
+        return await build_layer_already_fenced(
+            shot,
+            layer,
+            session,
+            rounds=rounds,
+            verbose=verbose,
+            resume_ok=resume_ok,
+            force=force,
+            selected_authority=selected_authority,
+            fence_lease=fence_lease,
+        )
+
+
+async def build_layer_already_fenced(
+    shot: Shot,
+    layer,
+    session: BlenderSession,
+    *,
+    rounds: int = 2,
+    verbose: bool = True,
+    resume_ok: bool = False,
+    force: bool = False,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+    fence_lease: BuilderExecutionFenceLease,
+) -> Ledger:
+    """Build under the caller's one live shot fence without reacquiring it."""
+
+    require_builder_execution_lease(fence_lease, shot.folder)
+    with fence_lease.operation(shot.folder):
+        if resume_ok:
+            raise ValueError(
+                "builder resume refused: legacy ledger checkpoint/session rows are not "
+                "bound to an exact work-unit attempt receipt; reviewed `vfx units retry` "
+                "starts a new attempt from current authority"
+            )
+        return await _build_layer_under_execution_fence(
+            shot,
+            layer,
+            session,
+            rounds=rounds,
+            verbose=verbose,
+            resume_ok=resume_ok,
+            force=force,
+            selected_authority=selected_authority,
+            fence_lease=fence_lease,
+        )
 
 
 def _compose_unit_artifact_source(parts: list[tuple[str, str, str]]) -> str:
-    """Compose unit scripts with the same evaluated-state publication as live replay."""
-    composed = []
-    for unit_id, rel, source in parts:
-        composed.append(
-            f"# --- work unit {unit_id}: {rel} ---\n"
-            f"{source.rstrip()}\n\n"
-            "# --- publish evaluated unit interface (HIR-0117) ---\n"
-            f"{_ARTIFACT_EVALUATION_BARRIER.rstrip()}"
-        )
-    return "\n\n".join(composed).rstrip() + "\n"
+    """Preserve the historical builder helper API around pure source assembly."""
+
+    return compose_unit_artifact_source(
+        parts,
+        evaluation_barrier=_ARTIFACT_EVALUATION_BARRIER,
+    )
 
 
 def _ablation_frames(shot: Shot, layer) -> list[int]:

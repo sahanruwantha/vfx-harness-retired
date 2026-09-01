@@ -247,13 +247,28 @@ def test_provider_error_skips_optional_context_usage_telemetry(monkeypatch) -> N
             self.context_requested = True
             raise AssertionError("terminal provider errors must bypass optional telemetry")
 
+    class CurrentAttemptGuard:
+        def __init__(self) -> None:
+            self.checks: list[str] = []
+
+        def check(self, operation: str) -> None:
+            self.checks.append(operation)
+
     client = FakeClient()
+    guard = CurrentAttemptGuard()
     monkeypatch.setattr(builder, "ResultMessage", FakeResultMessage)
     monkeypatch.setattr(builder.transcript, "message", lambda _message: None)
     monkeypatch.setattr(builder.costlog, "record", lambda _message: None)
-    info = anyio.run(builder._drain, client, False)
+    info = anyio.run(
+        lambda: builder._drain(
+            client,
+            False,
+            attempt_guard=guard,
+        )
+    )
     assert info["api_error_status"] == 429
     assert client.context_requested is False
+    assert guard.checks == ["consume unit builder response (success)"]
 
 
 def test_black_plate_has_no_optical_signal(tmp_path: Path) -> None:
@@ -442,7 +457,9 @@ def test_repair_candidate_server_binds_cannot_express(tmp_path) -> None:
             "layer_id": "2",
             "roles": [],
             "comparison_state": state,
+            "attempt_guard": object(),
         },
+        mode="repair",
     )
     assert "mcp__candidate__cannot_express_in_scope" in names
     assert all("propose_checks" not in name for name in names)
@@ -456,7 +473,9 @@ def test_repair_candidate_server_binds_cannot_express(tmp_path) -> None:
             "judges": [],
             "layer_id": "2",
             "roles": [],
+            "attempt_guard": object(),
         },
+        mode="finalize",
     )
     assert "mcp__candidate__cannot_express_in_scope" not in finalize_names
     assert all("propose_checks" not in name for name in finalize_names)

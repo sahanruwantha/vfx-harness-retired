@@ -9,6 +9,10 @@ from claude_agent_sdk import (
 from vfx_harness.agents.build_prompts import (
     critic_prompt,
 )
+from vfx_harness.agents.builder.attempt_guard import (
+    UnitAttemptAuthorityLost,
+    UnitAttemptGuard,
+)
 from vfx_harness.agents.builder.axes import _axes_need_motion, _critic_options
 from vfx_harness.agents.builder.critic_focus import (
     _apply_evidence_gate,
@@ -56,6 +60,7 @@ async def _critique(
     focus_frames: list[int] | tuple[int, ...] | set[int] | None = None,
     active_unit=None,
     selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
+    attempt_guard: UnitAttemptGuard | None = None,
 ) -> dict:
     if selected_authority is None:
         selected_authority = authority_selection.resolve_selected_authority(
@@ -166,6 +171,11 @@ async def _critique(
                 frame=getattr(m, "frame", None),
                 model=critic_model(),
             ):
+                if attempt_guard is not None:
+                    attempt_guard.check(
+                        f"query {review_mode} critic for unit "
+                        f"{attempt_guard.unit.id} at frame {m.frame}"
+                    )
                 async for message in query(
                     prompt=_one_user_message(blocks),
                     options=_critic_options(
@@ -202,9 +212,16 @@ async def _critique(
                                 f"critic {review_mode}: {phase_failure}",
                                 terminal_cause="model_session_failure",
                             )
+                if attempt_guard is not None:
+                    attempt_guard.check(
+                        f"consume {review_mode} critic result for unit "
+                        f"{attempt_guard.unit.id} at frame {m.frame}"
+                    )
             if acc.get("structured") or acc.get("text", "").strip():
                 break
             log(f"critic returned nothing (attempt {attempt}/3) — retrying", 1)
+        except UnitAttemptAuthorityLost:
+            raise
         except BuildTruncated:
             raise
         except Exception as e:
@@ -595,6 +612,8 @@ async def _judge(
             focused["focus_requested"] = requests
             focused["focus_panels"] = focus_panels
             first = focused
+        except UnitAttemptAuthorityLost:
+            raise
         except Exception as exc:
             first["focus_error"] = str(exc)[:200]
             log(f"! focus panel review unavailable: {str(exc)[:120]} — retaining the full-frame verdict", 1)

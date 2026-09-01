@@ -20,6 +20,13 @@ from vfx_harness.domain.judgment_debts import (
     validate_judgment_debt_replay_prefix,
 )
 from vfx_harness.domain.plan_records import load_judgment_debt_catalog
+from vfx_harness.domain.unit_evaluation_receipts import ReplayDependencyBinding
+from vfx_harness.infrastructure.trusted_files import (
+    TrustedFileBinding,
+    TrustedFileError,
+    read_trusted_file,
+    require_trusted_file_unchanged,
+)
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.observability.run_artifacts import shot_state_dir
 from vfx_harness.orchestration.authority_selection import (
@@ -29,6 +36,10 @@ from vfx_harness.orchestration.authority_selection import (
 )
 from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
+from vfx_harness.orchestration.unit_evaluation_receipts import (
+    ExecutedReplayDependency,
+    ExecutedReplayInput,
+)
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 from vfx_harness.orchestration.unit_state import unit_digest, validate_current
 
@@ -97,6 +108,7 @@ class ReplayPrefixLayerReceipt:
     layer_id: str
     script_path: str
     script_sha256: str
+    dependencies: tuple[ReplayDependencyBinding, ...]
     units: tuple[ReplayPrefixUnitReceipt, ...]
 
     def __post_init__(self) -> None:
@@ -105,6 +117,13 @@ class ReplayPrefixLayerReceipt:
         if not isinstance(self.script_path, str) or not self.script_path.strip():
             raise ValueError("ReplayPrefixLayerReceipt.script_path must be a non-empty string")
         _require_sha256(self.script_sha256, "ReplayPrefixLayerReceipt.script_sha256")
+        if any(
+            not isinstance(dependency, ReplayDependencyBinding)
+            for dependency in self.dependencies
+        ):
+            raise ValueError(
+                "ReplayPrefixLayerReceipt.dependencies must be typed replay dependencies"
+            )
         if not self.units:
             raise ValueError("ReplayPrefixLayerReceipt.units must be non-empty")
         if any(unit.layer_id != self.layer_id for unit in self.units):
@@ -118,6 +137,7 @@ class ReplayPrefixLayerReceipt:
             "layer_id": self.layer_id,
             "script_path": self.script_path,
             "script_sha256": self.script_sha256,
+            "dependencies": [row.as_dict() for row in self.dependencies],
             "units": [unit.as_dict() for unit in self.units],
         }
 
@@ -160,18 +180,99 @@ class ReplayPrefixReceipt:
         }
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def require_replay_inputs_unchanged(
+    shot_folder: str | Path,
+    replay_inputs: Sequence[ExecutedReplayInput],
+    *,
+    where: str = "judgment-debt replay input",
+) -> None:
+    """Retain the exact executed layer-source lineage through debt publication."""
+
+    if isinstance(replay_inputs, (str, bytes)) or not isinstance(
+        replay_inputs, Sequence
+    ):
+        raise ValueError("replay_inputs must be a sequence of ExecutedReplayInput")
+    if not replay_inputs:
+        raise ValueError("replay_inputs must be non-empty")
+    shot = Path(shot_folder).expanduser().absolute()
+    seen: set[str] = set()
+    try:
+        for index, replay_input in enumerate(replay_inputs):
+            if not isinstance(replay_input, ExecutedReplayInput):
+                raise ValueError(
+                    f"replay_inputs[{index}] must be an ExecutedReplayInput"
+                )
+            locator = replay_input.script_path
+            if (
+                not isinstance(locator, str)
+                or not locator
+                or Path(locator).is_absolute()
+                or ".." in Path(locator).parts
+                or Path(locator).as_posix() != locator
+            ):
+                raise ValueError(
+                    f"replay_inputs[{index}].script_path must be a canonical "
+                    "shot-relative path"
+                )
+            if locator in seen:
+                raise ValueError(f"replay_inputs repeats script path {locator!r}")
+            seen.add(locator)
+            _require_sha256(
+                replay_input.script_sha256,
+                f"replay_inputs[{index}].script_sha256",
+            )
+            binding = replay_input.source_binding
+            if not isinstance(binding, TrustedFileBinding):
+                raise ValueError(
+                    f"replay_inputs[{index}].source_binding must be a trusted-file binding"
+                )
+            expected_path = shot / locator
+            if (
+                binding.root != shot
+                or binding.path != expected_path
+                or binding.relative != locator
+            ):
+                raise ValueError(
+                    f"replay_inputs[{index}] is not bound to canonical path {locator!r}"
+                )
+            require_trusted_file_unchanged(binding, where)
+            for dependency_index, dependency in enumerate(replay_input.dependencies):
+                dependency_where = (
+                    f"replay_inputs[{index}].dependencies[{dependency_index}]"
+                )
+                if not isinstance(dependency, ExecutedReplayDependency):
+                    raise ValueError(
+                        f"{dependency_where} must be an ExecutedReplayDependency"
+                    )
+                try:
+                    dependency_row = ReplayDependencyBinding.mint(
+                        kind=dependency.kind,
+                        path=dependency.path,
+                        sha256=dependency.sha256,
+                        where=dependency_where,
+                    )
+                except ValueError as exc:
+                    raise ValueError(str(exc)) from exc
+                dependency_binding = dependency.source_binding
+                if (
+                    not isinstance(dependency_binding, TrustedFileBinding)
+                    or dependency_binding.root != shot
+                    or dependency_binding.path != shot / dependency_row.path
+                    or dependency_binding.relative != dependency_row.path
+                ):
+                    raise ValueError(
+                        f"{dependency_where} is not bound to its canonical path"
+                    )
+                require_trusted_file_unchanged(dependency_binding, where)
+    except TrustedFileError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def replay_prefix_receipt(
     shot_folder: str | Path,
     *,
     replayed_layer_scripts: Sequence[str | Path],
+    replay_inputs: Sequence[ExecutedReplayInput],
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> ReplayPrefixReceipt:
     """Issue a canonical receipt for layer scripts replayed from the empty scene.
@@ -185,7 +286,12 @@ def replay_prefix_receipt(
         replayed_layer_scripts, Sequence
     ):
         raise ValueError("replayed_layer_scripts must be a sequence of layer script paths")
-    shot = Path(shot_folder).resolve()
+    shot = Path(shot_folder).expanduser().absolute()
+    require_replay_inputs_unchanged(shot, replay_inputs)
+    if len(replayed_layer_scripts) != len(replay_inputs):
+        raise ValueError(
+            "replayed_layer_scripts and replay_inputs must describe the same ordered prefix"
+        )
     layers_path = (
         selected_artifact_path(shot, "layers.json")
         if selected_authority is None
@@ -199,7 +305,9 @@ def replay_prefix_receipt(
     by_script = {Path(layer.script).as_posix(): layer for layer in layers.values()}
     replayed: list[ReplayPrefixLayerReceipt] = []
     seen_layers: set[str] = set()
-    for raw_path in replayed_layer_scripts:
+    unit_bindings: list[TrustedFileBinding] = []
+    for index, raw_path in enumerate(replayed_layer_scripts):
+        replay_input = replay_inputs[index]
         candidate = Path(raw_path)
         if candidate.is_absolute():
             try:
@@ -210,6 +318,11 @@ def replay_prefix_receipt(
                 ) from exc
         else:
             relative = candidate.as_posix()
+        if replay_input.script_path != relative:
+            raise ValueError(
+                "executed replay input order does not match replayed layer scripts: "
+                f"expected {relative!r}, found {replay_input.script_path!r}"
+            )
         layer = by_script.get(relative)
         if layer is None:
             raise ValueError(
@@ -219,11 +332,52 @@ def replay_prefix_receipt(
             raise ValueError(f"replay prefix repeats selected layer {layer.id}")
         seen_layers.add(layer.id)
         layer_script = shot / relative
-        if not layer_script.is_file():
-            raise ValueError(
-                f"replay prefix names missing selected layer artifact {relative}"
+        try:
+            layer_snapshot = read_trusted_file(
+                shot,
+                layer_script,
+                f"replayed layer {layer.id} causal input",
+                require_nonempty=True,
             )
-        layer_script_hash = _sha256(layer_script)
+        except TrustedFileError as exc:
+            raise ValueError(str(exc)) from exc
+        if (
+            layer_snapshot.binding != replay_input.source_binding
+            or layer_snapshot.sha256 != replay_input.script_sha256
+        ):
+            raise ValueError(
+                f"replayed layer {layer.id} current artifact does not match the exact "
+                "bytes executed by the evaluator"
+            )
+        layer_script_hash = replay_input.script_sha256
+        dependency_rows: list[ReplayDependencyBinding] = []
+        for dependency_index, dependency in enumerate(replay_input.dependencies):
+            dependency_row = ReplayDependencyBinding.mint(
+                kind=dependency.kind,
+                path=dependency.path,
+                sha256=dependency.sha256,
+                where=(
+                    f"replayed layer {layer.id} dependency {dependency_index}"
+                ),
+            )
+            try:
+                dependency_snapshot = read_trusted_file(
+                    shot,
+                    shot / dependency_row.path,
+                    f"replayed layer {layer.id} {dependency_row.kind}",
+                    require_nonempty=True,
+                )
+            except TrustedFileError as exc:
+                raise ValueError(str(exc)) from exc
+            if (
+                dependency_snapshot.binding != dependency.source_binding
+                or dependency_snapshot.sha256 != dependency_row.sha256
+            ):
+                raise ValueError(
+                    f"replayed layer {layer.id} {dependency_row.kind} does not "
+                    "match the exact bytes consumed by the evaluator"
+                )
+            dependency_rows.append(dependency_row)
         state = load_unit_state(shot, str(layer.id))
         validate_current(state, str(layer.id), layer.stages)
         if not state:
@@ -253,16 +407,21 @@ def replay_prefix_receipt(
                     f"replayed payer unit {identity} must own exactly one replay artifact"
                 )
             artifact = shot / unit.mutates.script_spans[0]
-            if not artifact.is_file():
-                raise ValueError(
-                    f"replayed payer unit {identity} artifact is missing: "
-                    f"{unit.mutates.script_spans[0]}"
+            try:
+                artifact_snapshot = read_trusted_file(
+                    shot,
+                    artifact,
+                    f"replayed payer unit {identity} artifact",
+                    require_nonempty=True,
                 )
-            script_hash = _sha256(artifact)
+            except TrustedFileError as exc:
+                raise ValueError(str(exc)) from exc
+            script_hash = artifact_snapshot.sha256
             if checkpoint.get("script_hash") != script_hash:
                 raise ValueError(
                     f"replayed payer unit {identity} artifact changed after its checkpoint"
                 )
+            unit_bindings.append(artifact_snapshot.binding)
             units.append(
                 ReplayPrefixUnitReceipt(
                     layer_id=str(layer.id),
@@ -279,9 +438,19 @@ def replay_prefix_receipt(
                 layer_id=str(layer.id),
                 script_path=relative,
                 script_sha256=layer_script_hash,
+                dependencies=tuple(dependency_rows),
                 units=tuple(units),
             )
         )
+    require_replay_inputs_unchanged(shot, replay_inputs)
+    try:
+        for binding in unit_bindings:
+            require_trusted_file_unchanged(
+                binding,
+                "judgment-debt payer unit causal input",
+            )
+    except TrustedFileError as exc:
+        raise ValueError(str(exc)) from exc
     return ReplayPrefixReceipt(tuple(replayed))
 
 
@@ -289,11 +458,13 @@ def replay_prefix_unit_digests(
     shot_folder: str | Path,
     *,
     replayed_layer_scripts: Sequence[str | Path],
+    replay_inputs: Sequence[ExecutedReplayInput],
 ) -> tuple[tuple[str, str], ...]:
     """Return the legacy exact payer pairs from the richer replay-prefix receipt."""
     return tuple(sorted(replay_prefix_receipt(
         shot_folder,
         replayed_layer_scripts=replayed_layer_scripts,
+        replay_inputs=replay_inputs,
     ).unit_digests))
 
 

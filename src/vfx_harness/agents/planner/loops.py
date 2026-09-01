@@ -22,8 +22,6 @@ from vfx_harness.observability.log import log
 from vfx_harness.orchestration import plan_authority
 from vfx_harness.orchestration.layer_plans import (
     global_plan_path,
-    is_selected_bundle_member,
-    validate_work_unit_plan_authority,
 )
 from vfx_harness.orchestration.plan_authority import prepare_staging, promote_candidate
 
@@ -269,8 +267,11 @@ def main() -> None:
     settings = planner_package().Settings.from_environment()
     ap = argparse.ArgumentParser(description="Plan a shot. Default: two-pass (draft → adversarial verify).")
     ap.add_argument("folder", help="shot folder (contains brief.md, refs/)")
-    ap.add_argument("--layer", help="generate only this layer's just-in-time plan")
-    ap.add_argument("--unit", help="with --layer, generate this ready work unit instead of the first ready unit")
+    ap.add_argument("--layer", help="materialize or reconcile this layer and its durable unit state")
+    ap.add_argument(
+        "--unit",
+        help="retired: paid unit-plan generation is owned by vfx build after an exact claim",
+    )
     ap.add_argument(
         "--rematerialize",
         action="store_true",
@@ -320,8 +321,11 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    if args.unit and not args.layer:
-        ap.error("--unit requires --layer")
+    if args.unit:
+        ap.error(
+            "--unit no longer starts paid planning; run `vfx build <shot> --layer <id>` "
+            "so one exact claimed attempt owns unit planning and building"
+        )
     if args.layer and (args.single or args.verify_only or args.until_clean or args.tag):
         ap.error("--layer is a dedicated JIT pass; do not combine it with global-pass flags")
     if args.rematerialize and not (args.layer and args.owner and args.trigger and args.evidence):
@@ -368,6 +372,7 @@ def main() -> None:
                         if args.rematerialize
                         else None
                     ),
+                    materialize_only=True,
                 )
             )
         elif args.single:
@@ -404,12 +409,9 @@ def main() -> None:
                 )
             )
         if args.layer:
-            log(f"unit plan ready: {plan_path}")
-            validate_work_unit_plan_authority(shot.folder, plan_path)
-            if is_selected_bundle_member(shot.folder, plan_path):
-                log("provenance → verified member of the selected immutable bundle")
-            else:
-                log(f"provenance → {plan_path.with_name(plan_path.name + '.authority.json')}")
+            log(f"layer {args.layer} materialized and durable unit state reconciled")
+            log(f"selected layer view → {plan_path}")
+            log("paid unit planning begins only inside `vfx build` after an exact claim")
         else:
             log(f"wrote {plan_path}")
             if loop_result is not None and loop_result.clean:

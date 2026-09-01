@@ -25,6 +25,12 @@ import bpy
 # Blender runs this file by path, so its own directory is NOT importable by default.
 # `checks` and `render_ext` are siblings and are imported lazily by their handlers.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from artifact_execution import (
+    artifact_builtins,
+    validate_artifact_source,
+)
+from construction_replay import immutable_glb_path, read_verified_replay_snapshot
+from process_confinement import install_worker_seccomp
 
 SENT = "@@VFXH@@"
 
@@ -599,6 +605,35 @@ def _bvfx_emissive_from_texture(obj, threshold=0.55, soft=0.10, strength=6.0,
 
 _PROMOTED_GLB = re.compile(r"^build/construction/[0-9a-f]{64}\.glb$")
 _CONSTRUCTION_PIN = "construction_import.json"
+_PREPARED_CONSTRUCTION_REPLAY: tuple[bytes, str, str] | None = None
+
+
+def h_pin_construction_replay(a: dict) -> dict:
+    """Load a hash-verified replay snapshot once, before artifact execution."""
+
+    global _PREPARED_CONSTRUCTION_REPLAY
+    payload = a.get("payload")
+    if payload is None:
+        _PREPARED_CONSTRUCTION_REPLAY = None
+        return {"pinned": False}
+    if not isinstance(payload, dict):
+        raise ValueError("construction replay pin payload must be an object or null")
+    rel = str(payload.get("glb") or "")
+    expected = str(payload.get("sha256") or "")
+    supplied = payload.get("snapshot")
+    if not _PROMOTED_GLB.fullmatch(rel):
+        raise ValueError(f"construction replay pin names illegal path {rel!r}")
+    if not isinstance(supplied, str) or not os.path.isabs(supplied):
+        raise ValueError("construction replay snapshot must be an absolute path")
+    snapshot = os.path.abspath(supplied)
+    replay_root = os.path.join(ARTIFACTS, "construction-replay")
+    raw = read_verified_replay_snapshot(
+        snapshot,
+        replay_root=replay_root,
+        expected_sha256=expected,
+    )
+    _PREPARED_CONSTRUCTION_REPLAY = (raw, rel, expected)
+    return {"pinned": True, "sha256": expected}
 
 
 def _bvfx_import_construction() -> "list[str]":
@@ -608,6 +643,22 @@ def _bvfx_import_construction() -> "list[str]":
     Generate units call this with no arguments. Procedural units must author mesh
     in-session; this helper raises without a pin.
     """
+    prepared = _PREPARED_CONSTRUCTION_REPLAY
+    if prepared is not None:
+        raw, _rel, expected = prepared
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != expected:
+            raise RuntimeError(
+                "prepared construction replay bytes changed in worker memory"
+            )
+        with immutable_glb_path(raw, expected_sha256=expected) as glb:
+            before = set(bpy.data.objects.keys())
+            bpy.ops.import_scene.gltf(filepath=glb)
+        new = [n for n in bpy.data.objects if n not in before]
+        for n in new:
+            bpy.data.objects[n].rotation_mode = "XYZ"
+        return new
+
     pin = os.path.join(ARTIFACTS, _CONSTRUCTION_PIN)
     if not os.path.isfile(pin):
         raise RuntimeError(
@@ -1065,8 +1116,15 @@ def h_run(a: dict) -> dict:
     tuple math kept recurring). Returns timing + scene-delta so the agent feels cost."""
 
     import mathutils as _mathutils
+    execution_policy = str(a.get("execution_policy") or "live")
+    if execution_policy not in {"live", "artifact"}:
+        raise ValueError(f"unknown Blender execution policy {execution_policy!r}")
+    if execution_policy == "artifact":
+        validate_artifact_source(str(a["code"]))
     ns: dict = {"bpy": bpy, "math": _math, "mathutils": _mathutils,
                 "Vector": _mathutils.Vector, **_HELPERS}
+    if execution_policy == "artifact":
+        ns["__builtins__"] = artifact_builtins()
     before = _scene_stats()
     buf = io.StringIO()
     t0 = time.monotonic()
@@ -2126,6 +2184,7 @@ def h_restore(a: dict) -> dict:
 
 HANDLERS = {
     "ping": h_ping,
+    "pin_construction_replay": h_pin_construction_replay,
     "run": h_run,
     "inspect": h_inspect,
     "observation_environment": h_observation_environment,
@@ -2143,6 +2202,7 @@ HANDLERS = {
 
 
 def serve() -> None:
+    install_worker_seccomp()
     _send({"event": "ready", "blender": bpy.app.version_string, "artifacts": ARTIFACTS})
     for line in sys.stdin:
         line = line.strip()

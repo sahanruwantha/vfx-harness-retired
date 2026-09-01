@@ -179,8 +179,11 @@ The normal operation is the whole driver:
 .venv/bin/vfx run shots/<shot-id> --rounds 2
 ```
 
-It performs just-in-time layer planning, the deterministic plan gate, bounded layer building,
-cumulative acceptance, final rendering, and queued distillation under one run ID. It stops on the
+It performs just-in-time layer materialization, claim-owned unit planning, the deterministic
+plan gate, bounded layer building, cumulative acceptance, and final rendering under one run ID.
+Legacy distillation queue rows are inert: recipe publication remains disabled until it has an
+immutable unit-completion receipt, a staged bounded diff, and post-spend authority revalidation.
+It stops on the
 first unaccepted boundary; do not force downstream work past it. The child boundary must publish
 one immutable `vfx-harness.stop-envelope/v1`, and the whole-run status selects it by digest. A
 bare nonzero child exit is a `harness_defect`, not evidence for retry, replan, or recovery. If
@@ -200,9 +203,11 @@ Published global plans contain executable units only for Layer 1. A later layer 
 typed `jit_deferred` boundary with upstream outcome dependencies, reserved semantic roles, and
 an ownership-only requirement list. Each deferred requirement names exactly one owner layer and
 due boundary without choosing contract kinds or moments. On
-`vfx plan <shot> --layer <id>`, the planner first materializes and validates
-that boundary into a bundle-pinned, content-addressed consumer view; only then does it create or
-plan the first ready unit. If requirement closure, role scope, or global structure disagree,
+`vfx plan <shot> --layer <id>`, the planner materializes and validates
+that boundary into a bundle-pinned, content-addressed consumer view and reconciles durable unit
+state. It does not perform paid unit planning. `vfx build` first claims a dependency-ready unit,
+then owns that unit's paid plan and build under the same exact attempt. `--unit` on `vfx plan` is
+retired and points to `vfx build`. If requirement closure, role scope, or global structure disagree,
 planning fails closed and no durable unit state is created. Do not hand-author placeholder units or
 edit `state/jit-layers/current.json`.
 

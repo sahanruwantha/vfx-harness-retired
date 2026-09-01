@@ -15,16 +15,19 @@ from __future__ import annotations
 import argparse
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import anyio
 
 from vfx_harness.domain.brief import Shot, load_shot
+from vfx_harness.domain.stop_envelope_primitives import require_digest
+from vfx_harness.domain.unit_evaluation_receipts import ReplayDependencyBinding
 from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration import plan_due
+from vfx_harness.orchestration import plan_due, unit_state
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
@@ -38,7 +41,7 @@ from vfx_harness.orchestration.selected_authority_guard import (
 )
 from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
 
-from ..blender.session import BlenderSession
+from ..blender.session import BlenderError, BlenderSession
 from . import acceptance_stop, acceptance_stop_evidence
 from .builder import (
     _RESET,
@@ -50,10 +53,115 @@ from .builder import (
     _verdict,
     ensure_axes,
 )
+from .builder.prior import (
+    PreparedArtifactReplayInput,
+    _prepare_artifact_replay_inputs,
+    require_prepared_artifact_replay_input_unchanged,
+)
 
 
 class IncompleteChain(RuntimeError):
     """Acceptance was asked to judge a shot that is not finished."""
+
+
+def _prepare_acceptance_replay_inputs(
+    shot: Shot,
+    authority: acceptance_stop.AcceptanceAuthoritySnapshot,
+) -> tuple[PreparedArtifactReplayInput, ...]:
+    """Capture exact accepted layer bytes before any acceptance replay begins."""
+
+    entries: list[tuple[str, Path]] = []
+    expected: list[tuple[str, str, tuple[ReplayDependencyBinding, ...]]] = []
+    for index, row in enumerate(authority.chain):
+        script = row.get("script")
+        digest = row.get("script_sha256")
+        if not isinstance(script, str) or not script:
+            raise IncompleteChain(
+                f"acceptance authority chain[{index}] has no replay script"
+            )
+        try:
+            digest = require_digest(
+                digest,
+                f"acceptance authority chain[{index}].script_sha256",
+            )
+        except ValueError as exc:
+            raise IncompleteChain(str(exc)) from exc
+        raw_dependencies = row.get("replay_dependencies")
+        if not isinstance(raw_dependencies, list):
+            raise IncompleteChain(
+                f"acceptance authority chain[{index}].replay_dependencies must be a list"
+            )
+        try:
+            dependencies = tuple(
+                ReplayDependencyBinding.parse(
+                    dependency,
+                    f"acceptance authority chain[{index}].replay_dependencies[{dependency_index}]",
+                )
+                for dependency_index, dependency in enumerate(raw_dependencies)
+            )
+        except ValueError as exc:
+            raise IncompleteChain(str(exc)) from exc
+        entries.append((script, shot.folder / script))
+        expected.append((script, digest, dependencies))
+    if not entries:
+        raise IncompleteChain("acceptance authority contains no replay scripts")
+    try:
+        prepared = _prepare_artifact_replay_inputs(shot.folder, entries)
+    except BlenderError as exc:
+        raise IncompleteChain(str(exc)) from exc
+    observed = [
+        (
+            item.executed.script_path,
+            item.executed.script_sha256,
+            tuple(
+                ReplayDependencyBinding.mint(
+                    kind=dependency.kind,
+                    path=dependency.path,
+                    sha256=dependency.sha256,
+                )
+                for dependency in item.executed.dependencies
+            ),
+        )
+        for item in prepared
+    ]
+    if observed != expected:
+        raise IncompleteChain(
+            "descriptor-read acceptance replay bytes do not match authority_before"
+        )
+    return prepared
+
+
+def _require_acceptance_replay_current(
+    replay_inputs: tuple[PreparedArtifactReplayInput, ...],
+) -> None:
+    """Retain exact executed-source lineage through acceptance publication."""
+
+    try:
+        for item in replay_inputs:
+            require_prepared_artifact_replay_input_unchanged(item)
+    except BlenderError as exc:
+        raise IncompleteChain(str(exc)) from exc
+
+
+def _unit_completion_failures(shot: Shot, layers) -> list[str]:
+    """Name layers whose lifecycle projection lacks receipt-backed unit authority."""
+
+    failures: list[str] = []
+    for layer in layers:
+        try:
+            state = unit_state.load(shot.folder, str(layer.id))
+            unit_state.validate_current(state, str(layer.id), layer.stages)
+        except ValueError as exc:
+            failures.append(f"layer {layer.id} work-unit state is invalid: {exc}")
+            continue
+        sealed = unit_state.digest_matched_passed(state, layer.stages)
+        missing = [unit.id for unit in layer.stages if unit.id not in sealed]
+        if missing:
+            failures.append(
+                f"layer {layer.id} has no receipt-backed completion for "
+                + ", ".join(missing)
+            )
+    return failures
 
 
 def _chain(
@@ -63,6 +171,7 @@ def _chain(
     force: bool = False,
     expected_bundle_digest: str | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
+    prepared_inputs: tuple[PreparedArtifactReplayInput, ...] | None = None,
 ) -> list[str]:
     """Run every layer script from an empty scene — the deliverable, start to finish.
 
@@ -83,6 +192,7 @@ def _chain(
                 for g in layers
                 if (shot.folder / g.script).is_file()
                 and ledger.status(g.as_milestone()) != "passed"]
+    unpassed.extend(_unit_completion_failures(shot, layers))
     if (missing or unpassed) and not force:
         raise IncompleteChain(
             "refusing to judge an unfinished shot — " + "; ".join(missing + unpassed)
@@ -91,16 +201,38 @@ def _chain(
     if missing or unpassed:
         log(f"! --force: judging an INCOMPLETE chain — {'; '.join(missing + unpassed)}")
 
+    executable_layers = [g for g in layers if (shot.folder / g.script).is_file()]
+    if not force:
+        if prepared_inputs is None:
+            raise IncompleteChain(
+                "acceptance requires descriptor-read inputs matched to authority_before"
+            )
+        expected_locators = [str(g.script) for g in executable_layers]
+        observed_locators = [item.executed.script_path for item in prepared_inputs]
+        if observed_locators != expected_locators:
+            raise IncompleteChain(
+                "prepared acceptance replay order does not match the selected layer DAG"
+            )
+        _require_acceptance_replay_current(prepared_inputs)
+
     session.run(_RESET)
     session.run(_preamble(shot))
     ran = []
+    replay_index = 0
     for g in layers:
         p = shot.folder / g.script
         if not p.is_file():
             continue                      # only reachable under --force
         log(f"chain: {g.script}", 1)
-        _run_artifact_script(session, p)
+        _run_artifact_script(
+            session,
+            p,
+            None if force else prepared_inputs[replay_index],
+        )
+        replay_index += 1
         ran.append(g.script)
+    if not force:
+        _require_acceptance_replay_current(prepared_inputs)
     return ran
 
 
@@ -133,6 +265,11 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         moments,
         selected_authority,
     )
+    replay_inputs = (
+        ()
+        if force
+        else _prepare_acceptance_replay_inputs(shot, authority_before)
+    )
     axes = await ensure_axes(shot, verbose, selected_authority)
     tpath = transcript.bind(shot.folder, "accept")
     if tpath:
@@ -143,6 +280,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         force=force,
         expected_bundle_digest=authority_before.bundle_digest,
         selected_authority=selected_authority,
+        prepared_inputs=None if force else replay_inputs,
     )
     log(f"chain rebuilt from empty: {len(ran)} scripts — judging {len(moments)} moment(s)")
     transcript.event("accept_start", moments=list(moments), chained=ran,
@@ -260,6 +398,8 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         moments,
         selected_authority,
     )
+    if replay_inputs:
+        _require_acceptance_replay_current(replay_inputs)
     if authority_after != authority_before:
         raise ValueError(
             "selected acceptance authority, judgment debt, or accepted build changed "
@@ -268,12 +408,17 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
     failed = {mid: result for mid, result in results.items() if not result["pass"]}
 
     def publish(operation, mutation):
-        return commit_selected_authority(
+        if replay_inputs:
+            _require_acceptance_replay_current(replay_inputs)
+        result = commit_selected_authority(
             shot.folder,
             selected_authority,
             operation=operation,
             mutation=mutation,
         )
+        if replay_inputs:
+            _require_acceptance_replay_current(replay_inputs)
+        return result
 
     if not only and publishable:
         # A frame-unspecified contract is evaluated at every acceptance moment.  One

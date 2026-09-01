@@ -38,6 +38,7 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
 )
 from vfx_harness.observability.run_artifacts import RunLayout
+from vfx_harness.orchestration import generate_construction
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
@@ -210,6 +211,16 @@ def capture_acceptance_authority(
         selected_authority=selected,
     ):
         layer_script = _inside(shot_root, layer.script, f"layer {layer.id} script")
+        try:
+            construction = generate_construction.prepare_construction_replay_input(
+                shot_root,
+                layer_script,
+            )
+        except generate_construction.GenerateConstructionError as exc:
+            raise ValueError(
+                f"acceptance cannot capture construction replay authority for "
+                f"layer {layer.id}: {exc}"
+            ) from exc
         units = []
         for unit in layer.stages:
             script_path = _inside(
@@ -231,6 +242,14 @@ def capture_acceptance_authority(
                 "status": statuses.get(str(layer.id), "pending"),
                 "script": layer.script,
                 "script_sha256": _sha256(layer_script) if layer_script.is_file() else None,
+                "replay_dependencies": (
+                    []
+                    if construction is None
+                    else [
+                        dependency.as_dict()
+                        for dependency in construction.dependencies
+                    ]
+                ),
                 "units": units,
             }
         )

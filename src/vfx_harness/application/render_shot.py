@@ -25,6 +25,7 @@ from pathlib import Path
 
 from vfx_harness.agents.acceptance_stop import require_current_accepted_outcome
 from vfx_harness.agents.builder import _RESET, _preamble, _run_artifact_script
+from vfx_harness.agents.builder.prior import PreparedArtifactReplayInput
 from vfx_harness.application.final_render_snapshot import (
     FinalRenderSnapshot,
     FinalRenderSnapshotError,
@@ -48,6 +49,7 @@ from vfx_harness.orchestration.authority_selection_transaction import (
 )
 from vfx_harness.orchestration.ledger import Ledger
 from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
+from vfx_harness.orchestration.unit_evaluation_receipts import ExecutedReplayInput
 
 
 class IncompleteRender(RuntimeError):
@@ -69,6 +71,30 @@ class _OwnedMediaRevision:
     device: int
     inode: int
     content: _MediaRevision
+
+
+def _prepared_snapshot_replay_input(
+    snapshot: FinalRenderSnapshot,
+    index: int,
+) -> PreparedArtifactReplayInput:
+    """Return the exact captured bytes and leaf lineage for one replay member."""
+
+    row = snapshot.replay[index]
+    trusted = row.snapshot.trusted
+    digest = row.snapshot.sha256
+    if trusted is None or digest is None:
+        raise FinalRenderSnapshotError(
+            f"immutable replay script {index} has no trusted member binding"
+        )
+    return PreparedArtifactReplayInput(
+        executed=ExecutedReplayInput(
+            script_path=row.snapshot.path.relative_to(snapshot.replay_root).as_posix(),
+            script_sha256=digest,
+            source_binding=trusted,
+        ),
+        source_path=row.snapshot.path,
+        payload=row.payload,
+    )
 
 
 def _render_output_path(
@@ -442,8 +468,12 @@ def _final_render_output_lock(output: Path) -> Iterator[None]:
 def _require_final_render_authority_current(
     shot: Shot,
     snapshot: FinalRenderSnapshot,
+    *,
+    selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
 ) -> None:
-    current_selected = authority_selection.resolve_selected_authority(shot.folder)
+    current_selected = selected_authority
+    if current_selected is None:
+        current_selected = authority_selection.resolve_selected_authority(shot.folder)
     if (
         current_selected.selection_token
         != snapshot.selected_authority.selection_token
@@ -474,14 +504,27 @@ def _publish_final_render(
                 snapshot.selected_authority.selection_token,
                 observed.token,
             )
+            # The selection lock is already held.  Re-entering
+            # ``resolve_selected_authority`` would open the same inode through a new
+            # descriptor and deadlock on its serialized flock.  Resolve the exact
+            # heads observed inside this transaction instead.
+            current_selected = authority_selection.resolve_selected_authority_from_heads(
+                shot.folder,
+                observed,
+            )
             with final_render_state_locks(shot, snapshot):
-                _require_final_render_authority_current(shot, snapshot)
+                _require_final_render_authority_current(
+                    shot,
+                    snapshot,
+                    selected_authority=current_selected,
+                )
                 _publish_media_transaction(
                     staged,
                     output,
                     postcondition=lambda: _require_final_render_authority_current(
                         shot,
                         snapshot,
+                        selected_authority=current_selected,
                     ),
                 )
     except (
@@ -559,6 +602,21 @@ def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
                 else shot.folder / "assets"
             ),
             cwd=shot.folder,
+            readable_roots=(
+                (render_snapshot.replay_root,)
+                if render_snapshot is not None
+                else ()
+            ),
+            readable_root_bindings=(
+                (render_snapshot.replay_root_binding,)
+                if render_snapshot is not None
+                else ()
+            ),
+            readable_file_bindings=(
+                render_snapshot.worker_file_bindings
+                if render_snapshot is not None
+                else ()
+            ),
         ).start()
         try:
             s.run(_RESET)
@@ -568,9 +626,17 @@ def render_mp4(shot: Shot, upto: str | None = None, *, scale: float = 1.0,
                     "import os\n"
                     f"os.chdir({str(render_snapshot.replay_root)!r})\n"
                 )
-            for p in scripts:
+            for index, p in enumerate(scripts):
                 log(f"running {p.name}")
-                _run_artifact_script(s, p)
+                _run_artifact_script(
+                    s,
+                    p,
+                    (
+                        _prepared_snapshot_replay_input(render_snapshot, index)
+                        if render_snapshot is not None
+                        else None
+                    ),
+                )
             log(f"rendering {shot.frames} frames @ scale {scale}…")
             t0 = time.monotonic()
             for f in range(1, shot.frames + 1):

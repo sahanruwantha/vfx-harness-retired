@@ -10,14 +10,15 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
+from tests.layer_outcome_fixtures import write_test_layer_outcome
+from tests.unit_attempt_fixtures import pass_unit
 from vfx_harness.agents import planner
 from vfx_harness.agents.planner import kickoff as kickoff_runtime
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration import revalidation
+from vfx_harness.orchestration import revalidation, unit_state
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
-from vfx_harness.orchestration.layer_plans import write_layer_outcome
 
 
 def test_two_pass_seeds_canonical_gate_candidate_from_draft(
@@ -292,14 +293,58 @@ def test_until_clean_main_exits_three_and_preserves_dirty_plan(tmp_path, monkeyp
     assert not (tmp_path / "plan.provenance.json").exists()
 
 
-def _mark_passed(folder, layer_id: str, *unit_ids: str) -> None:
-    import json as _json
+def test_standalone_unit_plan_refuses_before_shot_or_model_spend(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        planner.Settings,
+        "from_environment",
+        lambda **_kwargs: SimpleNamespace(
+            planner_model="model",
+            blender_bin="blender",
+        ),
+    )
+    monkeypatch.setattr(
+        planner,
+        "load_shot",
+        lambda *_args, **_kwargs: pytest.fail("unit refusal reached shot loading"),
+    )
+    monkeypatch.setattr(
+        planner,
+        "generate_layer_plan",
+        lambda *_args, **_kwargs: pytest.fail("unit refusal reached paid planning"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["vfx plan", str(tmp_path), "--layer", "1", "--unit", "form"],
+    )
 
-    path = folder / "state" / "work-units" / f"layer_{layer_id}.json"
-    value = _json.loads(path.read_text(encoding="utf-8"))
-    for uid in unit_ids:
-        value["units"][uid]["status"] = "passed"
-    path.write_text(_json.dumps(value), encoding="utf-8")
+    with pytest.raises(SystemExit) as raised:
+        planner.main()
+
+    captured = capsys.readouterr()
+    assert raised.value.code == 2
+    assert "--unit no longer starts paid planning" in captured.err
+    assert "vfx build <shot> --layer <id>" in captured.err
+
+
+def _mark_passed(folder, layer_id: str, units, *unit_ids: str) -> None:
+    plan_hash = unit_state.load(folder, layer_id)["plan_hash"]
+    by_id = {unit.id: unit for unit in units}
+    eligible_passed: set[str] = set()
+    for unit_id in unit_ids:
+        pass_unit(
+            folder,
+            layer_id,
+            by_id[unit_id],
+            units,
+            plan_hash=plan_hash,
+            eligible_passed=eligible_passed,
+        )
+        eligible_passed.add(unit_id)
 
 
 def _patch_remat_design(
@@ -387,8 +432,9 @@ def _patch_remat_design(
 def test_rematerialize_preserves_accepted_units_whose_digests_match(
     tmp_path, monkeypatch
 ) -> None:
-    """HIR-0052: remat is apply_replan. A passed sibling whose digest still matches
-    stays passed; a changed unit and its dependant reopen. The door must not refuse
+    """HIR-0052: remat is apply_replan. A digest-matched sibling retains its
+    checkpoint but reopens because its completion receipt names the prior plan;
+    changed units and dependants reopen as well. The door must not refuse merely
     because accepted units exist."""
     from tests.architecture.test_staged_architecture import _unit
     from vfx_harness.orchestration.unit_state import initialize, load
@@ -401,8 +447,15 @@ def test_rematerialize_preserves_accepted_units_whose_digests_match(
         "atmosphere", depends_on=["materials"], proposition_suffix=" vis moved"
     )
     new_units = (materials, new_atmosphere, lighting)
-    initialize(tmp_path, "2", old_units, plan_hash="old-hash")
-    _mark_passed(tmp_path, "2", "materials", "atmosphere", "lighting")
+    initialize(tmp_path, "2", old_units, plan_hash="1" * 64)
+    _mark_passed(
+        tmp_path,
+        "2",
+        old_units,
+        "materials",
+        "atmosphere",
+        "lighting",
+    )
     called = _patch_remat_design(
         monkeypatch,
         tmp_path,
@@ -426,7 +479,7 @@ def test_rematerialize_preserves_accepted_units_whose_digests_match(
     assert called["materialize"] is True
     assert refreshed.stages == new_units
     state = load(tmp_path, "2")
-    assert state["units"]["materials"]["status"] == "passed"
+    assert state["units"]["materials"]["status"] == "retryable"
     assert state["units"]["atmosphere"]["status"] == "pending"
     assert state["units"]["lighting"]["status"] == "pending"
     record = state["replans"][-1]
@@ -436,7 +489,7 @@ def test_rematerialize_preserves_accepted_units_whose_digests_match(
     assert record.get("discard_accepted") is None
     source = inspect.getsource(planner._rematerialize_layer)
     assert "re-materialization would discard proven work" not in source
-    assert "stay unless the replacement" in source
+    assert "plan-bound completion authority reopens" in source
 
 
 def test_rematerialize_uses_digest_bound_state_after_global_republication(
@@ -454,8 +507,8 @@ def test_rematerialize_uses_digest_bound_state_after_global_republication(
 
     old_units = (_unit("old_camera"), _unit("old_proxies", depends_on=["old_camera"]))
     new_units = (_unit("aim_target"), _unit("camera_rig", depends_on=["aim_target"]))
-    initialize(tmp_path, "2", old_units, plan_hash="durable-old-hash")
-    _mark_passed(tmp_path, "2", "old_camera", "old_proxies")
+    initialize(tmp_path, "2", old_units, plan_hash="2" * 64)
+    _mark_passed(tmp_path, "2", old_units, "old_camera", "old_proxies")
     called = _patch_remat_design(
         monkeypatch,
         tmp_path,
@@ -481,7 +534,7 @@ def test_rematerialize_uses_digest_bound_state_after_global_republication(
     assert set(state["units"]) == {"aim_target", "camera_rig"}
     assert {row["status"] for row in state["units"].values()} == {"pending"}
     record = state["replans"][-1]
-    assert record["old_plan_hash"] == "durable-old-hash"
+    assert record["old_plan_hash"] == "2" * 64
     assert record["removed"] == ["old_camera", "old_proxies"]
     assert record["added"] == ["aim_target", "camera_rig"]
     assert record.get("orphaned") is None
@@ -500,8 +553,8 @@ def test_direct_materialization_reconciles_prior_generation_state(
 
     old_units = (_unit("facade"), _unit("windows", depends_on=["facade"]))
     new_units = (_unit("massing"), _unit("roof", depends_on=["massing"]))
-    initialize(tmp_path, "2", old_units, plan_hash="old-generation")
-    _mark_passed(tmp_path, "2", "facade", "windows")
+    initialize(tmp_path, "2", old_units, plan_hash="3" * 64)
+    _mark_passed(tmp_path, "2", old_units, "facade", "windows")
     shot = SimpleNamespace(folder=tmp_path, id="shot")
     layer = SimpleNamespace(id="2", stages=new_units)
 
@@ -517,7 +570,7 @@ def test_direct_materialization_reconciles_prior_generation_state(
     assert set(state["units"]) == {"massing", "roof"}
     assert {row["status"] for row in state["units"].values()} == {"pending"}
     record = state["replans"][-1]
-    assert record["old_plan_hash"] == "old-generation"
+    assert record["old_plan_hash"] == "3" * 64
     assert record["removed"] == ["facade", "windows"]
     assert record["added"] == ["massing", "roof"]
     assert record.get("discard_accepted") is None
@@ -555,8 +608,8 @@ def test_rematerialize_unusable_base_does_not_wipe_accepted_units(
     from vfx_harness.orchestration.unit_state import initialize, load
 
     units = (_unit("materials"),)
-    initialize(tmp_path, "2", units, plan_hash="old-hash")
-    _mark_passed(tmp_path, "2", "materials")
+    initialize(tmp_path, "2", units, plan_hash="1" * 64)
+    _mark_passed(tmp_path, "2", units, "materials")
     _patch_remat_design(
         monkeypatch,
         tmp_path,
@@ -604,8 +657,8 @@ def test_rematerialize_unusable_base_wipes_only_with_discard_accepted(
     from vfx_harness.orchestration.unit_state import initialize, load
 
     units = (_unit("materials"),)
-    initialize(tmp_path, "2", units, plan_hash="old-hash")
-    _mark_passed(tmp_path, "2", "materials")
+    initialize(tmp_path, "2", units, plan_hash="1" * 64)
+    _mark_passed(tmp_path, "2", units, "materials")
     _patch_remat_design(
         monkeypatch,
         tmp_path,
@@ -644,8 +697,9 @@ def test_already_deferred_rematerialize_still_runs_the_transaction() -> None:
     import inspect
 
     from vfx_harness.agents import planner as _planner
+    from vfx_harness.agents.planner import generate as _generate
 
-    source = inspect.getsource(_planner.generate_layer_plan)
+    source = inspect.getsource(_generate._generate_layer_plan)
     assert "if rematerialize is not None and layer.execution == \"ready\":" not in source
     assert "if rematerialize is not None:" in source
     assert "_owner, replacing, _evidence = rematerialize" not in source
@@ -739,7 +793,7 @@ def test_materialization_kickoff_compiles_frame_authority_and_named_outcomes(
         "input_manifest",
         lambda *_args, **_kwargs: {"complete": "named-outcome"},
     )
-    write_layer_outcome(
+    write_test_layer_outcome(
         tmp_path,
         predecessor,
         status="passed",

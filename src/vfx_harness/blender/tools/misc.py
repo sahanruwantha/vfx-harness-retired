@@ -24,6 +24,7 @@ from vfx_harness.domain.image_debts import (
     unpaid_image_contract_debts,
 )
 from vfx_harness.domain.work_units import read_document
+from vfx_harness.evidence import runtime_check_publication
 from vfx_harness.evidence.checks import (
     IMAGE_PAYMENT_SCHEMA,
     METRICS,
@@ -31,9 +32,8 @@ from vfx_harness.evidence.checks import (
     load_image_contract_payment_rows,
     verify_necessity,
 )
-from vfx_harness.observability.provenance import atomic_write
-from vfx_harness.observability.worklists import load_unit_worklist, write_unit_worklist
-from vfx_harness.orchestration.escalate import ask as _ask
+from vfx_harness.observability import prepared_publication, worklists
+from vfx_harness.orchestration import escalate
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 from vfx_harness.orchestration.script_map import find_lines as _find_lines
 from vfx_harness.orchestration.script_map import outline as _outline
@@ -56,8 +56,23 @@ def register_misc(
     _black_search_stop,
     _register_candidate,
     selected_authority=None,
+    attempt_guard=None,
 ):
+    def publication_binding() -> str:
+        if attempt_guard is not None:
+            return f"work-unit-attempt:{attempt_guard.claim.claim_id}"
+        if selected_authority is not None:
+            token = selected_authority.selection_token.to_dict()
+            return "selected-authority:" + json.dumps(
+                token,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return f"unbound-tool:{Path(shot_dir).absolute() if shot_dir else 'no-shot'}"
+
     def publish(operation, mutation):
+        if attempt_guard is not None:
+            return attempt_guard.publish(operation, mutation)
         if selected_authority is None:
             return mutation()
         return commit_selected_authority(
@@ -66,6 +81,29 @@ def register_misc(
             operation=operation,
             mutation=mutation,
         )
+
+    def prepare_and_publish(operation, prepare):
+        binding = publication_binding()
+        if attempt_guard is not None:
+            attempt_guard.check(f"start {operation} preparation")
+        update = prepare(binding)
+        publication = update.publication
+        if publication is None:
+            if attempt_guard is not None:
+                attempt_guard.check(f"finish {operation} no-op")
+            return update.result
+        try:
+            publish(
+                operation,
+                lambda: prepared_publication.commit_prepared_file(
+                    publication,
+                    authority_binding=binding,
+                ),
+            )
+        except BaseException:
+            prepared_publication.discard_prepared_file(publication)
+            raise
+        return update.result
 
     @tool(
         "script_map",
@@ -121,22 +159,38 @@ def register_misc(
     async def ask_supervisor(args):
         if not shot_dir:
             return {"content": [{"type": "text", "text": "no shot folder — cannot ask"}]}
-        def ask():
-            return _ask(
-                shot_dir,
-                layer=layer_id or "?",
-                question=args["question"],
-                assumption=args["assumption"],
-                why_it_matters=args.get("why_it_matters", ""),
-                affected_layers=args.get("affected_layers") or [],
-                affected_axes=args.get("affected_axes") or [],
-                global_decision=bool(args.get("global_decision")),
-            )
 
-        qid = publish(
-            f"record builder question for layer {layer_id}",
-            ask,
+        binding = publication_binding()
+        if attempt_guard is not None:
+            attempt_guard.check("start builder question preparation")
+        prepared = escalate.prepare_question(
+            shot_dir,
+            layer=layer_id or "?",
+            question=args["question"],
+            assumption=args["assumption"],
+            why_it_matters=args.get("why_it_matters", ""),
+            affected_layers=args.get("affected_layers") or [],
+            affected_axes=args.get("affected_axes") or [],
+            global_decision=bool(args.get("global_decision")),
+            authority_binding=binding,
         )
+        try:
+            publication = prepared.update.publication
+            if publication is None:
+                if attempt_guard is not None:
+                    attempt_guard.check("finish duplicate builder question lookup")
+            else:
+                publish(
+                    f"record builder question for layer {layer_id}",
+                    lambda: prepared_publication.commit_prepared_file(
+                        publication,
+                        authority_binding=binding,
+                    ),
+                )
+        except BaseException:
+            escalate.discard_prepared_question(prepared)
+            raise
+        qid = escalate.log_committed_question(prepared)
         return {
             "content": [
                 {
@@ -176,30 +230,54 @@ def register_misc(
                 is_error=True,
             )
 
-        try:
-            wl, state = load_unit_worklist(
-                shot_dir,
-                layer_id=layer_part,
-                unit_id=active_unit_id,
-                unit_hash=active_unit_hash,
-            )
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            return _text(f"worklist refused: {exc}", is_error=True)
-        if args.get("items"):
-            # A new attempt may restate its tickets, but it cannot erase an unresolved
-            # item discovered by the previous attempt.  Carry those forward until they
-            # are explicitly completed; this is the durable feedback loop across both
-            # context compaction and full process restarts.
-            _merge_worklist_items(state, list(args["items"]))
-        for d in args.get("done", []):
-            if d not in state["done"]:
-                state["done"].append(d)
-        if args.get("note"):
-            state["notes"].append(args["note"])
-        publish(
-            f"write unit {layer_part}.{active_unit_id} worklist",
-            lambda: write_unit_worklist(wl, state),
+        mutation_requested = any(
+            args.get(field) for field in ("items", "done", "note")
         )
+        if not mutation_requested:
+            try:
+                if attempt_guard is not None:
+                    attempt_guard.check(
+                        f"start unit {layer_part}.{active_unit_id} worklist read"
+                    )
+                _worklist_path, state = worklists.load_unit_worklist(
+                    shot_dir,
+                    layer_id=layer_part,
+                    unit_id=active_unit_id,
+                    unit_hash=active_unit_hash,
+                )
+                if attempt_guard is not None:
+                    attempt_guard.check(
+                        f"finish unit {layer_part}.{active_unit_id} worklist read"
+                    )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                return _text(f"worklist refused: {exc}", is_error=True)
+        else:
+            def update_worklist(current):
+                if args.get("items"):
+                    # A new attempt may restate its tickets, but it cannot erase an
+                    # unresolved item discovered by the previous attempt. Carry those
+                    # forward until explicitly completed.
+                    _merge_worklist_items(current, list(args["items"]))
+                for done_item in args.get("done", []):
+                    if done_item not in current["done"]:
+                        current["done"].append(done_item)
+                if args.get("note"):
+                    current["notes"].append(args["note"])
+
+            try:
+                state = prepare_and_publish(
+                    f"write unit {layer_part}.{active_unit_id} worklist",
+                    lambda binding: worklists.prepare_unit_worklist_update(
+                        shot_dir,
+                        layer_id=layer_part,
+                        unit_id=active_unit_id,
+                        unit_hash=active_unit_hash,
+                        update=update_worklist,
+                        authority_binding=binding,
+                    ),
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                return _text(f"worklist refused: {exc}", is_error=True)
         left = [i for i in state["items"] if i not in state["done"]]
         body = (
             "\n".join(f"  [x] {i}" for i in state["items"] if i in state["done"])
@@ -568,15 +646,13 @@ def register_misc(
             else:
                 lines.append(f"  REJECTED {cid:10} {v.reasons[0][:120]}")
         if kept:
-            spec = root / "runtime_checks.json"
-            cur = json.loads(spec.read_text()) if spec.is_file() else []
-            replacement_keys = {(row.get("layer"), row.get("id")) for row in kept}
-            cur = [row for row in cur if (row.get("layer"), row.get("id")) not in replacement_keys]
-            cur.extend(kept)
-
-            publish(
+            prepare_and_publish(
                 f"publish layer {layer_id} runtime image checks",
-                lambda: atomic_write(spec, json.dumps(cur, indent=1) + "\n"),
+                lambda binding: runtime_check_publication.prepare_runtime_check_update(
+                    root,
+                    kept,
+                    authority_binding=binding,
+                ),
             )
         _refresh_unpaid_image_debts(
             comparison_state,

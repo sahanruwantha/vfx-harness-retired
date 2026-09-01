@@ -194,6 +194,48 @@ def test_optional_pointer_read_refuses_paths_outside_the_shot(tmp_path: Path) ->
         read_optional_pointer_bytes(tmp_path, tmp_path.parent / "current.json")
 
 
+def test_optional_pointer_read_rejects_symlinked_shot_ancestor(tmp_path: Path) -> None:
+    real_shot = tmp_path / "real-shot"
+    (real_shot / "plans").mkdir(parents=True)
+    (real_shot / "plans" / "current.json").write_bytes(b"selected")
+    linked_shot = tmp_path / "linked-shot"
+    linked_shot.symlink_to(real_shot, target_is_directory=True)
+
+    with pytest.raises(AuthoritySelectionConflict, match="ancestors must be"):
+        read_optional_pointer_bytes(linked_shot, "plans/current.json")
+
+
+def test_optional_pointer_read_refuses_mid_read_parent_rebind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    pointer = plans / "current.json"
+    pointer.write_bytes(b"selected")
+    retired = tmp_path / "plans-retired"
+    original_read = selection_tx.os.read
+    rebound = False
+
+    def read_after_rebind(descriptor: int, size: int) -> bytes:
+        nonlocal rebound
+        chunk = original_read(descriptor, size)
+        if not rebound:
+            rebound = True
+            plans.rename(retired)
+            plans.mkdir()
+            (plans / "current.json").write_bytes(b"replacement")
+        return chunk
+
+    monkeypatch.setattr(selection_tx.os, "read", read_after_rebind)
+
+    with pytest.raises(AuthoritySelectionConflict, match="changed while it was read"):
+        read_optional_pointer_bytes(tmp_path, "plans/current.json")
+
+    assert pointer.read_bytes() == b"replacement"
+    assert (retired / "current.json").read_bytes() == b"selected"
+
+
 def test_selection_lock_is_permanent_regular_and_reuses_one_inode(tmp_path: Path) -> None:
     with authority_selection_lock(tmp_path, exclusive=True) as lock_path:
         assert lock_path == tmp_path / AUTHORITY_SELECTION_LOCK
@@ -205,6 +247,34 @@ def test_selection_lock_is_permanent_regular_and_reuses_one_inode(tmp_path: Path
         assert lock_path.stat().st_ino == inode
 
     assert (tmp_path / AUTHORITY_SELECTION_LOCK).stat().st_ino == inode
+
+
+def test_selection_lock_refuses_parent_rename_recreate_split(tmp_path: Path) -> None:
+    parent = tmp_path / AUTHORITY_SELECTION_LOCK.parent
+    parent.mkdir(parents=True)
+    retired = parent.with_name("authority-selection-retired")
+    entered = threading.Event()
+    errors: list[BaseException] = []
+
+    with authority_selection_lock(tmp_path, exclusive=True):
+        parent.rename(retired)
+        parent.mkdir()
+
+        def contend() -> None:
+            try:
+                with authority_selection_lock(tmp_path, exclusive=True):
+                    entered.set()
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        contender = threading.Thread(target=contend)
+        contender.start()
+        contender.join(timeout=2)
+        assert not contender.is_alive()
+
+    assert entered.is_set() is False
+    assert len(errors) == 1
+    assert "another filesystem inode" in str(errors[0])
 
 
 def test_exclusive_selection_lock_blocks_a_shared_reader(tmp_path: Path) -> None:
@@ -448,6 +518,73 @@ def test_failed_replace_preserves_target_and_cleans_unique_temporary(
         durable_replace_pointer_bytes(tmp_path, pointer, b"new")
 
     assert pointer.read_bytes() == b"old"
+    assert list(plans.glob(".current.json.tmp-*")) == []
+
+
+def test_durable_replacement_refuses_prepared_name_substitution_without_deleting_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    pointer = plans / "current.json"
+    pointer.write_bytes(b"old")
+    real_fsync = selection_tx.os.fsync
+    injected = False
+
+    def substitute_after_file_flush(descriptor: int) -> None:
+        nonlocal injected
+        real_fsync(descriptor)
+        if injected or not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return
+        temporary = next(plans.glob(".current.json.tmp-*"))
+        substitute = plans / "substitute"
+        substitute.write_bytes(b"attacker")
+        os.replace(substitute, temporary)
+        injected = True
+
+    monkeypatch.setattr(selection_tx.os, "fsync", substitute_after_file_flush)
+
+    with pytest.raises(AuthoritySelectionConflict, match="changed before publication"):
+        durable_replace_pointer_bytes(tmp_path, pointer, b"new")
+
+    assert pointer.read_bytes() == b"old"
+    leftovers = list(plans.glob(".current.json.tmp-*"))
+    assert len(leftovers) == 1
+    assert leftovers[0].read_bytes() == b"attacker"
+
+
+def test_durable_replacement_refuses_post_rename_substitution_without_deleting_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    pointer = plans / "current.json"
+    pointer.write_bytes(b"old")
+    attacker = plans / "attacker"
+    attacker.write_bytes(b"attacker")
+    real_replace = selection_tx.os.replace
+    injected = False
+
+    def substitute_after_replace(source, target, *args, **kwargs) -> None:
+        nonlocal injected
+        real_replace(source, target, *args, **kwargs)
+        if not injected and target == pointer.name:
+            injected = True
+            real_replace(
+                attacker.name,
+                target,
+                src_dir_fd=kwargs["dst_dir_fd"],
+                dst_dir_fd=kwargs["dst_dir_fd"],
+            )
+
+    monkeypatch.setattr(selection_tx.os, "replace", substitute_after_replace)
+
+    with pytest.raises(AuthoritySelectionConflict, match="changed during publication"):
+        durable_replace_pointer_bytes(tmp_path, pointer, b"new")
+
+    assert pointer.read_bytes() == b"attacker"
     assert list(plans.glob(".current.json.tmp-*")) == []
 
 

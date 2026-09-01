@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
+from tests.layer_outcome_fixtures import write_test_layer_outcome
 from vfx_harness.agents.builder import verify
 from vfx_harness.domain.layer_outcomes import OUTCOME_SCHEMA
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import revalidation
-from vfx_harness.orchestration.layer_plans import write_layer_outcome
 from vfx_harness.orchestration.ledger import Milestone
 from vfx_harness.orchestration.revalidation import eligibility
 
@@ -159,7 +159,7 @@ def _sealed_outcome(
         "input_manifest",
         lambda *_args, **_kwargs: manifest,
     )
-    outcome_path = write_layer_outcome(
+    outcome_path = write_test_layer_outcome(
         root,
         layer,
         status="passed",

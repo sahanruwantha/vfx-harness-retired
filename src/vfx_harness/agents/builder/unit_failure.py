@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from functools import partial
+from typing import TYPE_CHECKING
 
 from vfx_harness.agents.builder.falsify import (
     _record_bound_contract_falsification,
@@ -12,8 +11,15 @@ from vfx_harness.agents.builder.falsify import (
 )
 from vfx_harness.agents.builder.models import BuildAuthorityDefect
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration.unit_state import block_dependents, transition
+from vfx_harness.orchestration.hypothesis_falsification_projection import (
+    FalsificationProjectionPending,
+)
+from vfx_harness.orchestration.unit_state import block_dependents
 from vfx_harness.orchestration.unit_state import load as load_unit_state
+from vfx_harness.orchestration.unit_state_claims import fail_unit_attempt
+
+if TYPE_CHECKING:
+    from vfx_harness.domain.unit_attempts import UnitAttemptClaim
 
 
 def handle_unpassed_unit(
@@ -24,41 +30,49 @@ def handle_unpassed_unit(
     ledger,
     unit_status: str,
     *,
+    attempt: UnitAttemptClaim,
     selected_authority,
-    publish: Callable,
+    publish_external,
 ) -> None:
     """Publish only the typed failure state authorized by the terminal unit outcome."""
 
     def mark_failed(reason: str, metadata: dict | None = None) -> None:
-        publish(
-            f"mark unit {layer.id}.{unit.id} failed",
-            partial(
-                transition,
-                shot.folder,
-                str(layer.id),
-                unit.id,
-                "failed",
-                reason=reason,
-                metadata=metadata,
-            ),
+        # Exact-attempt state transactions acquire selection SH -> unit state EX
+        # themselves.  Wrapping one in UnitAttemptGuard.publish would hold state SH
+        # and attempt an illegal SH -> EX upgrade.
+        fail_unit_attempt(
+            shot.folder,
+            str(layer.id),
+            unit.id,
+            layer.stages,
+            attempt,
+            expected_plan_hash=attempt.plan_hash,
+            selection_token=selected_authority.selection_token,
+            reason=reason,
+            evidence=[f"builder-outcome:{unit_status}"],
+            metadata=metadata,
         )
 
     finding = None
     if unit_status == "contract_gap":
         try:
-            finding = publish(
-                f"record unit {layer.id}.{unit.id} contract falsification",
-                partial(
-                    _record_contract_gap_falsification,
-                    shot,
-                    layer,
-                    unit,
-                    selected_authority=selected_authority,
-                ),
+            finding = _record_contract_gap_falsification(
+                shot,
+                layer,
+                unit,
+                attempt=attempt,
+                selected_authority=selected_authority,
             )
             log(
                 "plan hypothesis falsified by executable evidence → "
                 f"{finding['record_id']} (transactional replan required)",
+                1,
+            )
+        except FalsificationProjectionPending as pending:
+            finding = pending.payload
+            log(
+                "plan hypothesis falsification committed; its optional JSON "
+                f"projection will be reconciled from state → {pending.record_id}",
                 1,
             )
         except (OSError, ValueError, KeyError) as exc:
@@ -69,14 +83,14 @@ def handle_unpassed_unit(
             unit_status = "failed_unrecorded_plan_finding"
     elif unit_status == "failed":
         try:
-            finding = publish(
-                f"record unit {layer.id}.{unit.id} executable falsification",
-                lambda: _record_unsatisfiable_pair_falsification(
+            finding = (
+                _record_unsatisfiable_pair_falsification(
                     shot,
                     layer,
                     unit,
                     milestone,
                     ledger,
+                    attempt=attempt,
                     selected_authority=selected_authority,
                 )
                 or _record_bound_contract_falsification(
@@ -85,8 +99,16 @@ def handle_unpassed_unit(
                     unit,
                     milestone,
                     ledger,
+                    attempt=attempt,
                     selected_authority=selected_authority,
-                ),
+                )
+            )
+        except FalsificationProjectionPending as pending:
+            finding = pending.payload
+            log(
+                "plan hypothesis falsification committed; its optional JSON "
+                f"projection will be reconciled from state → {pending.record_id}",
+                1,
             )
         except (OSError, ValueError, KeyError) as exc:
             mark_failed(
@@ -106,10 +128,9 @@ def handle_unpassed_unit(
     else:
         mark_failed(unit_status)
 
-    publish(
+    publish_external(
         f"block dependants of unit {layer.id}.{unit.id}",
-        partial(
-            block_dependents,
+        lambda: block_dependents(
             shot.folder,
             str(layer.id),
             unit.id,

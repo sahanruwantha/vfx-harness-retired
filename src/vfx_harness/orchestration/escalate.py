@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vfx_harness.observability import prepared_publication
 from vfx_harness.observability.log import log
 
 QUESTIONS = "questions.jsonl"
@@ -34,66 +36,185 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def ask(shot_folder: str | Path, *, layer: str, question: str, assumption: str,
-        why_it_matters: str = "", affected_layers: list[str] | None = None,
-        affected_axes: list[str] | None = None, global_decision: bool = False) -> int:
-    """Record a question, keep working on `assumption`. Returns the question id."""
+@dataclass(frozen=True, slots=True)
+class PreparedQuestion:
+    """One append-only question row staged as a complete CAS replacement."""
+
+    update: prepared_publication.PreparedFileUpdate[tuple[int, bool]]
+    question: str
+    assumption: str
+
+
+def _append_record(raw: bytes | None, record: dict) -> bytes:
+    prefix = raw or b""
+    if prefix and not prefix.endswith(b"\n"):
+        prefix += b"\n"
+    return prefix + json.dumps(record).encode("utf-8") + b"\n"
+
+
+def _load_bytes(raw: bytes | None, path: Path) -> list[dict]:
+    if raw is None:
+        return []
+    out = []
+    for n, line in enumerate(raw.decode("utf-8").splitlines(), 1):
+        if line.strip():
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                # Preserve the existing operator-visible behavior.  The prepared
+                # replacement keeps every original byte even when one legacy row is
+                # unreadable; this parser never silently rewrites the event stream.
+                log(
+                    f"! {path.name}:{n} is not valid JSON and was SKIPPED ({exc}); "
+                    "a question or answer may be missing"
+                )
+    merged: dict[int, dict] = {}
+    for question in out:
+        merged[question["id"]] = {
+            **merged.get(question["id"], {}),
+            **question,
+        }
+    return [merged[key] for key in sorted(merged)]
+
+
+def prepare_question(
+    shot_folder: str | Path,
+    *,
+    layer: str,
+    question: str,
+    assumption: str,
+    why_it_matters: str = "",
+    affected_layers: list[str] | None = None,
+    affected_axes: list[str] | None = None,
+    global_decision: bool = False,
+    authority_binding: str,
+) -> PreparedQuestion:
+    """Prepare one logical append without holding selected/unit-state locks."""
+
     folder = Path(shot_folder)
     path = folder / QUESTIONS
-    existing = load(folder)
-    # don't re-ask the same thing every round
-    for q in existing:
-        if q["question"].strip().lower() == question.strip().lower():
-            return q["id"]
     affected_layers = sorted({str(value) for value in (affected_layers or []) if str(value)})
     affected_axes = sorted({str(value) for value in (affected_axes or []) if str(value)})
     if not global_decision and not affected_layers and not affected_axes:
         raise ValueError(
             "question must declare affected_layers, affected_axes, or global_decision=true"
         )
-    qid = (max((q["id"] for q in existing), default=0)) + 1
-    rec = {"id": qid, "layer": layer, "question": question.strip(),
-           "assumption": assumption.strip(), "why": why_it_matters.strip(),
-           "affected_layers": affected_layers, "affected_axes": affected_axes,
-           "global_decision": bool(global_decision),
-           "asked": _now(), "answer": None}
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(rec) + "\n")
-    log(f"❓ Q{qid} for the supervisor: {question.strip()[:100]}", 1)
-    log(f"   proceeding on: {assumption.strip()[:100]}", 1)
+
+    def build(raw: bytes | None) -> tuple[bytes | None, tuple[int, bool]]:
+        existing = _load_bytes(raw, path)
+        normalized = question.strip().lower()
+        for row in existing:
+            if row["question"].strip().lower() == normalized:
+                return None, (int(row["id"]), False)
+        qid = (max((row["id"] for row in existing), default=0)) + 1
+        record = {
+            "id": qid,
+            "layer": layer,
+            "question": question.strip(),
+            "assumption": assumption.strip(),
+            "why": why_it_matters.strip(),
+            "affected_layers": affected_layers,
+            "affected_axes": affected_axes,
+            "global_decision": bool(global_decision),
+            "asked": _now(),
+            "answer": None,
+        }
+        return _append_record(raw, record), (qid, True)
+
+    update = prepared_publication.prepare_file_update(
+        folder,
+        path,
+        build,
+        authority_binding=authority_binding,
+    )
+    return PreparedQuestion(
+        update=update,
+        question=question.strip(),
+        assumption=assumption.strip(),
+    )
+
+
+def commit_prepared_question(
+    prepared: PreparedQuestion,
+    *,
+    authority_binding: str,
+) -> int:
+    """Publish one prepared question and emit logs only after its CAS succeeds."""
+
+    if prepared.update.publication is not None:
+        prepared_publication.commit_prepared_file(
+            prepared.update.publication,
+            authority_binding=authority_binding,
+        )
+    return log_committed_question(prepared)
+
+
+def log_committed_question(prepared: PreparedQuestion) -> int:
+    """Emit operator diagnostics after the prepared metadata commit is released."""
+
+    qid, created = prepared.update.result
+    if created:
+        log(f"❓ Q{qid} for the supervisor: {prepared.question[:100]}", 1)
+        log(f"   proceeding on: {prepared.assumption[:100]}", 1)
     return qid
+
+
+def discard_prepared_question(prepared: PreparedQuestion) -> None:
+    prepared_publication.discard_prepared_file(prepared.update.publication)
+
+
+def ask(shot_folder: str | Path, *, layer: str, question: str, assumption: str,
+        why_it_matters: str = "", affected_layers: list[str] | None = None,
+        affected_axes: list[str] | None = None, global_decision: bool = False) -> int:
+    """Record a question through one prepared append-only CAS transaction."""
+
+    prepared = prepare_question(
+        shot_folder,
+        layer=layer,
+        question=question,
+        assumption=assumption,
+        why_it_matters=why_it_matters,
+        affected_layers=affected_layers,
+        affected_axes=affected_axes,
+        global_decision=global_decision,
+        authority_binding="supervisor-question",
+    )
+    try:
+        return commit_prepared_question(
+            prepared,
+            authority_binding="supervisor-question",
+        )
+    except BaseException:
+        discard_prepared_question(prepared)
+        raise
 
 
 def load(shot_folder: str | Path) -> list[dict]:
     path = Path(shot_folder) / QUESTIONS
     if not path.is_file():
         return []
-    out = []
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if line.strip():
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError as e:
-                # A dropped line here can be an ANSWER, and an answer that vanishes turns
-                # a settled question back into an unanswered one that blocks the build —
-                # or, worse, silently reverts to the assumption.
-                log(f"! {path.name}:{n} is not valid JSON and was SKIPPED ({e}); "
-                    f"a question or answer may be missing")
-    # later records for the same id win (that is how an answer lands)
-    merged: dict[int, dict] = {}
-    for q in out:
-        merged[q["id"]] = {**merged.get(q["id"], {}), **q}
-    return [merged[k] for k in sorted(merged)]
+    return _load_bytes(path.read_bytes(), path)
 
 
 def answer(shot_folder: str | Path, qid: int, text: str) -> bool:
     folder = Path(shot_folder)
-    qs = {q["id"]: q for q in load(folder)}
-    if qid not in qs:
+    path = folder / QUESTIONS
+
+    def build(raw: bytes | None) -> tuple[bytes | None, bool]:
+        questions = {row["id"]: row for row in _load_bytes(raw, path)}
+        if qid not in questions:
+            return None, False
+        record = {"id": qid, "answer": text.strip(), "answered": _now()}
+        return _append_record(raw, record), True
+
+    answered = prepared_publication.publish_file_update(
+        folder,
+        path,
+        build,
+        authority_binding="supervisor-answer",
+    )
+    if not answered:
         return False
-    with (folder / QUESTIONS).open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"id": qid, "answer": text.strip(),
-                             "answered": _now()}) + "\n")
     _rewrite_answers(folder)
     return True
 

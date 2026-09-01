@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from tests.layer_outcome_fixtures import write_test_layer_outcome
 from vfx_harness.agents.planner import _materialization_kickoff
 from vfx_harness.agents.planner import kickoff as kickoff_runtime
 from vfx_harness.agents.prompts import layer_user_prompt
 from vfx_harness.agents.unit_scope import compile_predecessor_interface
 from vfx_harness.orchestration import revalidation
-from vfx_harness.orchestration.layer_plans import write_layer_outcome
 
 
 def _write(path, value) -> None:
@@ -80,7 +80,7 @@ def test_materialization_kickoff_compiles_layer_bounded_authority(
         "input_manifest",
         lambda *_args, **_kwargs: {"complete": "bounded-context"},
     )
-    outcome_path = write_layer_outcome(
+    outcome_path = write_test_layer_outcome(
         tmp_path,
         predecessor,
         status="passed",

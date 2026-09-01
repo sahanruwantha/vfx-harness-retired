@@ -104,8 +104,8 @@ def test_artifact_replay_publishes_fresh_state_before_each_successor(tmp_path) -
         def __init__(self):
             self.calls = []
 
-        def run(self, code, *, journal=True):
-            self.calls.append((code, journal))
+        def run(self, code, *, journal=True, execution_policy=None):
+            self.calls.append((code, journal, execution_policy))
             return {"result": "ok"}
 
     first = tmp_path / "first.py"
@@ -116,24 +116,24 @@ def test_artifact_replay_publishes_fresh_state_before_each_successor(tmp_path) -
 
     assert _run_prior_paths(session, [first, second]) == ["first.py", "second.py"]
     assert session.calls == [
-        ("FIRST = True\n", True),
-        (_ARTIFACT_EVALUATION_BARRIER, False),
-        ("SECOND = True\n", True),
-        (_ARTIFACT_EVALUATION_BARRIER, False),
+        ("FIRST = True\n", True, "artifact"),
+        (_ARTIFACT_EVALUATION_BARRIER, False, None),
+        ("SECOND = True\n", True, "artifact"),
+        (_ARTIFACT_EVALUATION_BARRIER, False, None),
     ]
 
     candidate = Session()
     assert _run_artifact_script(candidate, first, journal=False) == {"result": "ok"}
     assert candidate.calls == [
-        ("FIRST = True\n", False),
-        (_ARTIFACT_EVALUATION_BARRIER, False),
+        ("FIRST = True\n", False, "artifact"),
+        (_ARTIFACT_EVALUATION_BARRIER, False, None),
     ]
     assert "_run_artifact_script(verify, Path(prior), journal=False)" in inspect.getsource(
         builder._build_probe_candidate_server
     )
-    assert "_run_artifact_script(session, script_path)" in inspect.getsource(
-        builder._verify_script
-    )
+    verify_source = inspect.getsource(builder._verify_script)
+    assert "_prepare_artifact_replay_inputs" in verify_source
+    assert "prepared_replay[-1]" in verify_source
 
     composed = _compose_unit_artifact_source(
         [

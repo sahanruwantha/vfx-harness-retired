@@ -41,14 +41,20 @@ from vfx_harness.orchestration.authority_selection import (
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
+from vfx_harness.orchestration.hypothesis_falsification_projection import (
+    FalsificationProjectionPending,
+)
 from vfx_harness.orchestration.ledger import Layer
 from vfx_harness.orchestration.unit_state import (
-    STATE_DIR,
     initialize,
     record_hypothesis_falsification,
-    transition,
 )
 from vfx_harness.orchestration.unit_state import load as load_unit_state
+from vfx_harness.orchestration.unit_state_claims import (
+    claim_ready_unit_for_build,
+    claim_ready_unit_for_planning,
+)
+from vfx_harness.orchestration.unit_state_lock import STATE_DIR
 
 
 def _sha256(path: Path) -> str:
@@ -122,8 +128,30 @@ def _fixture(
     evidence.write_text('{"id":"bbox-f36","pass":false}\n', encoding="utf-8")
 
     initialize(tmp_path, "1", (unit,), plan_hash=plan_hash)
-    transition(tmp_path, "1", unit.id, "planning", reason="ready")
-    transition(tmp_path, "1", unit.id, "building", reason="started")
+    state_token = AuthoritySelectionToken(0, None, 0, None)
+    planning_claim = claim_ready_unit_for_planning(
+        tmp_path,
+        "1",
+        unit.id,
+        (unit,),
+        expected_plan_hash=plan_hash,
+        eligible_passed=set(),
+        run_id="builder-stop-fixture",
+        selection_token=state_token,
+        reason="fixture planning claim",
+    )
+    build_claim = claim_ready_unit_for_build(
+        tmp_path,
+        "1",
+        unit.id,
+        (unit,),
+        planning_claim,
+        expected_plan_hash=plan_hash,
+        eligible_passed=set(),
+        run_id="builder-stop-fixture",
+        selection_token=state_token,
+        reason="fixture build claim",
+    )
     bundle_digest = hashlib.sha256(b"selected bundle").hexdigest()
     finding = record_hypothesis_falsification(
         tmp_path,
@@ -151,6 +179,8 @@ def _fixture(
             "controls": ["camera_spine"],
         },
         evidence=["evidence/failed-contract.json"],
+        attempt=build_claim,
+        selection_token=state_token,
     )
 
     bundle = SimpleNamespace(content_hash=bundle_digest)
@@ -235,7 +265,6 @@ def test_exact_current_falsification_compiles_one_amendment_action(
     assert evidence_ref.record_schema == (
         "vfx-harness.builder-authority-stop-evidence/v1"
     )
-
     action = envelope.actions[0]
     assert isinstance(action.target, PublishValidatedAmendmentTarget)
     target = action.target
@@ -327,6 +356,29 @@ def test_exact_current_falsification_compiles_one_amendment_action(
     )
     assert composition.stage == "composition"
     assert composition.cause_fingerprint == envelope.cause_fingerprint
+
+
+def test_stop_compiler_reconciles_missing_falsification_projection_from_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot, layout, finding, _unit_record = _fixture(tmp_path, monkeypatch)
+    projection = (
+        tmp_path
+        / STATE_DIR
+        / "hypothesis-falsifications"
+        / f"{finding['record_id']}.json"
+    )
+    projection.unlink()
+
+    envelope = builder_stops.compile_hypothesis_falsification_stop(
+        shot,
+        layout,
+        finding,
+    )
+
+    assert envelope.stop_class == "authority_defect"
+    assert json.loads(projection.read_text(encoding="utf-8")) == finding
 
 
 def test_hard_constraint_falsification_requires_a_typed_human_decision(
@@ -547,7 +599,11 @@ def test_layer_runtime_carries_only_a_sealed_falsification_to_public_boundary(
         def status(_milestone) -> str:
             return "contract_gap"
 
+    events: list[str] = []
+    selected_publications: list[str] = []
+
     async def build_unit(*_args, **_kwargs):
+        events.append("build")
         return _Ledger()
 
     monkeypatch.setattr(builder_layer, "active_plan_hash", lambda _folder: finding["identities"]["plan_hash"])
@@ -558,14 +614,57 @@ def test_layer_runtime_carries_only_a_sealed_falsification_to_public_boundary(
     monkeypatch.setattr(builder_layer, "plan_strips", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(builder_layer, "ready_from_durable_state", lambda *_args, **_kwargs: (unit,))
     monkeypatch.setattr(builder_layer, "require_due_clear", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        builder_layer,
+        "commit_selected_authority",
+        lambda _folder, _selected, *, operation, mutation: (
+            selected_publications.append(operation),
+            mutation(),
+        )[1],
+    )
     monkeypatch.setattr(builder_layer, "transition", lambda *_args, **_kwargs: None)
+    planning_claim = SimpleNamespace(phase="planning")
+    building_claim = SimpleNamespace(phase="building")
+
+    class _Guard:
+        claim = planning_claim
+
+        def check(self, _operation):
+            return self.claim
+
+        def publish(self, _operation, mutation):
+            return mutation()
+
+        def promoted(self, claim):
+            self.claim = claim
+            return self
+
+    monkeypatch.setattr(
+        builder_layer.UnitAttemptGuard,
+        "bind",
+        lambda *_args, **_kwargs: _Guard(),
+    )
+    monkeypatch.setattr(
+        builder_layer,
+        "claim_ready_unit_for_planning",
+        lambda *_args, **_kwargs: events.append("claim-planning") or planning_claim,
+    )
+    monkeypatch.setattr(
+        builder_layer,
+        "claim_ready_unit_for_build",
+        lambda *_args, **_kwargs: events.append("claim-building") or building_claim,
+    )
     monkeypatch.setattr(
         builder_unit_failure,
         "block_dependents",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(builder_layer, "work_unit_plan_path", lambda *_args, **_kwargs: unit_plan)
-    monkeypatch.setattr(builder_layer, "validate_work_unit_plan_authority", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        builder_layer,
+        "validate_work_unit_plan_authority",
+        lambda *_args, **_kwargs: events.append("validate-plan"),
+    )
     monkeypatch.setattr(builder_layer, "_plan_layer_excerpt", lambda *_args, **_kwargs: "unit plan")
     monkeypatch.setattr(builder_layer, "load_milestones", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(builder_layer, "write_layer_context", lambda *_args, **_kwargs: context)
@@ -574,10 +673,20 @@ def test_layer_runtime_carries_only_a_sealed_falsification_to_public_boundary(
         "builder_package",
         lambda: SimpleNamespace(build_unit=build_unit),
     )
+    def projection_pending(*_args, **_kwargs):
+        raise FalsificationProjectionPending(finding)
+
     monkeypatch.setattr(
         builder_unit_failure,
         "_record_contract_gap_falsification",
-        lambda *_args, **_kwargs: finding,
+        projection_pending,
+    )
+    monkeypatch.setattr(
+        builder_unit_failure,
+        "fail_unit_attempt",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a committed falsification must not fail its archived attempt"
+        ),
     )
 
     async def run() -> None:
@@ -588,6 +697,55 @@ def test_layer_runtime_carries_only_a_sealed_falsification_to_public_boundary(
         assert caught.value.exit_code == 7
 
     anyio.run(run)
+    assert events == ["claim-planning", "validate-plan", "claim-building", "build"]
+    assert selected_publications == [
+        "initialize builder state for layer 1",
+        "block dependants of unit 1.proxy",
+    ]
+    assert not any(
+        operation.startswith(("claim unit ", "promote unit "))
+        for operation in selected_publications
+    )
+
+
+def test_build_layer_refuses_unbound_legacy_resume_before_fence_or_spend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    touched: list[str] = []
+
+    def unexpected_fence(*_args, **_kwargs):
+        touched.append("fence")
+        raise AssertionError("resume reached the execution fence")
+
+    def unexpected_claim(*_args, **_kwargs):
+        touched.append("claim")
+        raise AssertionError("resume reached a work-unit claim")
+
+    monkeypatch.setattr(builder_layer, "builder_execution_fence", unexpected_fence)
+    monkeypatch.setattr(
+        builder_layer,
+        "claim_ready_unit_for_planning",
+        unexpected_claim,
+    )
+    monkeypatch.setattr(
+        builder_layer,
+        "builder_package",
+        lambda: touched.append("builder") or SimpleNamespace(),
+    )
+
+    async def run() -> None:
+        with pytest.raises(ValueError, match="not bound to an exact work-unit attempt"):
+            await builder_layer.build_layer(
+                SimpleNamespace(folder=tmp_path),
+                layer=None,
+                session=None,
+                resume_ok=True,
+            )
+
+    anyio.run(run)
+    assert touched == []
+    assert not (tmp_path / "state/builder-execution/fence.lock").exists()
 
 
 def test_unclassified_builder_exception_preserves_in_flight_unit_state(
@@ -601,8 +759,6 @@ def test_unclassified_builder_exception_preserves_in_flight_unit_state(
     unit_plan.parent.mkdir(parents=True, exist_ok=True)
     unit_plan.write_text("# exact gated unit plan\n", encoding="utf-8")
     initialize(tmp_path, "1", (unit,), plan_hash="0" * 64)
-    transition(tmp_path, "1", unit.id, "planning", reason="ready")
-    transition(tmp_path, "1", unit.id, "building", reason="started")
     layer = Layer(
         id="1",
         script=unit.mutates.script_spans[0],
@@ -651,6 +807,7 @@ def test_unclassified_builder_exception_preserves_in_flight_unit_state(
 
     state = load_unit_state(tmp_path, "1")
     assert state["units"][unit.id]["status"] == "building"
+    assert state["units"][unit.id]["active_attempt"]["phase"] == "building"
     assert blocked == []
 
 
@@ -704,8 +861,21 @@ def test_composition_runtime_preserves_outcome_then_carries_sealed_finding(
     monkeypatch.setattr(
         builder_layer,
         "load_unit_state",
-        lambda *_args: {"units": {unit.id: {"status": "passed"}}},
+        lambda *_args: {
+            "units": {
+                unit.id: {
+                    "status": "passed",
+                    "completion_receipt": {"fixture": True},
+                }
+            }
+        },
     )
+    monkeypatch.setattr(
+        builder_layer.UnitCompletionReceipt,
+        "parse",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(builder_layer, "resolve_completed_unit", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(builder_layer, "load_layers", lambda *_args, **_kwargs: {"1": layer})
     monkeypatch.setattr(builder_layer, "plan_strips", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(builder_layer, "Ledger", _Ledger)
@@ -726,7 +896,11 @@ def test_composition_runtime_preserves_outcome_then_carries_sealed_finding(
         "_record_composed_contract_gap_falsification",
         lambda *_args, **_kwargs: finding,
     )
-    monkeypatch.setattr(builder_layer, "write_layer_outcome", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        builder_layer,
+        "publish_composed_layer_outcome",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(builder_layer, "_blender_version", lambda _session: "test")
     monkeypatch.setattr(builder_layer.costlog, "bind", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(builder_layer.costlog, "unbind", lambda: None)

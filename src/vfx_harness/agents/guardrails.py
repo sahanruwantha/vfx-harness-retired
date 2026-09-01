@@ -891,6 +891,21 @@ def bounded_unit_context_guard(
     return HookMatcher(matcher=None, hooks=[_check])
 
 
+def work_unit_attempt_hook(attempt_guard: Any) -> HookMatcher:
+    """Abort a tool boundary after the exact durable unit claim is revoked."""
+
+    async def _check(inp, tool_use_id, ctx):
+        tool = (
+            inp.get("tool_name", "")
+            if isinstance(inp, dict)
+            else getattr(inp, "tool_name", "")
+        )
+        attempt_guard.check(f"builder tool {tool or 'unknown'}")
+        return {}
+
+    return HookMatcher(matcher=None, hooks=[_check])
+
+
 def builder_hooks(
     shot_folder: str | Path,
     roots: list,
@@ -898,12 +913,14 @@ def builder_hooks(
     script_rel: str | None = None,
     phase: dict[str, Any] | None = None,
     selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
+    attempt_guard: Any | None = None,
 ) -> dict:
     """PreToolUse: path sandbox + API guardrails. PostToolUse: metric feedback.
     PostToolUseFailure: durable failure log. Stop: the artifacts must exist."""
     active_phase = phase or {"mode": "live"}
+    attempt_hooks = [work_unit_attempt_hook(attempt_guard)] if attempt_guard is not None else []
     return {
-        "PreToolUse": [path_sandbox(*roots, cwd=shot_folder),
+        "PreToolUse": [*attempt_hooks, path_sandbox(*roots, cwd=shot_folder),
                        selected_plan_read_guard(
                            shot_folder,
                            selected_authority,

@@ -11,6 +11,7 @@ import fnmatch
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from vfx_harness.domain.judgment_debts import (
     JudgmentDebtActivation,
     JudgmentDebtDefinition,
 )
+from vfx_harness.domain.stop_envelope_primitives import require_digest
 from vfx_harness.domain.work_units import parse_evidence_domains
 
 REQUIREMENTS_SCHEMA = "vfx-harness.requirements/v2"
@@ -796,9 +798,17 @@ def load_active_structured_decisions(
 
 
 def load_resolutions(
-    path: str | Path, *, bundle_hash: str
+    path: str | Path,
+    *,
+    bundle_hash: str,
+    current_completion_receipts: Mapping[tuple[str, str], str] | None = None,
 ) -> dict[tuple[str, str], tuple[tuple[str, str], ...]]:
-    """Return satisfied records and evidence for exactly one published bundle."""
+    """Return satisfied records and evidence for exactly one published bundle.
+
+    When current completion receipts are supplied, a unit-produced row is live only
+    while the exact receipt that authored it remains current. Legacy unbound rows remain
+    readable for audit but cannot satisfy a current due gate.
+    """
     path = Path(path)
     if not path.is_file():
         return {}
@@ -820,5 +830,47 @@ def load_resolutions(
         rid = _text(row.get("id"), f"{path.name}:{line_no}.id")
         if row.get("status") == "satisfied":
             evidence = _evidence(row.get("evidence"), f"{path.name}:{line_no}.evidence")
+            resolved_by = row.get("resolved_by")
+            unit_resolution = (
+                isinstance(resolved_by, str)
+                and resolved_by.startswith("unit_completion:")
+            )
+            receipt_fields = {
+                "completion_receipt_digest",
+                "completion_layer",
+                "completion_unit",
+            }
+            present_receipt_fields = receipt_fields & set(row)
+            if present_receipt_fields and present_receipt_fields != receipt_fields:
+                raise ValueError(
+                    f"{path.name}:{line_no} has a partial completion receipt binding"
+                )
+            if unit_resolution and present_receipt_fields:
+                completion_layer = _text(
+                    row.get("completion_layer"),
+                    f"{path.name}:{line_no}.completion_layer",
+                )
+                completion_unit = _text(
+                    row.get("completion_unit"),
+                    f"{path.name}:{line_no}.completion_unit",
+                )
+                receipt_digest = require_digest(
+                    row.get("completion_receipt_digest"),
+                    f"{path.name}:{line_no}.completion_receipt_digest",
+                )
+                if resolved_by != f"unit_completion:{completion_layer}.{completion_unit}":
+                    raise ValueError(
+                        f"{path.name}:{line_no} completion owner does not match its receipt"
+                    )
+                if (
+                    current_completion_receipts is not None
+                    and current_completion_receipts.get(
+                        (completion_layer, completion_unit)
+                    )
+                    != receipt_digest
+                ):
+                    continue
+            elif unit_resolution and current_completion_receipts is not None:
+                continue
             out[(str(kind), rid)] = evidence
     return out

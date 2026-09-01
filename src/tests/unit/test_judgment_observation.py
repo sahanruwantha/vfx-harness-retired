@@ -95,6 +95,7 @@ def _receipt(*, script_bytes: bytes = b"build hall") -> ReplayPrefixReceipt:
             script_path="build/layers/form.py",
             script_sha256=_digest(b"composed form layer"),
             units=(unit,),
+            dependencies=(),
         ),
     ))
 

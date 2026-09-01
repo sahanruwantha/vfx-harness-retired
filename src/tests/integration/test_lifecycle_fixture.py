@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from tests.unit.test_plan_records import _candidate, _declaring, _vis_rows, _write
+from tests.unit_attempt_fixtures import pass_unit
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.evaluation.plan_gate.types import Finding
 from vfx_harness.observability import run_artifacts
@@ -32,6 +33,7 @@ from vfx_harness.orchestration.jit_materialization import (
     revert_materialization,
     stage_candidate_view,
 )
+from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.layer_plans import (
     read_work_unit_plan,
     stamp_work_unit_plan,
@@ -47,7 +49,6 @@ from vfx_harness.orchestration.unit_state import (
     apply_replan,
     initialize,
     load,
-    transition,
     validate_current,
 )
 
@@ -263,6 +264,9 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     payload = _root_materialization(tmp_path, bundle_a.content_hash)
     preview = prepare_consumer_view(layout_a)
     stage_candidate_view(tmp_path, payload, preview)
+    preview_state = preview / "state" / "work-units"
+    assert preview_state.is_dir()
+    assert not preview_state.is_symlink()
     previewed = plan_gate.run(preview)
     preview_families = {finding.check for finding in previewed.blocking}
     assert "global-preproduction" not in preview_families, plan_gate.report(previewed)
@@ -339,8 +343,23 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     assert [unit.id for unit in stages] == ["lock"]
     view_plan_hash = hashlib.sha256(selected_layers.read_bytes()).hexdigest()
     initialize(tmp_path, "1", stages, plan_hash=view_plan_hash)
-    for status in ("planning", "building", "frozen", "evaluating", "passed"):
-        transition(tmp_path, "1", "lock", status, reason="fixture build")
+    pass_unit(
+        tmp_path,
+        "1",
+        stages[0],
+        stages,
+        plan_hash=view_plan_hash,
+        selection_token=resolve_selected_authority(tmp_path).selection_token,
+    )
+    live_ledger_path = tmp_path / "shot.json"
+    live_ledger_bytes = live_ledger_path.read_bytes()
+    live_outcome_path = layer_outcome_path(tmp_path, "1")
+    live_outcome_path.parent.mkdir(parents=True, exist_ok=True)
+    live_outcome_bytes = b'{"layer":"1","status":"passed"}\n'
+    live_outcome_path.write_bytes(live_outcome_bytes)
+    unrelated_outcome_path = layer_outcome_path(tmp_path, "2")
+    unrelated_outcome_bytes = b'{"layer":"2","status":"failed"}\n'
+    unrelated_outcome_path.write_bytes(unrelated_outcome_bytes)
 
     # ── 5b · replacement preview projects, but does not publish, the replan ──
     replacement = json.loads(payload.read_text(encoding="utf-8"))
@@ -358,12 +377,26 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     overlay = revert_materialization(tmp_path, "1", select=False)
     assert overlay is not None
     replacement_preview = prepare_consumer_view(layout_a)
+    preview_ledger_path = replacement_preview / "shot.json"
+    preview_outcome_path = layer_outcome_path(replacement_preview, "1")
+    preview_unrelated_outcome_path = layer_outcome_path(replacement_preview, "2")
+    assert not preview_ledger_path.is_symlink()
+    assert preview_ledger_path.read_bytes() == live_ledger_bytes
+    assert preview_outcome_path.read_bytes() == live_outcome_bytes
+    assert preview_unrelated_outcome_path.read_bytes() == unrelated_outcome_bytes
     stage_candidate_view(
         tmp_path,
         payload,
         replacement_preview,
         overlay_root=overlay,
     )
+    preview_ledger = json.loads(preview_ledger_path.read_text(encoding="utf-8"))
+    assert preview_ledger["milestones"]["1"]["status"] == "pending"
+    assert not preview_outcome_path.exists()
+    assert preview_unrelated_outcome_path.read_bytes() == unrelated_outcome_bytes
+    assert live_ledger_path.read_bytes() == live_ledger_bytes
+    assert live_outcome_path.read_bytes() == live_outcome_bytes
+    assert unrelated_outcome_path.read_bytes() == unrelated_outcome_bytes
     replacement_result = plan_gate.run(replacement_preview)
     assert not any(
         finding.check == "hierarchy"
@@ -388,6 +421,9 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
         bundle_hash=bundle_a.content_hash,
     )
     assert load(tmp_path, "1")["units"]["lock"]["status"] == "passed"
+    assert live_ledger_path.read_bytes() == live_ledger_bytes
+    assert live_outcome_path.read_bytes() == live_outcome_bytes
+    assert unrelated_outcome_path.read_bytes() == unrelated_outcome_bytes
 
     # ── 6 · generation B supersedes A: stale view inert, sealed state retired with audit ──
     (tmp_path / "plans" / "global.md").write_text("# fixture plan, second generation\n", encoding="utf-8")

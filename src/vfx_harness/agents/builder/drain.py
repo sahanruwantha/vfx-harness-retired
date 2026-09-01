@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import TYPE_CHECKING
 
 import anyio
 from claude_agent_sdk import (
@@ -24,6 +25,9 @@ from vfx_harness.observability.log import (
     log_message,
 )
 from vfx_harness.observability.runlog import bump
+
+if TYPE_CHECKING:
+    from vfx_harness.agents.builder.attempt_guard import UnitAttemptGuard
 
 
 def _collect_approach(message) -> None:
@@ -138,7 +142,13 @@ async def _drain_once(client: ClaudeSDKClient, verbose: bool) -> dict:
     return info
 
 
-async def _drain(client: ClaudeSDKClient, verbose: bool, *, continues: int = MAX_CONTINUES) -> dict:
+async def _drain(
+    client: ClaudeSDKClient,
+    verbose: bool,
+    *,
+    continues: int = MAX_CONTINUES,
+    attempt_guard: UnitAttemptGuard,
+) -> dict:
     """Drain a builder response, nudging it onward if it hit the turn cap.
 
     A streaming-input session SURVIVES error_max_turns — the builder is still there
@@ -147,12 +157,14 @@ async def _drain(client: ClaudeSDKClient, verbose: bool, *, continues: int = MAX
     finish. (Single-shot query() raises instead; that is why this only works here.)
     """
     info = await _drain_once(client, verbose)
+    attempt_guard.check(f"consume unit builder response ({info['subtype']})")
     for i in range(continues):
         if info["subtype"] != "error_max_turns":
             break
         log(f"⏸ builder hit the turn cap ({info['turns']} turns, ${info['cost']:.2f}) — continuing {i + 1}/{continues}")
         continuation_tools_before = sum(TOOL_USE.values())
         continuation_prior_cost = float(info.get("cost") or 0.0)
+        attempt_guard.check(f"query unit builder continuation {i + 1}")
         await client.query(
             f"You have hit a turn checkpoint: {info['turns']} turns and "
             f"${info['cost']:.2f} spent on this layer so far, out of a ${MAX_BUDGET_USD:.0f} "
@@ -161,6 +173,9 @@ async def _drain(client: ClaudeSDKClient, verbose: bool, *, continues: int = MAX
             f"work in progress and prefer landing the layer over further refinement."
         )
         info = await _drain_once(client, verbose)
+        attempt_guard.check(
+            f"consume unit builder continuation {i + 1} ({info['subtype']})"
+        )
         continuation_why = model_phase_failure(
             info,
             sum(TOOL_USE.values()) - continuation_tools_before,

@@ -36,6 +36,18 @@ def _failed_raw() -> dict:
             "resolved": "/usr/bin/blender",
             "problems": [],
         },
+        "blender_confinement": {
+            "ok": True,
+            "bwrap": "/usr/bin/bwrap",
+            "libseccomp": "libseccomp.so.2",
+            "worker_blender": "5.2.1 LTS",
+            "problems": [],
+        },
+        "builder_execution_fence": {
+            "ok": True,
+            "mechanism": "sysv-sem-undo+descriptor-flock",
+            "problems": [],
+        },
     }
 
 
@@ -58,6 +70,18 @@ def _passing_raw(*, secret: str | None = None) -> dict:
             "ok": True,
             "requested": "blender",
             "resolved": "/usr/bin/blender",
+            "problems": [],
+        },
+        "blender_confinement": {
+            "ok": True,
+            "bwrap": "/usr/bin/bwrap",
+            "libseccomp": "libseccomp.so.2",
+            "worker_blender": "5.2.1 LTS",
+            "problems": [],
+        },
+        "builder_execution_fence": {
+            "ok": True,
+            "mechanism": "sysv-sem-undo+descriptor-flock",
             "problems": [],
         },
     }

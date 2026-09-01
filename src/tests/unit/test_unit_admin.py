@@ -7,11 +7,18 @@ from types import SimpleNamespace
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
+from tests.unit_attempt_fixtures import publish_passed_evaluation
 from vfx_harness.application import unit_admin
-from vfx_harness.orchestration import selected_authority_guard
+from vfx_harness.domain.work_units import canonical_unit_script_path
+from vfx_harness.orchestration import (
+    authority_selection_heads,
+    selected_authority_guard,
+    unit_state_claims,
+)
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
+from vfx_harness.orchestration.builder_execution_fence import builder_execution_fence
 from vfx_harness.orchestration.unit_state import (
     freeze_checkpoint,
     initialize,
@@ -19,6 +26,104 @@ from vfx_harness.orchestration.unit_state import (
     record_hypothesis_falsification,
     transition,
 )
+from vfx_harness.orchestration.unit_state_claims import (
+    claim_ready_unit_for_build,
+    claim_ready_unit_for_planning,
+    complete_unit_attempt,
+    fail_unit_attempt,
+)
+
+_EMPTY_TOKEN = AuthoritySelectionToken(0, None, 0, None)
+
+
+def _claim_building(folder, layer_id, units, unit_id, plan_hash, *, token=_EMPTY_TOKEN):
+    eligible = {
+        candidate.id
+        for candidate in units
+        if load(folder, str(layer_id))["units"][candidate.id]["status"] == "passed"
+    }
+    planning = claim_ready_unit_for_planning(
+        folder,
+        str(layer_id),
+        unit_id,
+        units,
+        expected_plan_hash=plan_hash,
+        eligible_passed=eligible,
+        run_id="unit-admin-fixture",
+        selection_token=token,
+        reason="fixture planning claim",
+    )
+    return claim_ready_unit_for_build(
+        folder,
+        str(layer_id),
+        unit_id,
+        units,
+        planning,
+        expected_plan_hash=plan_hash,
+        eligible_passed=eligible,
+        run_id=planning.run_id,
+        selection_token=token,
+        reason="fixture build claim",
+    )
+
+
+def _fail_building(folder, layer_id, units, unit_id, plan_hash):
+    claim = _claim_building(folder, layer_id, units, unit_id, plan_hash)
+    fail_unit_attempt(
+        folder,
+        str(layer_id),
+        unit_id,
+        units,
+        claim,
+        expected_plan_hash=plan_hash,
+        selection_token=_EMPTY_TOKEN,
+        reason="fixture failure",
+        evidence=["fixture:failure"],
+    )
+    return claim
+
+
+def _pass_building(folder, layer_id, units, unit_id, plan_hash):
+    unit = next(candidate for candidate in units if candidate.id == unit_id)
+    script = folder / canonical_unit_script_path(str(layer_id), unit_id)
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# accepted fixture\n", encoding="utf-8")
+    script_hash = hashlib.sha256(script.read_bytes()).hexdigest()
+    claim = _claim_building(folder, layer_id, units, unit_id, plan_hash)
+    freeze_checkpoint(
+        folder,
+        str(layer_id),
+        unit,
+        active_contract_ids=(),
+        candidate_hash="missing",
+        settings_hash="d" * 64,
+        script_hash=script_hash,
+        input_hash=plan_hash,
+        attempt=claim,
+        selection_token=_EMPTY_TOKEN,
+    )
+    transition(
+        folder,
+        str(layer_id),
+        unit_id,
+        "evaluating",
+        reason="fixture evaluation",
+        attempt=claim,
+        selection_token=_EMPTY_TOKEN,
+    )
+    publish_passed_evaluation(folder, str(layer_id), unit, claim)
+    complete_unit_attempt(
+        folder,
+        str(layer_id),
+        unit_id,
+        units,
+        claim,
+        expected_plan_hash=plan_hash,
+        selection_token=_EMPTY_TOKEN,
+        reason="fixture accepted",
+        evidence=["fixture:accepted"],
+    )
+    return claim
 
 
 def _select_replan_authority(
@@ -54,6 +159,16 @@ def _select_replan_authority(
     )
     monkeypatch.setattr(
         selected_authority_guard,
+        "read_authority_selection_heads",
+        lambda folder: SimpleNamespace(token=selected_token),
+    )
+    monkeypatch.setattr(
+        authority_selection_heads,
+        "read_authority_selection_heads",
+        lambda folder: SimpleNamespace(token=selected_token),
+    )
+    monkeypatch.setattr(
+        unit_state_claims,
         "read_authority_selection_heads",
         lambda folder: SimpleNamespace(token=selected_token),
     )
@@ -103,22 +218,20 @@ def test_populated_state_still_fails_closed_without_a_replan(tmp_path) -> None:
 
 def test_initialize_adopts_layers_hash_when_unit_dag_is_unchanged(tmp_path) -> None:
     """Sibling rematerialization rewrites combined layers.json; this layer's units
-    can stay identical. Adopting the new hash must preserve passed/failed slots
-    (HIR-0040). Empty-base replan would have marked every unit added."""
-    import json as _json
-
+    can stay identical. Adopting the new hash preserves checkpoint identity, but a
+    bare/pass receipt tied to the former plan cannot remain acceptance authority.
+    Empty-base replan would have marked every unit added."""
     units = (_unit("blockout"), _unit("camera", depends_on=["blockout"]))
-    initialize(tmp_path, "1", units, plan_hash="old-combined-view")
-    path = tmp_path / "state" / "work-units" / "layer_1.json"
-    value = _json.loads(path.read_text(encoding="utf-8"))
-    value["units"]["blockout"]["status"] = "passed"
-    value["units"]["camera"]["status"] = "failed"
-    path.write_text(_json.dumps(value), encoding="utf-8")
+    old_plan_hash = "a" * 64
+    new_plan_hash = "b" * 64
+    initialize(tmp_path, "1", units, plan_hash=old_plan_hash)
+    _pass_building(tmp_path, "1", units, "blockout", old_plan_hash)
+    _fail_building(tmp_path, "1", units, "camera", old_plan_hash)
 
-    adopted = initialize(tmp_path, "1", units, plan_hash="new-combined-view")
+    adopted = initialize(tmp_path, "1", units, plan_hash=new_plan_hash)
 
-    assert adopted["plan_hash"] == "new-combined-view"
-    assert adopted["units"]["blockout"]["status"] == "passed"
+    assert adopted["plan_hash"] == new_plan_hash
+    assert adopted["units"]["blockout"]["status"] == "retryable"
     assert adopted["units"]["camera"]["status"] == "failed"
     record = adopted["replans"][-1]
     assert record["preserved"] == ["blockout", "camera"]
@@ -280,12 +393,15 @@ def _generation_supersession_args(tmp_path, monkeypatch, *, discard_accepted=Fal
     (old_root / "layers.json").write_bytes(b"old deferred layers\n")
     (new_root / "layers.json").write_bytes(b"new deferred layers\n")
     old_units = (_unit("iris_bootstrap"), _unit("iris_detail", depends_on=["iris_bootstrap"]))
-    initialize(tmp_path, "1", old_units, plan_hash="materialized-view-hash")
-    transition(tmp_path, "1", "iris_bootstrap", "planning", reason="t")
-    transition(tmp_path, "1", "iris_bootstrap", "building", reason="t")
-    transition(tmp_path, "1", "iris_bootstrap", "frozen", reason="t")
-    transition(tmp_path, "1", "iris_bootstrap", "evaluating", reason="t")
-    transition(tmp_path, "1", "iris_bootstrap", "passed", reason="t")
+    old_plan_hash = "a" * 64
+    initialize(tmp_path, "1", old_units, plan_hash=old_plan_hash)
+    _pass_building(
+        tmp_path,
+        "1",
+        old_units,
+        "iris_bootstrap",
+        old_plan_hash,
+    )
 
     monkeypatch.setattr(unit_admin, "load_shot", lambda folder: SimpleNamespace(folder=tmp_path))
     _select_replan_authority(monkeypatch, new_root)
@@ -334,10 +450,11 @@ def test_generation_supersession_retires_state_units_with_audit(tmp_path, monkey
 
 def test_public_retry_preserves_failed_history_and_reopens_unit(tmp_path, monkeypatch, capsys) -> None:
     units = (_unit("blockout"),)
-    initialize(tmp_path, "1", units, plan_hash="plan")
-    transition(tmp_path, "1", "blockout", "planning", reason="ready")
-    transition(tmp_path, "1", "blockout", "building", reason="started")
-    transition(tmp_path, "1", "blockout", "failed", reason="scope audit")
+    layers_path = tmp_path / "layers.json"
+    layers_path.write_bytes(b"selected retry layers\n")
+    plan_hash = hashlib.sha256(layers_path.read_bytes()).hexdigest()
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
+    _fail_building(tmp_path, "1", units, "blockout", plan_hash)
     monkeypatch.setattr(
         unit_admin,
         "load_shot",
@@ -368,9 +485,10 @@ def test_public_retry_preserves_failed_history_and_reopens_unit(tmp_path, monkey
 
 def test_public_retry_reopens_an_interrupted_building_unit(tmp_path, monkeypatch) -> None:
     units = (_unit("blockout"),)
-    initialize(tmp_path, "1", units, plan_hash="plan")
-    transition(tmp_path, "1", "blockout", "planning", reason="ready")
-    transition(tmp_path, "1", "blockout", "building", reason="started")
+    layers_path = tmp_path / "layers.json"
+    layers_path.write_bytes(b"selected retry layers\n")
+    plan_hash = hashlib.sha256(layers_path.read_bytes()).hexdigest()
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
     monkeypatch.setattr(
         unit_admin,
         "load_shot",
@@ -381,7 +499,15 @@ def test_public_retry_reopens_an_interrupted_building_unit(tmp_path, monkeypatch
         "load_layers",
         lambda shot, *, selected_authority=None: {"1": SimpleNamespace(stages=units)},
     )
-    _select_replan_authority(monkeypatch, tmp_path)
+    selected = _select_replan_authority(monkeypatch, tmp_path)
+    _claim_building(
+        tmp_path,
+        "1",
+        units,
+        "blockout",
+        plan_hash,
+        token=selected.selection_token,
+    )
     args = SimpleNamespace(
         folder=str(tmp_path),
         layer="1",
@@ -394,15 +520,95 @@ def test_public_retry_reopens_an_interrupted_building_unit(tmp_path, monkeypatch
     assert load(tmp_path, "1")["units"]["blockout"]["status"] == "retryable"
 
 
+def test_public_retry_releases_exact_attempt_and_refuses_a_live_builder_fence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    units = (_unit("blockout"),)
+    layers_path = tmp_path / "layers.json"
+    layers_path.write_bytes(b"selected claimed retry layers\n")
+    plan_hash = hashlib.sha256(layers_path.read_bytes()).hexdigest()
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
+    monkeypatch.setattr(
+        unit_admin,
+        "load_shot",
+        lambda folder: SimpleNamespace(folder=tmp_path),
+    )
+    monkeypatch.setattr(
+        unit_admin,
+        "load_layers",
+        lambda shot, *, selected_authority=None: {"1": SimpleNamespace(stages=units)},
+    )
+    selected = _select_replan_authority(monkeypatch, tmp_path)
+    planning = claim_ready_unit_for_planning(
+        tmp_path,
+        "1",
+        "blockout",
+        units,
+        expected_plan_hash=plan_hash,
+        eligible_passed=set(),
+        run_id="run-claimed-retry",
+        selection_token=selected.selection_token,
+        reason="test planning claim",
+    )
+    claim_ready_unit_for_build(
+        tmp_path,
+        "1",
+        "blockout",
+        units,
+        planning,
+        expected_plan_hash=plan_hash,
+        eligible_passed=set(),
+        run_id="run-claimed-retry",
+        selection_token=selected.selection_token,
+        reason="test build claim",
+    )
+    args = SimpleNamespace(
+        folder=str(tmp_path),
+        layer="1",
+        unit="blockout",
+        reason="operator proved the prior process exited",
+        evidence=["run:interrupted", "process:exited"],
+    )
+
+    assert unit_admin._retry(args) == 0
+
+    slot = load(tmp_path, "1")["units"]["blockout"]
+    assert slot["status"] == "retryable"
+    assert "active_attempt" not in slot
+    assert slot["attempt_history"][-1]["disposition"] == "released"
+    assert slot["attempt_history"][-1]["evidence"] == args.evidence
+    next_claim = claim_ready_unit_for_planning(
+        tmp_path,
+        "1",
+        "blockout",
+        units,
+        expected_plan_hash=plan_hash,
+        eligible_passed=set(),
+        run_id="run-next-attempt",
+        selection_token=selected.selection_token,
+        reason="next reviewed attempt",
+    )
+    with (
+        builder_execution_fence(tmp_path),
+        pytest.raises(SystemExit, match="live builder execution fence"),
+    ):
+        unit_admin._retry(args)
+    after = load(tmp_path, "1")["units"]["blockout"]
+    assert after["status"] == "planning"
+    assert after["active_attempt"]["claim_id"] == next_claim.claim_id
+
+
 def test_public_retry_refuses_exact_head_change_before_state_mutation(
     tmp_path,
     monkeypatch,
 ) -> None:
     units = (_unit("blockout"),)
-    initialize(tmp_path, "1", units, plan_hash="plan")
-    transition(tmp_path, "1", "blockout", "planning", reason="ready")
-    transition(tmp_path, "1", "blockout", "building", reason="started")
-    transition(tmp_path, "1", "blockout", "failed", reason="scope audit")
+    layers_path = tmp_path / "layers.json"
+    layers_path.write_bytes(b"selected retry layers\n")
+    plan_hash = hashlib.sha256(layers_path.read_bytes()).hexdigest()
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
+    _fail_building(tmp_path, "1", units, "blockout", plan_hash)
     monkeypatch.setattr(
         unit_admin,
         "load_shot",
@@ -421,16 +627,9 @@ def test_public_retry_refuses_exact_head_change_before_state_mutation(
         jit_pointer_sha256=selected.selection_token.jit_pointer_sha256,
     )
     monkeypatch.setattr(
-        selected_authority_guard,
+        unit_state_claims,
         "read_authority_selection_heads",
         lambda folder: SimpleNamespace(token=changed),
-    )
-    monkeypatch.setattr(
-        unit_admin,
-        "transition",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("retry state mutated after selection changed")
-        ),
     )
 
     with pytest.raises(SystemExit, match="selected authority changed"):
@@ -498,21 +697,9 @@ def test_public_invalidate_revokes_checkpoint_under_exact_selection(
     monkeypatch,
 ) -> None:
     units = (_unit("blockout"),)
-    initialize(tmp_path, "1", units, plan_hash="plan")
-    transition(tmp_path, "1", "blockout", "planning", reason="ready")
-    transition(tmp_path, "1", "blockout", "building", reason="started")
-    freeze_checkpoint(
-        tmp_path,
-        "1",
-        units[0],
-        active_contract_ids=(),
-        candidate_hash="candidate",
-        settings_hash="settings",
-        script_hash="script",
-        input_hash="input",
-    )
-    transition(tmp_path, "1", "blockout", "evaluating", reason="judge")
-    transition(tmp_path, "1", "blockout", "passed", reason="accepted")
+    plan_hash = "a" * 64
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
+    _pass_building(tmp_path, "1", units, "blockout", plan_hash)
     monkeypatch.setattr(
         unit_admin,
         "load_shot",
@@ -553,8 +740,7 @@ def _falsified_replan_fixture(tmp_path, monkeypatch, *, strength: str):
     old_units = (_unit("blockout"),)
     new_units = (_unit("blockout", proposition_suffix=" amended"),)
     initialize(tmp_path, "1", old_units, plan_hash=old_hash)
-    transition(tmp_path, "1", "blockout", "planning", reason="ready")
-    transition(tmp_path, "1", "blockout", "building", reason="started")
+    claim = _claim_building(tmp_path, "1", old_units, "blockout", old_hash)
     finding = record_hypothesis_falsification(
         tmp_path,
         "1",
@@ -574,6 +760,8 @@ def _falsified_replan_fixture(tmp_path, monkeypatch, *, strength: str):
             "controls": [],
         },
         evidence=["runs/run/evidence/bbox.json"],
+        attempt=claim,
+        selection_token=_EMPTY_TOKEN,
     )
     monkeypatch.setattr(
         unit_admin,
@@ -595,10 +783,6 @@ def _falsified_replan_fixture(tmp_path, monkeypatch, *, strength: str):
             )
         },
     )
-    relative = (
-        "state/work-units/hypothesis-falsifications/"
-        f"{finding['record_id']}.json"
-    )
     return SimpleNamespace(
         folder=str(tmp_path),
         layer="1",
@@ -607,9 +791,26 @@ def _falsified_replan_fixture(tmp_path, monkeypatch, *, strength: str):
         owner="operator",
         trigger="executable hypothesis falsification",
         evidence=[],
-        falsification=relative,
+        falsification=finding["record_id"],
         hard_constraint_approval=None,
     ), finding
+
+
+def _replace_falsification_payload(tmp_path, args, payload) -> None:
+    """Replace one synthetic durable finding while preserving its exact slot bind."""
+
+    assert args.falsification == payload["record_id"]
+    state_path = tmp_path / "state" / "work-units" / "layer_1.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    matching = [
+        index
+        for index, row in enumerate(state["falsifications"])
+        if row.get("record_id") == payload["record_id"]
+    ]
+    assert len(matching) == 1
+    state["falsifications"][matching[0]] = payload
+    state["units"][payload["unit"]]["falsification"] = payload
+    state_path.write_text(json.dumps(state), encoding="utf-8")
 
 
 def test_public_replan_consumes_exact_typed_falsification(tmp_path, monkeypatch) -> None:
@@ -621,7 +822,27 @@ def test_public_replan_consumes_exact_typed_falsification(tmp_path, monkeypatch)
 
     record = load(tmp_path, "1")["replans"][-1]
     assert record["falsification_id"] == finding["record_id"]
-    assert record["evidence"] == [args.falsification]
+    assert record["evidence"] == [
+        f"hypothesis-falsification:{finding['record_id']}"
+    ]
+
+
+def test_public_replan_does_not_require_falsification_projection(
+    tmp_path, monkeypatch
+) -> None:
+    args, finding = _falsified_replan_fixture(
+        tmp_path, monkeypatch, strength="approved_start"
+    )
+    projection = (
+        tmp_path
+        / "state"
+        / "work-units"
+        / "hypothesis-falsifications"
+        / f"{finding['record_id']}.json"
+    )
+    projection.unlink()
+
+    assert unit_admin._replan(args) == 0
 
 
 def test_public_replan_requires_human_evidence_for_hard_constraint(
@@ -671,10 +892,9 @@ def test_public_replan_refuses_unchanged_out_of_layer_fault_owner(
     args, _finding = _falsified_replan_fixture(
         tmp_path, monkeypatch, strength="approved_start"
     )
-    finding_path = tmp_path / args.falsification
-    payload = json.loads(finding_path.read_text(encoding="utf-8"))
+    payload = load(tmp_path, "1")["units"]["blockout"]["falsification"]
     payload["fault_owner_units"] = ["camera_path"]
-    finding_path.write_text(json.dumps(payload), encoding="utf-8")
+    _replace_falsification_payload(tmp_path, args, payload)
 
     camera = _unit("camera_path", script_span="build/units/00/camera_path.py")
     old_mass = _unit("blockout")
@@ -708,11 +928,10 @@ def test_public_replan_accepts_audited_external_owner_supersession(
     args, _finding = _falsified_replan_fixture(
         tmp_path, monkeypatch, strength="approved_start"
     )
-    finding_path = tmp_path / args.falsification
-    payload = json.loads(finding_path.read_text(encoding="utf-8"))
+    payload = load(tmp_path, "1")["units"]["blockout"]["falsification"]
     payload["fault_owner_units"] = ["camera_path"]
     payload["recorded_at"] = "2026-08-30T12:00:00+00:00"
-    finding_path.write_text(json.dumps(payload), encoding="utf-8")
+    _replace_falsification_payload(tmp_path, args, payload)
 
     new_camera = _unit(
         "camera_path",
@@ -768,8 +987,6 @@ def test_public_replan_consumes_jit_falsification_against_view_identity(
     """A JIT layer's finding names the materialized view hash. Comparing that to
     sha256 of the sparse bundle layers.json is a false mismatch; empty-base add
     of every unit would also drop an unrelated passed sibling (HIR-0040, HIR-0049)."""
-    import json as _json
-
     old_root = tmp_path / "old-bundle"
     new_root = tmp_path / "new-bundle"
     old_root.mkdir()
@@ -786,12 +1003,14 @@ def test_public_replan_consumes_jit_falsification_against_view_identity(
     props = _unit("props", script_span="build/02/props.py")
     current_units = (materials, lighting, props)
     initialize(tmp_path, "2", current_units, plan_hash=view_hash)
-    path = tmp_path / "state" / "work-units" / "layer_2.json"
-    value = _json.loads(path.read_text(encoding="utf-8"))
-    value["units"]["props"]["status"] = "passed"
-    path.write_text(_json.dumps(value), encoding="utf-8")
-    transition(tmp_path, "2", "materials_energy", "planning", reason="ready")
-    transition(tmp_path, "2", "materials_energy", "building", reason="started")
+    _pass_building(tmp_path, "2", current_units, "props", view_hash)
+    claim = _claim_building(
+        tmp_path,
+        "2",
+        current_units,
+        "materials_energy",
+        view_hash,
+    )
     finding = record_hypothesis_falsification(
         tmp_path,
         "2",
@@ -811,6 +1030,8 @@ def test_public_replan_consumes_jit_falsification_against_view_identity(
             "controls": [],
         },
         evidence=["runs/run/evidence/look.json"],
+        attempt=claim,
+        selection_token=_EMPTY_TOKEN,
     )
     monkeypatch.setattr(
         unit_admin,
@@ -832,10 +1053,6 @@ def test_public_replan_consumes_jit_falsification_against_view_identity(
             )
         },
     )
-    relative = (
-        "state/work-units/hypothesis-falsifications/"
-        f"{finding['record_id']}.json"
-    )
     args = SimpleNamespace(
         folder=str(tmp_path),
         layer="2",
@@ -844,7 +1061,7 @@ def test_public_replan_consumes_jit_falsification_against_view_identity(
         owner="operator",
         trigger="executable hypothesis falsified",
         evidence=[],
-        falsification=relative,
+        falsification=finding["record_id"],
         hard_constraint_approval=None,
         preview=False,
         discard_accepted=False,
@@ -858,7 +1075,7 @@ def test_public_replan_consumes_jit_falsification_against_view_identity(
     state = load(tmp_path, "2")
     assert state["units"]["materials_energy"]["status"] == "pending"
     assert state["units"]["lighting_bloom"]["status"] == "pending"
-    assert state["units"]["props"]["status"] == "passed"
+    assert state["units"]["props"]["status"] == "retryable"
     record = state["replans"][-1]
     assert record["falsification_id"] == finding["record_id"]
     assert record["added"] == []

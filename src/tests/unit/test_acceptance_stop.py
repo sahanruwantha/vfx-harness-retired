@@ -69,6 +69,7 @@ def _authority() -> acceptance_stop.AcceptanceAuthoritySnapshot:
                 "status": "passed",
                 "script": "build/units/L1/form.py",
                 "script_sha256": _digest("script"),
+                "replay_dependencies": [],
                 "units": [
                     {
                         "unit_id": "form",
@@ -273,6 +274,11 @@ def _patch_acceptance(
         acceptance.acceptance_stop,
         "capture_acceptance_authority",
         lambda _shot, _moments, _selected=None: authority,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "_prepare_acceptance_replay_inputs",
+        lambda *_args, **_kwargs: (),
     )
 
     async def axes(*_args, **_kwargs):
@@ -1296,3 +1302,41 @@ def test_blocking_metric_prose_cannot_replace_typed_acceptance_readings(
             results,
             [("composition", "composition match")],
         )
+
+
+def test_chain_refuses_ledger_pass_without_completion_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _shot(tmp_path)
+    script = tmp_path / "build" / "units" / "1" / "form.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("pass\n", encoding="utf-8")
+    unit = SimpleNamespace(id="form")
+    layer = SimpleNamespace(
+        id="1",
+        script="build/units/1/form.py",
+        stages=(unit,),
+        as_milestone=lambda: object(),
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "selected_layer_chain",
+        lambda *_args, **_kwargs: (layer,),
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "Ledger",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lambda _milestone: "passed"),
+    )
+    monkeypatch.setattr(
+        acceptance.unit_state,
+        "load",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("passed work-unit state requires its completion receipt")
+        ),
+    )
+    session = SimpleNamespace(run=lambda *_args: pytest.fail("must stop before replay"))
+
+    with pytest.raises(acceptance.IncompleteChain, match="completion receipt"):
+        acceptance._chain(session, shot)

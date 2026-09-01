@@ -49,6 +49,11 @@ from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     resolve_selected_authority,
 )
+from vfx_harness.orchestration.hypothesis_falsification_state import (
+    load_state_backed_falsification,
+    reconcile_falsification_projection,
+)
+from vfx_harness.orchestration.unit_state_lock import STATE_DIR
 
 _FINDING_FIELDS = {
     "schema",
@@ -243,15 +248,6 @@ def _publish_stop_evidence(
     return reference
 
 
-def _finding_artifact(shot_root: Path, record_id: str) -> Path:
-    return (
-        shot_root
-        / unit_state.STATE_DIR
-        / "hypothesis-falsifications"
-        / f"{record_id}.json"
-    )
-
-
 def _current_unit(
     shot: Shot,
     finding: HypothesisFalsification,
@@ -300,6 +296,15 @@ def compile_hypothesis_falsification_stop(
     raw = dict(finding_payload)
     _require_current_finding_shape(raw)
     finding = HypothesisFalsification.parse(raw, "builder terminal hypothesis falsification")
+    state_payload = load_state_backed_falsification(
+        shot_root,
+        finding.layer,
+        finding.record_id,
+    )
+    if state_payload != raw:
+        raise ValueError(
+            "builder terminal falsification differs from its authoritative state row"
+        )
 
     selected_authority = resolve_selected_authority(shot_root)
     selected_bundle = selected_authority.assertion.bundle
@@ -357,7 +362,11 @@ def compile_hypothesis_falsification_stop(
     if not isinstance(recorded, list) or not recorded or recorded[-1] != raw:
         raise ValueError("hypothesis falsification is not the latest selected finding")
 
-    finding_path = _finding_artifact(shot_root, finding.record_id)
+    finding_path = reconcile_falsification_projection(
+        shot_root,
+        finding.layer,
+        finding.record_id,
+    )
     artifact_payload = _json(finding_path, "hypothesis falsification artifact")
     if artifact_payload != raw:
         raise ValueError("hypothesis falsification artifact disagrees with current unit state")
@@ -367,7 +376,7 @@ def compile_hypothesis_falsification_stop(
     finding_identity_id = f"hf-semantic-{finding_identity_digest[:20]}"
     finding_file_sha256 = _sha256(finding_path)
     evidence_rows = _evidence_rows(shot_root, finding)
-    state_path = shot_root / unit_state.STATE_DIR / f"layer_{finding.layer}.json"
+    state_path = shot_root / STATE_DIR / f"layer_{finding.layer}.json"
     state_file_sha256 = _sha256(state_path)
     checkpoint_digest = canonical_digest(
         {

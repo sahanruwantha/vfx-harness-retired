@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 
@@ -53,6 +54,10 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     authority_selection_lock,
     require_matching_authority_selection_token,
 )
+from vfx_harness.orchestration.builder_execution_fence import (
+    BuilderExecutionFenceLease,
+    require_builder_execution_lease,
+)
 from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 from vfx_harness.orchestration.layer_plans import (
     amendment_block,
@@ -74,6 +79,9 @@ from vfx_harness.orchestration.work_unit_plan_transaction import (
     WorkUnitPlanTransactionConflict,
     work_unit_plan_transaction,
 )
+
+if TYPE_CHECKING:
+    from vfx_harness.agents.builder.attempt_guard import UnitAttemptGuard
 
 _KICKOFF_MAX_PX = 1568  # same budget the critic uses; ~1600 tokens per still
 
@@ -245,7 +253,7 @@ async def generate_plan(
     return plan_path
 
 
-async def generate_layer_plan(
+async def _generate_layer_plan(
     folder: str | Path,
     layer_id: str,
     *,
@@ -254,6 +262,8 @@ async def generate_layer_plan(
     blender: str = "blender",
     max_turns: int = 24,
     rematerialize: tuple[str, str, list[str], bool] | None = None,
+    materialize_only: bool = False,
+    attempt_guard: UnitAttemptGuard | None = None,
 ) -> Path:
     """Generate one work-unit plan after its declared dependencies have sealed outcomes.
 
@@ -330,11 +340,14 @@ async def generate_layer_plan(
         raise ValueError(
             "selected authority changed before layer-plan state initialization"
         ) from exc
+    if materialize_only:
+        return selected_authority.artifact_paths["layers.json"]
     passed = {
         uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
     }
+    sealed = digest_matched_passed(state, layer.stages)
     ready = ready_units(
-        layer.stages, passed, sealed_producers=digest_matched_passed(state, layer.stages)
+        layer.stages, passed, sealed_producers=sealed
     )
     if unit_id is not None:
         selected = next((unit for unit in layer.stages if unit.id == unit_id), None)
@@ -343,7 +356,9 @@ async def generate_layer_plan(
                 f"unknown unit {unit_id!r} in layer {layer.id}; available: "
                 + ", ".join(unit.id for unit in layer.stages)
             )
-        missing = sorted(set(selected.depends_on) - passed)
+        # A raw ``passed`` projection is not dependency authority.  Only the exact
+        # digest-bound completion receipt seals a producer for its successors.
+        missing = sorted(set(selected.depends_on) - sealed)
         if missing:
             raise ValueError(
                 f"layer {layer.id} unit {selected.id} is blocked by unpassed dependencies: "
@@ -375,6 +390,19 @@ async def generate_layer_plan(
             f"{target.relative_to(shot.folder)}"
         )
         return target
+    if attempt_guard is None:
+        raise ValueError(
+            "paid unit-plan generation is builder-owned and requires an exact planning "
+            "attempt; run `vfx build` instead"
+        )
+    if (attempt_guard.layer_id, attempt_guard.unit.id) != (
+        str(layer.id),
+        selected.id,
+    ):
+        raise ValueError(
+            "unit planner attempt guard does not match the selected layer and unit"
+        )
+    attempt_guard.check(f"start unit plan {layer.id}.{selected.id}")
     target.parent.mkdir(parents=True, exist_ok=True)
     rel_target = target.relative_to(shot.folder).as_posix()
     feedback = "\n\n".join(
@@ -463,6 +491,7 @@ async def generate_layer_plan(
             writable_files=(target,),
             strict_reads=True,
             completion_gate=False,
+            attempt_guard=attempt_guard,
         ),
     )
     judge_names = {Path(ref).name for _frame, ref in layer.judges}
@@ -510,11 +539,13 @@ async def generate_layer_plan(
                     f"plan agent [LAYER {layer.id} · UNIT {selected.id}]: "
                     f"{selected.title} → {rel_target}"
                 )
+                attempt_guard.check(f"query unit plan {layer.id}.{selected.id}")
                 await run_session(
                     _attempt,
                     succeeded=_wrote,
                     label=f"plan layer {layer.id} unit {selected.id}",
                 )
+                attempt_guard.check(f"complete unit plan {layer.id}.{selected.id}")
             finally:
                 # The MCP write is complete at this boundary.  Capture its exact bytes
                 # even when the model session terminates abnormally so a legal rollback
@@ -539,11 +570,9 @@ async def generate_layer_plan(
             # Integrity stamp first — the gate validates it, then a clean result earns
             # the gate attestation consumers require.  Each phase proves that the pair
             # still has the exact revision owned by this attempt.
-            with authority_selection_lock(shot.folder, exclusive=False):
-                require_matching_authority_selection_token(
-                    selected_authority.selection_token,
-                    read_authority_selection_heads(shot.folder).token,
-                )
+            with attempt_guard.hold(
+                f"stamp unit plan {layer.id}.{selected.id}"
+            ):
                 plan_transaction.require_owned_current()
                 stamp_work_unit_plan(
                     shot.folder,
@@ -566,11 +595,9 @@ async def generate_layer_plan(
                     f"generated unit plan {layer.id}.{selected.id} failed the "
                     "deterministic gate:\n" + gate_report(gated)
                 )
-            with authority_selection_lock(shot.folder, exclusive=False):
-                require_matching_authority_selection_token(
-                    selected_authority.selection_token,
-                    read_authority_selection_heads(shot.folder).token,
-                )
+            with attempt_guard.hold(
+                f"publish gated unit plan {layer.id}.{selected.id}"
+            ):
                 plan_transaction.require_owned_current()
                 stamp_work_unit_plan(
                     shot.folder,
@@ -592,3 +619,46 @@ async def generate_layer_plan(
             raise
     log(f"unit plan published through a clean gate: {rel_target} ({text.count(chr(10))} lines)")
     return target
+
+
+async def generate_layer_plan(
+    folder: str | Path,
+    layer_id: str,
+    *,
+    unit_id: str | None = None,
+    model: str | None = None,
+    blender: str = "blender",
+    max_turns: int = 24,
+    rematerialize: tuple[str, str, list[str], bool] | None = None,
+    materialize_only: bool = False,
+    attempt_guard: UnitAttemptGuard | None = None,
+    fence_lease: BuilderExecutionFenceLease | None = None,
+) -> Path:
+    """Materialize a layer or plan one claimed unit under its live builder fence."""
+
+    if materialize_only:
+        return await _generate_layer_plan(
+            folder,
+            layer_id,
+            unit_id=unit_id,
+            model=model,
+            blender=blender,
+            max_turns=max_turns,
+            rematerialize=rematerialize,
+            materialize_only=True,
+            attempt_guard=attempt_guard,
+        )
+
+    require_builder_execution_lease(fence_lease, folder)
+    with fence_lease.operation(folder):
+        return await _generate_layer_plan(
+            folder,
+            layer_id,
+            unit_id=unit_id,
+            model=model,
+            blender=blender,
+            max_turns=max_turns,
+            rematerialize=rematerialize,
+            materialize_only=False,
+            attempt_guard=attempt_guard,
+        )

@@ -6,6 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
+from tests.unit_attempt_fixtures import (
+    ABSENT_SELECTION_TOKEN,
+    claim_for_build,
+    pass_unit,
+)
 from vfx_harness.domain.unit_outcomes import (
     falsifying_decisions,
     load_hypothesis_falsification,
@@ -20,9 +25,15 @@ from vfx_harness.orchestration.unit_state import (
 
 def _record(tmp_path: Path, *, strength: str = "approved_start") -> dict:
     units = (_unit("proxy"), _unit("finish", depends_on=["proxy"]))
-    initialize(tmp_path, "1", units, plan_hash="a" * 64)
-    transition(tmp_path, "1", "proxy", "planning", reason="ready")
-    transition(tmp_path, "1", "proxy", "building", reason="started")
+    plan_hash = "a" * 64
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
+    attempt = claim_for_build(
+        tmp_path,
+        "1",
+        units,
+        "proxy",
+        plan_hash=plan_hash,
+    )
     return record_hypothesis_falsification(
         tmp_path,
         "1",
@@ -47,6 +58,8 @@ def _record(tmp_path: Path, *, strength: str = "approved_start") -> dict:
             "controls": ["camera_spine"],
         },
         evidence=["runs/run-1/evidence/bbox-f36.json"],
+        attempt=attempt,
+        selection_token=ABSENT_SELECTION_TOKEN,
     )
 
 
@@ -71,7 +84,7 @@ def test_hypothesis_falsification_is_distinct_hash_pinned_state(tmp_path: Path) 
 def test_falsified_hypothesis_cannot_be_retried_under_same_authority(tmp_path: Path) -> None:
     _record(tmp_path)
 
-    with pytest.raises(ValueError, match="illegal work-unit transition"):
+    with pytest.raises(ValueError, match="generic unclaimed transition refuses"):
         transition(tmp_path, "1", "proxy", "retryable", reason="try again")
 
 
@@ -81,11 +94,16 @@ def test_falsification_can_name_passed_upstream_fault_owner_for_replan(tmp_path:
         _unit("detail", depends_on=["lighting"]),
         _unit("atmosphere", depends_on=["detail"]),
     )
-    initialize(tmp_path, "1", units, plan_hash="a" * 64)
-    for status in ("planning", "building", "frozen", "evaluating", "passed"):
-        transition(tmp_path, "1", "lighting", status, reason="accepted upstream")
-    transition(tmp_path, "1", "detail", "planning", reason="ready")
-    transition(tmp_path, "1", "detail", "building", reason="started")
+    plan_hash = "a" * 64
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
+    pass_unit(tmp_path, "1", units[0], units, plan_hash=plan_hash)
+    detail_attempt = claim_for_build(
+        tmp_path,
+        "1",
+        units,
+        "detail",
+        plan_hash=plan_hash,
+    )
 
     finding = record_hypothesis_falsification(
         tmp_path,
@@ -107,6 +125,8 @@ def test_falsification_can_name_passed_upstream_fault_owner_for_replan(tmp_path:
         },
         evidence=["runs/run-1/evidence/f150.png"],
         affected_seed_ids={"detail", "lighting"},
+        attempt=detail_attempt,
+        selection_token=ABSENT_SELECTION_TOKEN,
     )
 
     state = load(tmp_path, "1")
@@ -120,10 +140,10 @@ def test_composed_falsification_preserves_accepted_source_until_replan(
     tmp_path: Path,
 ) -> None:
     units = (_unit("mass"), _unit("roof", depends_on=["mass"]))
-    initialize(tmp_path, "2", units, plan_hash="a" * 64)
-    for unit_id in ("mass", "roof"):
-        for status in ("planning", "building", "frozen", "evaluating", "passed"):
-            transition(tmp_path, "2", unit_id, status, reason="accepted")
+    plan_hash = "a" * 64
+    initialize(tmp_path, "2", units, plan_hash=plan_hash)
+    pass_unit(tmp_path, "2", units[0], units, plan_hash=plan_hash)
+    pass_unit(tmp_path, "2", units[1], units, plan_hash=plan_hash)
 
     finding = record_hypothesis_falsification(
         tmp_path,
@@ -146,6 +166,7 @@ def test_composed_falsification_preserves_accepted_source_until_replan(
         evidence=["state/contract-gaps.jsonl"],
         affected_seed_ids={"mass", "roof"},
         preserve_accepted_source=True,
+        selection_token=ABSENT_SELECTION_TOKEN,
     )
 
     state = load(tmp_path, "2")
@@ -160,9 +181,15 @@ def test_falsification_records_earlier_layer_camera_without_local_affected(
     tmp_path: Path,
 ) -> None:
     units = (_unit("facade"),)
-    initialize(tmp_path, "2", units, plan_hash="a" * 64)
-    transition(tmp_path, "2", "facade", "planning", reason="ready")
-    transition(tmp_path, "2", "facade", "building", reason="started")
+    plan_hash = "a" * 64
+    initialize(tmp_path, "2", units, plan_hash=plan_hash)
+    attempt = claim_for_build(
+        tmp_path,
+        "2",
+        units,
+        "facade",
+        plan_hash=plan_hash,
+    )
 
     finding = record_hypothesis_falsification(
         tmp_path,
@@ -184,6 +211,8 @@ def test_falsification_records_earlier_layer_camera_without_local_affected(
         },
         evidence=["runs/run-1/evidence/f038.png"],
         affected_seed_ids={"facade", "camera_path"},
+        attempt=attempt,
+        selection_token=ABSENT_SELECTION_TOKEN,
     )
 
     state = load(tmp_path, "2")
@@ -266,9 +295,15 @@ def _terminal_failure_fixture(tmp_path: Path, monkeypatch, *, failing_id: str):
         _unit("camera_iris_bootstrap"),
         _unit("iris_mechanism_detail", depends_on=["camera_iris_bootstrap"]),
     )
-    initialize(tmp_path, "1", units, plan_hash="a" * 64)
-    transition(tmp_path, "1", "camera_iris_bootstrap", "planning", reason="ready")
-    transition(tmp_path, "1", "camera_iris_bootstrap", "building", reason="started")
+    plan_hash = "a" * 64
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
+    attempt = claim_for_build(
+        tmp_path,
+        "1",
+        units,
+        "camera_iris_bootstrap",
+        plan_hash=plan_hash,
+    )
     script = tmp_path / "build" / "unit.py"
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("print('build')\n", encoding="utf-8")
@@ -284,11 +319,8 @@ def _terminal_failure_fixture(tmp_path: Path, monkeypatch, *, failing_id: str):
         decision_strength="approved_start",
         falsification_contract_ids=("SC-L1-16-housing-bbox-height-f36",),
     )
-    monkeypatch.setattr(
-        plan_authority,
-        "resolve_current",
-        lambda folder: SimpleNamespace(root=tmp_path, content_hash="b" * 64),
-    )
+    bundle = SimpleNamespace(root=tmp_path, content_hash="b" * 64)
+    monkeypatch.setattr(plan_authority, "resolve_current", lambda folder: bundle)
     monkeypatch.setattr(plan_records, "load_assumptions", lambda root: (assumption,))
     monkeypatch.setattr(
         layer_plans,
@@ -328,7 +360,11 @@ def _terminal_failure_fixture(tmp_path: Path, monkeypatch, *, failing_id: str):
     layer = SimpleNamespace(id="1", stages=units)
     milestone = SimpleNamespace(frame=36, ref="refs/f036.png")
     ledger = SimpleNamespace(_slot=lambda m: slot)
-    return shot, layer, units[0], milestone, ledger
+    selected = SimpleNamespace(
+        plan=SimpleNamespace(bundle=bundle),
+        selection_token=ABSENT_SELECTION_TOKEN,
+    )
+    return shot, layer, units[0], milestone, ledger, attempt, selected
 
 
 def test_terminal_failing_falsification_contract_routes_to_typed_record(
@@ -336,11 +372,19 @@ def test_terminal_failing_falsification_contract_routes_to_typed_record(
 ) -> None:
     from vfx_harness.agents.builder import _record_bound_contract_falsification
 
-    shot, layer, unit, milestone, ledger = _terminal_failure_fixture(
+    shot, layer, unit, milestone, ledger, attempt, selected = _terminal_failure_fixture(
         tmp_path, monkeypatch, failing_id="SC-L1-16-housing-bbox-height-f36"
     )
 
-    record = _record_bound_contract_falsification(shot, layer, unit, milestone, ledger)
+    record = _record_bound_contract_falsification(
+        shot,
+        layer,
+        unit,
+        milestone,
+        ledger,
+        attempt=attempt,
+        selected_authority=selected,
+    )
 
     assert record is not None
     state = load(tmp_path, "1")
@@ -365,11 +409,22 @@ def test_terminal_failure_without_declared_path_stays_ordinary(
 ) -> None:
     from vfx_harness.agents.builder import _record_bound_contract_falsification
 
-    shot, layer, unit, milestone, ledger = _terminal_failure_fixture(
+    shot, layer, unit, milestone, ledger, attempt, selected = _terminal_failure_fixture(
         tmp_path, monkeypatch, failing_id="SC-L1-05-blade-bbox-height-f1"
     )
 
-    assert _record_bound_contract_falsification(shot, layer, unit, milestone, ledger) is None
+    assert (
+        _record_bound_contract_falsification(
+            shot,
+            layer,
+            unit,
+            milestone,
+            ledger,
+            attempt=attempt,
+            selected_authority=selected,
+        )
+        is None
+    )
     state = load(tmp_path, "1")
     assert state["units"]["camera_iris_bootstrap"]["status"] == "building"
     assert (
@@ -379,9 +434,15 @@ def test_terminal_failure_without_declared_path_stays_ordinary(
 
 def test_falsification_rejects_unpinned_candidate_identity(tmp_path: Path) -> None:
     units = (_unit("proxy"),)
-    initialize(tmp_path, "1", units, plan_hash="a" * 64)
-    transition(tmp_path, "1", "proxy", "planning", reason="ready")
-    transition(tmp_path, "1", "proxy", "building", reason="started")
+    plan_hash = "a" * 64
+    initialize(tmp_path, "1", units, plan_hash=plan_hash)
+    attempt = claim_for_build(
+        tmp_path,
+        "1",
+        units,
+        "proxy",
+        plan_hash=plan_hash,
+    )
 
     with pytest.raises(ValueError, match="candidate_hash"):
         record_hypothesis_falsification(
@@ -403,4 +464,6 @@ def test_falsification_rejects_unpinned_candidate_identity(tmp_path: Path) -> No
                 "controls": [],
             },
             evidence=["state/contract-gaps.jsonl"],
+            attempt=attempt,
+            selection_token=ABSENT_SELECTION_TOKEN,
         )

@@ -1,198 +1,50 @@
-"""Durable work-unit state, checkpoints, and transactional replanning.
-
-This is intentionally independent of Blender and the model SDK.  It is the small vertical
-slice that makes plan/state semantics testable before the expensive builder is taught to
-execute every work unit directly.
-"""
-
+"""Durable work-unit state, checkpoints, and transactional replanning."""
 from __future__ import annotations
 
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain import unit_attempts, unit_completion_receipts
 from vfx_harness.domain.unit_outcomes import HYPOTHESIS_FALSIFICATION_SCHEMA, HypothesisFalsification
 from vfx_harness.domain.work_units import (
     UNIT_STATES,
     WorkUnit,
     geometry_vis_protection_ids,
-    ready_units,
     validate_unit_dag,
 )
-from vfx_harness.observability.provenance import atomic_write
+from vfx_harness.orchestration import hypothesis_falsification_projection, unit_state_replan
+from vfx_harness.orchestration.authority_selection_transaction import AuthoritySelectionToken
+from vfx_harness.orchestration.unit_state_identity import (
+    DIGEST_SCHEMA,
+    downstream,
+    replan_effects,
+    unit_digest,
+)
+from vfx_harness.orchestration.unit_state_identity import (
+    digest_matched_passed as digest_matched_passed,
+)
+from vfx_harness.orchestration.unit_state_lifecycle import TRANSITIONS as _TRANSITIONS
 from vfx_harness.orchestration.unit_state_lock import (
-    STATE_DIR,
     serialized_state_mutation,
     unit_state_path,
 )
-
-SCHEMA = 1
-# Bump whenever WorkUnit gains or loses a field that is always present in `unit_digest`:
-# the hash covers asdict(unit) except empty publishes/consumes and default
-# procedural construction, which are omitted so schema-4 durable hashes stay
-# comparable. Non-empty interface rows and non-default construction participate
-# (HIR-0084, ADR-0009). Bump WHENEVER a new always-present field lands in that payload —
-# validate_current only knows to route cross-shape comparison through the replan
-# closure when the schema numbers differ. 3: EvidenceBinding gained optional
-# per-moment bindings (8ab8f5d shipped the field without the bump and bricked every
-# layer's durable state until the replan). The golden-digest test pins this pairing.
-# 4: MutationScope gained `dresses` (ADR-0007 appearance-assignment authority).
-DIGEST_SCHEMA = 4
-_TRANSITIONS = {
-    "pending": {"planning", "blocked", "superseded"},
-    "planning": {"building", "blocked", "failed", "retryable", "superseded"},
-    "building": {"frozen", "blocked", "failed", "hypothesis_falsified", "retryable", "superseded"},
-    "frozen": {"evaluating", "building", "blocked", "failed", "retryable", "superseded"},
-    "evaluating": {"passed", "repairing", "blocked", "failed", "hypothesis_falsified", "retryable", "superseded"},
-    "repairing": {"building", "frozen", "blocked", "failed", "hypothesis_falsified", "retryable", "superseded"},
-    "retryable": {"planning", "building", "blocked", "failed", "superseded"},
-    "blocked": {"pending", "planning", "superseded"},
-    "failed": {"retryable", "superseded"},
-    "hypothesis_falsified": {"superseded"},
-    "passed": {"superseded"},
-    "superseded": set(),
-}
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+from vfx_harness.orchestration.unit_state_queries import SCHEMA as SCHEMA
+from vfx_harness.orchestration.unit_state_queries import load as load
+from vfx_harness.orchestration.unit_state_queries import load_snapshot as load_snapshot
+from vfx_harness.orchestration.unit_state_queries import (
+    ready_from_durable_state as ready_from_durable_state,
+)
+from vfx_harness.orchestration.unit_state_queries import validate_current as validate_current
+from vfx_harness.orchestration.unit_state_selection import selected_attempt_state_mutation
+from vfx_harness.orchestration.unit_state_storage import now as _now
+from vfx_harness.orchestration.unit_state_storage import write as _write
 
 
 def _path(folder: str | Path, layer_id: str) -> Path:
     return unit_state_path(folder, layer_id)
-
-
-def _write(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
-
-
-def load(folder: str | Path, layer_id: str) -> dict:
-    path = _path(folder, layer_id)
-    if not path.is_file():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{path} is invalid JSON: {exc}") from exc
-    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
-        raise ValueError(f"{path} must be an object with schema={SCHEMA}")
-    if not isinstance(value.get("units"), dict):
-        raise ValueError(f"{path}.units must be an object")
-    return value
-
-
-def unit_digest(unit: WorkUnit) -> str:
-    """Identity hash of a WorkUnit.
-
-    Empty ``publishes`` / ``consumes`` and default procedural ``construction`` are
-    omitted so schema-4 durable hashes stay comparable for units that never declared
-    interfaces or a generate/retrieve/simplify route. Non-empty values participate,
-    so changing an interface id, kind, export, or construction route invalidates the
-    producer and its ``apply_replan`` closure (HIR-0084, ADR-0009). Adding a field
-    that is always present in this payload still requires a DIGEST_SCHEMA bump.
-    """
-    payload = asdict(unit)
-    if not payload.get("publishes"):
-        payload.pop("publishes", None)
-    if not payload.get("consumes"):
-        payload.pop("consumes", None)
-    construction = payload.get("construction")
-    if isinstance(construction, dict) and (
-        construction.get("route", "procedural") == "procedural"
-        and not construction.get("witnesses")
-        and not construction.get("reason")
-    ):
-        payload.pop("construction", None)
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def digest_matched_passed(
-    state: Mapping[str, Any] | dict,
-    units: tuple[WorkUnit, ...],
-) -> set[str]:
-    """Passed units whose stored digest matches the current WorkUnit.
-
-    Cross-schema stored hashes are not comparable; those rows stay in the passed
-    set because apply_replan is the invalidation closure (HIR-0084).
-    """
-    rows = (state or {}).get("units") or {}
-    passed = {
-        uid for uid, row in rows.items()
-        if isinstance(row, dict) and row.get("status") == "passed"
-    }
-    if not state or int(state.get("digest_schema", 1)) != DIGEST_SCHEMA:
-        return passed
-    by_id = {unit.id: unit for unit in units}
-    sealed: set[str] = set()
-    for uid in passed:
-        unit = by_id.get(uid)
-        row = rows.get(uid) or {}
-        if unit is not None and row.get("unit_hash") == unit_digest(unit):
-            sealed.add(uid)
-    return sealed
-
-
-def ready_from_durable_state(
-    folder: str | Path,
-    layer_id: str,
-    units: tuple[WorkUnit, ...],
-    *,
-    eligible_passed: set[str] | None = None,
-) -> tuple[WorkUnit, ...]:
-    """Resolve the ready set from one fresh durable-state snapshot.
-
-    A multi-unit build mutates unit state after every accepted checkpoint. Holding the
-    snapshot that existed before a producer ran makes its newly passed digest invisible
-    to the next scheduling decision. Read, validate, derive passed ids, and verify
-    producer digests together so readiness cannot mix lifecycle generations.
-
-    ``eligible_passed`` may narrow passed rows whose replay artifacts are locally
-    available to a caller; it can never broaden durable acceptance.
-    """
-
-    state = load(folder, layer_id)
-    validate_current(state, layer_id, units)
-    passed = {
-        str(uid)
-        for uid, row in ((state or {}).get("units") or {}).items()
-        if isinstance(row, dict) and row.get("status") == "passed"
-    }
-    if eligible_passed is not None:
-        passed &= {str(uid) for uid in eligible_passed}
-    sealed = digest_matched_passed(state, units) & passed
-    return ready_units(units, passed, sealed_producers=sealed)
-
-
-def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) -> None:
-    """Reject stale state before it grants planning or dependency authority."""
-    if not value:
-        return
-    if str(value.get("layer")) != str(layer_id):
-        raise ValueError(f"work-unit state belongs to layer {value.get('layer')}, not {layer_id}")
-    expected = {unit.id: unit_digest(unit) for unit in units}
-    actual = {uid: row.get("unit_hash") for uid, row in value["units"].items()}
-    if set(actual) != set(expected):
-        raise ValueError("work-unit state IDs do not match the active layer DAG; apply a transactional replan")
-    if int(value.get("digest_schema", 1)) != DIGEST_SCHEMA:
-        # `unit_digest` hashes the whole WorkUnit, so ADDING a field changes every
-        # stored digest and would brick durable state on any schema growth (adding
-        # `look_capabilities` did exactly that). Digests from another schema are not
-        # comparable, so identity is verified here and the replan closure — which
-        # recomputes both sides under the current schema — decides what is preserved.
-        return
-    changed = sorted(uid for uid in expected if actual.get(uid) != expected[uid])
-    if changed:
-        raise ValueError(
-            "work-unit state hashes do not match the active layer DAG for "
-            + ", ".join(changed)
-            + "; apply a transactional replan"
-        )
 
 
 @serialized_state_mutation(_path)
@@ -225,6 +77,7 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
                 }
                 for unit in units
             },
+            "attempt_lineage": dict(current.get("attempt_lineage") or {}),
             "updated": now,
         }
         _write(_path(folder, layer_id), value)
@@ -277,6 +130,7 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
         },
         "superseded": [],
         "replans": [],
+        "attempt_lineage": {},
         "updated": now,
     }
     _write(_path(folder, layer_id), value)
@@ -320,6 +174,20 @@ def supersede_layer_units(
     superseded = list(value.get("superseded") or [])
     for uid in sorted(value["units"]):
         prior = dict(value["units"][uid])
+        unit_attempts.archive_active_attempt(
+            prior,
+            disposition="revoked",
+            reason=trigger,
+            evidence=list(evidence),
+            at=now,
+        )
+        unit_completion_receipts.archive_completion_receipt(
+            prior,
+            disposition="superseded",
+            reason=trigger,
+            evidence=list(evidence),
+            at=now,
+        )
         prior.update(
             {
                 "id": uid,
@@ -345,6 +213,7 @@ def supersede_layer_units(
     return value
 
 
+@selected_attempt_state_mutation
 @serialized_state_mutation(_path)
 def transition(
     folder: str | Path,
@@ -354,6 +223,8 @@ def transition(
     *,
     reason: str,
     metadata: dict | None = None,
+    attempt: unit_attempts.UnitAttemptClaim | Mapping[str, Any] | None = None,
+    selection_token: AuthoritySelectionToken | None = None,
 ) -> dict:
     if status not in UNIT_STATES:
         raise ValueError(f"unknown work-unit state {status!r}")
@@ -365,6 +236,26 @@ def transition(
     except KeyError as exc:
         raise KeyError(f"unknown work unit {unit_id!r}") from exc
     before = slot.get("status")
+    current_attempt = unit_attempts.require_attempt_matches_slot(
+        slot,
+        attempt,
+        layer_id=str(layer_id),
+        unit_id=unit_id,
+        unit_digest=slot.get("unit_hash"),
+        plan_hash=value.get("plan_hash"),
+    )
+    if current_attempt is None:
+        allowed = {("pending", "blocked"), ("blocked", "pending")}
+        if before != status and (before, status) not in allowed:
+            raise ValueError(
+                f"generic unclaimed transition refuses {unit_id}: {before} -> {status}; "
+                "only pending/blocked non-spend migration is legal"
+            )
+    elif status not in {"evaluating", "repairing"}:
+        raise ValueError(
+            f"generic claimed transition cannot enter {status!r}; use the typed "
+            "checkpoint, completion, release, falsification, or revocation transaction"
+        )
     if before == status:
         return value
     if status not in _TRANSITIONS.get(before, set()):
@@ -380,6 +271,7 @@ def transition(
     return value
 
 
+@selected_attempt_state_mutation
 @serialized_state_mutation(_path)
 def freeze_checkpoint(
     folder: str | Path,
@@ -392,14 +284,28 @@ def freeze_checkpoint(
     script_hash: str,
     input_hash: str,
     layer_active_vis_ids: Iterable[str] = (),
+    attempt: unit_attempts.UnitAttemptClaim | Mapping[str, Any] | None = None,
+    selection_token: AuthoritySelectionToken | None = None,
 ) -> dict:
     """Resolve wildcards once and persist the immutable candidate boundary."""
+    if attempt is None:
+        raise ValueError(
+            "checkpoint freeze requires the exact active work-unit attempt"
+        )
     value = load(folder, layer_id)
     if not value:
         raise ValueError("work-unit state is not initialized")
     slot = value.get("units", {}).get(unit.id)
     if not slot:
         raise KeyError(f"unknown work unit {unit.id!r}")
+    unit_attempts.require_attempt_matches_slot(
+        slot,
+        attempt,
+        layer_id=str(layer_id),
+        unit_id=unit.id,
+        unit_digest=unit_digest(unit),
+        plan_hash=value.get("plan_hash"),
+    )
     if slot.get("status") not in {"building", "repairing"}:
         raise ValueError(f"cannot freeze {unit.id} from state {slot.get('status')}")
     protected = set(unit.protects.resolve(active_contract_ids))
@@ -438,7 +344,7 @@ def block_dependents(
     value = load(folder, layer_id)
     if not value:
         raise ValueError("work-unit state is not initialized")
-    closure = _downstream({failed_unit}, units) - {failed_unit}
+    closure = downstream({failed_unit}, units) - {failed_unit}
     now = _now()
     for uid in sorted(closure):
         slot = value["units"][uid]
@@ -448,6 +354,13 @@ def block_dependents(
         if "blocked" not in _TRANSITIONS.get(before, set()) and before != "blocked":
             raise ValueError(f"cannot block dependent {uid} from state {before}")
         if before != "blocked":
+            unit_attempts.archive_active_attempt(
+                slot,
+                disposition="revoked",
+                reason=str(reason),
+                evidence=[f"upstream:{failed_unit}"],
+                at=now,
+            )
             slot.setdefault("history", []).append(
                 {"at": now, "from": before, "to": "blocked", "reason": str(reason)}
             )
@@ -484,7 +397,7 @@ def invalidate_checkpoint(
     if unit_id not in value["units"]:
         raise KeyError(f"unknown work unit {unit_id!r}")
 
-    affected = _downstream({unit_id}, units)
+    affected = downstream({unit_id}, units)
     now = _now()
     archived: dict[str, dict] = {}
     for uid in sorted(affected):
@@ -492,7 +405,22 @@ def invalidate_checkpoint(
         before = slot.get("status")
         if before == "superseded":
             raise ValueError(f"cannot invalidate superseded work unit {uid}")
+        unit_attempts.archive_active_attempt(
+            slot,
+            disposition="revoked",
+            reason=reason if uid == unit_id else f"upstream checkpoint {unit_id} invalidated",
+            evidence=list(evidence),
+            at=now,
+            archive_checkpoint=False,
+        )
         checkpoint = slot.pop("checkpoint", None)
+        unit_completion_receipts.archive_completion_receipt(
+            slot,
+            disposition="revoked",
+            reason=reason if uid == unit_id else f"upstream checkpoint {unit_id} invalidated",
+            evidence=list(evidence),
+            at=now,
+        )
         if checkpoint:
             archived[uid] = checkpoint
             slot.setdefault("invalidated_checkpoints", []).append(
@@ -532,6 +460,7 @@ def invalidate_checkpoint(
     return record
 
 
+@selected_attempt_state_mutation
 @serialized_state_mutation(_path)
 def record_hypothesis_falsification(
     folder: str | Path,
@@ -550,6 +479,8 @@ def record_hypothesis_falsification(
     evidence: list[str],
     affected_seed_ids: set[str] | tuple[str, ...] | list[str] | None = None,
     preserve_accepted_source: bool = False,
+    attempt: unit_attempts.UnitAttemptClaim | Mapping[str, Any] | None = None,
+    selection_token: AuthoritySelectionToken | None = None,
 ) -> dict:
     """Seal a plan finding and stop the unit without granting it mutation authority.
 
@@ -566,7 +497,20 @@ def record_hypothesis_falsification(
     if slot is None:
         raise KeyError(f"unknown work unit {unit.id!r}")
     before = slot.get("status")
+    source_attempt = unit_attempts.require_attempt_matches_slot(
+        slot,
+        attempt,
+        layer_id=str(layer_id),
+        unit_id=unit.id,
+        unit_digest=unit_digest(unit),
+        plan_hash=value.get("plan_hash"),
+    )
     preserve_accepted = bool(preserve_accepted_source and before == "passed")
+    if not preserve_accepted and source_attempt is None:
+        raise ValueError(
+            "hypothesis falsification requires the exact active work-unit attempt; "
+            "review an unclaimed historical row into retryable state first"
+        )
     if not preserve_accepted and "hypothesis_falsified" not in _TRANSITIONS.get(before, set()):
         raise ValueError(f"cannot falsify plan hypothesis for {unit.id} from state {before}")
     if preserve_accepted_source and not preserve_accepted:
@@ -578,7 +522,7 @@ def record_hypothesis_falsification(
     seeds.add(unit.id)
     upstream_owners = sorted(seeds - known_ids)
     local_seeds = (seeds & known_ids) | {unit.id}
-    affected = sorted(_downstream(local_seeds, units))
+    affected = sorted(downstream(local_seeds, units))
     now = _now()
     payload = {
         "schema": HYPOTHESIS_FALSIFICATION_SCHEMA,
@@ -610,10 +554,6 @@ def record_hypothesis_falsification(
     payload["record_id"] = f"hf-{digest[:20]}"
     HypothesisFalsification.parse(payload)
 
-    artifact = Path(folder) / STATE_DIR / "hypothesis-falsifications" / f"{payload['record_id']}.json"
-    artifact.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(artifact, json.dumps(payload, indent=2, sort_keys=True) + "\n")
-
     event = {
         "at": now,
         "from": before,
@@ -628,6 +568,22 @@ def record_hypothesis_falsification(
     }
     slot.setdefault("history", []).append(event)
     if not preserve_accepted:
+        if source_attempt is not None:
+            unit_attempts.archive_active_attempt(
+                slot,
+                disposition="completed",
+                reason=event["reason"],
+                evidence=list(evidence),
+                at=now,
+            )
+            unit_attempts.archive_attempt_checkpoint(
+                slot,
+                claim_id=source_attempt.claim_id,
+                disposition="revoked",
+                reason=event["reason"],
+                evidence=list(evidence),
+                at=now,
+            )
         slot["status"] = "hypothesis_falsified"
     slot["falsification"] = payload
     slot["updated"] = now
@@ -651,6 +607,13 @@ def record_hypothesis_falsification(
                 raise ValueError(
                     f"cannot block downstream unit {affected_unit} from {dependent_before}"
                 )
+            unit_attempts.archive_active_attempt(
+                dependent,
+                disposition="revoked",
+                reason=f"upstream hypothesis {unit.id} was falsified",
+                evidence=list(evidence),
+                at=now,
+            )
             dependent.setdefault("history", []).append({
                 "at": now,
                 "from": dependent_before,
@@ -663,45 +626,14 @@ def record_hypothesis_falsification(
     value.setdefault("falsifications", []).append(payload)
     value["updated"] = now
     _write(_path(folder, layer_id), value)
+    # State is the commit receipt; JSON is only its derived projection.
+    try:
+        hypothesis_falsification_projection.publish_projection(folder, payload)
+    except OSError as exc:
+        raise hypothesis_falsification_projection.FalsificationProjectionPending(
+            payload
+        ) from exc
     return payload
-
-
-def _downstream(seeds: set[str], units: tuple[WorkUnit, ...]) -> set[str]:
-    reverse: dict[str, set[str]] = {unit.id: set() for unit in units}
-    for unit in units:
-        for dep in unit.depends_on:
-            reverse.setdefault(dep, set()).add(unit.id)
-    out = set(seeds)
-    frontier = list(seeds)
-    while frontier:
-        current = frontier.pop()
-        for child in reverse.get(current, set()):
-            if child not in out:
-                out.add(child)
-                frontier.append(child)
-    return out
-
-
-def replan_effects(
-    old_units: tuple[WorkUnit, ...], new_units: tuple[WorkUnit, ...]
-) -> dict[str, list[str]]:
-    """Return the deterministic supersession closure without mutating durable state."""
-    validate_unit_dag(old_units, "old work-unit DAG")
-    validate_unit_dag(new_units, "new work-unit DAG")
-    old = {unit.id: unit for unit in old_units}
-    new = {unit.id: unit for unit in new_units}
-    added = set(new) - set(old)
-    removed = set(old) - set(new)
-    changed = {uid for uid in set(old) & set(new) if unit_digest(old[uid]) != unit_digest(new[uid])}
-    invalidated = _downstream(added | changed, new_units)
-    preserved = set(old) & set(new) - invalidated
-    return {
-        "added": sorted(added),
-        "removed": sorted(removed),
-        "changed": sorted(changed),
-        "invalidated": sorted(invalidated),
-        "preserved": sorted(preserved),
-    }
 
 
 @serialized_state_mutation(_path)
@@ -717,6 +649,7 @@ def apply_replan(
     trigger: str,
     evidence: list[str],
     falsification_id: str | None = None,
+    falsification_payload: Mapping[str, Any] | None = None,
     hard_constraint_approval: str | None = None,
     discard_accepted: bool = False,
     reopen: frozenset[str] | set[str] | tuple[str, ...] | None = None,
@@ -773,7 +706,7 @@ def apply_replan(
             for uid in state_unit_ids & new_ids
             if stored_hashes[uid] != unit_digest(new_by_id[uid])
         }
-        invalidated_ids = _downstream(added_ids | changed_ids, new_units)
+        invalidated_ids = downstream(added_ids | changed_ids, new_units)
         effects = {
             "added": sorted(added_ids),
             "removed": sorted(removed_ids),
@@ -813,19 +746,34 @@ def apply_replan(
             "discarding proven work requires --discard-accepted or a typed falsification record"
         )
 
+    if falsification_id is not None:
+        unit_state_replan.require_unconsumed_falsification(
+            value,
+            falsification_id,
+            falsification_payload,
+        )
+    elif falsification_payload is not None:
+        raise ValueError("replan falsification payload requires its exact record id")
+
+    unit_state_replan.revoke_active_authority(
+        value["units"],
+        plan_changed=old_plan_hash != new_plan_hash,
+        evidence=list(evidence),
+        at=now,
+    )
+
     next_slots: dict[str, dict] = {}
     superseded = list(value.get("superseded") or [])
     for uid in retiring:
-        prior = dict(value["units"].get(uid) or {})
-        prior.update(
-            {
-                "id": uid,
-                "status": "superseded",
-                "superseded_at": now,
-                "superseded_by_plan": new_plan_hash,
-            }
+        superseded.append(
+            unit_state_replan.retire_slot(
+                value["units"].get(uid) or {},
+                uid,
+                new_plan_hash=new_plan_hash,
+                evidence=list(evidence),
+                at=now,
+            )
         )
-        superseded.append(prior)
     for unit in new_units:
         if unit.id in preserved:
             slot = dict(value["units"][unit.id])

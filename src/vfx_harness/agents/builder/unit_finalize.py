@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import json as _json
 import shutil
 import time
@@ -13,11 +12,14 @@ from vfx_harness.agents.build_prompts import (
     canonical_repair_prompt,
     finalize_prompt,
 )
+from vfx_harness.agents.builder.attempt_guard import (
+    UnitAttemptAuthorityLost,
+    UnitAttemptGuard,
+)
 from vfx_harness.agents.builder.authority import (
-    commit_selected_authority,
     require_selected_authority_unchanged,
 )
-from vfx_harness.agents.builder.axes import _layer_needs_motion, distill_recipe
+from vfx_harness.agents.builder.axes import _layer_needs_motion
 from vfx_harness.agents.builder.critic_focus import (
     _canonical_failing_ids,
     _repair_action,
@@ -26,6 +28,7 @@ from vfx_harness.agents.builder.critic_focus import (
     _unsatisfiable_pair_findings,
 )
 from vfx_harness.agents.builder.evidence import _unit_evidence_ids_by_frame
+from vfx_harness.agents.builder.layer_outcome import publish_unit_layer_outcome
 from vfx_harness.agents.builder.models import (
     _TRUNCATED,
     MAX_CANON_REPAIRS,
@@ -39,9 +42,14 @@ from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import _run_script_agent
 from vfx_harness.agents.builder.revalidate import _blender_version
 from vfx_harness.agents.builder.state import _APPROACH, _ERRORS, _JOURNAL_INFO, _RECIPES_USED
+from vfx_harness.agents.builder.unit_evaluation import publish_unit_evaluation_outcome
 from vfx_harness.agents.builder.verify import _verify_script
 from vfx_harness.evaluation.plan_gate import _builder_render
-from vfx_harness.evidence.checks import revalidate_layer
+from vfx_harness.evidence.checks import (
+    commit_layer_revalidation,
+    discard_layer_revalidation,
+    prepare_layer_revalidation,
+)
 from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import (
@@ -52,7 +60,6 @@ from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.observability.runlog import snapshot_counts
 from vfx_harness.observability.runlog import summary as run_summary
 from vfx_harness.observability.runlog import write as write_run
-from vfx_harness.orchestration.layer_plans import write_layer_outcome
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
@@ -74,6 +81,7 @@ async def _persist_journal_and_finalize_script(
     shot,
     m,
     script_rel,
+    candidate_script_rel,
     prior_paths,
     session,
     priors,
@@ -86,6 +94,7 @@ async def _persist_journal_and_finalize_script(
     ledger,
     comparison_state,
     phase,
+    attempt_guard: UnitAttemptGuard,
     *,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ):
@@ -121,6 +130,8 @@ async def _persist_journal_and_finalize_script(
                     f"{info['dropped']} call(s) from discarded rounds excluded",
                     1,
                 )
+    except UnitAttemptAuthorityLost:
+        raise
     except Exception as e:  # never block finalize on a nicety
         log(f"journal unavailable ({str(e)[:60]})")
     phase["mode"] = "finalize"
@@ -161,17 +172,18 @@ async def _persist_journal_and_finalize_script(
         ),
         "comparison_state": comparison_state,
         "selected_authority": selected_authority,
+        "attempt_guard": attempt_guard,
     }
     with costlog.scoped(role="finalizer", phase="finalize_script", model=script_model()):
         fin = await _run_script_agent(
             shot,
             mode="finalize",
-            script_rel=script_rel,
+            script_rel=candidate_script_rel,
             prompt=finalize_prompt(
                 shot,
                 m,
                 priors=priors,
-                script_rel=script_rel,
+                script_rel=candidate_script_rel,
                 journal_rel=journal_rel,
                 raster_required=raster_required,
                 construction_route=str(
@@ -230,11 +242,13 @@ async def _publish_unit_outcome(
     passed,
     canonical,
     canon_verdicts,
+    canonical_replay_inputs,
     comparison_state,
     t_layer,
     last_info,
     _look_actions,
     scope,
+    attempt_guard: UnitAttemptGuard,
     *,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ):
@@ -258,24 +272,22 @@ async def _publish_unit_outcome(
         # layer 1's shipped as stale. Re-verify here, where "the render" stops moving,
         # even when a noisy critic disagrees with it.
         try:
-
-            def revalidate():
-                return revalidate_layer(
-                    shot.folder,
-                    str(getattr(layer, "id", m.id)),
-                    lambda c: _builder_render(shot.folder, c),
-                    selected_authority=selected_authority,
-                )
-            rv = (
-                revalidate()
-                if selected_authority is None
-                else commit_selected_authority(
-                    shot.folder,
-                    selected_authority,
-                    operation=f"revalidate layer {layer.id} image checks",
-                    mutation=revalidate,
-                )
+            attempt_guard.check(
+                f"start layer {layer.id} image-check revalidation"
             )
+            revalidation = prepare_layer_revalidation(
+                shot.folder,
+                str(getattr(layer, "id", m.id)),
+                lambda c: _builder_render(shot.folder, c),
+                selected_authority=selected_authority,
+            )
+            try:
+                rv = attempt_guard.publish(
+                    f"revalidate layer {layer.id} image checks",
+                    lambda: commit_layer_revalidation(revalidation),
+                )
+            finally:
+                discard_layer_revalidation(revalidation)
             if rv["dropped"]:
                 log(
                     f"builder checks: {rv['kept']} held, {len(rv['dropped'])} dropped as "
@@ -286,34 +298,42 @@ async def _publish_unit_outcome(
                     log(f"  dropped {cid}: {why}", 2)
             elif rv["kept"]:
                 log(f"builder checks: all {rv['kept']} still hold on the final renders", 1)
-        except Exception as e:
-            log(f"! builder-check revalidation skipped: {str(e)[:120]}", 1)
+        except UnitAttemptAuthorityLost:
+            raise
 
-        def publish_outcome():
-            return write_layer_outcome(
-                shot.folder,
-                layer,
-                status=status,
-                best=best,
-                canonical=canon_verdicts,
-                run_id=RUN_ID,
-                attempt=ledger._slot(m).get("attempt"),
-                blender_version=_blender_version(session),
-            )
-        outcome = (
-            publish_outcome()
-            if selected_authority is None
-            else commit_selected_authority(
-                shot.folder,
-                selected_authority,
-                operation=f"publish layer {layer.id} outcome",
-                mutation=publish_outcome,
-            )
+        blender_version = _blender_version(session)
+
+        if selected_authority is None:
+            raise ValueError("layer outcome publication requires selected authority")
+        outcome = publish_unit_layer_outcome(
+            shot.folder,
+            layer,
+            status=status,
+            best=best,
+            canonical=canon_verdicts,
+            run_id=RUN_ID,
+            ledger_attempt=int(ledger._slot(m).get("attempt") or 0),
+            blender_version=blender_version,
+            selected_authority=selected_authority,
+            attempt_guard=attempt_guard,
         )
         log(f"layer outcome → {outcome.relative_to(shot.folder)}", 1)
     # Publishing the sealed outcome is part of completion. Marking the ledger first could
     # let a later layer advance with no feedback artifact if the outcome write failed.
     ledger.mark(m, status, best=best)
+    if ok:
+        candidate_path = str((best or {}).get("render") or "") or None
+        publish_unit_evaluation_outcome(
+            shot.folder,
+            str(getattr(layer, "id", m.id)),
+            active_unit,
+            attempt_guard,
+            result=canonical,
+            canonical_verdicts=canon_verdicts,
+            ledger_slot=ledger._slot(m),
+            replay_inputs=canonical_replay_inputs,
+            candidate_path=candidate_path,
+        )
     if ok and layer is not None and publish_layer:
         abl = await builder_package()._ablate(shot, layer, prior_paths, script_rel, session)
         ledger.record_ablation(m, abl)
@@ -327,35 +347,6 @@ async def _publish_unit_outcome(
         v = ledger.snapshot_scripts(m, "pass")
         if v:
             log(f"chain snapshot → {Path(v).name} (revert point)", 1)
-    if ok or _ERRORS:
-        # QUEUED, not run here. Distillation writes recipes for FUTURE layers; nothing
-        # downstream in this run needs them, yet the run used to sit and wait for a model
-        # to finish writing prose before the next layer could start. Drain the queue with
-        # `python -m vfx_harness.agents.distill <shot>` after the run, or set VFXH_DISTILL_INLINE=1.
-        req = {"milestone": m.id, "script_rel": script_rel if ok else None, "errors": list(_ERRORS), "run_id": RUN_ID}
-        if builder_package().Settings.from_environment().distill_inline:
-            try:
-                await distill_recipe(shot, m, verbose, script_rel=script_rel if ok else None, errors=list(_ERRORS))
-            except Exception as e:
-                log(f"distill skipped: {str(e)[:80]}")
-        else:
-            try:
-                q = run_artifacts.logs_dir(shot.folder) / "distill_queue.jsonl"
-                q.parent.mkdir(parents=True, exist_ok=True)
-                with q.open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(req) + "\n")
-                log(
-                    f"distillation queued ({len(_ERRORS)} error(s)) → "
-                    f"{q.relative_to(shot.folder)}; drain with "
-                    f"`python -m vfx_harness.agents.distill {shot.folder}`",
-                    1,
-                )
-            except OSError as e:
-                log(f"! could not queue distillation, running it inline: {e}")
-                try:
-                    await distill_recipe(shot, m, verbose, script_rel=script_rel if ok else None, errors=list(_ERRORS))
-                except Exception as e2:
-                    log(f"distill skipped: {str(e2)[:80]}")
     # One report per layer: everything that previously took six greps, plus what the
     # HOOKS did — a hook that never fires is silent by accident and invisible otherwise.
     try:
@@ -454,6 +445,7 @@ async def _publish_unit_outcome(
     _ERRORS.clear()
     _RECIPES_USED.clear()
     _APPROACH.clear()
+    attempt_guard.check(f"complete unit {m.id} builder outcome")
     return ledger
 
 
@@ -478,6 +470,9 @@ async def _run_canonical_repairs(
     raster_required,
     phase,
     passed,
+    canonical_replay_inputs,
+    authority_script_rel,
+    attempt_guard: UnitAttemptGuard,
     *,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ):
@@ -536,6 +531,7 @@ async def _run_canonical_repairs(
         shutil.copyfile(shot.folder / script_rel, backup)
         pre_script = backup.read_text(encoding="utf-8")
         pre_verdicts = list(canon_verdicts or [])
+        pre_replay_inputs = list(canonical_replay_inputs)
         pre_canonical = canonical
         phase["mode"] = "repair"
         repair_error = None
@@ -558,6 +554,8 @@ async def _run_canonical_repairs(
                     verbose=verbose,
                     probe_ctx=probe_ctx,
                 )
+        except UnitAttemptAuthorityLost:
+            raise
         except Exception as exc:
             # Edit is not atomic with the SDK session: the agent can mutate the file
             # and then lose its process before yielding a terminal ResultMessage.
@@ -604,12 +602,15 @@ async def _run_canonical_repairs(
             )
             canon_verdicts.clear()
             canon_verdicts.extend(pre_verdicts)
+            canonical_replay_inputs.clear()
+            canonical_replay_inputs.extend(pre_replay_inputs)
             canonical = pre_canonical
             break
         # Re-verify, then compare against EVERY frame's pre-repair score rather than
         # only the failing ones — see _repair_delta, which owns both judgements (did
         # this break a passing frame, and did it move toward a pass at all).
         canon_verdicts.clear()
+        canonical_replay_inputs.clear()
         canonical = await _verify_script(
             shot,
             m,
@@ -626,7 +627,10 @@ async def _run_canonical_repairs(
             layer=layer,
             active_unit=active_unit,
             out_verdicts=canon_verdicts,
+            out_replay_inputs=canonical_replay_inputs,
+            authority_script_rel=authority_script_rel,
             selected_authority=selected_authority,
+            attempt_guard=attempt_guard,
         )
         delta = _repair_delta(pre_verdicts, canon_verdicts or [])
         was, now, broke = delta["was"], delta["now"], delta["broke"]
@@ -669,6 +673,8 @@ async def _run_canonical_repairs(
             )
             canon_verdicts.clear()
             canon_verdicts.extend(pre_verdicts)
+            canonical_replay_inputs.clear()
+            canonical_replay_inputs.extend(pre_replay_inputs)
             canonical = pre_canonical
             if action == "rollback_retry":
                 continue

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import json
 import shutil
 import time
 from functools import partial
@@ -16,15 +14,13 @@ from claude_agent_sdk import (
 from vfx_harness.agents.approach import review as approach_review
 from vfx_harness.agents.approach import revision_from_review
 from vfx_harness.agents.build_prompts import (
-    axis_feedback_groups,
     builder_kickoff,
-    capability_feedback_groups,
     recurring_complaints,
     revision_prompt,
 )
-from vfx_harness.agents.builder.authority import (
-    AuthorityBoundLedger,
-    commit_selected_authority,
+from vfx_harness.agents.builder.attempt_guard import (
+    AttemptBoundBlenderSession,
+    UnitAttemptGuard,
 )
 from vfx_harness.agents.builder.axes import (
     _builder_ticket_context,
@@ -34,17 +30,12 @@ from vfx_harness.agents.builder.axes import (
     _warn_unowned_axes,
     ensure_axes,
 )
+from vfx_harness.agents.builder.candidate_script import exact_candidate_script_path
 from vfx_harness.agents.builder.critic import _round_rank
 from vfx_harness.agents.builder.drain import _drain
 from vfx_harness.agents.builder.evidence import (
-    _fault_owner_options_for_unit,
-    _geometry_protected_vis_ids,
-    _scene_ids_active_at_declared_frames,
     _unit_raster_mode,
     _unit_requires_raster,
-    _unit_scene_evidence_ids,
-    image_evidence_required_for,
-    look_unsettled_for,
 )
 from vfx_harness.agents.builder.models import (
     _RESET,
@@ -56,24 +47,28 @@ from vfx_harness.agents.builder.models import (
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import (
     _builder_options,
-    _run_artifact_script,
 )
 from vfx_harness.agents.builder.revalidate import (
     _live_reopen_reason,
     _live_round_budget,
-    _retry_warm_start,
     _try_revalidate,
 )
 from vfx_harness.agents.builder.state import _APPROACH, _RECIPES_USED
+from vfx_harness.agents.builder.unit_construction import resolve_unit_construction
+from vfx_harness.agents.builder.unit_context import compile_unit_build_context
 from vfx_harness.agents.builder.unit_finalize import (
     _metric_report,
     _persist_journal_and_finalize_script,
     _publish_unit_outcome,
     _run_canonical_repairs,
 )
+from vfx_harness.agents.builder.unit_runtime import (
+    apply_retry_warm_start,
+    publish_candidate_script,
+    start_unit_runtime,
+)
 from vfx_harness.agents.builder.verdicts import _judge_unit_or_layer, _layer_motion_frames
 from vfx_harness.agents.builder.verify import _verify_script
-from vfx_harness.agents.unit_scope import compile_unit_scope_for_shot
 from vfx_harness.application.preflight import model_phase_failure
 from vfx_harness.blender.session import BlenderError, BlenderSession
 from vfx_harness.blender.tools import build_blender_tools, capture_image_adversaries
@@ -85,11 +80,7 @@ from vfx_harness.domain.image_debts import (
     unpaid_image_contract_debts,
 )
 from vfx_harness.evidence.checks import load_image_contract_payment_rows
-from vfx_harness.evidence.scene_checks import (
-    deferred_subject_composition_forecast_ids_for_unit,
-    load_rows,
-    prior_interface_evidence,
-)
+from vfx_harness.evidence.scene_checks import prior_interface_evidence
 from vfx_harness.knowledge.recipes import build_recipe_tools, log_recipe_use
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import (
@@ -104,14 +95,16 @@ from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     resolve_selected_authority,
 )
+from vfx_harness.orchestration.builder_execution_fence import (
+    builder_execution_fenced,
+)
 from vfx_harness.orchestration.layer_state import record_round as state_round
 from vfx_harness.orchestration.layer_state import start as state_start
 from vfx_harness.orchestration.ledger import Ledger, Milestone
 from vfx_harness.orchestration.unit_state import load as _load_unit_state
-from vfx_harness.orchestration.unit_state import load as load_unit_state_for_scope
-from vfx_harness.orchestration.unit_state import unit_digest
 
 
+@builder_execution_fenced
 async def build_unit(
     shot: Shot,
     m: Milestone,
@@ -130,178 +123,79 @@ async def build_unit(
     resume_ok: bool = False,
     layer_units=None,
     selected_authority: ResolvedSelectedAuthority | None = None,
+    attempt_guard: UnitAttemptGuard | None = None,
 ) -> Ledger:
     """The build+critic engine for ONE unit of work. Iteration is judged at m.frame vs
     m.ref; the canonical check covers every frame `layer` claims (see _verify_script)."""
+    if resume_ok:
+        raise ValueError(
+            "builder resume refused: legacy checkpoint/session rows are not exact "
+            "work-unit attempt receipts; reviewed retry starts a new attempt"
+        )
+    if active_unit is None or attempt_guard is None:
+        raise ValueError("build_unit requires an exact active work-unit attempt guard")
     selected_authority = selected_authority or resolve_selected_authority(shot.folder)
+    attempt_guard.check(f"start unit {getattr(layer, 'id', m.id)}.{active_unit.id} build")
+    session = AttemptBoundBlenderSession(session, attempt_guard)
 
     def publish(operation, mutation):
-        return commit_selected_authority(
-            shot.folder,
-            selected_authority,
-            operation=operation,
-            mutation=mutation,
-        )
+        return attempt_guard.publish(operation, mutation)
 
-    ledger = AuthorityBoundLedger(shot, selected_authority)
-    previous_slot = dict(ledger._slot(m))
-    previous_status = str(previous_slot.get("status") or "")
-    retry_script = shot.folder / script_rel
-
-    current_unit_hash = unit_digest(active_unit) if active_unit is not None else ""
-    warm_start_candidate = _retry_warm_start(
-        previous_status,
-        retry_script,
-        previous_artifact_unit_hash=str(
-            previous_slot.get("artifact_unit_hash") or ""
-        ),
-        current_unit_hash=current_unit_hash,
+    started = start_unit_runtime(
+        shot,
+        m,
+        script_rel,
+        active_unit,
+        selected_authority,
+        attempt_guard,
     )
-    ledger._slot(m)["script"] = script_rel
-    ledger._slot(m)["unit_hash"] = current_unit_hash
-    ledger.begin(m)
-    t_layer = time.monotonic()
+    ledger = started.ledger
+    previous_status = started.previous_status
+    retry_script = started.retry_script
+    current_unit_hash = started.unit_hash
+    warm_start_candidate = started.warm_start_candidate
+    t_layer = started.started_at
 
-    promoted = None
-    if active_unit is not None:
-        route = getattr(getattr(active_unit, "construction", None), "route", "procedural")
-        if route in {"generate", "retrieve"}:
-            promoted = generate_construction.prepare_generate_unit(
-                shot.folder, str(getattr(layer, "id", m.id)), active_unit
-            )
+    promoted = resolve_unit_construction(
+        shot,
+        str(getattr(layer, "id", m.id)),
+        active_unit,
+        current_unit_hash,
+        attempt_guard,
+    )
     generate_construction.pin_construction_import(session, promoted)
 
     revalidated = _try_revalidate(
         shot, m, script_rel, prior_paths, session, layer=layer, ledger=ledger,
         t_layer=t_layer, active_unit=active_unit,
+        attempt_guard=attempt_guard,
         selected_authority=selected_authority,
     )
     if revalidated is not None:
         return revalidated
 
+    attempt_guard.check(f"load axes for unit {active_unit.id}")
     all_axes = await ensure_axes(shot, verbose, selected_authority)
     _warn_unowned_axes(shot, all_axes, selected_authority)
     # A layer's ownership is already deterministic in layers.json. Passing every rubric
     # axis and asking the critic to decide which were n/a made the denominator move between
     # identical repeats. Filter before the builder prompt, critic prompt, and JSON schema.
     axes = _owned_axes(all_axes, layer)
-    # Shared with both the Blender tool server and the PreToolUse phase guard. The tool
-    # flips scene_contracts_passed atomically. Image-bound work then pauses mutation for
-    # an immutable comparison; executable-only work remains in BUILDING until the model's
-    # terminal handoff freezes its candidate (HIR-0118).
-    #
-    # Typed unit authority decides look scope. Only a unit that declares no capabilities
-    # at all (legacy schema-4 layers) falls back to scanning axis identifiers, which
-    # silently denied an appearance-owning unit its own feedback in run 20260823T154920Z.
-    _declared_capabilities = tuple(getattr(active_unit, "look_capabilities", ()) or ())
-    # A declaring work unit owns look scope even when the tuple is empty: [] means
-    # executable-only (HIR-0032). Falling back to axis-identifier scanning treated
-    # camera_continuity as motion look-feedback and called the critic on black plates.
-    _feedback_groups = (
-        capability_feedback_groups(_declared_capabilities)
-        if active_unit is not None
-        else axis_feedback_groups(axes)
-    )
-    _look_actions = bool(_feedback_groups)
-    active_evidence_ids = _unit_scene_evidence_ids(active_unit)
-    diagnostic_evidence_ids: set[str] = set()
-    if active_evidence_ids is not None and layer is not None:
-        try:
-            extra_vis = _geometry_protected_vis_ids(
-                shot,
-                layer,
-                active_unit,
-                selected_authority=selected_authority,
-            )
-        except (OSError, ValueError, KeyError):
-            extra_vis = set()
-        active_evidence_ids = set(active_evidence_ids) | extra_vis
-        frames = [int(m.frame)]
-        frames.extend(int(frame) for frame, _ref in (getattr(layer, "judges", None) or ()))
-        with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
-            active_evidence_ids = _scene_ids_active_at_declared_frames(
-                shot,
-                str(layer.id),
-                active_evidence_ids,
-                frames,
-                selected_authority=selected_authority,
-            )
-        with contextlib.suppress(OSError, ValueError, KeyError, json.JSONDecodeError):
-
-            diagnostic_evidence_ids = set(
-                deferred_subject_composition_forecast_ids_for_unit(
-                    load_rows(shot.folder, selected_authority),
-                    tuple(layer_units or getattr(layer, "stages", ()) or ()),
-                    active_unit,
-                    str(layer.id),
-                )
-            )
-    active_image_evidence_ids = {
-        binding.id
-        for claim in (active_unit.evaluation.claims if active_unit else ())
-        if claim.required
-        for binding in claim.evidence
-        if binding.kind == "image_contract"
-    }
-    image_evidence_required = image_evidence_required_for(
-        active_image_evidence_ids, _declared_capabilities
-    )
-    look_unsettled = look_unsettled_for(
-        active_image_evidence_ids, _declared_capabilities
-    )
-
-    image_debts = (
-        [card.as_dict() for card in image_contract_debt_cards(active_unit)]
-        if active_unit is not None
-        else []
-    )
-
-    fault_owner_options = _fault_owner_options_for_unit(
+    build_context = compile_unit_build_context(
         shot,
+        m,
         layer,
         active_unit,
+        axes,
+        layer_units=layer_units,
         selected_authority=selected_authority,
     )
-
-    phase = {
-        "mode": "live",
-        "round": 1,
-        "frame": int(m.frame),
-        "look_actions": _look_actions,
-        "look_unsettled": look_unsettled,
-        "active_evidence_ids": active_evidence_ids,
-        "diagnostic_evidence_ids": diagnostic_evidence_ids,
-        "active_image_evidence_ids": active_image_evidence_ids,
-        "image_evidence_required": image_evidence_required,
-        "image_debts": image_debts,
-        "unpaid_image_debts": list(image_debts),
-        "unit_id": str(getattr(active_unit, "id", "") or ""),
-        "unit_hash": unit_digest(active_unit) if active_unit is not None else "",
-        "fault_owner_options": fault_owner_options,
-    }
+    _feedback_groups = build_context.feedback_groups
+    _look_actions = build_context.look_actions
+    phase = build_context.phase
     comparison_state = phase
     scope_baseline: set[str] = set()
-    unit_scope_card = None
-    if active_unit is not None:
-
-        layer_units = tuple(layer_units or getattr(layer, "stages", ()) or ())
-        if len(layer_units) <= 1:
-            layer_units = tuple(layer_units or ((active_unit,) if active_unit is not None else ()))
-        try:
-            durable_state = load_unit_state_for_scope(
-                shot.folder, str(getattr(layer, "id", m.id))
-            )
-        except ValueError:
-            durable_state = {}
-        unit_scope_card = compile_unit_scope_for_shot(
-            shot,
-            active_unit,
-            str(getattr(layer, "id", m.id)),
-            units=layer_units,
-            durable_state=durable_state,
-            selected_authority=selected_authority,
-        )
-        unit_scope_card["fault_owner_options"] = fault_owner_options
+    unit_scope_card = build_context.scope_card
     bserver, bnames = build_blender_tools(
         session,
         assets_dir=shot.folder / "assets",
@@ -321,6 +215,7 @@ async def build_unit(
         scope_baseline=scope_baseline,
         unit_scope=unit_scope_card,
         selected_authority=selected_authority,
+        attempt_guard=attempt_guard,
     )
     rserver, rnames = build_recipe_tools(
         on_use=lambda names: (log_recipe_use(shot.folder, names), _RECIPES_USED.extend(names)),
@@ -336,32 +231,10 @@ async def build_unit(
     # Deterministic base + prior delta scripts (a unit extends the existing scene).
     session.run(_RESET)
     session.run(builder_package()._preamble(shot))
-    resume = ledger.get_resume(m) if resume_ok else None
-    if resume:
-        # Establish the exact dependency-chain adversary before restoring the active
-        # unit checkpoint. Image-payment authority must never use the resumed candidate
-        # as its own "before" state.
-        priors = builder_package()._run_prior_paths(session, prior_paths)
-        generate_construction.pin_construction_import(session, promoted)
-
-        capture_image_adversaries(session, shot.folder, comparison_state, prior_paths)
-        unit_journal_start = int(session.journal().get("calls", 0))
-        log(
-            f"↻ resuming layer {m.id} from round {resume['round']}: restoring scene "
-            f"+ replaying journal[{resume['journal_index']}:]"
-        )
-        session.restore(resume["blend"])
-        try:
-            n = session.replay(resume["journal_index"]).get("replayed", 0)
-            log(f"  replayed {n} journalled call(s) — scene matches the session", 1)
-        except BlenderError as e:
-            log(f"  ! replay failed ({str(e)[:60]}) — continuing from the checkpoint", 1)
-    else:
-        priors = builder_package()._run_prior_paths(session, prior_paths)
-        generate_construction.pin_construction_import(session, promoted)
-
-        capture_image_adversaries(session, shot.folder, comparison_state, prior_paths)
-        unit_journal_start = int(session.journal().get("calls", 0))
+    priors = builder_package()._run_prior_paths(session, prior_paths)
+    generate_construction.pin_construction_import(session, promoted)
+    capture_image_adversaries(session, shot.folder, comparison_state, prior_paths)
+    unit_journal_start = int(session.journal().get("calls", 0))
 
     if layer is not None and int(layer.id) > 1:
 
@@ -385,27 +258,17 @@ async def build_unit(
         if interfaces:
             log(f"prior interface preflight: {len(interfaces)}/{len(interfaces)} pass", 1)
 
-    warm_started = False
-    if warm_start_candidate:
-        # A failed canonical script is still valuable measured work.  Starting the next
-        # attempt from priors alone made the builder spend another hour recreating the
-        # same rig, while the artifact containing its best state sat unused on disk.
-        # Replay it through the journal so finalisation still sees a complete L4 delta.
-        # If it no longer executes, restore the clean prior chain and fall back loudly.
-        try:
-            _run_artifact_script(session, retry_script)
-            warm_started = True
-            log(
-                f"retry warm start: replayed prior {previous_status} artifact {script_rel}; "
-                "builder will repair this scene instead of rebuilding it",
-                1,
-            )
-        except BlenderError as exc:
-            log(f"retry warm start rejected ({str(exc)[:120]}); restoring clean prior layers", 1)
-            session.run(_RESET)
-            session.run(builder_package()._preamble(shot))
-            priors = builder_package()._run_prior_paths(session, prior_paths)
-            generate_construction.pin_construction_import(session, promoted)
+    warm_started, priors = apply_retry_warm_start(
+        shot,
+        session,
+        prior_paths,
+        priors,
+        promoted,
+        enabled=warm_start_candidate,
+        retry_script=retry_script,
+        previous_status=previous_status,
+        script_rel=script_rel,
+    )
 
     # The scene is now fully staged (priors + any warm-start replay): everything present
     # is inherited authority the live scope check must not flag against this unit.
@@ -442,6 +305,7 @@ async def build_unit(
         ),
     )
     canon_verdicts: list = []
+    canonical_replay_inputs: list = []
     passed = False
     reviewed = False  # one approach review per layer; a second plateau stops
     best = {"mean": -1.0, "round": 0, "render": None, "verdict": None}
@@ -457,9 +321,8 @@ async def build_unit(
         phase=phase,
         ticket_context=ticket_context,
         selected_authority=selected_authority,
+        attempt_guard=attempt_guard,
     )
-    if resume and resume.get("session_id"):
-        opts.resume = resume["session_id"]  # SDK restores the CONVERSATION
     async with ClaudeSDKClient(options=opts) as builder:
         also = [(f, r) for f, r in (layer.judges if layer else ()) if f != m.frame]
         # What earlier ATTEMPTS at this layer were told and kept being told. Without
@@ -523,9 +386,15 @@ async def build_unit(
             model=builder_model(),
             system_prompt_chars=len(opts.system_prompt or ""),
         )
+        attempt_guard.check(f"query unit {active_unit.id} live builder")
         await builder.query(_kickoff)
         _tools_before = sum(TOOL_USE.values())
-        info = last_info = await _drain(builder, verbose)
+        info = last_info = await _drain(
+            builder,
+            verbose,
+            attempt_guard=attempt_guard,
+        )
+        attempt_guard.check(f"complete unit {active_unit.id} live builder")
         # A layer that spent nothing and touched no tool did not build anything, whatever
         # the result subtype claims. Caught here rather than after the critic, because the
         # next thing this function does is pay a vision model to look at an empty scene.
@@ -615,6 +484,7 @@ async def build_unit(
                 active_unit=active_unit,
                 selected_authority=selected_authority,
             )
+            attempt_guard.check(f"judge unit {active_unit.id} round {rnd}")
             verdict = await _judge_unit_or_layer(
                 shot,
                 m,
@@ -631,6 +501,7 @@ async def build_unit(
                 allow_motion=_layer_needs_motion(layer),
                 layer=layer,
                 selected_authority=selected_authority,
+                attempt_guard=attempt_guard,
             )
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             convergence_stop = _evidence_convergence_stop(layer, verdict)
@@ -693,6 +564,9 @@ async def build_unit(
                     phase="approach_review",
                     model=builder_package().Settings.from_environment(load_dotenv_file=False).reviewer_model,
                 ):
+                    attempt_guard.check(
+                        f"review unit {active_unit.id} approach at round {rnd}"
+                    )
                     out = await approach_review(
                         shot,
                         layer,
@@ -707,6 +581,7 @@ async def build_unit(
                 ledger.record_review(m, rnd, out)
                 _revision_tools_before = sum(TOOL_USE.values())
                 _revision_prior_cost = float(last_info.get("cost") or 0.0)
+                attempt_guard.check(f"query unit {active_unit.id} reviewed revision")
                 await builder.query(revision_from_review(layer, out))
             elif plateaued:
                 log(f"plateau again after review ({verdict['mean']}) — stopping revisions")
@@ -714,8 +589,14 @@ async def build_unit(
             else:
                 _revision_tools_before = sum(TOOL_USE.values())
                 _revision_prior_cost = float(last_info.get("cost") or 0.0)
+                attempt_guard.check(f"query unit {active_unit.id} revision {rnd + 1}")
                 await builder.query(revision_prompt(m, verdict, render_rel))
-            last_info = await _drain(builder, verbose)
+            last_info = await _drain(
+                builder,
+                verbose,
+                attempt_guard=attempt_guard,
+            )
+            attempt_guard.check(f"complete unit {active_unit.id} revision {rnd + 1}")
             _why = model_phase_failure(
                 last_info,
                 sum(TOOL_USE.values()) - _revision_tools_before,
@@ -751,6 +632,7 @@ async def build_unit(
             session.restore(best["snap"]["blend"])
             _restore_tools_before = sum(TOOL_USE.values())
             _restore_prior_cost = float(last_info.get("cost") or 0.0)
+            attempt_guard.check(f"query unit {active_unit.id} restore acknowledgement")
             await builder.query(
                 f"NOTE: the scene has been RESTORED to your round-{best['round']} state "
                 f"(the best-scoring round, mean {best['mean']}) — your later revision "
@@ -759,7 +641,12 @@ async def build_unit(
                 f"LIVE_BUILD, and the harness will send a separate FINALIZE_SCRIPT "
                 f"request after it captures the journal."
             )
-            last_info = await _drain(builder, verbose)
+            last_info = await _drain(
+                builder,
+                verbose,
+                attempt_guard=attempt_guard,
+            )
+            attempt_guard.check(f"complete unit {active_unit.id} restore acknowledgement")
             _why = model_phase_failure(
                 last_info,
                 sum(TOOL_USE.values()) - _restore_tools_before,
@@ -774,10 +661,14 @@ async def build_unit(
                     terminal_cause="model_session_failure",
                 )
 
+        run_artifacts.ensure(shot.folder, command="build")
+        candidate_path = exact_candidate_script_path(shot.folder, attempt_guard)
+        candidate_script_rel = candidate_path.relative_to(shot.folder).as_posix()
         probe_ctx = await _persist_journal_and_finalize_script(
             shot,
             m,
             script_rel,
+            candidate_script_rel,
             prior_paths,
             session,
             priors,
@@ -790,6 +681,7 @@ async def build_unit(
             ledger,
             comparison_state,
             phase,
+            attempt_guard,
             selected_authority=selected_authority,
         )
 
@@ -832,7 +724,7 @@ async def build_unit(
             canonical = await _verify_script(
                 shot,
                 m,
-                script_rel,
+                candidate_script_rel,
                 prior_paths,
                 session,
                 axes,
@@ -845,13 +737,16 @@ async def build_unit(
                 layer=layer,
                 active_unit=active_unit,
                 out_verdicts=canon_verdicts,
+                out_replay_inputs=canonical_replay_inputs,
+                authority_script_rel=script_rel,
                 selected_authority=selected_authority,
+                attempt_guard=attempt_guard,
             )
 
         canonical = await _run_canonical_repairs(
             shot,
             m,
-            script_rel,
+            candidate_script_rel,
             prior_paths,
             session,
             axes,
@@ -869,7 +764,16 @@ async def build_unit(
             raster_required,
             phase,
             passed,
+            canonical_replay_inputs,
+            script_rel,
+            attempt_guard,
             selected_authority=selected_authority,
+        )
+        publish_candidate_script(
+            shot.folder,
+            candidate_path,
+            script_rel,
+            attempt_guard,
         )
     return await _publish_unit_outcome(
         shot,
@@ -888,10 +792,12 @@ async def build_unit(
         passed,
         canonical,
         canon_verdicts,
+        canonical_replay_inputs,
         comparison_state,
         t_layer,
         last_info,
         _look_actions,
         scope,
+        attempt_guard,
         selected_authority=selected_authority,
     )

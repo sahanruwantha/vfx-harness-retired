@@ -101,7 +101,16 @@ MAX_CANON_REPAIRS = 2
 
 _REPO = PROJECT_ROOT
 
-_RESET = "import bpy\nbpy.ops.wm.read_factory_settings(use_empty=True)\n"
+_RESET = (
+    "import bpy\n"
+    "_vfx_handlers = bpy.app.handlers\n"
+    "for _vfx_handler_name in dir(_vfx_handlers):\n"
+    "    _vfx_handler_list = getattr(_vfx_handlers, _vfx_handler_name)\n"
+    "    if isinstance(_vfx_handler_list, list):\n"
+    "        _vfx_handler_list.clear()\n"
+    "bpy.ops.wm.read_factory_settings(use_empty=True)\n"
+    "del _vfx_handlers, _vfx_handler_name, _vfx_handler_list\n"
+)
 
 # Terminations that mean "the builder never finished", as opposed to "it finished badly".
 _TRUNCATED = {"error_max_turns", "error_max_budget_usd"}

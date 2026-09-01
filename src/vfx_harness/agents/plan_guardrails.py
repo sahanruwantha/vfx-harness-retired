@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from claude_agent_sdk import HookMatcher
 
@@ -433,9 +434,20 @@ def planner_hooks(
     writable_files: tuple[str | Path, ...] | None = None,
     strict_reads: bool = False,
     completion_gate: bool = True,
+    attempt_guard: Any | None = None,
 ) -> dict:
+    async def require_attempt(inp, tool_use_id, ctx):
+        tool = inp.get("tool_name", "") if isinstance(inp, dict) else ""
+        attempt_guard.check(f"unit planner tool {tool or 'unknown'}")
+        return {}
+
+    attempt_hooks = (
+        [HookMatcher(matcher=None, hooks=[require_attempt])]
+        if attempt_guard is not None
+        else []
+    )
     hooks = {
-        "PreToolUse": [planner_path_scope(
+        "PreToolUse": [*attempt_hooks, planner_path_scope(
             shot_folder,
             readable_files=readable_files,
             readable_roots=readable_roots,

@@ -34,6 +34,7 @@ def build_blender_tools(
     scope_baseline: set[str] | None = None,
     unit_scope: dict | None = None,
     selected_authority=None,
+    attempt_guard=None,
 ):
     """Wire the warm session as SDK tools. `assets_dir` enables `import_asset`;
     `shot_dir` enables `compare_frame` to resolve reference paths (e.g. refs/…).
@@ -159,17 +160,28 @@ def build_blender_tools(
         # the builder a dead-end action.
         if not _payment_eligible_candidate(rendered):
             return None
-        record = _capture_image_artifact(
-            shot_dir=shot_dir,
-            source=rendered["image_path"],
-            frame=int(rendered["frame"]),
-            mode=str(rendered["mode"]),
-            scale=float(rendered.get("scale", 0.5)),
-            resolution=rendered.get("resolution"),
-            role="live_candidate",
-            unit_id=str(comparison_state.get("unit_id") or "unit"),
-            parent_chain_hash=str(comparison_state.get("parent_chain_hash") or ""),
-        )
+        def capture():
+            return _capture_image_artifact(
+                shot_dir=shot_dir,
+                source=rendered["image_path"],
+                frame=int(rendered["frame"]),
+                mode=str(rendered["mode"]),
+                scale=float(rendered.get("scale", 0.5)),
+                resolution=rendered.get("resolution"),
+                role="live_candidate",
+                unit_id=str(comparison_state.get("unit_id") or "unit"),
+                parent_chain_hash=str(comparison_state.get("parent_chain_hash") or ""),
+            )
+
+        if attempt_guard is None:
+            record = capture()
+        else:
+            # The copied plate is unreferenced run evidence until its handle is
+            # registered below. Keep hashing/copying and run-layout I/O outside the
+            # state lock; a replan may leave only an inert orphan in this run.
+            attempt_guard.check("start unit image candidate capture")
+            record = capture()
+            attempt_guard.check("finish unit image candidate capture")
         comparison_state.setdefault("image_artifacts", {})[record["handle"]] = record
         return str(record["handle"])
 
@@ -204,6 +216,7 @@ def build_blender_tools(
     script_map, find_in_script, worklist, cannot_express_in_scope, measure_regions, propose_checks = register_misc(
         **closed,
         selected_authority=selected_authority,
+        attempt_guard=attempt_guard,
     )
     tools = [
         run_bpy,

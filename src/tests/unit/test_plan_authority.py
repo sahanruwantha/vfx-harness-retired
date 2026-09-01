@@ -18,6 +18,7 @@ from vfx_harness.agents.plan_guardrails import (
 )
 from vfx_harness.agents.planner import _phase_tools, plan_role_capabilities
 from vfx_harness.agents.prompts import verifier_user_prompt
+from vfx_harness.infrastructure.trusted_files import TrustedFileError
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import plan_authority, plan_bundle_integrity
 from vfx_harness.orchestration.jit_materialization.schema import OVERLAY_ARTIFACTS
@@ -643,14 +644,14 @@ def test_first_time_staging_wraps_an_unreadable_reference_as_publication_error(
     reference = tmp_path / "refs" / "one.png"
     reference.write_bytes(b"reference")
     layout = run_artifacts.create(tmp_path, "staging-unreadable-reference")
-    original_read_bytes = Path.read_bytes
+    original_read = plan_bundle_integrity.read_trusted_file
 
-    def deny_reference(path: Path) -> bytes:
+    def deny_reference(root: Path, path: Path, where: str):
         if path == reference:
-            raise PermissionError("injected unreadable reference")
-        return original_read_bytes(path)
+            raise TrustedFileError(f"{where} is unreadable: {path}")
+        return original_read(root, path, where)
 
-    monkeypatch.setattr(Path, "read_bytes", deny_reference)
+    monkeypatch.setattr(plan_bundle_integrity, "read_trusted_file", deny_reference)
     with pytest.raises(PlanPublicationError, match="authored reference input is unreadable"):
         prepare_staging(layout)
     assert not (layout.scratch / "plan-workspace").exists()
@@ -1032,14 +1033,14 @@ def test_selected_bundle_wraps_unreadable_authored_input_as_publication_error(
     reference.write_bytes(b"reference")
     layout = run_artifacts.create(tmp_path, "unreadable-reference")
     publish_current(tmp_path, layout, outcome="clean")
-    original_read_bytes = Path.read_bytes
+    original_read = plan_bundle_integrity.read_trusted_file
 
-    def deny_reference(path: Path) -> bytes:
+    def deny_reference(root: Path, path: Path, where: str):
         if path == reference:
-            raise PermissionError("injected unreadable reference")
-        return original_read_bytes(path)
+            raise TrustedFileError(f"{where} is unreadable: {path}")
+        return original_read(root, path, where)
 
-    monkeypatch.setattr(Path, "read_bytes", deny_reference)
+    monkeypatch.setattr(plan_bundle_integrity, "read_trusted_file", deny_reference)
     with pytest.raises(PlanPublicationError, match="authored reference input is unreadable"):
         resolve_current(tmp_path)
 

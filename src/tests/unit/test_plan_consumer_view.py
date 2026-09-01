@@ -198,7 +198,8 @@ def test_consumer_view_copies_and_binds_exact_planning_inputs(tmp_path: Path) ->
     assert not (view / "plan_amendments.jsonl").is_symlink()
     assert not (view / "state").is_symlink()
     assert not (view / "state" / "plan-resolutions.jsonl").is_symlink()
-    assert (view / "state" / "work-units").is_symlink()
+    assert (view / "state" / "work-units").is_dir()
+    assert not (view / "state" / "work-units").is_symlink()
     assert marker.authored_inputs == {
         "brief.md": hashlib.sha256(b"# original brief\n").hexdigest(),
         "refs/hero.txt": hashlib.sha256(b"original ref\n").hexdigest(),

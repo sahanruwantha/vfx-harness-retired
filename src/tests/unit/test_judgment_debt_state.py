@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.unit_attempt_fixtures import executed_replay_input
 from vfx_harness.domain.judgment_debts import (
     JudgmentDebtActivation,
     JudgmentDebtDefinition,
@@ -82,10 +83,18 @@ def test_replay_prefix_receipt_is_ordered_hash_pinned_and_canonical(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scripts, unit_digests = _receipt_fixture(tmp_path, monkeypatch)
+    replay_inputs = tuple(
+        executed_replay_input(
+            tmp_path,
+            script.relative_to(tmp_path).as_posix(),
+        )
+        for script in scripts
+    )
 
     receipt = judgment_debt_state.replay_prefix_receipt(
         tmp_path,
         replayed_layer_scripts=scripts,
+        replay_inputs=replay_inputs,
     )
 
     assert [layer.layer_id for layer in receipt.layers] == ["1", "2"]
@@ -109,16 +118,26 @@ def test_replay_prefix_receipt_is_ordered_hash_pinned_and_canonical(
     assert judgment_debt_state.replay_prefix_unit_digests(
         tmp_path,
         replayed_layer_scripts=scripts,
+        replay_inputs=replay_inputs,
     ) == tuple(unit_digests.items())
     assert judgment_debt_state.replay_prefix_receipt(
         tmp_path,
         replayed_layer_scripts=scripts,
+        replay_inputs=replay_inputs,
     ).digest == receipt.digest
 
     scripts[1].write_text("# changed layer receipt artifact\n", encoding="utf-8")
+    changed_replay_inputs = (
+        replay_inputs[0],
+        executed_replay_input(
+            tmp_path,
+            scripts[1].relative_to(tmp_path).as_posix(),
+        ),
+    )
     assert judgment_debt_state.replay_prefix_receipt(
         tmp_path,
         replayed_layer_scripts=scripts,
+        replay_inputs=changed_replay_inputs,
     ).digest != receipt.digest
 
 
@@ -127,6 +146,13 @@ def test_replay_prefix_receipt_rejects_checkpoint_script_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scripts, _unit_digests = _receipt_fixture(tmp_path, monkeypatch)
+    replay_inputs = tuple(
+        executed_replay_input(
+            tmp_path,
+            script.relative_to(tmp_path).as_posix(),
+        )
+        for script in scripts
+    )
     (tmp_path / "build" / "units" / "2" / "hall_form.py").write_text(
         "# changed after checkpoint\n", encoding="utf-8"
     )
@@ -135,7 +161,36 @@ def test_replay_prefix_receipt_rejects_checkpoint_script_drift(
         judgment_debt_state.replay_prefix_receipt(
             tmp_path,
             replayed_layer_scripts=scripts,
+            replay_inputs=replay_inputs,
         )
+
+
+def test_replay_prefix_receipt_rejects_swap_then_restore_of_executed_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts, _unit_digests = _receipt_fixture(tmp_path, monkeypatch)
+    replay_inputs = tuple(
+        executed_replay_input(
+            tmp_path,
+            script.relative_to(tmp_path).as_posix(),
+        )
+        for script in scripts
+    )
+    original = scripts[1].with_suffix(".original")
+    scripts[1].rename(original)
+    scripts[1].write_bytes(original.read_bytes())
+
+    try:
+        with pytest.raises(ValueError, match="trusted path changed"):
+            judgment_debt_state.replay_prefix_receipt(
+                tmp_path,
+                replayed_layer_scripts=scripts,
+                replay_inputs=replay_inputs,
+            )
+    finally:
+        scripts[1].unlink()
+        original.rename(scripts[1])
 
 
 def _definition_and_activation() -> tuple[JudgmentDebtDefinition, JudgmentDebtActivation]:

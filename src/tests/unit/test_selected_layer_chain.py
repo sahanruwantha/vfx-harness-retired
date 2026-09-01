@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +12,7 @@ import pytest
 
 import vfx_harness.orchestration.selected_layer_chain as selected_chain
 from vfx_harness.agents import acceptance, acceptance_stop
+from vfx_harness.agents.builder import prior as builder_prior
 from vfx_harness.application import render_shot
 from vfx_harness.domain.brief import Shot
 from vfx_harness.orchestration.authority_selection_transaction import (
@@ -197,6 +198,87 @@ def test_selected_layer_chain_uses_stable_global_dag_order(
     ]
 
 
+def test_builder_prior_prefix_uses_selected_dag_not_script_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    chain = selected_chain.selected_layer_chain(shot)
+    (tmp_path / "build" / "00_orphan.py").write_text("# stray\n", encoding="utf-8")
+    receipts = {
+        (layer.id, unit.id): _digest(f"{layer.id}:{unit.id}")
+        for layer in chain
+        for unit in layer.stages
+    }
+
+    @contextmanager
+    def verified(_folder):
+        yield receipts
+
+    monkeypatch.setattr(builder_prior, "selected_layer_chain", lambda *_args, **_kwargs: chain)
+    monkeypatch.setattr(
+        builder_prior,
+        "Ledger",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status=lambda _milestone: "passed",
+            stale=lambda _milestone: None,
+        ),
+    )
+    monkeypatch.setattr(builder_prior, "current_completion_receipt_digests", verified)
+    monkeypatch.setattr(
+        builder_prior.unit_state,
+        "load",
+        lambda _folder, layer_id: {
+            "units": {
+                unit.id: {"status": "passed"}
+                for layer in chain
+                if layer.id == layer_id
+                for unit in layer.stages
+            }
+        },
+    )
+    monkeypatch.setattr(builder_prior.unit_state, "validate_current", lambda *_args: None)
+    monkeypatch.setattr(
+        builder_prior.unit_state,
+        "digest_matched_passed",
+        lambda _state, units: {unit.id for unit in units},
+    )
+
+    paths = builder_prior._prior_layer_paths(
+        shot,
+        chain[-1],
+        selected_authority=SimpleNamespace(),
+    )
+
+    assert [path.relative_to(tmp_path).as_posix() for path in paths] == [
+        "build/30_camera.py",
+        "build/20_form.py",
+    ]
+
+
+def test_builder_prior_prefix_fails_closed_without_ledger_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    chain = selected_chain.selected_layer_chain(shot)
+    monkeypatch.setattr(builder_prior, "selected_layer_chain", lambda *_args, **_kwargs: chain)
+    monkeypatch.setattr(
+        builder_prior,
+        "Ledger",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("shot.json is invalid JSON")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON"):
+        builder_prior._prior_layer_paths(
+            shot,
+            chain[-1],
+            selected_authority=SimpleNamespace(),
+        )
+
+
 def test_finished_chain_consumers_share_selected_global_dag_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -205,15 +287,25 @@ def test_finished_chain_consumers_share_selected_global_dag_order(
     expected = ["build/30_camera.py", "build/20_form.py", "build/01_composite.py"]
 
     replayed: list[str] = []
+    prepared = builder_prior._prepare_artifact_replay_inputs(
+        shot.folder,
+        [
+            (relative, shot.folder / relative)
+            for relative in expected
+        ],
+    )
     monkeypatch.setattr(acceptance, "_RESET", "reset")
     monkeypatch.setattr(acceptance, "_preamble", lambda _shot: "preamble")
+    monkeypatch.setattr(acceptance, "_unit_completion_failures", lambda *_args: [])
     monkeypatch.setattr(
         acceptance,
         "_run_artifact_script",
-        lambda _session, path: replayed.append(path.relative_to(shot.folder).as_posix()),
+        lambda _session, path, _prepared: replayed.append(
+            path.relative_to(shot.folder).as_posix()
+        ),
     )
     session = SimpleNamespace(run=lambda _code: None)
-    assert acceptance._chain(session, shot) == expected
+    assert acceptance._chain(session, shot, prepared_inputs=prepared) == expected
     assert replayed == expected
 
     bundle = SimpleNamespace(
@@ -273,6 +365,44 @@ def test_finished_chain_consumers_share_selected_global_dag_order(
     assert [path.relative_to(shot.folder).as_posix() for path in render_shot._chain_scripts(shot)] == expected
 
 
+def test_acceptance_replay_rejects_script_swap_before_execution_then_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    chain = selected_chain.selected_layer_chain(shot)
+    entries = [
+        (str(layer.script), shot.folder / layer.script)
+        for layer in chain
+    ]
+    prepared = builder_prior._prepare_artifact_replay_inputs(shot.folder, entries)
+    target = entries[0][1]
+    original = target.with_suffix(".accepted")
+    calls = 0
+
+    def run(_source: str, **_kwargs) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            target.rename(original)
+            target.write_text("# transient substituted script\n", encoding="utf-8")
+
+    monkeypatch.setattr(acceptance, "_RESET", "reset")
+    monkeypatch.setattr(acceptance, "_preamble", lambda _shot: "preamble")
+    monkeypatch.setattr(acceptance, "_unit_completion_failures", lambda *_args: [])
+
+    try:
+        with pytest.raises(builder_prior.BlenderError, match="trusted path changed"):
+            acceptance._chain(
+                SimpleNamespace(run=run),
+                shot,
+                prepared_inputs=prepared,
+            )
+    finally:
+        target.unlink(missing_ok=True)
+        original.rename(target)
+
+
 def test_render_mp4_replays_selected_scripts_through_evaluated_frame_barrier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -310,7 +440,7 @@ def test_render_mp4_replays_selected_scripts_through_evaluated_frame_barrier(
     monkeypatch.setattr(
         render_shot,
         "_run_artifact_script",
-        lambda active, path: (
+        lambda active, path, _prepared: (
             pytest.fail("render barrier received another Blender session")
             if active is not session
             else barrier_calls.append(path.relative_to(shot.folder).as_posix())

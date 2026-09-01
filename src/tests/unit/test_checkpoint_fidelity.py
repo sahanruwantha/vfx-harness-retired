@@ -281,6 +281,216 @@ def test_session_passes_the_selected_index_through(monkeypatch) -> None:
     assert result["dropped"] == 3
 
 
+def test_parent_publication_is_invisible_until_commit_and_disposable(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.blender.session import (
+        _commit_durable_parent_publish,
+        _discard_prepared_parent_publish,
+        _prepare_durable_parent_publish,
+    )
+
+    scratch = tmp_path / "scratch"
+    checkpoints = tmp_path / "checkpoints"
+    scratch.mkdir()
+    checkpoints.mkdir()
+    source = scratch / "snapshot.blend"
+    destination = checkpoints / "snapshot.blend"
+    payload = b"checkpoint-bytes" * 131_072
+    source.write_bytes(payload)
+
+    abandoned = _prepare_durable_parent_publish(
+        source,
+        destination,
+        source_root=scratch,
+    )
+    assert not destination.exists()
+    assert abandoned.temporary.is_file()
+    _discard_prepared_parent_publish(abandoned)
+    assert not abandoned.temporary.exists()
+    assert not destination.exists()
+
+    accepted = _prepare_durable_parent_publish(
+        source,
+        destination,
+        source_root=scratch,
+    )
+    digest = _commit_durable_parent_publish(accepted)
+    assert digest == accepted.sha256
+    assert destination.read_bytes() == payload
+    assert not accepted.temporary.exists()
+
+
+def test_parent_publication_refuses_same_size_temp_mutation(tmp_path: Path) -> None:
+    from vfx_harness.blender.session import (
+        BlenderError,
+        _commit_durable_parent_publish,
+        _discard_prepared_parent_publish,
+        _prepare_durable_parent_publish,
+    )
+
+    scratch = tmp_path / "scratch"
+    checkpoints = tmp_path / "checkpoints"
+    scratch.mkdir()
+    checkpoints.mkdir()
+    source = scratch / "snapshot.blend"
+    destination = checkpoints / "snapshot.blend"
+    source.write_bytes(b"accepted-candidate")
+    prepared = _prepare_durable_parent_publish(
+        source,
+        destination,
+        source_root=scratch,
+    )
+    prepared.temporary.write_bytes(b"modified-candidate")
+
+    try:
+        with pytest.raises(BlenderError, match="identity changed"):
+            _commit_durable_parent_publish(prepared)
+    finally:
+        _discard_prepared_parent_publish(prepared)
+
+    assert not destination.exists()
+    assert not prepared.temporary.exists()
+
+
+def test_parent_publication_refuses_substituted_temp_entry_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.blender.session import (
+        BlenderError,
+        _commit_durable_parent_publish,
+        _prepare_durable_parent_publish,
+    )
+
+    scratch = tmp_path / "scratch"
+    checkpoints = tmp_path / "checkpoints"
+    scratch.mkdir()
+    checkpoints.mkdir()
+    source = scratch / "snapshot.blend"
+    destination = checkpoints / "snapshot.blend"
+    source.write_bytes(b"accepted-candidate")
+    prepared = _prepare_durable_parent_publish(
+        source,
+        destination,
+        source_root=scratch,
+    )
+    detached = checkpoints / "detached-prepared.blend"
+    prepared.temporary.rename(detached)
+    prepared.temporary.write_bytes(b"substituted-candidate")
+
+    with pytest.raises(BlenderError, match=r"identity changed|directory entry changed"):
+        _commit_durable_parent_publish(prepared)
+
+    assert not destination.exists()
+    assert detached.read_bytes() == b"accepted-candidate"
+    assert prepared.temporary.read_bytes() == b"substituted-candidate"
+
+
+def test_parent_publication_discard_preserves_substituted_temp_entry(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.blender.session import (
+        _discard_prepared_parent_publish,
+        _prepare_durable_parent_publish,
+    )
+
+    scratch = tmp_path / "scratch"
+    checkpoints = tmp_path / "checkpoints"
+    scratch.mkdir()
+    checkpoints.mkdir()
+    source = scratch / "snapshot.blend"
+    destination = checkpoints / "snapshot.blend"
+    source.write_bytes(b"accepted-candidate")
+    prepared = _prepare_durable_parent_publish(
+        source,
+        destination,
+        source_root=scratch,
+    )
+    detached = checkpoints / "detached-prepared.blend"
+    prepared.temporary.rename(detached)
+    prepared.temporary.write_bytes(b"substituted-candidate")
+
+    _discard_prepared_parent_publish(prepared)
+
+    assert detached.read_bytes() == b"accepted-candidate"
+    assert prepared.temporary.read_bytes() == b"substituted-candidate"
+
+
+def test_parent_publication_refuses_destination_directory_substitution(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.blender.session import (
+        BlenderError,
+        _commit_durable_parent_publish,
+        _discard_prepared_parent_publish,
+        _prepare_durable_parent_publish,
+    )
+
+    scratch = tmp_path / "scratch"
+    checkpoints = tmp_path / "checkpoints"
+    scratch.mkdir()
+    checkpoints.mkdir()
+    source = scratch / "snapshot.blend"
+    destination = checkpoints / "snapshot.blend"
+    source.write_bytes(b"accepted-candidate")
+    prepared = _prepare_durable_parent_publish(
+        source,
+        destination,
+        source_root=scratch,
+    )
+    retired = tmp_path / "checkpoints-retired"
+    checkpoints.rename(retired)
+    checkpoints.mkdir()
+
+    try:
+        with pytest.raises(BlenderError, match="destination directory changed"):
+            _commit_durable_parent_publish(prepared)
+    finally:
+        _discard_prepared_parent_publish(prepared)
+
+    assert not destination.exists()
+    assert not (retired / prepared.temporary_name).exists()
+
+
+def test_parent_publication_refuses_source_root_substitution(
+    tmp_path: Path,
+) -> None:
+    from vfx_harness.blender.session import (
+        BlenderError,
+        _commit_durable_parent_publish,
+        _discard_prepared_parent_publish,
+        _prepare_durable_parent_publish,
+    )
+
+    scratch = tmp_path / "scratch"
+    checkpoints = tmp_path / "checkpoints"
+    outside = tmp_path / "outside"
+    scratch.mkdir()
+    checkpoints.mkdir()
+    outside.mkdir()
+    source = scratch / "snapshot.blend"
+    destination = checkpoints / "snapshot.blend"
+    source.write_bytes(b"accepted-candidate")
+    (outside / source.name).write_bytes(b"attacker-candidate")
+    prepared = _prepare_durable_parent_publish(
+        source,
+        destination,
+        source_root=scratch,
+    )
+    retired = tmp_path / "scratch-retired"
+    scratch.rename(retired)
+    scratch.symlink_to(outside, target_is_directory=True)
+
+    try:
+        with pytest.raises(BlenderError, match="trusted root"):
+            _commit_durable_parent_publish(prepared)
+    finally:
+        _discard_prepared_parent_publish(prepared)
+
+    assert not destination.exists()
+    assert not (checkpoints / prepared.temporary_name).exists()
+
+
 def test_camera_rig_helper_tags_both_objects(worker) -> None:
     """The helper persisted an untagged rig and camera, so any scoped unit using it
     inherited a canonical-replay rejection it could not repair — re-invoking the helper

@@ -388,7 +388,8 @@ async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str]
         )
     elif accepted:
         log(
-            f"accepted unit(s) {', '.join(accepted)} stay unless the replacement DAG invalidates them",
+            f"accepted unit(s) {', '.join(accepted)} retain digest-matched checkpoints, "
+            "but plan-bound completion authority reopens unless reconciled",
             1,
         )
 

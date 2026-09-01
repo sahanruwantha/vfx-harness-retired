@@ -30,13 +30,21 @@ restores the API key explicitly.
 from __future__ import annotations
 
 import argparse
+import ctypes.util
 import hashlib
 import json
 import os
 import shutil
+import tempfile
+from functools import lru_cache
 from pathlib import Path
 
-from vfx_harness.domain.environment_results import EnvironmentCheck, EnvironmentResult
+from vfx_harness.blender.session import BlenderError, BlenderSession
+from vfx_harness.domain.environment_results import (
+    EnvironmentCheck,
+    EnvironmentProbeSpec,
+    EnvironmentResult,
+)
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
 from vfx_harness.domain.stop_transaction_state import (
@@ -50,6 +58,11 @@ from vfx_harness.domain.stop_transactions import (
 )
 from vfx_harness.infrastructure.config import Settings, credential_preference, load_environment
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration.builder_execution_fence import (
+    BuilderExecutionFenceActive,
+    BuilderExecutionFenceError,
+    builder_execution_fence,
+)
 
 # What the Agent SDK / Claude Code CLI actually reads, in the precedence measured above.
 _READ = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -156,6 +169,155 @@ def _safe_auth() -> dict:
         }
 
 
+@lru_cache(maxsize=8)
+def _probe_blender_confinement(resolved_blender: str | None) -> dict:
+    """Exercise the real shot-bound worker capability view without durable state."""
+
+    bwrap = shutil.which("bwrap")
+    libseccomp = ctypes.util.find_library("seccomp")
+    problems: list[str] = []
+    if resolved_blender is None:
+        problems.append("Blender confinement cannot run until Blender resolves.")
+    if bwrap is None:
+        problems.append("bubblewrap (`bwrap`) is unavailable.")
+    if libseccomp is None:
+        problems.append("libseccomp is unavailable.")
+    worker_blender = None
+    if not problems:
+        temporary_root: Path | None = None
+        host_canary: Path | None = None
+        session: BlenderSession | None = None
+        previous_run_dir = os.environ.get("VFXH_RUN_DIR")
+        previous_canary = os.environ.get("VFXH_PREFLIGHT_HOST_CANARY")
+        try:
+            temporary_root = Path(tempfile.mkdtemp(prefix=".vfxh-preflight-"))
+            refs = temporary_root / "refs"
+            refs.mkdir()
+            declared = refs / "declared.txt"
+            declared.write_text("declared", encoding="utf-8")
+            old_input = temporary_root / "runs" / "old" / "scratch" / "input.txt"
+            old_input.parent.mkdir(parents=True)
+            old_input.write_text("old", encoding="utf-8")
+            host_canary = temporary_root.parent / f"{temporary_root.name}-host-input"
+            host_canary.write_text("host", encoding="utf-8")
+            os.environ["VFXH_PREFLIGHT_HOST_CANARY"] = "must-not-cross"
+            session = BlenderSession(
+                blender=str(resolved_blender),
+                cwd=temporary_root,
+                boot_timeout=60.0,
+            )
+            sibling_input = session.artifacts.parent / "sibling-input.txt"
+            sibling_input.write_text("sibling", encoding="utf-8")
+            worker_output = session.artifacts / "capability-probe.txt"
+            session.start()
+            worker_blender = str(session.ping().get("blender") or "").strip() or None
+            if worker_blender is None:
+                problems.append("confined Blender worker returned no version identity.")
+            capability = session.run(
+                "import os\n"
+                "from pathlib import Path\n"
+                "RESULT = {\n"
+                f"  'declared': Path({str(declared)!r}).read_text(),\n"
+                f"  'old_hidden': not Path({str(old_input)!r}).exists(),\n"
+                f"  'sibling_hidden': not Path({str(sibling_input)!r}).exists(),\n"
+                f"  'host_hidden': not Path({str(host_canary)!r}).exists(),\n"
+                "  'environment_hidden': "
+                "'VFXH_PREFLIGHT_HOST_CANARY' not in os.environ,\n"
+                "}\n"
+                f"Path({str(worker_output)!r}).write_text('active')\n",
+                journal=False,
+            ).get("result")
+            expected = {
+                "declared": "declared",
+                "old_hidden": True,
+                "sibling_hidden": True,
+                "host_hidden": True,
+                "environment_hidden": True,
+            }
+            if capability != expected or not worker_output.is_file():
+                problems.append(
+                    "confined Blender worker did not enforce its declared-input/"
+                    "active-scratch capability view."
+                )
+            self_test = session.check(kind="self_test")
+            if not bool((self_test.get("gate") or {}).get("ok")):
+                problems.append(
+                    "confined Blender worker could not load and pass its packaged "
+                    "deterministic check self-test."
+                )
+        except (BlenderError, OSError, RuntimeError, ValueError) as exc:
+            message = str(exc)
+            if temporary_root is not None:
+                message = message.replace(
+                    str(temporary_root), "<private-preflight-root>"
+                )
+            problems.append(
+                f"confined Blender worker smoke failed ({type(exc).__name__}): "
+                + message[-400:]
+            )
+        finally:
+            if session is not None:
+                session.close()
+            if previous_run_dir is None:
+                os.environ.pop("VFXH_RUN_DIR", None)
+            else:
+                os.environ["VFXH_RUN_DIR"] = previous_run_dir
+            if previous_canary is None:
+                os.environ.pop("VFXH_PREFLIGHT_HOST_CANARY", None)
+            else:
+                os.environ["VFXH_PREFLIGHT_HOST_CANARY"] = previous_canary
+            if host_canary is not None:
+                host_canary.unlink(missing_ok=True)
+            if temporary_root is not None:
+                shutil.rmtree(temporary_root, ignore_errors=True)
+    return {
+        "ok": not problems,
+        "bwrap": bwrap,
+        "libseccomp": libseccomp,
+        "worker_blender": worker_blender,
+        "problems": problems,
+    }
+
+
+@lru_cache(maxsize=1)
+def _probe_builder_execution_fence() -> dict:
+    """Exercise the kernel fence contract without leaving durable shot state."""
+
+    problems: list[str] = []
+    temporary_root: Path | None = None
+    try:
+        temporary_root = Path(tempfile.mkdtemp(prefix=".vfxh-fence-preflight-"))
+        with builder_execution_fence(temporary_root):
+            try:
+                with builder_execution_fence(temporary_root):
+                    pass
+            except BuilderExecutionFenceActive:
+                pass
+            else:
+                problems.append(
+                    "kernel builder fence admitted a second live owner for one shot."
+                )
+    except (BuilderExecutionFenceError, OSError, RuntimeError, ValueError) as exc:
+        message = str(exc)
+        if temporary_root is not None:
+            message = message.replace(
+                str(temporary_root),
+                "<private-fence-preflight-root>",
+            )
+        problems.append(
+            f"kernel builder fence smoke failed ({type(exc).__name__}): "
+            + message[-400:]
+        )
+    finally:
+        if temporary_root is not None:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+    return {
+        "ok": not problems,
+        "mechanism": "sysv-sem-undo+descriptor-flock",
+        "problems": problems,
+    }
+
+
 def check(blender: str | None = None) -> dict:
     a = _safe_auth()
     configuration = {"ok": True, "problems": []}
@@ -177,11 +339,21 @@ def check(blender: str | None = None) -> dict:
             else [f"Blender executable {configured_blender!r} is not available or executable."]
         ),
     }
+    confinement = _probe_blender_confinement(resolved_blender)
+    builder_fence = _probe_builder_execution_fence()
     return {
-        "ok": bool(a["ok"] and configuration["ok"] and blender_result["ok"]),
+        "ok": bool(
+            a["ok"]
+            and configuration["ok"]
+            and blender_result["ok"]
+            and confinement["ok"]
+            and builder_fence["ok"]
+        ),
         "auth": a,
         "configuration": configuration,
         "blender": blender_result,
+        "blender_confinement": confinement,
+        "builder_execution_fence": builder_fence,
     }
 
 
@@ -204,11 +376,15 @@ def probe(blender: str | None = None) -> dict:
                 else [f"Blender executable {requested!r} is not available or executable."]
             ),
         }
+        confinement = _probe_blender_confinement(resolved)
+        builder_fence = _probe_builder_execution_fence()
         return {
             "ok": False,
             "auth": a,
             "configuration": configuration,
             "blender": blender_result,
+            "blender_confinement": confinement,
+            "builder_execution_fence": builder_fence,
         }
     return check(blender)
 
@@ -218,11 +394,21 @@ def environment_result(value: dict) -> EnvironmentResult:
     auth_result = value.get("auth") if isinstance(value, dict) else None
     configuration = value.get("configuration") if isinstance(value, dict) else None
     blender = value.get("blender") if isinstance(value, dict) else None
-    if not all(isinstance(row, dict) for row in (auth_result, configuration, blender)):
-        raise ValueError("preflight result requires auth, configuration, and Blender observations")
+    confinement = value.get("blender_confinement") if isinstance(value, dict) else None
+    builder_fence = value.get("builder_execution_fence") if isinstance(value, dict) else None
+    if not all(
+        isinstance(row, dict)
+        for row in (auth_result, configuration, blender, confinement, builder_fence)
+    ):
+        raise ValueError(
+            "preflight result requires auth, configuration, Blender, and Blender "
+            "confinement, and builder-fence observations"
+        )
     assert isinstance(auth_result, dict)
     assert isinstance(configuration, dict)
     assert isinstance(blender, dict)
+    assert isinstance(confinement, dict)
+    assert isinstance(builder_fence, dict)
     safe_observation = {
         "schema": "vfx-harness.auth-observation/v1",
         "using": auth_result.get("using"),
@@ -262,45 +448,106 @@ def environment_result(value: dict) -> EnvironmentResult:
         if blender_passed
         else "; ".join(str(problem) for problem in blender_safe["problems"])
     )
+    confinement_safe = {
+        "schema": "vfx-harness.blender-confinement-observation/v1",
+        "bwrap": confinement.get("bwrap"),
+        "libseccomp": confinement.get("libseccomp"),
+        "worker_blender": confinement.get("worker_blender"),
+        "problems": list(confinement.get("problems") or []),
+    }
+    confinement_passed = bool(confinement.get("ok"))
+    confinement_found = (
+        "A real Blender worker booted with read-only filesystem confinement and "
+        "thread-synchronized network/process syscall denial."
+        if confinement_passed
+        else "; ".join(str(problem) for problem in confinement_safe["problems"])
+    )
+    fence_safe = {
+        "schema": "vfx-harness.builder-execution-fence-observation/v1",
+        "mechanism": builder_fence.get("mechanism"),
+        "problems": list(builder_fence.get("problems") or []),
+    }
+    fence_passed = bool(builder_fence.get("ok"))
+    fence_found = (
+        "The kernel builder fence excluded a second live owner and released cleanly."
+        if fence_passed
+        else "; ".join(str(problem) for problem in fence_safe["problems"])
+    )
+    checks = (
+        EnvironmentCheck(
+            check_id="builder_execution_fence",
+            passed=fence_passed,
+            observed_digest=canonical_digest(fence_safe),
+            expected=(
+                "A crash-recoverable kernel fence excludes duplicate live builders "
+                "before paid execution."
+            ),
+            found=fence_found,
+            next_action=(
+                "No builder-fence recovery is required."
+                if fence_passed
+                else "Repair System V semaphore availability/limits and rerun strict preflight."
+            ),
+        ),
+        EnvironmentCheck(
+            check_id="blender_confinement",
+            passed=confinement_passed,
+            observed_digest=canonical_digest(confinement_safe),
+            expected=(
+                "A real Blender worker boots under bubblewrap read-only mounts and "
+                "thread-synchronized libseccomp confinement."
+            ),
+            found=confinement_found,
+            next_action=(
+                "No Blender confinement recovery is required."
+                if confinement_passed
+                else "Install or repair bubblewrap/libseccomp and rerun strict preflight."
+            ),
+        ),
+        EnvironmentCheck(
+            check_id="credential_configuration",
+            passed=auth_passed,
+            observed_digest=canonical_digest(safe_observation),
+            expected="Exactly one valid selected credential is visible to the model runtime.",
+            found=auth_found,
+            next_action=(
+                "No environment recovery is required."
+                if auth_passed
+                else "Correct the named credential variables, then run strict preflight again."
+            ),
+        ),
+        EnvironmentCheck(
+            check_id="runtime_configuration",
+            passed=configuration_passed,
+            observed_digest=canonical_digest(configuration_safe),
+            expected="Runtime configuration parses under the current strict settings schema.",
+            found=configuration_found,
+            next_action=(
+                "No configuration recovery is required."
+                if configuration_passed
+                else "Correct the named configuration value, then run strict preflight again."
+            ),
+        ),
+        EnvironmentCheck(
+            check_id="blender_executable",
+            passed=blender_passed,
+            observed_digest=canonical_digest(blender_safe),
+            expected="The configured Blender executable resolves to an executable file.",
+            found=blender_found,
+            next_action=(
+                "No Blender recovery is required."
+                if blender_passed
+                else "Install Blender or select a valid executable, then run strict preflight again."
+            ),
+        ),
+    )
     return EnvironmentResult(
         probe_id="preflight",
-        checks=(
-            EnvironmentCheck(
-                check_id="credential_configuration",
-                passed=auth_passed,
-                observed_digest=canonical_digest(safe_observation),
-                expected="Exactly one valid selected credential is visible to the model runtime.",
-                found=auth_found,
-                next_action=(
-                    "No environment recovery is required."
-                    if auth_passed
-                    else "Correct the named credential variables, then run strict preflight again."
-                ),
-            ),
-            EnvironmentCheck(
-                check_id="runtime_configuration",
-                passed=configuration_passed,
-                observed_digest=canonical_digest(configuration_safe),
-                expected="Runtime configuration parses under the current strict settings schema.",
-                found=configuration_found,
-                next_action=(
-                    "No configuration recovery is required."
-                    if configuration_passed
-                    else "Correct the named configuration value, then run strict preflight again."
-                ),
-            ),
-            EnvironmentCheck(
-                check_id="blender_executable",
-                passed=blender_passed,
-                observed_digest=canonical_digest(blender_safe),
-                expected="The configured Blender executable resolves to an executable file.",
-                found=blender_found,
-                next_action=(
-                    "No Blender recovery is required."
-                    if blender_passed
-                    else "Install Blender or select a valid executable, then run strict preflight again."
-                ),
-            ),
+        checks=checks,
+        probe_spec=EnvironmentProbeSpec(
+            probe_id="preflight",
+            probe_revision=3,
+            check_ids=tuple(sorted(check.check_id for check in checks)),
         ),
     )
 
@@ -409,6 +656,26 @@ def report(d: dict) -> str:
     )
     for problem in blender["problems"]:
         L.append(f"   ✗ {problem}")
+    confinement = d.get("blender_confinement") or {
+        "ok": False,
+        "problems": ["not checked"],
+    }
+    L.append(
+        "   blender confinement: "
+        + ("verified" if confinement["ok"] else "UNAVAILABLE")
+    )
+    for problem in confinement["problems"]:
+        L.append(f"   ✗ {problem}")
+    builder_fence = d.get("builder_execution_fence") or {
+        "ok": False,
+        "problems": ["not checked"],
+    }
+    L.append(
+        "   builder execution fence: "
+        + ("verified" if builder_fence["ok"] else "UNAVAILABLE")
+    )
+    for problem in builder_fence["problems"]:
+        L.append(f"   ✗ {problem}")
     if d["ok"]:
         L.append("   ✓ nothing to fix")
     return "\n".join(L)
@@ -429,6 +696,8 @@ def warn_if_broken() -> bool:
         *d["auth"]["problems"],
         *d["configuration"]["problems"],
         *d["blender"]["problems"],
+        *d["blender_confinement"]["problems"],
+        *d["builder_execution_fence"]["problems"],
     ]:
         log(f"✗ {p}", 1)
     log("  fix these first: a misconfigured credential does not fail loudly, it fails "

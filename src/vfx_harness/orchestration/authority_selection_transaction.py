@@ -23,6 +23,10 @@ from vfx_harness.domain.authority_head_records import (
     canonical_json_bytes,
     parse_authority_selection_token,
 )
+from vfx_harness.orchestration.builder_execution_fence import (
+    BuilderExecutionFenceError,
+    stable_live_path_identity,
+)
 
 AUTHORITY_SELECTION_LOCK = Path("state/authority-selection/selection.lock")
 _DIRECTORY_OPEN_FLAGS = (
@@ -145,13 +149,22 @@ def require_matching_authority_selection_token(
 def _shot_path(shot_folder: str | Path) -> Path:
     raw = Path(shot_folder).expanduser()
     shot = Path(os.path.abspath(raw))
+    descriptor: int | None = None
     try:
-        descriptor = os.open(shot, _DIRECTORY_OPEN_FLAGS)
+        descriptor = os.open(shot.anchor, _DIRECTORY_OPEN_FLAGS)
+        for part in shot.parts[1:]:
+            following = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = following
     except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
         raise AuthoritySelectionConflict(
-            f"authority-selection shot root must be an existing real directory: {shot}"
+            "authority-selection shot root and ancestors must be existing real "
+            f"directories: {shot}"
         ) from exc
     try:
+        assert descriptor is not None
         if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
             raise AuthoritySelectionConflict(
                 f"authority-selection shot root must be a directory: {shot}"
@@ -189,12 +202,20 @@ def _open_directory_parts(
     create: bool,
     missing_ok: bool = False,
 ) -> int | None:
+    current: int | None = None
     try:
-        current = os.open(shot, _DIRECTORY_OPEN_FLAGS)
+        current = os.open(shot.anchor, _DIRECTORY_OPEN_FLAGS)
+        for part in shot.parts[1:]:
+            following = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            os.close(current)
+            current = following
     except OSError as exc:
+        if current is not None:
+            os.close(current)
         raise AuthoritySelectionConflict(
             f"authority-selection shot root became unsafe: {shot}"
         ) from exc
+    assert current is not None
     try:
         for part in parts:
             try:
@@ -316,13 +337,75 @@ def read_optional_pointer_bytes(
             raise AuthoritySelectionConflict(
                 f"authority pointer is not a real regular file: {relative}"
             ) from exc
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
             raise AuthoritySelectionConflict(
                 f"authority pointer is not a real regular file: {relative}"
             )
-        with os.fdopen(descriptor, "rb", closefd=True) as handle:
-            descriptor = None
-            return handle.read()
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if after_identity != before_identity:
+            raise AuthoritySelectionConflict(
+                f"authority pointer changed while it was read: {relative}"
+            )
+        current_parent = _open_directory_parts(
+            shot,
+            relative.parts[:-1],
+            create=False,
+            missing_ok=True,
+        )
+        if current_parent is None:
+            raise AuthoritySelectionConflict(
+                f"authority pointer parent changed while it was read: {relative}"
+            )
+        try:
+            held_parent = os.fstat(parent)
+            live_parent = os.fstat(current_parent)
+            try:
+                named = os.stat(
+                    relative.name,
+                    dir_fd=current_parent,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise AuthoritySelectionConflict(
+                    f"authority pointer changed while it was read: {relative}"
+                ) from exc
+            named_identity = (
+                named.st_dev,
+                named.st_ino,
+                named.st_size,
+                named.st_mtime_ns,
+                named.st_ctime_ns,
+            )
+            if (
+                (held_parent.st_dev, held_parent.st_ino)
+                != (live_parent.st_dev, live_parent.st_ino)
+                or not stat.S_ISREG(named.st_mode)
+                or named_identity != after_identity
+            ):
+                raise AuthoritySelectionConflict(
+                    f"authority pointer changed while it was read: {relative}"
+                )
+        finally:
+            os.close(current_parent)
+        return b"".join(chunks)
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -367,16 +450,47 @@ def authority_selection_lock(
         os.fsync(descriptor)
         os.fsync(lock_parent)
         try:
-            fcntl.flock(
-                descriptor,
-                fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH,
-            )
+            # These are short metadata transactions.  One exclusive inode lock for
+            # both requested modes makes ordinary contention wait here; reaching the
+            # stable kernel identity while it is held then proves an ancestor was
+            # rebound to a second lock inode and must fail closed.
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
         except OSError as exc:
             raise AuthoritySelectionConflict(
                 "could not acquire the authority selection lock"
             ) from exc
         locked = True
-        yield shot / AUTHORITY_SELECTION_LOCK
+        try:
+            with stable_live_path_identity(shot / AUTHORITY_SELECTION_LOCK):
+                current_parent = _open_directory_parts(
+                    shot,
+                    AUTHORITY_SELECTION_LOCK.parts[:-1],
+                    create=False,
+                )
+                assert current_parent is not None
+                try:
+                    current_parent_stat = os.fstat(current_parent)
+                    held_parent_stat = os.fstat(lock_parent)
+                    current_lock_stat = os.stat(
+                        AUTHORITY_SELECTION_LOCK.name,
+                        dir_fd=current_parent,
+                        follow_symlinks=False,
+                    )
+                    held_lock_stat = os.fstat(descriptor)
+                    if (
+                        (current_parent_stat.st_dev, current_parent_stat.st_ino)
+                        != (held_parent_stat.st_dev, held_parent_stat.st_ino)
+                        or (current_lock_stat.st_dev, current_lock_stat.st_ino)
+                        != (held_lock_stat.st_dev, held_lock_stat.st_ino)
+                    ):
+                        raise AuthoritySelectionConflict(
+                            "authority selection lock path changed during acquisition"
+                        )
+                finally:
+                    os.close(current_parent)
+                yield shot / AUTHORITY_SELECTION_LOCK
+        except BuilderExecutionFenceError as exc:
+            raise AuthoritySelectionConflict(str(exc)) from exc
     finally:
         if descriptor is not None:
             if locked:
@@ -422,6 +536,85 @@ def _unique_temporary(parent: int, target_name: str) -> tuple[int, str]:
     )
 
 
+def _file_identity(observed: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _require_named_temporary_current(
+    parent: int,
+    name: str,
+    descriptor: int,
+    expected: tuple[int, int, int, int, int],
+    relative: Path,
+) -> None:
+    try:
+        held = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except OSError as exc:
+        raise AuthoritySelectionConflict(
+            f"prepared authority pointer disappeared before publication: {relative}"
+        ) from exc
+    if (
+        not stat.S_ISREG(held.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or _file_identity(held) != expected
+        or _file_identity(named) != expected
+    ):
+        raise AuthoritySelectionConflict(
+            f"prepared authority pointer changed before publication: {relative}"
+        )
+
+
+def _require_published_descriptor_current(
+    parent: int,
+    name: str,
+    descriptor: int,
+    expected: tuple[int, int, int, int, int],
+    relative: Path,
+) -> None:
+    try:
+        held = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except OSError as exc:
+        raise AuthoritySelectionConflict(
+            f"published authority pointer disappeared during publication: {relative}"
+        ) from exc
+    if (
+        not stat.S_ISREG(held.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or (held.st_dev, held.st_ino) != expected[:2]
+        or (named.st_dev, named.st_ino) != expected[:2]
+        or (held.st_size, held.st_mtime_ns) != (expected[2], expected[3])
+        or _file_identity(named) != _file_identity(held)
+    ):
+        raise AuthoritySelectionConflict(
+            f"published authority pointer changed during publication: {relative}"
+        )
+
+
+def _unlink_named_descriptor_if_owned(parent: int, name: str, descriptor: int) -> None:
+    """Remove only a temporary name still bound to the held inode."""
+
+    try:
+        held = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except OSError:
+        return
+    if (
+        stat.S_ISREG(held.st_mode)
+        and stat.S_ISREG(named.st_mode)
+        and (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
+    ):
+        with suppress(FileNotFoundError):
+            os.unlink(name, dir_fd=parent)
+
+
 def durable_replace_pointer_bytes(
     shot_folder: str | Path,
     pointer_path: str | Path,
@@ -449,17 +642,31 @@ def durable_replace_pointer_bytes(
         _validate_replace_target(parent, relative.name, relative)
         temporary_descriptor, temporary_name = _unique_temporary(parent, relative.name)
         try:
-            with os.fdopen(temporary_descriptor, "wb", closefd=True) as handle:
-                temporary_descriptor = None
+            with os.fdopen(temporary_descriptor, "wb", closefd=False) as handle:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+            temporary_identity = _file_identity(os.fstat(temporary_descriptor))
+            _require_named_temporary_current(
+                parent,
+                temporary_name,
+                temporary_descriptor,
+                temporary_identity,
+                relative,
+            )
             _validate_replace_target(parent, relative.name, relative)
             os.replace(
                 temporary_name,
                 relative.name,
                 src_dir_fd=parent,
                 dst_dir_fd=parent,
+            )
+            _require_published_descriptor_current(
+                parent,
+                relative.name,
+                temporary_descriptor,
+                temporary_identity,
+                relative,
             )
             temporary_name = None
             os.fsync(parent)
@@ -471,11 +678,39 @@ def durable_replace_pointer_bytes(
             ) from exc
     finally:
         if temporary_descriptor is not None:
+            if temporary_name is not None:
+                _unlink_named_descriptor_if_owned(
+                    parent,
+                    temporary_name,
+                    temporary_descriptor,
+                )
             os.close(temporary_descriptor)
-        if temporary_name is not None:
-            with suppress(FileNotFoundError):
-                os.unlink(temporary_name, dir_fd=parent)
         os.close(parent)
+
+
+def durable_replace_file_bytes(
+    shot_folder: str | Path,
+    file_path: str | Path,
+    payload: bytes,
+) -> None:
+    """Durably replace one ordinary in-shot file through its real parent.
+
+    Unlike authority-head publication, ordinary durable state may create its parent
+    chain. Directory entries, staged bytes, and the final same-parent rename are all
+    flushed before success is reported.
+    """
+
+    if not isinstance(payload, bytes):
+        raise AuthoritySelectionConflict("durable file payload must be bytes")
+    shot = _shot_path(shot_folder)
+    relative = _relative_in_shot(shot, file_path, "durable file")
+    if relative == AUTHORITY_SELECTION_LOCK:
+        raise AuthoritySelectionConflict(
+            "the permanent authority selection lock is not a replaceable file"
+        )
+    if relative.parent != Path("."):
+        durably_ensure_real_directory(shot, relative.parent)
+    durable_replace_pointer_bytes(shot, relative, payload)
 
 
 def durable_replace_pointer_json(

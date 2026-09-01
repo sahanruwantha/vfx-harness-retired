@@ -152,11 +152,13 @@ exist. A dependency-root layer may materialize immediately after the global plan
 
 | outcome | what you do |
 |---|---|
-| publishes | Durable unit state is created. First ready unit can be planned/built. |
+| publishes | Durable unit state is created or reconciled. Run `vfx build`; only its exact claimed attempt may plan and build the first ready unit. |
 | gate / session fail | Nothing selected. No unit state from a partial candidate. |
 | max-turns | Failed transaction, not a select. A leftover candidate file is not a plan. |
 
 Do not hand-author placeholder units or edit `state/jit-layers/current.json`.
+`vfx plan --layer N --unit ID` is a deterministic refusal; standalone paid unit
+planning could leave an orphan planning claim and is now owned exclusively by `vfx build`.
 
 ### 4. Build units
 
@@ -253,8 +255,8 @@ plan → materialize/rematerialize per layer → build units → accept → rend
 | stage | command | what it does |
 |---|---|---|
 | **plan** | `vfx plan <shot>` | Sparse global map + gate. `--until-clean` loops repair against the gate. |
-| **layer design** | `vfx plan <shot> --layer N` | Materialize, then plan the first ready unit. `--unit ID` picks a ready unit. |
-| **build** | `vfx build <shot> --layer N` | Build that layer's ready units as additive scripts. |
+| **layer design** | `vfx plan <shot> --layer N` | Materialize or reconcile the layer DAG and durable state. It performs no paid unit planning. `--unit` is retired. |
+| **build** | `vfx build <shot> --layer N` | Claim each ready unit, then own its paid planning and additive build in one exact attempt. |
 | **run** | `vfx run <shot>` | Whole driver. Stops on first unaccepted boundary. `--dry-run` previews. |
 | **recover environment** | `vfx recover-environment <shot> --run-id ID --idempotency-key KEY` | Reverify an exact typed infrastructure stop after external repair; never edits the environment. |
 | **accept** | `vfx accept <shot>` | Empty-scene full chain; publish an exact typed acceptance outcome. |
