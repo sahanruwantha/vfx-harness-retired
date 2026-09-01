@@ -75,9 +75,22 @@ model-quality, retry, or authority-repair defect.
 
 ### Current foundation is deliberately non-publishable
 
-The initial foundation defines the strict records and owner-fence contract, but it does not yet
-implement the independent source-verifying evaluator, the shot-authority capture fence, or the
-terminal status publisher/reader. The two selected record locators are already closed to
+The current foundation defines the strict records, the namespace-bound owner-fence contract, the
+non-integrated `vfx-harness.shot-ledger/v2` value schema, and a non-integrated shot-authority lease
+over the permanent selection lock. That lease is process-, thread-, shot-root-, and lock-inode-bound;
+uses a refcounted per-inode process mutex, a POSIX record lock, and an armed crash-safe live-identity
+claim; and records each inherited descriptor with its captured file identity. Managed acquisition,
+registration, handoff, and cleanup transactions close the call-to-return interruption gaps. Cleanup
+atomically shrinks both fork-visible and local rows to the exact still-live identity subset before
+closing neutralized slots, so a closed-and-reused descriptor number is never touched. Direct
+regressions cover the pre-registration fork window, process death, same-shot serialization,
+distinct-shot concurrency, physical path aliases, foreign-thread context unwind, unexpected
+same-process descriptor closure/reuse, partial cleanup, acquisition interruption, and both directions
+of the legacy `flock` transition. The same managed fork-acquisition primitive now owns root-run fence
+opens and handoff as well. The shot-authority lease is not yet installed around every sanctioned
+writer or actual inner lock and write sink. The foundation also does not yet implement
+the ledger writer/derivation boundary, the independent source-verifying evaluator, or the terminal
+status publisher/reader. The two selected record locators are already closed to
 `reports/interruption-receipt.json` and
 `reports/interruption-receipt-evaluation.json`; alternate nearby files have no authority.
 
@@ -89,9 +102,10 @@ round-tripped structurally in pure tests, but no current production caller can t
 selected interrupted status.
 
 Before that refusal may be removed, the evaluator must be able to prove the complete graph rather
-than only rehash caller-enumerated files. In particular, accepted ledger authority needs a closed
-schema and explicit complete ledger-to-member edges; authored intent and selected construction
-witnesses must be enumerated from their owning namespaces; optional durable context references
+than only rehash caller-enumerated files. In particular, the strict ledger value must be emitted by
+one fenced writer which derives explicit complete ledger-to-member edges from selected authority;
+authored intent and selected construction witnesses must be enumerated from their owning namespaces;
+optional durable context references
 need a closed schema/parser-to-semantic-digest registry (or a narrower typed reference union);
 current and pending authority need independently rooted heterogeneous graphs; and the before/after
 authority capture must bind one descriptor-stable shot-authority fence across the terminalization

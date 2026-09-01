@@ -15,7 +15,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from threading import local
+from threading import get_ident, local
 from typing import Any, ClassVar
 
 from vfx_harness.domain.authority_head_records import (
@@ -24,9 +24,24 @@ from vfx_harness.domain.authority_head_records import (
     canonical_json_bytes,
     parse_authority_selection_token,
 )
-from vfx_harness.orchestration.builder_execution_fence import (
-    BuilderExecutionFenceError,
-    stable_live_path_identity,
+from vfx_harness.observability.run_owner_fork_guard import (
+    RunOwnerForkGuardCleanupError,
+    managed_fork_protected_acquisition,
+)
+from vfx_harness.orchestration.authority_selection_process_registry import (
+    AuthoritySelectionCleanupFailure,
+    AuthoritySelectionConflict,
+    DescriptorLeaseRegistration,
+    canonical_authority_shot_path,
+    current_process_token,
+    descriptor_registry_mutation,
+    neutralize_registered_descriptors,
+    open_authority_directory_parts,
+    process_bound_live_lock_identity,
+    provisional_descriptor_registration,
+    registration_is_current,
+    require_selection_lease_identity,
+    shot_process_mutex,
 )
 
 AUTHORITY_SELECTION_LOCK = Path("state/authority-selection/selection.lock")
@@ -37,12 +52,6 @@ _SELECTED_AUTHORITY_POINTERS = frozenset(
         Path("state/authority-state/current.json"),
         Path("state/authority-state/pending.json"),
     }
-)
-_DIRECTORY_OPEN_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_CLOEXEC", 0)
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
 )
 _FILE_READ_FLAGS = (
     os.O_RDONLY
@@ -63,10 +72,6 @@ _TEMP_OPEN_FLAGS = (
     | getattr(os, "O_NOFOLLOW", 0)
 )
 _THREAD_LOCKS = local()
-
-
-class AuthoritySelectionConflict(ValueError):
-    """Authority selection changed or its low-level storage is unsafe."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,8 +118,14 @@ class AuthoritySelectionToken:
 class _HeldAuthoritySelectionLock:
     shot: Path
     lock_path: Path
+    shot_descriptor: int
     parent_descriptor: int
     lock_descriptor: int
+    process_id: int
+    process_token: str
+    thread_id: int
+    registration: DescriptorLeaseRegistration
+    exclusive: bool
     depth: int
 
 
@@ -132,43 +143,47 @@ def _require_selection_lock_current(
     binding: _HeldAuthoritySelectionLock,
     phase: str,
 ) -> None:
-    """Require the live namespace to retain the held parent and lock inode."""
+    """Require this process/thread lease and its complete namespace identity."""
 
-    current_parent: int | None = None
-    try:
-        current_parent = _open_directory_parts(
-            binding.shot,
-            AUTHORITY_SELECTION_LOCK.parts[:-1],
-            create=False,
-        )
-        assert current_parent is not None
-        current_parent_stat = os.fstat(current_parent)
-        held_parent_stat = os.fstat(binding.parent_descriptor)
-        current_lock_stat = os.stat(
-            AUTHORITY_SELECTION_LOCK.name,
-            dir_fd=current_parent,
-            follow_symlinks=False,
-        )
-        held_lock_stat = os.fstat(binding.lock_descriptor)
-        if (
-            not stat.S_ISREG(current_lock_stat.st_mode)
-            or (current_parent_stat.st_dev, current_parent_stat.st_ino)
-            != (held_parent_stat.st_dev, held_parent_stat.st_ino)
-            or (current_lock_stat.st_dev, current_lock_stat.st_ino)
-            != (held_lock_stat.st_dev, held_lock_stat.st_ino)
-        ):
-            raise AuthoritySelectionConflict(
-                f"authority selection lock path changed {phase}"
-            )
-    except AuthoritySelectionConflict:
-        raise
-    except OSError as exc:
+    if (
+        binding.process_id != os.getpid()
+        or binding.process_token != current_process_token()
+        or binding.thread_id != get_ident()
+        or not registration_is_current(binding.registration)
+    ):
         raise AuthoritySelectionConflict(
-            f"authority selection lock path changed {phase}"
-        ) from exc
-    finally:
-        if current_parent is not None:
-            os.close(current_parent)
+            "authority selection lock binding belongs to another process or thread"
+        )
+    require_selection_lease_identity(
+        shot=binding.shot,
+        shot_descriptor=binding.shot_descriptor,
+        lock_parent_descriptor=binding.parent_descriptor,
+        lock_descriptor=binding.lock_descriptor,
+        lock_relative=AUTHORITY_SELECTION_LOCK,
+        phase=phase,
+    )
+
+
+def require_current_authority_selection_lock(
+    shot_folder: str | Path,
+    *,
+    exclusive: bool,
+) -> Path:
+    """Revalidate this thread's exact live selection-lock lease."""
+
+    shot = canonical_authority_shot_path(shot_folder)
+    lock_path = shot / AUTHORITY_SELECTION_LOCK
+    binding = _held_selection_locks().get(str(lock_path))
+    if binding is None:
+        raise AuthoritySelectionConflict(
+            "authority selection lock is not active on this thread"
+        )
+    _require_selection_lock_current(binding, "while requiring the active lease")
+    if exclusive and not binding.exclusive:
+        raise AuthoritySelectionConflict(
+            "authority operation requires an exclusive selection-lock lease"
+        )
+    return lock_path
 
 
 def pointer_sha256(pointer_bytes: bytes | None) -> str | None:
@@ -218,32 +233,7 @@ def require_matching_authority_selection_token(
         )
 
 
-def _shot_path(shot_folder: str | Path) -> Path:
-    raw = Path(shot_folder).expanduser()
-    shot = Path(os.path.abspath(raw))
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(shot.anchor, _DIRECTORY_OPEN_FLAGS)
-        for part in shot.parts[1:]:
-            following = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = following
-    except OSError as exc:
-        if descriptor is not None:
-            os.close(descriptor)
-        raise AuthoritySelectionConflict(
-            "authority-selection shot root and ancestors must be existing real "
-            f"directories: {shot}"
-        ) from exc
-    try:
-        assert descriptor is not None
-        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-            raise AuthoritySelectionConflict(
-                f"authority-selection shot root must be a directory: {shot}"
-            )
-    finally:
-        os.close(descriptor)
-    return shot
+_shot_path = canonical_authority_shot_path
 
 
 def _relative_in_shot(shot: Path, path: str | Path, where: str) -> Path:
@@ -267,70 +257,7 @@ def _relative_in_shot(shot: Path, path: str | Path, where: str) -> Path:
     return relative
 
 
-def _open_directory_parts(
-    shot: Path,
-    parts: tuple[str, ...],
-    *,
-    create: bool,
-    missing_ok: bool = False,
-) -> int | None:
-    current: int | None = None
-    try:
-        current = os.open(shot.anchor, _DIRECTORY_OPEN_FLAGS)
-        for part in shot.parts[1:]:
-            following = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            os.close(current)
-            current = following
-    except OSError as exc:
-        if current is not None:
-            os.close(current)
-        raise AuthoritySelectionConflict(
-            f"authority-selection shot root became unsafe: {shot}"
-        ) from exc
-    assert current is not None
-    try:
-        for part in parts:
-            try:
-                following = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
-            except FileNotFoundError:
-                if missing_ok:
-                    os.close(current)
-                    return None
-                if not create:
-                    raise AuthoritySelectionConflict(
-                        f"authority-selection directory is missing: {part}"
-                    ) from None
-                try:
-                    os.mkdir(part, mode=0o700, dir_fd=current)
-                except FileExistsError:
-                    pass
-                except OSError as exc:
-                    raise AuthoritySelectionConflict(
-                        f"cannot create authority-selection directory: {part}"
-                    ) from exc
-                try:
-                    following = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
-                except OSError as exc:
-                    raise AuthoritySelectionConflict(
-                        f"authority-selection component is not a real directory: {part}"
-                    ) from exc
-            except OSError as exc:
-                raise AuthoritySelectionConflict(
-                    f"authority-selection component is not a real directory: {part}"
-                ) from exc
-            if create:
-                try:
-                    os.fsync(following)
-                    os.fsync(current)
-                except BaseException:
-                    os.close(following)
-                    raise
-            os.close(current)
-            current = following
-        return current
-    except BaseException:
-        os.close(current)
-        raise
+_open_directory_parts = open_authority_directory_parts
 
 
 def durably_ensure_real_directory(
@@ -485,6 +412,139 @@ def read_optional_pointer_bytes(
 
 
 @contextmanager
+def _uncontended_authority_selection_lock(
+    *,
+    shot: Path,
+    lock_path: Path,
+    lock_key: str,
+    held: dict[str, _HeldAuthoritySelectionLock],
+    exclusive: bool,
+    shot_identity: os.stat_result,
+) -> Iterator[Path]:
+    shot_descriptor: int | None = None
+    lock_parent: int | None = None
+    descriptor: int | None = None
+    registration: DescriptorLeaseRegistration | None = None
+    locked = False
+    try:
+        with managed_fork_protected_acquisition() as acquisition, descriptor_registry_mutation():
+            shot_descriptor = acquisition.open_descriptor(
+                lambda: _open_directory_parts(shot, (), create=False)
+            )
+            assert shot_descriptor is not None
+            retained_shot = os.fstat(shot_descriptor)
+            if (retained_shot.st_dev, retained_shot.st_ino) != (
+                shot_identity.st_dev,
+                shot_identity.st_ino,
+            ):
+                raise AuthoritySelectionConflict(
+                    "authority-selection shot root changed during lock acquisition"
+                )
+            lock_parent = acquisition.open_descriptor(
+                lambda: _open_directory_parts(
+                    shot,
+                    AUTHORITY_SELECTION_LOCK.parts[:-1],
+                    create=True,
+                )
+            )
+            assert lock_parent is not None
+            descriptor = acquisition.open_descriptor(
+                lambda: os.open(
+                    AUTHORITY_SELECTION_LOCK.name,
+                    _LOCK_OPEN_FLAGS,
+                    0o600,
+                    dir_fd=lock_parent,
+                )
+            )
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise AuthoritySelectionConflict(
+                    "authority selection lock must be a real regular file"
+                )
+            os.fsync(descriptor)
+            os.fsync(lock_parent)
+            descriptors = (shot_descriptor, lock_parent, descriptor)
+            with provisional_descriptor_registration(
+                descriptors,
+                acquisition,
+            ) as provisional:
+                registration = provisional.registration
+                acquisition.handoff(descriptors)
+                provisional.commit()
+    except OSError as exc:
+        raise AuthoritySelectionConflict(
+            "authority selection lock must be a real regular file"
+        ) from exc
+    except RunOwnerForkGuardCleanupError as exc:
+        raise AuthoritySelectionCleanupFailure(
+            errors=exc.errors,
+            retained=exc.retained,
+            body_error=exc.__cause__,
+        ) from exc
+    assert (
+        shot_descriptor is not None
+        and lock_parent is not None
+        and descriptor is not None
+        and registration is not None
+    )
+    body_error: BaseException | None = None
+    try:
+        try:
+            fcntl.lockf(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise AuthoritySelectionConflict(
+                "could not acquire the authority selection lock"
+            ) from exc
+        locked = True
+        with process_bound_live_lock_identity(shot / AUTHORITY_SELECTION_LOCK):
+            binding = _HeldAuthoritySelectionLock(
+                shot=shot,
+                lock_path=lock_path,
+                shot_descriptor=shot_descriptor,
+                parent_descriptor=lock_parent,
+                lock_descriptor=descriptor,
+                process_id=os.getpid(),
+                process_token=current_process_token(),
+                thread_id=get_ident(),
+                registration=registration,
+                exclusive=exclusive,
+                depth=1,
+            )
+            _require_selection_lock_current(binding, "during lock acquisition")
+            held[lock_key] = binding
+            try:
+                yield lock_path
+            except BaseException as exc:
+                body_error = exc
+                raise
+            finally:
+                try:
+                    _require_selection_lock_current(binding, "during lock exit")
+                finally:
+                    held.pop(lock_key, None)
+    finally:
+        try:
+            neutralize_registered_descriptors(
+                registration,
+                unlock_record_lock=locked,
+            )
+        except AuthoritySelectionCleanupFailure as cleanup_error:
+            if body_error is not None and not cleanup_error.retained:
+                body_error.add_note(str(cleanup_error))
+                for error in cleanup_error.errors:
+                    body_error.add_note(
+                        f"cleanup diagnostic: {type(error).__name__}: {error}"
+                    )
+            elif body_error is not None:
+                raise AuthoritySelectionCleanupFailure(
+                    errors=cleanup_error.errors,
+                    retained=cleanup_error.retained,
+                    body_error=body_error,
+                ) from body_error
+            else:
+                raise
+
+
+@contextmanager
 def authority_selection_lock(
     shot_folder: str | Path,
     *,
@@ -500,13 +560,17 @@ def authority_selection_lock(
     held = _held_selection_locks()
     binding = held.get(lock_key)
     if binding is not None:
-        # Both public modes intentionally use one kernel-exclusive lock below.  A
-        # nested guard therefore already owns the strongest lock and must reuse that
-        # open-file description; opening the same inode again can self-deadlock under
-        # flock even within one process.
+        # Both semantic modes use one exclusive POSIX record lock.  Nested calls
+        # reuse the creator thread's retained lease; the per-shot process mutex
+        # serializes independent same-process threads because record locks do not.
+        _require_selection_lock_current(binding, "during nested lock entry")
+        if exclusive and not binding.exclusive:
+            raise AuthoritySelectionConflict(
+                "cannot upgrade a nested shared authority selection lock to exclusive; "
+                "restart the transaction with the exclusive shot-authority boundary outermost"
+            )
         binding.depth += 1
         try:
-            _require_selection_lock_current(binding, "during nested lock entry")
             yield lock_path
         finally:
             try:
@@ -514,69 +578,29 @@ def authority_selection_lock(
             finally:
                 binding.depth -= 1
         return
-    lock_parent = _open_directory_parts(
-        shot,
-        AUTHORITY_SELECTION_LOCK.parts[:-1],
-        create=True,
-    )
-    assert lock_parent is not None
-    descriptor: int | None = None
-    locked = False
+    if held:
+        active_shots = ", ".join(sorted(str(active.shot) for active in held.values()))
+        raise AuthoritySelectionConflict(
+            "nested authority selection locks require the same canonical shot; "
+            f"active={active_shots}; requested={shot}"
+        )
     try:
-        try:
-            descriptor = os.open(
-                AUTHORITY_SELECTION_LOCK.name,
-                _LOCK_OPEN_FLAGS,
-                0o600,
-                dir_fd=lock_parent,
-            )
-        except OSError as exc:
-            raise AuthoritySelectionConflict(
-                "authority selection lock must be a real regular file"
-            ) from exc
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise AuthoritySelectionConflict(
-                "authority selection lock must be a real regular file"
-            )
-        os.fsync(descriptor)
-        os.fsync(lock_parent)
-        try:
-            # These are short metadata transactions.  One exclusive inode lock for
-            # both requested modes makes ordinary contention wait here; reaching the
-            # stable kernel identity while it is held then proves an ancestor was
-            # rebound to a second lock inode and must fail closed.
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-        except OSError as exc:
-            raise AuthoritySelectionConflict(
-                "could not acquire the authority selection lock"
-            ) from exc
-        locked = True
-        try:
-            with stable_live_path_identity(shot / AUTHORITY_SELECTION_LOCK):
-                binding = _HeldAuthoritySelectionLock(
-                    shot=shot,
-                    lock_path=lock_path,
-                    parent_descriptor=lock_parent,
-                    lock_descriptor=descriptor,
-                    depth=1,
-                )
-                _require_selection_lock_current(binding, "during lock acquisition")
-                held[lock_key] = binding
-                try:
-                    yield lock_path
-                finally:
-                    try:
-                        _require_selection_lock_current(binding, "during lock exit")
-                    finally:
-                        held.pop(lock_key, None)
-        except BuilderExecutionFenceError as exc:
-            raise AuthoritySelectionConflict(str(exc)) from exc
-    finally:
-        if descriptor is not None:
-            if locked:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
-        os.close(lock_parent)
+        shot_identity = os.stat(shot, follow_symlinks=False)
+    except OSError as exc:
+        raise AuthoritySelectionConflict(
+            f"authority-selection shot root changed before lock acquisition: {shot}"
+        ) from exc
+    with shot_process_mutex(
+        (shot_identity.st_dev, shot_identity.st_ino)
+    ), _uncontended_authority_selection_lock(
+        shot=shot,
+        lock_path=lock_path,
+        lock_key=lock_key,
+        held=held,
+        exclusive=exclusive,
+        shot_identity=shot_identity,
+    ):
+        yield lock_path
 
 
 def _validate_replace_target(parent: int, name: str, relative: Path) -> None:

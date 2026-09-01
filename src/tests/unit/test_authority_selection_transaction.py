@@ -273,11 +273,13 @@ def test_selection_lock_refuses_parent_rename_recreate_split(tmp_path: Path) -> 
         contender = threading.Thread(target=contend)
         contender.start()
         contender.join(timeout=2)
-        assert not contender.is_alive()
+        assert contender.is_alive()
+        assert not entered.is_set()
 
-    assert entered.is_set() is False
-    assert len(errors) == 1
-    assert "another filesystem inode" in str(errors[0])
+    contender.join(timeout=2)
+    assert not contender.is_alive()
+    assert entered.is_set()
+    assert errors == []
 
 
 def test_exclusive_selection_lock_blocks_a_shared_reader(tmp_path: Path) -> None:

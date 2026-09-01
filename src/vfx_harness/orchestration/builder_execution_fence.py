@@ -55,6 +55,19 @@ class BuilderExecutionFenceActive(BuilderExecutionFenceError):
 
 
 _LEASE_CONSTRUCTOR_KEY = object()
+_LIVE_IDENTITY_CLAIM_KEY = object()
+_LIVE_IDENTITY_PROCESS_TOKEN = object()
+
+
+def _invalidate_forked_live_identity_claims() -> None:
+    """Make every inherited claim capability inert in the forked child."""
+
+    global _LIVE_IDENTITY_PROCESS_TOKEN
+
+    _LIVE_IDENTITY_PROCESS_TOKEN = object()
+
+
+os.register_at_fork(after_in_child=_invalidate_forked_live_identity_claims)
 
 
 class BuilderExecutionFenceLease:
@@ -83,13 +96,11 @@ class BuilderExecutionFenceLease:
         shot_descriptor: int,
         parent: int,
         descriptor: int,
-        live_identity: _KernelSemaphoreLease,
+        live_identity: LivePathIdentityClaim,
         _key: object,
     ) -> None:
         if _key is not _LEASE_CONSTRUCTOR_KEY:
-            raise BuilderExecutionFenceError(
-                "builder execution fence leases are issued only by the live fence context"
-            )
+            raise BuilderExecutionFenceError("builder execution fence leases are issued only by the live fence context")
         self._shot = shot
         self.path = path
         self._shot_identity = shot_identity
@@ -113,18 +124,12 @@ class BuilderExecutionFenceLease:
 
     def _require_live(self, shot_folder: str | Path) -> None:
         with self._mutex:
-            live = not self._released and (
-                self._owner_active or self._operations > 0
-            )
+            live = not self._released and (self._owner_active or self._operations > 0)
         if not live:
-            raise BuilderExecutionFenceError(
-                "paid builder execution requires a live shot-wide fence lease"
-            )
+            raise BuilderExecutionFenceError("paid builder execution requires a live shot-wide fence lease")
         expected = Path(os.path.abspath(Path(shot_folder).expanduser()))
         if expected != self._shot:
-            raise BuilderExecutionFenceError(
-                f"builder execution fence lease belongs to {self._shot}, not {expected}"
-            )
+            raise BuilderExecutionFenceError(f"builder execution fence lease belongs to {self._shot}, not {expected}")
         observed_shot, descriptor = _open_shot_root(expected)
         try:
             observed = os.fstat(descriptor)
@@ -132,9 +137,7 @@ class BuilderExecutionFenceLease:
         finally:
             os.close(descriptor)
         if observed_shot != self._shot or identity != self._shot_identity:
-            raise BuilderExecutionFenceError(
-                "builder execution shot root changed after its live fence was acquired"
-            )
+            raise BuilderExecutionFenceError("builder execution shot root changed after its live fence was acquired")
 
     @contextmanager
     def operation(self, shot_folder: str | Path) -> Iterator[None]:
@@ -142,9 +145,7 @@ class BuilderExecutionFenceLease:
 
         with self._mutex:
             if not self._owner_active or self._released:
-                raise BuilderExecutionFenceError(
-                    "paid builder execution requires its still-open fence context"
-                )
+                raise BuilderExecutionFenceError("paid builder execution requires its still-open fence context")
             self._operations += 1
         try:
             self._require_live(shot_folder)
@@ -183,9 +184,7 @@ def require_builder_execution_lease(
     """Refuse paid/mutating execution without this shot's live fence capability."""
 
     if not isinstance(lease, BuilderExecutionFenceLease):
-        raise BuilderExecutionFenceError(
-            "paid builder execution requires a live shot-wide fence lease"
-        )
+        raise BuilderExecutionFenceError("paid builder execution requires a live shot-wide fence lease")
     lease._require_live(shot_folder)
 
 
@@ -225,6 +224,119 @@ class _KernelSemaphoreLease:
             raise OSError(observed_errno, os.strerror(observed_errno))
 
 
+class LivePathIdentityClaim:
+    """Armed, exact-process owner for one crash-safe SysV identity claim.
+
+    Construct this capability before entering the ``try`` that calls
+    :meth:`acquire`.  The acquisition stores cleanup authority here before the
+    builder semaphore can remain claimed.  ``acquire`` deliberately returns
+    ``None``: no resource ownership crosses a CALL-to-assignment boundary.
+
+    Cleanup is process-bound, not thread-bound.  A foreign thread in the same
+    process may unwind an owner, while a forked child can neither acquire nor
+    remove its parent's semaphore set.
+    """
+
+    __slots__ = (
+        "_cleanup_armed",
+        "_fence_path",
+        "_mutex",
+        "_owner_pid",
+        "_owner_process_token",
+        "_released",
+        "_semid",
+        "_shot",
+    )
+
+    def __init__(self, shot: Path, fence_path: Path, *, _key: object) -> None:
+        if _key is not _LIVE_IDENTITY_CLAIM_KEY:
+            raise BuilderExecutionFenceError("live path identity claims must be created by arm_live_path_identity")
+        self._shot = shot
+        self._fence_path = fence_path
+        self._owner_pid = os.getpid()
+        self._owner_process_token = _LIVE_IDENTITY_PROCESS_TOKEN
+        self._mutex = threading.RLock()
+        self._semid: int | None = None
+        self._cleanup_armed = False
+        self._released = False
+
+    @property
+    def belongs_to_current_process(self) -> bool:
+        """Whether this capability belongs to the exact creating process."""
+
+        return os.getpid() == self._owner_pid and _LIVE_IDENTITY_PROCESS_TOKEN is self._owner_process_token
+
+    def acquire(self) -> None:
+        """Acquire the identity without returning a detached lease object."""
+
+        if not self.belongs_to_current_process:
+            raise BuilderExecutionFenceError("forked child cannot acquire its parent's live path identity claim")
+        with self._mutex:
+            if self._released:
+                raise BuilderExecutionFenceError("released live path identity claim cannot be reacquired")
+            if self._cleanup_armed:
+                raise BuilderExecutionFenceError("live path identity claim is already acquired")
+            try:
+                _claim_live_identity_into(self, self._shot, self._fence_path)
+                if not self._cleanup_armed:
+                    raise BuilderExecutionFenceError("live path identity acquisition returned without arming cleanup")
+            except BaseException:
+                # The owner object existed before acquisition began.  It is therefore
+                # safe to clean an armed claim even when interruption lands immediately
+                # after the successful semop and before its Python call returns.
+                self._release_owned()
+                raise
+
+    def release(self) -> None:
+        """Release in the creator process; inherited child copies are inert."""
+
+        if not self.belongs_to_current_process:
+            return
+        with self._mutex:
+            self._release_owned()
+
+    def _arm_cleanup(self, semid: int) -> None:
+        if self._cleanup_armed or self._released:
+            raise BuilderExecutionFenceError("live path identity cleanup was armed more than once")
+        self._semid = semid
+        self._cleanup_armed = True
+
+    def _disarm_failed_semop(self, semid: int) -> None:
+        if not self._cleanup_armed or self._semid != semid:
+            raise BuilderExecutionFenceError("failed live path identity semop does not match its armed cleanup")
+        self._cleanup_armed = False
+        self._semid = None
+
+    def _release_owned(self) -> None:
+        semid = self._semid
+        cleanup_armed = self._cleanup_armed
+        self._semid = None
+        self._cleanup_armed = False
+        self._released = True
+        if not cleanup_armed:
+            return
+        if semid is None:
+            raise BuilderExecutionFenceError("armed live path identity cleanup is missing its semaphore id")
+        try:
+            _KernelSemaphoreLease(semid=semid).release()
+        except OSError as exc:
+            if exc.errno not in {errno.EIDRM, errno.EINVAL}:
+                raise
+
+
+def arm_live_path_identity(
+    shot: str | Path,
+    fence_path: str | Path,
+) -> LivePathIdentityClaim:
+    """Create a resource-free transaction before attempting a SysV claim."""
+
+    return LivePathIdentityClaim(
+        Path(os.path.abspath(Path(shot).expanduser())),
+        Path(os.path.abspath(Path(fence_path).expanduser())),
+        _key=_LIVE_IDENTITY_CLAIM_KEY,
+    )
+
+
 _LIBC = ctypes.CDLL(None, use_errno=True)
 _LIBC.semget.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
 _LIBC.semget.restype = ctypes.c_int
@@ -234,9 +346,7 @@ _LIBC.semctl.restype = ctypes.c_int
 
 
 def _semop(semid: int, operations: tuple[tuple[int, int, int], ...]) -> None:
-    rows = (_SemBuf * len(operations))(
-        *(_SemBuf(number, operation, flags) for number, operation, flags in operations)
-    )
+    rows = (_SemBuf * len(operations))(*(_SemBuf(number, operation, flags) for number, operation, flags in operations))
     while _LIBC.semop(semid, rows, len(rows)) != 0:
         observed_errno = ctypes.get_errno()
         if observed_errno == errno.EINTR:
@@ -260,10 +370,7 @@ def _set_sem_value(semid: int, number: int, value: int) -> None:
 
 def _identity_digest(shot: Path, probe: int) -> bytes:
     return hashlib.sha256(
-        b"vfx-harness-builder-fence\0"
-        + os.fsencode(str(shot))
-        + b"\0"
-        + str(probe).encode("ascii")
+        b"vfx-harness-builder-fence\0" + os.fsencode(str(shot)) + b"\0" + str(probe).encode("ascii")
     ).digest()
 
 
@@ -290,8 +397,12 @@ def _open_semaphore_set(key: int) -> int:
     return int(semid)
 
 
-def _claim_live_identity(shot: Path, fence_path: Path) -> _KernelSemaphoreLease:
-    """Claim a crash-safe kernel identity immune to filesystem substitution."""
+def _claim_live_identity_into(
+    claim: LivePathIdentityClaim,
+    shot: Path,
+    fence_path: Path,
+) -> None:
+    """Claim a crash-safe kernel identity into an already-addressable owner."""
 
     for probe in range(_MAX_KEY_PROBES):
         digest = _identity_digest(shot, probe)
@@ -316,8 +427,9 @@ def _claim_live_identity(shot: Path, fence_path: Path) -> _KernelSemaphoreLease:
                 f"could not acquire builder execution kernel identity for {shot}: {exc}"
             ) from exc
 
-        builder_claimed = False
+        init_claimed = False
         try:
+            init_claimed = True
             marker = _sem_value(semid, _MARKER_SEMAPHORE)
             if marker == 0:
                 for index, part in enumerate(expected_fingerprint):
@@ -328,22 +440,38 @@ def _claim_live_identity(shot: Path, fence_path: Path) -> _KernelSemaphoreLease:
                 continue
 
             observed_fingerprint = tuple(
-                _sem_value(semid, _FINGERPRINT_START + index)
-                for index in range(_FINGERPRINT_COUNT)
+                _sem_value(semid, _FINGERPRINT_START + index) for index in range(_FINGERPRINT_COUNT)
             )
             if observed_fingerprint != expected_fingerprint:
                 continue
+            builder_value = _sem_value(semid, _BUILDER_SEMAPHORE)
+            if builder_value == 0:
+                raise BuilderExecutionFenceActive(_active_message(fence_path))
+            if builder_value != 1:
+                raise BuilderExecutionFenceError(
+                    "builder execution kernel identity has an invalid semaphore value; "
+                    "route to engineering before paid execution"
+                )
+
+            # Arm the already-addressable transaction while the initialization
+            # mutex excludes every cooperating claimant and while the builder
+            # semaphore is proven unclaimed.  If interruption lands before or
+            # immediately after semop returns, transaction cleanup may safely
+            # remove this inactive-or-owned set.
+            claim._arm_cleanup(semid)
             try:
                 _semop(
                     semid,
                     ((_BUILDER_SEMAPHORE, -1, _IPC_NOWAIT | _SEM_UNDO),),
                 )
             except OSError as exc:
+                # SysV semop is atomic: an error applies none of the requested
+                # operations, so this transaction does not own the set.
+                claim._disarm_failed_semop(semid)
                 if exc.errno == errno.EAGAIN:
                     raise BuilderExecutionFenceActive(_active_message(fence_path)) from exc
                 raise
-            builder_claimed = True
-            return _KernelSemaphoreLease(semid=semid)
+            return
         except BuilderExecutionFenceActive:
             raise
         except OSError as exc:
@@ -351,17 +479,43 @@ def _claim_live_identity(shot: Path, fence_path: Path) -> _KernelSemaphoreLease:
                 f"could not acquire builder execution kernel identity for {shot}: {exc}"
             ) from exc
         finally:
-            try:
-                _semop(semid, ((_INIT_SEMAPHORE, -1, _SEM_UNDO),))
-            except OSError:
-                if builder_claimed:
-                    _semop(semid, ((_BUILDER_SEMAPHORE, 1, _SEM_UNDO),))
-                raise
+            if init_claimed:
+                try:
+                    _semop(semid, ((_INIT_SEMAPHORE, -1, _SEM_UNDO),))
+                except OSError as exc:
+                    # An armed acquisition will remove the entire set during
+                    # transaction unwind.  EIDRM/EINVAL means that cleanup has
+                    # already made the set unreachable.
+                    if not claim._cleanup_armed or exc.errno not in {
+                        errno.EIDRM,
+                        errno.EINVAL,
+                    }:
+                        raise
 
     raise BuilderExecutionFenceError(
-        "builder execution kernel identity exhausted collision probes; "
-        "route to engineering before paid execution"
+        "builder execution kernel identity exhausted collision probes; route to engineering before paid execution"
     )
+
+
+def _claim_live_identity(shot: Path, fence_path: Path) -> _KernelSemaphoreLease:
+    """Legacy test/migration bridge; production must use ``arm_live_path_identity``.
+
+    This detached-return shape cannot close the CALL-to-assignment interruption
+    window.  It remains temporarily for migration-only callers and must not be
+    introduced into production code.
+    """
+
+    claim = arm_live_path_identity(shot, fence_path)
+    claim.acquire()
+    with claim._mutex:
+        semid = claim._semid
+        if semid is None or not claim._cleanup_armed:
+            claim.release()
+            raise BuilderExecutionFenceError("legacy live path identity bridge did not receive an armed claim")
+        claim._semid = None
+        claim._cleanup_armed = False
+        claim._released = True
+    return _KernelSemaphoreLease(semid=semid)
 
 
 def _open_shot_root(shot_folder: str | Path) -> tuple[Path, int]:
@@ -377,15 +531,12 @@ def _open_shot_root(shot_folder: str | Path) -> tuple[Path, int]:
         if current is not None:
             os.close(current)
         raise BuilderExecutionFenceError(
-            "builder execution shot root and every ancestor must be an existing real "
-            f"directory component: {shot}"
+            f"builder execution shot root and every ancestor must be an existing real directory component: {shot}"
         ) from exc
     if current is None or not stat.S_ISDIR(os.fstat(current).st_mode):
         if current is not None:
             os.close(current)
-        raise BuilderExecutionFenceError(
-            f"builder execution shot root must be a real directory: {shot}"
-        )
+        raise BuilderExecutionFenceError(f"builder execution shot root must be a real directory: {shot}")
     return shot, current
 
 
@@ -440,17 +591,18 @@ def stable_live_path_identity(identity_path: str | Path) -> Iterator[None]:
     """
 
     identity = Path(os.path.abspath(Path(identity_path).expanduser()))
+    claim = arm_live_path_identity(identity, identity)
     try:
-        lease = _claim_live_identity(identity, identity)
-    except BuilderExecutionFenceActive as exc:
-        raise BuilderExecutionFenceError(
-            "live lock identity is already held through another filesystem inode; "
-            f"the lock path may have been replaced: {identity}"
-        ) from exc
-    try:
+        try:
+            claim.acquire()
+        except BuilderExecutionFenceActive as exc:
+            raise BuilderExecutionFenceError(
+                "live lock identity is already held through another filesystem inode; "
+                f"the lock path may have been replaced: {identity}"
+            ) from exc
         yield
     finally:
-        lease.release()
+        claim.release()
 
 
 @contextmanager
@@ -467,14 +619,14 @@ def builder_execution_fence(
 
     shot, shot_descriptor = _open_shot_root(shot_folder)
     fence_path = shot / BUILDER_EXECUTION_FENCE
-    live_identity: _KernelSemaphoreLease | None = None
+    live_identity = arm_live_path_identity(shot, fence_path)
     root_locked = False
     parent: int | None = None
     descriptor: int | None = None
     locked = False
     lease: BuilderExecutionFenceLease | None = None
     try:
-        live_identity = _claim_live_identity(shot, fence_path)
+        live_identity.acquire()
         try:
             # The kernel semaphore is the stable live identity.  Root and permanent
             # child locks preserve inspectability and defense in depth.
@@ -482,9 +634,7 @@ def builder_execution_fence(
         except BlockingIOError as exc:
             raise BuilderExecutionFenceActive(_active_message(fence_path)) from exc
         except OSError as exc:
-            raise BuilderExecutionFenceError(
-                f"could not acquire builder execution shot-root fence: {shot}"
-            ) from exc
+            raise BuilderExecutionFenceError(f"could not acquire builder execution shot-root fence: {shot}") from exc
         root_locked = True
         parent = _open_fence_parent(shot_descriptor)
         try:
@@ -532,5 +682,4 @@ def builder_execution_fence(
             if root_locked:
                 fcntl.flock(shot_descriptor, fcntl.LOCK_UN)
             os.close(shot_descriptor)
-            if live_identity is not None:
-                live_identity.release()
+            live_identity.release()

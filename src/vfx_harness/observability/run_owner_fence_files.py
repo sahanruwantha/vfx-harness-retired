@@ -14,7 +14,10 @@ from vfx_harness.domain.run_owner_claims import (
     RUN_OWNER_CLAIM_LOCATOR,
     RUN_OWNER_FENCE_LOCATOR,
 )
-from vfx_harness.observability.run_owner_fork_guard import ForkProtectedAcquisition
+from vfx_harness.observability.run_owner_fork_guard import (
+    ForkProtectedAcquisition,
+    GuardedDescriptor,
+)
 
 RUN_OWNER_DIRECTORY = Path("owner")
 RUN_OWNER_FENCE = Path(RUN_OWNER_FENCE_LOCATOR)
@@ -90,21 +93,17 @@ def _close_namespace_descriptors(
         if descriptor is None:
             continue
         try:
-            os.close(descriptor)
-        except BaseException as exc:
-            if first_error is None:
-                first_error = exc
-        finally:
             if (
                 acquisition is not None
                 and acquisition.belongs_to_current_process
                 and (tracked is None or descriptor in tracked)
             ):
-                try:
-                    acquisition.forget(descriptor)
-                except BaseException as exc:
-                    if first_error is None:
-                        first_error = exc
+                acquisition.retire(descriptor)
+            else:
+                os.close(descriptor)
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
     if first_error is not None:
         raise first_error
 
@@ -127,41 +126,72 @@ def open_run_namespace(
         )
 
     shot = root.parent.parent
-    descriptor: int | None = None
     shot_descriptor: int | None = None
     runs_descriptor: int | None = None
     root_descriptor: int | None = None
     tracked: set[int] = set()
-    try:
+
+    def open_shot_root() -> int:
         descriptor = os.open(shot.anchor, _DIRECTORY_FLAGS)
-        for component in shot.parts[1:]:
-            following = os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptor)
-            try:
-                os.close(descriptor)
-            except BaseException:
-                os.close(following)
-                raise
-            descriptor = following
-        shot_descriptor = descriptor
-        descriptor = None
-        _set_non_inheritable(shot_descriptor, where="shot root")
-        if acquisition is not None:
-            acquisition.track(shot_descriptor)
-            tracked.add(shot_descriptor)
-        runs_descriptor = os.open("runs", _DIRECTORY_FLAGS, dir_fd=shot_descriptor)
-        _set_non_inheritable(runs_descriptor, where="runs directory")
-        if acquisition is not None:
-            acquisition.track(runs_descriptor)
-            tracked.add(runs_descriptor)
-        root_descriptor = os.open(run_id, _DIRECTORY_FLAGS, dir_fd=runs_descriptor)
-        _set_non_inheritable(root_descriptor, where="run root")
-        if acquisition is not None:
-            acquisition.track(root_descriptor)
-            tracked.add(root_descriptor)
-    except OSError as exc:
-        if descriptor is not None:
+        try:
+            for component in shot.parts[1:]:
+                following = os.open(
+                    component,
+                    _DIRECTORY_FLAGS,
+                    dir_fd=descriptor,
+                )
+                try:
+                    os.close(descriptor)
+                except BaseException:
+                    os.close(following)
+                    raise
+                descriptor = following
+            return descriptor
+        except BaseException:
             with suppress(OSError):
                 os.close(descriptor)
+            raise
+
+    try:
+        if acquisition is None:
+            shot_descriptor = open_shot_root()
+        else:
+            shot_descriptor = acquisition.open_descriptor(open_shot_root)
+            tracked.add(shot_descriptor)
+        _set_non_inheritable(shot_descriptor, where="shot root")
+        if acquisition is None:
+            runs_descriptor = os.open(
+                "runs",
+                _DIRECTORY_FLAGS,
+                dir_fd=shot_descriptor,
+            )
+        else:
+            runs_descriptor = acquisition.open_descriptor(
+                lambda: os.open(
+                    "runs",
+                    _DIRECTORY_FLAGS,
+                    dir_fd=shot_descriptor,
+                )
+            )
+            tracked.add(runs_descriptor)
+        _set_non_inheritable(runs_descriptor, where="runs directory")
+        if acquisition is None:
+            root_descriptor = os.open(
+                run_id,
+                _DIRECTORY_FLAGS,
+                dir_fd=runs_descriptor,
+            )
+        else:
+            root_descriptor = acquisition.open_descriptor(
+                lambda: os.open(
+                    run_id,
+                    _DIRECTORY_FLAGS,
+                    dir_fd=runs_descriptor,
+                )
+            )
+            tracked.add(root_descriptor)
+        _set_non_inheritable(root_descriptor, where="run root")
+    except OSError as exc:
         _close_namespace_descriptors(
             (shot_descriptor, runs_descriptor, root_descriptor),
             acquisition=acquisition,
@@ -171,9 +201,6 @@ def open_run_namespace(
             f"run root and every ancestor must be existing real directory components: {root}"
         ) from exc
     except BaseException:
-        if descriptor is not None:
-            with suppress(OSError):
-                os.close(descriptor)
         _close_namespace_descriptors(
             (shot_descriptor, runs_descriptor, root_descriptor),
             acquisition=acquisition,
@@ -345,8 +372,9 @@ def open_fence(
     acquisition: ForkProtectedAcquisition | None = None,
 ) -> tuple[int, bool]:
     created = False
-    tracked = False
-    try:
+
+    def open_exact_fence() -> int:
+        nonlocal created
         if create:
             try:
                 descriptor = os.open(
@@ -356,27 +384,37 @@ def open_fence(
                     dir_fd=owner_descriptor,
                 )
                 created = True
+                return descriptor
             except FileExistsError:
-                descriptor = os.open(RUN_OWNER_FENCE.name, _FENCE_FLAGS, dir_fd=owner_descriptor)
+                return os.open(
+                    RUN_OWNER_FENCE.name,
+                    _FENCE_FLAGS,
+                    dir_fd=owner_descriptor,
+                )
+        return os.open(
+            RUN_OWNER_FENCE.name,
+            _FENCE_FLAGS,
+            dir_fd=owner_descriptor,
+        )
+
+    try:
+        if acquisition is None:
+            descriptor = open_exact_fence()
         else:
-            descriptor = os.open(RUN_OWNER_FENCE.name, _FENCE_FLAGS, dir_fd=owner_descriptor)
+            descriptor = acquisition.open_descriptor(open_exact_fence)
     except OSError as exc:
         raise RunOwnerFenceError(f"run owner fence must be a real regular file: {RUN_OWNER_FENCE.as_posix()}") from exc
     try:
-        if acquisition is not None:
-            acquisition.track(descriptor)
-            tracked = True
         observed = os.fstat(descriptor)
         require_regular(observed, where="run owner fence")
         require_single_name(observed, where="run owner fence")
         _set_non_inheritable(descriptor, where="run owner fence")
         return descriptor, created
     except BaseException:
-        try:
+        if acquisition is None:
             os.close(descriptor)
-        finally:
-            if tracked and acquisition is not None and acquisition.belongs_to_current_process:
-                acquisition.forget(descriptor)
+        else:
+            acquisition.retire(descriptor)
         raise
 
 
@@ -459,3 +497,59 @@ def close_acquisition(
                 os.close(owner_descriptor)
         finally:
             _close_namespace_descriptors((shot_descriptor, runs_descriptor, root_descriptor))
+
+
+def close_guarded_acquisition(
+    descriptors: tuple[GuardedDescriptor, ...],
+) -> None:
+    """Close only numeric slots still joined to this exact lease identity."""
+
+    errors: list[BaseException] = []
+    fence = descriptors[-1]
+    if fence.is_current():
+        try:
+            close_acquisition(
+                fence_descriptor=fence.descriptor,
+                owner_descriptor=None,
+                root_descriptor=None,
+                runs_descriptor=None,
+                shot_descriptor=None,
+                locked=True,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+    else:
+        errors.append(
+            RunOwnerFenceSubstituted(
+                "run owner fence descriptor changed identity before release"
+            )
+        )
+    for guarded in reversed(descriptors[:-1]):
+        if not guarded.is_current():
+            errors.append(
+                RunOwnerFenceSubstituted(
+                    "run owner directory descriptor changed identity before release"
+                )
+            )
+            continue
+        try:
+            os.close(guarded.descriptor)
+        except BaseException as exc:
+            errors.append(exc)
+    if not errors:
+        return
+    primary = errors[0]
+    if isinstance(primary, RunOwnerFenceError):
+        for diagnostic in errors[1:]:
+            primary.add_note(
+                f"cleanup diagnostic: {type(diagnostic).__name__}: {diagnostic}"
+            )
+        raise primary
+    failure = RunOwnerFenceError(
+        "run owner fence cleanup reported an operating-system failure"
+    )
+    for diagnostic in errors:
+        failure.add_note(
+            f"cleanup diagnostic: {type(diagnostic).__name__}: {diagnostic}"
+        )
+    raise failure from primary

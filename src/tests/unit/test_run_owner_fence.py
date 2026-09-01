@@ -11,7 +11,7 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 import pytest
@@ -1204,3 +1204,121 @@ os._exit(24)
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline and Path(f"/proc/{descendant_pid}").exists():
             time.sleep(0.01)
+
+
+def test_managed_fork_guard_entry_failure_does_not_pin_run_owner_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _manifest = _run_root(tmp_path)
+    original_managed = run_owner_fence_module.managed_fork_protected_acquisition
+
+    @contextmanager
+    def enter_then_interrupt():
+        with original_managed():
+            raise RuntimeError("injected run-owner managed-entry interruption")
+            yield  # pragma: no cover - required generator shape
+
+    monkeypatch.setattr(
+        run_owner_fence_module,
+        "managed_fork_protected_acquisition",
+        enter_then_interrupt,
+    )
+    with pytest.raises(RuntimeError, match="managed-entry interruption"):
+        acquire_run_owner_fence(
+            root,
+            run_id="run-001",
+            command="plan",
+            owner_kind="direct",
+        )
+
+    assert run_owner_fork_guard_module._PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_guard_module._ACTIVE_DESCRIPTORS == {}
+    monkeypatch.setattr(
+        run_owner_fence_module,
+        "managed_fork_protected_acquisition",
+        original_managed,
+    )
+    with acquire_run_owner_fence(
+        root,
+        run_id="run-001",
+        command="plan",
+        owner_kind="direct",
+    ):
+        pass
+
+
+def test_run_owner_handoff_interruption_repairs_guard_for_reconciler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _manifest = _run_root(tmp_path)
+
+    class InterruptAfterFirstInsert(dict):
+        interrupted = False
+
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if not self.interrupted:
+                self.interrupted = True
+                raise RuntimeError("injected run-owner active handoff interruption")
+
+    active = InterruptAfterFirstInsert(
+        run_owner_fork_guard_module._ACTIVE_DESCRIPTORS
+    )
+    monkeypatch.setattr(
+        run_owner_fork_guard_module,
+        "_ACTIVE_DESCRIPTORS",
+        active,
+    )
+    with pytest.raises(RuntimeError, match="active handoff interruption"):
+        acquire_run_owner_fence(
+            root,
+            run_id="run-001",
+            command="plan",
+            owner_kind="direct",
+        )
+
+    assert run_owner_fork_guard_module._PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_guard_module._ACTIVE_DESCRIPTORS == {}
+    claim = read_run_owner_claim(root, run_id="run-001")
+    with acquire_run_reconciler_fence(root, prior_owner=claim):
+        pass
+
+
+def test_run_owner_release_skips_closed_and_reused_fence_descriptor(
+    tmp_path: Path,
+) -> None:
+    root, _manifest = _run_root(tmp_path)
+    lease = acquire_run_owner_fence(
+        root,
+        run_id="run-001",
+        command="plan",
+        owner_kind="direct",
+    )
+    original_fence_descriptor = lease._fence_descriptor
+    os.close(original_fence_descriptor)
+    reused = os.open(os.devnull, os.O_RDONLY)
+    assert reused == original_fence_descriptor
+    try:
+        with pytest.raises(
+            RunOwnerFenceSubstituted,
+            match="changed identity before release",
+        ):
+            lease.release()
+        os.fstat(reused)
+        child = os.fork()
+        if child == 0:
+            try:
+                os.fstat(reused)
+            except OSError:
+                os._exit(91)
+            os._exit(0)
+        _pid, status = os.waitpid(child, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        os.close(reused)
+
+    assert run_owner_fork_guard_module._ACTIVE_DESCRIPTORS == {}
+    with acquire_run_reconciler_fence(root, prior_owner=lease.claim):
+        pass

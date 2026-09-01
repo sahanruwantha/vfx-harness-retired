@@ -15,6 +15,7 @@ import pytest
 import vfx_harness.agents.builder.layer as builder_layer
 import vfx_harness.agents.builder.unit_loop as builder_unit_loop
 import vfx_harness.agents.planner.generate as planner_generate
+import vfx_harness.orchestration.builder_execution_fence as builder_fence_module
 from tests.architecture.test_staged_architecture import _unit
 from vfx_harness.agents.builder.attempt_guard import UnitAttemptGuard
 from vfx_harness.orchestration import unit_state
@@ -25,6 +26,7 @@ from vfx_harness.orchestration.builder_execution_fence import (
     BUILDER_EXECUTION_FENCE,
     BuilderExecutionFenceActive,
     BuilderExecutionFenceError,
+    arm_live_path_identity,
     builder_execution_fence,
     require_builder_execution_lease,
 )
@@ -70,6 +72,181 @@ with builder_execution_fence(sys.argv[1]):
 def _release_holder(process: subprocess.Popen[str]) -> tuple[str, str]:
     stdout, stderr = process.communicate("release\n", timeout=5)
     return stdout, stderr
+
+
+def _start_live_identity_holder(identity: Path) -> subprocess.Popen[str]:
+    script = """
+import os
+import sys
+from vfx_harness.orchestration.builder_execution_fence import arm_live_path_identity
+
+claim = arm_live_path_identity(sys.argv[1], sys.argv[1])
+try:
+    claim.acquire()
+    print("acquired", flush=True)
+    sys.stdin.readline()
+    os._exit(29)
+finally:
+    claim.release()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(identity)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_child_environment(),
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "acquired"
+    return process
+
+
+def test_armed_live_identity_cleans_interruption_before_acquire_returns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = tmp_path / "interrupted-live-identity.lock"
+    original = builder_fence_module._claim_live_identity_into
+    reached_post_claim_boundary = False
+
+    def interrupt_after_successful_claim(*args, **kwargs) -> None:
+        nonlocal reached_post_claim_boundary
+        original(*args, **kwargs)
+        reached_post_claim_boundary = True
+        raise KeyboardInterrupt("injected after successful SysV claim")
+
+    monkeypatch.setattr(
+        builder_fence_module,
+        "_claim_live_identity_into",
+        interrupt_after_successful_claim,
+    )
+    claim = arm_live_path_identity(identity, identity)
+    with pytest.raises(KeyboardInterrupt, match="after successful SysV claim"):
+        claim.acquire()
+
+    assert reached_post_claim_boundary is True
+    monkeypatch.setattr(
+        builder_fence_module,
+        "_claim_live_identity_into",
+        original,
+    )
+    successor = arm_live_path_identity(identity, identity)
+    try:
+        successor.acquire()
+    finally:
+        successor.release()
+
+
+def test_builder_owner_cleans_interruption_after_transaction_acquire_returns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = builder_fence_module.LivePathIdentityClaim.acquire
+    reached_owner_call_boundary = False
+
+    def interrupt_before_owner_continues(self) -> None:
+        nonlocal reached_owner_call_boundary
+        original(self)
+        reached_owner_call_boundary = True
+        raise KeyboardInterrupt("injected before owner continued")
+
+    monkeypatch.setattr(
+        builder_fence_module.LivePathIdentityClaim,
+        "acquire",
+        interrupt_before_owner_continues,
+    )
+    with (
+        pytest.raises(
+            KeyboardInterrupt,
+            match="before owner continued",
+        ),
+        builder_execution_fence(tmp_path),
+    ):
+        raise AssertionError("interrupted acquisition entered the fence body")
+
+    assert reached_owner_call_boundary is True
+    monkeypatch.setattr(
+        builder_fence_module.LivePathIdentityClaim,
+        "acquire",
+        original,
+    )
+    with builder_execution_fence(tmp_path):
+        pass
+
+
+def test_live_identity_process_death_releases_armed_claim(tmp_path: Path) -> None:
+    identity = tmp_path / "process-death-live-identity.lock"
+    holder = _start_live_identity_holder(identity)
+    contender = arm_live_path_identity(identity, identity)
+    with pytest.raises(BuilderExecutionFenceActive, match="already active"):
+        contender.acquire()
+
+    stdout, stderr = holder.communicate("crash\n", timeout=5)
+
+    assert holder.returncode == 29, (stdout, stderr)
+    successor = arm_live_path_identity(identity, identity)
+    try:
+        successor.acquire()
+    finally:
+        successor.release()
+
+
+def test_live_identity_cleanup_is_process_bound_not_thread_bound(tmp_path: Path) -> None:
+    identity = tmp_path / "foreign-thread-live-identity.lock"
+    claim = arm_live_path_identity(identity, identity)
+    claim.acquire()
+    failure: list[BaseException] = []
+
+    def release_from_foreign_thread() -> None:
+        try:
+            claim.release()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failure.append(exc)
+
+    releaser = threading.Thread(target=release_from_foreign_thread)
+    releaser.start()
+    releaser.join(timeout=2)
+
+    assert not releaser.is_alive()
+    assert failure == []
+    successor = arm_live_path_identity(identity, identity)
+    try:
+        successor.acquire()
+    finally:
+        successor.release()
+
+
+def test_forked_child_cannot_release_parent_live_identity(tmp_path: Path) -> None:
+    identity = tmp_path / "forked-live-identity.lock"
+    parent_claim = arm_live_path_identity(identity, identity)
+    parent_claim.acquire()
+    read_descriptor, write_descriptor = os.pipe()
+    child = os.fork()
+    if child == 0:  # pragma: no branch - parent asserts the result
+        os.close(read_descriptor)
+        parent_claim.release()
+        os.write(write_descriptor, b"released")
+        os.close(write_descriptor)
+        os._exit(0)
+
+    os.close(write_descriptor)
+    try:
+        assert os.read(read_descriptor, 8) == b"released"
+        _pid, status = os.waitpid(child, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        contender = arm_live_path_identity(identity, identity)
+        with pytest.raises(BuilderExecutionFenceActive, match="already active"):
+            contender.acquire()
+    finally:
+        os.close(read_descriptor)
+        parent_claim.release()
+
+    successor = arm_live_path_identity(identity, identity)
+    try:
+        successor.acquire()
+    finally:
+        successor.release()
 
 
 def test_fence_is_exclusive_across_threads_and_fails_without_waiting(tmp_path: Path) -> None:

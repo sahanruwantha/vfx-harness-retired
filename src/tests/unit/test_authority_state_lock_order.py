@@ -63,11 +63,32 @@ def test_nested_selection_guards_reuse_one_kernel_lock(tmp_path, monkeypatch) ->
     operations: list[int] = []
     monkeypatch.setattr(
         authority_selection_transaction.fcntl,
-        "flock",
+        "lockf",
         lambda _descriptor, operation: operations.append(operation),
     )
 
-    with authority_selection_lock(tmp_path, exclusive=False), authority_selection_lock(tmp_path, exclusive=True):
+    with authority_selection_lock(tmp_path, exclusive=True), authority_selection_lock(tmp_path, exclusive=False):
+        pass
+
+    assert operations == [fcntl.LOCK_EX, fcntl.LOCK_UN]
+
+
+def test_nested_selection_guard_refuses_shared_to_exclusive_upgrade(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    operations: list[int] = []
+    monkeypatch.setattr(
+        authority_selection_transaction.fcntl,
+        "lockf",
+        lambda _descriptor, operation: operations.append(operation),
+    )
+
+    with (
+        authority_selection_lock(tmp_path, exclusive=False),
+        pytest.raises(AuthoritySelectionConflict, match="cannot upgrade"),
+        authority_selection_lock(tmp_path, exclusive=True),
+    ):
         pass
 
     assert operations == [fcntl.LOCK_EX, fcntl.LOCK_UN]

@@ -47,6 +47,9 @@ from vfx_harness.observability.run_owner_fence_files import (
     close_acquisition as _close_acquisition,
 )
 from vfx_harness.observability.run_owner_fence_files import (
+    close_guarded_acquisition as _close_guarded_acquisition,
+)
+from vfx_harness.observability.run_owner_fence_files import (
     durably_publish_created_fence as _durably_publish_created_fence,
 )
 from vfx_harness.observability.run_owner_fence_files import (
@@ -78,9 +81,10 @@ from vfx_harness.observability.run_owner_fence_files import (
 )
 from vfx_harness.observability.run_owner_fork_guard import (
     ForkProtectedAcquisition,
+    GuardedDescriptor,
     RunOwnerForkGuardError,
     active_descriptor_close,
-    begin_fork_protected_acquisition,
+    managed_fork_protected_acquisition,
 )
 from vfx_harness.observability.run_owner_manifest import (
     RUN_MANIFEST_LOCATOR,
@@ -132,30 +136,6 @@ def _process_start_token() -> str:
         # inode fence, never this token, remains the liveness proof.
         material = secrets.token_bytes(32)
     return hashlib.sha256(material).hexdigest()
-
-
-def _abort_fork_protected_acquisition(
-    acquisition: ForkProtectedAcquisition,
-    *,
-    shot_descriptor: int | None,
-    runs_descriptor: int | None,
-    root_descriptor: int | None,
-    owner_descriptor: int | None,
-    fence_descriptor: int | None,
-    locked: bool,
-) -> None:
-    try:
-        if acquisition.belongs_to_current_process:
-            _close_acquisition(
-                fence_descriptor=fence_descriptor,
-                owner_descriptor=owner_descriptor,
-                root_descriptor=root_descriptor,
-                runs_descriptor=runs_descriptor,
-                shot_descriptor=shot_descriptor,
-                locked=locked,
-            )
-    finally:
-        acquisition.abort()
 
 
 def _retire_claim_staging(
@@ -342,6 +322,7 @@ class RunOwnerFenceLease:
     _owner_identity: tuple[int, int] = field(repr=False)
     _creator_pid: int = field(repr=False)
     _registry_token: object = field(repr=False)
+    _registry_descriptors: tuple[GuardedDescriptor, ...] = field(repr=False)
     _released: bool = field(default=False, init=False, repr=False)
     _constructor_key: object = field(default=None, repr=False)
 
@@ -432,14 +413,18 @@ class RunOwnerFenceLease:
             self._fence_descriptor,
         )
         try:
-            with active_descriptor_close(self._registry_token, descriptors):
-                _close_acquisition(
-                    fence_descriptor=self._fence_descriptor,
-                    owner_descriptor=self._owner_descriptor,
-                    root_descriptor=self._root_descriptor,
-                    runs_descriptor=self._runs_descriptor,
-                    shot_descriptor=self._shot_descriptor,
-                    locked=True,
+            if tuple(
+                item.descriptor for item in self._registry_descriptors
+            ) != descriptors:
+                raise RunOwnerFenceError(
+                    "run owner lease descriptors differ from their captured fork identities"
+                )
+            with active_descriptor_close(
+                self._registry_token,
+                self._registry_descriptors,
+            ):
+                _close_guarded_acquisition(
+                    self._registry_descriptors
                 )
         except RunOwnerForkGuardError as exc:
             raise RunOwnerFenceError(str(exc)) from exc
@@ -456,19 +441,16 @@ class RunOwnerFenceLease:
         self.release()
 
 
-def acquire_run_owner_fence(
+def _acquire_run_owner_fence_managed(
     run_root: str | Path,
     *,
     run_id: str,
     command: str,
     owner_kind: str,
+    acquisition: ForkProtectedAcquisition,
 ) -> RunOwnerFenceLease:
-    """Acquire the root fence and atomically mint its immutable owner claim."""
+    """Acquire one owner lease inside an already-armed fork transaction."""
 
-    try:
-        acquisition = begin_fork_protected_acquisition()
-    except RunOwnerForkGuardError as exc:
-        raise RunOwnerFenceError(str(exc)) from exc
     shot_descriptor: int | None = None
     runs_descriptor: int | None = None
     root_descriptor: int | None = None
@@ -476,7 +458,6 @@ def acquire_run_owner_fence(
     fence_descriptor: int | None = None
     prepared = None
     prepared_tracked = False
-    locked = False
     try:
         namespace = _open_run_namespace(run_root, run_id, acquisition=acquisition)
         root = namespace.root
@@ -486,8 +467,9 @@ def acquire_run_owner_fence(
         shot_identity = namespace.shot_identity
         runs_identity = namespace.runs_identity
         root_identity = namespace.root_identity
-        owner_descriptor = _open_owner_directory(root_descriptor, create=True)
-        acquisition.track(owner_descriptor)
+        owner_descriptor = acquisition.open_descriptor(
+            lambda: _open_owner_directory(root_descriptor, create=True)
+        )
         owner_identity = _verify_named_owner_directory(
             root_descriptor,
             owner_descriptor,
@@ -502,7 +484,6 @@ def acquire_run_owner_fence(
             acquisition=acquisition,
         )
         _acquire_exclusive(fence_descriptor, path=root / RUN_OWNER_FENCE)
-        locked = True
         if _claim_exists(owner_descriptor):
             raise RunOwnerClaimExists("run owner claim appeared before ownership could be established")
         fence_device, fence_inode = _verify_named_fence(
@@ -550,7 +531,7 @@ def acquire_run_owner_fence(
         prepared_descriptor = prepared.descriptor
         if prepared_descriptor is None:  # pragma: no cover - allocator contract
             raise RunOwnerFenceError("owner claim allocator returned a closed staging descriptor")
-        acquisition.track(prepared_descriptor)
+        acquisition.adopt_descriptor(prepared_descriptor)
         prepared_tracked = True
         claim = RunOwnerClaim(
             run_id=run_id,
@@ -614,6 +595,16 @@ def acquire_run_owner_fence(
             fence_descriptor,
             expected=(claim.fence_device, claim.fence_inode),
         )
+        descriptor_numbers = (
+            shot_descriptor,
+            runs_descriptor,
+            root_descriptor,
+            owner_descriptor,
+            fence_descriptor,
+        )
+        registry_descriptors = acquisition.guarded_descriptors(
+            descriptor_numbers
+        )
         lease = RunOwnerFenceLease(
             run_root=root,
             claim=claim,
@@ -629,40 +620,42 @@ def acquire_run_owner_fence(
             _owner_identity=owner_identity,
             _creator_pid=os.getpid(),
             _registry_token=acquisition.token,
+            _registry_descriptors=registry_descriptors,
             _constructor_key=_LEASE_KEY,
         )
-        acquisition.handoff(
-            (
-                shot_descriptor,
-                runs_descriptor,
-                root_descriptor,
-                owner_descriptor,
-                fence_descriptor,
-            )
-        )
+        acquisition.handoff(descriptor_numbers)
         return lease
-    except BaseException as exc:
-        try:
-            if prepared is not None and owner_descriptor is not None:
-                _retire_claim_staging(
-                    acquisition,
-                    owner_descriptor,
-                    prepared,
-                    tracked=prepared_tracked,
-                )
-        finally:
-            _abort_fork_protected_acquisition(
+    except BaseException:
+        if prepared is not None and owner_descriptor is not None:
+            _retire_claim_staging(
                 acquisition,
-                shot_descriptor=shot_descriptor,
-                runs_descriptor=runs_descriptor,
-                fence_descriptor=fence_descriptor,
-                owner_descriptor=owner_descriptor,
-                root_descriptor=root_descriptor,
-                locked=locked,
+                owner_descriptor,
+                prepared,
+                tracked=prepared_tracked,
             )
-        if isinstance(exc, RunOwnerForkGuardError):
-            raise RunOwnerFenceError(str(exc)) from exc
         raise
+
+
+def acquire_run_owner_fence(
+    run_root: str | Path,
+    *,
+    run_id: str,
+    command: str,
+    owner_kind: str,
+) -> RunOwnerFenceLease:
+    """Acquire the root fence and atomically mint its immutable owner claim."""
+
+    try:
+        with managed_fork_protected_acquisition() as acquisition:
+            return _acquire_run_owner_fence_managed(
+                run_root,
+                run_id=run_id,
+                command=command,
+                owner_kind=owner_kind,
+                acquisition=acquisition,
+            )
+    except RunOwnerForkGuardError as exc:
+        raise RunOwnerFenceError(str(exc)) from exc
 
 
 def read_run_owner_claim(
@@ -739,25 +732,21 @@ def read_run_owner_claim(
         )
 
 
-def acquire_run_reconciler_fence(
+def _acquire_run_reconciler_fence_managed(
     run_root: str | Path,
     *,
     prior_owner: RunOwnerClaim,
+    acquisition: ForkProtectedAcquisition,
 ) -> RunOwnerFenceLease:
-    """Acquire the exact prior owner's released fence without consulting PID or time."""
+    """Acquire one reconciler lease inside an armed fork transaction."""
 
     if not isinstance(prior_owner, RunOwnerClaim):
         raise RunOwnerFenceError("reconciler acquisition requires the exact typed prior owner claim")
-    try:
-        acquisition = begin_fork_protected_acquisition()
-    except RunOwnerForkGuardError as exc:
-        raise RunOwnerFenceError(str(exc)) from exc
     shot_descriptor: int | None = None
     runs_descriptor: int | None = None
     root_descriptor: int | None = None
     owner_descriptor: int | None = None
     fence_descriptor: int | None = None
-    locked = False
     try:
         namespace = _open_run_namespace(
             run_root,
@@ -771,8 +760,9 @@ def acquire_run_reconciler_fence(
         shot_identity = namespace.shot_identity
         runs_identity = namespace.runs_identity
         root_identity = namespace.root_identity
-        owner_descriptor = _open_owner_directory(root_descriptor, create=False)
-        acquisition.track(owner_descriptor)
+        owner_descriptor = acquisition.open_descriptor(
+            lambda: _open_owner_directory(root_descriptor, create=False)
+        )
         owner_identity = _verify_named_owner_directory(
             root_descriptor,
             owner_descriptor,
@@ -799,7 +789,6 @@ def acquire_run_reconciler_fence(
             expected=expected,
         )
         _acquire_exclusive(fence_descriptor, path=root / RUN_OWNER_FENCE)
-        locked = True
         # Reopen all immutable joins after acquiring.  A rename/substitution race is
         # refused before the reconciler may publish owner-loss evidence.
         observed = _read_claim_from_descriptors(
@@ -832,6 +821,16 @@ def acquire_run_reconciler_fence(
             fence_descriptor,
             expected=expected,
         )
+        descriptor_numbers = (
+            shot_descriptor,
+            runs_descriptor,
+            root_descriptor,
+            owner_descriptor,
+            fence_descriptor,
+        )
+        registry_descriptors = acquisition.guarded_descriptors(
+            descriptor_numbers
+        )
         lease = RunOwnerFenceLease(
             run_root=root,
             claim=prior_owner,
@@ -847,28 +846,28 @@ def acquire_run_reconciler_fence(
             _owner_identity=owner_identity,
             _creator_pid=os.getpid(),
             _registry_token=acquisition.token,
+            _registry_descriptors=registry_descriptors,
             _constructor_key=_LEASE_KEY,
         )
-        acquisition.handoff(
-            (
-                shot_descriptor,
-                runs_descriptor,
-                root_descriptor,
-                owner_descriptor,
-                fence_descriptor,
-            )
-        )
+        acquisition.handoff(descriptor_numbers)
         return lease
-    except BaseException as exc:
-        _abort_fork_protected_acquisition(
-            acquisition,
-            shot_descriptor=shot_descriptor,
-            runs_descriptor=runs_descriptor,
-            fence_descriptor=fence_descriptor,
-            owner_descriptor=owner_descriptor,
-            root_descriptor=root_descriptor,
-            locked=locked,
-        )
-        if isinstance(exc, RunOwnerForkGuardError):
-            raise RunOwnerFenceError(str(exc)) from exc
+    except BaseException:
         raise
+
+
+def acquire_run_reconciler_fence(
+    run_root: str | Path,
+    *,
+    prior_owner: RunOwnerClaim,
+) -> RunOwnerFenceLease:
+    """Acquire the exact prior owner's released fence without PID or time."""
+
+    try:
+        with managed_fork_protected_acquisition() as acquisition:
+            return _acquire_run_reconciler_fence_managed(
+                run_root,
+                prior_owner=prior_owner,
+                acquisition=acquisition,
+            )
+    except RunOwnerForkGuardError as exc:
+        raise RunOwnerFenceError(str(exc)) from exc

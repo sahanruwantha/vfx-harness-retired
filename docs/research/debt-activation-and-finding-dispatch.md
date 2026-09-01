@@ -181,9 +181,21 @@ authorization for that exact seal run.
 The first attempt to execute that seal exposed a separate run-lifecycle defect before it produced
 a model result: an interrupted direct invocation could remain `running`, while the cooperative
 fallback misclassified operator cessation as a HIR-0164 `harness_defect` with an engineering
-action. Proposed HIR-0172 separates failure from interruption. Its initial local slice defines
-strict action-free interruption record shapes and a fail-closed owner-fence foundation, but
-deliberately cannot publish or authoritatively read an `interrupted` v2 status. The evaluation has
+action. Proposed HIR-0172 separates failure from interruption. Its current local foundation defines
+strict action-free interruption record shapes, a fail-closed owner fence, a non-integrated strict
+`shot-ledger/v2` value contract, and a tested but non-integrated shot-authority lease over the
+permanent selection lock. The lease closes the pre-registration fork window with POSIX process-lock
+semantics, retains an armed crash-safe live-identity claim across accidental descriptor closure and
+legacy `flock` interoperability, and binds capabilities to the canonical shot, creator process, and
+thread while still completing exact-process cleanup after a foreign-thread context unwind. Its
+managed mutex, descriptor acquisition, local registration, and handoff transactions are interruption
+safe; fork-visible rows carry captured per-fd identities and shrink to only still-live originals before
+neutralized slots close. This prevents a stale numeric fd from closing an unrelated replacement. The
+same managed fork-acquisition primitive now covers root-run owner and reconciler fence opens. The
+shot-authority lease is not yet installed around every sanctioned writer, actual inner lock, and
+publication sink. The foundation deliberately has no ledger-v2 writer and cannot publish or
+authoritatively read an `interrupted` v2
+status. The evaluation has
 no caller-selected success factory, and the canonical receipt/evaluation locators are reserved for
 a future independent evaluator and terminalizer. `RunStatusV2` remains a closed
 `running | passed | dry-run | failed | interrupted` union: `dry-run` selects only its non-accepting
