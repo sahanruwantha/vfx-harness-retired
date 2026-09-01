@@ -18,9 +18,14 @@ import pytest
 from vfx_harness.evidence.scene_checks import KIND_DOMAINS
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.jit_materialization import validate_materialization
-from vfx_harness.orchestration.plan_authority import publish_current
 
-from .test_plan_records import _add_deferred_layer, _candidate, _jit_payload, _write
+from .test_plan_records import (
+    _add_deferred_layer,
+    _candidate,
+    _jit_payload,
+    _write,
+    publish_current,
+)
 
 
 def _materialize(tmp_path, mutate, *, requirement_domain: str = "image") -> None:

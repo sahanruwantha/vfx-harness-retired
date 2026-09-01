@@ -31,17 +31,18 @@ These are the names the rest of this file and the CLI use. They are not departme
 | **gate** | Deterministic checker. No model. `clean` means the plan is structurally executable, not that future scene numbers already pass. |
 | **JIT** | Just in time. A later layer stays `jit_deferred` until its upstream outcomes exist and it is materialized. |
 | **digest** | Hash of a unit's identity (goal, deps, mutation, contracts, publish/consume). Same id + same digest = same unit. |
-| **replan** | Move durable unit *state* onto a new DAG: keep unchanged checkpoints, supersede what the change invalidates. `vfx units replan`. Does not redesign the layer by itself. |
-| **`--discard-accepted`** | Heavy remat flag: retire accepted orphans, or wipe state when the old DAG cannot be reconstructed. Not required to start rematerialize. |
+| **authority-state transition** | One gate-attested plan/JIT publication that atomically selects authority and moves every affected durable unit binding. Exact unchanged work is preserved; changed and downstream-invalidated work is superseded. There is no standalone state-replan command. |
+| **`--discard-accepted`** | Heavy remat authorization: permit a validated replacement to retire accepted orphans. It is not required for comparable current authority and never authorizes an out-of-band state wipe. |
 | **checkpoint** | Accepted Blender/script snapshot for one unit. Repair and retry start here. |
 | **canonical replay** | Rebuild from an empty scene using the published scripts. Warm live success is not the artifact of record. |
 | **composed** | After a layer's units pass, replay them together. Units can pass while the composed layer still fails. |
+| **layer finalization** | Claimed public layer boundary: one v2 receipt per actual replay group, one v1 evaluation receipt over the ordered contiguous group prefix, then one mechanically derived v2 terminal receipt. |
 | **claim / contract** | A checkable proposition (scene fact, image metric, timing). Required claims AND together; a pass cannot average away a fail. |
 | **role / control** | Semantic tags on Blender hosts (`bvfx_role`, `bvfx_control`). Plans select these, not object display names. |
 | **write-cluster** | The one mutation family a unit is allowed (role namespace × host × instrument). Mixed families cannot publish. |
 | **evidence** | Measurements and renders on disk. Model prose is not evidence. |
 | **critic** | Visual judge for qualitative leftovers. It cannot override a passing measurement of the same fact. |
-| **hypothesis_falsified** | Builder proved the selected unit authority cannot work inside its scope. Stop. Publish a validated amended authority generation first; only then may `vfx units replan` consume the exact finding. |
+| **hypothesis_falsified** | Builder proved the selected unit authority cannot work inside its scope. Stop. A reviewed replacement must publish through its owning plan/materialization boundary; that publication, not a follow-up state command, derives the exact preservation and invalidation effect. |
 | **cannot_express_in_scope** | Repair cannot fix this with the unit's allowed mutations. Remaining repair budget stops. Read the typed stop; do not infer replan, rematerialize, or retry from this label alone. |
 | **stop envelope** | The immutable typed reason a run stopped, plus its one legal route and exact evidence. Exit code, `status.detail`, and `contract_gap` are summaries, not dispatch authority. |
 | **superseded / blocked / passed** | Lifecycle of a unit: replaced by a newer DAG, waiting on a failed/replaced dependency, or accepted. Not scene-quality scores. |
@@ -53,12 +54,30 @@ Related commands that are easy to mix up:
 | you want | command |
 |---|---|
 | First design of a deferred layer | `vfx plan <shot> --layer N` |
-| Replace that published design | `vfx plan <shot> --layer N --rematerialize --owner … --trigger … --evidence …` |
-| Reopen units after a typed finding, DAG may be unchanged | `vfx units replan <shot> --layer N --falsification …` |
+| Replace that published design and atomically move affected state | `vfx plan <shot> --layer N --rematerialize --owner … --trigger … --evidence …` |
+| Handle a typed finding that needs new authority | Stop; publish a reviewed replacement through the owning plan/materialization command. No public finding-consumption adapter or automatic controller exists yet. |
 | Retry a truncated or now-fixed unit | `vfx units retry <shot> --layer N --unit ID --reason … --evidence …` |
+| Release a dead pre-terminal layer finalizer | `vfx finalizations release <shot> --layer N --claim-id lfc-… --reason … --evidence <file> …` |
 | Promote a retained clean plan without re-authoring | `vfx plan <shot> --promote-run <run-id>` |
 
 Builders never rewrite plans or widen their own scope.
+
+`vfx finalizations release` is a reviewed finalization-only abort, not a unit retry or
+authority replacement. It requires the exact active claim and shot-local evidence, snapshots
+every reviewed byte at a SHA-256-derived immutable locator, and archives the complete existing
+ordered contiguous replay-receipt prefix. Its v2 request, evidence, and receipt records reject
+gaps, substitutions, or inconsistent group counts. It changes no unit row and refuses a terminal
+finalization. An ordinary pre-crash critic output is archived as review evidence but is not a
+sealed judgment receipt, so the fresh higher-revision claim may need to pay for judgment again.
+
+Layer finalization executes every planned evidence group through a fresh replay. Each
+`vfx-harness.layer-replay-receipt/v2` binds that group's required claims, actual deterministic
+evidence, exact references, and any group-specific `solid | eevee` render plus auxiliary
+captures. A typed replay-stage failure seals a failed group without invented point or critic
+evidence. `vfx-harness.layer-evaluation-receipt/v1` accepts only the executed contiguous group
+prefix and can pass only when all planned groups ran. The terminal
+`vfx-harness.layer-finalization-receipt/v2` derives its result from that evaluation; downstream
+outcome readers reopen the evaluation, every group receipt, and every named source byte.
 
 ## The flow (and what can happen)
 
@@ -133,7 +152,7 @@ layer DAG, who owns which brief requirement, reserved interfaces, genuine blocke
 
 | outcome | what you do |
 |---|---|
-| `clean` | Pointer moves. Structurally executable — not “the scene already passes.” |
+| `clean` | Selected authority and its gate-attested state effect commit atomically. Structurally executable — not “the scene already passes.” |
 | blocking findings | Repair the plan; rerun the gate. Do not hand-edit bundle files. |
 | stalled / budget | Reported as failure. Pay for a new attempt, or promote a retained clean candidate. |
 | crash mid-plan | Previous `plans/current.json` stays. The failed run is diagnostic only. |
@@ -152,7 +171,7 @@ exist. A dependency-root layer may materialize immediately after the global plan
 
 | outcome | what you do |
 |---|---|
-| publishes | Durable unit state is created or reconciled. Run `vfx build`; only its exact claimed attempt may plan and build the first ready unit. |
+| publishes | The selected view and its exact durable-state effect commit atomically. Run `vfx build`; only its exact claimed attempt may plan and build the first ready unit. |
 | gate / session fail | Nothing selected. No unit state from a partial candidate. |
 | max-turns | Failed transaction, not a select. A leftover candidate file is not a plan. |
 
@@ -179,8 +198,9 @@ and later empty-scene replay of the published script.
 | executable miss, in scope | Repair from the last checkpoint. Regression restores the snapshot. |
 | qualitative miss | Critic on owned axes only; still cannot override a passing measurement. |
 | `cannot_express_in_scope` | Stop remaining repairs. Typed finding, not more mutations. |
-| `hypothesis_falsified` | Plan is wrong. Publish amended authority; `vfx units replan --falsification`. |
+| `hypothesis_falsified` | Plan is wrong. Stop, review the typed finding, and publish amended authority through its owning boundary. The authority-state transaction moves affected state; there is no follow-up `units replan`. |
 | interrupt / SDK failure | Stop. Start a new run from the fault-owning unit. The operator-only `vfx units retry` command requires independent review; it neither consumes the stop action nor emits a receipt. A legacy checkpoint-and-journal row does not authorize automatic session resume. |
+| dead pre-terminal layer finalizer | Restart fails on its active claim. After proving the process exited, release only that exact claim with `vfx finalizations release`; accepted unit receipts and checkpoints remain unchanged. |
 | unpassed prior | Refuse (exit 6). Do not build on a layer that never passed. |
 | brief changed since plan | Refuse (exit 8). Replan first. |
 | unanswered question on this layer | Refuse (exit 5). Escalate. |
@@ -198,33 +218,35 @@ Use this when the published unit DAG or contracts must be replaced: defective de
 new harness rule that the selected view fails, or a new global plan generation.
 
 It designs against **current global authority**, not against the view being thrown away.
-The live pointer moves only when the replacement publishes. A crash leaves the previous
-design in place.
+Before the write-ahead intent is selected, a failure leaves the previous design live. After that
+point readers fail closed until deterministic recovery finishes the already staged replacement.
 
-After publication, unit *state* moves with `apply_replan`:
+Publication and unit-state movement are one gate-attested authority-state transaction:
 
-- same id + same digest → keep, including `passed`
-- changed, removed, or downstream-invalidated → `superseded` even if they had passed
-- `--discard-accepted` only for orphans, or when the old DAG cannot be reconstructed
+- an exact unchanged unit binding may keep its immutable completion receipt, even when a sibling
+  change gives the containing layer a new generation;
+- changed, removed, or downstream-invalidated units become `superseded`, even if they had passed;
+- the old terminal layer receipt is revoked whenever the complete layer binding changes; and
+- every preservation must continue across each immediate-predecessor coordinator edge. An
+  A → B → A sequence cannot recover a receipt that B invalidated.
 
 **Not rematerialize:** a `keyframe_schedule` path miss, a repairable scene fail, or a
-finding whose DAG bytes did not change — those stay in build/repair or `units replan`.
+finding whose remedy does not change authority. The first two stay in bounded build/repair. The
+last remains stopped because no receipt-backed finding-consumption adapter currently authorizes
+a same-authority reopen.
 
-### 6. Replan unit state (when the *finding* is right)
+### 6. Authority-state transitions and typed findings
 
-```bash
-vfx units replan shots/<shot> --layer N \
-  --base-run <old-plan-run-id> --base-bundle <old-plan-content-hash> \
-  --owner <who> --trigger "<why>" --evidence <path> \
-  --falsification state/work-units/hypothesis-falsifications/<id>.json
-```
+There is no public `vfx units replan` command. Global-plan and materialization publishers stage
+the proposed authority capsules, complete durable-state before/after images, and exact
+preservation/invalidation effect for the gate to verify. Publication then commits the selected
+pointer and affected state through one write-ahead, independently evaluated transaction.
 
-Consumes a typed finding. Reopens that unit and its affected closure. Unaffected
-checkpoints stay. `--preview` prints added/removed/changed/invalidated/preserved first.
-
-A sibling rematerialize that only changes the combined `layers.json` hash, while this
-layer's unit ids and digests still match, is **not** a DAG change. Do not empty-base
-that layer.
+An immutable unit completion receipt may cross a changed layer transition only when every
+contiguous coordinator edge preserves its exact unit binding and source closure. A terminal layer
+receipt crosses only unchanged complete layer bindings. Typed findings remain evidence for a
+reviewed authority change; they are not themselves dispatch receipts, and no automatic recovery
+controller currently consumes them.
 
 ### 7. Accept and render
 
@@ -255,10 +277,12 @@ plan → materialize/rematerialize per layer → build units → accept → rend
 | stage | command | what it does |
 |---|---|---|
 | **plan** | `vfx plan <shot>` | Sparse global map + gate. `--until-clean` loops repair against the gate. |
-| **layer design** | `vfx plan <shot> --layer N` | Materialize or reconcile the layer DAG and durable state. It performs no paid unit planning. `--unit` is retired. |
+| **layer design** | `vfx plan <shot> --layer N` | Materialize the layer DAG; a successful publication atomically commits its verified authority-state effect. It performs no paid unit planning. `--unit` is retired. |
 | **build** | `vfx build <shot> --layer N` | Claim each ready unit, then own its paid planning and additive build in one exact attempt. |
 | **run** | `vfx run <shot>` | Whole driver. Stops on first unaccepted boundary. `--dry-run` previews. |
+| **recover authority** | `vfx recover-authority-state <shot>` | Deterministically roll an exact pending authority-state WAL forward; performs no planner, Blender, render, critic, or model work. |
 | **recover environment** | `vfx recover-environment <shot> --run-id ID --idempotency-key KEY` | Reverify an exact typed infrastructure stop after external repair; never edits the environment. |
+| **release finalization** | `vfx finalizations release <shot> --layer N --claim-id ID --reason … --evidence <file> …` | Archive one exact orphaned pre-terminal claim after review; preserves all accepted unit authority and permits a higher-revision fresh claim. |
 | **accept** | `vfx accept <shot>` | Empty-scene full chain; publish an exact typed acceptance outcome. |
 | **render** | `vfx render <shot>` | Encode a deliverable only from the current passing acceptance outcome. |
 | **inspect** | `vfx inspect <shot> --list-runs` | Read generated runs in the supported order. |

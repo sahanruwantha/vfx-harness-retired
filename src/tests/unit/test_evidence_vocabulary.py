@@ -504,10 +504,10 @@ def test_materialization_requires_visibility_at_every_judge_frame(tmp_path) -> N
         _candidate,
         _jit_payload,
         _write,
+        publish_current,
     )
     from vfx_harness.observability import run_artifacts
     from vfx_harness.orchestration.jit_materialization import validate_materialization
-    from vfx_harness.orchestration.plan_authority import publish_current
 
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)

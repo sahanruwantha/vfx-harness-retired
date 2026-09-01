@@ -14,6 +14,12 @@ from vfx_harness.blender.observation_environment import (
 from vfx_harness.blender.observation_environment import (
     canonical_observation_environment,
 )
+from vfx_harness.domain.judgment_debt_replay_receipts import (
+    ReplayPrefixLayerReceipt,
+    ReplayPrefixReceipt,
+    ReplayPrefixUnitReceipt,
+    payment_generation_for_replay,
+)
 from vfx_harness.domain.judgment_debts import (
     JudgmentDebtActivation,
     JudgmentDebtDefinition,
@@ -26,11 +32,6 @@ from vfx_harness.domain.judgment_debts import (
 )
 from vfx_harness.domain.refobs import PROMOTED_CONSTRUCTION_SCHEMA
 from vfx_harness.orchestration import judgment_observation
-from vfx_harness.orchestration.judgment_debt_state import (
-    ReplayPrefixLayerReceipt,
-    ReplayPrefixReceipt,
-    ReplayPrefixUnitReceipt,
-)
 
 
 def _digest(value: bytes | str) -> str:
@@ -40,6 +41,7 @@ def _digest(value: bytes | str) -> str:
 
 BUNDLE_DIGEST = _digest("selected-bundle")
 PAYER_DIGEST = _digest("form-hall-unit")
+LAYER_REPLAY_RECEIPT_DIGEST = _digest("layer-replay-receipt")
 
 
 def _due_authority() -> tuple[JudgmentDebtDefinition, JudgmentDebtActivation, JudgmentDebtState]:
@@ -68,10 +70,17 @@ def _due_authority() -> tuple[JudgmentDebtDefinition, JudgmentDebtActivation, Ju
         definition,
         payer_unit_digests=(("form:hall", PAYER_DIGEST),),
     )
+    replay = _receipt()
+    payment_generation = payment_generation_for_replay(
+        definition,
+        activation,
+        replay,
+    )
     due = activate_judgment_debt(
         definition,
         JudgmentDebtState.pending(definition),
         activation=activation,
+        payment_generation_digest=payment_generation.digest,
         layer_id="form",
         replayed_unit_digests=activation.payer_unit_digests,
     )
@@ -88,14 +97,18 @@ def _receipt(*, script_bytes: bytes = b"build hall") -> ReplayPrefixReceipt:
         script_path="build/units/form/hall.py",
         script_sha256=script_digest,
         checkpoint_script_sha256=script_digest,
+        completion_receipt_digest=_digest("form-hall-completion"),
     )
     return ReplayPrefixReceipt((
         ReplayPrefixLayerReceipt(
             layer_id="form",
+            layer_generation_digest=_digest("form-layer-generation"),
+            predecessor_layer_digests=(),
             script_path="build/layers/form.py",
             script_sha256=_digest(b"composed form layer"),
             units=(unit,),
             dependencies=(),
+            payer_claim_id=f"lfc-{_digest('form-payer-claim')}",
         ),
     ))
 
@@ -142,11 +155,13 @@ def _compile(
     *,
     receipt: ReplayPrefixReceipt,
     environment: dict,
+    layer_replay_receipt_digest: str = LAYER_REPLAY_RECEIPT_DIGEST,
 ) -> judgment_observation.JudgmentObservationRequest:
     return judgment_observation.compile_current_judgment_observation_request(
         shot,
         definition.digest,
         replay_receipt=receipt,
+        layer_replay_receipt_digest=layer_replay_receipt_digest,
         frame=10,
         ref="refs/hall.png",
         render_mode="solid",
@@ -173,6 +188,7 @@ def test_compiles_exact_due_request_with_reference_view_replay_and_environment(
     assert request.activation_digest == activation.digest
     assert request.reference_digest == _digest(b"reference")
     assert request.replay_receipt_digest == receipt.digest
+    assert request.layer_replay_receipt_digest == LAYER_REPLAY_RECEIPT_DIGEST
     assert request.observation_environment_digest == environment["digest"]
     assert request.external_asset_provenance_digest == judgment_observation._digest_json({
         "schema": "vfx-harness.judgment-observation-assets/v1",
@@ -191,6 +207,73 @@ def test_compiles_exact_due_request_with_reference_view_replay_and_environment(
     })
 
 
+def test_provisional_pending_request_is_identical_after_due_without_state_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    definition, activation, due = _due_authority()
+    pending = JudgmentDebtState.pending(definition)
+    observed_state = pending
+    monkeypatch.setattr(
+        judgment_observation,
+        "_selected_snapshot",
+        lambda _shot: (object(), BUNDLE_DIGEST, BUNDLE_DIGEST),
+    )
+    monkeypatch.setattr(
+        judgment_observation,
+        "current_judgment_debt_states_for_authority",
+        lambda _shot, _selected: ((definition, activation, observed_state),),
+    )
+    _write_reference(tmp_path)
+    receipt = _receipt()
+    kwargs = {
+        "replay_receipt": receipt,
+        "layer_replay_receipt_digest": LAYER_REPLAY_RECEIPT_DIGEST,
+        "frame": 10,
+        "ref": "refs/hall.png",
+        "render_mode": "solid",
+        "render_scale": 0.5,
+        "observation_environment": _environment(),
+        "comparison_config": {"schema": "comparison/v1", "threshold": 0.8},
+        "judge_config": {"schema": "judge/v1", "model": "bounded"},
+    }
+
+    provisional = judgment_observation.compile_provisional_judgment_observation_request(
+        tmp_path,
+        definition.digest,
+        **kwargs,
+    )
+
+    assert provisional.lifecycle == "pending_not_due"
+    assert observed_state == pending
+    assert not (tmp_path / "state").exists()
+    with pytest.raises(ValueError, match="requires the exact due activation"):
+        judgment_observation.compile_current_judgment_observation_request(
+            tmp_path,
+            definition.digest,
+            **kwargs,
+        )
+
+    observed_state = due
+    current = judgment_observation.compile_current_judgment_observation_request(
+        tmp_path,
+        definition.digest,
+        **kwargs,
+    )
+    provisional_due = (
+        judgment_observation.compile_provisional_judgment_observation_request(
+            tmp_path,
+            definition.digest,
+            **kwargs,
+        )
+    )
+
+    assert provisional.request == current
+    assert provisional.request.digest == current.digest
+    assert provisional_due.lifecycle == "due"
+    assert provisional_due.request == current
+
+
 def test_changed_reference_environment_replay_or_view_changes_request_digest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -204,12 +287,20 @@ def test_changed_reference_environment_replay_or_view_changes_request_digest(
     _write_reference(tmp_path, b"changed reference")
     changed_reference = _compile(tmp_path, definition, receipt=receipt, environment=_environment())
     changed_environment = _compile(tmp_path, definition, receipt=receipt, environment=_environment(label="changed"))
-    changed_replay = _compile(
+    changed_layer_replay = _compile(
         tmp_path,
         definition,
-        receipt=_receipt(script_bytes=b"changed unit script"),
+        receipt=receipt,
         environment=_environment(),
+        layer_replay_receipt_digest=_digest("changed-layer-replay-receipt"),
     )
+    with pytest.raises(ValueError, match="another replay payment generation"):
+        _compile(
+            tmp_path,
+            definition,
+            receipt=_receipt(script_bytes=b"changed unit script"),
+            environment=_environment(),
+        )
     monkeypatch.setattr(
         judgment_observation,
         "_selected_snapshot",
@@ -219,7 +310,7 @@ def test_changed_reference_environment_replay_or_view_changes_request_digest(
 
     assert changed_reference.digest != baseline.digest
     assert changed_environment.digest != baseline.digest
-    assert changed_replay.digest != baseline.digest
+    assert changed_layer_replay.digest != baseline.digest
     assert changed_view.digest != baseline.digest
 
 
@@ -241,6 +332,7 @@ def test_rejects_missing_or_undeclared_reference_and_stale_environment(
             tmp_path,
             definition.digest,
             replay_receipt=receipt,
+            layer_replay_receipt_digest=LAYER_REPLAY_RECEIPT_DIGEST,
             frame=10,
             ref="refs/other.png",
             render_mode="solid",

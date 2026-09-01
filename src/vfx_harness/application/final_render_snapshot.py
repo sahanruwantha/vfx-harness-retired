@@ -8,18 +8,30 @@ import os
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from vfx_harness.agents import acceptance_stop
+from vfx_harness.application.final_render_snapshot_contracts import (
+    FinalRenderSnapshot as FinalRenderSnapshot,
+)
+from vfx_harness.application.final_render_snapshot_contracts import (
+    FinalRenderSnapshotError as FinalRenderSnapshotError,
+)
+from vfx_harness.application.final_render_snapshot_contracts import (
+    _ConstructionCapture as _ConstructionCapture,
+)
+from vfx_harness.application.final_render_snapshot_contracts import (
+    _FileBinding as _FileBinding,
+)
+from vfx_harness.application.final_render_snapshot_contracts import (
+    _ReplayBinding as _ReplayBinding,
+)
 from vfx_harness.domain.acceptance_outcomes import AcceptanceOutcome
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.refobs import PROMOTED_CONSTRUCTION_SCHEMA
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest, require_digest
 from vfx_harness.infrastructure.trusted_files import (
-    TrustedDirectoryBinding,
-    TrustedFileBinding,
     TrustedFileError,
     TrustedFileNotFound,
     bind_trusted_directory,
@@ -42,82 +54,6 @@ from vfx_harness.orchestration.unit_state_lock import unit_state_lock, unit_stat
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.ledger import Layer
-
-
-class FinalRenderSnapshotError(ValueError):
-    """The accepted render inputs cannot form or retain one exact snapshot."""
-
-
-@dataclass(frozen=True, slots=True)
-class _FileBinding:
-    path: Path
-    sha256: str | None
-    trusted: TrustedFileBinding | None
-
-
-@dataclass(frozen=True, slots=True)
-class _ReplayBinding:
-    source: _FileBinding
-    snapshot: _FileBinding
-    payload: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _ConstructionCapture:
-    pointer_data: bytes
-    glb_data: bytes
-    sha256: str
-    unit_digest: str
-    view_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class FinalRenderSnapshot:
-    """One accepted outcome bound to immutable replay bytes and durable state."""
-
-    selected_authority: ResolvedSelectedAuthority
-    outcome_digest: str
-    authority_digest: str
-    chain_digest: str
-    authored_inputs_digest: str
-    decision_inputs_digest: str
-    asset_tree_digest: str
-    layers: tuple[Layer, ...]
-    ledger: _FileBinding
-    selected_artifacts: tuple[_FileBinding, ...]
-    evidence_files: tuple[_FileBinding, ...]
-    source_files: tuple[_FileBinding, ...]
-    unit_state_digests: tuple[tuple[str, str], ...]
-    replay: tuple[_ReplayBinding, ...]
-    replay_dependencies: tuple[_FileBinding, ...]
-    replay_root: Path
-    replay_root_binding: TrustedDirectoryBinding
-    assets_dir: Path
-    manifest: Path
-
-    @property
-    def replay_scripts(self) -> tuple[Path, ...]:
-        return tuple(binding.snapshot.path for binding in self.replay)
-
-    @property
-    def worker_file_bindings(self) -> tuple[TrustedFileBinding, ...]:
-        """Exact snapshot members mounted into the confined worker by descriptor."""
-
-        rows = (
-            *(row.snapshot for row in self.replay),
-            *self.replay_dependencies,
-        )
-        bindings: list[TrustedFileBinding] = []
-        seen: set[Path] = set()
-        for row in rows:
-            if row.sha256 is None or row.trusted is None:
-                raise FinalRenderSnapshotError(
-                    f"worker-readable snapshot member has no trusted binding: {row.path}"
-                )
-            if row.path not in seen:
-                bindings.append(row.trusted)
-                seen.add(row.path)
-        return tuple(bindings)
 
 
 def _digest(data: bytes) -> str:
@@ -200,6 +136,15 @@ def _expected_chain_files(
             raise FinalRenderSnapshotError(f"{where} must be an object")
         if raw_layer.get("status") != "passed":
             raise FinalRenderSnapshotError(f"{where} is not an accepted layer checkpoint")
+        require_digest(
+            raw_layer.get("finalization_receipt_digest"),
+            f"{where}.finalization_receipt_digest",
+        )
+        _inside(root, raw_layer.get("layer_outcome"), f"{where}.layer_outcome")
+        require_digest(
+            raw_layer.get("layer_outcome_sha256"),
+            f"{where}.layer_outcome_sha256",
+        )
         relative, _path = _inside(root, raw_layer.get("script"), f"{where}.script")
         script_digest = require_digest(raw_layer.get("script_sha256"), f"{where}.script_sha256")
         if relative in expected and expected[relative] != script_digest:
@@ -222,6 +167,10 @@ def _expected_chain_files(
                 raw_unit.get("script_sha256"),
                 f"{unit_where}.script_sha256",
             )
+            require_digest(
+                raw_unit.get("completion_receipt_digest"),
+                f"{unit_where}.completion_receipt_digest",
+            )
             if unit_relative in expected and expected[unit_relative] != unit_script_digest:
                 raise FinalRenderSnapshotError(
                     f"{unit_where}.script has conflicting accepted digests"
@@ -230,6 +179,41 @@ def _expected_chain_files(
     if len(replay) != len(set(replay)):
         raise FinalRenderSnapshotError("acceptance chain contains duplicate replay scripts")
     return expected, tuple(replay)
+
+
+def _capture_layer_outcome_files(
+    root: Path,
+    authority: acceptance_stop.AcceptanceAuthoritySnapshot,
+) -> tuple[_FileBinding, ...]:
+    """Bind the exact v3 outcome bytes accepted by every terminal receipt."""
+
+    bindings: list[_FileBinding] = []
+    for layer_index, raw_layer in enumerate(authority.chain):
+        where = f"acceptance chain[{layer_index}]"
+        if not isinstance(raw_layer, Mapping):
+            raise FinalRenderSnapshotError(f"{where} must be an object")
+        relative, path = _inside(
+            root,
+            raw_layer.get("layer_outcome"),
+            f"{where}.layer_outcome",
+        )
+        expected = require_digest(
+            raw_layer.get("layer_outcome_sha256"),
+            f"{where}.layer_outcome_sha256",
+        )
+        binding, _data = _binding(
+            root,
+            path,
+            required=True,
+            where=f"accepted layer outcome {relative}",
+        )
+        if binding.sha256 != expected:
+            raise FinalRenderSnapshotError(
+                f"accepted layer outcome {relative} changed before snapshot; "
+                f"expected={expected}, found={binding.sha256}"
+            )
+        bindings.append(binding)
+    return tuple(bindings)
 
 
 def _capture_source_files(
@@ -648,7 +632,7 @@ def _manifest_payload(snapshot: FinalRenderSnapshot, root: Path) -> dict[str, An
             return str(path)
 
     return {
-        "schema": "vfx-harness.final-render-replay-snapshot/v1",
+        "schema": "vfx-harness.final-render-replay-snapshot/v2",
         "selection_token": snapshot.selected_authority.selection_token.to_dict(),
         "outcome_digest": snapshot.outcome_digest,
         "authority_digest": snapshot.authority_digest,
@@ -657,6 +641,10 @@ def _manifest_payload(snapshot: FinalRenderSnapshot, root: Path) -> dict[str, An
         "decision_inputs_digest": snapshot.decision_inputs_digest,
         "asset_tree_digest": snapshot.asset_tree_digest,
         "ledger": {"path": locator(snapshot.ledger.path), "sha256": snapshot.ledger.sha256},
+        "layer_outcomes": [
+            {"path": locator(row.path), "sha256": row.sha256}
+            for row in snapshot.layer_outcomes
+        ],
         "selected_artifacts": [
             {"path": locator(row.path), "sha256": row.sha256}
             for row in snapshot.selected_artifacts
@@ -715,6 +703,7 @@ def capture_final_render_snapshot(
         root,
         expected_scripts,
     )
+    layer_outcomes = _capture_layer_outcome_files(root, authority)
 
     layers = selected_layer_chain(
         shot,
@@ -781,6 +770,7 @@ def capture_final_render_snapshot(
         asset_tree_digest=asset_tree_digest,
         layers=layers,
         ledger=ledger_binding,
+        layer_outcomes=layer_outcomes,
         selected_artifacts=selected_artifacts,
         evidence_files=(*evidence_files, *dependencies, *asset_sources),
         source_files=source_files,
@@ -804,6 +794,16 @@ def capture_final_render_snapshot(
     ).encode("utf-8") + b"\n"
     _write_snapshot_file(root, provisional.manifest, payload)
     require_snapshot_inputs_current(shot, provisional)
+    authority_after = acceptance_stop.capture_acceptance_authority(
+        shot,
+        load_milestones(shot, selected_authority),
+        selected_authority,
+    )
+    if authority_after != authority:
+        raise FinalRenderSnapshotError(
+            "receipt-backed accepted layer chain changed while its final-render "
+            "snapshot was captured"
+        )
     return provisional
 
 
@@ -832,6 +832,8 @@ def require_snapshot_inputs_current(shot: Shot, snapshot: FinalRenderSnapshot) -
     if current_asset_tree_digest != snapshot.asset_tree_digest:
         raise FinalRenderSnapshotError("shot asset tree changed during final render")
     _assert_binding_current(snapshot.ledger, "final-render acceptance ledger")
+    for index, binding in enumerate(snapshot.layer_outcomes):
+        _assert_binding_current(binding, f"accepted layer outcome {index}")
     for index, binding in enumerate(snapshot.selected_artifacts):
         _assert_binding_current(binding, f"selected artifact {index}")
     for index, binding in enumerate(snapshot.evidence_files):

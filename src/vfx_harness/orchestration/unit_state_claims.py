@@ -7,23 +7,17 @@ selection -> unit-state order while readiness and claim publication share one re
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from vfx_harness.domain.authority_head_records import (
-    AuthoritySelectionTokenProjection,
-    parse_authority_selection_token,
-)
 from vfx_harness.domain.stop_envelope_primitives import require_digest
 from vfx_harness.domain.unit_attempts import (
     UnitAttemptClaim,
     archive_active_attempt,
     archive_attempt_checkpoint,
     require_attempt_matches_slot,
-    validate_state_attempt_contracts,
 )
 from vfx_harness.domain.unit_completion_receipts import (
     UnitCompletionReceipt,
@@ -43,6 +37,26 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     authority_selection_lock,
     require_matching_authority_selection_token,
 )
+from vfx_harness.orchestration.unit_attempt_state_guards import (
+    UnitAttemptConflict as UnitAttemptConflict,
+)
+from vfx_harness.orchestration.unit_attempt_state_guards import (
+    _selection_projection,
+    _slot,
+    require_active_unit_attempt_in_state,
+)
+from vfx_harness.orchestration.unit_attempt_state_guards import (
+    active_unit_attempt_guard as active_unit_attempt_guard,
+)
+from vfx_harness.orchestration.unit_attempt_state_guards import (
+    require_active_unit_attempt as require_active_unit_attempt,
+)
+from vfx_harness.orchestration.unit_completion_authority_guard import (
+    require_current_unit_completion_authorization,
+)
+from vfx_harness.orchestration.unit_completion_authorizations import (
+    AuthorizedUnitCompletionSet,
+)
 from vfx_harness.orchestration.unit_completion_state import (
     completed_unit_attempt_guard as completed_unit_attempt_guard,
 )
@@ -54,7 +68,6 @@ from vfx_harness.orchestration.unit_evaluation_receipts import (
 )
 from vfx_harness.orchestration.unit_state_lock import (
     serialized_state_mutation,
-    unit_state_lock,
     unit_state_path,
 )
 
@@ -63,10 +76,6 @@ ATTEMPT_RELEASE_STATES = frozenset({"retryable", "blocked", "failed"})
 UNCLAIMED_RETRY_STATES = frozenset(
     {"failed", "planning", "building", "frozen", "evaluating", "repairing"}
 )
-
-
-class UnitAttemptConflict(ValueError):
-    """Current durable state cannot grant or mutate the requested attempt."""
 
 
 def _selected_state_mutation(mutation):
@@ -103,19 +112,6 @@ def _write(path: Path, value: dict[str, Any]) -> None:
     unit_state._write(path, value)
 
 
-def _selection_projection(
-    selection_token: AuthoritySelectionToken,
-) -> AuthoritySelectionTokenProjection:
-    if not isinstance(selection_token, AuthoritySelectionToken):
-        raise UnitAttemptConflict(
-            "work-unit claim requires an exact typed authority selection token"
-        )
-    return parse_authority_selection_token(
-        selection_token.to_dict(),
-        "work-unit claim authority selection token",
-    )
-
-
 def _load_exact_state(
     folder: str | Path,
     layer_id: str,
@@ -134,7 +130,8 @@ def _load_exact_state(
     unit_state.validate_current(value, layer_id, units)
     if int(value.get("digest_schema", 0)) != unit_state.DIGEST_SCHEMA:
         raise UnitAttemptConflict(
-            "work-unit claim requires current digest schema; apply a transactional replan"
+            "work-unit claim requires current digest schema; publish a validated "
+            "authority replacement or amendment"
         )
     if value.get("plan_hash") != expected_plan_hash:
         raise UnitAttemptConflict(
@@ -143,127 +140,13 @@ def _load_exact_state(
     return value
 
 
-def _slot(value: Mapping[str, Any], unit_id: str) -> dict[str, Any]:
-    try:
-        slot = value["units"][unit_id]
-    except KeyError as exc:
-        raise UnitAttemptConflict(f"unknown work unit {unit_id!r}") from exc
-    if not isinstance(slot, dict):
-        raise UnitAttemptConflict(f"work-unit state slot {unit_id!r} must be an object")
-    return slot
-
-
-def require_active_unit_attempt_in_state(
-    value: Mapping[str, Any],
-    layer_id: str,
-    unit_id: str,
-    units: tuple[WorkUnit, ...],
-    claim: UnitAttemptClaim,
-    *,
-    expected_plan_hash: str,
-    selection_token: AuthoritySelectionToken,
-) -> UnitAttemptClaim:
-    """Validate one exact claim in state while the caller owns both shared locks."""
-
-    validate_state_attempt_contracts(value)
-    unit_state.validate_current(dict(value), layer_id, units)
-    if int(value.get("digest_schema", 0)) != unit_state.DIGEST_SCHEMA:
-        raise UnitAttemptConflict(
-            "active work-unit attempt requires current digest schema"
-        )
-    expected_plan_hash = require_digest(
-        expected_plan_hash,
-        "active work-unit attempt expected_plan_hash",
-    )
-    if value.get("plan_hash") != expected_plan_hash:
-        raise UnitAttemptConflict("active work-unit attempt plan identity changed")
-    unit = next((candidate for candidate in units if candidate.id == unit_id), None)
-    if unit is None:
-        raise UnitAttemptConflict(f"unknown work unit {unit_id!r}")
-    slot = _slot(value, unit_id)
-    try:
-        current = require_attempt_matches_slot(
-            slot,
-            claim,
-            layer_id=str(layer_id),
-            unit_id=unit.id,
-            unit_digest=unit_state.unit_digest(unit),
-            plan_hash=expected_plan_hash,
-        )
-    except ValueError as exc:
-        raise UnitAttemptConflict(str(exc)) from exc
-    if current is None:
-        raise UnitAttemptConflict(f"work unit {unit_id} has no active attempt")
-    if current.selection_token != _selection_projection(selection_token):
-        raise UnitAttemptConflict(
-            "active work-unit attempt belongs to another authority selection"
-        )
-    return current
-
-
-@contextmanager
-def active_unit_attempt_guard(
-    folder: str | Path,
-    layer_id: str,
-    unit_id: str,
-    units: tuple[WorkUnit, ...],
-    claim: UnitAttemptClaim,
-    *,
-    expected_plan_hash: str,
-    selection_token: AuthoritySelectionToken,
-) -> Iterator[UnitAttemptClaim]:
-    """Hold selection-SH then state-SH around exact claimed external work."""
-
-    _selection_projection(selection_token)
-    with authority_selection_lock(folder, exclusive=False):
-        observed = read_authority_selection_heads(folder).token
-        require_matching_authority_selection_token(selection_token, observed)
-        with unit_state_lock(folder, layer_id, exclusive=False):
-            value = unit_state.load(folder, layer_id)
-            if not value:
-                raise UnitAttemptConflict("work-unit state is not initialized")
-            current = require_active_unit_attempt_in_state(
-                value,
-                layer_id,
-                unit_id,
-                units,
-                claim,
-                expected_plan_hash=expected_plan_hash,
-                selection_token=selection_token,
-            )
-            yield current
-
-
-def require_active_unit_attempt(
-    folder: str | Path,
-    layer_id: str,
-    unit_id: str,
-    units: tuple[WorkUnit, ...],
-    claim: UnitAttemptClaim,
-    *,
-    expected_plan_hash: str,
-    selection_token: AuthoritySelectionToken,
-) -> UnitAttemptClaim:
-    """Return the exact parsed live claim after a selection/state shared proof."""
-
-    with active_unit_attempt_guard(
-        folder,
-        layer_id,
-        unit_id,
-        units,
-        claim,
-        expected_plan_hash=expected_plan_hash,
-        selection_token=selection_token,
-    ) as current:
-        return current
-
-
 def _require_ready(
     value: Mapping[str, Any],
     unit_id: str,
     units: tuple[WorkUnit, ...],
     *,
     eligible_passed: set[str] | frozenset[str] | None,
+    completion_authorization: AuthorizedUnitCompletionSet | None,
 ) -> WorkUnit:
     by_id = {unit.id: unit for unit in units}
     unit = by_id.get(unit_id)
@@ -283,7 +166,11 @@ def _require_ready(
                 + ", ".join(sorted(unknown))
             )
         passed &= eligible
-    sealed = unit_state.digest_matched_passed(value, units) & passed
+    sealed = unit_state.authorized_passed_unit_ids(
+        value,
+        units,
+        completion_authorization=completion_authorization,
+    ) & passed
     ready_ids = {
         candidate.id
         for candidate in ready_units(units, passed, sealed_producers=sealed)
@@ -349,6 +236,7 @@ def claim_ready_unit_for_planning(
     *,
     expected_plan_hash: str,
     eligible_passed: set[str] | frozenset[str] | None,
+    completion_authorization: AuthorizedUnitCompletionSet | None,
     run_id: str,
     selection_token: AuthoritySelectionToken,
     reason: str,
@@ -357,12 +245,28 @@ def claim_ready_unit_for_planning(
 
     reason = _text(reason, "work-unit planning claim reason")
     projection = _selection_projection(selection_token)
+    if (
+        completion_authorization is not None
+        and completion_authorization.selection_token != projection
+    ):
+        raise UnitAttemptConflict(
+            "work-unit completion authorization belongs to another selection"
+        )
     value = _load_exact_state(
         folder,
         layer_id,
         units,
         expected_plan_hash=expected_plan_hash,
     )
+    if completion_authorization is not None:
+        try:
+            require_current_unit_completion_authorization(
+                folder,
+                completion_authorization,
+                selection_token=selection_token,
+            )
+        except ValueError as exc:
+            raise UnitAttemptConflict(str(exc)) from exc
     slot = _slot(value, unit_id)
     before = str(slot.get("status"))
     if before not in PLANNING_CLAIMABLE_STATES:
@@ -377,6 +281,7 @@ def claim_ready_unit_for_planning(
         unit_id,
         units,
         eligible_passed=eligible_passed,
+        completion_authorization=completion_authorization,
     )
     at = unit_state._now()
     claim = UnitAttemptClaim.mint(
@@ -419,6 +324,7 @@ def claim_ready_unit_for_build(
     *,
     expected_plan_hash: str,
     eligible_passed: set[str] | frozenset[str] | None,
+    completion_authorization: AuthorizedUnitCompletionSet | None,
     run_id: str,
     selection_token: AuthoritySelectionToken,
     reason: str,
@@ -426,12 +332,29 @@ def claim_ready_unit_for_build(
     """Promote the exact ready planning claim before builder execution spend."""
 
     reason = _text(reason, "work-unit build claim reason")
+    projection = _selection_projection(selection_token)
+    if (
+        completion_authorization is not None
+        and completion_authorization.selection_token != projection
+    ):
+        raise UnitAttemptConflict(
+            "work-unit completion authorization belongs to another selection"
+        )
     value = _load_exact_state(
         folder,
         layer_id,
         units,
         expected_plan_hash=expected_plan_hash,
     )
+    if completion_authorization is not None:
+        try:
+            require_current_unit_completion_authorization(
+                folder,
+                completion_authorization,
+                selection_token=selection_token,
+            )
+        except ValueError as exc:
+            raise UnitAttemptConflict(str(exc)) from exc
     slot = _slot(value, unit_id)
     if slot.get("status") != "planning":
         raise UnitAttemptConflict(
@@ -443,6 +366,7 @@ def claim_ready_unit_for_build(
         unit_id,
         units,
         eligible_passed=eligible_passed,
+        completion_authorization=completion_authorization,
     )
     try:
         current = require_attempt_matches_slot(

@@ -22,7 +22,17 @@ from tests.unit_attempt_fixtures import pass_unit
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.evaluation.plan_gate.types import Finding
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
+from vfx_harness.orchestration.authority_state_context import (
+    resolve_current_authority_state,
+)
+from vfx_harness.orchestration.authority_state_store import (
+    read_current_bytes,
+    read_pending_bytes,
+)
 from vfx_harness.orchestration.jit_materialization import (
     MATERIALIZATION_SCHEMA,
     MaterializationSelectionConflict,
@@ -46,11 +56,11 @@ from vfx_harness.orchestration.plan_authority import (
     selected_artifact_path,
 )
 from vfx_harness.orchestration.unit_state import (
-    apply_replan,
     initialize,
     load,
     validate_current,
 )
+from vfx_harness.orchestration.unit_state_lock import unit_state_path
 
 
 def _deferred_root(root: Path) -> None:
@@ -341,7 +351,13 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     parsed = load_layers_from_path(selected_layers)
     stages = parsed["1"].stages
     assert [unit.id for unit in stages] == ["lock"]
-    view_plan_hash = hashlib.sha256(selected_layers.read_bytes()).hexdigest()
+    current_authority = resolve_selected_authority(tmp_path)
+    view_plan_hash = selected_layer_capsule_digest(
+        tmp_path,
+        "1",
+        current_authority,
+    )
+    assert load(tmp_path, "1")["plan_hash"] == view_plan_hash
     initialize(tmp_path, "1", stages, plan_hash=view_plan_hash)
     pass_unit(
         tmp_path,
@@ -349,7 +365,7 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
         stages[0],
         stages,
         plan_hash=view_plan_hash,
-        selection_token=resolve_selected_authority(tmp_path).selection_token,
+        selection_token=current_authority.selection_token,
     )
     live_ledger_path = tmp_path / "shot.json"
     live_ledger_bytes = live_ledger_path.read_bytes()
@@ -432,19 +448,14 @@ def test_generation_lifecycle_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     assert bundle_b.content_hash != bundle_a.content_hash
     # the A-generation materialized view must not block B's consumers (stale-view seam)
     assert selected_artifact_path(tmp_path, "layers.json") == bundle_b.root / "layers.json"
-    record = apply_replan(
-        tmp_path, "1", (), (),
-        old_plan_hash=view_plan_hash,
-        new_plan_hash=hashlib.sha256((bundle_b.root / "layers.json").read_bytes()).hexdigest(),
-        owner="fixture-operator",
-        trigger="generation B supersedes A",
-        evidence=["gate:gen-b-clean"],
-        discard_accepted=True,
+    assert load(tmp_path, "1") == {}
+    coordinator = resolve_current_authority_state(tmp_path)
+    assert coordinator is not None
+    effect = next(
+        row for row in coordinator.proposal.effects if row.layer_id == "1"
     )
-    assert record["orphaned"] == ["lock"]
-    state = load(tmp_path, "1")
-    assert state["units"] == {}
-    assert any(row["id"] == "lock" and row["status"] == "superseded" for row in state["superseded"])
+    assert effect.effect_kind == "removed"
+    assert effect.invalidated_unit_ids == ("lock",)
 
 
 @pytest.mark.parametrize(
@@ -560,6 +571,10 @@ def test_same_semantic_rematerialization_is_a_jit_pointer_noop(
     assert first.clean
     pointer = publish_materialization(tmp_path, candidate)
     selected_bytes = pointer.read_bytes()
+    coordinator_bytes = read_current_bytes(tmp_path)
+    state_bytes = unit_state_path(tmp_path, "1").read_bytes()
+    assert coordinator_bytes is not None
+    assert read_pending_bytes(tmp_path) is None
 
     payload = json.loads(candidate.read_text(encoding="utf-8"))
     payload["base_selection"] = resolve_selected_authority(
@@ -582,3 +597,58 @@ def test_same_semantic_rematerialization_is_a_jit_pointer_noop(
         overlay_root=overlay,
     ) == pointer
     assert pointer.read_bytes() == selected_bytes
+    assert read_current_bytes(tmp_path) == coordinator_bytes
+    assert unit_state_path(tmp_path, "1").read_bytes() == state_bytes
+    assert read_pending_bytes(tmp_path) is None
+
+
+def test_semantic_noop_refuses_live_state_drift_after_finalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-op attestation is still an exact state snapshot, not a bypass."""
+
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    _candidate(tmp_path)
+    _deferred_root(tmp_path)
+    layout = run_artifacts.create(tmp_path, "jit-noop-state-drift")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    _approve_hold_decision(tmp_path, bundle.content_hash)
+    candidate = _root_materialization(tmp_path, bundle.content_hash)
+    first = finalize_materialization_candidate(
+        tmp_path,
+        candidate,
+        prepare_consumer_view(layout),
+    )
+    assert first.clean
+    publish_materialization(tmp_path, candidate)
+
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    payload["base_selection"] = resolve_selected_authority(
+        tmp_path
+    ).selection_token.to_dict()
+    _write(candidate, payload)
+    overlay = revert_materialization(tmp_path, "1", select=False)
+    assert overlay is not None
+    second = finalize_materialization_candidate(
+        tmp_path,
+        candidate,
+        prepare_consumer_view(layout),
+        overlay_root=overlay,
+    )
+    assert second.clean
+
+    state = load(tmp_path, "1")
+    state["updated"] = "2099-01-01T00:00:00+00:00"
+    _write(unit_state_path(tmp_path, "1"), state)
+
+    with pytest.raises(
+        MaterializationSelectionConflict,
+        match="authority-state snapshot differs from terminal finalization",
+    ):
+        publish_materialization(
+            tmp_path,
+            candidate,
+            overlay_root=overlay,
+        )
+    assert read_pending_bytes(tmp_path) is None

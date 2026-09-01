@@ -289,11 +289,16 @@ def validate_state_completion_contracts(value: Mapping[str, Any]) -> None:
                 raise ValueError(
                     f"current completion receipt for {unit_id!r} cannot coexist with an attempt"
                 )
+            # ``claim.plan_hash`` is the immutable layer capsule under which the
+            # unit executed.  A coordinator transition may preserve this exact unit
+            # receipt while changing a sibling and therefore the live layer capsule.
+            # Current authorization is proved externally by the coordinator binding
+            # and its contiguous lineage; this pure state-shape validator must not
+            # rewrite or reinterpret the historical execution identity.
             if (
                 receipt.claim.layer_id != str(value.get("layer"))
                 or receipt.claim.unit_id != unit_id
                 or receipt.claim.unit_digest != slot.get("unit_hash")
-                or receipt.claim.plan_hash != value.get("plan_hash")
             ):
                 raise ValueError(
                     f"current completion receipt for {unit_id!r} is stale for durable state"

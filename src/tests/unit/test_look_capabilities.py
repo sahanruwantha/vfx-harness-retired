@@ -142,10 +142,15 @@ def test_materialization_requires_an_explicit_capability_declaration(
     unit without image feedback. An explicit [] is the legal way to own none."""
     import json
 
-    from tests.unit.test_plan_records import _add_deferred_layer, _candidate, _jit_payload, _write
+    from tests.unit.test_plan_records import (
+        _add_deferred_layer,
+        _candidate,
+        _jit_payload,
+        _write,
+        publish_current,
+    )
     from vfx_harness.observability import run_artifacts
     from vfx_harness.orchestration.jit_materialization import validate_materialization
-    from vfx_harness.orchestration.plan_authority import publish_current
 
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _candidate(tmp_path)
@@ -404,6 +409,8 @@ def test_live_unit_render_is_guarded_by_typed_raster_need() -> None:
     assert "if raster_required" in source
     assert "mode=_unit_raster_mode(active_unit)" in source
     revalidate_source = inspect.getsource(builder._try_revalidate)
+    assert "require_current_layer_publication" in revalidate_source
+    assert "load_layer_outcome" not in revalidate_source
     assert "raster_required = _unit_requires_raster(" in revalidate_source
     assert "selected_authority=selected_authority" in revalidate_source
     assert "deterministic_executable_revalidation" in revalidate_source

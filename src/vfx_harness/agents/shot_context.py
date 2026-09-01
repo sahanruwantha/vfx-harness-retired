@@ -22,9 +22,16 @@ from typing import TYPE_CHECKING
 from vfx_harness.agents.unit_scope import compile_scope_with_predecessors, format_unit_scope_card, helper_inventory
 from vfx_harness.domain.brief import Shot
 from vfx_harness.evidence.scene_checks import load_rows
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
 from vfx_harness.orchestration.escalate import answers_block, open_block
-from vfx_harness.orchestration.layer_plans import amendment_block, prior_outcomes_block, work_unit_plan_path
+from vfx_harness.orchestration.layer_outcome_context import prior_outcomes_block
+from vfx_harness.orchestration.layer_plans import amendment_block, work_unit_plan_path
 from vfx_harness.orchestration.layer_state import as_prompt_block
+from vfx_harness.orchestration.unit_completion_state import (
+    authorize_completed_units_for_layer,
+)
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 
 if TYPE_CHECKING:
@@ -70,10 +77,14 @@ def write_layer_context(
         hierarchical = "\n\n".join(
             block for block in (
                 amendment_block(shot.folder, str(layer.id)),
-                prior_outcomes_block(
-                    shot.folder,
-                    str(layer.id),
-                    selected_authority=selected_authority,
+                (
+                    prior_outcomes_block(
+                        shot,
+                        str(layer.id),
+                        selected_authority=selected_authority,
+                    )
+                    if selected_authority is not None
+                    else ""
                 ),
             ) if block
         )
@@ -116,14 +127,30 @@ def write_layer_context(
             durable_state = load_unit_state(shot.folder, str(layer.id))
         except (OSError, ValueError):
             durable_state = {}
+        scope_units = tuple(layer_units or getattr(layer, "stages", ()) or (unit,))
+        completion_authorization = None
+        if selected_authority is not None:
+            layer_digest = selected_layer_capsule_digest(
+                shot.folder,
+                str(layer.id),
+                selected_authority,
+            )
+            completion_authorization = authorize_completed_units_for_layer(
+                shot.folder,
+                str(layer.id),
+                scope_units,
+                expected_plan_hash=layer_digest,
+                selected_authority=selected_authority,
+            )
         scope_card = format_unit_scope_card(
             compile_scope_with_predecessors(
                 unit=unit,
                 layer_id=str(layer.id),
                 contracts=contracts,
                 helpers=helper_inventory(),
-                units=tuple(layer_units or getattr(layer, "stages", ()) or (unit,)),
+                units=scope_units,
                 durable_state=durable_state,
+                completion_authorization=completion_authorization,
             )
         )
     except ValueError as exc:

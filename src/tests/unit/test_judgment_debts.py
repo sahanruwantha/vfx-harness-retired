@@ -10,7 +10,9 @@ import pytest
 
 from vfx_harness.domain.judgment_debts import (
     JudgmentDebtActivation,
+    JudgmentDebtCompletionBinding,
     JudgmentDebtDefinition,
+    JudgmentDebtPaymentGeneration,
     JudgmentDebtSeed,
     JudgmentDebtState,
     JudgmentObservationRequest,
@@ -27,6 +29,7 @@ from vfx_harness.domain.judgment_debts import (
 )
 
 BUNDLE_DIGEST = hashlib.sha256(b"selected plan bundle").hexdigest()
+PAYMENT_GENERATION_DIGEST = hashlib.sha256(b"payment generation").hexdigest()
 
 
 def _seed(
@@ -98,6 +101,7 @@ def _observation_request(
         owner_view_digest=_digest("owner view"),
         payer_view_digest=_digest("payer view"),
         replay_receipt_digest=_digest("detailed replay receipt"),
+        layer_replay_receipt_digest=_digest("layer replay receipt"),
         parent_chain_digest=_digest("parent chain"),
         judge_point=definition.seed.judge_points[0],
         observation_medium=definition.seed.observation_medium,
@@ -130,6 +134,7 @@ def test_camera_debt_activates_at_matching_descendant_mesh() -> None:
             definition,
             pending,
             activation=_activation(definition),
+            payment_generation_digest=PAYMENT_GENERATION_DIGEST,
             layer_id="1",
             replayed_unit_digests=_activation(definition).payer_unit_digests,
         )
@@ -137,6 +142,7 @@ def test_camera_debt_activates_at_matching_descendant_mesh() -> None:
         definition,
         pending,
         activation=_activation(definition),
+        payment_generation_digest=PAYMENT_GENERATION_DIGEST,
         layer_id="2",
         replayed_unit_digests=_activation(definition).payer_unit_digests,
     )
@@ -291,6 +297,7 @@ def test_multiple_relevant_providers_wait_for_dependency_complete_layer() -> Non
             definition,
             JudgmentDebtState.pending(definition),
             activation=_activation(definition),
+            payment_generation_digest=PAYMENT_GENERATION_DIGEST,
             layer_id="4",
             replayed_unit_digests=(),
         )
@@ -315,6 +322,7 @@ def test_replay_prefix_requires_each_exact_payer_unit_digest() -> None:
         definition,
         JudgmentDebtState.pending(definition),
         activation=activation,
+        payment_generation_digest=PAYMENT_GENERATION_DIGEST,
         layer_id="2",
         replayed_unit_digests=(*activation.payer_unit_digests, ("upstream:camera", BUNDLE_DIGEST)),
     )
@@ -443,6 +451,7 @@ def test_lifecycle_rejects_skips_and_terminal_rewrites() -> None:
         definition,
         pending,
         activation=_activation(definition),
+        payment_generation_digest=PAYMENT_GENERATION_DIGEST,
         layer_id="2",
         replayed_unit_digests=_activation(definition).payer_unit_digests,
     )
@@ -457,6 +466,7 @@ def test_lifecycle_rejects_skips_and_terminal_rewrites() -> None:
             definition,
             falsified,
             activation=_activation(definition),
+            payment_generation_digest=PAYMENT_GENERATION_DIGEST,
             layer_id="2",
             replayed_unit_digests=_activation(definition).payer_unit_digests,
         )
@@ -506,6 +516,50 @@ def test_authority_records_round_trip_and_refuse_unknown_or_stale_digests() -> N
     unknown["unexpected"] = True
     with pytest.raises(ValueError, match="fields mismatch"):
         JudgmentDebtSeed.from_dict(unknown, "seed")
+
+
+def test_payment_generation_binds_exact_payer_completion_receipts() -> None:
+    definition = compile_judgment_debt(
+        _seed(),
+        (_provider("hall-mass", "2", "hall.mass"),),
+        layer_dependencies={"1": (), "2": ("1",)},
+        layer_order=("1", "2"),
+    )
+    unit_digest = _digest("hall-form unit")
+    activation = JudgmentDebtActivation.for_definition(
+        definition,
+        payer_unit_digests=(("2:hall-form", unit_digest),),
+    )
+    completion = JudgmentDebtCompletionBinding(
+        layer_id="2",
+        unit_id="hall-form",
+        unit_digest=unit_digest,
+        completion_receipt_digest=_digest("completion A"),
+    )
+    generation = JudgmentDebtPaymentGeneration(
+        definition_digest=definition.digest,
+        activation_digest=activation.digest,
+        replay_prefix_digest=_digest("replay prefix A"),
+        replay_completions=(completion,),
+        payer_completions=(completion,),
+    )
+
+    generation.assert_matches(definition, activation)
+    assert (
+        JudgmentDebtPaymentGeneration.from_dict(generation.as_dict(), "generation")
+        == generation
+    )
+    replacement = replace(
+        completion,
+        completion_receipt_digest=_digest("completion B"),
+    )
+    assert replace(
+        generation,
+        replay_completions=(replacement,),
+        payer_completions=(replacement,),
+    ).digest != generation.digest
+    with pytest.raises(ValueError, match="exact subset"):
+        replace(generation, payer_completions=(replacement,))
 
 
 def test_debt_id_excludes_bundle_and_decision_strength_but_definition_does_not() -> None:

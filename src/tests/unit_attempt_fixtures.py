@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from vfx_harness.domain.authority_head_records import parse_authority_selection_token
+from vfx_harness.domain.authority_state_records import AuthorityStateRecordRef
+from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.unit_attempts import UnitAttemptClaim
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.domain.work_units import WorkUnit, canonical_unit_script_path
@@ -18,9 +24,142 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
 from vfx_harness.orchestration.plan_bundle_integrity import read_real_file_snapshot
+from vfx_harness.orchestration.unit_completion_authorizations import (
+    AuthorizedUnitCompletionSet,
+    completion_projection_digest,
+)
 from vfx_harness.orchestration.unit_evaluation_receipts import ExecutedReplayInput
+from vfx_harness.orchestration.unit_state_replan_transactions import (
+    apply_replan as _legacy_apply_replan,
+)
 
 ABSENT_SELECTION_TOKEN = AuthoritySelectionToken(0, None, 0, None)
+FIXTURE_AUTHORITY_STATE_HEAD_REF = AuthorityStateRecordRef.mint(
+    locator="state/authority-state/objects/fixture-head.json",
+    sha256="f" * 64,
+    record_schema="vfx-harness.authority-state-head/v1",
+    record_digest="e" * 64,
+)
+legacy_apply_replan = _legacy_apply_replan
+
+
+def fixture_completion_authorization(
+    folder: str | Path,
+    layer_id: str,
+    *,
+    selection_token: AuthoritySelectionToken = ABSENT_SELECTION_TOKEN,
+) -> AuthorizedUnitCompletionSet | None:
+    """Make a typed synthetic attestation for isolated lower-boundary tests.
+
+    Production code is forbidden from constructing this type and must use
+    ``authorize_completed_units_for_layer``.  These fixtures intentionally have no
+    selected plan or coordinator; tests of the live-head guard provide that boundary
+    separately.
+    """
+
+    state = unit_state.load(folder, str(layer_id))
+    receipts: dict[str, str] = {}
+    for unit_id, slot in (state.get("units") or {}).items():
+        if not isinstance(slot, dict) or slot.get("status") != "passed":
+            continue
+        receipt = UnitCompletionReceipt.parse(
+            slot.get("completion_receipt"),
+            f"fixture completion receipt {layer_id}.{unit_id}",
+        )
+        receipts[str(unit_id)] = receipt.receipt_digest
+    return synthetic_completion_authorization(
+        state,
+        receipts=receipts,
+        selection_token=selection_token,
+    )
+
+
+def synthetic_completion_authorization(
+    state: dict,
+    *,
+    receipts: dict[str, str] | None = None,
+    selection_token: AuthoritySelectionToken = ABSENT_SELECTION_TOKEN,
+) -> AuthorizedUnitCompletionSet | None:
+    """Bind an isolated synthetic state to a test-only typed attestation."""
+
+    if receipts is None:
+        receipts = {}
+        for unit_id, slot in (state.get("units") or {}).items():
+            if not isinstance(slot, dict) or slot.get("status") != "passed":
+                continue
+            receipt = UnitCompletionReceipt.parse(
+                slot.get("completion_receipt"),
+                f"synthetic completion receipt {state.get('layer')}.{unit_id}",
+            )
+            receipts[str(unit_id)] = receipt.receipt_digest
+    if not receipts:
+        return None
+    return AuthorizedUnitCompletionSet(
+        layer_id=str(state["layer"]),
+        selection_token=parse_authority_selection_token(
+            selection_token.to_dict(),
+            "fixture completion authorization selection",
+        ),
+        authority_state_head_ref=FIXTURE_AUTHORITY_STATE_HEAD_REF,
+        layer_generation_digest=str(state["plan_hash"]),
+        completion_projection_digest=completion_projection_digest(state),
+        receipts=tuple(sorted(receipts.items())),
+    )
+
+
+def synthetic_completion_authorization_for_receipts(
+    layer_id: str,
+    layer_generation_digest: str,
+    receipts: dict[str, str],
+    *,
+    selection_token: AuthoritySelectionToken = ABSENT_SELECTION_TOKEN,
+) -> AuthorizedUnitCompletionSet:
+    """Make a typed boundary stub when the test deliberately mocks durable state.
+
+    Unlike ``synthetic_completion_authorization``, this helper does not claim that a
+    supplied state document was structurally verified.  It is reserved for tests that
+    replace the state reader and receipt parser themselves and only need the consumer
+    to retain typed, exact receipt identities.
+    """
+
+    rows = tuple(sorted((str(unit_id), str(digest)) for unit_id, digest in receipts.items()))
+    return AuthorizedUnitCompletionSet(
+        layer_id=str(layer_id),
+        selection_token=parse_authority_selection_token(
+            selection_token.to_dict(),
+            "fixture completion authorization selection",
+        ),
+        authority_state_head_ref=FIXTURE_AUTHORITY_STATE_HEAD_REF,
+        layer_generation_digest=str(layer_generation_digest),
+        completion_projection_digest=canonical_digest(
+            {
+                "schema": "vfx-harness.test-completion-projection/v1",
+                "layer_id": str(layer_id),
+                "layer_generation_digest": str(layer_generation_digest),
+                "receipts": list(rows),
+            }
+        ),
+        receipts=rows,
+    )
+
+
+@contextmanager
+def fixture_live_completion_authority(
+    authorization: AuthorizedUnitCompletionSet | None,
+):
+    """Supply only the coordinator head omitted by isolated unit-state fixtures."""
+
+    if authorization is None:
+        yield
+        return
+    with patch(
+        "vfx_harness.orchestration.unit_completion_authority_guard."
+        "resolve_current_authority_state",
+        return_value=SimpleNamespace(
+            head_ref=authorization.authority_state_head_ref,
+        ),
+    ):
+        yield
 
 
 def executed_replay_input(
@@ -45,6 +184,8 @@ def synthetic_completion_receipt(
     layer_id: str,
     unit_id: str,
     passed_evidence: set[tuple[str, str]],
+    *,
+    unit_generation_digest: str = "a" * 64,
 ) -> UnitCompletionReceipt:
     """Make a strict typed receipt for isolated resolution-ledger tests."""
 
@@ -53,7 +194,7 @@ def synthetic_completion_receipt(
         run_id="fixture-resolution",
         layer_id=str(layer_id),
         unit_id=unit_id,
-        unit_digest="a" * 64,
+        unit_digest=unit_generation_digest,
         plan_hash="b" * 64,
         selection_token=ABSENT_SELECTION_TOKEN.to_dict(),
         phase="building",
@@ -97,29 +238,37 @@ def claim_for_build(
     eligible_passed: set[str] | None = None,
     selection_token: AuthoritySelectionToken = ABSENT_SELECTION_TOKEN,
 ) -> UnitAttemptClaim:
-    planning = unit_state_claims.claim_ready_unit_for_planning(
+    completion_authorization = fixture_completion_authorization(
         folder,
         layer_id,
-        unit_id,
-        units,
-        expected_plan_hash=plan_hash,
-        eligible_passed=eligible_passed,
-        run_id=f"fixture-{layer_id}-{unit_id}",
         selection_token=selection_token,
-        reason="fixture dependency closure proved ready",
     )
-    return unit_state_claims.claim_ready_unit_for_build(
-        folder,
-        layer_id,
-        unit_id,
-        units,
-        planning,
-        expected_plan_hash=plan_hash,
-        eligible_passed=eligible_passed,
-        run_id=planning.run_id,
-        selection_token=selection_token,
-        reason="fixture plan passed its gate",
-    )
+    with fixture_live_completion_authority(completion_authorization):
+        planning = unit_state_claims.claim_ready_unit_for_planning(
+            folder,
+            layer_id,
+            unit_id,
+            units,
+            expected_plan_hash=plan_hash,
+            eligible_passed=eligible_passed,
+            completion_authorization=completion_authorization,
+            run_id=f"fixture-{layer_id}-{unit_id}",
+            selection_token=selection_token,
+            reason="fixture dependency closure proved ready",
+        )
+        return unit_state_claims.claim_ready_unit_for_build(
+            folder,
+            layer_id,
+            unit_id,
+            units,
+            planning,
+            expected_plan_hash=plan_hash,
+            eligible_passed=eligible_passed,
+            completion_authorization=completion_authorization,
+            run_id=planning.run_id,
+            selection_token=selection_token,
+            reason="fixture plan passed its gate",
+        )
 
 
 def freeze_unit(

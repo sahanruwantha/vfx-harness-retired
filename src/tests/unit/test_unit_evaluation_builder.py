@@ -12,6 +12,7 @@ from tests.unit_attempt_fixtures import (
     claim_for_build,
     executed_replay_input,
     freeze_unit,
+    legacy_apply_replan,
 )
 from vfx_harness.agents import builder
 from vfx_harness.agents.builder import revalidate, unit_evaluation
@@ -29,7 +30,7 @@ from vfx_harness.orchestration import (
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
-from vfx_harness.orchestration.ledger import Layer, Ledger
+from vfx_harness.orchestration.ledger import Layer, Ledger, Milestone
 
 
 class _RevalidationSession:
@@ -39,6 +40,115 @@ class _RevalidationSession:
         if "bvfx_role" in source:
             return {"result": {}}
         return {"result": None}
+
+
+def test_revalidation_refuses_unverified_layer_outcome_before_blender(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        revalidate.layer_publication,
+        "require_current_layer_publication",
+        lambda *_args: (_ for _ in ()).throw(
+            revalidate.layer_publication.LayerPublicationConflict(
+                "no current terminal finalization receipt"
+            )
+        ),
+    )
+
+    class _NoBlender:
+        def run(self, *_args, **_kwargs):
+            pytest.fail("unverified revalidation must stop before Blender")
+
+    observed = revalidate._try_revalidate(
+        SimpleNamespace(folder=tmp_path),
+        None,
+        "build/units/01/hero.py",
+        [],
+        _NoBlender(),
+        layer=SimpleNamespace(id="01"),
+        ledger=None,
+        t_layer=0.0,
+        active_unit=None,
+        attempt_guard=None,
+        selected_authority=SimpleNamespace(),
+    )
+
+    assert observed is None
+
+
+def test_revalidation_refuses_layer_milestone_under_unit_attempt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    token = AuthoritySelectionToken(0, None, 0, None)
+    selected = SimpleNamespace(selection_token=token, plan=None)
+    unit = _two_judge_unit()
+    units = (unit,)
+    layer = Layer(
+        id="04",
+        script="build/layer_04.py",
+        title="fixture layer",
+        judges=((40, "refs/f040.png"), (80, "refs/f080.png")),
+        reads="fixture",
+        owns=("form",),
+        primary_judge=40,
+        stages=units,
+    )
+    plan_hash = "c" * 64
+    unit_state.initialize(tmp_path, layer.id, units, plan_hash=plan_hash)
+    attempt = claim_for_build(
+        tmp_path,
+        layer.id,
+        units,
+        unit.id,
+        plan_hash=plan_hash,
+        selection_token=token,
+    )
+    guard = UnitAttemptGuard.bind(
+        tmp_path,
+        layer.id,
+        unit,
+        units,
+        attempt,
+        expected_plan_hash=plan_hash,
+        selected_authority=selected,
+    )
+    monkeypatch.setattr(
+        revalidate.layer_publication,
+        "require_current_layer_publication",
+        lambda *_args: SimpleNamespace(
+            receipt=SimpleNamespace(receipt_digest="f" * 64),
+            outcome_bytes=b"{}",
+            outcome_sha256="e" * 64,
+        ),
+    )
+    shot = Shot(
+        folder=tmp_path,
+        frontmatter={"id": "wrong-milestone", "frames": 100, "fps": 24},
+        body="",
+    )
+
+    class _NoBlender:
+        def run(self, *_args, **_kwargs):
+            pytest.fail("wrong milestone must fail before Blender")
+
+    with pytest.raises(ValueError, match="exact unit milestone"):
+        revalidate._try_revalidate(
+            shot,
+            layer.as_milestone({}),
+            canonical_unit_script_path(layer.id, unit.id),
+            [],
+            _NoBlender(),
+            layer=layer,
+            ledger=Ledger(shot),
+            t_layer=0.0,
+            active_unit=unit,
+            attempt_guard=guard,
+            selected_authority=selected,
+        )
+
+    assert not (tmp_path / "shot.json").exists()
 
 
 def test_evaluation_receipt_staging_rejects_temp_name_substitution(
@@ -166,7 +276,7 @@ def test_replan_does_not_wait_for_evaluation_receipt_staging(
 
     def replan() -> None:
         try:
-            unit_state.apply_replan(
+            legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,
@@ -298,7 +408,12 @@ def test_revalidation_records_every_canonical_judge_and_completion_consumes_rece
         primary_judge=40,
         stages=units,
     )
-    milestone = layer.as_milestone({})
+    milestone = Milestone(
+        f"{layer.id}@{unit.id}",
+        unit.evaluation.primary_judge,
+        "refs/f040.png",
+        layer.reads,
+    )
     shot = Shot(
         folder=tmp_path,
         frontmatter={"id": "revalidation-fixture", "frames": 100, "fps": 24},
@@ -352,8 +467,23 @@ def test_revalidation_records_every_canonical_judge_and_completion_consumes_rece
     ]
     report = tmp_path / "revalidation-report.json"
 
-    monkeypatch.setattr(revalidate, "load_layer_outcome", lambda *_args: outcome)
-    monkeypatch.setattr(revalidate, "input_manifest", lambda *_args, **_kwargs: {})
+    publication = SimpleNamespace(
+        receipt=SimpleNamespace(receipt_digest="f" * 64),
+        outcome_bytes=json.dumps(outcome).encode("utf-8"),
+        outcome_sha256="e" * 64,
+    )
+    monkeypatch.setattr(
+        revalidate.layer_publication,
+        "require_current_layer_publication",
+        lambda *_args: publication,
+    )
+    manifest_calls: list[None] = []
+
+    def current_manifest(*_args, **_kwargs):
+        manifest_calls.append(None)
+        return {}
+
+    monkeypatch.setattr(revalidate, "input_manifest", current_manifest)
     monkeypatch.setattr(revalidate, "eligibility", lambda *_args: (True, []))
     monkeypatch.setattr(revalidate, "_unit_requires_raster", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(revalidate, "_load_contract_rows", lambda *_args: [])
@@ -386,6 +516,7 @@ def test_revalidation_records_every_canonical_judge_and_completion_consumes_rece
     )
 
     assert observed is ledger
+    assert len(manifest_calls) == 2
     slot = ledger._slot(milestone)
     canonical_rounds = [row for row in slot["rounds"] if row["kind"] == "canonical"]
     assert len(canonical_rounds) == len(unit.evaluation.judges) == 2

@@ -11,12 +11,42 @@ from types import SimpleNamespace
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
+from tests.integration.test_lifecycle_fixture import (
+    _approve_hold_decision,
+    _deferred_root,
+    _root_materialization,
+)
+from tests.unit.test_layer_finalization_state import (
+    _claim as _claim_layer_finalization,
+)
+from tests.unit.test_layer_finalization_state import (
+    _publish_artifact as _publish_layer_artifact,
+)
+from tests.unit.test_layer_finalizations import (
+    _refresh_gap_resolution,
+    _typed_contract_gap_case,
+)
+from tests.unit.test_plan_records import _candidate as _plan_candidate
 from tests.unit_attempt_fixtures import (
+    claim_for_build,
     executed_replay_input,
+    fixture_completion_authorization,
+    fixture_live_completion_authority,
     freeze_unit,
+    legacy_apply_replan,
     publish_passed_evaluation,
 )
+from vfx_harness.agents.builder.layer_finalization_guard import (
+    LayerFinalizationClaimGuard,
+)
+from vfx_harness.domain.authority_state_records import AuthorityStateRecordRef
+from vfx_harness.domain.layer_finalizations import (
+    LayerEvaluationReceipt,
+    LayerFinalizationReceipt,
+    LayerReplayReceiptBinding,
+)
 from vfx_harness.domain.work_units import canonical_unit_script_path
+from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import (
     authority_selection_heads,
     hypothesis_falsification_projection,
@@ -25,6 +55,10 @@ from vfx_harness.orchestration import (
     unit_state,
     unit_state_claims,
 )
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
+from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
@@ -32,7 +66,30 @@ from vfx_harness.orchestration.hypothesis_falsification_state import (
     load_state_backed_falsification,
     reconcile_falsification_projection,
 )
-from vfx_harness.orchestration.ledger import ledger_lock
+from vfx_harness.orchestration.jit_materialization import (
+    finalize_materialization_candidate,
+    publish_materialization,
+)
+from vfx_harness.orchestration.layer_evaluation_receipts import (
+    commit_layer_evaluation_receipt,
+    discard_layer_evaluation_receipt,
+    prepare_layer_evaluation_receipt,
+)
+from vfx_harness.orchestration.layer_finalization_state import (
+    authorize_terminal_layer_finalization_mutation,
+    complete_layer_finalization,
+)
+from vfx_harness.orchestration.layer_replay_receipts import (
+    commit_layer_replay_receipt,
+    discard_layer_replay_receipt,
+    prepare_layer_replay_receipt,
+)
+from vfx_harness.orchestration.ledger import ledger_lock, load_layers_from_path
+from vfx_harness.orchestration.plan_authority import (
+    prepare_consumer_view,
+    publish_current,
+    selected_artifact_path,
+)
 
 _PLAN_A = "a" * 64
 _PLAN_B = "b" * 64
@@ -76,32 +133,38 @@ def _claim_planning(
     token: AuthoritySelectionToken | None = None,
     eligible_passed: set[str] | None = None,
 ):
-    return unit_state_claims.claim_ready_unit_for_planning(
-        folder,
-        "1",
-        unit_id,
-        units,
-        expected_plan_hash=plan_hash,
-        eligible_passed=eligible_passed,
-        run_id="run-claim",
-        selection_token=token or _token(),
-        reason="dependency closure proved ready",
-    )
+    authorization = fixture_completion_authorization(folder, "1")
+    with fixture_live_completion_authority(authorization):
+        return unit_state_claims.claim_ready_unit_for_planning(
+            folder,
+            "1",
+            unit_id,
+            units,
+            expected_plan_hash=plan_hash,
+            eligible_passed=eligible_passed,
+            completion_authorization=authorization,
+            run_id="run-claim",
+            selection_token=token or _token(),
+            reason="dependency closure proved ready",
+        )
 
 
 def _promote(folder, units, claim, *, eligible_passed=None):
-    return unit_state_claims.claim_ready_unit_for_build(
-        folder,
-        "1",
-        claim.unit_id,
-        units,
-        claim,
-        expected_plan_hash=claim.plan_hash,
-        eligible_passed=eligible_passed,
-        run_id=claim.run_id,
-        selection_token=_token(),
-        reason="gated plan ready for builder execution",
-    )
+    authorization = fixture_completion_authorization(folder, "1")
+    with fixture_live_completion_authority(authorization):
+        return unit_state_claims.claim_ready_unit_for_build(
+            folder,
+            "1",
+            claim.unit_id,
+            units,
+            claim,
+            expected_plan_hash=claim.plan_hash,
+            eligible_passed=eligible_passed,
+            completion_authorization=authorization,
+            run_id=claim.run_id,
+            selection_token=_token(),
+            reason="gated plan ready for builder execution",
+        )
 
 
 def _pass_unclaimed(folder, unit, units):
@@ -129,6 +192,78 @@ def _pass_unclaimed(folder, unit, units):
         reason="fixture",
         evidence=["fixture:pass"],
     )
+
+
+def _different_authority_head() -> AuthorityStateRecordRef:
+    return AuthorityStateRecordRef.mint(
+        locator="state/authority-state/objects/different-head.json",
+        sha256="1" * 64,
+        record_schema="vfx-harness.authority-state-head/v1",
+        record_digest="2" * 64,
+    )
+
+
+def test_planning_claim_refuses_stale_completion_authority_head(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    producer = _unit("form")
+    successor = _unit("finish", depends_on=[producer.id])
+    units = (producer, successor)
+    unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
+    _pass_unclaimed(tmp_path, producer, units)
+    authorization = fixture_completion_authorization(tmp_path, "1")
+    assert authorization is not None
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.unit_completion_authority_guard."
+        "resolve_current_authority_state",
+        lambda *_args, **_kwargs: SimpleNamespace(head_ref=_different_authority_head()),
+    )
+
+    with pytest.raises(
+        unit_state_claims.UnitAttemptConflict,
+        match="another authority-state head",
+    ):
+        unit_state_claims.claim_ready_unit_for_planning(
+            tmp_path,
+            "1",
+            successor.id,
+            units,
+            expected_plan_hash=_PLAN_A,
+            eligible_passed={producer.id},
+            completion_authorization=authorization,
+            run_id="stale-completion-head",
+            selection_token=_token(),
+            reason="fixture successor readiness",
+        )
+    assert unit_state.load(tmp_path, "1")["units"][successor.id]["status"] == "pending"
+
+
+def test_ready_query_refuses_stale_completion_authority_head(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    producer = _unit("form")
+    successor = _unit("finish", depends_on=[producer.id])
+    units = (producer, successor)
+    unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
+    _pass_unclaimed(tmp_path, producer, units)
+    authorization = fixture_completion_authorization(tmp_path, "1")
+    assert authorization is not None
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.unit_completion_authority_guard."
+        "resolve_current_authority_state",
+        lambda *_args, **_kwargs: SimpleNamespace(head_ref=_different_authority_head()),
+    )
+
+    with pytest.raises(ValueError, match="another authority-state head"):
+        unit_state.ready_from_durable_state(
+            tmp_path,
+            "1",
+            units,
+            eligible_passed={producer.id},
+            completion_authorization=authorization,
+        )
 
 
 def _evaluation_payload(layer_id, unit, claim, *, passed: bool = True):
@@ -534,7 +669,7 @@ def test_replan_archives_receipt_so_old_debt_authority_cannot_revive(tmp_path) -
     unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
     receipt = _pass_unclaimed(tmp_path, unit, units)
 
-    unit_state.apply_replan(
+    legacy_apply_replan(
         tmp_path,
         "1",
         units,
@@ -551,8 +686,10 @@ def test_replan_archives_receipt_so_old_debt_authority_cannot_revive(tmp_path) -
     assert "completion_receipt" not in slot
     assert slot["completion_receipt_history"][-1]["receipt"] == receipt.as_dict()
     assert slot["completion_receipt_history"][-1]["disposition"] == "revoked"
-    assert unit_state.digest_matched_passed(
-        unit_state.load(tmp_path, "1"), units
+    assert unit_state.authorized_passed_unit_ids(
+        unit_state.load(tmp_path, "1"),
+        units,
+        completion_authorization=None,
     ) == set()
 
 
@@ -565,7 +702,7 @@ def test_plan_change_receipt_revocation_blocks_a_digest_identical_successor(
     unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
     _pass_unclaimed(tmp_path, producer, units)
 
-    unit_state.apply_replan(
+    legacy_apply_replan(
         tmp_path,
         "1",
         units,
@@ -580,55 +717,261 @@ def test_plan_change_receipt_revocation_blocks_a_digest_identical_successor(
     state = unit_state.load(tmp_path, "1")
     assert state["units"][producer.id]["unit_hash"] == unit_state.unit_digest(producer)
     assert state["units"][producer.id]["status"] == "retryable"
-    assert unit_state.digest_matched_passed(state, units) == set()
+    assert unit_state.authorized_passed_unit_ids(
+        state,
+        units,
+        completion_authorization=None,
+    ) == set()
     assert [unit.id for unit in unit_state.ready_from_durable_state(
         tmp_path,
         "1",
         units,
+        completion_authorization=None,
     )] == [producer.id]
 
 
-def _preserve_accepted_falsification(folder, unit, units):
-    return unit_state.record_hypothesis_falsification(
+def _selected_contract_gap_fixture(
+    folder,
+    *,
+    candidate_bytes: bytes | None = None,
+) -> SimpleNamespace:
+    """Publish one exact accepted finding through terminal finalization authority."""
+
+    _plan_candidate(folder)
+    _deferred_root(folder)
+    # References are authored plan inputs, so the exact contract-gap plate must
+    # exist before publication and remain byte-identical through finalization.
+    contract_gap_reference = folder / "refs" / "frame.png"
+    contract_gap_reference.write_bytes(b"reference")
+    layout = run_artifacts.create(folder, "accepted-falsification")
+    bundle = publish_current(folder, layout, outcome="clean_with_deferred")
+    _approve_hold_decision(folder, bundle.content_hash)
+    materialization = _root_materialization(folder, bundle.content_hash)
+    result = finalize_materialization_candidate(
         folder,
-        "1",
+        materialization,
+        prepare_consumer_view(layout),
+    )
+    assert result.clean
+    publish_materialization(folder, materialization)
+
+    selected = resolve_selected_authority(folder)
+    layer = load_layers_from_path(selected_artifact_path(folder, "layers.json"))["1"]
+    units = layer.stages
+    unit = units[0]
+    plan_hash = selected_layer_capsule_digest(
+        folder,
+        layer.id,
+        selected,
+    )
+    attempt = claim_for_build(
+        folder,
+        layer.id,
+        units,
+        unit.id,
+        plan_hash=plan_hash,
+        selection_token=selected.selection_token,
+    )
+    candidate_path = None
+    candidate_hash = None
+    if candidate_bytes is not None:
+        candidate = (
+            folder
+            / "runs"
+            / attempt.run_id
+            / "evidence"
+            / "accepted.png"
+        )
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_bytes(candidate_bytes)
+        candidate_path = candidate.relative_to(folder).as_posix()
+        candidate_hash = hashlib.sha256(candidate_bytes).hexdigest()
+    freeze_unit(
+        folder,
+        layer.id,
+        unit,
+        attempt,
+        candidate_hash=candidate_hash or "missing",
+        selection_token=selected.selection_token,
+    )
+    unit_state.transition(
+        folder,
+        layer.id,
+        unit.id,
+        "evaluating",
+        reason="fixture accepted candidate ready",
+        attempt=attempt,
+        selection_token=selected.selection_token,
+    )
+    publish_passed_evaluation(
+        folder,
+        layer.id,
+        unit,
+        attempt,
+        candidate_path=candidate_path,
+    )
+    completion_receipt = unit_state_claims.complete_unit_attempt(
+        folder,
+        layer.id,
+        unit.id,
+        units,
+        attempt,
+        expected_plan_hash=plan_hash,
+        selection_token=selected.selection_token,
+        reason="fixture accepted",
+        evidence=["fixture:accepted"],
+    )
+
+    claim = _claim_layer_finalization(
+        folder,
+        layer,
+        plan_hash=plan_hash,
+        selection_token=selected.selection_token,
+    )
+    claim_guard = LayerFinalizationClaimGuard.bind(
+        folder,
+        claim,
+        units,
+        selected,
+    )
+    _layer_path, script_sha256 = _publish_layer_artifact(folder, claim_guard)
+    replay, canonical, projection = _typed_contract_gap_case(claim=claim)
+    assert replay.layer_script_sha256 == script_sha256
+
+    point = replay.observation.points[0]
+    reference = folder / point.ref
+    assert reference == contract_gap_reference
+    assert hashlib.sha256(reference.read_bytes()).hexdigest() == point.ref_sha256
+    assert point.render is not None
+    render = folder / point.render
+    render.parent.mkdir(parents=True, exist_ok=True)
+    render.write_bytes(b"qualitative render")
+    assert hashlib.sha256(render.read_bytes()).hexdigest() == point.render_sha256
+
+    projected_finding = projection["finding"]
+    prepared_finding = unit_state.prepare_accepted_hypothesis_falsification(
+        folder,
+        layer.id,
         unit,
         units,
-        bundle_hash="d" * 64,
-        unit_plan_hash="e" * 64,
-        candidate_hash="f" * 64,
-        settings_hash="1" * 64,
-        contract_ids=["form.contract"],
-        observations=[{"pass": False}],
-        decisions=[],
-        conflict={
-            "kind": "contract",
-            "required_authority": "amend form authority",
-            "roles": ["form"],
-            "controls": [],
-        },
-        evidence=["run:evidence/failure.json"],
-        preserve_accepted_source=True,
-        selection_token=_token(),
+        bundle_hash=projected_finding["identities"]["bundle_hash"],
+        unit_plan_hash=projected_finding["identities"]["unit_plan_hash"],
+        candidate_hash=projected_finding["identities"]["candidate_hash"],
+        settings_hash=projected_finding["identities"]["settings_hash"],
+        contract_ids=projected_finding["contract_ids"],
+        observations=projected_finding["observations"],
+        decisions=projected_finding["decisions"],
+        conflict=projected_finding["conflict"],
+        evidence=projected_finding["evidence"],
+        affected_seed_ids=set(projected_finding["affected"]),
+        recorded_at=projected_finding["recorded_at"],
+    )
+    assert prepared_finding == projected_finding
+    projection["finding"] = prepared_finding
+    _refresh_gap_resolution(projection, canonical)
+
+    prepared_replay = prepare_layer_replay_receipt(folder, replay)
+    try:
+        stored_replay = commit_layer_replay_receipt(
+            prepared_replay,
+            claim_guard,
+        )
+    finally:
+        discard_layer_replay_receipt(prepared_replay)
+    evaluation = LayerEvaluationReceipt.mint(
+        replay_receipts=(
+            LayerReplayReceiptBinding.mint(
+                locator=stored_replay.locator,
+                sha256=stored_replay.sha256,
+                receipt=replay,
+            ),
+        ),
+        evaluation_groups=(
+            {
+                "group_index": 0,
+                "result": "contract_gap",
+                "requirement_ids": list(
+                    replay.observation.plan.requirement_ids
+                ),
+                "debt_id": replay.observation.plan.debt_id,
+                "definition_digest": replay.observation.plan.definition_digest,
+                "activation_digest": replay.observation.plan.activation_digest,
+                "canonical_start": 0,
+                "canonical_end": len(canonical),
+                "payment_failures": [],
+            },
+        ),
+        canonical=canonical,
+        created_at="2026-09-01T10:01:30+00:00",
+    )
+    prepared_evaluation = prepare_layer_evaluation_receipt(folder, evaluation)
+    try:
+        stored_evaluation = commit_layer_evaluation_receipt(
+            prepared_evaluation,
+            claim_guard,
+        )
+    finally:
+        discard_layer_evaluation_receipt(prepared_evaluation)
+    terminal_receipt = LayerFinalizationReceipt.mint(
+        evaluation_receipt=evaluation,
+        evaluation_receipt_locator=stored_evaluation.locator,
+        evaluation_receipt_sha256=stored_evaluation.sha256,
+        projection=projection,
+        completed_at=prepared_finding["recorded_at"],
+    )
+    complete_layer_finalization(
+        folder,
+        terminal_receipt,
+        evaluation,
+        units,
+        selection_token=selected.selection_token,
+    )
+    finalization_authorization = authorize_terminal_layer_finalization_mutation(
+        folder,
+        terminal_receipt,
+        units,
+        selected,
+    )
+    finding = unit_state.record_prepared_accepted_hypothesis_falsification(
+        folder,
+        layer.id,
+        units,
+        prepared_finding,
+        selection_token=selected.selection_token,
+        required_layer_finalization_receipt_digest=(
+            terminal_receipt.receipt_digest
+        ),
+        finalization_authorization=finalization_authorization,
+    )
+    return SimpleNamespace(
+        layer=layer,
+        unit=unit,
+        units=units,
+        plan_hash=plan_hash,
+        selection_token=selected.selection_token,
+        completion_receipt=completion_receipt,
+        terminal_receipt=terminal_receipt,
+        finding=finding,
+        candidate_hash=candidate_hash,
     )
 
 
 def test_same_plan_falsification_reopen_archives_passed_completion_receipt(
     tmp_path,
 ) -> None:
-    unit = _unit("form")
-    units = (unit,)
-    unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
-    receipt = _pass_unclaimed(tmp_path, unit, units)
-    finding = _preserve_accepted_falsification(tmp_path, unit, units)
+    fixture = _selected_contract_gap_fixture(tmp_path)
+    unit = fixture.unit
+    units = fixture.units
+    receipt = fixture.completion_receipt
+    finding = fixture.finding
 
-    unit_state.apply_replan(
+    legacy_apply_replan(
         tmp_path,
         "1",
         units,
         units,
-        old_plan_hash=_PLAN_A,
-        new_plan_hash=_PLAN_A,
+        old_plan_hash=fixture.plan_hash,
+        new_plan_hash=fixture.plan_hash,
         owner="fixture",
         trigger="consume composed falsification",
         evidence=["fixture:falsification"],
@@ -647,24 +990,23 @@ def test_same_plan_falsification_reopen_archives_passed_completion_receipt(
 
 
 def test_concurrent_falsification_replan_consumers_commit_exactly_once(tmp_path) -> None:
-    unit = _unit("form")
-    units = (unit,)
-    unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
-    _pass_unclaimed(tmp_path, unit, units)
-    finding = _preserve_accepted_falsification(tmp_path, unit, units)
+    fixture = _selected_contract_gap_fixture(tmp_path)
+    unit = fixture.unit
+    units = fixture.units
+    finding = fixture.finding
     results: list[dict] = []
     errors: list[BaseException] = []
 
     stale_payload = json.loads(json.dumps(finding))
     stale_payload["evidence"] = ["run:evidence/substituted.json"]
     with pytest.raises(ValueError, match="falsification"):
-        unit_state.apply_replan(
+        legacy_apply_replan(
             tmp_path,
             "1",
             units,
             units,
-            old_plan_hash=_PLAN_A,
-            new_plan_hash=_PLAN_A,
+            old_plan_hash=fixture.plan_hash,
+            new_plan_hash=fixture.plan_hash,
             owner="fixture",
             trigger="stale preload must not consume",
             evidence=["fixture:falsification"],
@@ -674,13 +1016,13 @@ def test_concurrent_falsification_replan_consumers_commit_exactly_once(tmp_path)
         )
 
     def operation():
-        return unit_state.apply_replan(
+        return legacy_apply_replan(
             tmp_path,
             "1",
             units,
             units,
-            old_plan_hash=_PLAN_A,
-            new_plan_hash=_PLAN_A,
+            old_plan_hash=fixture.plan_hash,
+            new_plan_hash=fixture.plan_hash,
             owner="fixture",
             trigger="consume composed falsification",
             evidence=["fixture:falsification"],
@@ -807,6 +1149,7 @@ def test_build_promotion_rejects_exact_plan_unit_and_selection_mismatches(tmp_pa
             planning,
             expected_plan_hash=_PLAN_B,
             eligible_passed=None,
+            completion_authorization=None,
             run_id=planning.run_id,
             selection_token=_token(),
             reason="wrong plan",
@@ -820,6 +1163,7 @@ def test_build_promotion_rejects_exact_plan_unit_and_selection_mismatches(tmp_pa
             planning,
             expected_plan_hash=_PLAN_A,
             eligible_passed=None,
+            completion_authorization=None,
             run_id=planning.run_id,
             selection_token=_token(),
             reason="wrong unit generation",
@@ -833,6 +1177,7 @@ def test_build_promotion_rejects_exact_plan_unit_and_selection_mismatches(tmp_pa
             planning,
             expected_plan_hash=_PLAN_A,
             eligible_passed=None,
+            completion_authorization=None,
             run_id=planning.run_id,
             selection_token=_token(revision=2),
             reason="wrong authority token",
@@ -1177,7 +1522,7 @@ def test_same_id_replan_winning_lock_prevents_stale_unclaimed_retry(
         name="replan-first",
         target=_run,
         kwargs={
-            "operation": lambda: unit_state.apply_replan(
+            "operation": lambda: legacy_apply_replan(
                 tmp_path,
                 "1",
                 old_units,
@@ -1325,7 +1670,7 @@ def test_replan_revokes_even_digest_preserved_claim_and_reopens_retryable(tmp_pa
     unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
     claim = _claim_planning(tmp_path, units, unit.id)
 
-    unit_state.apply_replan(
+    legacy_apply_replan(
         tmp_path,
         "1",
         units,
@@ -1403,7 +1748,7 @@ def test_digest_preserving_replan_revocation_archives_checkpoint(tmp_path) -> No
         selection_token=_token(),
     )
 
-    unit_state.apply_replan(
+    legacy_apply_replan(
         tmp_path,
         "1",
         units,
@@ -1429,7 +1774,7 @@ def test_attempt_revision_is_monotone_across_same_id_reopen(tmp_path) -> None:
     unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
     stale = _claim_planning(tmp_path, units, unit.id)
 
-    unit_state.apply_replan(
+    legacy_apply_replan(
         tmp_path,
         "1",
         units,
@@ -1473,7 +1818,7 @@ def test_attempt_revision_is_monotone_across_remove_and_readd_same_id(tmp_path) 
     unit_state.initialize(tmp_path, "1", units, plan_hash=_PLAN_A)
     stale = _claim_planning(tmp_path, units, unit.id)
 
-    unit_state.apply_replan(
+    legacy_apply_replan(
         tmp_path,
         "1",
         units,
@@ -1679,7 +2024,7 @@ def test_require_active_attempt_returns_exact_current_and_refuses_stale_after_re
         expected_plan_hash=_PLAN_A,
         selection_token=_token(),
     ) == claim
-    unit_state.apply_replan(
+    legacy_apply_replan(
         tmp_path,
         "1",
         units,
@@ -1846,60 +2191,15 @@ def test_active_falsification_archives_candidate_but_accepted_preservation_keeps
 
     accepted_root = tmp_path / "accepted"
     accepted_root.mkdir()
-    unit_state.initialize(accepted_root, "1", units, plan_hash=_PLAN_A)
-    accepted_planning = _claim_planning(accepted_root, units, unit.id)
-    accepted_building = _promote(accepted_root, units, accepted_planning)
-    candidate = accepted_root / "runs" / accepted_building.run_id / "evidence" / "accepted.png"
-    candidate.parent.mkdir(parents=True, exist_ok=True)
-    candidate.write_bytes(b"accepted candidate")
-    candidate_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
-    freeze_unit(
+    accepted = _selected_contract_gap_fixture(
         accepted_root,
-        "1",
-        unit,
-        accepted_building,
-        candidate_hash=candidate_hash,
-        selection_token=_token(),
+        candidate_bytes=b"accepted candidate",
     )
-    unit_state.transition(
-        accepted_root,
-        "1",
-        unit.id,
-        "evaluating",
-        reason="judge",
-        attempt=accepted_building,
-        selection_token=_token(),
-    )
-    publish_passed_evaluation(
-        accepted_root,
-        "1",
-        unit,
-        accepted_building,
-        candidate_path=candidate.relative_to(accepted_root).as_posix(),
-    )
-    unit_state_claims.complete_unit_attempt(
-        accepted_root,
-        "1",
-        unit.id,
-        units,
-        accepted_building,
-        expected_plan_hash=_PLAN_A,
-        selection_token=_token(),
-        reason="accepted",
-        evidence=["fixture:accepted"],
-    )
-    unit_state.record_hypothesis_falsification(
-        accepted_root,
-        "1",
-        unit,
-        units,
-        **common,
-        preserve_accepted_source=True,
-        selection_token=_token(),
-    )
-    preserved = unit_state.load(accepted_root, "1")["units"][unit.id]
+    preserved = unit_state.load(accepted_root, accepted.layer.id)["units"][
+        accepted.unit.id
+    ]
     assert preserved["status"] == "passed"
-    assert preserved["checkpoint"]["candidate_hash"] == candidate_hash
+    assert preserved["checkpoint"]["candidate_hash"] == accepted.candidate_hash
 
 
 def test_falsification_state_write_failure_leaves_no_authoritative_record(

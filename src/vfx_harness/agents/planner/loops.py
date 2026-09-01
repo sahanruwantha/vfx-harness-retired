@@ -276,13 +276,13 @@ def main() -> None:
         "--rematerialize",
         action="store_true",
         help="with --layer, replace the layer's materialized view and design it again "
-        "from global authority; apply_replan preserves units whose digests still match",
+        "from global authority; publication atomically preserves exact unchanged units",
     )
     ap.add_argument(
         "--discard-accepted",
         action="store_true",
-        help="with --rematerialize, permit retiring accepted orphans and wiping state "
-        "when the replan base is unusable; matching digests still stay through apply_replan",
+        help="with --rematerialize, permit the reviewed transition to retire accepted "
+        "orphans; exact unchanged unit bindings remain preserved",
     )
     ap.add_argument("--owner", help="authority applying a --rematerialize transaction")
     ap.add_argument("--trigger", help="why the materialized view is being replaced")

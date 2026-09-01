@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vfx_harness.agents.plan_guardrails import target_validation_feedback
-from vfx_harness.domain.layer_outcomes import (
-    LayerOutcomeContractError,
-    parse_sealed_layer_outcome,
-)
 from vfx_harness.domain.plan_records import load_active_structured_decisions, roles_match_reserved
 from vfx_harness.domain.work_units import (
     CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
@@ -19,6 +15,7 @@ from vfx_harness.domain.work_units import (
     compile_deferred_subject_activation,
     compile_frame_authority,
 )
+from vfx_harness.orchestration import layer_publication
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
@@ -35,10 +32,8 @@ from vfx_harness.orchestration.jit_materialization.overlay_base import read_over
 from vfx_harness.orchestration.jit_materialization.schema import (
     materialization_base_selection,
 )
-from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_authoring import expand_mapping, validate_mapping
-from vfx_harness.orchestration.revalidation import current_outcome_eligibility
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,31 +353,26 @@ def _sealed_outcomes_block(
     required_bindings = frozenset((row["kind"], row["id"]) for row in required)
     outcomes: list[dict] = []
     for dep in depends:
-        path = layer_outcome_path(shot_folder, dep)
-        if not path.is_file():
-            outcomes.append({"layer": dep, "status": "missing"})
-            continue
-        value = json.loads(path.read_text(encoding="utf-8"))
-        try:
-            sealed = parse_sealed_layer_outcome(value, expected_layer_id=dep)
-        except LayerOutcomeContractError as exc:
-            raise ValueError(f"dependency {dep} has an invalid sealed outcome: {exc}") from exc
         dependency_layer = available_layers.get(dep)
         if dependency_layer is None:
             raise ValueError(f"dependency {dep} is absent from the selected executable consumer view")
-        eligible, reasons = current_outcome_eligibility(
-            shot_folder,
-            dependency_layer,
-            value,
-            selected_authority=selected_authority,
-        )
-        if not eligible:
-            raise ValueError(f"dependency {dep} sealed outcome is stale: " + "; ".join(reasons))
+        try:
+            publication = layer_publication.require_current_layer_publication(
+                shot_folder,
+                dependency_layer,
+                selected_authority,
+            )
+        except layer_publication.LayerPublicationConflict as exc:
+            raise ValueError(
+                f"dependency {dep} has no current receipt-backed publication: {exc}"
+            ) from exc
+        sealed = publication.outcome
         outcomes.append(
             {
                 "layer": dep,
                 "status": sealed.status,
                 "script": sealed.script,
+                "finalization_receipt_digest": sealed.receipt_digest,
                 "required_evidence": list(sealed.required_evidence(required_bindings)),
             }
         )

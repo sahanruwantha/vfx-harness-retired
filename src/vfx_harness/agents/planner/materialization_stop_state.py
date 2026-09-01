@@ -257,7 +257,7 @@ def dependency_outcome_state(
     dependency: str,
     required_outcomes: frozenset[tuple[str, str]],
     script_state: dict[str, Any] | None,
-    current_eligibility: tuple[bool, tuple[str, ...]] | None,
+    current_publication_receipt_digest: str | None,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
     if payload is None:
         return {"layer": dependency, "status": "missing"}, ()
@@ -277,27 +277,18 @@ def dependency_outcome_state(
             f"dependency_outcome_{dependency}_invalid",
         )
     if sealed.status == "passed":
-        if current_eligibility is None:
+        if current_publication_receipt_digest is None:
             return {
                 "layer": dependency,
                 "status": "invalid",
-                "reason": "current_eligibility_unavailable",
-            }, (f"dependency_outcome_{dependency}_eligibility_unavailable",)
-        eligible, raw_reasons = current_eligibility
-        reasons = tuple(sorted(set(raw_reasons)))
-        if (eligible and reasons) or (not eligible and not reasons):
+                "reason": "publication_unverified",
+            }, (f"dependency_outcome_{dependency}_publication_unverified",)
+        if current_publication_receipt_digest != sealed.receipt_digest:
             return {
                 "layer": dependency,
                 "status": "invalid",
-                "reason": "current_eligibility_inconsistent",
-            }, (f"dependency_outcome_{dependency}_eligibility_inconsistent",)
-        if not eligible:
-            return {
-                "layer": dependency,
-                "status": "invalid",
-                "reason": "stale",
-                "eligibility_reasons": list(reasons),
-            }, (f"dependency_outcome_{dependency}_stale",)
+                "reason": "publication_receipt_mismatch",
+            }, (f"dependency_outcome_{dependency}_publication_receipt_mismatch",)
     matched = [
         {
             key: (
@@ -309,9 +300,12 @@ def dependency_outcome_state(
         }
         for row in sealed.required_evidence(required_outcomes)
     ]
-    return {
+    state = {
         "layer": sealed.layer_id,
         "status": sealed.status,
         "script": script_state,
         "required_evidence": matched,
-    }, ()
+    }
+    if sealed.status == "passed":
+        state["finalization_receipt_digest"] = sealed.receipt_digest
+    return state, ()

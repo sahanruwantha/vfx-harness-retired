@@ -26,20 +26,33 @@ seconds-to-minutes. Two defect classes live here, both observed:
 
 from __future__ import annotations
 
-import re
 import statistics
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PIL import Image
 
 from vfx_harness.domain.brief import Shot
+from vfx_harness.evaluation.layer_publications import (
+    capture_exact_layer_publications,
+    receipt_backed_layer_prefix,
+    require_exact_layer_publications,
+)
 from vfx_harness.evidence.metrics import compare, look_pair, look_vector
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration.ledger import Ledger, load_layers
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.layer_publication import LayerPublicationConflict
+from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
 
 from ..agents.builder import _RESET, _preamble, _run_artifact_script
 from ..blender.session import BlenderError, BlenderSession
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.ledger import Layer
 
 # The scales the render tools actually offer. render_frame and compare_frame default to
 # 0.4, render_frames to 0.35, _stash_render to 0.5 — so a builder's own measurements and
@@ -223,8 +236,12 @@ def _scene_manifest(session) -> dict:
     return {"inspect": text, "scene": stats.get("scene", {})}
 
 
-def accepted_prefix(shot: Shot) -> tuple[list, int]:
-    """The longest run of layers, from the first, that the ledger records as passed.
+def accepted_prefix(
+    shot: Shot,
+    *,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> tuple[list[Layer], int]:
+    """The longest dependency-ordered run of receipt-backed published layers.
 
     Not `render_shot._chain_scripts`, which refuses anything short of a complete accepted
     chain — correct for producing a deliverable, useless for measuring determinism. A
@@ -233,18 +250,22 @@ def accepted_prefix(shot: Shot) -> tuple[list, int]:
     can say how much of the chain it actually exercised.
     """
 
-    def num(script: str) -> int:
-        m = re.match(r"(\d+)", Path(script).name)
-        return int(m.group(1)) if m else 10_000
-
-    layers = sorted(load_layers(shot).values(), key=lambda L: num(L.script))
-    ledger = Ledger(shot)
-    prefix = []
-    for L in layers:
-        if ledger.status(L.as_milestone()) != "passed" or not (shot.folder / L.script).is_file():
-            break
-        prefix.append(L)
-    return prefix, len(layers)
+    selected = selected_authority or resolve_selected_authority(shot.folder)
+    if selected.plan is None:
+        raise ValueError(
+            "replay equivalence requires selected plan authority; offline scripts, "
+            "ledger rows, and outcomes cannot synthesize layer publications"
+        )
+    layers = selected_layer_chain(
+        shot,
+        selected_authority=selected,
+    )
+    prefix = receipt_backed_layer_prefix(
+        shot.folder,
+        layers,
+        selected,
+    )
+    return list(prefix), len(layers)
 
 
 def replay_equivalence(shot: Shot, *, blender: str = "blender", passes: int = 2,
@@ -254,14 +275,30 @@ def replay_equivalence(shot: Shot, *, blender: str = "blender", passes: int = 2,
     same look vector every time."""
 
     try:
-        layers, total = accepted_prefix(shot)
+        selected_authority = resolve_selected_authority(shot.folder)
+        layers, total = accepted_prefix(
+            shot,
+            selected_authority=selected_authority,
+        )
     except Exception as e:
         return Result("replay equivalence", ok=None,
                       detail=f"cannot determine the accepted chain: {str(e)[:200]}")
     if not layers:
         return Result("replay equivalence", ok=None,
-                      detail="no layer is recorded 'passed' with a script on disk — "
+                      detail="no layer has a current receipt-backed publication — "
                              "there is no accepted chain to replay yet")
+    try:
+        publication_identities = capture_exact_layer_publications(
+            shot.folder,
+            layers,
+            selected_authority,
+        )
+    except LayerPublicationConflict as exc:
+        return Result(
+            "replay equivalence",
+            ok=None,
+            detail=f"cannot capture the exact accepted chain: {str(exc)[:300]}",
+        )
     scripts = [shot.folder / L.script for L in layers]
     partial = ("" if len(layers) == total else
                f"PARTIAL CHAIN: {len(layers)} of {total} layers are accepted, so this "
@@ -293,6 +330,23 @@ def replay_equivalence(shot: Shot, *, blender: str = "blender", passes: int = 2,
     except BlenderError as e:
         return Result("replay equivalence", ok=None,
                       detail=f"Blender could not replay the chain: {str(e)[:300]}")
+
+    try:
+        require_exact_layer_publications(
+            shot.folder,
+            layers,
+            selected_authority,
+            expected=publication_identities,
+        )
+    except LayerPublicationConflict as exc:
+        return Result(
+            "replay equivalence",
+            ok=None,
+            detail=(
+                "accepted layer publication changed while replay equivalence ran: "
+                f"{str(exc)[:300]}"
+            ),
+        )
 
     problems, data = [], {"frame": frame, "scripts": [p.name for p in scripts],
                           "passes": passes, "layers_replayed": len(layers),

@@ -13,6 +13,7 @@ from tests.unit.test_plan_records import (
     _passed_layer_one_outcome,
     _write,
     _write_authority_record,
+    publish_current,
 )
 from vfx_harness.domain.brief import Shot
 from vfx_harness.observability import run_artifacts
@@ -21,7 +22,6 @@ from vfx_harness.orchestration.ledger import load_milestones
 from vfx_harness.orchestration.plan_authority import (
     PlanPublicationError,
     prepare_consumer_view,
-    publish_current,
     selected_artifact_path,
 )
 
@@ -32,7 +32,6 @@ _MATERIALIZED_MOMENT = {
     "reads": "the materialized polish layer preserves the final lock",
     "strip": [239],
     "fingerprint": {"axis": "final_lock", "property": "frame_delta"},
-    "layer": "2",
 }
 
 

@@ -125,6 +125,11 @@ def test_cli_owns_one_fence_before_run_root_and_blender_start(
     monkeypatch.setattr(builder_cli, "load_unit_state", lambda *_args: {"units": {}})
     monkeypatch.setattr(
         builder_cli,
+        "require_current_layer_publication",
+        lambda *_args: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        builder_cli,
         "clear_layer_context",
         lambda _shot: events.append("clear-context"),
     )
@@ -187,3 +192,81 @@ def test_already_fenced_cli_entry_refuses_before_shared_mutation_or_blender(
 
     anyio.run(run)
     assert touched == []
+
+
+def test_cli_refuses_layer_success_without_receipt_bound_publication(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    closed: list[bool] = []
+    milestone = object()
+    layer = SimpleNamespace(
+        id="1",
+        title="fixture",
+        judges=((1, "refs/reference.png"),),
+        script="build/layer-1.py",
+        as_milestone=lambda: milestone,
+    )
+    shot = SimpleNamespace(folder=tmp_path, id="missing-publication")
+    request = builder_cli.PreparedBuildRequest(
+        shot=shot,
+        layer=layer,
+        selected_authority=SimpleNamespace(),
+    )
+
+    class _Session:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self):
+            return self
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class _Ledger:
+        path = tmp_path / "shot.json"
+
+        def status(self, _milestone):
+            return "passed"
+
+    async def build_layer_already_fenced(*_args, **_kwargs):
+        return _Ledger()
+
+    monkeypatch.setattr(builder_cli, "require_builder_execution_lease", lambda *_args: None)
+    monkeypatch.setattr(builder_cli, "ensure_construction_read_namespace", lambda *_args: None)
+    monkeypatch.setattr(builder_cli, "BlenderSession", _Session)
+    monkeypatch.setattr(
+        builder_cli,
+        "builder_package",
+        lambda: SimpleNamespace(
+            build_layer_already_fenced=build_layer_already_fenced,
+        ),
+    )
+    monkeypatch.setattr(builder_cli, "load_unit_state", lambda *_args: {"units": {}})
+    monkeypatch.setattr(builder_cli, "clear_layer_context", lambda *_args: None)
+    monkeypatch.setattr(builder_cli, "builder_model", lambda: "fixture-builder")
+    monkeypatch.setattr(builder_cli, "critic_model", lambda: "fixture-critic")
+    monkeypatch.setattr(builder_cli, "log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        builder_cli,
+        "require_current_layer_publication",
+        lambda *_args: (_ for _ in ()).throw(
+            builder_cli.LayerPublicationConflict("terminal receipt is missing")
+        ),
+    )
+
+    async def run() -> None:
+        with pytest.raises(
+            builder_cli.LayerVerdictFailed,
+            match="no complete receipt-bound publication",
+        ):
+            await builder_cli._run_already_fenced(
+                request,
+                rounds=1,
+                blender="blender",
+                fence_lease=object(),
+            )
+
+    anyio.run(run)
+    assert closed == [True]

@@ -433,7 +433,7 @@ def _lookless_without_executable_verdict(unit, frame: int, axes: list[tuple[str,
 def _provisional_composition_contract_gap(
     judged: dict, active_unit, frame: int
 ) -> dict:
-    """Route qualified composed criticism to replan without losing its evidence.
+    """Route qualified composed criticism to amendment without losing its evidence.
 
     The critic may identify a concrete defect under qualified qualitative authority,
     but the synthetic composition unit owns no executable script.  Preserve that exact
@@ -470,7 +470,8 @@ def _provisional_composition_contract_gap(
                     "reason": (
                         "qualified canonical judgment falsified a provisional layer "
                         "decision, but composed judgment grants no cross-unit mutation "
-                        "authority; transactionally replan the cited producer closure"
+                        "authority; publish a validated amendment for the cited producer "
+                        "closure"
                     ),
                 }
             )
@@ -488,8 +489,8 @@ def _provisional_composition_contract_gap(
                         f"{requirement_id}"
                     ),
                     "action": (
-                        "replan the bounded producer units; composed judgment grants no "
-                        "cross-unit mutation authority"
+                        "publish a validated amendment for the bounded producer units; "
+                        "composed judgment grants no cross-unit mutation authority"
                     ),
                     "axis": "reference_match",
                     "property": "reference_identity",

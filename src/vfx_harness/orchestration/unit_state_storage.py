@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 from vfx_harness.orchestration.unit_state_lock import (
     read_state_file_bytes,
     write_state_file_bytes,
+)
+from vfx_harness.orchestration.unit_state_serialization import (
+    serialize_work_unit_state,
 )
 
 
@@ -21,5 +23,4 @@ def read(path: Path) -> bytes | None:
 
 
 def write(path: Path, value: dict) -> None:
-    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    write_state_file_bytes(path, payload)
+    write_state_file_bytes(path, serialize_work_unit_state(value))

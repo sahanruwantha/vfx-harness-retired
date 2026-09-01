@@ -49,10 +49,15 @@ def start_unit_runtime(
 ) -> UnitRuntimeStart:
     """Initialize the attempt-bound ledger and exact-generation warm-start decision."""
 
+    attempt_guard.require_unit_boundary(
+        milestone,
+        active_unit,
+        script_rel=script_rel,
+    )
     ledger = AuthorityBoundLedger(
         shot,
         selected_authority,
-        attempt_guard=attempt_guard,
+        execution_guard=attempt_guard,
     )
     previous_slot = dict(ledger._slot(milestone))
     previous_status = str(previous_slot.get("status") or "")

@@ -69,11 +69,15 @@ def _authority() -> acceptance_stop.AcceptanceAuthoritySnapshot:
                 "status": "passed",
                 "script": "build/units/L1/form.py",
                 "script_sha256": _digest("script"),
+                "finalization_receipt_digest": _digest("finalization receipt"),
+                "layer_outcome": "plans/outcomes/layer-L1.json",
+                "layer_outcome_sha256": _digest("layer outcome"),
                 "replay_dependencies": [],
                 "units": [
                     {
                         "unit_id": "form",
                         "unit_digest": _digest("unit"),
+                        "completion_receipt_digest": _digest("completion receipt"),
                         "script": "build/units/L1/form.py",
                         "script_sha256": _digest("script"),
                     }
@@ -273,7 +277,7 @@ def _patch_acceptance(
     monkeypatch.setattr(
         acceptance.acceptance_stop,
         "capture_acceptance_authority",
-        lambda _shot, _moments, _selected=None: authority,
+        lambda _shot, _moments, _selected=None, **_kwargs: authority,
     )
     monkeypatch.setattr(
         acceptance,
@@ -1304,7 +1308,7 @@ def test_blocking_metric_prose_cannot_replace_typed_acceptance_readings(
         )
 
 
-def test_chain_refuses_ledger_pass_without_completion_receipt(
+def test_chain_refuses_ledger_pass_without_terminal_layer_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1324,19 +1328,30 @@ def test_chain_refuses_ledger_pass_without_completion_receipt(
         "selected_layer_chain",
         lambda *_args, **_kwargs: (layer,),
     )
+    selected = SimpleNamespace()
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_selected_authority",
+        lambda _folder: selected,
+    )
     monkeypatch.setattr(
         acceptance,
         "Ledger",
         lambda *_args, **_kwargs: SimpleNamespace(status=lambda _milestone: "passed"),
     )
     monkeypatch.setattr(
-        acceptance.unit_state,
-        "load",
+        acceptance.layer_publication,
+        "require_current_layer_publication",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            ValueError("passed work-unit state requires its completion receipt")
+            acceptance.layer_publication.LayerPublicationConflict(
+                "layer 1 has no current terminal finalization receipt"
+            )
         ),
     )
     session = SimpleNamespace(run=lambda *_args: pytest.fail("must stop before replay"))
 
-    with pytest.raises(acceptance.IncompleteChain, match="completion receipt"):
+    with pytest.raises(
+        acceptance.IncompleteChain,
+        match="no current terminal finalization receipt",
+    ):
         acceptance._chain(session, shot)

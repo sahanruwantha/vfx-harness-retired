@@ -40,6 +40,10 @@ from vfx_harness.orchestration.escalate import unanswered_for_layer
 from vfx_harness.orchestration.generate_construction import (
     ensure_construction_read_namespace,
 )
+from vfx_harness.orchestration.layer_publication import (
+    LayerPublicationConflict,
+    require_current_layer_publication,
+)
 from vfx_harness.orchestration.ledger import Layer, load_layers
 from vfx_harness.orchestration.plan_due import require_due_clear
 from vfx_harness.orchestration.unit_state import load as load_unit_state
@@ -174,10 +178,16 @@ async def _run_already_fenced(
             raise BuildUnpassed(
                 f"layer {g.id} did not accept every work unit: {', '.join(unpassed)}"
             )
-        if status not in {"passed", "reproduced"}:
-            raise LayerVerdictFailed(
-                f"layer {g.id} units passed but the composed verdict is {status!r}"
+        try:
+            require_current_layer_publication(
+                shot.folder,
+                g,
+                selected_authority,
             )
+        except LayerPublicationConflict as exc:
+            raise LayerVerdictFailed(
+                f"layer {g.id} has no complete receipt-bound publication: {exc}"
+            ) from exc
     finally:
         session.close()
         # This was imported and never called. write_layer_context() overwrites CLAUDE.md

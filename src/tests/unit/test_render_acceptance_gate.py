@@ -126,6 +126,47 @@ def test_full_render_refuses_before_replay_when_acceptance_is_missing(
         render_shot.render_mp4(shot)
 
 
+def test_render_chain_refuses_ledger_pass_without_terminal_layer_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _shot(tmp_path)
+    script = tmp_path / "build" / "layer.py"
+    script.parent.mkdir()
+    script.write_text("# layer\n", encoding="utf-8")
+    layer = SimpleNamespace(
+        id="1",
+        script="build/layer.py",
+        as_milestone=lambda: object(),
+    )
+    selected = SimpleNamespace()
+    monkeypatch.setattr(
+        render_shot,
+        "selected_layer_chain",
+        lambda *_args, **_kwargs: (layer,),
+    )
+    monkeypatch.setattr(
+        render_shot,
+        "Ledger",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lambda _milestone: "passed"),
+    )
+    monkeypatch.setattr(
+        render_shot.layer_publication,
+        "require_current_layer_publication",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            render_shot.layer_publication.LayerPublicationConflict(
+                "layer 1 has no current terminal finalization receipt"
+            )
+        ),
+    )
+
+    with pytest.raises(
+        render_shot.IncompleteRender,
+        match="no current terminal finalization receipt",
+    ):
+        render_shot._chain_scripts(shot, selected_authority=selected)
+
+
 def test_preview_defaults_never_use_the_deliverables_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -211,8 +252,8 @@ def test_final_render_reuses_one_snapshot_and_rechecks_it_before_publication(
 
     assert result == output
     assert output.read_bytes() == b"new mp4"
-    assert resolutions == [shot.folder]
-    assert acceptance_inputs == [selected, selected, selected]
+    assert resolutions == [shot.folder, shot.folder]
+    assert acceptance_inputs == [selected, selected]
     assert chain_inputs == [selected]
     assert not list(tmp_path.glob(".deliverable.pending-*.mp4"))
 
@@ -278,7 +319,7 @@ def test_final_render_postverify_conflict_restores_exact_predecessor(
 
     def require_current(_shot: Shot, _snapshot: object) -> None:
         observed_outputs.append(output.read_bytes())
-        if len(observed_outputs) == 2:
+        if len(observed_outputs) == 3:
             raise render_shot.FinalRenderSnapshotError(
                 "script changed at the final rename seam"
             )
@@ -317,7 +358,7 @@ def test_final_render_postverify_conflict_restores_exact_predecessor(
     with pytest.raises(render_shot.IncompleteRender, match="changed during final render"):
         render_shot.render_mp4(shot, out=output)
 
-    assert observed_outputs == [b"old mp4", b"new mp4"]
+    assert observed_outputs == [b"old mp4", b"old mp4", b"new mp4"]
     assert output.read_bytes() == b"old mp4"
     assert not list(tmp_path.glob(".deliverable.mp4.predecessor-*.mp4"))
     assert not list(tmp_path.glob(".deliverable.pending-*.mp4"))

@@ -10,6 +10,13 @@ from typing import Any
 
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.domain.work_units import WorkUnit, validate_unit_dag
+from vfx_harness.orchestration.unit_completion_authorizations import (
+    AuthorizedUnitCompletionSet,
+    CandidateAuthorizedUnitCompletionSet,
+    UnitCompletionAuthorization,
+    UnitCompletionAuthorizationError,
+    require_completion_authorization_matches_state,
+)
 
 # Bump whenever WorkUnit gains or loses a field always present in unit_digest.
 # Schema 4 added MutationScope.dresses (ADR-0007).
@@ -35,42 +42,75 @@ def unit_digest(unit: WorkUnit) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def digest_matched_passed(
-    state: Mapping[str, Any] | dict,
+def authorized_passed_unit_ids(
+    state: Mapping[str, Any],
     units: tuple[WorkUnit, ...],
+    *,
+    completion_authorization: UnitCompletionAuthorization | None,
+    allow_candidate: bool = False,
 ) -> set[str]:
-    """Return passed ids whose receipt and digest match current authority."""
+    """Return passed ids named by an exact state-bound authorization.
 
-    rows = (state or {}).get("units") or {}
-    passed = {
-        uid
-        for uid, row in rows.items()
-        if isinstance(row, dict) and row.get("status") == "passed"
-    }
-    if not state or int(state.get("digest_schema", 1)) != DIGEST_SCHEMA:
-        # Digests from another schema are not comparable, and a bare lifecycle bit
-        # must never become acceptance authority.
+    A matching layer hash is not current authorization: it cannot distinguish an
+    execution receipt from an A-to-B-to-A semantic coincidence. ``None`` is an
+    explicit deny-all value and never derives authority from lifecycle state.
+    """
+
+    if completion_authorization is None:
         return set()
+    if not isinstance(completion_authorization, AuthorizedUnitCompletionSet) and not (
+        allow_candidate
+        and isinstance(
+            completion_authorization,
+            CandidateAuthorizedUnitCompletionSet,
+        )
+    ):
+        kind = "current or candidate" if allow_candidate else "current coordinator"
+        raise UnitCompletionAuthorizationError(
+            f"digest-matched passed units require a typed {kind} authorization"
+        )
+    require_completion_authorization_matches_state(
+        state,
+        completion_authorization,
+        allow_candidate=allow_candidate,
+    )
+    if int(state.get("digest_schema", 0)) != DIGEST_SCHEMA:
+        raise UnitCompletionAuthorizationError(
+            "work-unit completion authorization requires the current digest schema"
+        )
+
+    rows = state.get("units") or {}
     by_id = {unit.id: unit for unit in units}
     sealed: set[str] = set()
-    for uid in passed:
+    for uid, authorized_digest in completion_authorization.receipts:
+        unit = by_id.get(uid)
+        if unit is None:
+            raise UnitCompletionAuthorizationError(
+                f"work-unit completion authorization names unknown unit {uid!r}"
+            )
         row = rows.get(uid) or {}
-        if uid not in by_id or row.get("unit_hash") != unit_digest(by_id[uid]):
-            continue
+        expected_unit_digest = unit_digest(unit)
+        if row.get("status") != "passed" or row.get("unit_hash") != expected_unit_digest:
+            raise UnitCompletionAuthorizationError(
+                f"authorized completion {uid!r} is not an exact current passed unit"
+            )
         try:
             receipt = UnitCompletionReceipt.parse(
                 row.get("completion_receipt"),
                 f"work-unit state {uid}.completion_receipt",
             )
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise UnitCompletionAuthorizationError(str(exc)) from exc
         if (
-            receipt.claim.unit_id == uid
-            and receipt.claim.layer_id == str(state.get("layer"))
-            and receipt.claim.unit_digest == row.get("unit_hash")
-            and receipt.claim.plan_hash == state.get("plan_hash")
+            receipt.claim.unit_id != uid
+            or receipt.claim.layer_id != str(state.get("layer"))
+            or receipt.claim.unit_digest != expected_unit_digest
+            or receipt.receipt_digest != authorized_digest
         ):
-            sealed.add(uid)
+            raise UnitCompletionAuthorizationError(
+                f"authorized completion receipt identity changed for unit {uid!r}"
+            )
+        sealed.add(uid)
     return sealed
 
 

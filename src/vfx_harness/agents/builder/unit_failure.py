@@ -65,7 +65,7 @@ def handle_unpassed_unit(
             )
             log(
                 "plan hypothesis falsified by executable evidence → "
-                f"{finding['record_id']} (transactional replan required)",
+                f"{finding['record_id']} (validated authority amendment required)",
                 1,
             )
         except FalsificationProjectionPending as pending:
@@ -122,7 +122,7 @@ def handle_unpassed_unit(
             else:
                 log(
                     "plan hypothesis falsified by executable evidence → "
-                    f"{finding['record_id']} (transactional replan required)",
+                    f"{finding['record_id']} (validated authority amendment required)",
                     1,
                 )
     else:

@@ -28,8 +28,27 @@ def _write_plan(root: Path, *, marker: str = "fixture") -> None:
     (root / "refs" / "reference.txt").write_text("reference\n", encoding="utf-8")
     (root / "plans").mkdir(exist_ok=True)
     (root / "plans" / "global.md").write_text(f"# plan {marker}\n", encoding="utf-8")
+    layer = {
+        "id": "form",
+        "script": "build/form.py",
+        "title": "Form",
+        "primary_judge": 1,
+        "judge": [{"frame": 1, "ref": "refs/reference.txt"}],
+        "owns": ["form"],
+        "evidence_domains": ["scene"],
+        "reads": "Fixture form authority",
+        "execution": "jit_deferred",
+        "stages": [],
+        "jit": {
+            "depends_on_layers": [],
+            "required_outcomes": [],
+            "provides": {"geometry": ["subject.form"]},
+            "reserved_roles": ["subject.form"],
+            "owned_requirements": [],
+        },
+    }
     documents = {
-        "layers.json": {"schema": 5, "layers": []},
+        "layers.json": {"schema": 5, "layers": [layer]},
         "acceptance.json": [],
         "critic_axes.json": [],
         "checks.json": {"schema": 2, "checks": []},
@@ -255,6 +274,12 @@ def test_old_jit_view_stays_inert_after_plan_semantic_aba(
     assert first.assertion.bundle is not None
     _write_jit_pointer(tmp_path, bundle_digest=first.assertion.bundle.digest)
     assert resolve_selected_authority(tmp_path).assertion.effective_view.source == "jit"
+    stale_pointer = (tmp_path / CURRENT).read_bytes()
+    # The direct pointer fixture intentionally exercises the low-level selection
+    # resolver and is not a coordinator-authorized publication.  Remove it while
+    # publishing the intervening plan revisions, then restore those exact stale
+    # bytes to exercise semantic ABA handling.
+    (tmp_path / CURRENT).unlink()
 
     _write_plan(tmp_path, marker="different")
     publish_current(
@@ -268,6 +293,9 @@ def test_old_jit_view_stays_inert_after_plan_semantic_aba(
         run_artifacts.create(tmp_path, "plan-run-a2"),
         outcome="clean_with_deferred",
     )
+    pointer_path = tmp_path / CURRENT
+    pointer_path.parent.mkdir(parents=True, exist_ok=True)
+    pointer_path.write_bytes(stale_pointer)
 
     resolved = resolve_selected_authority(tmp_path)
     pointer = json.loads(

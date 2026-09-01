@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
-from functools import partial
 from pathlib import Path
 
-from vfx_harness.agents.builder.attempt_guard import UnitAttemptGuard
+from vfx_harness.agents.builder.attempt_guard import (
+    AttemptBoundBlenderSession,
+    UnitAttemptGuard,
+)
 from vfx_harness.agents.builder.authority import (
     AuthorityBoundLedger,
     commit_selected_authority,
@@ -20,10 +22,43 @@ from vfx_harness.agents.builder.composition_helpers import (
 from vfx_harness.agents.builder.composition_helpers import (
     judgment_payment_evidence_digest as _judgment_payment_evidence_digest,
 )
-from vfx_harness.agents.builder.evidence import _unit_raster_mode
-from vfx_harness.agents.builder.falsify import _record_composed_contract_gap_falsification
-from vfx_harness.agents.builder.judgment_payment import JudgmentDebtPayment
-from vfx_harness.agents.builder.layer_outcome import publish_composed_layer_outcome
+from vfx_harness.agents.builder.evidence import (
+    _unit_raster_mode,
+    _unit_requires_raster,
+)
+from vfx_harness.agents.builder.execution_guard import ExecutionAuthorityLost
+from vfx_harness.agents.builder.falsify import (
+    _prepare_composed_contract_gap_falsification,
+)
+from vfx_harness.agents.builder.judgment_payment import (
+    JudgmentDebtPayment,
+    JudgmentDebtPaymentPolicy,
+)
+from vfx_harness.agents.builder.layer_artifact import (
+    commit_layer_artifact,
+    discard_layer_artifact,
+    prepare_layer_artifact,
+    proposed_layer_artifact_sha256,
+)
+from vfx_harness.agents.builder.layer_composition_finalization import (
+    _canonical_receipt_rows as _canonical_receipt_rows,
+)
+from vfx_harness.agents.builder.layer_composition_finalization import (
+    _finalization_predecessor_inputs as _finalization_predecessor_inputs,
+)
+from vfx_harness.agents.builder.layer_composition_finalization import (
+    _json_ready as _json_ready,
+)
+from vfx_harness.agents.builder.layer_composition_finalization import (
+    finalize_composed_layer,
+)
+from vfx_harness.agents.builder.layer_finalization_guard import (
+    LayerFinalizationAuthorityLost,
+    LayerFinalizationClaimGuard,
+)
+from vfx_harness.agents.builder.layer_finalization_reconcile import (
+    reconcile_layer_finalization,
+)
 from vfx_harness.agents.builder.models import _RESET, BuildAuthorityDefect, critic_model
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import (
@@ -55,15 +90,40 @@ from vfx_harness.agents.shot_context import clear_layer_context, write_layer_con
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.contracts import active_for, load_document
+from vfx_harness.domain.judgment_debt_replay_receipts import (
+    payment_generation_for_replay,
+)
+from vfx_harness.domain.layer_finalizations import (
+    LAYER_FINALIZATION_PROJECTION_SCHEMA,
+    LayerEvaluationReceipt,
+    LayerFinalizationPredecessorInput,
+    LayerFinalizationReceipt,
+    LayerReplayClaimRequirement,
+    LayerReplayEvaluationGroupPlan,
+    LayerReplayObservation,
+    LayerReplayPointObservation,
+    LayerReplayReceipt,
+    LayerReplayReceiptBinding,
+)
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.domain.work_units import dependency_ordered_units, layer_active_visible_fraction_ids
+from vfx_harness.evaluation.plan_gate import _builder_render
+from vfx_harness.evidence.checks import (
+    discard_layer_revalidation,
+    prepare_layer_revalidation,
+)
+from vfx_harness.evidence.layer_revalidation_projection import (
+    layer_revalidation_projection,
+)
 from vfx_harness.evidence.metrics import look_vector
 from vfx_harness.observability import costlog, transcript
 from vfx_harness.observability.log import (
     log,
 )
-from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.observability.runid import RUN_ID
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     resolve_selected_authority,
@@ -74,25 +134,111 @@ from vfx_harness.orchestration.builder_execution_fence import (
     require_builder_execution_lease,
 )
 from vfx_harness.orchestration.judgment_debt_state import (
-    mark_judgment_debt_due,
+    current_judgment_debt_states_for_authority,
     replay_prefix_receipt,
     require_replay_inputs_unchanged,
-    resolve_current_judgment_debt,
+)
+from vfx_harness.orchestration.layer_evaluation_receipts import (
+    commit_layer_evaluation_receipt,
+    discard_layer_evaluation_receipt,
+    prepare_layer_evaluation_receipt,
+)
+from vfx_harness.orchestration.layer_finalization_state import (
+    claim_layer_finalization,
+    complete_layer_finalization,
+    current_layer_finalization_receipt,
 )
 from vfx_harness.orchestration.layer_plans import (
+    build_layer_outcome_projection,
     validate_work_unit_plan_authority,
     work_unit_plan_path,
 )
+from vfx_harness.orchestration.layer_replay_receipts import (
+    commit_layer_replay_receipt,
+    discard_layer_replay_receipt,
+    prepare_layer_replay_receipt,
+)
 from vfx_harness.orchestration.ledger import Ledger, Milestone, load_axes, load_layers, load_milestones, plan_strips
-from vfx_harness.orchestration.plan_authority import active_plan_hash
 from vfx_harness.orchestration.plan_due import require_due_clear
 from vfx_harness.orchestration.revalidation import digest
-from vfx_harness.orchestration.unit_state import freeze_checkpoint, initialize, ready_from_durable_state, transition
+from vfx_harness.orchestration.unit_completion_state import (
+    authorize_completed_units_for_layer,
+)
+from vfx_harness.orchestration.unit_replay_inputs import prepare_replay_inputs
+from vfx_harness.orchestration.unit_state import (
+    freeze_checkpoint,
+    ready_from_durable_state,
+    transition,
+)
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 from vfx_harness.orchestration.unit_state_claims import (
     claim_ready_unit_for_build,
     claim_ready_unit_for_planning,
 )
+from vfx_harness.orchestration.unit_state_storage import now as state_now
+
+__all__ = [
+    "LAYER_FINALIZATION_PROJECTION_SCHEMA",
+    "AttemptBoundBlenderSession",
+    "AuthorityBoundLedger",
+    "JudgmentDebtPayment",
+    "JudgmentDebtPaymentPolicy",
+    "LayerEvaluationReceipt",
+    "LayerFinalizationAuthorityLost",
+    "LayerFinalizationClaimGuard",
+    "LayerFinalizationPredecessorInput",
+    "LayerFinalizationReceipt",
+    "LayerReplayClaimRequirement",
+    "LayerReplayEvaluationGroupPlan",
+    "LayerReplayObservation",
+    "LayerReplayPointObservation",
+    "LayerReplayReceipt",
+    "LayerReplayReceiptBinding",
+    "_ablate",
+    "_ablation_frames",
+    "_blender_version",
+    "_builder_render",
+    "_canonical_receipt_rows",
+    "_compose_unit_artifact_source",
+    "_composition_judge_unit",
+    "_finalization_predecessor_inputs",
+    "_json_ready",
+    "_judgment_payment_evidence_digest",
+    "_load_provisional_decisions",
+    "_owned_axes",
+    "_prepare_composed_contract_gap_falsification",
+    "_unit_raster_mode",
+    "_unit_requires_raster",
+    "_verify_script",
+    "build_layer",
+    "build_layer_already_fenced",
+    "build_layer_outcome_projection",
+    "claim_layer_finalization",
+    "commit_layer_artifact",
+    "commit_layer_evaluation_receipt",
+    "commit_layer_replay_receipt",
+    "complete_layer_finalization",
+    "costlog",
+    "critic_model",
+    "current_judgment_debt_states_for_authority",
+    "discard_layer_artifact",
+    "discard_layer_evaluation_receipt",
+    "discard_layer_replay_receipt",
+    "discard_layer_revalidation",
+    "ensure_axes",
+    "layer_revalidation_projection",
+    "payment_generation_for_replay",
+    "prepare_layer_artifact",
+    "prepare_layer_evaluation_receipt",
+    "prepare_layer_replay_receipt",
+    "prepare_layer_revalidation",
+    "prepare_replay_inputs",
+    "proposed_layer_artifact_sha256",
+    "replay_prefix_receipt",
+    "require_replay_inputs_unchanged",
+    "state_now",
+    "transcript",
+]
 
 
 async def _build_layer_under_execution_fence(
@@ -118,10 +264,10 @@ async def _build_layer_under_execution_fence(
     selected_layer = selected_layers.get(str(layer.id))
     if selected_layer is None or selected_layer != layer:
         raise ValueError(
-            f"supplied layer {getattr(layer, 'id', None)!r} does not exactly match "
-            "the selected authority snapshot"
+            f"supplied layer {getattr(layer, 'id', None)!r} does not exactly match the selected authority snapshot"
         )
     layer = selected_layer
+
     def publish(operation, mutation):
         return commit_selected_authority(
             shot.folder,
@@ -146,32 +292,17 @@ async def _build_layer_under_execution_fence(
 
     ordered_units = dependency_ordered_units(layer.stages)
     artifacts = [_unit_artifact_path(layer, unit) for unit in ordered_units]
-    if len(layer.stages) > 1:
-        if len(set(artifacts)) != len(artifacts):
-            raise ValueError(f"layer {layer.id} work units must own distinct script artifacts")
-        if layer.script in artifacts:
-            raise ValueError(
-                f"layer {layer.id} reserves {layer.script} for the composed layer artifact; "
-                "multi-unit stages must write distinct unit scripts"
-            )
-    layers_path = (
-        shot.folder / "layers.json"
-        if selected_authority.plan is None
-        else selected_authority.artifact_paths["layers.json"]
-    )
-    layers_hash = (
-        active_plan_hash(shot.folder)
-        if selected_authority.plan is None
-        else hashlib.sha256(layers_path.read_bytes()).hexdigest()
-    )
-    publish(
-        f"initialize builder state for layer {layer.id}",
-        lambda: initialize(
-            shot.folder,
-            str(layer.id),
-            layer.stages,
-            plan_hash=layers_hash,
-        ),
+    if len(set(artifacts)) != len(artifacts):
+        raise ValueError(f"layer {layer.id} work units must own distinct script artifacts")
+    if layer.script in artifacts:
+        raise ValueError(
+            f"layer {layer.id} reserves {layer.script} for the composed layer artifact; "
+            "every work unit must use its identity-derived unit script"
+        )
+    layers_hash = selected_layer_capsule_digest(
+        shot.folder,
+        str(layer.id),
+        selected_authority,
     )
     prior_layers = _prior_layer_paths(
         shot,
@@ -199,11 +330,57 @@ async def _build_layer_under_execution_fence(
             selected_authority=selected_authority,
         )
         passed_units.add(completed.id)
-    unit_artifacts = [
-        _unit_artifact_path(layer, unit)
-        for unit in ordered_units
-        if unit.id in passed_units
-    ]
+    completion_authorization = authorize_completed_units_for_layer(
+        shot.folder,
+        str(layer.id),
+        layer.stages,
+        expected_plan_hash=layers_hash,
+        selected_authority=selected_authority,
+    )
+    authorized_unit_ids = (
+        completion_authorization.unit_ids
+        if completion_authorization is not None
+        else frozenset()
+    )
+    if passed_units != authorized_unit_ids:
+        raise ValueError(
+            f"layer {layer.id} passed-unit set changed during receipt authorization"
+        )
+    unit_artifacts = [_unit_artifact_path(layer, unit) for unit in ordered_units if unit.id in passed_units]
+    strips = plan_strips(shot, selected_authority)
+    existing_finalization = current_layer_finalization_receipt(
+        shot.folder,
+        str(layer.id),
+    )
+    if existing_finalization is not None:
+        reconciled = reconcile_layer_finalization(
+            shot,
+            layer,
+            existing_finalization,
+            selected_authority=selected_authority,
+            strips=strips,
+        )
+        if reconciled.revalidation["dropped"]:
+            log(
+                f"builder checks: {reconciled.revalidation['kept']} held, "
+                f"{len(reconciled.revalidation['dropped'])} dropped as stale",
+                1,
+            )
+        log(
+            "reconciled terminal layer finalization without Blender or critic spend "
+            f"→ {reconciled.outcome.relative_to(shot.folder)}",
+            1,
+        )
+        if reconciled.finding is not None:
+            raise BuildAuthorityDefect(
+                reconciled.finding,
+                stage="composition",
+                exit_code=9,
+                legacy_detail=(
+                    f"layer {layer.id} units passed but terminal composition is {existing_finalization.final_status!r}"
+                ),
+            )
+        return reconciled.ledger
 
     # The layer-level scope remains a boundary statement; each unit adds a narrower
     # claim/property manifest and its own plan below.
@@ -249,19 +426,17 @@ async def _build_layer_under_execution_fence(
             f"layer {layer.id} answers for {len(layer.judges)} frames: "
             + ", ".join(f"f{f} vs {r}" for f, r in layer.judges)
         )
-    strips = plan_strips(shot, selected_authority)
     while len(passed_units) < len(layer.stages):
         ready = ready_from_durable_state(
             shot.folder,
             str(layer.id),
             layer.stages,
             eligible_passed=passed_units,
+            completion_authorization=completion_authorization,
         )
         pending = [unit for unit in ready if unit.id not in passed_units]
         if not pending:
-            raise RuntimeError(
-                f"layer {layer.id} has no dependency-ready work unit; inspect logs/work_units state"
-            )
+            raise RuntimeError(f"layer {layer.id} has no dependency-ready work unit; inspect logs/work_units state")
         unit = pending[0]
 
         require_due_clear(
@@ -280,6 +455,7 @@ async def _build_layer_under_execution_fence(
             layer.stages,
             expected_plan_hash=layers_hash,
             eligible_passed=passed_units,
+            completion_authorization=completion_authorization,
             run_id=RUN_ID,
             selection_token=selected_authority.selection_token,
             reason="unit selected from the dependency-ready durable state",
@@ -304,7 +480,6 @@ async def _build_layer_under_execution_fence(
         # as absent and regenerated through the transactional gate-then-publish path.
         needs_plan = not unit_plan_path.is_file()
         if not needs_plan:
-
             try:
                 validate_work_unit_plan_authority(
                     shot.folder,
@@ -340,16 +515,12 @@ async def _build_layer_under_execution_fence(
         unit_layer = _active_unit_layer_view(layer, unit)
         unit_judges = unit_layer.judges
         unit_ref = next(ref for frame, ref in unit_judges if frame == unit.evaluation.primary_judge)
-        milestone = (
-            layer.as_milestone(strips)
-            if len(layer.stages) == 1
-            else Milestone(
-                f"{layer.id}@{unit.id}",
-                unit.evaluation.primary_judge,
-                unit_ref,
-                unit_layer.reads,
-                strips.get(unit.evaluation.primary_judge, ()),
-            )
+        milestone = Milestone(
+            f"{layer.id}@{unit.id}",
+            unit.evaluation.primary_judge,
+            unit_ref,
+            unit_layer.reads,
+            strips.get(unit.evaluation.primary_judge, ()),
         )
         attempt = claim_ready_unit_for_build(
             shot.folder,
@@ -359,6 +530,7 @@ async def _build_layer_under_execution_fence(
             planning_claim,
             expected_plan_hash=layers_hash,
             eligible_passed=passed_units,
+            completion_authorization=completion_authorization,
             run_id=RUN_ID,
             selection_token=selected_authority.selection_token,
             reason="builder transaction started",
@@ -393,10 +565,7 @@ async def _build_layer_under_execution_fence(
             scope=scope + f"\n  ACTIVE WORK UNIT: {unit.id} — {unit.title}. Only its claims may authorize repair.",
             layer=unit_layer,
             active_unit=unit,
-            publish_layer=len(layer.stages) == 1,
-            report_layer=(
-                unit_layer if len(layer.stages) == 1 else replace(unit_layer, id=f"{layer.id}.{unit.id}")
-            ),
+            report_layer=(unit_layer if len(layer.stages) == 1 else replace(unit_layer, id=f"{layer.id}.{unit.id}")),
             resume_ok=resume_ok,
             layer_units=layer.stages,
             selected_authority=selected_authority,
@@ -466,7 +635,7 @@ async def _build_layer_under_execution_fence(
             selection_token=selected_authority.selection_token,
         )
 
-        complete_and_resolve_unit(
+        completion_receipt = complete_and_resolve_unit(
             shot.folder,
             str(layer.id),
             unit,
@@ -474,255 +643,49 @@ async def _build_layer_under_execution_fence(
             attempt,
             expected_plan_hash=attempt.plan_hash,
             selected_authority=selected_authority,
-            checkpoint_hash=str(
-                frozen_state["units"][unit.id]["checkpoint"]["candidate_hash"]
-            ),
+            checkpoint_hash=str(frozen_state["units"][unit.id]["checkpoint"]["candidate_hash"]),
         )
         passed_units.add(unit.id)
+        completion_authorization = authorize_completed_units_for_layer(
+            shot.folder,
+            str(layer.id),
+            layer.stages,
+            expected_plan_hash=layers_hash,
+            selected_authority=selected_authority,
+        )
+        if (
+            completion_authorization is None
+            or completion_authorization.receipt_digest(unit.id)
+            != completion_receipt.receipt_digest
+        ):
+            raise ValueError(
+                f"layer {layer.id} unit {unit.id} completion was not authorized"
+            )
         # Reconstruct rather than append: after an interrupted run, a newly completed
         # independent unit may sort before an already passed sibling.  Stable replay is
         # DAG order plus authored-order tie-break, never accident-of-attempt order.
         unit_artifacts = [
-            _unit_artifact_path(layer, candidate)
-            for candidate in ordered_units
-            if candidate.id in passed_units
+            _unit_artifact_path(layer, candidate) for candidate in ordered_units if candidate.id in passed_units
         ]
 
-    if len(layer.stages) == 1 and unit_artifacts[0] == layer.script:
-        return (
-            Ledger(shot)
-            if selected_authority.plan is None
-            else AuthorityBoundLedger(shot, selected_authority)
-        )
+    # Deliberate package-facade lookup: the composition leaf reads the existing
+    # builder.layer replacement surfaces used by tests and runtime configuration.
+    from vfx_harness.agents.builder import layer as layer_runtime  # noqa: PLC0415
 
-    parts = [
-        (
-            str(unit.id),
-            _unit_artifact_path(layer, unit),
-            (shot.folder / _unit_artifact_path(layer, unit)).read_text(encoding="utf-8"),
-        )
-        for unit in ordered_units
-    ]
-    publish(
-        f"publish composed layer {layer.id} artifact",
-        lambda: atomic_write(
-            shot.folder / layer.script,
-            _compose_unit_artifact_source(parts),
-        ),
-    )
-    log(f"published composed layer artifact → {layer.script}")
-
-    ledger = (
-        Ledger(shot)
-        if selected_authority.plan is None
-        else AuthorityBoundLedger(shot, selected_authority)
-    )
-    milestone = layer.as_milestone(strips)
-    ledger._slot(milestone)["script"] = layer.script
-    ledger.begin(milestone)
-    composition_attempt = int(ledger._slot(milestone).get("attempt") or 0)
-    costlog.bind(
-        shot.folder,
-        role="layer_composition",
-        phase="canonical_composition",
-        layer=str(layer.id),
-        run_id=RUN_ID,
-        attempt=composition_attempt,
-        model=critic_model(),
-    )
-    transcript.bind(
-        shot.folder,
-        "build",
-        label=f"layer{layer.id}-composition",
-        run_id=RUN_ID,
-    )
-    all_axes = await ensure_axes(shot, verbose, selected_authority)
-    canonical: list = []
-    provisional_decisions = _load_provisional_decisions(
+    return await finalize_composed_layer(
+        layer_runtime,
         shot,
-        str(layer.id),
-        selected_authority=selected_authority,
-    )
-    decision_groups = (
-        tuple((decision,) for decision in provisional_decisions)
-        if provisional_decisions
-        else ((),)
-    )
-    composition_units = tuple(
-        _composition_judge_unit(layer, decisions) for decisions in decision_groups
-    )
-    result = "passed"
-    terminal_finding = None
-    for composition_unit in composition_units:
-        composition_layer = layer
-        active_decisions = tuple(
-            getattr(composition_unit, "provisional_decisions", ()) or ()
-        )
-        typed_decisions = tuple(
-            decision for decision in active_decisions if decision.get("debt_id")
-        )
-        if len(typed_decisions) > 1:
-            raise ValueError(
-                "one composed canonical payment may settle exactly one judgment debt"
-            )
-        if composition_unit is not None and active_decisions:
-            judges = tuple(
-                (int(point.frame), str(point.ref))
-                for point in composition_unit.evaluation.judges
-            )
-            owns = tuple(
-                dict.fromkeys(
-                    claim.axis
-                    for claim in composition_unit.evaluation.claims
-                    if getattr(claim, "required", False)
-                )
-            )
-            composition_layer = replace(layer, judges=judges, owns=owns)
-        axes = _owned_axes(all_axes, composition_layer)
-        if composition_unit is not None:
-            if active_decisions:
-                decision = active_decisions[0]
-                identity = decision.get("debt_id") or decision["id"]
-                log(
-                    "composed canonical owes independent reference judgment for due "
-                    f"debt {identity} · render mode {_unit_raster_mode(composition_unit)}",
-                    1,
-                )
-            else:
-                log(
-                    "composed canonical fans in look-less unit claims — no critic look vote",
-                    1,
-                )
-        on_replay_ready = None
-        if typed_decisions:
-            decision = typed_decisions[0]
-
-            def _activate_after_replay(
-                replay_inputs,
-                decision=decision,
-                axes=axes,
-            ) -> JudgmentDebtPayment:
-                receipt = replay_prefix_receipt(
-                    shot.folder,
-                    replayed_layer_scripts=(*prior_layers, shot.folder / layer.script),
-                    replay_inputs=replay_inputs,
-                    selected_authority=selected_authority,
-                )
-                publish(
-                    f"activate judgment debt {decision['debt_id']}",
-                    lambda: mark_judgment_debt_due(
-                        shot.folder,
-                        decision["definition_digest"],
-                        layer_id=str(layer.id),
-                        replayed_unit_digests=receipt.unit_digests,
-                        selected_authority=selected_authority,
-                    ),
-                )
-                require_replay_inputs_unchanged(
-                    shot.folder,
-                    replay_inputs,
-                    where="judgment-debt replay input after activation publication",
-                )
-                return JudgmentDebtPayment(
-                    shot=shot,
-                    decision=decision,
-                    session=session,
-                    axes=axes,
-                    replay_receipt=receipt,
-                )
-
-            on_replay_ready = _activate_after_replay
-        canonical_start = len(canonical)
-        result = await _verify_script(
-            shot,
-            milestone,
-            layer.script,
-            prior_layers,
-            session,
-            axes,
-            ledger,
-            verbose,
-            scope=scope,
-            layer=composition_layer,
-            active_unit=composition_unit,
-            out_verdicts=canonical,
-            on_replay_ready=on_replay_ready,
-            selected_authority=selected_authority,
-        )
-        finding_record_id = None
-        if (
-            result == "contract_gap"
-            and composition_unit is not None
-            and tuple(
-                getattr(composition_unit, "provisional_requirement_ids", ()) or ()
-            )
-        ):
-            # The state-native falsification transaction owns selection-SH ->
-            # state-EX because preserving accepted source is selection-bound.  Do not
-            # wrap it in the generic selection publisher and self-deadlock.
-            finding = _record_composed_contract_gap_falsification(
-                shot,
-                layer,
-                composition_unit,
-                selected_authority=selected_authority,
-            )
-            terminal_finding = finding
-            finding_record_id = str(finding["record_id"])
-            log(
-                "composed provisional judgment published typed producer-closure finding → "
-                f"{finding['record_id']} (accepted checkpoints preserved until replan)",
-                1,
-            )
-        if typed_decisions and result in {"passed", "reproduced", "contract_gap"}:
-            decision = typed_decisions[0]
-            debt_evidence_digest = _judgment_payment_evidence_digest(
-                decision,
-                result=result,
-                verdicts=canonical[canonical_start:],
-                finding_record_id=finding_record_id,
-            )
-            publish(
-                f"resolve judgment debt {decision['debt_id']}",
-                partial(
-                    resolve_current_judgment_debt,
-                    shot.folder,
-                    decision["definition_digest"],
-                    outcome=(
-                        "falsified" if result == "contract_gap" else "satisfied"
-                    ),
-                    evidence_digest=debt_evidence_digest,
-                    selected_authority=selected_authority,
-                ),
-            )
-        if result not in {"passed", "reproduced"}:
-            break
-    status = "passed" if result == "passed" else result
-    best = {"round": 0, "mean": min((v.get("mean", 0) for _fr, v in canonical), default=0), "render": None}
-    composition_attempt = int(ledger._slot(milestone).get("attempt") or 0)
-    publish_composed_layer_outcome(
-        shot.folder,
         layer,
-        status=status,
-        best=best,
-        canonical=canonical,
-        run_id=RUN_ID,
-        ledger_attempt=composition_attempt,
-        blender_version=_blender_version(session),
+        session,
+        ordered_units=ordered_units,
+        prior_layers=prior_layers,
+        selected_layers=selected_layers,
         selected_authority=selected_authority,
+        layers_hash=layers_hash,
+        strips=strips,
+        scope=scope,
+        verbose=verbose,
     )
-    ledger.mark(milestone, status, best=best)
-    transcript.unbind()
-    costlog.unbind()
-    if terminal_finding is not None:
-        raise BuildAuthorityDefect(
-            terminal_finding,
-            stage="composition",
-            exit_code=9,
-            legacy_detail=(
-                f"layer {layer.id} units passed but the composed verdict is {status!r}"
-            ),
-        )
-    return ledger
 
 
 async def build_layer(
@@ -833,6 +796,8 @@ async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str, s
         builder_package()._run_prior_paths(session, prior_paths)
         try:
             without = {frame: look_vector(session.render(frame=frame, mode="eevee", scale=0.4)) for frame in frames}
+        except ExecutionAuthorityLost:
+            raise
         except Exception as e:
             # The FIRST layer has no priors, so "without it" is an empty scene with no
             # camera. That is not a skip — it is the strongest possible result: nothing
@@ -850,6 +815,8 @@ async def _ablate(shot: Shot, layer, prior_paths: list[Path], script_rel: str, s
             raise
         _run_artifact_script(session, shot.folder / script_rel)
         with_ = {frame: look_vector(session.render(frame=frame, mode="eevee", scale=0.4)) for frame in frames}
+    except ExecutionAuthorityLost:
+        raise
     except Exception as e:
         return {"ok": True, "note": f"ablation INCONCLUSIVE: {str(e)[:70]}"}
     moved = {}

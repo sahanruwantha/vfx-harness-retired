@@ -10,7 +10,7 @@ from vfx_harness.orchestration import plan_bundle_integrity
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
     AuthoritySelectionToken,
-    durable_replace_pointer_bytes,
+    durable_replace_file_bytes,
 )
 from vfx_harness.orchestration.jit_materialization.errors import (
     MaterializationSelectionConflict,
@@ -55,7 +55,7 @@ def write_overlay_base(
                 "content-addressed materialization overlay has conflicting base authority"
             )
         return
-    durable_replace_pointer_bytes(overlay_root, target, payload)
+    durable_replace_file_bytes(overlay_root, target, payload)
 
 
 def overlay_store_digest(

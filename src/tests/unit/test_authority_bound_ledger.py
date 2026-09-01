@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
-from tests.unit_attempt_fixtures import claim_for_build
+from tests.unit_attempt_fixtures import claim_for_build, legacy_apply_replan
 from vfx_harness.agents.builder.attempt_guard import (
     UnitAttemptAuthorityLost,
     UnitAttemptGuard,
@@ -18,7 +18,7 @@ from vfx_harness.orchestration import unit_state
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
-from vfx_harness.orchestration.ledger import Ledger, LedgerSaveConflict
+from vfx_harness.orchestration.ledger import Ledger, LedgerSaveConflict, Milestone
 
 
 def _shot(tmp_path) -> Shot:
@@ -149,9 +149,10 @@ def test_replan_does_not_wait_for_attempt_bound_ledger_prepare(
     ledger = AuthorityBoundLedger(
         _shot(tmp_path),
         guard.selected_authority,
-        attempt_guard=guard,
+        execution_guard=guard,
     )
-    ledger.data["candidate_result"] = {"status": "stale"}
+    milestone = Milestone("1@hero", 1, "refs/hero.png", "fixture")
+    ledger._slot(milestone)["status"] = "in_progress"
 
     original_prepare = Ledger.prepare_save
     prepare_started = Event()
@@ -180,7 +181,7 @@ def test_replan_does_not_wait_for_attempt_bound_ledger_prepare(
 
     def replan() -> None:
         try:
-            unit_state.apply_replan(
+            legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,
@@ -214,3 +215,24 @@ def test_replan_does_not_wait_for_attempt_bound_ledger_prepare(
     assert binding["selection_token"] == guard.selected_authority.selection_token.to_dict()
     assert not (tmp_path / "shot.json").exists()
     assert list(tmp_path.glob(".shot.json.prepared.*")) == []
+
+
+def test_unit_attempt_cannot_publish_layer_milestone_status(tmp_path) -> None:
+    unit, _units, guard = _building_guard(tmp_path, plan_hash="e" * 64)
+    ledger = AuthorityBoundLedger(
+        _shot(tmp_path),
+        guard.selected_authority,
+        execution_guard=guard,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="cannot mutate another milestone",
+    ):
+        ledger.mark(
+            Milestone("1", 1, "refs/layer.png", "fixture layer"),
+            "passed",
+        )
+
+    assert guard.ledger_publication_scope.milestone_id == f"1@{unit.id}"
+    assert not (tmp_path / "shot.json").exists()

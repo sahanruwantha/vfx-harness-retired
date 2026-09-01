@@ -335,13 +335,13 @@ def load_layers_from_path(
                 raise ValueError(
                     f"{where}.stages.{unit.id} must own exactly one replayable script span"
                 )
-        if len(stages) > 1:
-            if len(set(unit_artifacts)) != len(unit_artifacts):
-                raise ValueError(f"{where}.stages must own distinct script spans")
-            if str(g.get("script")) in unit_artifacts:
-                raise ValueError(
-                    f"{where}.script is reserved for the composed multi-unit artifact"
-                )
+        if len(set(unit_artifacts)) != len(unit_artifacts):
+            raise ValueError(f"{where}.stages must own distinct script spans")
+        if str(g.get("script")) in unit_artifacts:
+            raise ValueError(
+                f"{where}.script is reserved for the composed layer artifact; "
+                "singleton layers also finalize through a distinct public script"
+            )
         layer_frames = set(frames)
         unit_ids = {unit.id for unit in stages}
         for unit in stages:

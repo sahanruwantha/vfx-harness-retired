@@ -6,19 +6,54 @@ from types import SimpleNamespace
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
+from tests.unit.test_layer_finalization_state import (
+    _claim,
+    _claim_guard,
+    _layer,
+    _pass_layer_units,
+    _publish_artifact,
+)
+from tests.unit.test_layer_finalizations import (
+    _judgment_decision,
+    _refresh_gap_resolution,
+    _typed_contract_gap_case,
+)
 from tests.unit_attempt_fixtures import (
     ABSENT_SELECTION_TOKEN,
     claim_for_build,
+    fixture_completion_authorization,
     pass_unit,
+)
+from vfx_harness.domain.authority_state_records import AuthorityStateRecordRef
+from vfx_harness.domain.layer_finalizations import (
+    LayerEvaluationReceipt,
+    LayerFinalizationReceipt,
+    LayerReplayReceiptBinding,
 )
 from vfx_harness.domain.unit_outcomes import (
     falsifying_decisions,
     load_hypothesis_falsification,
 )
+from vfx_harness.orchestration.layer_evaluation_receipts import (
+    commit_layer_evaluation_receipt,
+    prepare_layer_evaluation_receipt,
+)
+from vfx_harness.orchestration.layer_finalization_authorizations import (
+    AuthorizedLayerFinalizationMutation,
+)
+from vfx_harness.orchestration.layer_finalization_state import (
+    complete_layer_finalization,
+)
+from vfx_harness.orchestration.layer_replay_receipts import (
+    commit_layer_replay_receipt,
+    prepare_layer_replay_receipt,
+)
 from vfx_harness.orchestration.unit_state import (
     initialize,
     load,
+    prepare_accepted_hypothesis_falsification,
     record_hypothesis_falsification,
+    record_prepared_accepted_hypothesis_falsification,
     transition,
 )
 
@@ -136,7 +171,7 @@ def test_falsification_can_name_passed_upstream_fault_owner_for_replan(tmp_path:
     assert state["units"]["atmosphere"]["status"] == "blocked"
 
 
-def test_composed_falsification_preserves_accepted_source_until_replan(
+def test_composed_falsification_cannot_preserve_accepted_source_without_terminal_authority(
     tmp_path: Path,
 ) -> None:
     units = (_unit("mass"), _unit("roof", depends_on=["mass"]))
@@ -145,36 +180,231 @@ def test_composed_falsification_preserves_accepted_source_until_replan(
     pass_unit(tmp_path, "2", units[0], units, plan_hash=plan_hash)
     pass_unit(tmp_path, "2", units[1], units, plan_hash=plan_hash)
 
-    finding = record_hypothesis_falsification(
+    with pytest.raises(ValueError, match="typed terminal finalization authority"):
+        record_hypothesis_falsification(
+            tmp_path,
+            "2",
+            units[0],
+            units,
+            bundle_hash="b" * 64,
+            unit_plan_hash="c" * 64,
+            candidate_hash="d" * 64,
+            settings_hash="e" * 64,
+            contract_ids=["requirement:R51:form"],
+            observations=[{"classification": "qualified_composed_failure"}],
+            decisions=[{"id": "R51", "strength": "approved_start"}],
+            conflict={
+                "kind": "decision",
+                "required_authority": "transactionally reopen producer closure",
+                "roles": ["building.mass", "building.roof"],
+                "controls": [],
+            },
+            evidence=["state/contract-gaps.jsonl"],
+            affected_seed_ids={"mass", "roof"},
+            preserve_accepted_source=True,
+            selection_token=ABSENT_SELECTION_TOKEN,
+        )
+
+    state = load(tmp_path, "2")
+    assert state["units"]["mass"]["status"] == "passed"
+    assert state["units"]["roof"]["status"] == "passed"
+    assert "falsification" not in state["units"]["mass"]
+
+
+def test_terminal_receipt_finding_reconciles_exactly_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def authorize_fixture_receipts(
+        folder,
+        layer_id,
+        _units,
+        *,
+        expected_plan_hash,
+        selection_token,
+    ):
+        del expected_plan_hash, selection_token
+        return fixture_completion_authorization(folder, str(layer_id))
+
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.layer_finalization_state._authorized_unit_receipts",
+        authorize_fixture_receipts,
+    )
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    authorization = fixture_completion_authorization(tmp_path, layer.id)
+    assert authorization is not None
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.layer_finalization_state."
+        "resolve_current_authority_state",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            head_ref=authorization.authority_state_head_ref,
+        ),
+    )
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.layer_finalization_state."
+        "require_exact_selected_finalization_predecessors",
+        lambda *_args, **_kwargs: (),
+    )
+    claim = _claim(tmp_path, layer)
+    claim_guard = _claim_guard(tmp_path, layer, claim)
+    _path, script_sha256 = _publish_artifact(tmp_path, claim_guard)
+    decision = {
+        **_judgment_decision(),
+        "id": "R51",
+        "fault_owner": layer.id,
+    }
+    replay, receipt_canonical, projection = _typed_contract_gap_case(
+        claim=claim,
+        decision=decision,
+    )
+    assert replay.layer_script_sha256 == script_sha256
+    reference = tmp_path / replay.observation.points[0].ref
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    reference.write_bytes(b"reference")
+    render = tmp_path / str(replay.observation.points[0].render)
+    render.parent.mkdir(parents=True, exist_ok=True)
+    render.write_bytes(b"qualitative render")
+    prepared_replay = prepare_layer_replay_receipt(tmp_path, replay)
+    stored_replay = commit_layer_replay_receipt(prepared_replay, claim_guard)
+
+    source = layer.stages[0]
+    finding = prepare_accepted_hypothesis_falsification(
         tmp_path,
-        "2",
-        units[0],
-        units,
+        layer.id,
+        source,
+        layer.stages,
         bundle_hash="b" * 64,
         unit_plan_hash="c" * 64,
-        candidate_hash="d" * 64,
-        settings_hash="e" * 64,
-        contract_ids=["requirement:R51:form"],
-        observations=[{"classification": "qualified_composed_failure"}],
+        candidate_hash=replay.observation.points[0].render_sha256,
+        settings_hash=projection["finding"]["identities"]["settings_hash"],
+        contract_ids=projection["finding"]["contract_ids"],
+        observations=projection["finding"]["observations"],
         decisions=[{"id": "R51", "strength": "approved_start"}],
         conflict={
             "kind": "decision",
             "required_authority": "transactionally reopen producer closure",
-            "roles": ["building.mass", "building.roof"],
+            "roles": ["building.mass"],
             "controls": [],
         },
         evidence=["state/contract-gaps.jsonl"],
-        affected_seed_ids={"mass", "roof"},
-        preserve_accepted_source=True,
+        affected_seed_ids={source.id},
+        recorded_at="2026-09-01T10:02:00+00:00",
+    )
+    projection["finding"] = finding
+    _refresh_gap_resolution(projection, receipt_canonical)
+    plan = replay.observation.plan
+    evaluation = LayerEvaluationReceipt.mint(
+        replay_receipts=(
+            LayerReplayReceiptBinding.mint(
+                locator=stored_replay.locator,
+                sha256=stored_replay.sha256,
+                receipt=replay,
+            ),
+        ),
+        evaluation_groups=(
+            {
+                "group_index": plan.group_index,
+                "result": "contract_gap",
+                "requirement_ids": list(plan.requirement_ids),
+                "debt_id": plan.debt_id,
+                "definition_digest": plan.definition_digest,
+                "activation_digest": plan.activation_digest,
+                "canonical_start": 0,
+                "canonical_end": len(receipt_canonical),
+                "payment_failures": [],
+            },
+        ),
+        canonical=receipt_canonical,
+        created_at="2026-09-01T10:01:30+00:00",
+    )
+    prepared_evaluation = prepare_layer_evaluation_receipt(tmp_path, evaluation)
+    stored_evaluation = commit_layer_evaluation_receipt(
+        prepared_evaluation,
+        claim_guard,
+    )
+    receipt = LayerFinalizationReceipt.mint(
+        evaluation_receipt=evaluation,
+        evaluation_receipt_locator=stored_evaluation.locator,
+        evaluation_receipt_sha256=stored_evaluation.sha256,
+        projection=projection,
+        completed_at="2026-09-01T10:02:00+00:00",
+    )
+    complete_layer_finalization(
+        tmp_path,
+        receipt,
+        evaluation,
+        layer.stages,
         selection_token=ABSENT_SELECTION_TOKEN,
     )
+    finalization_authorization = AuthorizedLayerFinalizationMutation(
+        receipt=receipt,
+        completion_authorization=authorization,
+        lineage_authorization=None,
+    )
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.unit_state.resolve_current_authority_state",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            head_ref=authorization.authority_state_head_ref,
+        ),
+    )
 
-    state = load(tmp_path, "2")
-    assert finding["affected"] == ["mass", "roof"]
-    assert state["units"]["mass"]["status"] == "passed"
-    assert state["units"]["roof"]["status"] == "passed"
-    assert state["units"]["mass"]["falsification"]["record_id"] == finding["record_id"]
-    assert state["units"]["mass"]["history"][-1]["to"] == "passed"
+    first = record_prepared_accepted_hypothesis_falsification(
+        tmp_path,
+        layer.id,
+        layer.stages,
+        finding,
+        selection_token=ABSENT_SELECTION_TOKEN,
+        required_layer_finalization_receipt_digest=receipt.receipt_digest,
+        finalization_authorization=finalization_authorization,
+    )
+    again = record_prepared_accepted_hypothesis_falsification(
+        tmp_path,
+        layer.id,
+        layer.stages,
+        finding,
+        selection_token=ABSENT_SELECTION_TOKEN,
+        required_layer_finalization_receipt_digest=receipt.receipt_digest,
+        finalization_authorization=finalization_authorization,
+    )
+
+    assert first == again == finding
+    state = load(tmp_path, layer.id)
+    assert state["units"][source.id]["status"] == "passed"
+    assert state["units"][source.id]["falsification"] == finding
+    assert state["falsifications"] == [finding]
+
+    stale_head = AuthorityStateRecordRef.mint(
+        locator="state/authority-state/objects/stale-head.json",
+        sha256="1" * 64,
+        record_schema="vfx-harness.authority-state-head/v1",
+        record_digest="2" * 64,
+    )
+    monkeypatch.setattr(
+        "vfx_harness.orchestration.unit_state.resolve_current_authority_state",
+        lambda *_args, **_kwargs: SimpleNamespace(head_ref=stale_head),
+    )
+    with pytest.raises(ValueError, match="another authority-state head"):
+        record_prepared_accepted_hypothesis_falsification(
+            tmp_path,
+            layer.id,
+            layer.stages,
+            finding,
+            selection_token=ABSENT_SELECTION_TOKEN,
+            required_layer_finalization_receipt_digest=receipt.receipt_digest,
+            finalization_authorization=finalization_authorization,
+        )
+
+    with pytest.raises(ValueError, match="another receipt"):
+        record_prepared_accepted_hypothesis_falsification(
+            tmp_path,
+            layer.id,
+            layer.stages,
+            finding,
+            selection_token=ABSENT_SELECTION_TOKEN,
+            required_layer_finalization_receipt_digest="f" * 64,
+            finalization_authorization=finalization_authorization,
+        )
 
 
 def test_falsification_records_earlier_layer_camera_without_local_affected(
@@ -400,7 +630,10 @@ def test_terminal_failing_falsification_contract_routes_to_typed_record(
     )
     parsed = load_hypothesis_falsification(artifact)
     assert parsed.conflict.kind == "decision"
-    assert "vfx units replan --falsification" in parsed.conflict.required_authority
+    assert "amend decision(s) A2" in parsed.conflict.required_authority
+    assert "owning plan or materialization boundary" in (
+        parsed.conflict.required_authority
+    )
     assert not parsed.changes_hard_constraint
 
 

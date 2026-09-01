@@ -38,7 +38,7 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
 )
 from vfx_harness.observability.run_artifacts import RunLayout
-from vfx_harness.orchestration import generate_construction
+from vfx_harness.orchestration import generate_construction, layer_publication
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
@@ -111,7 +111,7 @@ class AcceptanceAuthoritySnapshot:
 
     def _payload(self) -> dict[str, Any]:
         return {
-            "schema": "vfx-harness.acceptance-authoritative-before/v1",
+            "schema": "vfx-harness.acceptance-authoritative-before/v2",
             "bundle_digest": self.bundle_digest,
             "view_digest": self.view_digest,
             "judgment_debt_state_digest": self.judgment_debt_state_digest,
@@ -129,7 +129,7 @@ class AcceptanceAuthoritySnapshot:
     def chain_digest(self) -> str:
         return canonical_digest(
             {
-                "schema": "vfx-harness.acceptance-chain/v1",
+                "schema": "vfx-harness.acceptance-chain/v2",
                 "chain": list(self.chain),
             }
         )
@@ -182,6 +182,8 @@ def capture_acceptance_authority(
     shot: Shot,
     moments: Mapping[str, Milestone],
     selected_authority: ResolvedSelectedAuthority | None = None,
+    *,
+    verify_layer_publications: bool = True,
 ) -> AcceptanceAuthoritySnapshot:
     """Resolve one strict before-state and reject a mixed authority generation."""
 
@@ -205,11 +207,32 @@ def capture_acceptance_authority(
     statuses = _ledger_statuses(shot)
 
     chain: list[dict[str, Any]] = []
-    for layer in selected_layer_chain(
+    layers = tuple(selected_layer_chain(
         shot,
         bundle=bundle_before,
         selected_authority=selected,
-    ):
+    ))
+    publications: list[layer_publication.VerifiedLayerPublication] = []
+    if verify_layer_publications:
+        failures: list[str] = []
+        for layer in layers:
+            try:
+                publications.append(
+                    layer_publication.require_current_layer_publication(
+                        shot_root,
+                        layer,
+                        selected,
+                    )
+                )
+            except layer_publication.LayerPublicationConflict as exc:
+                failures.append(f"layer {layer.id}: {exc}")
+        if failures:
+            raise ValueError(
+                "acceptance requires current receipt-backed layer publications — "
+                + "; ".join(failures)
+            )
+
+    for layer_index, layer in enumerate(layers):
         layer_script = _inside(shot_root, layer.script, f"layer {layer.id} script")
         try:
             construction = generate_construction.prepare_construction_replay_input(
@@ -221,27 +244,58 @@ def capture_acceptance_authority(
                 f"acceptance cannot capture construction replay authority for "
                 f"layer {layer.id}: {exc}"
             ) from exc
-        units = []
-        for unit in layer.stages:
-            script_path = _inside(
-                shot_root,
-                unit.mutates.script_spans[0],
-                f"layer {layer.id} unit {unit.id} script",
-            )
-            units.append(
+        publication = publications[layer_index] if verify_layer_publications else None
+        if publication is None:
+            units = []
+            for unit in layer.stages:
+                script_path = _inside(
+                    shot_root,
+                    unit.mutates.script_spans[0],
+                    f"layer {layer.id} unit {unit.id} script",
+                )
+                units.append(
+                    {
+                        "unit_id": unit.id,
+                        "unit_digest": unit_digest(unit),
+                        "completion_receipt_digest": None,
+                        "script": unit.mutates.script_spans[0],
+                        "script_sha256": (
+                            _sha256(script_path) if script_path.is_file() else None
+                        ),
+                    }
+                )
+        else:
+            units = [
                 {
-                    "unit_id": unit.id,
-                    "unit_digest": unit_digest(unit),
-                    "script": unit.mutates.script_spans[0],
-                    "script_sha256": _sha256(script_path) if script_path.is_file() else None,
+                    "unit_id": unit.unit_id,
+                    "unit_digest": unit.unit_digest,
+                    "completion_receipt_digest": unit.completion_receipt_digest,
+                    "script": unit.script_path,
+                    "script_sha256": unit.script_sha256,
                 }
-            )
+                for unit in publication.receipt.claim.unit_inputs
+            ]
         chain.append(
             {
                 "layer_id": layer.id,
-                "status": statuses.get(str(layer.id), "pending"),
-                "script": layer.script,
-                "script_sha256": _sha256(layer_script) if layer_script.is_file() else None,
+                "status": (
+                    statuses.get(str(layer.id), "pending")
+                    if publication is None
+                    else publication.ledger_status
+                ),
+                "script": (
+                    layer.script
+                    if publication is None
+                    else publication.ledger_script_path
+                ),
+                "script_sha256": (
+                    _sha256(layer_script) if publication is None and layer_script.is_file()
+                    else (
+                        None
+                        if publication is None
+                        else publication.ledger_script_sha256
+                    )
+                ),
                 "replay_dependencies": (
                     []
                     if construction is None
@@ -251,8 +305,42 @@ def capture_acceptance_authority(
                     ]
                 ),
                 "units": units,
+                "finalization_receipt_digest": (
+                    None if publication is None else publication.receipt.receipt_digest
+                ),
+                "layer_outcome": (
+                    None if publication is None else publication.outcome_locator
+                ),
+                "layer_outcome_sha256": (
+                    None if publication is None else publication.outcome_sha256
+                ),
             }
         )
+
+    if verify_layer_publications:
+        observed_again: list[layer_publication.VerifiedLayerPublication] = []
+        failures = []
+        for layer in layers:
+            try:
+                observed_again.append(
+                    layer_publication.require_current_layer_publication(
+                        shot_root,
+                        layer,
+                        selected,
+                    )
+                )
+            except layer_publication.LayerPublicationConflict as exc:
+                failures.append(f"layer {layer.id}: {exc}")
+        if failures:
+            raise ValueError(
+                "receipt-backed layer publication changed during acceptance authority "
+                "capture — " + "; ".join(failures)
+            )
+        if tuple(observed_again) != tuple(publications):
+            raise ValueError(
+                "receipt-backed layer publication changed during acceptance authority "
+                "capture"
+            )
 
     selected_rows: list[dict[str, Any]] = []
     for moment_id, moment in moments.items():

@@ -149,7 +149,7 @@ def _capture(
         selection_token=ABSENT_SELECTION_TOKEN,
     )
     publish_passed_evaluation(tmp_path, "1", unit, attempt)
-    unit_state_claims.complete_unit_attempt(
+    completion = unit_state_claims.complete_unit_attempt(
         tmp_path,
         "1",
         unit.id,
@@ -161,16 +161,25 @@ def _capture(
         evidence=["fixture:accepted"],
     )
 
+    layer_outcome = tmp_path / "plans" / "outcomes" / "layer-1.json"
+    layer_outcome.parent.mkdir(parents=True)
+    layer_outcome.write_text('{"schema":3,"fixture":true}\n', encoding="utf-8")
+    finalization_receipt_digest = _digest(b"layer-finalization-receipt")
+
     chain = (
         {
             "layer_id": "1",
             "status": "passed",
             "script": unit.mutates.script_spans[0],
             "script_sha256": script_digest,
+            "finalization_receipt_digest": finalization_receipt_digest,
+            "layer_outcome": layer_outcome.relative_to(tmp_path).as_posix(),
+            "layer_outcome_sha256": _digest(layer_outcome.read_bytes()),
             "units": [
                 {
                     "unit_id": unit.id,
                     "unit_digest": unit_state.unit_digest(unit),
+                    "completion_receipt_digest": completion.receipt_digest,
                     "script": unit.mutates.script_spans[0],
                     "script_sha256": script_digest,
                 }
@@ -210,7 +219,14 @@ def _capture(
     )
     ledger = {
         "shot": shot.id,
-        "milestones": {"1": {"status": "passed"}},
+        "milestones": {
+            "1": {
+                "status": "passed",
+                "script": unit.mutates.script_spans[0],
+                "script_sha256": script_digest,
+                "finalization_receipt_digest": finalization_receipt_digest,
+            }
+        },
         "acceptance": {
             "outcome": outcome.as_dict(),
             "moments": {
@@ -459,6 +475,23 @@ def test_ledger_mutation_during_render_invalidates_snapshot(
     with pytest.raises(
         final_render_snapshot.FinalRenderSnapshotError,
         match="acceptance ledger changed during final render",
+    ):
+        final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
+
+
+def test_layer_outcome_mutation_during_render_invalidates_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot, _script, _construction = _capture(tmp_path, monkeypatch)
+    snapshot.layer_outcomes[0].path.write_text(
+        '{"schema":3,"fixture":"replaced"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        final_render_snapshot.FinalRenderSnapshotError,
+        match="accepted layer outcome 0 changed during final render",
     ):
         final_render_snapshot.require_snapshot_inputs_current(_shot(tmp_path), snapshot)
 

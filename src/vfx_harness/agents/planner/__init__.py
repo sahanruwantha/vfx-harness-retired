@@ -26,9 +26,6 @@ from vfx_harness.agents.planner.rematerialize import DRAFT_MODEL as DRAFT_MODEL
 from vfx_harness.agents.planner.rematerialize import MODEL as MODEL
 from vfx_harness.agents.planner.rematerialize import VERIFY_MODEL as VERIFY_MODEL
 from vfx_harness.agents.planner.rematerialize import _materialize_deferred_layer as _materialize_deferred_layer
-from vfx_harness.agents.planner.rematerialize import (
-    _reconcile_materialized_layer_state as _reconcile_materialized_layer_state,
-)
 from vfx_harness.agents.planner.rematerialize import _rematerialize_layer as _rematerialize_layer
 from vfx_harness.agents.planner.types import MATERIALIZATION_DENIED_TOOLS as MATERIALIZATION_DENIED_TOOLS
 from vfx_harness.agents.planner.types import PlanGateFailure as PlanGateFailure

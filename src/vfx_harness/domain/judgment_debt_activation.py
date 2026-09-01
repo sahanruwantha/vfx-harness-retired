@@ -221,6 +221,7 @@ def activate_judgment_debt(
     state: JudgmentDebtState,
     *,
     activation: JudgmentDebtActivation,
+    payment_generation_digest: str,
     layer_id: str,
     replayed_unit_digests: Sequence[tuple[str, str]],
 ) -> JudgmentDebtState:
@@ -239,7 +240,13 @@ def activate_judgment_debt(
     if activation.payer_layer != layer_id:
         raise ValueError(f"judgment debt activation payer_layer={activation.payer_layer!r}, not layer {layer_id!r}")
     validate_judgment_debt_replay_prefix(activation, replayed_unit_digests)
-    return JudgmentDebtState(definition.digest, "due", activation_digest=activation.digest)
+    _require_digest(payment_generation_digest, "payment_generation_digest")
+    return JudgmentDebtState(
+        definition.digest,
+        "due",
+        activation_digest=activation.digest,
+        payment_generation_digest=payment_generation_digest,
+    )
 
 
 def resolve_judgment_debt(
@@ -263,4 +270,5 @@ def resolve_judgment_debt(
         outcome,
         evidence_digest,
         state.activation_digest,
+        state.payment_generation_digest,
     )

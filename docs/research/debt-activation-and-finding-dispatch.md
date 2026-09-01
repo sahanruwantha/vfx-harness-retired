@@ -121,23 +121,52 @@ semantic plan A → B → A. Selection never unlinks the JIT head, run-scoped co
 verified artifact snapshot, and equal-content unpublished revert overlays include their exact
 base token in storage identity rather than overwriting one another's metadata.
 
-This does **not** complete the program. Deterministic equivalence/successor handling for
-already-satisfied discharges, explicit same-bundle lineage/retirement, failure reasons
-beyond no-signal, cross-layer fault routing, the fresh real-model two-layer CLI eval, and
-several owning stop classifiers remain open. There is no dispatch controller or controller
-journal. HIR-0166 implements the durable `prepared -> running -> terminal` receipt protocol and
-an explicitly invoked, idempotency-key-consuming `recover_environment` adapter; it is the only
-receipt-capable transaction and does not authorize automatic dispatch. Safe checkpointed
-session resume is likewise unimplemented;
+Proposed HIR-0170 now has an implementation of the universal receipt-bound layer-finalization
+boundary. Singleton and fan-in layers use one claimed composition lifecycle. Every actual
+evaluation group publishes `vfx-harness.layer-replay-receipt/v2`, including a typed replay
+execution failure when applicable; the receipts must form an ordered contiguous executed prefix.
+`vfx-harness.layer-evaluation-receipt/v1` mechanically decides that prefix, and
+`vfx-harness.layer-finalization-receipt/v2` derives the terminal result before layer outcome,
+debt/finding, and ledger projections. Group-specific render modes bind the actual reference,
+render, capture, and auxiliary bytes, and downstream outcome verification reopens that complete
+source chain. Executable-only groups do not invent raster or critic work. Reviewed orphan release
+uses v2 request/receipt/evidence records and captures the complete existing replay prefix. This
+implementation is not yet promoted from proposed because the complete validation matrix remains
+outstanding.
+
+Proposed HIR-0171 now has an implementation of the missing authority/state move. A central,
+schema-closed capsule compiler gives unit and layer state a semantic identity narrower than the
+cumulative view. Plan
+and JIT publication stage exact pointer/state images, select a write-ahead intent, commit one
+atomic transition, independently evaluate it, and publish one coordinator head. The same strict
+descriptor-bound live-member resolver now serves pre-WAL commit, post-install validation,
+independent evaluation, recovery, and no-pending `already_current` verification. Focused tests
+exercise exact before/after roll-forward, hostile pending state, live-namespace substitution,
+and a subprocess death before state replacement. Process death at every remaining multi-file
+commit boundary, full-suite validation, and confined real replay remain required before
+acceptance. Exact unchanged
+receipt bindings can cross later selections only through contiguous immediate-predecessor
+`unchanged` effects; the historical execution token is never rewritten. True semantic no-ops
+change neither plan/JIT bytes, coordinator head, nor live state. As with HIR-0170, this remains
+proposed until heterogeneous and full-suite validation is complete.
+
+This does **not** complete the program. Failure reasons beyond no-signal, complete cross-layer
+fault routing, the fresh real-model two-layer CLI eval, and several owning stop classifiers
+remain open. There is no dispatch controller or controller journal. HIR-0166 implements the
+durable `prepared -> running -> terminal` receipt protocol and an explicitly invoked,
+idempotency-key-consuming `recover_environment` adapter; it is the only receipt-capable
+transaction and does not authorize automatic dispatch. Safe checkpointed session resume is
+likewise unimplemented;
 a legacy checkpoint-and-journal row does not establish the full authority, unit, session,
 phase, and write-ahead-log identity required by that transition. The motion chamber is
 not the next validation target; the remaining heterogeneous fixtures and real-model
 two-layer seal remain the required bridge.
 
-Revisioned selection also does not make authority publication and durable work-unit state one
-atomic move. That crash boundary still needs an explicit commit and reconciliation protocol.
-There is no amendment adapter binding successor authoring, gate attestation, finding consumption,
-selection, state move, receipt, and independent evaluation, and there is still no controller.
+The new atomic authority-state transaction is deliberately not an amendment adapter. No
+mechanism yet binds successor authoring, finding consumption, or automatic action selection to
+that commit. There is still no dispatcher: amendment, retry, engineering recovery, environment
+recovery, and human escalation remain explicit operations until their own independently
+evaluated adapters and controller journal exist.
 
 ## Observed stop
 
@@ -734,15 +763,20 @@ Existing lower-level causes map into this taxonomy only at their owning boundary
   transaction; and
 - `hypothesis_falsified` authorizes consumption only after amended selected authority exists.
 
-`vfx units replan --falsification` moves durable state to already-published amended
-authority; it does not author the amendment. A stop envelope expresses exactly one action: the
-current authority-defect producers name `publish_validated_amendment`. Only after that action
-has actually published and selected new authority may a later independently classified stop
-name `apply_revision_checked_replan`; the two are never smuggled into one action. Invalidation
-preview is a read-only precondition executed inside the apply transaction. It may be journaled
-for audit, but it is not a standalone progress-producing action and consumes no dispatch
-attempt. If preview requires a policy choice rather than a deterministic check, the boundary
-emits `human_decision_required`.
+HIR-0171 makes validated plan or materialization publication itself move durable state through
+the independently evaluated coordinator effect. The old `vfx units replan --falsification`
+state-movement command is therefore retired: replaying a second DAG transform after publication
+would restore the split authority owner and can overwrite semantic capsule identity. A stop
+envelope still expresses exactly one authority action, `publish_validated_amendment`; that action
+must commit both selection and its mechanically derived invalidation/preservation effect.
+
+Exact finding consumption remains a separate future receipt transaction. It must read the
+finding from the immutable transition before-image, prove that the selected coordinator effects
+cover its local and external fault owners, and publish an idempotent consumption receipt without
+mutating unit state, selection, or the coordinator again. The provisional
+`apply_revision_checked_replan` target/postcondition must be migrated to that meaning before it
+can become dispatchable. If the required join needs a policy choice rather than deterministic
+proof, the boundary emits `human_decision_required`.
 
 ### Dispatchable transaction protocol — implemented for environment reverification only
 
@@ -1019,11 +1053,20 @@ inference.
 
 ### Milestone 3 — Composed scheduling, payment, and fault routing
 
-**Implementation note (2026-08-31):** lifecycle scheduling, exact replay receipts,
-pre-render observation identity, carrier-aware environment capture, canonical render
-capture, no-signal failure persistence, unchanged direct-restart suppression, and
-successful-verdict provenance are landed. Discharge equivalence/successor generations,
-the remaining typed attempt-failure classes, and cross-layer fault routing are still open.
+**Implementation note (2026-09-01):** lifecycle scheduling, per-group
+`vfx-harness.layer-replay-receipt/v2`, ordered
+`vfx-harness.layer-evaluation-receipt/v1`, terminal
+`vfx-harness.layer-finalization-receipt/v2`, pre-render observation identity,
+carrier-aware environment capture, canonical render capture, no-signal failure persistence,
+unchanged direct-restart suppression, and successful-verdict provenance are landed. Replay
+execution failures are typed by stage, while successful rendered groups bind their own
+`solid | eevee` mode/scale and source-closed reference, render, capture, and auxiliary bytes.
+Receipt-bound payment generations now survive only while their exact completion lineage and
+stable selected-DAG replay prefix remain current. The prefix binds every strict predecessor's
+current terminal finalization receipt and crosses the payer's pre-terminal observation boundary
+through its exact active finalization claim; durable payment then requires the payer's resulting
+terminal receipt. A changed relevant prefix creates a successor generation rather than reviving
+an earlier semantic A -> B -> A state. Complete cross-layer fault routing remains open.
 
 **Work**
 
@@ -1122,12 +1165,17 @@ and base-bound workspace/candidate/finalization/snapshot contracts. Stale JIT ge
 inert by exact plan revision, semantic global no-ops preserve pointer bytes, selection never uses
 unlink, and unpublished overlay identity includes its exact base token.
 
-The remaining transaction gap is no longer pointer ABA. Authority selection and durable
-work-unit state movement are not one atomic commit. Global planning still does not bind the
-complete amendment input/candidate operation needed to execute one exact successor, and there is
-no amendment adapter, finding-consumption commit, receipt reconciliation, or independent
-evaluator. There is no controller command or persistent controller journal, and no other action
-is dispatchable.
+Proposed HIR-0171 now closes the authority/state split for already validated plan and JIT
+candidates: capsule-derived state effects, pointer bytes, and work-unit state move through one
+WAL-backed commit, independent evaluation, and coordinator head, with deterministic roll-forward
+recovery and immediate-predecessor receipt preservation. Focused tests cover the shared strict
+live-member namespace, hostile pending-state failures, and one real subprocess-death staging
+window, but not yet process death at every commit boundary. It remains proposed until that full
+crash matrix, the complete suite, and real confined replay pass. This transaction does not author
+a successor or consume a finding. Global planning still does not bind the complete amendment input/candidate
+operation needed to execute one exact successor, and there is no amendment adapter,
+finding-consumption commit, or independently evaluated amendment receipt. There is no controller
+command or persistent controller journal, and no other action is dispatchable.
 
 **Work**
 

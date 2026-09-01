@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,63 +26,84 @@ from vfx_harness.domain.stop_transactions import (
 from vfx_harness.observability import run_artifacts
 
 
-def test_passed_layer_skip_requires_every_source_verified_unit_receipt(
+def test_passed_layer_skip_requires_current_terminal_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    units = (SimpleNamespace(id="camera"), SimpleNamespace(id="form"))
     layer = SimpleNamespace(
-        stages=units,
-        as_milestone=lambda: SimpleNamespace(id="1"),
+        id="1",
+        script="build/01_camera.py",
+        stages=(SimpleNamespace(id="camera"), SimpleNamespace(id="form")),
     )
     shot = SimpleNamespace(folder=tmp_path)
-    ledger = SimpleNamespace(status=lambda _milestone: "passed")
-    monkeypatch.setattr(run_shot.unit_state, "load", lambda *_args: {"units": {}})
-    monkeypatch.setattr(
-        run_shot.unit_state,
-        "validate_current",
-        lambda *_args: None,
-    )
-    monkeypatch.setattr(
-        run_shot.unit_state,
-        "digest_matched_passed",
-        lambda *_args: {"camera", "form"},
-    )
-
-    @contextmanager
-    def incomplete_receipts(_folder):
-        yield {("1", "camera"): _digest("camera receipt")}
+    selected = object()
 
     monkeypatch.setattr(
-        run_shot,
-        "current_completion_receipt_digests",
-        incomplete_receipts,
+        run_shot.layer_publication,
+        "require_current_layer_publication",
+        lambda *_args: (_ for _ in ()).throw(
+            run_shot.layer_publication.LayerPublicationConflict(
+                "terminal receipt is missing"
+            )
+        ),
     )
 
     assert run_shot._receipt_backed_passed_layers(
         shot,
         {"1": layer},
-        ledger,
+        selected,
     ) == set()
 
-    @contextmanager
-    def complete_receipts(_folder):
-        yield {
-            ("1", "camera"): _digest("camera receipt"),
-            ("1", "form"): _digest("form receipt"),
-        }
+    calls = []
+
+    def current_publication(folder, candidate, authority):
+        calls.append((folder, candidate, authority))
+        return SimpleNamespace(
+            receipt=SimpleNamespace(layer_script_path=candidate.script),
+        )
 
     monkeypatch.setattr(
-        run_shot,
-        "current_completion_receipt_digests",
-        complete_receipts,
+        run_shot.layer_publication,
+        "require_current_layer_publication",
+        current_publication,
     )
 
     assert run_shot._receipt_backed_passed_layers(
         shot,
         {"1": layer},
-        ledger,
+        selected,
     ) == {"1"}
+    assert calls == [(tmp_path, layer, selected)]
+
+
+def test_selected_run_layers_preserves_selected_dag_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = SimpleNamespace(folder=tmp_path)
+    selected = object()
+    camera = SimpleNamespace(id="camera")
+    form = SimpleNamespace(id="form")
+    composite = SimpleNamespace(id="composite")
+    observed = []
+    monkeypatch.setattr(
+        run_shot.authority_selection,
+        "resolve_selected_authority",
+        lambda folder: selected if folder == tmp_path else pytest.fail("wrong shot"),
+    )
+
+    def selected_chain(candidate_shot, *, selected_authority):
+        observed.append((candidate_shot, selected_authority))
+        return (camera, form, composite)
+
+    monkeypatch.setattr(run_shot, "selected_layer_chain", selected_chain)
+
+    authority, chain, layers = run_shot._selected_run_layers(shot)
+
+    assert authority is selected
+    assert chain == (camera, form, composite)
+    assert list(layers) == ["camera", "form", "composite"]
+    assert observed == [(shot, selected)]
 
 
 def _digest(label: str) -> str:
@@ -262,14 +282,7 @@ def test_run_allocates_layout_then_stops_on_strict_preflight_before_any_stage(
 ) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     shot = SimpleNamespace(folder=tmp_path, id="strict-preflight-shot")
-    layer = SimpleNamespace(
-        id="1",
-        title="form",
-        script="build/01_form.py",
-        as_milestone=lambda: SimpleNamespace(id="1"),
-    )
     monkeypatch.setattr(run_shot, "load_shot", lambda _folder: shot)
-    monkeypatch.setattr(run_shot, "load_layers", lambda _shot: {"1": layer})
     monkeypatch.setattr(
         run_shot,
         "preflight_probe",

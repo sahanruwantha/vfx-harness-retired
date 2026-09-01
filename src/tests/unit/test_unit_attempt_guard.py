@@ -9,6 +9,7 @@ import anyio
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
+from tests.unit_attempt_fixtures import legacy_apply_replan
 from vfx_harness.agents.builder import drain as drain_runtime
 from vfx_harness.agents.builder import verify as verify_runtime
 from vfx_harness.agents.builder.attempt_guard import (
@@ -44,6 +45,7 @@ def test_replan_does_not_wait_for_long_blender_staging_and_postcheck_refuses(
         units,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="render-race",
         selection_token=token,
         reason="fixture planning",
@@ -56,6 +58,7 @@ def test_replan_does_not_wait_for_long_blender_staging_and_postcheck_refuses(
         planning,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="render-race",
         selection_token=token,
         reason="fixture building",
@@ -90,7 +93,7 @@ def test_replan_does_not_wait_for_long_blender_staging_and_postcheck_refuses(
 
     def run_replan() -> None:
         try:
-            unit_state.apply_replan(
+            legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,
@@ -137,6 +140,7 @@ def test_revocation_before_turn_continuation_refuses_additional_model_query(
         units,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="continuation-race",
         selection_token=token,
         reason="fixture planning",
@@ -149,6 +153,7 @@ def test_revocation_before_turn_continuation_refuses_additional_model_query(
         planning,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="continuation-race",
         selection_token=token,
         reason="fixture building",
@@ -164,7 +169,7 @@ def test_revocation_before_turn_continuation_refuses_additional_model_query(
     )
 
     async def revoke_during_first_response(*_args, **_kwargs):
-        unit_state.apply_replan(
+        legacy_apply_replan(
             tmp_path,
             "1",
             units,
@@ -227,6 +232,7 @@ def test_canonical_critic_refuses_revoked_attempt_before_paid_score(
         units,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="canonical-score-race",
         selection_token=token,
         reason="fixture planning",
@@ -239,6 +245,7 @@ def test_canonical_critic_refuses_revoked_attempt_before_paid_score(
         planning,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="canonical-score-race",
         selection_token=token,
         reason="fixture building",
@@ -291,7 +298,7 @@ def test_canonical_critic_refuses_revoked_attempt_before_paid_score(
     )
 
     def revoke_after_render(*_args, **_kwargs):
-        unit_state.apply_replan(
+        legacy_apply_replan(
             tmp_path,
             "1",
             units,
@@ -350,7 +357,7 @@ def test_canonical_critic_refuses_revoked_attempt_before_paid_score(
             active_unit=unit,
             authority_script_rel=script_rel,
             selected_authority=guard.selected_authority,
-            attempt_guard=guard,
+            execution_guard=guard,
         )
 
     with pytest.raises(UnitAttemptAuthorityLost):
@@ -373,6 +380,7 @@ def test_replan_does_not_wait_for_snapshot_copy_and_stale_commit_is_discarded(
         units,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="snapshot-race",
         selection_token=token,
         reason="fixture planning",
@@ -385,6 +393,7 @@ def test_replan_does_not_wait_for_snapshot_copy_and_stale_commit_is_discarded(
         planning,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="snapshot-race",
         selection_token=token,
         reason="fixture building",
@@ -434,7 +443,7 @@ def test_replan_does_not_wait_for_snapshot_copy_and_stale_commit_is_discarded(
 
     def run_replan() -> None:
         try:
-            unit_state.apply_replan(
+            legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,
@@ -486,6 +495,7 @@ def test_replan_does_not_wait_for_large_construction_publication_staging(
         units,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="construction-race",
         selection_token=token,
         reason="fixture planning",
@@ -498,6 +508,7 @@ def test_replan_does_not_wait_for_large_construction_publication_staging(
         planning,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="construction-race",
         selection_token=token,
         reason="fixture building",
@@ -558,7 +569,7 @@ def test_replan_does_not_wait_for_large_construction_publication_staging(
 
     def run_replan() -> None:
         try:
-            unit_state.apply_replan(
+            legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,

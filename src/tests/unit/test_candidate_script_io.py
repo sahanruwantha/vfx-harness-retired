@@ -4,7 +4,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 
 from tests.architecture.test_staged_architecture import _unit
-from tests.unit_attempt_fixtures import claim_for_build
+from tests.unit_attempt_fixtures import claim_for_build, legacy_apply_replan
 from vfx_harness.agents.builder import candidate_script
 from vfx_harness.agents.builder.attempt_guard import (
     UnitAttemptAuthorityLost,
@@ -74,7 +74,7 @@ def test_replan_does_not_wait_for_inert_candidate_write(
 
     def replan() -> None:
         try:
-            unit_state.apply_replan(
+            legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,

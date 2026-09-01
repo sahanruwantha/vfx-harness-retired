@@ -5,14 +5,27 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from vfx_harness.domain import unit_attempts, unit_completion_receipts
+from vfx_harness.domain import (
+    layer_finalizations,
+    unit_attempts,
+    unit_completion_receipts,
+)
 from vfx_harness.domain.work_units import WorkUnit, ready_units
+from vfx_harness.orchestration.authority_selection_transaction import (
+    authority_selection_lock,
+)
+from vfx_harness.orchestration.unit_completion_authority_guard import (
+    require_current_unit_completion_authorization,
+)
+from vfx_harness.orchestration.unit_completion_authorizations import (
+    AuthorizedUnitCompletionSet,
+)
 from vfx_harness.orchestration.unit_state_identity import (
     DIGEST_SCHEMA,
-    digest_matched_passed,
+    authorized_passed_unit_ids,
     unit_digest,
 )
-from vfx_harness.orchestration.unit_state_lock import unit_state_path
+from vfx_harness.orchestration.unit_state_lock import unit_state_lock, unit_state_path
 from vfx_harness.orchestration.unit_state_storage import read
 
 SCHEMA = 1
@@ -33,6 +46,7 @@ def _decode_snapshot(path: Path, payload: bytes | None) -> dict:
         raise ValueError(f"{path}.units must be an object")
     unit_attempts.validate_state_attempt_contracts(value)
     unit_completion_receipts.validate_state_completion_contracts(value)
+    layer_finalizations.validate_state_layer_finalization_contracts(value)
     return value
 
 
@@ -65,8 +79,8 @@ def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) ->
     actual = {uid: row.get("unit_hash") for uid, row in value["units"].items()}
     if set(actual) != set(expected):
         raise ValueError(
-            "work-unit state IDs do not match the active layer DAG; apply a "
-            "transactional replan"
+            "work-unit state IDs do not match the active layer DAG; publish a "
+            "validated authority replacement or amendment"
         )
     if int(value.get("digest_schema", 1)) != DIGEST_SCHEMA:
         # Digests from another schema are not comparable. Replan closure recomputes
@@ -77,7 +91,7 @@ def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) ->
         raise ValueError(
             "work-unit state hashes do not match the active layer DAG for "
             + ", ".join(changed)
-            + "; apply a transactional replan"
+            + "; publish a validated authority replacement or amendment"
         )
 
 
@@ -87,6 +101,7 @@ def ready_from_durable_state(
     units: tuple[WorkUnit, ...],
     *,
     eligible_passed: set[str] | None = None,
+    completion_authorization: AuthorizedUnitCompletionSet | None,
 ) -> tuple[WorkUnit, ...]:
     """Resolve the ready set from one fresh, digest-validated state snapshot.
 
@@ -94,7 +109,16 @@ def ready_from_durable_state(
     available to a caller; it can never broaden durable acceptance.
     """
 
-    state = load(folder, layer_id)
+    if completion_authorization is None:
+        state = load(folder, layer_id)
+    else:
+        with authority_selection_lock(folder, exclusive=False):
+            require_current_unit_completion_authorization(
+                folder,
+                completion_authorization,
+            )
+            with unit_state_lock(folder, layer_id, exclusive=False):
+                state = load(folder, layer_id)
     validate_current(state, layer_id, units)
     passed = {
         str(uid)
@@ -103,5 +127,9 @@ def ready_from_durable_state(
     }
     if eligible_passed is not None:
         passed &= {str(uid) for uid in eligible_passed}
-    sealed = digest_matched_passed(state, units) & passed
+    sealed = authorized_passed_unit_ids(
+        state,
+        units,
+        completion_authorization=completion_authorization,
+    ) & passed
     return ready_units(units, passed, sealed_producers=sealed)

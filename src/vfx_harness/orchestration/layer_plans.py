@@ -12,13 +12,17 @@ import hashlib
 import json
 import os
 import re
-from datetime import UTC, datetime
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vfx_harness.domain.layer_finalizations import (
+    LayerFinalizationClaim,
+    LayerFinalizationReceipt,
+)
+from vfx_harness.domain.layer_outcome_projections import LayerOutcomeProjection
 from vfx_harness.domain.layer_outcomes import OUTCOME_SCHEMA
-from vfx_harness.domain.unit_attempts import UnitAttemptClaim
-from vfx_harness.domain.work_units import strict_topological_sparse_layer_ids
+from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
@@ -33,6 +37,9 @@ from vfx_harness.orchestration.layer_outcome_publication import (
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
+    from vfx_harness.orchestration.layer_finalization_authorizations import (
+        AuthorizedLayerFinalizationMutation,
+    )
 
 PLAN_DIR = "plans"
 GLOBAL_PLAN = "global.md"
@@ -419,7 +426,7 @@ def amendment_block(folder: str | Path, layer_id: str) -> str:
 
 
 def contract_gaps_block(folder: str | Path, layer_id: str, unit_id: str | None = None) -> str:
-    """Latest hash-pinned coverage defects for transactional replanning context."""
+    """Latest hash-pinned coverage defects for validated amendment context."""
     path = run_artifacts.shot_state_dir(folder) / "contract-gaps.jsonl"
     if not path.is_file():
         return ""
@@ -463,121 +470,129 @@ def contract_gaps_block(folder: str | Path, layer_id: str, unit_id: str | None =
     return "\n".join(lines)
 
 
-def prior_outcomes_block(
-    folder: str | Path,
-    layer_id: str,
-    *,
-    selected_authority=None,
-) -> str:
-    root = Path(folder).resolve()
-    try:
-        # A layer prefix is authority from the selected document, never integer order or
-        # whatever filenames happen to exist in the outcomes directory.
-        from vfx_harness.orchestration.plan_authority import (  # noqa: PLC0415
-            POINTER,
-            resolve_current,
-            selected_artifact_path,
-        )
-
-        if selected_authority is None:
-            selected_path = selected_artifact_path(root, "layers.json")
-            global_path = resolve_current(root).root / "layers.json" if (root / POINTER).exists() else selected_path
-        else:
-            selected_plan = getattr(selected_authority, "plan", None)
-            if selected_plan is None:
-                raise ValueError("prior outcomes require selected global plan authority")
-            try:
-                selected_plan.bundle.root.relative_to(root)
-            except ValueError as exc:
-                raise ValueError("prior-outcome snapshot belongs to another shot") from exc
-            selected_path = selected_authority.artifact_paths["layers.json"]
-            global_path = selected_plan.bundle.root / "layers.json"
-        selected_document = json.loads(selected_path.read_text(encoding="utf-8"))
-        global_document = json.loads(global_path.read_text(encoding="utf-8"))
-        selected_rows = selected_document.get("layers") if isinstance(selected_document, dict) else None
-        global_rows = global_document.get("layers") if isinstance(global_document, dict) else None
-        if (
-            not isinstance(selected_rows, list)
-            or any(not isinstance(row, dict) for row in selected_rows)
-            or not isinstance(global_rows, list)
-            or any(not isinstance(row, dict) for row in global_rows)
-        ):
-            raise ValueError("selected/global layers.json must contain layer objects")
-        ordered_ids = list(strict_topological_sparse_layer_ids(global_rows))
-        selected_ids = [str(row.get("id") or "").strip() for row in selected_rows]
-        if len(selected_ids) != len(set(selected_ids)) or set(selected_ids) != set(ordered_ids):
-            raise ValueError("selected executable layer view does not match the exact global DAG")
-        current = ordered_ids.index(str(layer_id))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("cannot read selected layer DAG for prior outcomes") from exc
-    rows = []
-    for prior_id in ordered_ids[:current]:
-        path = layer_outcome_path(root, prior_id)
-        if not path.is_file():
-            continue
-        try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-            if str(row.get("layer") or "") != prior_id:
-                raise ValueError(f"sealed outcome at {path} names layer {row.get('layer')!r}, expected {prior_id!r}")
-            if row.get("status") == "passed":
-                rows.append(row)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"sealed prior-layer outcome is unreadable: {path}") from exc
-    if not rows:
-        return ""
-    lines = ["## Sealed prior-layer outcomes"]
-    for row in rows:
-        lines.append(
-            f"- Layer {row['layer']} passed; script `{row.get('script', '?')}`; "
-            f"canonical decision `{row.get('decided_by', '?')}`; "
-            f"authoritative checks {row.get('authoritative_passed', 0)}/"
-            f"{row.get('authoritative_total', 0)}. Do not reopen it without an approved "
-            f"amendment."
-        )
-    return "\n".join(lines)
-
-
 def _layer_outcome_digest(layer) -> str:
     return hashlib.sha256(repr(layer).encode("utf-8")).hexdigest()
 
 
-def unit_attempt_layer_outcome_authority(
+def finalization_layer_outcome_authority(
     layer,
     selected_authority: ResolvedSelectedAuthority,
-    claim: UnitAttemptClaim,
     *,
-    run_id: str,
-    ledger_attempt: int,
+    finalization_receipt: LayerFinalizationReceipt,
+    finalization_authorization: AuthorizedLayerFinalizationMutation,
 ) -> LayerOutcomePublicationAuthority:
-    """Bind outcome preparation to one exact selected work-unit attempt."""
+    """Bind outcome projection to one exact terminal layer finalization."""
 
     return LayerOutcomePublicationAuthority(
-        kind="unit_attempt",
+        kind="finalization",
         layer_id=str(layer.id),
         layer_digest=_layer_outcome_digest(layer),
-        run_id=str(run_id),
-        ledger_attempt=ledger_attempt,
         selection_token=selected_authority.selection_token,
-        claim=claim,
+        receipt=finalization_receipt,
+        finalization_authorization=finalization_authorization,
     )
 
 
-def composition_layer_outcome_authority(
-    layer,
-    selected_authority: ResolvedSelectedAuthority,
-    *,
-    run_id: str,
-    ledger_attempt: int,
-) -> LayerOutcomePublicationAuthority:
-    """Bind a synthetic composed outcome to its exact selected run/attempt."""
+def layer_finalization_canonical_rows(canonical: list) -> tuple[dict, ...]:
+    """Normalize builder canonical tuples into the terminal receipt projection."""
 
-    return LayerOutcomePublicationAuthority(
-        kind="composition",
-        layer_id=str(layer.id),
-        layer_digest=_layer_outcome_digest(layer),
-        run_id=str(run_id),
-        ledger_attempt=ledger_attempt,
-        selection_token=selected_authority.selection_token,
+    rows: list[dict] = []
+    for index, value in enumerate(canonical):
+        if (
+            not isinstance(value, (list, tuple))
+            or len(value) != 2
+            or not isinstance(value[0], (list, tuple))
+            or len(value[0]) != 2
+        ):
+            raise ValueError(
+                f"canonical[{index}] must be ((frame, ref), verdict)"
+            )
+        (frame, ref), verdict = value
+        if not isinstance(frame, int) or isinstance(frame, bool):
+            raise ValueError(f"canonical[{index}] frame must be an integer")
+        if not isinstance(ref, str) or not ref or ref != ref.strip():
+            raise ValueError(
+                f"canonical[{index}] ref must be a non-empty trimmed string"
+            )
+        if not isinstance(verdict, Mapping):
+            raise ValueError(f"canonical[{index}] verdict must be an object")
+        rows.append({"frame": frame, "ref": ref, "verdict": dict(verdict)})
+    return tuple(rows)
+
+
+def build_layer_outcome_projection(
+    folder: str | Path,
+    layer,
+    *,
+    best: dict,
+    canonical: list,
+    finalization_claim: LayerFinalizationClaim,
+    final_status: str,
+    blender_version: str,
+    revalidation_projection: Mapping,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> LayerOutcomeProjection:
+    """Prepare the exact non-audit outcome body before terminal commit."""
+
+    # revalidation imports the path helpers above; outcome sealing is the reverse edge.
+    from vfx_harness.orchestration.revalidation import (  # noqa: PLC0415
+        canonical_records,
+        input_manifest,
+    )
+
+    if not isinstance(finalization_claim, LayerFinalizationClaim):
+        raise ValueError("layer outcome projection requires a typed finalization claim")
+    if finalization_claim.layer_id != str(layer.id):
+        raise ValueError("layer outcome projection claim belongs to another layer")
+    if finalization_claim.layer_script_path != str(layer.script):
+        raise ValueError("layer outcome projection script does not match its claim")
+    if selected_authority is not None:
+        claim_token = finalization_claim.selection_token
+        selected_token = selected_authority.selection_token
+        if (
+            claim_token.plan_revision != selected_token.plan_revision
+            or claim_token.plan_pointer_sha256
+            != selected_token.plan_pointer_sha256
+            or claim_token.jit_revision != selected_token.jit_revision
+            or claim_token.jit_pointer_sha256
+            != selected_token.jit_pointer_sha256
+        ):
+            raise ValueError(
+                "layer outcome finalization receipt belongs to another selected authority"
+            )
+
+    receipt_canonical = layer_finalization_canonical_rows(canonical)
+    manifest_kwargs = {"blender_version": blender_version}
+    if selected_authority is not None:
+        manifest_kwargs["selected_authority"] = selected_authority
+    if not isinstance(revalidation_projection, Mapping):
+        raise ValueError("layer outcome projection requires typed revalidation authority")
+    replacement_text = revalidation_projection.get("replacement_text")
+    if replacement_text is not None:
+        if not isinstance(replacement_text, str):
+            raise ValueError(
+                "layer outcome revalidation replacement_text must be a string or null"
+            )
+        manifest_kwargs["runtime_checks_text"] = replacement_text
+    revalidation_manifest = input_manifest(folder, layer, **manifest_kwargs)
+    manifest_sha256 = canonical_digest(revalidation_manifest)
+    sealed_canonical = canonical_records(
+        folder,
+        layer,
+        canonical,
+        input_manifest_sha256=manifest_sha256,
+        allow_qualitative_defects=final_status != "passed",
+    )
+    return LayerOutcomeProjection.from_canonical(
+        claim=finalization_claim,
+        layer_title=layer.title,
+        layer_script_path=layer.script,
+        final_status=final_status,
+        best={key: best.get(key) for key in ("round", "mean", "render")},
+        revalidation_manifest=revalidation_manifest,
+        canonical=sealed_canonical,
+        receipt_canonical=receipt_canonical,
+        blender_version=blender_version,
     )
 
 
@@ -585,120 +600,108 @@ def build_layer_outcome_record(
     folder: str | Path,
     layer,
     *,
-    status: str,
     best: dict,
     canonical: list,
-    run_id: str,
-    attempt: int | None = None,
+    finalization_receipt: LayerFinalizationReceipt,
     blender_version: str,
     selected_authority: ResolvedSelectedAuthority | None = None,
     sealed_at: str | None = None,
 ) -> dict:
-    """Assemble and hash a layer outcome without publishing it."""
-    # revalidation imports the path helpers above; outcome sealing is the reverse edge.
-    from vfx_harness.orchestration.revalidation import (  # noqa: PLC0415
-        canonical_records,
-        input_manifest,
-    )
+    """Assemble one outcome only from its exact receipt-bound projection."""
 
-    evidence = [
-        item
-        for _frame_ref, verdict in canonical
-        for item in (verdict.get("evidence") or [])
-        if item.get("authoritative")
-    ]
-    interfaces = [
-        {
-            key: item.get(key)
-            for key in (
-                "id",
-                "metric",
-                "value",
-                "target",
-                "pass",
-                "owner_layer",
-                "fault_owner",
-                "activates_at",
-                "lifecycle",
-            )
-        }
-        for item in evidence
-        if item.get("source") == "interface_contract" and str(item.get("owner_layer")) == str(layer.id)
-    ]
-    decisions = [verdict.get("decided_by", "critic") for _fr, verdict in canonical]
-    manifest_kwargs = {"blender_version": blender_version}
-    if selected_authority is not None:
-        manifest_kwargs["selected_authority"] = selected_authority
-    revalidation_manifest = input_manifest(folder, layer, **manifest_kwargs)
-    manifest_sha256 = hashlib.sha256(
-        json.dumps(
-            revalidation_manifest,
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
+    if not isinstance(finalization_receipt, LayerFinalizationReceipt):
+        raise ValueError(
+            "layer outcome requires a typed terminal finalization receipt"
+        )
+    if finalization_receipt.claim.layer_id != str(layer.id):
+        raise ValueError("layer outcome finalization receipt belongs to another layer")
+    if finalization_receipt.layer_script_path != str(layer.script):
+        raise ValueError(
+            "layer outcome script does not match its finalization receipt"
+        )
+    receipt_canonical = layer_finalization_canonical_rows(canonical)
+    if tuple(finalization_receipt.canonical) != receipt_canonical:
+        raise ValueError(
+            "layer outcome canonical evidence does not exactly match its "
+            "finalization receipt"
+        )
+    proposed = build_layer_outcome_projection(
+        folder,
+        layer,
+        best=best,
+        canonical=canonical,
+        finalization_claim=finalization_receipt.claim,
+        final_status=finalization_receipt.final_status,
+        blender_version=blender_version,
+        revalidation_projection=finalization_receipt.projection["revalidation"],
+        selected_authority=selected_authority,
+    )
+    expected = _sealed_layer_outcome_projection(finalization_receipt)
+    if proposed != expected:
+        mismatched = [
+            field
+            for field in proposed.record
+            if proposed.record[field] != expected.record[field]
+        ]
+        raise ValueError(
+            "layer outcome inputs do not match the receipt-bound proposed projection: "
+            + ", ".join(mismatched)
+        )
+    at = finalization_receipt.completed_at if sealed_at is None else sealed_at
+    if at != finalization_receipt.completed_at:
+        raise ValueError(
+            "layer outcome sealed_at must match its terminal finalization receipt"
+        )
     return {
         "schema": OUTCOME_SCHEMA,
-        "at": sealed_at or datetime.now(UTC).isoformat(timespec="seconds"),
-        "layer": str(layer.id),
-        "title": layer.title,
-        "script": layer.script,
-        "status": status,
-        "run_id": run_id,
-        "attempt": attempt,
-        "best": {key: best.get(key) for key in ("round", "mean", "render")},
-        "decided_by": decisions[0] if len(set(decisions)) == 1 and decisions else decisions,
-        "authoritative_total": len(evidence),
-        "authoritative_passed": sum(bool(item.get("pass")) for item in evidence),
-        "failed_contracts": [item.get("id") for item in evidence if not item.get("pass")],
-        "interfaces": interfaces,
-        "revalidation_manifest": revalidation_manifest,
-        "canonical": canonical_records(
-            folder,
-            layer,
-            canonical,
-            input_manifest_sha256=manifest_sha256,
-        ),
+        "at": at,
+        **expected.as_record(),
+        "finalization_receipt": finalization_receipt.as_dict(),
     }
 
 
-def _layer_outcome_source_paths(folder: str | Path, record: dict) -> tuple[Path, ...]:
-    """Recover every file whose bytes the prepared outcome just hashed."""
+def _sealed_layer_outcome_projection(
+    finalization_receipt: LayerFinalizationReceipt,
+) -> LayerOutcomeProjection:
+    """Parse the immutable projection carried by one terminal receipt."""
 
-    root = Path(folder).expanduser().resolve()
-    manifest = record["revalidation_manifest"]
-    paths: set[Path] = {root / "runtime_checks.json"}
-    for value in manifest.get("files", {}):
-        path = Path(value)
-        paths.add(path if path.is_absolute() else root / path)
-    package = Path(__file__).resolve().parents[1]
-    paths.update(package / value for value in manifest.get("harness_files", {}))
-    paths.update(
-        layer_outcome_path(root, str(layer_id))
-        for layer_id in manifest.get("prior_outcomes", {})
+    if not isinstance(finalization_receipt, LayerFinalizationReceipt):
+        raise ValueError(
+            "sealed layer outcome requires a typed terminal finalization receipt"
+        )
+    return LayerOutcomeProjection.parse(
+        finalization_receipt.projection["outcome"],
+        claim=finalization_receipt.claim,
+        layer_script_path=finalization_receipt.layer_script_path,
+        final_status=finalization_receipt.final_status,
+        best=finalization_receipt.projection["best"],
+        receipt_canonical=finalization_receipt.canonical,
+        blender_version=str(finalization_receipt.projection["blender_version"]),
+        where="terminal finalization receipt outcome projection",
     )
-    for row in record.get("canonical", []):
-        for field in ("ref", "render"):
-            value = row.get(field)
-            if isinstance(value, str) and value:
-                paths.add(root / value)
-    best_render = (record.get("best") or {}).get("render")
-    if isinstance(best_render, str) and best_render:
-        paths.add(root / best_render)
-    return tuple(sorted(paths, key=lambda value: str(value)))
+
+
+def _sealed_layer_outcome_record(
+    finalization_receipt: LayerFinalizationReceipt,
+) -> dict:
+    """Reproduce byte-stable mutable outcome content from terminal authority."""
+
+    expected = _sealed_layer_outcome_projection(finalization_receipt)
+    return {
+        "schema": OUTCOME_SCHEMA,
+        "at": finalization_receipt.completed_at,
+        **expected.as_record(),
+        "finalization_receipt": finalization_receipt.as_dict(),
+    }
 
 
 def prepare_layer_outcome(
     folder: str | Path,
     layer,
     *,
-    status: str,
     best: dict,
     canonical: list,
-    run_id: str,
-    attempt: int,
+    finalization_receipt: LayerFinalizationReceipt,
     blender_version: str,
     selected_authority: ResolvedSelectedAuthority,
     authority: LayerOutcomePublicationAuthority,
@@ -710,39 +713,49 @@ def prepare_layer_outcome(
     ):
         raise ValueError("layer-outcome publication authority belongs to another layer")
     if (
-        authority.run_id != str(run_id)
-        or authority.ledger_attempt != attempt
+        authority.receipt != finalization_receipt
         or authority.selection_token != selected_authority.selection_token
     ):
         raise ValueError("layer-outcome publication authority belongs to another generation")
-    sealed_at = datetime.now(UTC).isoformat(timespec="seconds")
-    discovered = build_layer_outcome_record(
-        folder,
-        layer,
-        status=status,
-        best=best,
-        canonical=canonical,
-        run_id=run_id,
-        attempt=attempt,
-        blender_version=blender_version,
-        selected_authority=selected_authority,
-        sealed_at=sealed_at,
+    receipt_canonical = layer_finalization_canonical_rows(canonical)
+    if (
+        finalization_receipt.claim.layer_id != str(layer.id)
+        or finalization_receipt.layer_script_path != str(layer.script)
+        or tuple(finalization_receipt.canonical) != receipt_canonical
+        or dict(finalization_receipt.projection["best"]) != dict(best)
+        or str(finalization_receipt.projection["blender_version"])
+        != blender_version
+    ):
+        raise ValueError(
+            "layer-outcome inputs do not exactly match terminal receipt authority"
+        )
+    # The terminal receipt is the decision and already sealed this exact projection.
+    # Reconciliation under a preserved successor must reproduce those historical bytes;
+    # rebuilding its manifest against the successor token would mint a different record.
+    discovered = _sealed_layer_outcome_record(finalization_receipt)
+    if discovered["title"] != str(layer.title):
+        raise ValueError(
+            "layer-outcome current layer title does not match terminal authority"
+        )
+    # Source verification imports revalidation's deterministic primitives;
+    # keeping this reverse edge local avoids an orchestration import cycle.
+    from vfx_harness.orchestration.layer_outcome_source_verification import (  # noqa: PLC0415
+        verify_sealed_layer_outcome_sources,
     )
-    source_paths = _layer_outcome_source_paths(folder, discovered)
+
+    source_paths = verify_sealed_layer_outcome_sources(
+        folder,
+        discovered,
+        finalization_receipt=finalization_receipt,
+    )
     before = capture_layer_outcome_source_identities(source_paths)
-    record = build_layer_outcome_record(
+    record = _sealed_layer_outcome_record(finalization_receipt)
+    verified_paths = verify_sealed_layer_outcome_sources(
         folder,
-        layer,
-        status=status,
-        best=best,
-        canonical=canonical,
-        run_id=run_id,
-        attempt=attempt,
-        blender_version=blender_version,
-        selected_authority=selected_authority,
-        sealed_at=sealed_at,
+        record,
+        finalization_receipt=finalization_receipt,
     )
-    if _layer_outcome_source_paths(folder, record) != source_paths:
+    if verified_paths != source_paths:
         raise ValueError("layer-outcome causal source closure changed during preparation")
     after = capture_layer_outcome_source_identities(source_paths)
     if after != before:
@@ -771,12 +784,3 @@ def discard_layer_outcome(prepared: PreparedLayerOutcomePublication) -> None:
     """Discard an uncommitted prepared layer-outcome temp."""
 
     discard_layer_outcome_publication(prepared)
-
-
-def load_layer_outcome(folder: str | Path, layer_id: str) -> dict:
-    path = layer_outcome_path(folder, str(layer_id))
-    try:
-        row = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return row if isinstance(row, dict) else {}

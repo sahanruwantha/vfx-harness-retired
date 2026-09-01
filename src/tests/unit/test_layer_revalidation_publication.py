@@ -8,7 +8,7 @@ import stat
 
 import pytest
 
-from vfx_harness.evidence import checks
+from vfx_harness.evidence import checks, layer_revalidation_projection
 
 
 def _builder_check() -> dict:
@@ -75,3 +75,43 @@ def test_revalidation_commit_refuses_changed_source_and_discards_stage(tmp_path)
 
     assert not staged.exists()
     assert spec.read_text(encoding="utf-8") == "[]\n"
+
+
+def test_terminal_revalidation_projection_reconciles_exact_bytes_once(tmp_path) -> None:
+    spec = tmp_path / "runtime_checks.json"
+    spec.write_text(json.dumps([_builder_check()]) + "\n", encoding="utf-8")
+    prepared = checks.prepare_layer_revalidation(tmp_path, "1", lambda _check: None)
+    projection = layer_revalidation_projection.layer_revalidation_projection(prepared)
+    checks.discard_layer_revalidation(prepared)
+
+    first = layer_revalidation_projection.reconcile_layer_revalidation_projection(
+        tmp_path,
+        "1",
+        projection,
+    )
+    first_bytes = spec.read_bytes()
+    second = layer_revalidation_projection.reconcile_layer_revalidation_projection(
+        tmp_path,
+        "1",
+        projection,
+    )
+
+    assert first == second
+    assert json.loads(first_bytes) == []
+    assert spec.read_bytes() == first_bytes
+
+
+def test_terminal_revalidation_projection_refuses_external_source_change(tmp_path) -> None:
+    spec = tmp_path / "runtime_checks.json"
+    spec.write_text(json.dumps([_builder_check()]) + "\n", encoding="utf-8")
+    prepared = checks.prepare_layer_revalidation(tmp_path, "1", lambda _check: None)
+    projection = layer_revalidation_projection.layer_revalidation_projection(prepared)
+    checks.discard_layer_revalidation(prepared)
+    spec.write_text('[{"foreign":true}]\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changed outside"):
+        layer_revalidation_projection.reconcile_layer_revalidation_projection(
+            tmp_path,
+            "1",
+            projection,
+        )

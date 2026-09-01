@@ -14,6 +14,9 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     OVERLAY_ARTIFACTS,
     MaterializedLayer,
 )
+from vfx_harness.orchestration.jit_materialization.transition import (
+    PreparedMaterializationPublication,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +34,7 @@ class ProposedMaterializationView:
     planning_inputs_digest: str
     consumer_marker_sha256: str
     consumer_pointer_sha256: str
+    publication: PreparedMaterializationPublication
 
 
 def serialized_documents(documents: dict[str, Any]) -> dict[str, bytes]:

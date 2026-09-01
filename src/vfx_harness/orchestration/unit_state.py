@@ -1,4 +1,5 @@
-"""Durable work-unit state, checkpoints, and transactional replanning."""
+"""Durable work-unit state and checkpoint lifecycle operations."""
+
 from __future__ import annotations
 
 import hashlib
@@ -8,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from vfx_harness.domain import unit_attempts, unit_completion_receipts
+from vfx_harness.domain.authority_head_records import parse_authority_selection_token
+from vfx_harness.domain.layer_finalizations import LayerFinalizationReceipt
+from vfx_harness.domain.stop_envelope_primitives import require_digest
 from vfx_harness.domain.unit_outcomes import HYPOTHESIS_FALSIFICATION_SCHEMA, HypothesisFalsification
 from vfx_harness.domain.work_units import (
     UNIT_STATES,
@@ -15,20 +19,32 @@ from vfx_harness.domain.work_units import (
     geometry_vis_protection_ids,
     validate_unit_dag,
 )
-from vfx_harness.orchestration import hypothesis_falsification_projection, unit_state_replan
+from vfx_harness.orchestration import (
+    hypothesis_falsification_projection,
+    layer_finalization_lifecycle,
+)
 from vfx_harness.orchestration.authority_selection_transaction import AuthoritySelectionToken
+from vfx_harness.orchestration.authority_state_context import (
+    resolve_current_authority_state,
+)
+from vfx_harness.orchestration.layer_finalization_authorizations import (
+    AuthorizedLayerFinalizationMutation,
+)
 from vfx_harness.orchestration.unit_state_identity import (
     DIGEST_SCHEMA,
     downstream,
-    replan_effects,
     unit_digest,
 )
 from vfx_harness.orchestration.unit_state_identity import (
-    digest_matched_passed as digest_matched_passed,
+    authorized_passed_unit_ids as authorized_passed_unit_ids,
+)
+from vfx_harness.orchestration.unit_state_identity import (
+    replan_effects as replan_effects,
 )
 from vfx_harness.orchestration.unit_state_lifecycle import TRANSITIONS as _TRANSITIONS
 from vfx_harness.orchestration.unit_state_lock import (
     serialized_state_mutation,
+    unit_state_lock,
     unit_state_path,
 )
 from vfx_harness.orchestration.unit_state_queries import SCHEMA as SCHEMA
@@ -59,9 +75,7 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
         # supersession history — the forbidden act is reinitializing OVER existing
         # units, which still fails closed below.
         if str(current.get("layer")) != str(layer_id):
-            raise ValueError(
-                f"work-unit state belongs to layer {current.get('layer')}, not {layer_id}"
-            )
+            raise ValueError(f"work-unit state belongs to layer {current.get('layer')}, not {layer_id}")
         now = _now()
         value = {
             **current,
@@ -86,32 +100,11 @@ def initialize(folder: str | Path, layer_id: str, units: tuple[WorkUnit, ...], *
         validate_current(current, layer_id, units)
         if current.get("plan_hash") == plan_hash:
             return current
-        # `plan_hash` is sha256 of the selected layers.json, which names every
-        # materialized layer. A sibling rematerialization changes that file while
-        # this layer's unit DAG can be byte-identical. That is a plan-identity
-        # adoption, not a DAG change: empty-base `vfx units replan` would treat
-        # every unit as added and reset passed checkpoints (HIR-0040).
-        if int(current.get("digest_schema", 1)) != DIGEST_SCHEMA:
-            raise ValueError(
-                "work-unit plan changed; apply a transactional replan instead of reinitializing"
-            )
-        apply_replan(
-            folder,
-            layer_id,
-            units,
-            units,
-            old_plan_hash=str(current["plan_hash"]),
-            new_plan_hash=plan_hash,
-            owner="vfx-harness.initialize",
-            trigger=(
-                "selected layers.json identity changed while this layer's unit DAG is unchanged"
-            ),
-            evidence=[f"layers.json sha256 {plan_hash}"],
+        raise ValueError(
+            "work-unit state authority capsule does not match the selected layer "
+            "capsule; publish authority through the atomic authority-state coordinator "
+            "before initializing"
         )
-        adopted = load(folder, layer_id)
-        if not adopted:
-            raise ValueError("work-unit state disappeared during plan-identity adoption")
-        return adopted
     now = _now()
     value = {
         "schema": SCHEMA,
@@ -151,26 +144,30 @@ def supersede_layer_units(
     """Retire every unit of a layer whose authority was replaced, under an audited
     transaction. Refuses when any unit has been accepted.
 
-    Re-materialization publishes a new view and then moves state; if the move cannot
-    validate — the old DAG is gone, or its digests predate a WorkUnit schema change —
-    the state is orphaned and no `apply_replan` base can be reconstructed. This retires
-    it explicitly, with the operator's owner/trigger/evidence recorded, rather than
-    leaving it to be hand-edited or silently reseeded.
+    This is explicit orphan retirement only. If an authority-state transition cannot
+    compare the old DAG — for example because its digests predate the current WorkUnit
+    schema — no preservation base can be reconstructed. The operator records the exact
+    owner, trigger, and evidence instead of hand-editing or silently reseeding state.
     """
     if not owner.strip() or not trigger.strip() or not evidence:
         raise ValueError("superseding layer units requires owner, trigger, and evidence")
     value = load(folder, layer_id)
     if not value:
         return {}
-    accepted = sorted(
-        uid for uid, row in value["units"].items() if row.get("status") == "passed"
-    )
+    accepted = sorted(uid for uid, row in value["units"].items() if row.get("status") == "passed")
     if accepted and not allow_accepted:
         raise ValueError(
             f"layer {layer_id} has accepted unit(s) {', '.join(accepted)}; "
             "move that state with a replan transaction instead"
         )
     now = _now()
+    layer_finalization_lifecycle.archive_layer_finalization(
+        value,
+        disposition="superseded",
+        reason=trigger,
+        evidence=list(evidence),
+        at=now,
+    )
     superseded = list(value.get("superseded") or [])
     for uid in sorted(value["units"]):
         prior = dict(value["units"][uid])
@@ -289,9 +286,7 @@ def freeze_checkpoint(
 ) -> dict:
     """Resolve wildcards once and persist the immutable candidate boundary."""
     if attempt is None:
-        raise ValueError(
-            "checkpoint freeze requires the exact active work-unit attempt"
-        )
+        raise ValueError("checkpoint freeze requires the exact active work-unit attempt")
     value = load(folder, layer_id)
     if not value:
         raise ValueError("work-unit state is not initialized")
@@ -361,9 +356,7 @@ def block_dependents(
                 evidence=[f"upstream:{failed_unit}"],
                 at=now,
             )
-            slot.setdefault("history", []).append(
-                {"at": now, "from": before, "to": "blocked", "reason": str(reason)}
-            )
+            slot.setdefault("history", []).append({"at": now, "from": before, "to": "blocked", "reason": str(reason)})
             slot["status"] = "blocked"
             slot["updated"] = now
     value["updated"] = now
@@ -399,6 +392,13 @@ def invalidate_checkpoint(
 
     affected = downstream({unit_id}, units)
     now = _now()
+    layer_finalization_lifecycle.archive_layer_finalization(
+        value,
+        disposition="revoked",
+        reason=reason,
+        evidence=list(evidence),
+        at=now,
+    )
     archived: dict[str, dict] = {}
     for uid in sorted(affected):
         slot = value["units"][uid]
@@ -460,10 +460,8 @@ def invalidate_checkpoint(
     return record
 
 
-@selected_attempt_state_mutation
-@serialized_state_mutation(_path)
-def record_hypothesis_falsification(
-    folder: str | Path,
+def _hypothesis_falsification_payload(
+    value: Mapping[str, Any],
     layer_id: str,
     unit: WorkUnit,
     units: tuple[WorkUnit, ...],
@@ -477,57 +475,21 @@ def record_hypothesis_falsification(
     decisions: list[dict],
     conflict: dict,
     evidence: list[str],
-    affected_seed_ids: set[str] | tuple[str, ...] | list[str] | None = None,
-    preserve_accepted_source: bool = False,
-    attempt: unit_attempts.UnitAttemptClaim | Mapping[str, Any] | None = None,
-    selection_token: AuthoritySelectionToken | None = None,
+    affected_seed_ids: set[str] | tuple[str, ...] | list[str] | None,
+    recorded_at: str,
 ) -> dict:
-    """Seal a plan finding and stop the unit without granting it mutation authority.
-
-    The authoritative copy lives in the work-unit state transaction.  A content-identical
-    JSON artifact is also written for the public replan command and external review.
-    """
-
-    validate_unit_dag(units, f"layer {layer_id} work units")
-    value = load(folder, layer_id)
-    if not value:
-        raise ValueError("work-unit state is not initialized")
-    validate_current(value, layer_id, units)
-    slot = value["units"].get(unit.id)
-    if slot is None:
-        raise KeyError(f"unknown work unit {unit.id!r}")
-    before = slot.get("status")
-    source_attempt = unit_attempts.require_attempt_matches_slot(
-        slot,
-        attempt,
-        layer_id=str(layer_id),
-        unit_id=unit.id,
-        unit_digest=unit_digest(unit),
-        plan_hash=value.get("plan_hash"),
-    )
-    preserve_accepted = bool(preserve_accepted_source and before == "passed")
-    if not preserve_accepted and source_attempt is None:
-        raise ValueError(
-            "hypothesis falsification requires the exact active work-unit attempt; "
-            "review an unclaimed historical row into retryable state first"
-        )
-    if not preserve_accepted and "hypothesis_falsified" not in _TRANSITIONS.get(before, set()):
-        raise ValueError(f"cannot falsify plan hypothesis for {unit.id} from state {before}")
-    if preserve_accepted_source and not preserve_accepted:
-        raise ValueError(
-            f"preserve_accepted_source requires passed state for {unit.id}, found {before}"
-        )
+    if not isinstance(recorded_at, str) or not recorded_at.strip():
+        raise ValueError("hypothesis falsification recorded_at must be non-empty")
     known_ids = {candidate.id for candidate in units}
     seeds = {str(uid) for uid in (affected_seed_ids or {unit.id}) if str(uid)}
     seeds.add(unit.id)
     upstream_owners = sorted(seeds - known_ids)
     local_seeds = (seeds & known_ids) | {unit.id}
     affected = sorted(downstream(local_seeds, units))
-    now = _now()
     payload = {
         "schema": HYPOTHESIS_FALSIFICATION_SCHEMA,
         "record_id": "pending",
-        "recorded_at": now,
+        "recorded_at": recorded_at,
         "layer": str(layer_id),
         "unit": unit.id,
         "identities": {
@@ -553,6 +515,304 @@ def record_hypothesis_falsification(
     ).hexdigest()
     payload["record_id"] = f"hf-{digest[:20]}"
     HypothesisFalsification.parse(payload)
+    return payload
+
+
+def prepare_accepted_hypothesis_falsification(
+    folder: str | Path,
+    layer_id: str,
+    unit: WorkUnit,
+    units: tuple[WorkUnit, ...],
+    *,
+    bundle_hash: str,
+    unit_plan_hash: str,
+    candidate_hash: str,
+    settings_hash: str,
+    contract_ids: list[str],
+    observations: list[dict],
+    decisions: list[dict],
+    conflict: dict,
+    evidence: list[str],
+    affected_seed_ids: set[str] | tuple[str, ...] | list[str] | None = None,
+    recorded_at: str,
+) -> dict:
+    """Prepare the exact finding later projected from a terminal layer receipt."""
+
+    validate_unit_dag(units, f"layer {layer_id} work units")
+    with unit_state_lock(folder, layer_id, exclusive=False):
+        value = load(folder, layer_id)
+        if not value:
+            raise ValueError("work-unit state is not initialized")
+        validate_current(value, layer_id, units)
+        slot = value["units"].get(unit.id)
+        if not isinstance(slot, Mapping) or slot.get("status") != "passed":
+            raise ValueError(
+                "accepted hypothesis-falsification preparation requires a passed "
+                f"source unit, found {None if slot is None else slot.get('status')!r}"
+            )
+        return _hypothesis_falsification_payload(
+            value,
+            layer_id,
+            unit,
+            units,
+            bundle_hash=bundle_hash,
+            unit_plan_hash=unit_plan_hash,
+            candidate_hash=candidate_hash,
+            settings_hash=settings_hash,
+            contract_ids=contract_ids,
+            observations=observations,
+            decisions=decisions,
+            conflict=conflict,
+            evidence=evidence,
+            affected_seed_ids=affected_seed_ids,
+            recorded_at=recorded_at,
+        )
+
+
+def record_prepared_accepted_hypothesis_falsification(
+    folder: str | Path,
+    layer_id: str,
+    units: tuple[WorkUnit, ...],
+    payload: Mapping[str, Any],
+    *,
+    selection_token: AuthoritySelectionToken,
+    required_layer_finalization_receipt_digest: str,
+    finalization_authorization: AuthorizedLayerFinalizationMutation,
+) -> dict:
+    """Reconcile one exact receipt-carried finding without rediscovering evidence."""
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("prepared hypothesis falsification must be an object")
+    raw = dict(payload)
+    parsed = HypothesisFalsification.parse(
+        raw,
+        "prepared hypothesis falsification",
+    )
+    if parsed.layer != str(layer_id):
+        raise ValueError("prepared hypothesis falsification belongs to another layer")
+    try:
+        source = next(unit for unit in units if unit.id == parsed.unit)
+    except StopIteration as exc:
+        raise ValueError("prepared hypothesis falsification source unit is not in the current DAG") from exc
+    identities = raw.get("identities")
+    conflict = raw.get("conflict")
+    if not isinstance(identities, Mapping) or not isinstance(conflict, Mapping):
+        raise ValueError("prepared hypothesis falsification identities and conflict must be objects")
+    seeds = {
+        *(str(unit_id) for unit_id in parsed.affected),
+        *(str(unit_id) for unit_id in parsed.fault_owner_units),
+    }
+    return record_hypothesis_falsification(
+        folder,
+        str(layer_id),
+        source,
+        units,
+        bundle_hash=str(identities.get("bundle_hash")),
+        unit_plan_hash=str(identities.get("unit_plan_hash")),
+        candidate_hash=str(identities.get("candidate_hash")),
+        settings_hash=str(identities.get("settings_hash")),
+        contract_ids=list(parsed.contract_ids),
+        observations=[dict(row) for row in parsed.observations],
+        decisions=[{"id": row.id, "strength": row.strength} for row in parsed.decisions],
+        conflict=dict(conflict),
+        evidence=list(parsed.evidence),
+        affected_seed_ids=seeds,
+        preserve_accepted_source=True,
+        selection_token=selection_token,
+        recorded_at=parsed.recorded_at,
+        expected_payload=raw,
+        required_layer_finalization_receipt_digest=(required_layer_finalization_receipt_digest),
+        finalization_authorization=finalization_authorization,
+    )
+
+
+def _require_finalization_mutation_authorization(
+    folder: str | Path,
+    value: Mapping[str, Any],
+    units: tuple[WorkUnit, ...],
+    *,
+    selection_token: AuthoritySelectionToken,
+    required_receipt_digest: str,
+    authorization: AuthorizedLayerFinalizationMutation | None,
+) -> LayerFinalizationReceipt:
+    """Recheck a terminal authorization under selection-SH -> unit-state-EX."""
+
+    if not isinstance(authorization, AuthorizedLayerFinalizationMutation):
+        raise ValueError(
+            "accepted hypothesis falsification requires typed terminal-finalization "
+            "mutation authorization"
+        )
+    required_receipt_digest = require_digest(
+        required_receipt_digest,
+        "accepted hypothesis falsification terminal receipt",
+    )
+    receipt = authorization.receipt
+    completions = authorization.completion_authorization
+    if receipt.receipt_digest != required_receipt_digest:
+        raise ValueError(
+            "hypothesis falsification terminal authorization names another receipt"
+        )
+    if not isinstance(selection_token, AuthoritySelectionToken):
+        raise ValueError(
+            "accepted hypothesis falsification requires an exact selection token"
+        )
+    current_projection = parse_authority_selection_token(
+        selection_token.to_dict(),
+        "accepted hypothesis falsification selection token",
+    )
+    if completions.selection_token != current_projection:
+        raise ValueError(
+            "hypothesis falsification terminal authorization belongs to another "
+            "selection"
+        )
+    context = resolve_current_authority_state(folder)
+    if context is None or context.head_ref != completions.authority_state_head_ref:
+        raise ValueError(
+            "hypothesis falsification terminal authorization belongs to another "
+            "authority-state head"
+        )
+    sealed = authorized_passed_unit_ids(
+        value,
+        units,
+        completion_authorization=completions,
+    )
+    expected_units = {unit.id for unit in units}
+    if sealed != expected_units:
+        raise ValueError(
+            "hypothesis falsification terminal authorization does not cover every "
+            "current finalization unit"
+        )
+    raw_terminal = (
+        (value.get("layer_finalization") or {}).get("terminal_receipt")
+        if isinstance(value.get("layer_finalization"), Mapping)
+        else None
+    )
+    current = LayerFinalizationReceipt.parse(
+        raw_terminal,
+        "accepted hypothesis falsification current terminal receipt",
+    )
+    if current != receipt:
+        raise ValueError(
+            "hypothesis falsification terminal authorization does not name the exact "
+            "current receipt"
+        )
+    return current
+
+
+@selected_attempt_state_mutation
+@serialized_state_mutation(_path)
+def record_hypothesis_falsification(
+    folder: str | Path,
+    layer_id: str,
+    unit: WorkUnit,
+    units: tuple[WorkUnit, ...],
+    *,
+    bundle_hash: str,
+    unit_plan_hash: str,
+    candidate_hash: str,
+    settings_hash: str,
+    contract_ids: list[str],
+    observations: list[dict],
+    decisions: list[dict],
+    conflict: dict,
+    evidence: list[str],
+    affected_seed_ids: set[str] | tuple[str, ...] | list[str] | None = None,
+    preserve_accepted_source: bool = False,
+    attempt: unit_attempts.UnitAttemptClaim | Mapping[str, Any] | None = None,
+    selection_token: AuthoritySelectionToken | None = None,
+    recorded_at: str | None = None,
+    expected_payload: Mapping[str, Any] | None = None,
+    required_layer_finalization_receipt_digest: str | None = None,
+    finalization_authorization: AuthorizedLayerFinalizationMutation | None = None,
+) -> dict:
+    """Seal a plan finding and stop the unit without granting it mutation authority.
+
+    The authoritative copy lives in the work-unit state transaction. A content-identical
+    JSON artifact is also written for review and a future typed authority-replacement
+    consumer; it does not itself authorize state movement.
+    """
+
+    validate_unit_dag(units, f"layer {layer_id} work units")
+    value = load(folder, layer_id)
+    if not value:
+        raise ValueError("work-unit state is not initialized")
+    validate_current(value, layer_id, units)
+    authorized_terminal_receipt = None
+    if required_layer_finalization_receipt_digest is not None:
+        authorized_terminal_receipt = _require_finalization_mutation_authorization(
+            folder,
+            value,
+            units,
+            selection_token=selection_token,
+            required_receipt_digest=required_layer_finalization_receipt_digest,
+            authorization=finalization_authorization,
+        )
+    slot = value["units"].get(unit.id)
+    if slot is None:
+        raise KeyError(f"unknown work unit {unit.id!r}")
+    before = slot.get("status")
+    source_attempt = unit_attempts.require_attempt_matches_slot(
+        slot,
+        attempt,
+        layer_id=str(layer_id),
+        unit_id=unit.id,
+        unit_digest=unit_digest(unit),
+        plan_hash=value.get("plan_hash"),
+    )
+    preserve_accepted = bool(preserve_accepted_source and before == "passed")
+    if preserve_accepted_source and required_layer_finalization_receipt_digest is None:
+        raise ValueError(
+            "preserving an accepted falsification source requires typed terminal "
+            "finalization authority"
+        )
+    if not preserve_accepted and source_attempt is None:
+        raise ValueError(
+            "hypothesis falsification requires the exact active work-unit attempt; "
+            "review an unclaimed historical row into retryable state first"
+        )
+    if not preserve_accepted and "hypothesis_falsified" not in _TRANSITIONS.get(before, set()):
+        raise ValueError(f"cannot falsify plan hypothesis for {unit.id} from state {before}")
+    if preserve_accepted_source and not preserve_accepted:
+        raise ValueError(f"preserve_accepted_source requires passed state for {unit.id}, found {before}")
+    now = recorded_at or _now()
+    payload = _hypothesis_falsification_payload(
+        value,
+        layer_id,
+        unit,
+        units,
+        bundle_hash=bundle_hash,
+        unit_plan_hash=unit_plan_hash,
+        candidate_hash=candidate_hash,
+        settings_hash=settings_hash,
+        contract_ids=contract_ids,
+        observations=observations,
+        decisions=decisions,
+        conflict=conflict,
+        evidence=evidence,
+        affected_seed_ids=affected_seed_ids,
+        recorded_at=now,
+    )
+    if expected_payload is not None and dict(expected_payload) != payload:
+        raise ValueError("prepared hypothesis falsification no longer matches current durable state")
+    if required_layer_finalization_receipt_digest is not None:
+        assert authorized_terminal_receipt is not None
+        bound_finding = authorized_terminal_receipt.projection.get("finding")
+        if bound_finding != payload:
+            raise ValueError(
+                "hypothesis falsification payload is not the exact finding bound "
+                "by the current terminal layer-finalization receipt"
+            )
+    affected = list(payload["affected"])
+    same_id = [
+        row
+        for row in value.get("falsifications", [])
+        if isinstance(row, Mapping) and row.get("record_id") == payload["record_id"]
+    ]
+    if same_id:
+        if len(same_id) != 1 or dict(same_id[0]) != payload or slot.get("falsification") != payload:
+            raise ValueError("hypothesis falsification record id conflicts with durable state")
+        hypothesis_falsification_projection.publish_projection(folder, payload)
+        return payload
 
     event = {
         "at": now,
@@ -560,7 +820,7 @@ def record_hypothesis_falsification(
         "to": "passed" if preserve_accepted else "hypothesis_falsified",
         "reason": (
             "composed canonical evidence falsified authority after unit acceptance; "
-            "checkpoint preserved until transactional replan"
+            "checkpoint preserved until a validated authority amendment is selected"
             if preserve_accepted
             else "executable evidence requires authority outside the active unit plan"
         ),
@@ -594,8 +854,8 @@ def record_hypothesis_falsification(
         dependent_before = dependent.get("status")
         if dependent_before == "passed":
             # A typed upstream fault-owner finding must not silently revoke accepted
-            # authority. Preserve the checkpoint until vfx units replan consumes this
-            # immutable finding and publishes the complete invalidation transaction.
+            # authority. Preserve the checkpoint until reviewed replacement authority
+            # publishes the complete invalidation transaction.
             continue
         if dependent_before == "superseded":
             raise ValueError(
@@ -604,9 +864,7 @@ def record_hypothesis_falsification(
             )
         if dependent_before != "blocked":
             if "blocked" not in _TRANSITIONS.get(dependent_before, set()):
-                raise ValueError(
-                    f"cannot block downstream unit {affected_unit} from {dependent_before}"
-                )
+                raise ValueError(f"cannot block downstream unit {affected_unit} from {dependent_before}")
             unit_attempts.archive_active_attempt(
                 dependent,
                 disposition="revoked",
@@ -614,13 +872,15 @@ def record_hypothesis_falsification(
                 evidence=list(evidence),
                 at=now,
             )
-            dependent.setdefault("history", []).append({
-                "at": now,
-                "from": dependent_before,
-                "to": "blocked",
-                "reason": f"upstream hypothesis {unit.id} was falsified",
-                "metadata": {"record_id": payload["record_id"]},
-            })
+            dependent.setdefault("history", []).append(
+                {
+                    "at": now,
+                    "from": dependent_before,
+                    "to": "blocked",
+                    "reason": f"upstream hypothesis {unit.id} was falsified",
+                    "metadata": {"record_id": payload["record_id"]},
+                }
+            )
             dependent["status"] = "blocked"
             dependent["updated"] = now
     value.setdefault("falsifications", []).append(payload)
@@ -630,201 +890,5 @@ def record_hypothesis_falsification(
     try:
         hypothesis_falsification_projection.publish_projection(folder, payload)
     except OSError as exc:
-        raise hypothesis_falsification_projection.FalsificationProjectionPending(
-            payload
-        ) from exc
+        raise hypothesis_falsification_projection.FalsificationProjectionPending(payload) from exc
     return payload
-
-
-@serialized_state_mutation(_path)
-def apply_replan(
-    folder: str | Path,
-    layer_id: str,
-    old_units: tuple[WorkUnit, ...],
-    new_units: tuple[WorkUnit, ...],
-    *,
-    old_plan_hash: str,
-    new_plan_hash: str,
-    owner: str,
-    trigger: str,
-    evidence: list[str],
-    falsification_id: str | None = None,
-    falsification_payload: Mapping[str, Any] | None = None,
-    hard_constraint_approval: str | None = None,
-    discard_accepted: bool = False,
-    reopen: frozenset[str] | set[str] | tuple[str, ...] | None = None,
-    state_backed_base: bool = False,
-) -> dict:
-    """Atomically publish state effects and an audit record for a validated DAG amendment."""
-    if not owner.strip() or not trigger.strip() or not evidence:
-        raise ValueError("replan requires owner, trigger, and non-empty evidence")
-    validate_unit_dag(old_units, "old work-unit DAG")
-    validate_unit_dag(new_units, "new work-unit DAG")
-    value = load(folder, layer_id)
-    if not value:
-        raise ValueError("work-unit state is not initialized")
-    state_unit_ids = set(value.get("units") or {})
-    # Under unit-first authority a generation's bundle carries no unit DAG: the layer's
-    # units exist only in its materialized view and this durable state. Superseding such
-    # a generation therefore arrives with an EMPTY base DAG while state holds the real
-    # units; the state itself is the only truthful old identity (layer + its recorded
-    # plan hash), and every state unit absent from the new DAG must be retired WITH an
-    # audit trail — the bundle-level diff alone would have dropped them silently.
-    deferred_base = not old_units and bool(state_unit_ids)
-    if deferred_base:
-        if str(value.get("layer")) != str(layer_id):
-            raise ValueError(
-                f"work-unit state belongs to layer {value.get('layer')}, not {layer_id}"
-            )
-        if value.get("plan_hash") != old_plan_hash:
-            raise ValueError("replan base layer/plan hash does not match active state")
-    else:
-        validate_current(value, layer_id, old_units)
-        if str(value.get("layer")) != str(layer_id) or value.get("plan_hash") != old_plan_hash:
-            raise ValueError("replan base layer/plan hash does not match active state")
-
-    old = {unit.id: unit for unit in old_units}
-    new_ids = {unit.id for unit in new_units}
-    if deferred_base and state_backed_base:
-        if int(value.get("digest_schema", 1)) != DIGEST_SCHEMA:
-            raise ValueError(
-                "digest-bound replan base uses an incompatible work-unit digest schema"
-            )
-        stored_hashes: dict[str, str] = {}
-        for uid, row in value["units"].items():
-            digest = (row or {}).get("unit_hash")
-            if not isinstance(digest, str) or not digest:
-                raise ValueError(
-                    f"digest-bound replan base is missing unit_hash for {uid}"
-                )
-            stored_hashes[str(uid)] = digest
-        new_by_id = {unit.id: unit for unit in new_units}
-        added_ids = new_ids - state_unit_ids
-        removed_ids = state_unit_ids - new_ids
-        changed_ids = {
-            uid
-            for uid in state_unit_ids & new_ids
-            if stored_hashes[uid] != unit_digest(new_by_id[uid])
-        }
-        invalidated_ids = downstream(added_ids | changed_ids, new_units)
-        effects = {
-            "added": sorted(added_ids),
-            "removed": sorted(removed_ids),
-            "changed": sorted(changed_ids),
-            "invalidated": sorted(invalidated_ids),
-            "preserved": sorted(state_unit_ids & new_ids - invalidated_ids),
-        }
-    else:
-        effects = replan_effects(old_units, new_units)
-    added = set(effects["added"])
-    removed = set(effects["removed"])
-    changed = set(effects["changed"])
-    reopen_ids = {str(uid) for uid in (reopen or ()) if str(uid)}
-    invalidated = set(effects["invalidated"]) | (reopen_ids & new_ids)
-    preserved = set(effects["preserved"]) - invalidated
-    orphaned = (
-        set()
-        if state_backed_base
-        else state_unit_ids - set(old) - {unit.id for unit in new_units}
-        if deferred_base
-        else set()
-    )
-    now = _now()
-
-    old_identity_ids = state_unit_ids if deferred_base and state_backed_base else set(old)
-    retiring = sorted(removed | (invalidated & old_identity_ids) | orphaned)
-    # A published DAG amendment is itself the recorded authority for the units it
-    # removes or invalidates — but ORPHANS are invisible to the amendment diff (they
-    # exist only in materialization-era state), so retiring an accepted orphan needs
-    # its own explicit decision, exactly like --discard-accepted at rematerialization.
-    accepted_orphans = sorted(
-        uid for uid in orphaned if (value.get("units", {}).get(uid) or {}).get("status") == "passed"
-    )
-    if accepted_orphans and not discard_accepted and falsification_id is None:
-        raise ValueError(
-            f"replan would retire accepted unit(s) {', '.join(accepted_orphans)}; "
-            "discarding proven work requires --discard-accepted or a typed falsification record"
-        )
-
-    if falsification_id is not None:
-        unit_state_replan.require_unconsumed_falsification(
-            value,
-            falsification_id,
-            falsification_payload,
-        )
-    elif falsification_payload is not None:
-        raise ValueError("replan falsification payload requires its exact record id")
-
-    unit_state_replan.revoke_active_authority(
-        value["units"],
-        plan_changed=old_plan_hash != new_plan_hash,
-        evidence=list(evidence),
-        at=now,
-    )
-
-    next_slots: dict[str, dict] = {}
-    superseded = list(value.get("superseded") or [])
-    for uid in retiring:
-        superseded.append(
-            unit_state_replan.retire_slot(
-                value["units"].get(uid) or {},
-                uid,
-                new_plan_hash=new_plan_hash,
-                evidence=list(evidence),
-                at=now,
-            )
-        )
-    for unit in new_units:
-        if unit.id in preserved:
-            slot = dict(value["units"][unit.id])
-        else:
-            slot = {
-                "status": "pending",
-                "updated": now,
-                "history": [
-                    {
-                        "at": now,
-                        "from": "superseded" if unit.id in old_identity_ids else None,
-                        "to": "pending",
-                        "reason": "transactional plan amendment",
-                    }
-                ],
-            }
-        slot["unit_hash"] = unit_digest(unit)
-        next_slots[unit.id] = slot
-
-    record = {
-        "schema": 1,
-        "at": now,
-        "layer": str(layer_id),
-        "owner": owner,
-        "trigger": trigger,
-        "evidence": list(evidence),
-        "old_plan_hash": old_plan_hash,
-        "new_plan_hash": new_plan_hash,
-        "added": sorted(added),
-        "removed": sorted(removed),
-        "changed": sorted(changed),
-        "invalidated": sorted(invalidated),
-        "preserved": sorted(preserved),
-    }
-    if orphaned:
-        record["orphaned"] = sorted(orphaned)
-    if discard_accepted:
-        record["discard_accepted"] = True
-    if falsification_id is not None:
-        record["falsification_id"] = str(falsification_id)
-    if hard_constraint_approval is not None:
-        record["hard_constraint_approval"] = str(hard_constraint_approval)
-    value.update(
-        plan_hash=new_plan_hash,
-        revision=int(value.get("revision") or 1) + 1,
-        units=next_slots,
-        superseded=superseded,
-        updated=now,
-    )
-    value.setdefault("replans", []).append(record)
-    # Plan effects and their audit record share one rename boundary: readers see the old
-    # plan state or the complete amended state, never one without the other.
-    _write(_path(folder, layer_id), value)
-    return record

@@ -53,13 +53,14 @@ UNPAID_IMAGE_DEBT_RULE = (
 
 UNPAID_IMAGE_DEBT_AUTHORITY = (
     "pay the named image_contract debts with propose_checks on the live plate "
-    "(exact id, frame, property kind, axis), or amend the claim; vfx units replan "
-    "consumes the finding. Canonical repair cannot author evaluation contracts"
+    "(exact id, frame, property kind, axis), or publish an amended claim through "
+    "its owning authority boundary. The finding does not mutate state. Canonical "
+    "repair cannot author evaluation contracts"
 )
 
 UNSATISFIABLE_PAIR_AUTHORITY = (
-    "amend the named contracts so they are jointly satisfiable, then "
-    "vfx units replan; builders cannot invent a third interpolation"
+    "publish amended authority in which the named contracts are jointly satisfiable; "
+    "builders cannot invent a third interpolation and the finding does not reopen state"
 )
 
 

@@ -19,6 +19,8 @@ from vfx_harness.agents.planner import (
 )
 from vfx_harness.agents.resilience import AgentSessionFailure
 from vfx_harness.domain.authority_head_records import canonical_json_bytes
+from vfx_harness.domain.authority_state_records import AuthorityStateRecordRef
+from vfx_harness.domain.layer_outcomes import SealedLayerOutcome
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.domain.stop_transaction_state import (
@@ -34,7 +36,7 @@ from vfx_harness.domain.stop_transactions import (
 )
 from vfx_harness.evaluation.plan_gate import Finding, GateResult
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration import revalidation
+from vfx_harness.orchestration import layer_publication
 from vfx_harness.orchestration.authority_selection import (
     SelectedAuthorityResolutionError,
 )
@@ -316,14 +318,14 @@ def test_invalid_durable_inputs_do_not_promote_opaque_bytes_into_authority() -> 
         dependency="2",
         required_outcomes=frozenset(),
         script_state=None,
-        current_eligibility=None,
+        current_publication_receipt_digest=None,
     )
     second_outcome, second_outcome_issues = materialization_stop_state.dependency_outcome_state(
         json.dumps(["run-b"]).encode(),
         dependency="2",
         required_outcomes=frozenset(),
         script_state=None,
-        current_eligibility=None,
+        current_publication_receipt_digest=None,
     )
     assert first_outcome == second_outcome == {
         "layer": "2",
@@ -345,10 +347,58 @@ def test_invalid_durable_inputs_do_not_promote_opaque_bytes_into_authority() -> 
             dependency="2",
             required_outcomes=frozenset(),
             script_state=None,
-            current_eligibility=None,
+            current_publication_receipt_digest=None,
         )
         assert outcome == {"layer": "2", "status": "invalid", "reason": "schema"}
         assert outcome_issues == ("dependency_outcome_2_invalid",)
+
+
+def test_dependency_stop_state_binds_the_exact_verified_publication_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_digest = "d" * 64
+    sealed = SealedLayerOutcome(
+        layer_id="2",
+        status="passed",
+        script="build/02.py",
+        receipt_digest=receipt_digest,
+        evidence=(
+            {"id": "handoff", "kind": "scene_contract", "pass": True},
+        ),
+    )
+    monkeypatch.setattr(
+        materialization_stop_state,
+        "parse_sealed_layer_outcome",
+        lambda *_args, **_kwargs: sealed,
+    )
+
+    current, issues = materialization_stop_state.dependency_outcome_state(
+        b"{}",
+        dependency="2",
+        required_outcomes=frozenset({("scene_contract", "handoff")}),
+        script_state={"state": "present", "sha256": "a" * 64, "bytes": 4},
+        current_publication_receipt_digest=receipt_digest,
+    )
+    assert issues == ()
+    assert current["status"] == "passed"
+    assert current["finalization_receipt_digest"] == receipt_digest
+    assert current["required_evidence"] == [
+        {"id": "handoff", "kind": "scene_contract", "pass": True}
+    ]
+
+    stale, stale_issues = materialization_stop_state.dependency_outcome_state(
+        b"{}",
+        dependency="2",
+        required_outcomes=frozenset({("scene_contract", "handoff")}),
+        script_state={"state": "present", "sha256": "a" * 64, "bytes": 4},
+        current_publication_receipt_digest="e" * 64,
+    )
+    assert stale == {
+        "layer": "2",
+        "status": "invalid",
+        "reason": "publication_receipt_mismatch",
+    }
+    assert stale_issues == ("dependency_outcome_2_publication_receipt_mismatch",)
 
 
 def test_invalid_authority_bytes_change_audit_not_stop_identity(
@@ -543,14 +593,14 @@ def test_invalid_selected_view_artifact_bytes_are_audit_only(
     }
 
 
-def test_stale_passed_dependency_is_invalid_with_opaque_bytes_audit_only(
+def test_unverified_passed_dependency_is_invalid_with_opaque_bytes_audit_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stale_reasons = (
-        "input manifest changed",
-        "reference changed or is missing for f40",
-        "sealed canonical changed or is missing for f40",
+    publication_failures = (
+        "no current terminal finalization receipt",
+        "terminal receipt source closure is stale",
+        "ledger projection disagrees with the terminal receipt",
     )
     semantic_envelopes = []
     helper_calls: list[tuple[str, str]] = []
@@ -568,21 +618,50 @@ def test_stale_passed_dependency_is_invalid_with_opaque_bytes_audit_only(
         "inspect_materialization",
         unexpected_inspection,
     )
-    for reason_index, reason in enumerate(stale_reasons):
+    def parsed_outcome(value: object, *, expected_layer_id: str) -> SealedLayerOutcome:
+        assert isinstance(value, dict)
+        return SealedLayerOutcome(
+            layer_id=expected_layer_id,
+            status="passed",
+            script=str(value["script"]),
+            receipt_digest="d" * 64,
+            evidence=(
+                {
+                    "id": "handoff",
+                    "kind": "scene_contract",
+                    "pass": True,
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        materialization_stop_evidence,
+        "parse_sealed_layer_outcome",
+        parsed_outcome,
+    )
+    monkeypatch.setattr(
+        materialization_stop_state,
+        "parse_sealed_layer_outcome",
+        parsed_outcome,
+    )
+    for reason_index, reason in enumerate(publication_failures):
         pair = []
 
-        def stale(
-            _folder: Path,
+        def unavailable(
+            folder: Path,
             layer: SimpleNamespace,
-            outcome: object,
+            _selected_authority: object,
             *,
             _reason: str = reason,
-        ) -> tuple[bool, tuple[str, ...]]:
-            assert isinstance(outcome, dict)
-            helper_calls.append((layer.id, str(outcome["run_id"])))
-            return False, (_reason,)
+        ) -> None:
+            helper_calls.append((layer.id, folder.name))
+            raise layer_publication.LayerPublicationConflict(_reason)
 
-        monkeypatch.setattr(revalidation, "current_outcome_eligibility", stale)
+        monkeypatch.setattr(
+            materialization_stop_evidence.layer_publication,
+            "require_current_layer_publication",
+            unavailable,
+        )
         for marker in ("run-a", "run-b"):
             run_id = f"materialization-stale-{reason_index}-{marker}"
             shot, layout, bundle, candidate = _fixture(
@@ -658,8 +737,7 @@ def test_stale_passed_dependency_is_invalid_with_opaque_bytes_audit_only(
         expected_state = {
             "layer": "2",
             "status": "invalid",
-            "reason": "stale",
-            "eligibility_reasons": [reason],
+            "reason": "publication_unverified",
         }
         assert first[1]["authoritative_before"]["dependency_outcomes"]["2"] == (
             expected_state
@@ -685,18 +763,21 @@ def test_stale_passed_dependency_is_invalid_with_opaque_bytes_audit_only(
         assert first_audit["dependency_outcomes"]["2"]["script_record"][
             "sha256"
         ] != second_audit["dependency_outcomes"]["2"]["script_record"]["sha256"]
+        assert first_audit["dependency_outcomes"]["2"]["current_publication"][
+            "error"
+        ] == reason
         semantic_envelopes.append(first[0])
 
     assert helper_calls == [
-        ("2", marker)
-        for _reason in stale_reasons
+        ("2", f"materialization-stale-{reason_index}-{marker}")
+        for reason_index, _reason in enumerate(publication_failures)
         for marker in ("run-a", "run-b")
     ]
     assert len(
         {envelope.authoritative_before_digest for envelope in semantic_envelopes}
-    ) == len(stale_reasons)
+    ) == 1
     assert len({envelope.attempt_evidence_digest for envelope in semantic_envelopes}) == (
-        len(stale_reasons)
+        1
     )
 
 
@@ -797,19 +878,17 @@ def test_malformed_view_pointer_and_nested_outcome_audit_are_not_authority(
         dependency="2",
         required_outcomes=frozenset({("scene_contract", "handoff")}),
         script_state=None,
-        current_eligibility=None,
+        current_publication_receipt_digest=None,
     )
     assert issues == ("dependency_outcome_2_invalid",)
-    assert outcome == {"layer": "2", "status": "invalid", "reason": "canonical_missing"}
+    assert outcome == {"layer": "2", "status": "invalid", "reason": "schema"}
 
 
-def test_upstream_outcome_gate_requires_schema_layer_and_registered_evidence_location(
+def test_upstream_outcome_gate_requires_current_receipt_and_registered_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dependency_id = "camera.hero"
-    outcome_path = layer_outcome_path(tmp_path, dependency_id)
-    outcome_path.parent.mkdir(parents=True)
     layer = SimpleNamespace(
         id="look.final",
         jit=SimpleNamespace(
@@ -818,69 +897,69 @@ def test_upstream_outcome_gate_requires_schema_layer_and_registered_evidence_loc
         ),
     )
     available_layers = {dependency_id: SimpleNamespace(id=dependency_id)}
+    selected = SimpleNamespace(selection_token=object())
+
+    def publication(evidence: tuple[dict, ...]) -> SimpleNamespace:
+        return SimpleNamespace(
+            outcome=SealedLayerOutcome(
+                layer_id=dependency_id,
+                status="passed",
+                script="build/camera.py",
+                receipt_digest="a" * 64,
+                evidence=evidence,
+            )
+        )
+
     monkeypatch.setattr(
-        revalidation,
-        "current_outcome_eligibility",
-        lambda *_args, **_kwargs: (True, ()),
-    )
-    base = {
-        "schema": 2,
-        "layer": dependency_id,
-        "status": "passed",
-        "interfaces": [],
-        "canonical": [{"authoritative": []}],
-    }
-    outcome_path.write_text(
-        json.dumps({**base, "audit": {"id": "handoff", "pass": True}}),
-        encoding="utf-8",
+        layer_publication,
+        "require_current_layer_publication",
+        lambda *_args, **_kwargs: publication(()),
     )
     with pytest.raises(ValueError, match="required upstream outcomes have not passed"):
-        _require_upstream_outcomes(tmp_path, layer, available_layers)
+        _require_upstream_outcomes(
+            tmp_path,
+            layer,
+            available_layers,
+            selected_authority=selected,
+        )
 
-    outcome_path.write_text(
-        json.dumps(
-            {
-                **base,
-                "interfaces": [
-                    {"id": "handoff", "owner_layer": dependency_id, "pass": True}
-                ],
-                "canonical": [
-                    {
-                        "authoritative": [
-                            {
-                                "id": "handoff",
-                                "source": "interface_contract",
-                                "owner_layer": dependency_id,
-                                "pass": True,
-                            }
-                        ]
-                    }
-                ],
-            }
+    monkeypatch.setattr(
+        layer_publication,
+        "require_current_layer_publication",
+        lambda *_args, **_kwargs: publication(
+            ({"id": "handoff", "kind": "scene_contract", "pass": True},)
         ),
-        encoding="utf-8",
     )
-    _require_upstream_outcomes(tmp_path, layer, available_layers)
-
-    monkeypatch.setattr(
-        revalidation,
-        "current_outcome_eligibility",
-        lambda *_args, **_kwargs: (False, ("input manifest changed",)),
-    )
-    with pytest.raises(ValueError, match="sealed outcome is stale: input manifest changed"):
-        _require_upstream_outcomes(tmp_path, layer, available_layers)
-    monkeypatch.setattr(
-        revalidation,
-        "current_outcome_eligibility",
-        lambda *_args, **_kwargs: (True, ()),
+    _require_upstream_outcomes(
+        tmp_path,
+        layer,
+        available_layers,
+        selected_authority=selected,
     )
 
-    outcome_path.write_text(
-        json.dumps({**base, "schema": 1}),
-        encoding="utf-8",
+    def stale(*_args: object, **_kwargs: object) -> None:
+        raise layer_publication.LayerPublicationConflict(
+            "terminal receipt source closure is stale"
+        )
+
+    monkeypatch.setattr(
+        layer_publication,
+        "require_current_layer_publication",
+        stale,
     )
-    with pytest.raises(ValueError, match="invalid sealed outcome"):
-        _require_upstream_outcomes(tmp_path, layer, available_layers)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"cannot materialize before dependency camera[.]hero has a current "
+            r"receipt-backed publication"
+        ),
+    ):
+        _require_upstream_outcomes(
+            tmp_path,
+            layer,
+            available_layers,
+            selected_authority=selected,
+        )
 
 
 def test_local_structural_findings_authorize_only_validated_candidate_amendment(
@@ -1076,6 +1155,12 @@ def test_clean_attested_candidate_that_failed_to_publish_is_a_harness_defect(
         lambda *_args, **_kwargs: ([], object()),
     )
     candidate_value = json.loads(candidate.read_text(encoding="utf-8"))
+    head_ref = AuthorityStateRecordRef.mint(
+        locator=f"state/authority-state/objects/{'1' * 64}/record.json",
+        sha256="1" * 64,
+        record_schema="vfx-harness.authority-state-head/v1",
+        record_digest="2" * 64,
+    )
     attest_materialization_finalization(
         candidate,
         bundle_hash=BUNDLE_DIGEST,
@@ -1090,6 +1175,14 @@ def test_clean_attested_candidate_that_failed_to_publish_is_a_harness_defect(
         },
         planning_inputs_digest="f" * 64,
         consumer_marker_sha256="0" * 64,
+        publication_jit_pointer_sha256="1" * 64,
+        authority_transition_kind="noop",
+        authority_transition_intent_ref=None,
+        authority_capsule_set_digest="2" * 64,
+        authority_effects_digest=None,
+        authority_state_head_ref=head_ref,
+        before_state_hashes={},
+        after_state_hashes={},
     )
     gate_evidence.write_materialization_gate_evidence(
         layout,

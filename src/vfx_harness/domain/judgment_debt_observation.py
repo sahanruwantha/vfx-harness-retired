@@ -47,7 +47,7 @@ class JudgmentObservationRequest:
     creates a new digest and therefore a new legal payment attempt.
     """
 
-    SCHEMA: ClassVar[str] = "vfx-harness.judgment-observation-request/v1"
+    SCHEMA: ClassVar[str] = "vfx-harness.judgment-observation-request/v2"
 
     definition_digest: str
     activation_digest: str
@@ -56,6 +56,7 @@ class JudgmentObservationRequest:
     owner_view_digest: str
     payer_view_digest: str
     replay_receipt_digest: str
+    layer_replay_receipt_digest: str
     parent_chain_digest: str
     judge_point: JudgmentPoint
     observation_medium: str
@@ -77,6 +78,7 @@ class JudgmentObservationRequest:
             "owner_view_digest",
             "payer_view_digest",
             "replay_receipt_digest",
+            "layer_replay_receipt_digest",
             "parent_chain_digest",
             "observation_environment_digest",
             "external_asset_provenance_digest",
@@ -149,6 +151,7 @@ class JudgmentObservationRequest:
             "owner_view_digest": self.owner_view_digest,
             "payer_view_digest": self.payer_view_digest,
             "replay_receipt_digest": self.replay_receipt_digest,
+            "layer_replay_receipt_digest": self.layer_replay_receipt_digest,
             "parent_chain_digest": self.parent_chain_digest,
             "judge_point": self.judge_point.as_dict(),
             "observation_medium": self.observation_medium,
@@ -182,6 +185,7 @@ class JudgmentObservationRequest:
             "owner_view_digest",
             "payer_view_digest",
             "replay_receipt_digest",
+            "layer_replay_receipt_digest",
             "parent_chain_digest",
             "judge_point",
             "observation_medium",
@@ -211,6 +215,7 @@ class JudgmentObservationRequest:
             owner_view_digest=row["owner_view_digest"],
             payer_view_digest=row["payer_view_digest"],
             replay_receipt_digest=row["replay_receipt_digest"],
+            layer_replay_receipt_digest=row["layer_replay_receipt_digest"],
             parent_chain_digest=row["parent_chain_digest"],
             judge_point=JudgmentPoint.from_dict(row["judge_point"], f"{where}.judge_point"),
             observation_medium=row["observation_medium"],

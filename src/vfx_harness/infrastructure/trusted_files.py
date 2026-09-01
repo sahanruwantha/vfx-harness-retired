@@ -81,6 +81,17 @@ class TrustedDirectoryBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class TrustedFileAbsenceBinding:
+    """Exact deepest real ancestor and unresolved suffix for an absent file."""
+
+    root: Path
+    path: Path
+    relative: str
+    existing_parent: TrustedDirectoryBinding
+    missing_parts: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TrustedFileSnapshot:
     payload: bytes
     sha256: str
@@ -574,6 +585,99 @@ def read_trusted_file(
         payload, digest = pinned.read_and_hash()
         pinned.require_current()
         return TrustedFileSnapshot(payload, digest, pinned.binding)
+
+
+def bind_trusted_file_absence(
+    root: str | Path,
+    path: str | Path,
+    where: str,
+) -> TrustedFileAbsenceBinding:
+    """Bind an absent descendant without following or forgetting missing ancestors."""
+
+    trusted_root, target, relative = _normalize(root, path, where)
+    root_descriptor = _open_absolute_directory(trusted_root, where)
+    current = os.dup(root_descriptor)
+    identities: list[DirectoryIdentity] = []
+    opened_parts: list[str] = []
+    missing_parts: tuple[str, ...] | None = None
+    try:
+        root_identity = _directory_identity(os.fstat(root_descriptor))
+        for index, part in enumerate(relative.parts[:-1]):
+            try:
+                following = os.open(part, _DIRECTORY_FLAGS, dir_fd=current)
+            except FileNotFoundError:
+                missing_parts = tuple(relative.parts[index:])
+                break
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise TrustedFileError(
+                        f"{where} must not contain symlink or non-directory "
+                        f"path components: {target}"
+                    ) from exc
+                raise TrustedFileError(
+                    f"{where} is unreadable beneath its trusted root: {target}"
+                ) from exc
+            os.close(current)
+            current = following
+            observed = os.fstat(current)
+            if not stat.S_ISDIR(observed.st_mode):
+                raise TrustedFileError(
+                    f"{where} ancestor is not a real directory: {target.parent}"
+                )
+            identities.append(_directory_identity(observed))
+            opened_parts.append(part)
+        if missing_parts is None:
+            try:
+                os.stat(relative.name, dir_fd=current, follow_symlinks=False)
+            except FileNotFoundError:
+                missing_parts = (relative.name,)
+            except OSError as exc:
+                raise TrustedFileError(
+                    f"{where} absence is unreadable beneath its trusted root: {target}"
+                ) from exc
+            else:
+                raise TrustedFileError(f"{where} must be absent: {target}")
+
+        current_identity = _directory_identity(os.fstat(current))
+        existing_path = trusted_root.joinpath(*opened_parts)
+        existing_relative = (
+            Path(*opened_parts).as_posix() if opened_parts else "."
+        )
+        parent_binding = TrustedDirectoryBinding(
+            root=trusted_root,
+            path=existing_path,
+            relative=existing_relative,
+            root_identity=root_identity,
+            ancestor_identities=tuple(identities[:-1]),
+            directory_identity=current_identity,
+        )
+        binding = TrustedFileAbsenceBinding(
+            root=trusted_root,
+            path=target,
+            relative=relative.as_posix(),
+            existing_parent=parent_binding,
+            missing_parts=missing_parts,
+        )
+    finally:
+        os.close(current)
+        os.close(root_descriptor)
+    require_trusted_directory_unchanged(parent_binding, f"{where} existing parent")
+    return binding
+
+
+def require_trusted_file_absent(
+    binding: TrustedFileAbsenceBinding,
+    where: str,
+) -> None:
+    """Require the same absent suffix beneath the same real ancestor lineage."""
+
+    if not isinstance(binding, TrustedFileAbsenceBinding):
+        raise TrustedFileError(f"{where} requires a typed trusted absence binding")
+    current = bind_trusted_file_absence(binding.root, binding.path, where)
+    if current != binding:
+        raise TrustedFileError(
+            f"{where} trusted absent path changed before publication: {binding.path}"
+        )
 
 
 def require_trusted_file_unchanged(

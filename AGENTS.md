@@ -51,10 +51,13 @@ operation.
   are unsupported: no evidence authority, no write destination (ADR-0002).
 - Diagnosis routes by cause: preflight/config failure → fix the environment, not VFX logic;
   plan-gate failure → repair plan/contracts and rerun the gate; builder evidence failure → the
-  owning layer report and its cited evidence; `hypothesis_falsified` → publish amended authority
-  and consume the typed finding with `vfx units replan`; canonical replay failure → the
-  deterministic script/checkpoint mechanism; acceptance failure → the declared fault-owning
-  layer; interruption → last checkpoint, journal, and final transcript events.
+  owning layer report and its cited evidence; `hypothesis_falsified` → stop, review the typed
+  finding, and publish amended authority through its owning plan/materialization boundary;
+  canonical replay failure → the deterministic script/checkpoint mechanism; acceptance failure
+  → the declared fault-owning layer; interruption → last checkpoint, journal, and final
+  transcript events. The authority publisher, not a follow-up state command, atomically derives
+  and commits preservation/invalidation effects. `vfx units replan` is retired, and there is no
+  public receipt-backed finding-consumption adapter.
   `EvidenceNotDue` is successful continuation to its DAG-compiled provider, never a stop or
   replan request. A stop envelope proposes exactly one typed transaction; it does not prove that
   transaction ran. `recover_environment` is the sole receipt-backed public adapter: after an
@@ -72,6 +75,29 @@ operation.
   automatic `resume_checkpointed_session` dispatch is authorized; start a new run from the
   fault-owning unit and current exact authority instead. Never copy an old render, snapshot, or
   script into a run and call it a resume (HIR-0164).
+  A process death after a layer replay or critic call can leave an exact pre-terminal
+  layer-finalization claim active. Restart must fail closed on that claim. Only after the
+  builder fence proves no live owner may an operator invoke
+  `vfx finalizations release <shot> --layer ... --claim-id ... --reason ... --evidence ...`.
+  That reviewed transaction snapshots evidence bytes content-addressably, archives only the
+  named unsealed claim, preserves every accepted unit receipt/checkpoint byte, records the
+  complete existing ordered contiguous replay-receipt prefix, marks unsealed judgment output
+  non-reusable, and permits a fresh higher finalization revision only while its v2 request,
+  evidence, release receipt, and snapshots remain source-verifiable. A missing, duplicate,
+  substituted, out-of-range, or count-inconsistent replay group refuses release. This is not unit
+  invalidation, model-session resume, or automatic retry (HIR-0170).
+  Every layer finalization publishes one `vfx-harness.layer-replay-receipt/v2` per actual
+  evaluation group. Its typed observation binds the exact claim/replay prefix, group plan,
+  required claims/evidence ids, reference bytes, actual deterministic evidence, and any
+  group-specific `solid | eevee` render/capture plus hashed auxiliary captures. A typed replay
+  execution failure carries only its closed stage/message/digest and cannot invent point,
+  payment, raster, or critic evidence. `vfx-harness.layer-evaluation-receipt/v1` accepts only the
+  ordered contiguous executed prefix from group zero, derives every group result, and can pass
+  only after all planned groups execute. `vfx-harness.layer-finalization-receipt/v2` derives its
+  status and projections from that evaluation. Terminal and layer-outcome readers reopen the
+  external evaluation, every group receipt, and every replay-input/dependency,
+  reference/render/auxiliary, script, predecessor, and sealed outcome source; embedded receipt
+  content never self-certifies current publication (HIR-0170).
   A failed-artifact warm start is likewise legal only when the ledger pins that artifact to the
   exact current `WorkUnit` digest; same-id superseded and legacy unpinned scripts replay from clean
   priors instead (HIR-0059).
@@ -443,21 +469,30 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   leaves the previously selected view (HIR-0026). After global republication, a live JIT view
   pinned to the prior bundle is superseded state: rematerialization derives its unpublished
   design base from the currently selected sparse bundle and never carries prior-generation
-  rows forward by proximity (HIR-0101). Rematerialization of a layer that already
-  has accepted units is `apply_replan`: matching digests stay, including `passed`;
-  changed or downstream-invalidated units are superseded even if they had passed.
-  Durable work-unit state is the remat transaction's old identity when global
-  republication or a sibling view change means the selected layer no longer reconstructs
-  that DAG. Current-schema stored unit digests drive the exact preserve/change/remove
-  diff; missing or cross-schema identity fails closed (HIR-0102).
-  Plain first-time `vfx plan --layer` uses that same digest-backed state transaction
-  when the selected sparse generation materializes over prior-generation durable units;
-  a publish-before-state-move crash is recovered on the next bounded plan call. It never
-  reinitializes, deletes, or requires `--discard-accepted` for comparable current-schema
-  state (HIR-0133).
-  `--discard-accepted` retires accepted orphans and wipes state only when the replan
-  base is unusable — it is not the door on remat (HIR-0052). Task and Agent are not remat repair
-  instruments. An exhausted materialization session does not publish: max-turns is a failed
+  rows forward by proximity (HIR-0101). First materialization and rematerialization stage an
+  exact semantic-capsule/state effect for every affected layer; the gate verifies it, and the
+  authority-state publisher atomically selects the plan/JIT head and installs those state bytes.
+  There is no post-publication `apply_replan`, direct `unit_state.initialize` adoption, or public
+  `vfx units replan` state-movement path (HIR-0171).
+  A selected `state/authority-state/pending.json` is the sole roll-forward authority and makes
+  every ordinary reader/publisher fail closed. Recover it only through
+  `vfx recover-authority-state <shot>`; that command verifies the exact staged before/after
+  identities, performs no planning/Blender/render/critic/model work, and returns a typed result.
+  Repeating recovery after the committed head is current is an exact state no-op.
+  An immutable completed-unit receipt may cross a changed layer transition only when every
+  contiguous immediate-predecessor edge preserves its exact unit binding and complete source
+  closure. Changed or downstream-invalidated units are superseded even if they had passed. A
+  terminal layer receipt survives only when the complete layer capsule, constituent receipts,
+  predecessor terminal bindings, and layer source closure are unchanged; unit preservation never
+  implies layer-finalization preservation. Missing or cross-schema identity fails closed, and an
+  A -> B -> A sequence cannot revive a receipt omitted by B (HIR-0102, HIR-0171).
+  Plain first-time `vfx plan --layer` uses the same gate-attested authority-state transaction over
+  prior-generation durable units; a post-intent crash rolls forward only from the staged immutable
+  bytes and never waits for a later plan call to repair selected state. Comparable current-schema
+  state never requires reinitialization, deletion, or `--discard-accepted` (HIR-0133, HIR-0171).
+  `--discard-accepted` permits a reviewed rematerialization to retire accepted orphans; it never
+  authorizes an out-of-band state wipe and is not the door on remat (HIR-0052). Task and Agent are
+  not remat repair instruments. An exhausted materialization session does not publish: max-turns is a failed
   transaction, not a select (HIR-0027). The sole exception is an exact current revision
   that a successful `finalize_materialization` call has bound to the selected bundle in a
   typed terminal attestation; candidate existence or patch validation alone never
@@ -624,11 +659,18 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   `unstage_materialization_unit` is the only retirement surface for unpublished scratch:
   it removes one named unit under the same transaction, refuses surviving dependency or
   consume edges, and prunes only rows no surviving unit binds (HIR-0104).
-  Terminal preview of a replacement stages both the candidate documents and a run-local
-  projection of that layer's durable unit state through the exact state-backed replan.
-  It must not compare the post-publication candidate DAG to pre-publication state, skip
-  hierarchy validation, reinitialize state, or mutate the selected predecessor before
-  publication. An unprojectable digest schema or replan closure fails closed (HIR-0140).
+  Terminal preview of a replacement stages the candidate documents, the exact all-layer
+  successor state images from the prepared authority-state transition, and one canonical
+  content-addressed preview reference. The independent gate reopens that reference through the
+  live predecessor head, transition intent, capsule/effect digests, before/after state hashes,
+  JIT manifest targets, immutable staged members, and source-closed preserved receipts. It
+  recompiles the effects and exact successor states/bindings from the live predecessor and
+  candidate capsules; producer-authored effects never self-authorize. Preview receipt authority
+  is a distinct typed value and
+  cannot authorize live planning or build claims. The preview must not compare the
+  post-publication candidate DAG to pre-publication state, skip hierarchy validation,
+  reinitialize state, or mutate the selected predecessor before publication. An unprojectable
+  digest schema or transition closure fails closed (HIR-0140, HIR-0171).
   Materialization exposes one terminal operation: `finalize_materialization` performs
   collectable validation, stages that coherent preview, runs the exact deterministic gate,
   and attests only its clean candidate revision. A materialization session does not expose
@@ -679,7 +721,17 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   the raster publishes its actual settings and PNG digest separately. A no-signal result is
   append-only attempt state and leaves debt `due`. Direct restart must re-prove replay, then
   suppress raster and critic for the unchanged request; only a changed relevant digest permits
-  one new attempt (HIR-0163).
+  one new attempt (HIR-0163). A judgment payment binds the exact stable global topological
+  replay prefix through its payer, including independent earlier layers; caller-supplied subsets,
+  authored array order, and directory order are never prefix authority. Every strict predecessor
+  row binds its current terminal finalization receipt, while the payer crosses observation through
+  its exact active finalization claim and durable payment additionally requires the resulting
+  terminal receipt. Every row must equal the payer group's v2 replay receipt's complete script,
+  dependency, and dependency-ordered unit-completion inputs; the observation request additionally
+  binds that group receipt, reference digest, render mode/scale, activation, definition, and
+  payment generation. Omission, reordering, substitution, or an earlier independent-prefix
+  change invalidates the payment generation rather than reviving a semantic A -> B -> A match
+  (HIR-0170, HIR-0171).
   More generally, every deferred requirement's `evidence_domains` is logical AND through
   materialization: structural domains require same-domain registry contracts, while an unpaid
   `image` or `human` domain requires explicit `approved_start`/`planner_start` judgment debt.
@@ -701,22 +753,15 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   replacement for what the current layer must be judged against (HIR-0149).
 - Unit plans publish only through the gate-attested two-phase transaction (HIR-0016). Do not
   hand-author placeholder units, edit `state/jit-layers/current.json`, or reinitialize,
-  hand-edit, or delete durable work-unit state to make a new DAG fit. A selected
-  `layers.json` hash change that leaves this layer's unit IDs and digests unchanged
-  is a preserve-all plan-identity adoption, not a DAG replan and not permission to
-  empty-base-replan that layer (HIR-0040). Rematerialization of a layer that already has
-  accepted units is the same `apply_replan`: matching digests stay; `--discard-accepted`
-  is not the door on remat (HIR-0052). `vfx units replan --falsification`
-  on a JIT layer compares `plan_hash` and unit digest to durable state and the
-  selected view, not sha256 of the sparse bundle `layers.json`; consuming the
-  finding reopens that unit and its affected closure even when the published
-  DAG bytes are unchanged (HIR-0049). That exception is local: when a finding names
-  out-of-layer `fault_owner_units`, replan first proves each exact owner digest changed
-  between base and selected authority. If a unit-first sparse base omits the materialized
-  owner, the bridge is the external layer's current exact digest plus a different durable
-  superseded digest recorded after the finding. An unchanged owner or one without either
-  proof rejects and names the required upstream amendment; a local reopen cannot repeat
-  work it has no authority to repair (HIR-0154).
+  hand-edit, or delete durable work-unit state to make a new DAG fit. The complete selected
+  `layers.json` hash is not a unit acceptance identity. Schema-closed unit and layer capsules plus
+  the immediately preceding coordinator binding determine the exact preserve/change/remove
+  effect, and plan/JIT publication commits that effect with pointer selection (HIR-0040,
+  HIR-0171). A typed falsification cannot reopen unchanged authority: `vfx units replan` is
+  retired, and no public finding-consumption adapter exists. When a finding names out-of-layer
+  `fault_owner_units`, the reviewed replacement authority must actually change the exact owning
+  capsules before publication may invalidate their closure; an unchanged owner cannot authorize
+  repeated work it has no scope to repair (HIR-0049, HIR-0154, HIR-0171).
 - When passing requires a decision, dependency, ownership, scope, contract, or sealed-outcome
   change outside the active unit, record `hypothesis_falsified` and stop. Replanning is a
   versioned transaction: freeze accepted state, validate the amendment, compute the complete
@@ -818,7 +863,7 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   comparison gates close over only the bound ids due at that frame and report valid builder
   payments as bound checks, never as autonomous acceptance authority (HIR-0060).
 - Interaction claims declare a coordination owner and the exact shared controls it may balance;
-  atomic claims stay protected, and anything broader enters transactional replanning.
+  atomic claims stay protected, and anything broader requires a validated authority replacement.
 - Warm-scene success proves nothing durable. The deterministic script and its empty-scene replay
   are the artifacts of record.
 
@@ -1017,10 +1062,12 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   that cannot express the fix inside its authorized scope stops with a typed plan defect; it
   does not broaden its permissions. `cannot_express_in_scope` names any proven upstream owner only
   through the compiled `fault_owner_options`; the finding's invalidation closure starts from the
-  active unit and those validated owner units. Accepted checkpoints remain authoritative until
-  `vfx units replan --falsification` consumes that finding atomically. A unit that consumes an
-  earlier unit's scene or pixels declares the producer in `depends_on`; serialization order is not
-  dependency authority (HIR-0056).
+  active unit and those validated owner units. A finding records the proposed closure but does not
+  mutate authority or state. Accepted checkpoints remain authoritative until a reviewed replacement
+  publishes through the atomic authority-state transaction; no public finding consumer or
+  controller may reopen them in place. A unit that consumes an earlier unit's scene or pixels
+  declares the producer in `depends_on`; serialization order is not dependency authority
+  (HIR-0056, HIR-0171).
 - Conversation summaries and transcripts are never execution authority. Durable memory is
   checkpoints, manifests, and sealed outcomes on disk.
 

@@ -629,11 +629,12 @@ class JudgmentDebtDefinition:
 
 @dataclass(frozen=True, slots=True)
 class JudgmentDebtState:
-    SCHEMA: ClassVar[str] = "vfx-harness.judgment-debt-state/v1"
+    SCHEMA: ClassVar[str] = "vfx-harness.judgment-debt-state/v2"
     definition_digest: str
     status: str
     evidence_digest: str | None = None
     activation_digest: str | None = None
+    payment_generation_digest: str | None = None
 
     def __post_init__(self) -> None:
         _require_digest(self.definition_digest, "JudgmentDebtState.definition_digest")
@@ -643,12 +644,27 @@ class JudgmentDebtState:
             _require_digest(self.evidence_digest, "JudgmentDebtState.evidence_digest")
         elif self.evidence_digest is not None:
             raise ValueError("non-terminal JudgmentDebtState must omit evidence_digest")
-        if self.status == "pending_not_due" and self.activation_digest is not None:
-            raise ValueError("pending_not_due JudgmentDebtState must omit activation_digest")
-        if self.status != "pending_not_due" and self.activation_digest is None:
-            raise ValueError("due or terminal JudgmentDebtState requires activation_digest")
+        if self.status == "pending_not_due" and (
+            self.activation_digest is not None
+            or self.payment_generation_digest is not None
+        ):
+            raise ValueError(
+                "pending_not_due JudgmentDebtState must omit activation and payment generation"
+            )
+        if self.status != "pending_not_due" and (
+            self.activation_digest is None
+            or self.payment_generation_digest is None
+        ):
+            raise ValueError(
+                "due or terminal JudgmentDebtState requires activation and payment generation"
+            )
         if self.activation_digest is not None:
             _require_digest(self.activation_digest, "JudgmentDebtState.activation_digest")
+        if self.payment_generation_digest is not None:
+            _require_digest(
+                self.payment_generation_digest,
+                "JudgmentDebtState.payment_generation_digest",
+            )
 
     @classmethod
     def pending(cls, definition: JudgmentDebtDefinition) -> JudgmentDebtState:
@@ -663,6 +679,7 @@ class JudgmentDebtState:
             "status": self.status,
             "evidence_digest": self.evidence_digest,
             "activation_digest": self.activation_digest,
+            "payment_generation_digest": self.payment_generation_digest,
         }
         return {**payload, "state_digest": _canonical_digest(payload)}
 
@@ -678,9 +695,22 @@ class JudgmentDebtState:
             value,
             where,
             cls.SCHEMA,
-            ("definition_digest", "status", "evidence_digest", "activation_digest", "state_digest"),
+            (
+                "definition_digest",
+                "status",
+                "evidence_digest",
+                "activation_digest",
+                "payment_generation_digest",
+                "state_digest",
+            ),
         )
-        candidate = cls(row["definition_digest"], row["status"], row["evidence_digest"], row["activation_digest"])
+        candidate = cls(
+            row["definition_digest"],
+            row["status"],
+            row["evidence_digest"],
+            row["activation_digest"],
+            row["payment_generation_digest"],
+        )
         _require_canonical_digest(row["state_digest"], candidate.digest, where, "state_digest")
         return candidate
 

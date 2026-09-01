@@ -278,3 +278,53 @@ def test_executable_only_canonical_is_explicit_and_never_invents_a_render(
         malformed["revalidation_manifest"],
         tmp_path,
     )[0]
+
+
+def test_failed_terminal_seals_qualitative_defect_but_never_becomes_eligible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layer, canonical = _verified_canonical(
+        tmp_path,
+        monkeypatch,
+        raster_required=False,
+    )
+    canonical[0][1].update(
+        {
+            "pass": False,
+            "mean": 0.0,
+            "issues": ["no optical signal for qualitative judgment"],
+        }
+    )
+    manifest = {"complete": "failed-terminal-boundary"}
+    monkeypatch.setattr(
+        revalidation,
+        "input_manifest",
+        lambda *_args, **_kwargs: manifest,
+    )
+
+    outcome_path = write_test_layer_outcome(
+        tmp_path,
+        layer,
+        status="failed",
+        best={"round": 1, "mean": 0.0, "render": None},
+        canonical=canonical,
+        run_id="failed-terminal-boundary",
+        attempt=1,
+        blender_version="fixture",
+    )
+    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+
+    assert outcome["status"] == "failed"
+    assert outcome["canonical"][0]["qualitative_defects"] == [
+        "no optical signal for qualitative judgment"
+    ]
+    eligible, reasons = eligibility(
+        outcome,
+        outcome["revalidation_manifest"],
+        tmp_path,
+    )
+    assert not eligible
+    assert "prior outcome is not passed" in reasons
+    assert "sealed outcome retains a qualitative defect at f40" in reasons

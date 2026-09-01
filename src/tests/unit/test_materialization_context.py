@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from tests.layer_outcome_fixtures import write_test_layer_outcome
+import pytest
+
 from vfx_harness.agents.planner import _materialization_kickoff
 from vfx_harness.agents.planner import kickoff as kickoff_runtime
 from vfx_harness.agents.prompts import layer_user_prompt
 from vfx_harness.agents.unit_scope import compile_predecessor_interface
-from vfx_harness.orchestration import revalidation
+from vfx_harness.domain.layer_outcomes import SealedLayerOutcome
+from vfx_harness.orchestration import layer_publication
+from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 
 
 def _write(path, value) -> None:
@@ -75,57 +78,31 @@ def test_materialization_kickoff_compiles_layer_bounded_authority(
         judges=((72, "refs/f72.png"),),
         stages=(),
     )
-    monkeypatch.setattr(
-        revalidation,
-        "input_manifest",
-        lambda *_args, **_kwargs: {"complete": "bounded-context"},
-    )
-    outcome_path = write_test_layer_outcome(
-        tmp_path,
-        predecessor,
-        status="passed",
-        best={"round": 1, "mean": 5.0, "render": None},
-        canonical=[
-            (
-                (72, "refs/f72.png"),
-                {
-                    "evidence_kind": "executable_only",
-                    "pass": True,
-                    "issues": [],
-                    "evidence": [
-                        {
-                            "id": "upstream-vis",
-                            "metric": "visible_fraction",
-                            "value": 1.0,
-                            "target": ">= 0.5",
-                            "pass": True,
-                            "source": "interface_contract",
-                            "authoritative": True,
-                            "owner_layer": "1",
-                            "fault_owner": "1",
-                            "activates_at": "1",
-                            "lifecycle": "persistent",
-                        }
-                    ],
-                },
-            )
-        ],
-        run_id="bounded-context",
-        attempt=1,
-        blender_version="fixture",
-    )
-    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
-    outcome["large_unrelated_report"] = "OUTCOME-JUNK" * 1000
-    _write(outcome_path, outcome)
+    outcome_path = layer_outcome_path(tmp_path, "1")
+    _write(outcome_path, {"large_unrelated_report": "OUTCOME-JUNK" * 1000})
     monkeypatch.setattr(
         kickoff_runtime,
         "load_layers_from_path",
         lambda _path: {"1": predecessor},
     )
     monkeypatch.setattr(
-        kickoff_runtime,
-        "current_outcome_eligibility",
-        lambda *_args, **_kwargs: (True, ()),
+        kickoff_runtime.layer_publication,
+        "require_current_layer_publication",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            outcome=SealedLayerOutcome(
+                layer_id="1",
+                status="passed",
+                script="build/01.py",
+                receipt_digest="a" * 64,
+                evidence=(
+                    {
+                        "id": "upstream-vis",
+                        "kind": "scene_contract",
+                        "pass": True,
+                    },
+                ),
+            )
+        ),
     )
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / "plan-resolutions.jsonl").write_text("", encoding="utf-8")
@@ -157,6 +134,90 @@ def test_materialization_kickoff_compiles_layer_bounded_authority(
     assert "OUTCOME-JUNK" not in kickoff
     assert "Selected bundle root (readable)" not in kickoff
     assert "state/plan-resolutions.jsonl" not in kickoff
+
+
+@pytest.mark.parametrize(
+    "publication_failure",
+    (
+        "no current terminal finalization receipt",
+        "terminal receipt source closure is stale",
+    ),
+)
+def test_materialization_kickoff_refuses_missing_or_stale_dependency_receipt(
+    tmp_path,
+    monkeypatch,
+    publication_failure: str,
+) -> None:
+    bundle_root = tmp_path / "bundle"
+    predecessor_row = {
+        "id": "1",
+        "title": "Camera",
+        "script": "build/01.py",
+        "execution": "ready",
+        "stages": [],
+    }
+    target_row = {
+        "id": "2",
+        "title": "Lookdev",
+        "script": "build/02.py",
+        "primary_judge": 1,
+        "judge": [{"frame": 1, "ref": "refs/a.png"}],
+        "owns": ["look"],
+        "reads": "lookdev",
+        "execution": "jit_deferred",
+        "stages": [],
+        "jit": {
+            "depends_on_layers": ["1"],
+            "required_outcomes": [],
+            "reserved_roles": ["look.*"],
+            "owned_requirements": [],
+        },
+    }
+    _write(
+        bundle_root / "layers.json",
+        {"schema": 5, "layers": [predecessor_row, target_row]},
+    )
+    predecessor = SimpleNamespace(id="1", script="build/01.py", stages=())
+    monkeypatch.setattr(
+        kickoff_runtime,
+        "load_layers_from_path",
+        lambda _path: {"1": predecessor},
+    )
+    calls: list[tuple[object, object, object]] = []
+
+    def unavailable(folder, layer, selected_authority) -> None:
+        calls.append((folder, layer, selected_authority))
+        raise layer_publication.LayerPublicationConflict(publication_failure)
+
+    monkeypatch.setattr(
+        kickoff_runtime.layer_publication,
+        "require_current_layer_publication",
+        unavailable,
+    )
+    selected = SimpleNamespace(plan=None)
+    layer = SimpleNamespace(
+        id="2",
+        title="Lookdev",
+        jit=SimpleNamespace(
+            depends_on_layers=("1",),
+            required_outcomes=(),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="dependency 1 has no current receipt-backed publication",
+    ):
+        _materialization_kickoff(
+            tmp_path,
+            layer,
+            SimpleNamespace(root=bundle_root, content_hash="a" * 64),
+            "runs/current/scratch/jit-layer-2.json",
+            overlay_root=bundle_root,
+            selected_authority=selected,
+        )
+
+    assert calls == [(tmp_path, predecessor, selected)]
 
 
 def test_camera_materialization_kickoff_compiles_earliest_geometry_layer(tmp_path) -> None:
@@ -291,7 +352,8 @@ def test_predecessor_interface_excludes_dependency_implementation_closure() -> N
                 "axis": "material_language",
             }],
             "helpers": [{"name": "bvfx_role", "signature": "LARGE HELPER INVENTORY"}],
-        }
+        },
+        completion_authorized=True,
     )
 
     encoded = json.dumps(interface)

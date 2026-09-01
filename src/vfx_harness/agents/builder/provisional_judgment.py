@@ -41,7 +41,8 @@ def _load_provisional_decisions(
         if state.status == "falsified":
             raise ValueError(
                 f"judgment debt {definition.debt_id} is falsified under current "
-                "authority; consume its typed finding through replan before rebuilding"
+                "authority; publish a validated authority amendment that covers its "
+                "typed finding before rebuilding"
             )
         rows.append(
             {

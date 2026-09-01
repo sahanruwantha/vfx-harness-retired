@@ -8,8 +8,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tests.unit.test_plan_improvements import _layer_doc, _write
-from tests.unit.test_plan_records import _add_deferred_layer, _candidate, _jit_payload
+from tests.unit.test_plan_records import (
+    _add_deferred_layer,
+    _candidate,
+    _jit_payload,
+)
 from tests.unit.test_plan_records import _write as _write_plan
+from tests.unit.test_plan_records import (
+    publish_current as _publish_fixture_current,
+)
 from tests.unit_attempt_fixtures import claim_for_build, freeze_unit
 from vfx_harness.agents.builder import (
     _active_unit_layer_view,
@@ -442,15 +449,17 @@ def test_volume_unit_required_vis_is_refused_at_the_gate(tmp_path: Path) -> None
 def test_materialization_refuses_volume_vis_and_keeps_camera_vis(tmp_path: Path) -> None:
     from vfx_harness.observability import run_artifacts
     from vfx_harness.orchestration.jit_materialization import inspect_materialization
-    from vfx_harness.orchestration.plan_authority import publish_current
-
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
     layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
     layers["layers"][1]["jit"]["provides"] = {"camera": ["polish.*"]}
     _write_plan(tmp_path / "layers.json", layers)
     layout = run_artifacts.create(tmp_path, "vis-owner")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    bundle = _publish_fixture_current(
+        tmp_path,
+        layout,
+        outcome="clean_with_deferred",
+    )
     payload = _jit_payload(tmp_path, bundle.content_hash)
     document = json.loads(payload.read_text(encoding="utf-8"))
     polish = document["layer"]["stages"][0]
@@ -507,12 +516,14 @@ def test_materialization_refuses_volume_vis_and_keeps_camera_vis(tmp_path: Path)
 def test_materialization_requires_later_geometry_to_depend_on_vis_owner(tmp_path: Path) -> None:
     from vfx_harness.observability import run_artifacts
     from vfx_harness.orchestration.jit_materialization import inspect_materialization
-    from vfx_harness.orchestration.plan_authority import publish_current
-
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
     layout = run_artifacts.create(tmp_path, "geometry-vis-dependency")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    bundle = _publish_fixture_current(
+        tmp_path,
+        layout,
+        outcome="clean_with_deferred",
+    )
     payload = _jit_payload(tmp_path, bundle.content_hash)
     document = json.loads(payload.read_text(encoding="utf-8"))
     root = document["layer"]["stages"][0]

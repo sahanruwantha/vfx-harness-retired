@@ -118,7 +118,6 @@ async def build_unit(
     scope: str | None = None,
     layer=None,
     active_unit=None,
-    publish_layer: bool = True,
     report_layer=None,
     resume_ok: bool = False,
     layer_units=None,
@@ -134,6 +133,12 @@ async def build_unit(
         )
     if active_unit is None or attempt_guard is None:
         raise ValueError("build_unit requires an exact active work-unit attempt guard")
+    attempt_guard.require_unit_boundary(
+        m,
+        active_unit,
+        layer=layer,
+        script_rel=script_rel,
+    )
     selected_authority = selected_authority or resolve_selected_authority(shot.folder)
     attempt_guard.check(f"start unit {getattr(layer, 'id', m.id)}.{active_unit.id} build")
     session = AttemptBoundBlenderSession(session, attempt_guard)
@@ -501,7 +506,7 @@ async def build_unit(
                 allow_motion=_layer_needs_motion(layer),
                 layer=layer,
                 selected_authority=selected_authority,
-                attempt_guard=attempt_guard,
+                execution_guard=attempt_guard,
             )
             verdict["round_s"] = round(time.monotonic() - t_round, 1)
             convergence_stop = _evidence_convergence_stop(layer, verdict)
@@ -740,7 +745,7 @@ async def build_unit(
                 out_replay_inputs=canonical_replay_inputs,
                 authority_script_rel=script_rel,
                 selected_authority=selected_authority,
-                attempt_guard=attempt_guard,
+                execution_guard=attempt_guard,
             )
 
         canonical = await _run_canonical_repairs(
@@ -778,12 +783,8 @@ async def build_unit(
     return await _publish_unit_outcome(
         shot,
         m,
-        script_rel,
-        prior_paths,
-        session,
         layer,
         active_unit,
-        publish_layer,
         report_layer,
         verbose,
         ledger,
@@ -799,5 +800,4 @@ async def build_unit(
         _look_actions,
         scope,
         attempt_guard,
-        selected_authority=selected_authority,
     )

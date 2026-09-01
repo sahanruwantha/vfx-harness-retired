@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from vfx_harness.agents.builder.authority import commit_selected_authority
@@ -12,16 +13,27 @@ from vfx_harness.agents.builder.critic_focus import _unsatisfiable_pair_findings
 from vfx_harness.domain import plan_records
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.image_debts import conflict_authority
-from vfx_harness.domain.unit_outcomes import falsifying_decisions
-from vfx_harness.domain.work_units import dependency_ordered_units
+from vfx_harness.domain.unit_outcomes import (
+    falsifying_decisions,
+    hypothesis_falsification_render_settings_hash,
+)
+from vfx_harness.domain.work_units import WorkUnit, dependency_ordered_units
 from vfx_harness.evidence.claim_evidence import append_gap_record
 from vfx_harness.observability.log import (
     log,
 )
 from vfx_harness.observability.run_artifacts import shot_state_dir
 from vfx_harness.orchestration import layer_plans, plan_authority
+from vfx_harness.orchestration.layer_finalization_state import (
+    authorize_terminal_layer_finalization_mutation,
+    current_layer_finalization_receipt,
+)
 from vfx_harness.orchestration.ledger import Milestone
-from vfx_harness.orchestration.unit_state import record_hypothesis_falsification
+from vfx_harness.orchestration.unit_state import (
+    prepare_accepted_hypothesis_falsification,
+    record_hypothesis_falsification,
+    record_prepared_accepted_hypothesis_falsification,
+)
 
 if TYPE_CHECKING:
     from vfx_harness.domain.unit_attempts import UnitAttemptClaim
@@ -44,6 +56,7 @@ def _persist_contract_gaps(
     verdict: dict,
     *,
     mode: str = "eevee",
+    scale: float = 0.5,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> None:
     """Pin a coverage defect to the exact canonical pixels and comparison boundary."""
@@ -61,24 +74,22 @@ def _persist_contract_gaps(
             if any(int(m.frame) in claim.moments for claim in unit.evaluation.claims)
         ]
         unit_id = active[0] if len(active) == 1 else "+".join(active) or "coverage_audit"
-    settings = {
-        "mode": str(mode),
-        "scale": 0.5,
-        "frame": int(m.frame),
-        "reference": str(m.ref),
-        "reference_sha256": hashlib.sha256((shot.folder / m.ref).read_bytes()).hexdigest(),
-    }
+    settings_hash = hypothesis_falsification_render_settings_hash(
+        mode=str(mode),
+        scale=scale,
+        frame=int(m.frame),
+        reference=str(m.ref),
+        reference_sha256=hashlib.sha256(
+            (shot.folder / m.ref).read_bytes()
+        ).hexdigest(),
+    )
     def mutation():
         return append_gap_record(
             shot.folder,
             layer=str(getattr(layer, "id", m.id)),
             unit=unit_id,
             candidate_hash=hashlib.sha256(candidate.read_bytes()).hexdigest(),
-            settings_hash=hashlib.sha256(
-                json.dumps(settings, sort_keys=True, separators=(",", ":")).encode(
-                    "utf-8"
-                )
-            ).hexdigest(),
+            settings_hash=settings_hash,
             rows=rows,
         )
     if selected_authority is None:
@@ -199,7 +210,7 @@ def _record_contract_gap_falsification(
     attempt: UnitAttemptClaim | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> dict:
-    """Promote the latest verified coverage gap into typed replan authority.
+    """Promote the latest verified coverage gap into typed amendment evidence.
 
     ``contract_gap`` is narrower than a failed contract: it means a measurable observation
     has no authoritative contract binding, so repairing the scene would require authority
@@ -225,7 +236,7 @@ def _record_contract_gap_falsification(
     if not records:
         raise ValueError(
             f"contract gap for {layer.id}.{unit.id} has no hash-pinned gap record; "
-            "refusing to invent replanning evidence"
+            "refusing to invent amendment evidence"
         )
     gap = records[-1]
     observations = list(gap.get("gaps") or [])
@@ -280,14 +291,24 @@ def _record_contract_gap_falsification(
     )
 
 
-def _record_composed_contract_gap_falsification(
+@dataclass(frozen=True, slots=True)
+class PreparedComposedContractGapFalsification:
+    """Exact finding inputs sealed before the layer terminal receipt commits."""
+
+    layer_id: str
+    units: tuple[WorkUnit, ...]
+    payload: dict
+
+
+def _prepare_composed_contract_gap_falsification(
     shot: Shot,
     layer,
     composition_unit,
     *,
+    recorded_at: str,
     selected_authority: ResolvedSelectedAuthority | None = None,
-) -> dict:
-    """Publish a replan-consumable finding after all producer units have passed.
+) -> PreparedComposedContractGapFalsification:
+    """Seal the exact amendment finding before terminal layer publication.
 
     Composition has no script identity of its own.  Bind the finding to the earliest
     exact producer implicated by the critic's role evidence, preserve every accepted
@@ -366,37 +387,116 @@ def _record_composed_contract_gap_falsification(
         source,
         selected_authority=selected_authority,
     )
-    return record_hypothesis_falsification(
+    bundle_hash = bundle.content_hash
+    unit_plan_hash = hashlib.sha256(unit_plan.read_bytes()).hexdigest()
+    candidate_hash = str(gap.get("candidate_hash"))
+    settings_hash = str(gap.get("settings_hash"))
+    conflict = {
+        "kind": "decision",
+        "required_authority": (
+            "amend the bounded producer claim/contract graph and transactionally "
+            "reopen the role-derived producer closure"
+        ),
+        "roles": sorted(observed_roles),
+        "controls": sorted(
+            {
+                control
+                for unit in implicated
+                for control in unit.mutates.controls
+            }
+        ),
+    }
+    evidence = ("state/contract-gaps.jsonl",)
+    affected_seed_ids = frozenset(unit.id for unit in implicated)
+    payload = prepare_accepted_hypothesis_falsification(
         shot.folder,
         str(layer.id),
         source,
         ordered,
-        bundle_hash=bundle.content_hash,
-        unit_plan_hash=hashlib.sha256(unit_plan.read_bytes()).hexdigest(),
-        candidate_hash=str(gap.get("candidate_hash")),
-        settings_hash=str(gap.get("settings_hash")),
+        bundle_hash=bundle_hash,
+        unit_plan_hash=unit_plan_hash,
+        candidate_hash=candidate_hash,
+        settings_hash=settings_hash,
         contract_ids=cited,
         observations=observations,
         decisions=decisions,
-        conflict={
-            "kind": "decision",
-            "required_authority": (
-                "amend the bounded producer claim/contract graph and transactionally "
-                "reopen the role-derived producer closure"
-            ),
-            "roles": sorted(observed_roles),
-            "controls": sorted(
-                {
-                    control
-                    for unit in implicated
-                    for control in unit.mutates.controls
-                }
-            ),
-        },
-        evidence=["state/contract-gaps.jsonl"],
-        affected_seed_ids={unit.id for unit in implicated},
-        preserve_accepted_source=True,
+        conflict=conflict,
+        evidence=list(evidence),
+        affected_seed_ids=affected_seed_ids,
+        recorded_at=recorded_at,
+    )
+    return PreparedComposedContractGapFalsification(
+        layer_id=str(layer.id),
+        units=ordered,
+        payload=payload,
+    )
+
+
+def _commit_composed_contract_gap_falsification(
+    shot: Shot,
+    prepared: PreparedComposedContractGapFalsification,
+    *,
+    finalization_receipt_digest: str,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict:
+    """Commit the exact receipt-bound finding into durable unit state."""
+
+    if selected_authority is None:
+        raise ValueError(
+            "composition falsification requires the exact selected authority snapshot"
+        )
+    receipt = current_layer_finalization_receipt(
+        shot.folder,
+        prepared.layer_id,
+    )
+    if (
+        receipt is None
+        or receipt.receipt_digest != finalization_receipt_digest
+    ):
+        raise ValueError(
+            "composition falsification requires the exact current terminal "
+            "finalization receipt"
+        )
+    authorization = authorize_terminal_layer_finalization_mutation(
+        shot.folder,
+        receipt,
+        prepared.units,
+        selected_authority,
+    )
+    return record_prepared_accepted_hypothesis_falsification(
+        shot.folder,
+        prepared.layer_id,
+        prepared.units,
+        prepared.payload,
         selection_token=selected_authority.selection_token,
+        required_layer_finalization_receipt_digest=finalization_receipt_digest,
+        finalization_authorization=authorization,
+    )
+
+
+def _record_composed_contract_gap_falsification(
+    shot: Shot,
+    layer,
+    composition_unit,
+    *,
+    recorded_at: str,
+    finalization_receipt_digest: str,
+    selected_authority: ResolvedSelectedAuthority | None = None,
+) -> dict:
+    """Compatibility facade for a single receipt-bound prepare/commit call."""
+
+    prepared = _prepare_composed_contract_gap_falsification(
+        shot,
+        layer,
+        composition_unit,
+        recorded_at=recorded_at,
+        selected_authority=selected_authority,
+    )
+    return _commit_composed_contract_gap_falsification(
+        shot,
+        prepared,
+        finalization_receipt_digest=finalization_receipt_digest,
+        selected_authority=selected_authority,
     )
 
 
@@ -485,8 +585,9 @@ def _record_bound_contract_falsification(
             "required_authority": (
                 "amend decision(s) "
                 + ", ".join(record.id for record in decisions)
-                + " through vfx units replan --falsification; the failing contracts are their "
-                "declared falsification path, so passing requires authority outside this unit"
+                + " through the owning plan or materialization boundary; the failing "
+                "contracts are their declared falsification path, so passing requires "
+                "replacement authority outside this unit"
             ),
             "roles": list(unit.mutates.roles),
             "controls": list(unit.mutates.controls),

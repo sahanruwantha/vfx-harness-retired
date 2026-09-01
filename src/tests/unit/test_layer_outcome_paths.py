@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from tests.layer_outcome_fixtures import write_test_layer_outcome
+from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.orchestration import revalidation
 from vfx_harness.orchestration.layer_outcome_paths import (
     layer_outcome_locator,
     layer_outcome_path,
 )
-from vfx_harness.orchestration.layer_plans import load_layer_outcome
 
 
 def test_layer_outcome_locators_are_injective_and_cannot_traverse(tmp_path: Path) -> None:
@@ -37,6 +39,9 @@ def test_named_layer_outcome_round_trips_through_all_layer_plan_writers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    reference = tmp_path / "refs" / "M1.png"
+    reference.parent.mkdir(parents=True)
+    reference.write_bytes(b"fixture reference")
     manifest = {
         "blender_version": "5.2",
         "comparison": {"mode": "eevee", "scale": 0.5},
@@ -45,7 +50,48 @@ def test_named_layer_outcome_round_trips_through_all_layer_plan_writers(
     monkeypatch.setattr(
         revalidation,
         "canonical_records",
-        lambda *_args, **_kwargs: [{"evidence_kind": "executable_only", "authoritative": []}],
+        lambda *_args, **_kwargs: [
+            {
+                "evidence_kind": "executable_only",
+                "frame": 1,
+                "ref": "refs/M1.png",
+                "ref_sha256": hashlib.sha256(b"fixture reference").hexdigest(),
+                "input_manifest_sha256": canonical_digest(manifest),
+                "authoritative": [
+                    {
+                        "id": "fixture-contract-0",
+                        "metric": "fixture",
+                        "value": 1,
+                        "target": "= 1",
+                        "pass": True,
+                        "source": "scene_contract",
+                        "owner_layer": "camera.hero",
+                        "fault_owner": "camera.hero",
+                        "activates_at": None,
+                        "lifecycle": None,
+                    }
+                ],
+                "authoritative_sha256": canonical_digest(
+                    {
+                        "authoritative": [
+                            {
+                                "id": "fixture-contract-0",
+                                "metric": "fixture",
+                                "value": 1,
+                                "target": "= 1",
+                                "pass": True,
+                                "source": "scene_contract",
+                                "owner_layer": "camera.hero",
+                                "fault_owner": "camera.hero",
+                                "activates_at": None,
+                                "lifecycle": None,
+                            }
+                        ]
+                    }
+                ),
+                "qualitative_defects": [],
+            }
+        ],
     )
     layer = SimpleNamespace(
         id="camera.hero",
@@ -57,79 +103,31 @@ def test_named_layer_outcome_round_trips_through_all_layer_plan_writers(
         tmp_path,
         layer,
         status="passed",
-        best={},
-        canonical=[((1, "refs/M1.png"), {"evidence": [], "decided_by": "metrics"})],
+        best={"round": 0, "mean": 0.0, "render": None},
+        canonical=[
+            (
+                (1, "refs/M1.png"),
+                {
+                    "evidence": [
+                        {
+                            "id": "fixture-contract-0",
+                            "metric": "fixture",
+                            "value": 1,
+                            "target": "= 1",
+                            "pass": True,
+                            "source": "scene_contract",
+                            "authoritative": True,
+                            "owner_layer": "camera.hero",
+                            "fault_owner": "camera.hero",
+                        }
+                    ],
+                    "decided_by": "metrics",
+                },
+            )
+        ],
         run_id="run-1",
         blender_version="5.2",
     )
 
     assert path == layer_outcome_path(tmp_path, "camera.hero")
-    assert load_layer_outcome(tmp_path, "camera.hero")["layer"] == "camera.hero"
-
-
-def test_current_outcome_eligibility_uses_sealed_comparison_settings(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    outcome = {
-        "schema": 2,
-        "layer": "camera.hero",
-        "status": "passed",
-        "interfaces": [],
-        "canonical": [{"authoritative": []}],
-        "revalidation_manifest": {
-            "blender_version": "5.2.1",
-            "comparison": {"mode": "workbench", "scale": 0.375},
-        },
-    }
-    observed: dict[str, object] = {}
-
-    def manifest(_folder, layer, **settings):
-        observed["layer"] = layer.id
-        observed.update(settings)
-        return outcome["revalidation_manifest"]
-
-    monkeypatch.setattr(revalidation, "input_manifest", manifest)
-    monkeypatch.setattr(
-        revalidation,
-        "eligibility",
-        lambda *_args, **_kwargs: (False, ["input manifest changed"]),
-    )
-
-    assert revalidation.current_outcome_eligibility(
-        tmp_path,
-        SimpleNamespace(id="camera.hero"),
-        outcome,
-    ) == (False, ("input manifest changed",))
-    assert observed == {
-        "layer": "camera.hero",
-        "blender_version": "5.2.1",
-        "comparison_mode": "workbench",
-        "comparison_scale": 0.375,
-    }
-
-
-def test_current_outcome_eligibility_refuses_missing_sealed_settings(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        revalidation,
-        "input_manifest",
-        lambda *_args, **_kwargs: pytest.fail(
-            "invalid sealed settings must fail before replay"
-        ),
-    )
-    outcome = {
-        "schema": 2,
-        "layer": "camera.hero",
-        "status": "passed",
-        "interfaces": [],
-        "canonical": [{"authoritative": []}],
-    }
-
-    assert revalidation.current_outcome_eligibility(
-        tmp_path,
-        SimpleNamespace(id="camera.hero"),
-        outcome,
-    ) == (False, ("sealed revalidation manifest is invalid",))
+    assert json.loads(path.read_text(encoding="utf-8"))["layer"] == "camera.hero"

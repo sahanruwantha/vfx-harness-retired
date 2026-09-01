@@ -16,6 +16,7 @@ from typing import ParamSpec, TypeVar
 
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
+    authority_selection_lock,
 )
 from vfx_harness.orchestration.builder_execution_fence import (
     BuilderExecutionFenceError,
@@ -25,6 +26,7 @@ from vfx_harness.orchestration.builder_execution_fence import (
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 STATE_DIR = "state/work-units"
+STATE_STAGING_DIR = "state/work-unit-state-staging"
 _THREAD_LOCKS = local()
 _DIRECTORY_OPEN_FLAGS = (
     os.O_RDONLY
@@ -101,15 +103,16 @@ def _open_real_directory(path: Path) -> int:
     return current
 
 
-def _open_state_parent(
+def _open_managed_directory(
     shot: Path,
+    relative: Path,
     *,
     create: bool,
 ) -> tuple[int, tuple[_NodeIdentity, ...]]:
     current = _open_real_directory(shot)
     lineage = [_node_identity(os.fstat(current))]
     try:
-        for part in Path(STATE_DIR).parts:
+        for part in relative.parts:
             try:
                 following = os.open(part, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
             except FileNotFoundError:
@@ -126,6 +129,71 @@ def _open_state_parent(
     except BaseException:
         os.close(current)
         raise
+
+
+def _open_state_parent(
+    shot: Path,
+    *,
+    create: bool,
+) -> tuple[int, tuple[_NodeIdentity, ...]]:
+    return _open_managed_directory(shot, Path(STATE_DIR), create=create)
+
+
+def _open_state_staging(
+    shot: Path,
+    *,
+    create: bool,
+) -> tuple[int, tuple[_NodeIdentity, ...]]:
+    return _open_managed_directory(shot, Path(STATE_STAGING_DIR), create=create)
+
+
+def state_namespace_entries(
+    folder: str | Path,
+) -> tuple[tuple[str, int], ...]:
+    """Return descriptor-bound names and modes in the live state namespace.
+
+    The caller interprets the names.  This storage boundary only guarantees that
+    enumeration did not follow a symlink component or race an ancestor replacement.
+    """
+
+    shot = Path(os.path.abspath(Path(folder).expanduser()))
+    parent: int | None = None
+    current: int | None = None
+    try:
+        try:
+            parent, lineage = _open_state_parent(shot, create=False)
+        except FileNotFoundError:
+            return ()
+        names = sorted(os.listdir(parent))
+        entries = tuple(
+            (
+                name,
+                os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode,
+            )
+            for name in names
+        )
+        current, current_lineage = _open_state_parent(shot, create=False)
+        if (
+            current_lineage != lineage
+            or _node_identity(os.fstat(parent)) != lineage[-1]
+            or _node_identity(os.fstat(current)) != lineage[-1]
+        ):
+            raise ValueError(
+                f"work-unit state namespace changed during enumeration: "
+                f"{shot / STATE_DIR}"
+            )
+        return entries
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            f"work-unit state namespace is unsafe or unreadable: {shot / STATE_DIR}"
+        ) from exc
+    finally:
+        if current is not None:
+            os.close(current)
+        if parent is not None:
+            os.close(parent)
 
 
 def _state_location(state_path: Path) -> tuple[Path, Path, Path]:
@@ -189,6 +257,38 @@ def _require_state_path_current(binding: _HeldStatePath, phase: str) -> None:
     finally:
         if current_parent is not None:
             os.close(current_parent)
+
+
+def _require_staging_path_current(
+    shot: Path,
+    descriptor: int,
+    lineage: tuple[_NodeIdentity, ...],
+    phase: str,
+) -> None:
+    """Require the disposable staging namespace to retain its held lineage."""
+
+    current: int | None = None
+    try:
+        current, current_lineage = _open_state_staging(shot, create=False)
+        if (
+            current_lineage != lineage
+            or _node_identity(os.fstat(descriptor)) != lineage[-1]
+            or _node_identity(os.fstat(current)) != lineage[-1]
+        ):
+            raise ValueError(
+                f"work-unit state staging lineage changed {phase}: "
+                f"{shot / STATE_STAGING_DIR}"
+            )
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            f"work-unit state staging lineage changed {phase}: "
+            f"{shot / STATE_STAGING_DIR}"
+        ) from exc
+    finally:
+        if current is not None:
+            os.close(current)
 
 
 def _require_held_state_path(state_path: Path, *, exclusive: bool) -> _HeldStatePath:
@@ -352,7 +452,8 @@ def _state_file_identity(observed: os.stat_result) -> tuple[int, int, int, int, 
 
 
 def _require_prepared_state_current(
-    binding: _HeldStatePath,
+    parent: int,
+    state_path: Path,
     name: str,
     descriptor: int,
     expected: tuple[int, int, int, int, int],
@@ -361,12 +462,12 @@ def _require_prepared_state_current(
         held = os.fstat(descriptor)
         named = os.stat(
             name,
-            dir_fd=binding.parent_descriptor,
+            dir_fd=parent,
             follow_symlinks=False,
         )
     except OSError as exc:
         raise AuthoritySelectionConflict(
-            f"prepared work-unit state disappeared: {binding.state_path}"
+            f"prepared work-unit state disappeared: {state_path}"
         ) from exc
     if (
         not stat.S_ISREG(held.st_mode)
@@ -375,7 +476,7 @@ def _require_prepared_state_current(
         or _state_file_identity(named) != expected
     ):
         raise AuthoritySelectionConflict(
-            f"prepared work-unit state changed before publication: {binding.state_path}"
+            f"prepared work-unit state changed before publication: {state_path}"
         )
 
 
@@ -409,30 +510,32 @@ def _require_published_state_current(
 
 
 def _unlink_prepared_state_if_owned(
-    binding: _HeldStatePath,
+    parent: int,
     name: str,
     descriptor: int,
-) -> None:
+) -> bool:
     try:
         held = os.fstat(descriptor)
         named = os.stat(
             name,
-            dir_fd=binding.parent_descriptor,
+            dir_fd=parent,
             follow_symlinks=False,
         )
     except OSError:
-        return
+        return False
     if (
         stat.S_ISREG(held.st_mode)
         and stat.S_ISREG(named.st_mode)
         and (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
     ):
         with suppress(FileNotFoundError):
-            os.unlink(name, dir_fd=binding.parent_descriptor)
+            os.unlink(name, dir_fd=parent)
+            return True
+    return False
 
 
 def write_state_file_bytes(state_path: Path, payload: bytes) -> None:
-    """Durably replace state relative to the exact locked parent directory."""
+    """Durably replace state from a closed sibling staging namespace."""
 
     if not isinstance(payload, bytes):
         raise TypeError("work-unit state payload must be bytes")
@@ -440,10 +543,30 @@ def write_state_file_bytes(state_path: Path, payload: bytes) -> None:
         binding = _require_held_state_path(state_path, exclusive=True)
         _require_state_path_current(binding, "before state preparation")
         descriptor: int | None = None
+        staging_descriptor: int | None = None
+        staging_lineage: tuple[_NodeIdentity, ...] | None = None
         temporary_name: str | None = None
         try:
+            staging_descriptor, staging_lineage = _open_state_staging(
+                binding.shot,
+                create=True,
+            )
+            if (
+                os.fstat(staging_descriptor).st_dev
+                != os.fstat(binding.parent_descriptor).st_dev
+            ):
+                raise AuthoritySelectionConflict(
+                    "work-unit state staging and live namespaces must share one "
+                    f"filesystem: {binding.shot}"
+                )
+            _require_staging_path_current(
+                binding.shot,
+                staging_descriptor,
+                staging_lineage,
+                "before state preparation",
+            )
             descriptor, temporary_name = _temporary_state_file(
-                binding.parent_descriptor,
+                staging_descriptor,
                 binding.state_path.name,
             )
             remaining = memoryview(payload)
@@ -453,18 +576,26 @@ def write_state_file_bytes(state_path: Path, payload: bytes) -> None:
                     raise OSError("short write while preparing work-unit state")
                 remaining = remaining[written:]
             os.fsync(descriptor)
+            os.fsync(staging_descriptor)
             temporary_identity = _state_file_identity(os.fstat(descriptor))
             _require_prepared_state_current(
-                binding,
+                staging_descriptor,
+                binding.state_path,
                 temporary_name,
                 descriptor,
                 temporary_identity,
+            )
+            _require_staging_path_current(
+                binding.shot,
+                staging_descriptor,
+                staging_lineage,
+                "before state publication",
             )
             _require_state_path_current(binding, "before state publication")
             os.replace(
                 temporary_name,
                 binding.state_path.name,
-                src_dir_fd=binding.parent_descriptor,
+                src_dir_fd=staging_descriptor,
                 dst_dir_fd=binding.parent_descriptor,
             )
             _require_published_state_current(
@@ -474,20 +605,64 @@ def write_state_file_bytes(state_path: Path, payload: bytes) -> None:
             )
             temporary_name = None
             os.fsync(binding.parent_descriptor)
+            os.fsync(staging_descriptor)
             _require_state_path_current(binding, "after state publication")
+            _require_staging_path_current(
+                binding.shot,
+                staging_descriptor,
+                staging_lineage,
+                "after state publication",
+            )
         except OSError as exc:
             raise AuthoritySelectionConflict(
                 f"could not durably replace work-unit state: {binding.state_path}"
             ) from exc
         finally:
             if descriptor is not None:
-                if temporary_name is not None:
-                    _unlink_prepared_state_if_owned(
-                        binding,
+                if temporary_name is not None and staging_descriptor is not None:
+                    removed = _unlink_prepared_state_if_owned(
+                        staging_descriptor,
                         temporary_name,
                         descriptor,
                     )
+                    if removed:
+                        os.fsync(staging_descriptor)
                 os.close(descriptor)
+            if staging_descriptor is not None:
+                os.close(staging_descriptor)
+
+
+def remove_state_file(state_path: Path) -> None:
+    """Durably remove one state member through its exact held parent descriptor."""
+
+    with _locked_state_path(state_path, exclusive=True):
+        binding = _require_held_state_path(state_path, exclusive=True)
+        _require_state_path_current(binding, "before state removal")
+        try:
+            observed = os.stat(
+                binding.state_path.name,
+                dir_fd=binding.parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            _require_state_path_current(binding, "after absent state removal")
+            return
+        except OSError as exc:
+            raise AuthoritySelectionConflict(
+                f"work-unit state is unreadable before removal: {binding.state_path}"
+            ) from exc
+        if not stat.S_ISREG(observed.st_mode):
+            raise AuthoritySelectionConflict(
+                f"work-unit state removal requires a regular file: {binding.state_path}"
+            )
+        try:
+            os.unlink(binding.state_path.name, dir_fd=binding.parent_descriptor)
+            os.fsync(binding.parent_descriptor)
+        except OSError as exc:
+            raise AuthoritySelectionConflict(
+                f"could not durably remove work-unit state: {binding.state_path}"
+            ) from exc
+        _require_state_path_current(binding, "after state removal")
 
 
 @contextmanager
@@ -514,7 +689,10 @@ def serialized_state_mutation(
     def decorate(mutation: Callable[_P, _T]) -> Callable[_P, _T]:
         @wraps(mutation)
         def guarded(folder, layer_id, *args, **kwargs):
-            with _locked_state_path(state_path(folder, layer_id), exclusive=True):
+            with (
+                authority_selection_lock(folder, exclusive=False),
+                _locked_state_path(state_path(folder, layer_id), exclusive=True),
+            ):
                 return mutation(folder, layer_id, *args, **kwargs)
 
         return guarded

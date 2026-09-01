@@ -304,6 +304,45 @@ def _is_simple_alias_value(node: ast.Attribute, parent: ast.AST | None) -> bool:
     )
 
 
+def _is_exact_current_frame_reevaluation_read(
+    node: ast.Attribute,
+    parent: ast.AST | None,
+    *,
+    parents: Mapping[ast.AST, ast.AST],
+    bindings: _BindingMap,
+) -> bool:
+    """Allow only ``scene.frame_set(int(scene.frame_current))`` scalar use.
+
+    Artifact publication must force Blender to evaluate the selected current frame
+    after every constituent replay.  The closed capability policy permits that one
+    read only when ``int`` feeds the exact ``bpy.context.scene.frame_set`` call.  The
+    scalar therefore cannot be assigned, passed elsewhere, chained, or used to reach
+    another Blender capability.  Simple aliases remain supported through the same
+    conservative binding resolver used by the rest of this module.
+    """
+
+    if _resolved_chains(node, bindings) != {
+        ("bpy", "context", "scene", "frame_current")
+    }:
+        return False
+    if not (
+        isinstance(parent, ast.Call)
+        and isinstance(parent.func, ast.Name)
+        and parent.func.id == "int"
+        and parent.args == [node]
+        and not parent.keywords
+    ):
+        return False
+    frame_set_call = parents.get(parent)
+    return bool(
+        isinstance(frame_set_call, ast.Call)
+        and frame_set_call.args == [parent]
+        and not frame_set_call.keywords
+        and _resolved_chains(frame_set_call.func, bindings)
+        == {("bpy", "context", "scene", "frame_set")}
+    )
+
+
 def validate_artifact_source(source: str) -> ast.Module:
     """Parse and reject any capability outside the artifact replay vocabulary."""
 
@@ -358,6 +397,12 @@ def validate_artifact_source(source: str) -> ast.Module:
                 _is_bpy_namespace(chain) for chain in chains
                 )
                 and not _is_simple_alias_value(node, parent)
+                and not _is_exact_current_frame_reevaluation_read(
+                    node,
+                    parent,
+                    parents=parents,
+                    bindings=bindings,
+                )
             ):
                 raise ArtifactExecutionPolicyError(
                     "artifact Blender capability cannot escape a tracked simple alias"

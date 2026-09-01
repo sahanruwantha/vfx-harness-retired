@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -110,6 +112,45 @@ def falsifying_decisions(
         record for record in decisions
         if failing & set(record.falsification_contract_ids)
     )
+
+
+def hypothesis_falsification_render_settings_hash(
+    *,
+    mode: str,
+    scale: int | float,
+    frame: int,
+    reference: str,
+    reference_sha256: str,
+) -> str:
+    """Digest the exact replay point settings used by a render-backed finding."""
+
+    normalized_mode = _text(mode, "hypothesis falsification render mode")
+    if (
+        isinstance(scale, bool)
+        or not isinstance(scale, (int, float))
+        or not math.isfinite(float(scale))
+        or float(scale) <= 0
+    ):
+        raise ValueError(
+            "hypothesis falsification render scale must be a positive number"
+        )
+    if not isinstance(frame, int) or isinstance(frame, bool) or frame <= 0:
+        raise ValueError(
+            "hypothesis falsification render frame must be a positive integer"
+        )
+    payload = {
+        "mode": normalized_mode,
+        "scale": scale,
+        "frame": frame,
+        "reference": _text(reference, "hypothesis falsification reference"),
+        "reference_sha256": _hash(
+            reference_sha256,
+            "hypothesis falsification reference SHA-256",
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vfx_harness.domain.authority_head_records import (
     JIT_CURRENT_PATH,
@@ -26,18 +26,20 @@ from vfx_harness.domain.authority_head_records import (
     canonical_json_bytes,
     decode_canonical_json_object,
 )
-from vfx_harness.domain.layer_outcomes import (
-    LayerOutcomeContractError,
-    parse_sealed_layer_outcome,
-)
+from vfx_harness.domain.authority_state_records import AuthorityStateRecordRef
+from vfx_harness.orchestration import layer_publication
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
     AuthoritySelectionToken,
-    durable_replace_pointer_bytes,
+    durable_replace_file_bytes,
 )
-from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.ledger import Layer
 from vfx_harness.orchestration.plan_consumer_view import OVERLAY_ARTIFACTS
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import (
+        ResolvedSelectedAuthority,
+    )
 
 MATERIALIZATION_SCHEMA = "vfx-harness.jit-layer-materialization/v3"
 VIEW_SCHEMA = JIT_VIEW_POINTER_SCHEMA
@@ -106,7 +108,7 @@ class UnstagedMaterializationUnit:
     removed_requirement_ids: tuple[str, ...]
 
 
-FINALIZATION_SCHEMA = "vfx-harness.materialization-finalization/v3"
+FINALIZATION_SCHEMA = "vfx-harness.materialization-finalization/v4"
 FINALIZATION_GATE_POLICY = {
     "gate_schema": "vfx-harness.plan-gate/v1",
     "policy": "structural-authority/runtime-falsification-v1",
@@ -123,6 +125,14 @@ _FINALIZATION_FIELDS = frozenset(
         "proposed_artifact_hashes",
         "planning_inputs_digest",
         "consumer_marker_sha256",
+        "publication_jit_pointer_sha256",
+        "authority_transition_kind",
+        "authority_transition_intent_ref",
+        "authority_capsule_set_digest",
+        "authority_effects_digest",
+        "authority_state_head_ref",
+        "before_state_hashes",
+        "after_state_hashes",
         "gate_policy",
     }
 )
@@ -138,6 +148,21 @@ def _require_digest(value: Any, where: str) -> str:
     return value
 
 
+def _require_state_hashes(value: Any, where: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{where} must be an object")
+    parsed: dict[str, str] = {}
+    for layer_id, digest in value.items():
+        if (
+            not isinstance(layer_id, str)
+            or not layer_id
+            or layer_id != layer_id.strip()
+        ):
+            raise ValueError(f"{where} contains an invalid layer id")
+        parsed[layer_id] = _require_digest(digest, f"{where}[{layer_id!r}]")
+    return dict(sorted(parsed.items()))
+
+
 @dataclass(frozen=True, slots=True)
 class MaterializationFinalization:
     """Exact gated candidate/view identity authorized for one selection CAS."""
@@ -149,11 +174,19 @@ class MaterializationFinalization:
     proposed_artifact_hashes: dict[str, str]
     planning_inputs_digest: str
     consumer_marker_sha256: str
+    publication_jit_pointer_sha256: str
+    authority_transition_kind: str
+    authority_transition_intent_ref: AuthorityStateRecordRef | None
+    authority_capsule_set_digest: str
+    authority_effects_digest: str | None
+    authority_state_head_ref: AuthorityStateRecordRef
+    before_state_hashes: dict[str, str]
+    after_state_hashes: dict[str, str]
 
     @classmethod
     def from_dict(cls, value: Any) -> MaterializationFinalization:
         if not isinstance(value, Mapping) or set(value) != _FINALIZATION_FIELDS:
-            raise ValueError("materialization finalization fields do not match the v3 schema")
+            raise ValueError("materialization finalization fields do not match the v4 schema")
         if value.get("schema") != FINALIZATION_SCHEMA:
             raise ValueError("materialization finalization schema is unsupported")
         try:
@@ -175,6 +208,69 @@ class MaterializationFinalization:
         }
         if value.get("gate_policy") != FINALIZATION_GATE_POLICY:
             raise ValueError("materialization finalization gate policy is unsupported")
+        transition_kind = value.get("authority_transition_kind")
+        if transition_kind not in {"commit", "noop"}:
+            raise ValueError(
+                "materialization finalization authority_transition_kind must be "
+                "'commit' or 'noop'"
+            )
+        raw_intent = value.get("authority_transition_intent_ref")
+        intent_ref = (
+            None
+            if raw_intent is None
+            else AuthorityStateRecordRef.parse(
+                raw_intent,
+                "materialization finalization.authority_transition_intent_ref",
+            )
+        )
+        if (
+            intent_ref is not None
+            and intent_ref.record_schema
+            != "vfx-harness.authority-state-transition-intent/v1"
+        ):
+            raise ValueError(
+                "materialization finalization intent reference must name an "
+                "authority-state transition intent"
+            )
+        raw_effects = value.get("authority_effects_digest")
+        effects_digest = (
+            None
+            if raw_effects is None
+            else _require_digest(
+                raw_effects,
+                "materialization finalization.authority_effects_digest",
+            )
+        )
+        if transition_kind == "commit" and (intent_ref is None or effects_digest is None):
+            raise ValueError(
+                "committing materialization finalization requires an intent and "
+                "effects digest"
+            )
+        if transition_kind == "noop" and (intent_ref is not None or effects_digest is not None):
+            raise ValueError(
+                "no-op materialization finalization cannot name an intent or effects"
+            )
+        head_ref = AuthorityStateRecordRef.parse(
+            value.get("authority_state_head_ref"),
+            "materialization finalization.authority_state_head_ref",
+        )
+        if head_ref.record_schema != "vfx-harness.authority-state-head/v1":
+            raise ValueError(
+                "materialization finalization authority_state_head_ref must name a "
+                "coordinator head"
+            )
+        before_state_hashes = _require_state_hashes(
+            value.get("before_state_hashes"),
+            "materialization finalization.before_state_hashes",
+        )
+        after_state_hashes = _require_state_hashes(
+            value.get("after_state_hashes"),
+            "materialization finalization.after_state_hashes",
+        )
+        if transition_kind == "noop" and before_state_hashes != after_state_hashes:
+            raise ValueError(
+                "no-op materialization finalization must preserve every state hash"
+            )
         return cls(
             base_selection=base_selection,
             bundle_hash=_require_digest(
@@ -198,6 +294,20 @@ class MaterializationFinalization:
                 value.get("consumer_marker_sha256"),
                 "materialization finalization.consumer_marker_sha256",
             ),
+            publication_jit_pointer_sha256=_require_digest(
+                value.get("publication_jit_pointer_sha256"),
+                "materialization finalization.publication_jit_pointer_sha256",
+            ),
+            authority_transition_kind=transition_kind,
+            authority_transition_intent_ref=intent_ref,
+            authority_capsule_set_digest=_require_digest(
+                value.get("authority_capsule_set_digest"),
+                "materialization finalization.authority_capsule_set_digest",
+            ),
+            authority_effects_digest=effects_digest,
+            authority_state_head_ref=head_ref,
+            before_state_hashes=before_state_hashes,
+            after_state_hashes=after_state_hashes,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -210,6 +320,18 @@ class MaterializationFinalization:
             "proposed_artifact_hashes": dict(self.proposed_artifact_hashes),
             "planning_inputs_digest": self.planning_inputs_digest,
             "consumer_marker_sha256": self.consumer_marker_sha256,
+            "publication_jit_pointer_sha256": self.publication_jit_pointer_sha256,
+            "authority_transition_kind": self.authority_transition_kind,
+            "authority_transition_intent_ref": (
+                None
+                if self.authority_transition_intent_ref is None
+                else self.authority_transition_intent_ref.as_dict()
+            ),
+            "authority_capsule_set_digest": self.authority_capsule_set_digest,
+            "authority_effects_digest": self.authority_effects_digest,
+            "authority_state_head_ref": self.authority_state_head_ref.as_dict(),
+            "before_state_hashes": dict(self.before_state_hashes),
+            "after_state_hashes": dict(self.after_state_hashes),
             "gate_policy": dict(FINALIZATION_GATE_POLICY),
         }
 
@@ -233,6 +355,14 @@ def attest_materialization_finalization(
     proposed_artifact_hashes: Mapping[str, str],
     planning_inputs_digest: str,
     consumer_marker_sha256: str,
+    publication_jit_pointer_sha256: str,
+    authority_transition_kind: str,
+    authority_transition_intent_ref: AuthorityStateRecordRef | None,
+    authority_capsule_set_digest: str,
+    authority_effects_digest: str | None,
+    authority_state_head_ref: AuthorityStateRecordRef,
+    before_state_hashes: Mapping[str, str],
+    after_state_hashes: Mapping[str, str],
 ) -> Path:
     """Bind one clean gate result to its exact candidate, base, and proposed view."""
     candidate = Path(path)
@@ -247,10 +377,22 @@ def attest_materialization_finalization(
             "proposed_artifact_hashes": dict(proposed_artifact_hashes),
             "planning_inputs_digest": planning_inputs_digest,
             "consumer_marker_sha256": consumer_marker_sha256,
+            "publication_jit_pointer_sha256": publication_jit_pointer_sha256,
+            "authority_transition_kind": authority_transition_kind,
+            "authority_transition_intent_ref": (
+                None
+                if authority_transition_intent_ref is None
+                else authority_transition_intent_ref.as_dict()
+            ),
+            "authority_capsule_set_digest": authority_capsule_set_digest,
+            "authority_effects_digest": authority_effects_digest,
+            "authority_state_head_ref": authority_state_head_ref.as_dict(),
+            "before_state_hashes": dict(before_state_hashes),
+            "after_state_hashes": dict(after_state_hashes),
             "gate_policy": dict(FINALIZATION_GATE_POLICY),
         }
     )
-    durable_replace_pointer_bytes(
+    durable_replace_file_bytes(
         candidate.parent,
         attestation,
         canonical_json_bytes(record.to_dict()),
@@ -349,34 +491,15 @@ def _matches_reserved(role: str, reserved: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(role, pattern) or fnmatch.fnmatchcase(pattern, role) for pattern in reserved)
 
 
-def _passed_evidence_ids(value: Any) -> set[str]:
-    """Compatibility projection over the strict sealed-outcome evidence locations."""
-
-    if not isinstance(value, dict):
-        return set()
-    layer_id = value.get("layer")
-    if not isinstance(layer_id, str):
-        return set()
-    try:
-        outcome = parse_sealed_layer_outcome(value, expected_layer_id=layer_id)
-    except LayerOutcomeContractError:
-        return set()
-    return {identifier for _kind, identifier in outcome.passed_bindings}
-
-
 def _require_upstream_outcomes(
     shot: Path,
     layer: Layer,
     available_layers: Mapping[str, Layer],
+    *,
+    selected_authority: ResolvedSelectedAuthority,
 ) -> None:
     if layer.jit is None:
         raise ValueError(f"layer {layer.id} has no deferred JIT authority")
-    # Imported at the call boundary to avoid making the JIT schema module part of
-    # the layer-plans/revalidation import cycle.
-    from vfx_harness.orchestration.revalidation import (  # noqa: PLC0415
-        current_outcome_eligibility,
-    )
-
     passed: set[tuple[str, str]] = set()
     for dependency in layer.jit.depends_on_layers:
         dependency_layer = available_layers.get(dependency)
@@ -384,30 +507,18 @@ def _require_upstream_outcomes(
             raise ValueError(
                 f"layer {layer.id} dependency {dependency} is absent from the selected executable consumer view"
             )
-        path = layer_outcome_path(shot, dependency)
         try:
-            outcome = _document(path)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                f"layer {layer.id} cannot materialize before dependency {dependency} has a sealed outcome"
-            ) from exc
-        try:
-            sealed = parse_sealed_layer_outcome(
-                outcome,
-                expected_layer_id=dependency,
+            publication = layer_publication.require_current_layer_publication(
+                shot,
+                dependency_layer,
+                selected_authority,
             )
-        except LayerOutcomeContractError as exc:
-            raise ValueError(f"layer {layer.id} dependency {dependency} has an invalid sealed outcome: {exc}") from exc
-        if sealed.status != "passed":
-            raise ValueError(f"layer {layer.id} dependency {dependency} does not have a passed sealed outcome")
-        eligible, reasons = current_outcome_eligibility(
-            shot,
-            dependency_layer,
-            outcome,
-        )
-        if not eligible:
-            raise ValueError(f"layer {layer.id} dependency {dependency} sealed outcome is stale: " + "; ".join(reasons))
-        passed.update(sealed.passed_bindings)
+        except layer_publication.LayerPublicationConflict as exc:
+            raise ValueError(
+                f"layer {layer.id} cannot materialize before dependency {dependency} "
+                f"has a current receipt-backed publication: {exc}"
+            ) from exc
+        passed.update(publication.outcome.passed_bindings)
     missing = sorted(
         f"{kind}:{identifier}" for kind, identifier in layer.jit.required_outcomes if (kind, identifier) not in passed
     )

@@ -8,9 +8,6 @@ from vfx_harness.orchestration.jit_materialization.publish import _composed_docu
 from vfx_harness.orchestration.jit_materialization.publish import _overlay_documents as _overlay_documents
 from vfx_harness.orchestration.jit_materialization.publish import _owned_by as _owned_by
 from vfx_harness.orchestration.jit_materialization.publish import (
-    _project_candidate_unit_state as _project_candidate_unit_state,
-)
-from vfx_harness.orchestration.jit_materialization.publish import (
     finalize_materialization_candidate as finalize_materialization_candidate,
 )
 from vfx_harness.orchestration.jit_materialization.publish import (
@@ -46,7 +43,6 @@ from vfx_harness.orchestration.jit_materialization.schema import _matches_reserv
 from vfx_harness.orchestration.jit_materialization.schema import (
     _mutate_materialization_candidate as _mutate_materialization_candidate,
 )
-from vfx_harness.orchestration.jit_materialization.schema import _passed_evidence_ids as _passed_evidence_ids
 from vfx_harness.orchestration.jit_materialization.schema import (
     _require_upstream_outcomes as _require_upstream_outcomes,
 )

@@ -12,9 +12,13 @@ _COMMANDS = {
     "build": "vfx_harness.agents.builder:main",
     "evals": "vfx_harness.evaluation.cli:main",
     "escalate": "vfx_harness.orchestration.escalate:main",
+    "finalizations": "vfx_harness.application.finalization_admin:main",
     "inspect": "vfx_harness.application.inspect_run:main",
     "plan": "vfx_harness.agents.planner:main",
     "preflight": "vfx_harness.application.preflight:main",
+    "recover-authority-state": (
+        "vfx_harness.application.authority_state_recovery:main"
+    ),
     "recover-environment": "vfx_harness.application.environment_recovery:main",
     "render": "vfx_harness.application.render_shot:main",
     "run": "vfx_harness.application.run_shot:main",

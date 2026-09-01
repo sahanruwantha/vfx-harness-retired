@@ -8,7 +8,11 @@ from pathlib import Path
 from vfx_harness.domain.authority_head_records import (
     JIT_CURRENT_PATH,
     AuthorityHeadRecordError,
+    JitViewPointer,
+    JitViewPointerError,
     decode_canonical_json_object,
+    parse_jit_view_pointer,
+    require_live_jit_artifact_locators,
 )
 from vfx_harness.orchestration import plan_bundle_integrity
 from vfx_harness.orchestration.authority_selection_transaction import (
@@ -17,11 +21,9 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     authority_selection_token_from_pointer_bytes,
     read_optional_pointer_bytes,
 )
-from vfx_harness.orchestration.jit_materialization.view_pointer import (
-    JitViewPointer,
-    JitViewPointerError,
-    parse_jit_view_pointer,
-    require_live_jit_artifact_locators,
+from vfx_harness.orchestration.authority_state_store import (
+    AuthorityStateStoreError,
+    require_no_pending_authority_state,
 )
 from vfx_harness.orchestration.plan_pointer import PLAN_POINTER_PATH, PlanPointer
 
@@ -47,10 +49,17 @@ class AuthoritySelectionHeads:
 
 def read_authority_selection_heads(
     shot_folder: str | Path,
+    *,
+    allow_pending_authority_state: bool = False,
 ) -> AuthoritySelectionHeads:
     """Read both pointer records exactly once; the caller owns lock lifetime."""
 
     shot = Path(shot_folder).expanduser().resolve()
+    if not allow_pending_authority_state:
+        try:
+            require_no_pending_authority_state(shot)
+        except AuthorityStateStoreError as exc:
+            raise AuthoritySelectionConflict(str(exc)) from exc
     plan_bytes = read_optional_pointer_bytes(
         shot,
         shot / PLAN_POINTER_PATH,

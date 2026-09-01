@@ -653,6 +653,7 @@ def record_cannot_express(comparison_state: dict | None, args: dict) -> dict:
         "Recorded cannot_express_in_scope for "
         + ", ".join(ids)
         + f" ({classification}). Do not edit the script further. The harness will stop "
-        "remaining repairs and publish a typed plan defect; vfx units replan consumes it. "
+        "remaining repairs and publish a typed plan defect. The finding does not reopen "
+        "state; publish reviewed replacement authority through its owning boundary. "
         f"Reason: {reason}"
     )

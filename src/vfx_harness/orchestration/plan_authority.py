@@ -27,10 +27,6 @@ from vfx_harness.observability.run_artifacts import RunLayout
 from vfx_harness.orchestration import plan_bundle_integrity, plan_consumer_state_snapshot
 from vfx_harness.orchestration.authority_selection_transaction import (
     authority_selection_lock,
-    durable_remove_pointer,
-    durable_replace_pointer_bytes,
-    durable_replace_pointer_json,
-    durably_ensure_real_directory,
     require_matching_authority_selection_token,
 )
 from vfx_harness.orchestration.plan_consumer_view import (
@@ -341,7 +337,6 @@ def publish_current(
             raise PlanPublicationError("plan path escapes the publication source") from exc
     payloads = _payloads(source, candidate_path)
     bundle = _write_bundle(layout, payloads, outcome=outcome)
-    pointer_path = shot / POINTER
     try:
         with authority_selection_lock(shot, exclusive=True):
             # The JIT package imports the plan authority facade; defer the shared
@@ -363,10 +358,27 @@ def publish_current(
                 content_hash=bundle.content_hash,
                 pointer_outcome=outcome,
             )
-            durably_ensure_real_directory(shot, pointer_path.parent)
             if heads.plan is not None:
                 current = _resolve_pointer(shot, heads.plan.as_dict())
                 if current.bundle.content_hash == bundle.content_hash and current.bundle.outcome == outcome:
+                    # A pointer-only legacy selection is not a semantic no-op after
+                    # HIR-0171 cutover; it lacks the independently evaluated state head.
+                    from vfx_harness.orchestration.authority_state_context import (  # noqa: PLC0415
+                        resolve_current_authority_state,
+                    )
+
+                    context = resolve_current_authority_state(shot)
+                    if context is None or context.head.selection_token != type(
+                        context.head.selection_token
+                    )(
+                        heads.token.plan_revision,
+                        heads.token.plan_pointer_sha256,
+                        heads.token.jit_revision,
+                        heads.token.jit_pointer_sha256,
+                    ):
+                        raise PlanPublicationError(
+                            "selected plan has no matching evaluated authority-state head"
+                        )
                     return current.bundle
             pointer = PlanPointer(
                 revision=heads.token.plan_revision + 1,
@@ -376,43 +388,60 @@ def publish_current(
                 outcome=outcome,
                 published_at=_now(),
             )
-            durable_replace_pointer_json(shot, pointer_path, pointer.as_dict())
-            try:
-                selected = read_authority_selection_heads(shot)
-                if (
-                    selected.plan != pointer
-                    or selected.jit_pointer_bytes != heads.jit_pointer_bytes
-                ):
-                    raise PlanPublicationError(
-                        "plan publication postcondition did not select the exact new plan "
-                        "head while preserving the observed JIT head"
-                    )
-                verified = _resolve_pointer(shot, pointer.as_dict())
-                if verified.bundle != bundle:
-                    raise PlanPublicationError(
-                        "plan publication postcondition selected another verified bundle"
-                    )
-            except BaseException as publication_error:
-                # Readers cannot observe the tentative pointer while this exclusive
-                # lock is held. If authored inputs changed during the final rename,
-                # restore the exact predecessor (including absence) before releasing.
-                if heads.plan_pointer_bytes is None:
-                    durable_remove_pointer(shot, pointer_path)
-                else:
-                    durable_replace_pointer_bytes(
-                        shot,
-                        pointer_path,
-                        heads.plan_pointer_bytes,
-                    )
-                restored = read_authority_selection_heads(shot)
-                if (
-                    restored.plan_pointer_bytes != heads.plan_pointer_bytes
-                    or restored.jit_pointer_bytes != heads.jit_pointer_bytes
-                ):
-                    raise PlanPublicationError(
-                        "plan publication rollback did not restore the exact predecessor heads"
-                    ) from publication_error
-                raise
+            # These imports stay at the publication boundary because the selected
+            # authority resolver intentionally depends on this plan-authority facade.
+            from vfx_harness.domain.authority_capsules import (  # noqa: PLC0415
+                compile_authority_capsules,
+            )
+            from vfx_harness.orchestration.authority_selection import (  # noqa: PLC0415
+                resolve_selected_authority_from_heads,
+            )
+            from vfx_harness.orchestration.authority_state_preparation import (  # noqa: PLC0415
+                prepare_authority_state_transition_locked,
+            )
+            from vfx_harness.orchestration.authority_state_transaction import (  # noqa: PLC0415
+                commit_prepared_authority_state_transition_locked,
+            )
+
+            documents = {
+                name: json.loads(payloads[name]) for name in OVERLAY_ARTIFACTS
+            }
+            after_capsules = compile_authority_capsules(documents, documents)
+            pointer_bytes = canonical_json_bytes(pointer.as_dict())
+            producer_payload = (bundle.root / "bundle.json").read_bytes()
+            prepared = prepare_authority_state_transition_locked(
+                shot,
+                heads=heads,
+                selected_before=(
+                    None
+                    if heads.plan is None
+                    else resolve_selected_authority_from_heads(shot, heads)
+                ),
+                after_capsules=after_capsules,
+                after_plan_pointer_bytes=pointer_bytes,
+                after_plan_revision=pointer.revision,
+                after_jit_pointer_bytes=None,
+                after_jit_revision=0,
+                producer_payload=producer_payload,
+                producer_schema=BUNDLE_SCHEMA,
+                producer_digest=hashlib.sha256(producer_payload).hexdigest(),
+                prepared_at=pointer.published_at,
+            )
+            commit_prepared_authority_state_transition_locked(
+                shot,
+                prepared,
+                committed_at=pointer.published_at,
+            )
+            selected = read_authority_selection_heads(shot)
+            if selected.plan != pointer or selected.jit is not None:
+                raise PlanPublicationError(
+                    "plan publication did not select the exact plan and retire prior JIT authority"
+                )
+            verified = _resolve_pointer(shot, pointer.as_dict())
+            if verified.bundle != bundle:
+                raise PlanPublicationError(
+                    "plan publication selected another verified bundle"
+                )
     except ValueError as exc:
         raise PlanSelectionConflict(f"plan publication selection conflict: {exc}") from exc
     return bundle

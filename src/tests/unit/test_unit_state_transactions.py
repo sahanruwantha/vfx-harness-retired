@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from threading import Event, Thread, current_thread
 
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
-from tests.unit_attempt_fixtures import freeze_unit, publish_passed_evaluation
+from tests.unit_attempt_fixtures import (
+    fixture_completion_authorization,
+    fixture_live_completion_authority,
+    freeze_unit,
+    legacy_apply_replan,
+    publish_passed_evaluation,
+)
 from vfx_harness.orchestration import authority_selection_transaction as selection_tx
 from vfx_harness.orchestration import unit_state, unit_state_claims
 from vfx_harness.orchestration import unit_state_lock as state_lock_module
@@ -32,7 +40,7 @@ _WHOLE_FILE_MUTATIONS = (
     unit_state.block_dependents,
     unit_state.invalidate_checkpoint,
     unit_state.record_hypothesis_falsification,
-    unit_state.apply_replan,
+    legacy_apply_replan,
     unit_state_claims.claim_ready_unit_for_planning,
     unit_state_claims.claim_ready_unit_for_build,
     unit_state_claims.complete_unit_attempt,
@@ -55,29 +63,33 @@ _SELECTION_THEN_STATE_MUTATIONS = (
 
 
 def _claim_for_build(folder, units, unit_id: str, *, plan_hash: str = _PLAN_A):
-    planning = unit_state_claims.claim_ready_unit_for_planning(
-        folder,
-        "1",
-        unit_id,
-        units,
-        expected_plan_hash=plan_hash,
-        eligible_passed=None,
-        run_id=f"run-{unit_id}",
-        selection_token=_TOKEN,
-        reason="fixture readiness",
-    )
-    return unit_state_claims.claim_ready_unit_for_build(
-        folder,
-        "1",
-        unit_id,
-        units,
-        planning,
-        expected_plan_hash=plan_hash,
-        eligible_passed=None,
-        run_id=planning.run_id,
-        selection_token=_TOKEN,
-        reason="fixture gated plan",
-    )
+    authorization = fixture_completion_authorization(folder, "1")
+    with fixture_live_completion_authority(authorization):
+        planning = unit_state_claims.claim_ready_unit_for_planning(
+            folder,
+            "1",
+            unit_id,
+            units,
+            expected_plan_hash=plan_hash,
+            eligible_passed=None,
+            completion_authorization=authorization,
+            run_id=f"run-{unit_id}",
+            selection_token=_TOKEN,
+            reason="fixture readiness",
+        )
+        return unit_state_claims.claim_ready_unit_for_build(
+            folder,
+            "1",
+            unit_id,
+            units,
+            planning,
+            expected_plan_hash=plan_hash,
+            eligible_passed=None,
+            completion_authorization=authorization,
+            run_id=planning.run_id,
+            selection_token=_TOKEN,
+            reason="fixture gated plan",
+        )
 
 
 def _freeze(folder, unit, claim) -> None:
@@ -470,7 +482,7 @@ def test_replan_and_transition_preserve_both_transactions(
         target=_run_thread,
         args=(
             errors,
-            lambda: unit_state.apply_replan(
+            lambda: legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,
@@ -531,7 +543,10 @@ def test_relative_shot_root_writes_exact_state_path(tmp_path, monkeypatch) -> No
     assert not Path("relative-shot/relative-shot/state/work-units/layer_1.json").exists()
 
 
-def test_state_write_flushes_file_then_rename_then_parent(tmp_path, monkeypatch) -> None:
+def test_state_write_flushes_staging_and_destination_around_rename(
+    tmp_path,
+    monkeypatch,
+) -> None:
     unit = _unit("form")
     unit_state.initialize(tmp_path, "1", (unit,), plan_hash=_PLAN_A)
     events: list[str] = []
@@ -551,7 +566,13 @@ def test_state_write_flushes_file_then_rename_then_parent(tmp_path, monkeypatch)
 
     unit_state.transition(tmp_path, "1", unit.id, "blocked", reason="fixture")
 
-    assert events[-3:] == ["fsync-file", "replace", "fsync-parent"]
+    assert events[-5:] == [
+        "fsync-file",
+        "fsync-parent",
+        "replace",
+        "fsync-parent",
+        "fsync-parent",
+    ]
 
 
 def test_replace_failure_preserves_prior_state_and_cleans_temporary(
@@ -572,6 +593,53 @@ def test_replace_failure_preserves_prior_state_and_cleans_temporary(
 
     assert path.read_bytes() == before
     assert list(path.parent.glob(f".{path.name}.prepared.*")) == []
+    staging = tmp_path / state_lock_module.STATE_STAGING_DIR
+    assert list(staging.glob(f".{path.name}.prepared.*")) == []
+
+
+def test_process_death_before_state_replace_leaves_only_inert_staging_orphan(
+    tmp_path: Path,
+) -> None:
+    unit = _unit("form")
+    unit_state.initialize(tmp_path, "1", (unit,), plan_hash=_PLAN_A)
+    path = unit_state._path(tmp_path, "1")
+    before = path.read_bytes()
+    script = """
+import os
+import sys
+
+from vfx_harness.orchestration import unit_state
+from vfx_harness.orchestration import unit_state_lock as state_lock
+
+real_replace = state_lock.os.replace
+
+def die_before_state_replace(source, target, *args, **kwargs):
+    if target == "layer_1.json" and kwargs.get("src_dir_fd") != kwargs.get("dst_dir_fd"):
+        os._exit(73)
+    return real_replace(source, target, *args, **kwargs)
+
+state_lock.os.replace = die_before_state_replace
+unit_state.transition(sys.argv[1], "1", "form", "blocked", reason="crash fixture")
+"""
+
+    crashed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        check=False,
+        cwd=Path(__file__).parents[3],
+    )
+
+    assert crashed.returncode == 73
+    assert path.read_bytes() == before
+    assert sorted(child.name for child in path.parent.iterdir()) == [
+        "layer_1.json",
+        "layer_1.json.lock",
+    ]
+    staging = tmp_path / state_lock_module.STATE_STAGING_DIR
+    assert len(list(staging.glob(f".{path.name}.prepared.*"))) == 1
+
+    unit_state.transition(tmp_path, "1", unit.id, "blocked", reason="next write")
+
+    assert unit_state.load(tmp_path, "1")["units"][unit.id]["status"] == "blocked"
 
 
 def test_state_write_refuses_prepared_name_substitution_without_deleting_it(
@@ -581,6 +649,7 @@ def test_state_write_refuses_prepared_name_substitution_without_deleting_it(
     unit = _unit("form")
     unit_state.initialize(tmp_path, "1", (unit,), plan_hash=_PLAN_A)
     path = unit_state._path(tmp_path, "1")
+    staging = tmp_path / state_lock_module.STATE_STAGING_DIR
     before = path.read_bytes()
     real_fsync = state_lock_module.os.fsync
     injected = False
@@ -590,8 +659,13 @@ def test_state_write_refuses_prepared_name_substitution_without_deleting_it(
         real_fsync(descriptor)
         if injected or not stat.S_ISREG(os.fstat(descriptor).st_mode):
             return
-        temporary = next(path.parent.glob(f".{path.name}.prepared.*"))
-        substitute = path.parent / "substitute-state"
+        prepared = list(staging.glob(f".{path.name}.prepared.*"))
+        if not prepared:
+            # Selection-first mutations durably flush the permanent selection lock
+            # before the state writer allocates its prepared member.
+            return
+        temporary = prepared[0]
+        substitute = staging / "substitute-state"
         substitute.write_bytes(b'{"attacker":true}\n')
         os.replace(substitute, temporary)
         injected = True
@@ -605,7 +679,7 @@ def test_state_write_refuses_prepared_name_substitution_without_deleting_it(
         unit_state.transition(tmp_path, "1", unit.id, "blocked", reason="fixture")
 
     assert path.read_bytes() == before
-    leftovers = list(path.parent.glob(f".{path.name}.prepared.*"))
+    leftovers = list(staging.glob(f".{path.name}.prepared.*"))
     assert len(leftovers) == 1
     assert leftovers[0].read_bytes() == b'{"attacker":true}\n'
 
@@ -644,6 +718,8 @@ def test_state_write_refuses_post_rename_substitution_without_deleting_it(
 
     assert path.read_bytes() == b'{"attacker":true}\n'
     assert list(path.parent.glob(f".{path.name}.prepared.*")) == []
+    staging = tmp_path / state_lock_module.STATE_STAGING_DIR
+    assert list(staging.glob(f".{path.name}.prepared.*")) == []
 
 
 def test_parent_flush_failure_never_reports_state_publication_success(

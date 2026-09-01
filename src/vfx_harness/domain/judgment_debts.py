@@ -37,6 +37,10 @@ from vfx_harness.domain.judgment_debt_observation import (
     JudgmentObservationRequest,
     JudgmentPaymentAttemptFailure,
 )
+from vfx_harness.domain.judgment_debt_payment_generations import (
+    JudgmentDebtCompletionBinding,
+    JudgmentDebtPaymentGeneration,
+)
 
 __all__ = [
     "JUDGMENT_DEBT_CLAIM_KINDS",
@@ -51,7 +55,9 @@ __all__ = [
     "RENDERED_CARRIER_FAMILIES",
     "TERMINAL_JUDGMENT_DEBT_STATUSES",
     "JudgmentDebtActivation",
+    "JudgmentDebtCompletionBinding",
     "JudgmentDebtDefinition",
+    "JudgmentDebtPaymentGeneration",
     "JudgmentDebtSeed",
     "JudgmentDebtState",
     "JudgmentObservationRequest",

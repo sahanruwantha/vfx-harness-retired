@@ -11,6 +11,7 @@ from PIL import Image
 from tests.unit_attempt_fixtures import (
     ABSENT_SELECTION_TOKEN,
     claim_for_build,
+    legacy_apply_replan,
     pass_unit,
 )
 from vfx_harness.agents.builder import _executable_unit_verdict, _scope_unit_evidence
@@ -24,7 +25,6 @@ from vfx_harness.observability.provenance import stamp as provenance_stamp
 from vfx_harness.orchestration.layer_plans import read_layer_plan
 from vfx_harness.orchestration.ledger import load_layers
 from vfx_harness.orchestration.unit_state import (
-    apply_replan,
     block_dependents,
     initialize,
     invalidate_checkpoint,
@@ -938,7 +938,7 @@ def test_checkpoint_and_replan_preserve_identity_but_reopen_plan_bound_receipts(
         _unit("finish", depends_on=["form"]),
         old[2],
     )
-    record = apply_replan(
+    record = legacy_apply_replan(
         tmp_path,
         "4",
         old,
@@ -981,7 +981,7 @@ def test_digest_bound_state_replan_preserves_matches_without_old_view(tmp_path):
     changed_form = _unit("form", depends_on=["rig"], proposition_suffix="-changed")
     finish = _unit("finish", depends_on=["form"])
     new = (rig, changed_form, finish)
-    record = apply_replan(
+    record = legacy_apply_replan(
         tmp_path,
         "4",
         (),
@@ -1077,6 +1077,7 @@ def test_work_unit_state_is_isolated_per_layer(tmp_path):
         layout_units,
         expected_plan_hash="a" * 64,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="fixture-layer-isolation",
         selection_token=ABSENT_SELECTION_TOKEN,
         reason="fixture layer is dependency-ready",
@@ -1088,7 +1089,10 @@ def test_work_unit_state_is_isolated_per_layer(tmp_path):
 
 def test_stale_unit_state_cannot_authorize_a_changed_dag(tmp_path):
     initialize(tmp_path, "1", (_unit("layout"),), plan_hash="plan")
-    with pytest.raises(ValueError, match="transactional replan"):
+    with pytest.raises(
+        ValueError,
+        match="validated authority replacement or amendment",
+    ):
         initialize(
             tmp_path,
             "1",

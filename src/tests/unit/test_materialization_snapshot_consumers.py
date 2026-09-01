@@ -367,15 +367,20 @@ def test_consumer_view_snapshot_avoids_nested_live_resolution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _write_plan(tmp_path, marker="ready")
+    _author_deferred_plan(tmp_path, marker="ready")
     rel = Path("plans/01_camera/unit.md")
-    (tmp_path / "layers.json").write_text(
+    ready_layers = tmp_path / "selected-ready-layers.json"
+    ready_layers.write_text(
         json.dumps(
             {
                 "schema": 5,
                 "layers": [
                     {
-                        "id": "1",
+                        **{
+                            key: value
+                            for key, value in _deferred_row().items()
+                            if key != "jit"
+                        },
                         "execution": "ready",
                         "stages": [{"id": "unit", "plan": rel.as_posix()}],
                     }
@@ -387,7 +392,7 @@ def test_consumer_view_snapshot_avoids_nested_live_resolution(
     )
     plan = tmp_path / rel
     layout = run_artifacts.create(tmp_path, "ready-plan")
-    plan_authority.publish_current(tmp_path, layout, outcome="clean")
+    plan_authority.publish_current(tmp_path, layout, outcome="clean_with_deferred")
     plan.parent.mkdir(parents=True)
     plan.write_text("# unit\n" + "bounded execution\n" * 20, encoding="utf-8")
     stamp_work_unit_plan(
@@ -396,6 +401,16 @@ def test_consumer_view_snapshot_avoids_nested_live_resolution(
         gate={"clean": True, "blocking": 0, "run_id": "ready-plan"},
     )
     selected = resolve_selected_authority(tmp_path)
+    # A verified snapshot is the input contract under test. Represent the already-
+    # materialized effective layer without mutating the sparse global publication;
+    # publication semantics are covered by the JIT transaction suites.
+    selected = type(selected)(
+        assertion=selected.assertion,
+        pointer_observation=selected.pointer_observation,
+        selection_token=selected.selection_token,
+        plan=selected.plan,
+        artifact_paths={**selected.artifact_paths, "layers.json": ready_layers},
+    )
     monkeypatch.setattr(
         authority_selection,
         "resolve_selected_authority",

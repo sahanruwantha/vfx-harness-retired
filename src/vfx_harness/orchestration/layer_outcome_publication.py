@@ -10,11 +10,23 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from vfx_harness.domain.authority_head_records import parse_authority_selection_token
+from vfx_harness.domain.layer_finalizations import LayerFinalizationReceipt
 from vfx_harness.domain.stop_envelope_primitives import require_digest
-from vfx_harness.domain.unit_attempts import UnitAttemptClaim
+from vfx_harness.infrastructure.trusted_files import (
+    TrustedFileAbsenceBinding,
+    TrustedFileBinding,
+    TrustedFileError,
+    TrustedFileNotFound,
+    bind_trusted_file_absence,
+    open_pinned_trusted_file,
+)
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
     durably_ensure_real_directory,
+)
+from vfx_harness.orchestration.layer_finalization_authorizations import (
+    AuthorizedLayerFinalizationMutation,
 )
 
 
@@ -24,18 +36,17 @@ class LayerOutcomePublicationConflict(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class LayerOutcomePublicationAuthority:
-    """Exact selection and execution identity allowed to publish one outcome."""
+    """Exact terminal finalization allowed to project one layer outcome."""
 
     kind: str
     layer_id: str
     layer_digest: str
-    run_id: str
-    ledger_attempt: int
     selection_token: AuthoritySelectionToken
-    claim: UnitAttemptClaim | None = None
+    receipt: LayerFinalizationReceipt
+    finalization_authorization: AuthorizedLayerFinalizationMutation
 
     def __post_init__(self) -> None:
-        if self.kind not in {"unit_attempt", "composition"}:
+        if self.kind != "finalization":
             raise LayerOutcomePublicationConflict(
                 f"unsupported layer-outcome authority kind: {self.kind!r}"
             )
@@ -44,39 +55,35 @@ class LayerOutcomePublicationAuthority:
                 "layer-outcome authority requires a non-empty trimmed layer id"
             )
         require_digest(self.layer_digest, "layer-outcome layer digest")
-        if not self.run_id or self.run_id != self.run_id.strip():
-            raise LayerOutcomePublicationConflict(
-                "layer-outcome authority requires a non-empty trimmed run id"
-            )
-        if (
-            not isinstance(self.ledger_attempt, int)
-            or isinstance(self.ledger_attempt, bool)
-            or self.ledger_attempt < 1
-        ):
-            raise LayerOutcomePublicationConflict(
-                "layer-outcome authority requires a positive ledger attempt"
-            )
         if not isinstance(self.selection_token, AuthoritySelectionToken):
             raise LayerOutcomePublicationConflict(
                 "layer-outcome authority requires an exact selection token"
             )
-        if self.kind == "unit_attempt":
-            if not isinstance(self.claim, UnitAttemptClaim):
-                raise LayerOutcomePublicationConflict(
-                    "unit layer outcome requires an exact work-unit attempt claim"
-                )
-            if (
-                self.claim.layer_id != self.layer_id
-                or self.claim.run_id != self.run_id
-                or self.claim.as_dict()["selection_token"]
-                != self.selection_token.to_dict()
-            ):
-                raise LayerOutcomePublicationConflict(
-                    "unit layer-outcome claim belongs to another layer, run, or selection"
-                )
-        elif self.claim is not None:
+        if not isinstance(self.receipt, LayerFinalizationReceipt):
             raise LayerOutcomePublicationConflict(
-                "composition layer outcome cannot carry a unit-attempt claim"
+                "layer outcome requires an exact terminal finalization receipt"
+            )
+        authorization = self.finalization_authorization
+        if not isinstance(authorization, AuthorizedLayerFinalizationMutation):
+            raise LayerOutcomePublicationConflict(
+                "layer outcome requires typed current-head finalization authorization"
+            )
+        current_projection = parse_authority_selection_token(
+            self.selection_token.to_dict(),
+            "layer-outcome current selection token",
+        )
+        if self.receipt.claim.layer_id != self.layer_id:
+            raise LayerOutcomePublicationConflict(
+                "layer-outcome finalization receipt belongs to another layer"
+            )
+        if (
+            authorization.receipt != self.receipt
+            or authorization.completion_authorization.selection_token
+            != current_projection
+        ):
+            raise LayerOutcomePublicationConflict(
+                "layer-outcome finalization authorization does not bind the exact "
+                "receipt and current selection"
             )
 
 
@@ -91,6 +98,8 @@ class LayerOutcomePathIdentity:
     size: int | None = None
     modified_ns: int | None = None
     changed_ns: int | None = None
+    trusted_file_binding: TrustedFileBinding | None = None
+    trusted_absence_binding: TrustedFileAbsenceBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,32 +239,49 @@ def _require_published_inode_current(
 def capture_layer_outcome_source_identities(
     paths: tuple[Path, ...],
 ) -> tuple[LayerOutcomePathIdentity, ...]:
-    """Capture exact regular-file identities without reading their potentially large bytes."""
+    """Capture exact source lineage without following any symlink component."""
 
     identities: list[LayerOutcomePathIdentity] = []
     for path in sorted({_absolute(value) for value in paths}, key=lambda value: str(value)):
+        where = "layer-outcome causal source"
         try:
-            observed = path.lstat()
-        except FileNotFoundError:
-            identities.append(LayerOutcomePathIdentity(path=path, exists=False))
-            continue
-        except OSError as exc:
-            raise LayerOutcomePublicationConflict(
-                f"layer-outcome source is unreadable: {path}"
-            ) from exc
-        if not stat.S_ISREG(observed.st_mode):
-            raise LayerOutcomePublicationConflict(
-                f"layer-outcome source must be a real regular file: {path}"
+            with open_pinned_trusted_file(path.anchor, path, where) as pinned:
+                pinned.require_current()
+                binding = pinned.binding
+        except TrustedFileNotFound:
+            try:
+                absence = bind_trusted_file_absence(
+                    path.anchor,
+                    path,
+                    where,
+                )
+            except TrustedFileError as exc:
+                raise LayerOutcomePublicationConflict(
+                    f"layer-outcome source absence is untrusted: {path}"
+                ) from exc
+            identities.append(
+                LayerOutcomePathIdentity(
+                    path=path,
+                    exists=False,
+                    trusted_absence_binding=absence,
+                )
             )
+            continue
+        except TrustedFileError as exc:
+            raise LayerOutcomePublicationConflict(
+                f"layer-outcome source is not a trusted regular file: {path}"
+            ) from exc
+        observed = binding.file_identity
         identities.append(
             LayerOutcomePathIdentity(
                 path=path,
                 exists=True,
-                device=observed.st_dev,
-                inode=observed.st_ino,
-                size=observed.st_size,
-                modified_ns=observed.st_mtime_ns,
-                changed_ns=observed.st_ctime_ns,
+                device=observed.device,
+                inode=observed.inode,
+                size=observed.size,
+                modified_ns=observed.modified_ns,
+                changed_ns=observed.changed_ns,
+                trusted_file_binding=binding,
             )
         )
     return tuple(identities)

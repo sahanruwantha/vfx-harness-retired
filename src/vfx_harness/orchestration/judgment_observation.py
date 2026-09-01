@@ -11,8 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from vfx_harness.blender.observation_environment import (
     SCHEMA as OBSERVATION_ENVIRONMENT_SCHEMA,
@@ -20,21 +21,54 @@ from vfx_harness.blender.observation_environment import (
 from vfx_harness.blender.observation_environment import (
     canonical_observation_environment,
 )
+from vfx_harness.domain.judgment_debt_replay_receipts import (
+    ReplayPrefixReceipt,
+    payment_generation_for_replay,
+    replay_parent_chain_digest,
+)
 from vfx_harness.domain.judgment_debts import (
     JudgmentObservationRequest,
     JudgmentPoint,
     validate_judgment_debt_replay_prefix,
 )
 from vfx_harness.domain.refobs import PROMOTED_CONSTRUCTION_SCHEMA
+from vfx_harness.domain.stop_envelope_primitives import require_digest
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
     resolve_selected_authority,
 )
 from vfx_harness.orchestration.judgment_debt_state import (
-    ReplayPrefixReceipt,
     current_judgment_debt_states_for_authority,
 )
+
+ProvisionalJudgmentLifecycle = Literal["pending_not_due", "due"]
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionalJudgmentObservationCompilation:
+    """A read-only observation request and the lifecycle state it was compiled from.
+
+    ``pending_not_due`` is legal here because a layer-finalization transaction may
+    need to perform the observation before publishing debt activation.  The request
+    itself is identical to the one compiled after activation; lifecycle is deliberately
+    not part of the payment identity.
+    """
+
+    request: JudgmentObservationRequest
+    lifecycle: ProvisionalJudgmentLifecycle
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, JudgmentObservationRequest):
+            raise ValueError(
+                "ProvisionalJudgmentObservationCompilation.request must be a "
+                "JudgmentObservationRequest"
+            )
+        if self.lifecycle not in ("pending_not_due", "due"):
+            raise ValueError(
+                "ProvisionalJudgmentObservationCompilation.lifecycle must be "
+                "pending_not_due or due"
+            )
 
 
 def _digest_json(value: Any) -> str:
@@ -80,22 +114,6 @@ def selected_view_digest(shot: Path, bundle_digest: str) -> str:
     if observed_bundle != bundle_digest:
         raise ValueError("selected plan bundle changed before judgment observation")
     return observed_view
-
-
-def _parent_chain_digest(receipt: ReplayPrefixReceipt) -> str:
-    return _digest_json(
-        {
-            "schema": "vfx-harness.judgment-observation-parent-chain/v1",
-            "layers": [
-                {
-                    "layer_id": layer.layer_id,
-                    "script_path": layer.script_path,
-                    "script_sha256": layer.script_sha256,
-                }
-                for layer in receipt.layers
-            ],
-        }
-    )
 
 
 def _external_asset_provenance_digest(shot: Path, receipt: ReplayPrefixReceipt) -> str:
@@ -205,11 +223,12 @@ def _validated_environment_digest(
     return str(canonical["digest"])
 
 
-def compile_current_judgment_observation_request(
+def _compile_judgment_observation_request(
     shot_folder: str | Path,
     definition_digest: str,
     *,
     replay_receipt: ReplayPrefixReceipt,
+    layer_replay_receipt_digest: str,
     frame: int,
     ref: str,
     render_mode: str,
@@ -217,10 +236,14 @@ def compile_current_judgment_observation_request(
     observation_environment: Mapping[str, Any],
     comparison_config: Mapping[str, Any],
     judge_config: Mapping[str, Any],
-) -> JudgmentObservationRequest:
-    """Seal one currently-due debt observation before any raster is produced."""
+    allow_pending_not_due: bool,
+) -> tuple[JudgmentObservationRequest, ProvisionalJudgmentLifecycle]:
     if not isinstance(replay_receipt, ReplayPrefixReceipt):
         raise ValueError("judgment observation requires a ReplayPrefixReceipt")
+    layer_replay_digest = require_digest(
+        layer_replay_receipt_digest,
+        "judgment observation layer_replay_receipt_digest",
+    )
     shot = Path(shot_folder).resolve()
     selected_authority, bundle_digest, selected_view = _selected_snapshot(shot)
     try:
@@ -240,10 +263,26 @@ def compile_current_judgment_observation_request(
         raise ValueError(
             f"judgment debt {definition.debt_id} has no current payer activation"
         )
-    if state.status != "due" or state.activation_digest != activation.digest:
+    if state.definition_digest != definition.digest:
+        raise ValueError(
+            f"judgment debt {definition.debt_id} state belongs to another definition"
+        )
+    lifecycle = state.status
+    if allow_pending_not_due:
+        if lifecycle not in ("pending_not_due", "due"):
+            raise ValueError(
+                f"judgment debt {definition.debt_id} provisional observation requires "
+                f"pending_not_due or the exact due activation; found {lifecycle}"
+            )
+        if lifecycle == "due" and state.activation_digest != activation.digest:
+            raise ValueError(
+                f"judgment debt {definition.debt_id} provisional observation requires "
+                "the exact due activation; found a stale activation"
+            )
+    elif lifecycle != "due" or state.activation_digest != activation.digest:
         raise ValueError(
             f"judgment debt {definition.debt_id} observation requires the exact due "
-            f"activation; found {state.status}"
+            f"activation; found {lifecycle}"
         )
     if bundle_digest != definition.seed.bundle_digest:
         raise ValueError(
@@ -263,17 +302,23 @@ def compile_current_judgment_observation_request(
     if not reference.is_file():
         raise ValueError(f"judgment reference {ref!r} is missing")
 
+    payment_generation = payment_generation_for_replay(
+        definition,
+        activation,
+        replay_receipt,
+    )
+    if (
+        lifecycle == "due"
+        and state.payment_generation_digest != payment_generation.digest
+    ):
+        raise ValueError(
+            f"judgment debt {definition.debt_id} due state belongs to another "
+            "replay payment generation"
+        )
     request = JudgmentObservationRequest(
         definition_digest=definition.digest,
         activation_digest=activation.digest,
-        payment_generation_digest=_digest_json(
-            {
-                "schema": "vfx-harness.judgment-payment-generation/v1",
-                "bundle_digest": bundle_digest,
-                "definition_digest": definition.digest,
-                "activation_digest": activation.digest,
-            }
-        ),
+        payment_generation_digest=payment_generation.digest,
         bundle_digest=bundle_digest,
         owner_view_digest=_digest_json(
             {
@@ -290,7 +335,8 @@ def compile_current_judgment_observation_request(
             }
         ),
         replay_receipt_digest=replay_receipt.digest,
-        parent_chain_digest=_parent_chain_digest(replay_receipt),
+        layer_replay_receipt_digest=layer_replay_digest,
+        parent_chain_digest=replay_parent_chain_digest(replay_receipt),
         judge_point=point,
         observation_medium=definition.seed.observation_medium,
         render_mode=render_mode,
@@ -312,4 +358,76 @@ def compile_current_judgment_observation_request(
         judge_config_digest=_digest_json(judge_config),
     )
     request.assert_matches(definition, activation)
+    return request, lifecycle
+
+
+def compile_current_judgment_observation_request(
+    shot_folder: str | Path,
+    definition_digest: str,
+    *,
+    replay_receipt: ReplayPrefixReceipt,
+    layer_replay_receipt_digest: str,
+    frame: int,
+    ref: str,
+    render_mode: str,
+    render_scale: float,
+    observation_environment: Mapping[str, Any],
+    comparison_config: Mapping[str, Any],
+    judge_config: Mapping[str, Any],
+) -> JudgmentObservationRequest:
+    """Seal one currently-due debt observation before any raster is produced."""
+    request, _lifecycle = _compile_judgment_observation_request(
+        shot_folder,
+        definition_digest,
+        replay_receipt=replay_receipt,
+        layer_replay_receipt_digest=layer_replay_receipt_digest,
+        frame=frame,
+        ref=ref,
+        render_mode=render_mode,
+        render_scale=render_scale,
+        observation_environment=observation_environment,
+        comparison_config=comparison_config,
+        judge_config=judge_config,
+        allow_pending_not_due=False,
+    )
     return request
+
+
+def compile_provisional_judgment_observation_request(
+    shot_folder: str | Path,
+    definition_digest: str,
+    *,
+    replay_receipt: ReplayPrefixReceipt,
+    layer_replay_receipt_digest: str,
+    frame: int,
+    ref: str,
+    render_mode: str,
+    render_scale: float,
+    observation_environment: Mapping[str, Any],
+    comparison_config: Mapping[str, Any],
+    judge_config: Mapping[str, Any],
+) -> ProvisionalJudgmentObservationCompilation:
+    """Compile from an exact pending or due activation without changing debt state.
+
+    This is the pre-terminal half of layer finalization.  The selected definition,
+    selected payer activation, and exact replay prefix are all verified just as they
+    are for a due observation.  Only the durable lifecycle precondition differs.
+    """
+    request, lifecycle = _compile_judgment_observation_request(
+        shot_folder,
+        definition_digest,
+        replay_receipt=replay_receipt,
+        layer_replay_receipt_digest=layer_replay_receipt_digest,
+        frame=frame,
+        ref=ref,
+        render_mode=render_mode,
+        render_scale=render_scale,
+        observation_environment=observation_environment,
+        comparison_config=comparison_config,
+        judge_config=judge_config,
+        allow_pending_not_due=True,
+    )
+    return ProvisionalJudgmentObservationCompilation(
+        request=request,
+        lifecycle=lifecycle,
+    )

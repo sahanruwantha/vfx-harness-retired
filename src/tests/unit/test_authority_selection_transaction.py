@@ -256,7 +256,10 @@ def test_selection_lock_refuses_parent_rename_recreate_split(tmp_path: Path) -> 
     entered = threading.Event()
     errors: list[BaseException] = []
 
-    with authority_selection_lock(tmp_path, exclusive=True):
+    with pytest.raises(
+        AuthoritySelectionConflict,
+        match="authority selection lock path changed during lock exit",
+    ), authority_selection_lock(tmp_path, exclusive=True):
         parent.rename(retired)
         parent.mkdir()
 

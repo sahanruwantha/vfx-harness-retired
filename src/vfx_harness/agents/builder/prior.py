@@ -16,9 +16,9 @@ from claude_agent_sdk import (
 )
 
 from vfx_harness.agents.build_prompts import (
-    builder_system,
     capability_feedback_groups,
 )
+from vfx_harness.agents.builder.builder_options import _builder_options as _builder_options
 from vfx_harness.agents.builder.candidate_script import (
     edit_scratch_candidate,
     write_scratch_candidate,
@@ -28,11 +28,8 @@ from vfx_harness.agents.builder.evidence import _scope_bound_evidence
 from vfx_harness.agents.builder.models import (
     _RESET,
     MAX_BUDGET_USD,
-    MAX_TURNS,
-    TASK_BUDGET_TOKENS,
     BuildTruncated,
     UnpassedPrior,
-    builder_model,
     script_model,
 )
 from vfx_harness.agents.builder.pkg import builder_package
@@ -49,20 +46,16 @@ from vfx_harness.infrastructure.trusted_files import (
     read_trusted_file,
     require_trusted_file_unchanged,
 )
-from vfx_harness.knowledge.recipes import RECIPES_DIR, build_recipe_tools, recipe_index
+from vfx_harness.knowledge.recipes import build_recipe_tools
 from vfx_harness.observability import transcript
 from vfx_harness.observability.log import (
     TOOL_USE,
     log,
 )
+from vfx_harness.orchestration import authority_selection, layer_publication
 from vfx_harness.orchestration import generate_construction as generate_construction
-from vfx_harness.orchestration import unit_state
 from vfx_harness.orchestration.layer_plans import read_layer_plan, read_work_unit_plan
-from vfx_harness.orchestration.ledger import Ledger
 from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
-from vfx_harness.orchestration.unit_completion_state import (
-    current_completion_receipt_digests,
-)
 from vfx_harness.orchestration.unit_evaluation_receipts import (
     ExecutedReplayDependency,
     ExecutedReplayInput,
@@ -70,6 +63,84 @@ from vfx_harness.orchestration.unit_evaluation_receipts import (
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
+    from vfx_harness.orchestration.ledger import Layer
+
+
+class _ReceiptBackedPriorPaths(list[Path]):
+    """List-compatible replay prefix retaining its terminal publication identities."""
+
+    def __init__(
+        self,
+        paths: list[Path],
+        *,
+        shot: Shot,
+        selected_authority: ResolvedSelectedAuthority,
+        publications: tuple[tuple[Layer, str, str, str], ...],
+    ) -> None:
+        super().__init__(paths)
+        self.shot = shot
+        self.selected_authority = selected_authority
+        self.publications = publications
+
+    def __add__(self, other):
+        return _ReceiptBackedPriorPaths(
+            [*self, *other],
+            shot=self.shot,
+            selected_authority=self.selected_authority,
+            publications=self.publications,
+        )
+
+    def require_current(self, where: str) -> None:
+        for (
+            layer,
+            expected_receipt_digest,
+            expected_script_path,
+            expected_script_sha256,
+        ) in self.publications:
+            publication = layer_publication.require_current_layer_publication(
+                self.shot.folder,
+                layer,
+                self.selected_authority,
+            )
+            if publication.receipt.receipt_digest != expected_receipt_digest:
+                raise layer_publication.LayerPublicationConflict(
+                    f"{where}: layer {layer.id} terminal finalization receipt changed"
+                )
+            if (
+                publication.receipt.layer_script_path != expected_script_path
+                or publication.receipt.layer_script_sha256 != expected_script_sha256
+            ):
+                raise layer_publication.LayerPublicationConflict(
+                    f"{where}: layer {layer.id} terminal replay source changed"
+                )
+
+    def prepare_inputs(self) -> tuple[PreparedArtifactReplayInput, ...]:
+        root = self.shot.folder.expanduser().absolute()
+        entries: list[tuple[str, Path]] = []
+        for index, path in enumerate(self):
+            absolute = path.expanduser().absolute()
+            try:
+                locator = absolute.relative_to(root).as_posix()
+            except ValueError as exc:
+                raise BlenderError(
+                    f"receipt-backed prior replay input {index} escapes the shot root"
+                ) from exc
+            entries.append((locator, absolute))
+        prepared = _prepare_artifact_replay_inputs(root, entries)
+        by_locator = {item.executed.script_path: item for item in prepared}
+        for (
+            layer,
+            _receipt_digest,
+            script_path,
+            script_sha256,
+        ) in self.publications:
+            item = by_locator.get(script_path)
+            if item is None or item.executed.script_sha256 != script_sha256:
+                raise BlenderError(
+                    f"layer {layer.id} prepared replay bytes do not match its terminal "
+                    "finalization receipt"
+                )
+        return prepared
 
 
 def _prior_layer_paths(
@@ -83,6 +154,10 @@ def _prior_layer_paths(
 
     Raises UnpassedPrior unless every one of them is recorded 'passed'."""
 
+    selected_authority = selected_authority or authority_selection.resolve_selected_authority(
+        shot.folder
+    )
+
     chain = selected_layer_chain(
         shot,
         selected_authority=selected_authority,
@@ -93,47 +168,33 @@ def _prior_layer_paths(
             f"layer {getattr(layer, 'id', None)!r} is not the exact selected-DAG layer"
         )
     prior_layers = chain[: matches[0]]
-    # A replay prefix without readable acceptance authority is not a degraded mode.
-    # Propagate malformed/missing selected-layer or ledger state before any prior bytes
-    # can reach Blender; otherwise an unaccepted artifact becomes the successor's base.
-    ledger = Ledger(shot, selected_authority=selected_authority)
+    # A replay prefix without one complete public finalization is not a degraded mode.
+    # Accepted paths come from the exact terminal receipt, never from directory presence.
     keep: list[Path] = []
+    publications: list[tuple[Layer, str, str, str]] = []
     unpassed: list[str] = []
-    with current_completion_receipt_digests(shot.folder) as verified_receipts:
-        for g in prior_layers:
-            p = shot.folder / g.script
-            if not p.is_file():
-                unpassed.append(f"layer {g.id} ({g.script}) has no replay script")
-                continue
-            keep.append(p)
-            try:
-                state = unit_state.load(shot.folder, str(g.id))
-                unit_state.validate_current(state, str(g.id), g.stages)
-            except ValueError as exc:
-                unpassed.append(f"layer {g.id} work-unit state is invalid: {exc}")
-                continue
-            sealed = unit_state.digest_matched_passed(state, g.stages)
-            missing_units = [
-                unit.id
-                for unit in g.stages
-                if unit.id not in sealed
-                or (str(g.id), unit.id) not in verified_receipts
-            ]
-            if missing_units:
-                unpassed.append(
-                    f"layer {g.id} has no source-verified completion for "
-                    + ", ".join(missing_units)
-                )
-                continue
-            st = ledger.status(g.as_milestone())
-            if st != "passed":
-                unpassed.append(f"layer {g.id} ({p.name}) is '{st}'")
-                continue
-            # 'passed' is a verdict on a SCRIPT, not on a layer id. Editing the
-            # composed script afterwards leaves the pass describing obsolete bytes.
-            why = ledger.stale(g.as_milestone())
-            if why:
-                unpassed.append(why)
+    for g in prior_layers:
+        fallback = shot.folder / g.script
+        try:
+            publication = layer_publication.require_current_layer_publication(
+                shot.folder,
+                g,
+                selected_authority,
+            )
+        except layer_publication.LayerPublicationConflict as exc:
+            unpassed.append(f"layer {g.id} publication is invalid: {exc}")
+            if force and fallback.is_file():
+                keep.append(fallback)
+            continue
+        keep.append(shot.folder / publication.receipt.layer_script_path)
+        publications.append(
+            (
+                g,
+                publication.receipt.receipt_digest,
+                publication.receipt.layer_script_path,
+                publication.receipt.layer_script_sha256,
+            )
+        )
     # FAIL CLOSED. This used to warn and chain anyway, so a layer could be built on top of
     # a predecessor whose content was never accepted — every judgement above it then rests
     # on unreviewed geometry. The protection previously lived in the shell script that
@@ -146,7 +207,12 @@ def _prior_layer_paths(
         )
     if unpassed:
         log(f"! --force: chaining {len(unpassed)} unaccepted prior(s) — " + "; ".join(unpassed))
-    return keep
+    return _ReceiptBackedPriorPaths(
+        keep,
+        shot=shot,
+        selected_authority=selected_authority,
+        publications=tuple(publications),
+    )
 
 
 class ChainBroken(RuntimeError):
@@ -317,6 +383,16 @@ def _run_prior_paths(
         raise ChainBroken(
             "canonical prior replay input count does not match the selected prefix"
         )
+    receipt_backed = paths if isinstance(paths, _ReceiptBackedPriorPaths) else None
+    if receipt_backed is not None:
+        try:
+            receipt_backed.require_current("before prior replay")
+            if prepared_inputs is None:
+                prepared_inputs = receipt_backed.prepare_inputs()
+        except (BlenderError, layer_publication.LayerPublicationConflict) as exc:
+            raise ChainBroken(
+                f"prior layer publication changed before replay: {exc}"
+            ) from exc
     names = []
     for index, p in enumerate(paths):
         log(f"running prior layer script {p.name}")
@@ -334,6 +410,13 @@ def _run_prior_paths(
                 f"layer (or restore the prior script it was authored against) before "
                 f"building further."
             ) from e
+        if receipt_backed is not None:
+            try:
+                receipt_backed.require_current(f"after replaying {p.name}")
+            except layer_publication.LayerPublicationConflict as exc:
+                raise ChainBroken(
+                    f"prior layer publication changed during replay: {exc}"
+                ) from exc
         names.append(p.name)
     return names
 
@@ -382,66 +465,6 @@ def _preamble(shot: Shot) -> str:
 # --------------------------------------------------------------------------- #
 # Agent plumbing                                                               #
 # --------------------------------------------------------------------------- #
-def _builder_options(
-    shot: Shot,
-    mcp_servers: dict,
-    tool_names: list[str],
-    axes: list[tuple[str, str]],
-    ref_rel: str | None = None,
-    script_rel: str | None = None,
-    phase: dict[str, str] | None = None,
-    ticket_context: str | None = None,
-    selected_authority: ResolvedSelectedAuthority | None = None,
-    attempt_guard=None,
-) -> ClaudeAgentOptions:
-    return ClaudeAgentOptions(
-        model=builder_model(),
-        system_prompt=builder_system(
-            axes,
-            recipe_index(context=ticket_context) if ticket_context is not None else recipe_index(),
-            ticket_context=ticket_context,
-        ),
-        cwd=str(shot.folder),
-        hooks=builder_hooks(
-            shot.folder,
-            [shot.folder, RECIPES_DIR],
-            ref_rel=ref_rel,
-            script_rel=script_rel,
-            phase=phase,
-            selected_authority=selected_authority,
-            attempt_guard=attempt_guard,
-        ),
-        mcp_servers=mcp_servers,
-        # LIVE_BUILD owns the warm Blender scene, never the artifact on disk.  Write/Edit
-        # are absent rather than merely prompt-discouraged; publication and repair use
-        # dedicated sessions below with mutually exclusive mutation surfaces.
-        allowed_tools=["Read", "Glob", "Grep", "WebFetch", *tool_names],
-        # allowed_tools is an AUTO-APPROVE list, not a whitelist: under bypassPermissions
-        # every unlisted tool still runs. Deny explicitly or it is available.
-        # WebFetch is allowed but hook-restricted to Blender docs (see guardrails):
-        # with no lookup at all the builder re-guesses a failing API verbatim.
-        disallowed_tools=["Write", "Edit", "Bash", "Task", "Agent", "NotebookEdit", "KillShell", "BashOutput"],
-        permission_mode="bypassPermissions",
-        max_buffer_size=32 * 1024 * 1024,  # renders/read-images can exceed the 1MB default
-        # "project" loads shots/<id>/CLAUDE.md on EVERY request, so the layer contract
-        # survives compaction — the kickoff message does not.
-        setting_sources=["project"],
-        max_turns=MAX_TURNS,  # headroom only — MAX_BUDGET_USD is the real stop
-        max_budget_usd=MAX_BUDGET_USD,
-        # Three different jobs, and they are not substitutes:
-        #   task_budget      ADVISORY — the model sees the countdown and can reserve room
-        #                    to finish and validate instead of being cut off mid-thought
-        #   max_budget_usd   ENFORCED financial ceiling
-        #   max_turns        runaway-loop backstop
-        # Advisory pacing does not fix a loop that cannot converge — layer 2 burned 46
-        # rounds and layer 5 sixteen because nothing could FAIL them on the axis that
-        # mattered, and a countdown would only have stopped them sooner with less to show.
-        # It is here because being cut off mid-script is strictly worse than landing early.
-        **({"task_budget": TASK_BUDGET_TOKENS} if TASK_BUDGET_TOKENS else {}),
-        effort="high",
-    )
-
-
 _SCRIPT_SYSTEM = """\
 You are a narrow build-artifact agent. Follow the requested MODE exactly. You do not have
 Blender scene tools and must not redesign the warm scene. In FINALIZE_SCRIPT, publish the

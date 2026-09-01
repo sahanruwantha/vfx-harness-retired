@@ -71,9 +71,11 @@ writes outside this workspace are denied.
 A gate-clean untagged `--until-clean` run freezes `plans/global.md`, its five execution
 contracts, typed requirements/obligations/assumptions, every nested Markdown unit/evidence plan,
 and authored-input provenance from that workspace into
-`runs/<run-id>/checkpoints/plans/bundles/<hash>/`, then atomically
-selects the complete generation through `plans/current.json`. A failed or interrupted run leaves
-the previous pointer unchanged and retains its own candidate as diagnostic run evidence.
+`runs/<run-id>/checkpoints/plans/bundles/<hash>/`, then stages the complete generation and its
+gate-attested authority-state effect. One coordinator transaction selects `plans/current.json`
+and installs every affected durable-state binding. A failure before pending selection leaves the
+previous authority live and retains the candidate as diagnostic run evidence; a crash after
+pending selection makes readers fail closed until exact roll-forward recovery completes.
 `--until-clean` exits 3 and records the run as failed if the gate stalls or exhausts its repair
 budget with blocking findings. Planning status and summary records carry `outcome`,
 `blocking_count`, and `plan_gate_report`; read `reports/plan_gate.json` for the reusable finding
@@ -86,53 +88,58 @@ boundary declared in its due gate.
 contracts, decision strengths, and due boundaries close. It does not mean future scene-dependent
 targets have already passed. The earliest producing unit evaluates those targets in the real
 cumulative scene. A local miss stays inside bounded repair; a miss requiring new authority records
-`hypothesis_falsified` and stops for transactional replanning.
+`hypothesis_falsified` and stops for a validated replacement through the owning plan or
+materialization boundary.
 
-When a newly published plan changes a layer DAG that already has durable work-unit state,
-move that state through the explicit replan transaction before execution. Name the exact
-immutable bundle that produced the old state; the command verifies its manifest and layers
-hash against durable state, compares it with current selected authority, preserves only
-unchanged/unaffected checkpoints, and atomically records the full supersession closure:
+There is no separate state-movement step after plan or JIT publication. The global-plan and
+materialization publishers stage semantic authority capsules, exact durable-state before/after
+images, and the complete preservation/invalidation effect. The gate attests that proposal, then
+one write-ahead authority-state transaction commits both the selected pointer and every affected
+state binding. A crash leaves a pending intent that deterministic recovery can only roll forward
+to those already staged bytes; it never reruns planning, Blender, render, or judgment (HIR-0171).
 
-```bash
-.venv/bin/vfx units replan shots/<shot-id> --layer <layer-id> \
-  --base-run <old-plan-run-id> --base-bundle <old-plan-content-hash> \
-  --owner <authority> --trigger "<why the DAG changed>" \
-  --evidence <locator> [--evidence <locator> ...]
-```
-
-When execution emitted a typed plan finding, consume it directly so the transaction verifies its
-bundle, DAG, unit, and dependency identities. A finding involving a hard constraint additionally
-requires an explicit human approval locator:
+When any authority reader reports that this transaction is pending, run the public recovery
+boundary before any other plan, build, or evaluation command:
 
 ```bash
-.venv/bin/vfx units replan shots/<shot-id> --layer <layer-id> \
-  --base-run <old-plan-run-id> --base-bundle <old-plan-content-hash> \
-  --owner <authority> --trigger "executable hypothesis falsified" \
-  --falsification state/work-units/hypothesis-falsifications/<record-id>.json \
-  [--hard-constraint-approval <human-decision-evidence>]
+.venv/bin/vfx recover-authority-state shots/<shot-id>
 ```
 
-Add `--preview` to validate the same authority and print the added, removed, changed, invalidated,
-and preserved unit sets without publishing the state transaction.
+The command selects no alternative and performs no planning, Blender, render, critic, or model
+work. It verifies the pending intent and every live member against their exact before/after
+identities, rolls forward only the already staged successor, independently evaluates the
+resulting commit, and prints one `vfx-harness.authority-state-recovery-result/v1` record. Its
+`coordinator_head_ref`, `intent_ref`, selection token, and state-member ids are the deterministic
+recovery evidence. Repeating it with no pending WAL is a state no-op and reports
+`already_current` for the same verified head.
 
-Do not reinitialize, hand-edit, or delete stale work-unit state to make a new DAG fit.
-When only the combined `layers.json` hash changed and this layer's unit IDs and
-digests still match (a sibling rematerialization), `vfx build` adopts the new
-hash and preserves statuses; do not empty-base-replan that layer (HIR-0040).
-A JIT-layer finding's `plan_hash` is the selected view hash (durable
-work-unit `plan_hash`), not sha256 of the sparse global `layers.json`.
-`--preview` must show the finding's unit and affected closure as invalidated;
-an unrelated passed sibling stays preserved (HIR-0049).
+An unchanged completed unit may keep its immutable receipt across a transition that changes a
+sibling and therefore the containing layer generation. Every contiguous coordinator edge must
+preserve that exact unit capsule, unit digest, receipt digest, and source closure. A terminal
+layer receipt is stricter: the complete layer capsule, all constituent receipts, predecessor
+terminal bindings, and layer source closure must remain unchanged. If an intermediate generation
+invalidates either receipt, a later A-like generation cannot recover it from history.
+
+`vfx units replan` is retired. Do not call an internal `apply_replan`, reinitialize, hand-edit,
+or delete durable work-unit state to make selected authority fit. `--discard-accepted` on a
+reviewed rematerialization may authorize retiring accepted orphans, but it never authorizes an
+out-of-band wipe. The complete `layers.json` hash is not a unit acceptance identity; schema-closed
+semantic capsules and the immediate-predecessor binding decide preservation.
+
+A typed `hypothesis_falsified` finding is evidence that new authority may be required, not a
+state-mutation receipt. Stop, review the finding and any required human decision, then publish a
+validated replacement through the owning global-plan or materialization boundary. That
+publication derives and commits the state effect. No public receipt-backed adapter currently
+consumes a finding to reopen an unchanged authority generation, and there is no automatic
+controller that may infer such permission.
+
 A `keyframe_schedule` empty-key or path miss is a build defect (key sample
 path `P` as object `P`, `data.P`, or the data-block fcurve); do not treat it
 as rematerialize-only INAPPLICABLE (HIR-0050).
 A required `visible_fraction` claim is repaired by a camera unit or the
 mutator of those roles, not a volume-only unit (HIR-0051). Rematerialize
-the owning layer without `--discard-accepted`: matching accepted digests
-stay, the vis-owner closure is superseded (HIR-0052). Do not empty-base
-the layer, and do not consume a finding first unless the replacement
-leaves that unit's digest unchanged.
+the owning layer without `--discard-accepted`: the atomic transition preserves exact unchanged
+unit bindings and supersedes the vis-owner closure (HIR-0052). Do not empty-base the layer.
 
 The existing operator-only retry command can reopen a failed or interrupted unit after a
 reviewed fix. It preserves the prior outcome and keeps dependants blocked until the retried
@@ -146,6 +153,48 @@ unit passes:
 This command does **not** consume a `RetryExactUnitTarget`, verify its typed budget/evidence
 preconditions, or emit a transaction receipt. It is therefore not the implementation of the
 stop-envelope action and must not be called automatically from a stop classification.
+
+### Release an orphaned pre-terminal layer finalization
+
+If a builder process dies after creating a layer-finalization claim but before committing its
+terminal receipt, a restart must first fail closed on that active claim. Confirm that no live
+builder owns the shot, read the exact `active_claim.claim_id` from the layer's durable state, and
+review the crash evidence. Then use the separate finalization-only boundary:
+
+```bash
+.venv/bin/vfx finalizations release shots/<shot-id> \
+  --layer <layer-id> \
+  --claim-id <lfc-...> \
+  --reason "<why the dead finalizer may be abandoned>" \
+  --evidence runs/<run-id>/<review-evidence-file> \
+  --evidence runs/<run-id>/<additional-evidence-file>
+```
+
+Every evidence argument must name an existing non-empty file inside the shot. The command
+requires the exact current selected generation, coordinator head, active claim, and complete
+source-authorized unit receipt closure. It first snapshots each reviewed file create-only under
+`state/layer-finalization-releases/evidence/<sha256>` and binds both its original locator and
+immutable snapshot identity. It discovers every existing replay receipt for the claim and
+captures only the complete ordered contiguous prefix from group zero. Each v2 release-evidence
+row binds the canonical locator, file and semantic digests, group index, common planned count,
+and v2 replay schema; any gap, duplicate, substitution, or inconsistent count refuses release.
+The `vfx-harness.layer-finalization-release-request/v2` and
+`vfx-harness.layer-finalization-release-receipt/v2` publish content-addressably, archive the
+claim as `released`, and clear only the finalization claim. Their replay and review rows use
+`vfx-harness.layer-finalization-release-evidence/v2`. They never reopen, invalidate, or rewrite a unit;
+accepted unit completion receipts, checkpoints, scripts, attempt histories, and mutation scopes
+remain byte-identical. The next build may mint a fresh claim only at the next monotone
+finalization revision, and only after source-verifying the archived release receipt's exact
+locator, file SHA-256, semantic digest, archive closure, and every immutable review snapshot.
+
+Do not use this command when a terminal finalization receipt exists; reconcile the terminal
+receipt's projections instead. A critic output without a sealed judgment-phase or terminal
+receipt is archived only as review evidence and is not reusable exact-once judgment, so a fresh
+claim may spend again. The exact same release command is idempotent and resolves the archived
+immutable receipt and snapshots without rereading mutable original evidence. A changed reason,
+original evidence locator, claim, selection, or active owner fails closed. Missing or changed
+snapshots also fail closed. This is not `vfx units retry`, automatic resume, semantic replan,
+authority widening, or finding consumption.
 
 If a retained gate-clean candidate predates a publication fix, promote it through a new,
 model-free run instead of editing its immutable bundle or paying to author the same plan again:
@@ -204,12 +253,31 @@ typed `jit_deferred` boundary with upstream outcome dependencies, reserved seman
 an ownership-only requirement list. Each deferred requirement names exactly one owner layer and
 due boundary without choosing contract kinds or moments. On
 `vfx plan <shot> --layer <id>`, the planner materializes and validates
-that boundary into a bundle-pinned, content-addressed consumer view and reconciles durable unit
-state. It does not perform paid unit planning. `vfx build` first claims a dependency-ready unit,
+that boundary into a bundle-pinned, content-addressed consumer view. Successful publication
+atomically selects that view and its independently evaluated durable-state transition. It does
+not perform paid unit planning. `vfx build` first claims a dependency-ready unit,
 then owns that unit's paid plan and build under the same exact attempt. `--unit` on `vfx plan` is
 retired and points to `vfx build`. If requirement closure, role scope, or global structure disagree,
 planning fails closed and no durable unit state is created. Do not hand-author placeholder units or
 edit `state/jit-layers/current.json`.
+
+After all exact current unit-completion receipts exist, every layer uses the same claimed
+finalization boundary. The harness executes one fresh empty-scene replay for each planned
+evaluation group and publishes `vfx-harness.layer-replay-receipt/v2` before any critic consumes
+that group. A group binds its own claims/evidence ids, judge points, actual deterministic rows,
+reference bytes, and either no raster or an exact `solid | eevee` mode/scale with render capture;
+declared auxiliary captures such as motion montages are also hashed sources. Replay-stage failure
+publishes a typed failed observation with no invented point, raster, payment, or critic rows.
+
+The group receipts must form an ordered contiguous prefix beginning at zero.
+`vfx-harness.layer-evaluation-receipt/v1` derives every group result and may pass only after all
+planned groups execute; a failure terminates the prefix. The terminal
+`vfx-harness.layer-finalization-receipt/v2` derives its status, canonical evidence, and projection
+digest from that exact evaluation before debt, finding, outcome, or ledger projection. Current
+layer publication reopens the external evaluation receipt, every external group receipt, replay
+inputs and dependencies, references, rendered PNGs, auxiliary captures, layer script,
+predecessor outcomes, and sealed revalidation sources. An embedded receipt or `passed` ledger row
+cannot compensate for a missing or changed source.
 
 Useful bounded operations:
 
@@ -283,7 +351,7 @@ Use the status-selected stop envelope before deciding what to change:
 
 ```text
 local_implementation_miss -> retry_exact_unit only when the exact typed retry target exists
-authority_defect          -> execute its one named action; a later stop may name replan only after amended authority exists
+authority_defect          -> stop for its named authority owner; reviewed replacement publication moves state atomically
 harness_defect            -> route the exact defect packet and evidence to engineering
 infrastructure_failure    -> external recovery; session resume only with a future fully sealed resume target and receipt
 human_decision_required   -> escalate the exact typed question; automation does not answer it

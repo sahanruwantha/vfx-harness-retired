@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
+from tests.materialization_support import attest_exact_materialization_view
 from vfx_harness.agents.guardrails import selected_plan_read_guard
 from vfx_harness.agents.plan_guardrails import (
     format_staged_relative_reads,
@@ -20,7 +21,22 @@ from vfx_harness.agents.planner import _phase_tools, plan_role_capabilities
 from vfx_harness.agents.prompts import verifier_user_prompt
 from vfx_harness.infrastructure.trusted_files import TrustedFileError
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration import plan_authority, plan_bundle_integrity
+from vfx_harness.orchestration import (
+    authority_state_transaction,
+    plan_bundle_integrity,
+)
+from vfx_harness.orchestration.authority_selection import (
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.authority_state_store import (
+    AUTHORITY_STATE_CURRENT,
+    AUTHORITY_STATE_PENDING,
+)
+from vfx_harness.orchestration.jit_materialization import (
+    MATERIALIZATION_SCHEMA,
+    publish_materialization,
+)
 from vfx_harness.orchestration.jit_materialization.schema import OVERLAY_ARTIFACTS
 from vfx_harness.orchestration.jit_materialization.view_pointer import canonical_view_hash
 from vfx_harness.orchestration.layer_plans import (
@@ -52,7 +68,30 @@ def _write_plan(folder: Path, *, marker: str = "one") -> None:
     (folder / "plans").mkdir(parents=True, exist_ok=True)
     (folder / "plans" / "global.md").write_text(f"# plan {marker}\n", encoding="utf-8")
     for name, value in {
-        "layers.json": {"schema": 4, "layers": []},
+        "layers.json": {
+            "schema": 5,
+            "layers": [
+                {
+                    "id": "1",
+                    "script": "build/01_fixture.py",
+                    "title": "Fixture authority",
+                    "primary_judge": 1,
+                    "judge": [{"frame": 1, "ref": "refs/reference.png"}],
+                    "owns": ["fixture"],
+                    "evidence_domains": ["scene"],
+                    "reads": "Fixture authority for publication-boundary tests.",
+                    "execution": "jit_deferred",
+                    "stages": [],
+                    "jit": {
+                        "depends_on_layers": [],
+                        "required_outcomes": [],
+                        "provides": {},
+                        "reserved_roles": ["fixture.subject"],
+                        "owned_requirements": ["R1"],
+                    },
+                }
+            ],
+        },
         "acceptance.json": [],
         "critic_axes.json": [],
         "checks.json": {"schema": 2, "checks": []},
@@ -60,17 +99,36 @@ def _write_plan(folder: Path, *, marker: str = "one") -> None:
     }.items():
         (folder / name).write_text(json.dumps(value) + "\n", encoding="utf-8")
     brief_hash = hashlib.sha256((folder / "brief.md").read_bytes()).hexdigest()
-    (folder / "requirements.json").write_text(json.dumps({
-        "schema": "vfx-harness.requirements/v2",
-        "judgment_debt_definitions": [],
-        "judgment_debt_activations": [],
-        "requirements": [{
-            "id": "R1",
-            "statement": "fixture brief",
-            "citation": {"source": "brief.md", "sha256": brief_hash, "line_start": 1, "line_end": 1},
-            "resolution": {"kind": "decision", "ids": [], "decision": "fixture authority"},
-        }],
-    }) + "\n", encoding="utf-8")
+    (folder / "requirements.json").write_text(
+        json.dumps(
+            {
+                "schema": "vfx-harness.requirements/v2",
+                "judgment_debt_definitions": [],
+                "judgment_debt_activations": [],
+                "requirements": [
+                    {
+                        "id": "R1",
+                        "statement": "fixture brief",
+                        "citation": {
+                            "source": "brief.md",
+                            "sha256": brief_hash,
+                            "line_start": 1,
+                            "line_end": 1,
+                        },
+                        "resolution": {
+                            "kind": "deferred_owner",
+                            "ids": [],
+                            "owner_layer": "1",
+                            "due": {"kind": "before_layer", "layer": "1"},
+                            "evidence_domains": ["scene", "projected_composition"],
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     (folder / "obligations.json").write_text(
         json.dumps({"schema": "vfx-harness.obligations/v1", "obligations": []}) + "\n",
         encoding="utf-8",
@@ -79,6 +137,136 @@ def _write_plan(folder: Path, *, marker: str = "one") -> None:
         json.dumps({"schema": "vfx-harness.assumptions/v1", "assumptions": []}) + "\n",
         encoding="utf-8",
     )
+
+
+def _publish_fixture_materialization(
+    shot: Path,
+    *,
+    bundle_hash: str,
+    plan: Path,
+) -> None:
+    candidate = shot / "fixture-materialization.json"
+    layer = json.loads((shot / "layers.json").read_text(encoding="utf-8"))["layers"][0]
+    layer = {
+        key: value
+        for key, value in layer.items()
+        if key not in {"execution", "stages", "jit"}
+    }
+    layer.update(
+        {
+            "execution": "ready",
+            "stages": [
+                {
+                    "id": "unit",
+                    "title": "Fixture unit",
+                    "plan": plan.as_posix(),
+                    "depends_on": [],
+                    "mutates": {
+                        "mode": "scoped",
+                        "roles": ["fixture.subject"],
+                        "controls": [],
+                        "control_roles": {},
+                        "script_spans": ["build/units/01/unit.py"],
+                    },
+                    "protects": {
+                        "selector": "all_active_upstream_interfaces",
+                        "resolve_to_explicit_ids_at": "freeze",
+                    },
+                    "evaluation": {
+                        "primary_judge": 1,
+                        "judge": [{"frame": 1, "ref": "refs/reference.png"}],
+                        "temporal_evidence": "none",
+                        "claims": [
+                            {
+                                "id": "fixture-exists",
+                                "proposition": "The fixture subject exists.",
+                                "axis": "fixture",
+                                "property": "object_count",
+                                "subject_roles": ["fixture.subject"],
+                                "subject_controls": [],
+                                "moments": [1],
+                                "kind": "atomic",
+                                "required": True,
+                                "authority": "executable_required",
+                                "repair_owner": "unit",
+                                "asserts": "scene",
+                                "evidence": [
+                                    {"kind": "scene_contract", "id": "fixture-count"}
+                                ],
+                            },
+                            {
+                                "id": "fixture-visible",
+                                "proposition": "The fixture subject is visible.",
+                                "axis": "fixture",
+                                "property": "visible_fraction",
+                                "subject_roles": ["fixture.subject"],
+                                "subject_controls": [],
+                                "moments": [1],
+                                "kind": "atomic",
+                                "required": True,
+                                "authority": "executable_required",
+                                "repair_owner": "unit",
+                                "asserts": "projected_composition",
+                                "evidence": [
+                                    {"kind": "scene_contract", "id": "fixture-visible"}
+                                ],
+                            },
+                        ],
+                    },
+                    "completion": "all_required_claims_and_protected_contracts_pass",
+                    "look_capabilities": [],
+                    "provides": ["geometry"],
+                }
+            ],
+        }
+    )
+    payload = {
+        "schema": MATERIALIZATION_SCHEMA,
+        "bundle_hash": bundle_hash,
+        "base_selection": resolve_selected_authority(shot).selection_token.to_dict(),
+        "layer": layer,
+        "scene_contracts": [
+            {
+                "id": "fixture-count",
+                "kind": "object_count",
+                "owner_layer": "1",
+                "fault_owner": "1",
+                "activates_at": "1",
+                "lifecycle": "layer",
+                "axis": "fixture",
+                "roles": ["fixture.subject"],
+                "op": "min",
+                "lo": 1,
+            },
+            {
+                "id": "fixture-visible",
+                "kind": "visible_fraction",
+                "owner_layer": "1",
+                "fault_owner": "1",
+                "activates_at": "1",
+                "lifecycle": "layer",
+                "axis": "fixture",
+                "roles": ["fixture.subject"],
+                "frame": 1,
+                "op": "min",
+                "lo": 0.25,
+            },
+        ],
+        "image_contracts": [],
+        "requirement_bindings": [
+            {
+                "requirement_id": "R1",
+                "contract_ids": ["fixture-count", "fixture-visible"],
+            }
+        ],
+        "acceptance": [],
+    }
+    candidate.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    attest_exact_materialization_view(shot, candidate)
+    publish_materialization(shot, candidate)
 
 
 def _preexisting_candidate_bundle(
@@ -149,18 +337,27 @@ def test_bundle_durability_barrier_has_deterministic_pre_pointer_order(
     original_file_fsync = plan_bundle_integrity._fsync_regular_file
     original_directory_fsync = plan_bundle_integrity._fsync_directory
     original_replace = plan_bundle_integrity.os.replace
-    original_pointer_parent = plan_authority.durably_ensure_real_directory
-    original_pointer_write = plan_authority.durable_replace_pointer_json
+    original_pointer_write = authority_state_transaction.durable_replace_pointer_bytes
+    bundle_phase_complete = False
 
     def temp_root(path: Path) -> Path:
         relative = path.relative_to(bundle_parent)
         return bundle_parent / relative.parts[0]
 
     def recording_file_fsync(path: Path) -> None:
-        events.append(f"file:{path.relative_to(temp_root(path)).as_posix()}")
+        try:
+            relative = path.relative_to(temp_root(path))
+        except (ValueError, IndexError):
+            pass
+        else:
+            events.append(f"file:{relative.as_posix()}")
         original_file_fsync(path)
 
     def recording_directory_fsync(path: Path) -> None:
+        nonlocal bundle_phase_complete
+        if bundle_phase_complete:
+            original_directory_fsync(path)
+            return
         try:
             temporary = temp_root(path)
         except (ValueError, IndexError):
@@ -172,6 +369,8 @@ def test_bundle_durability_barrier_has_deterministic_pre_pointer_order(
             label = "." if relative == Path(".") else relative.as_posix()
             events.append(f"tree:{label}")
         original_directory_fsync(path)
+        if path == tmp_path and "bundle-rename" in events:
+            bundle_phase_complete = True
 
     def recording_replace(
         source: str | Path,
@@ -182,14 +381,10 @@ def test_bundle_durability_barrier_has_deterministic_pre_pointer_order(
             events.append("bundle-rename")
         original_replace(source, target, **kwargs)  # type: ignore[arg-type]
 
-    def recording_pointer_write(*args: object, **kwargs: object) -> bytes:
-        events.append("pointer-write")
-        return original_pointer_write(*args, **kwargs)  # type: ignore[arg-type]
-
-    def recording_pointer_parent(*args: object, **kwargs: object) -> Path:
-        result = original_pointer_parent(*args, **kwargs)  # type: ignore[arg-type]
-        events.append("pointer-parent-durable")
-        return result
+    def recording_pointer_write(*args: object, **kwargs: object) -> None:
+        if len(args) >= 2 and Path(args[1]) == tmp_path / "plans" / "current.json":
+            events.append("pointer-write")
+        original_pointer_write(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(
         plan_bundle_integrity,
@@ -203,13 +398,8 @@ def test_bundle_durability_barrier_has_deterministic_pre_pointer_order(
     )
     monkeypatch.setattr(plan_bundle_integrity.os, "replace", recording_replace)
     monkeypatch.setattr(
-        plan_authority,
-        "durably_ensure_real_directory",
-        recording_pointer_parent,
-    )
-    monkeypatch.setattr(
-        plan_authority,
-        "durable_replace_pointer_json",
+        authority_state_transaction,
+        "durable_replace_pointer_bytes",
         recording_pointer_write,
     )
 
@@ -238,56 +428,37 @@ def test_bundle_durability_barrier_has_deterministic_pre_pointer_order(
         "ancestor:runs/durable-plan",
         "ancestor:runs",
         "ancestor:.",
-        "pointer-parent-durable",
         "pointer-write",
     ]
 
 
-def test_first_plan_pointer_parent_is_durable_before_selection(
+def test_first_plan_pointer_is_selected_through_the_authority_state_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _write_plan(tmp_path)
     layout = run_artifacts.create(tmp_path, "first-pointer-parent")
-    original_write_bundle = plan_authority._write_bundle
-    original_pointer_parent = plan_authority.durably_ensure_real_directory
-    original_pointer_write = plan_authority.durable_replace_pointer_json
+    original_pointer_write = authority_state_transaction.durable_replace_pointer_bytes
     events: list[str] = []
 
-    def remove_source_parent_after_freeze(*args: object, **kwargs: object):
-        bundle = original_write_bundle(*args, **kwargs)  # type: ignore[arg-type]
-        source = tmp_path / "plans" / "global.md"
-        source.unlink()
-        source.parent.rmdir()
-        return bundle
+    def recording_pointer(*args: object, **kwargs: object) -> None:
+        assert len(args) >= 2
+        path = Path(args[1])
+        if path == tmp_path / "plans" / "current.json":
+            assert path.parent.is_dir() and not path.parent.is_symlink()
+            events.append("pointer-write")
+        original_pointer_write(*args, **kwargs)  # type: ignore[arg-type]
 
-    def recording_pointer_parent(*args: object, **kwargs: object) -> Path:
-        result = original_pointer_parent(*args, **kwargs)  # type: ignore[arg-type]
-        events.append("pointer-parent-durable")
-        assert result == tmp_path / "plans"
-        assert result.is_dir()
-        return result
-
-    def recording_pointer(*args: object, **kwargs: object) -> bytes:
-        events.append("pointer-write")
-        return original_pointer_write(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(plan_authority, "_write_bundle", remove_source_parent_after_freeze)
     monkeypatch.setattr(
-        plan_authority,
-        "durably_ensure_real_directory",
-        recording_pointer_parent,
-    )
-    monkeypatch.setattr(
-        plan_authority,
-        "durable_replace_pointer_json",
+        authority_state_transaction,
+        "durable_replace_pointer_bytes",
         recording_pointer,
     )
 
     publish_current(tmp_path, layout, outcome="clean")
 
-    assert events == ["pointer-parent-durable", "pointer-write"]
+    assert events == ["pointer-write"]
     assert (tmp_path / "plans" / "current.json").is_file()
 
 
@@ -301,27 +472,17 @@ def test_crash_after_bundle_rename_cannot_select_until_orphan_is_reflushed(
     bundle_parent = layout.checkpoints / "plans" / "bundles"
     pointer = tmp_path / "plans" / "current.json"
     original_directory_fsync = plan_bundle_integrity._fsync_directory
-    original_pointer_write = plan_authority.durable_replace_pointer_json
 
     def crash_at_rename_parent(path: Path) -> None:
         if path == bundle_parent:
             raise OSError("injected crash after bundle rename")
         original_directory_fsync(path)
 
-    def forbidden_pointer_write(*_args: object, **_kwargs: object) -> bytes:
-        raise AssertionError("pointer write crossed an incomplete bundle durability barrier")
-
     monkeypatch.setattr(
         plan_bundle_integrity,
         "_fsync_directory",
         crash_at_rename_parent,
     )
-    monkeypatch.setattr(
-        plan_authority,
-        "durable_replace_pointer_json",
-        forbidden_pointer_write,
-    )
-
     with pytest.raises(PlanPublicationError, match="durably install"):
         publish_current(tmp_path, layout, outcome="clean")
 
@@ -337,7 +498,12 @@ def test_crash_after_bundle_rename_cannot_select_until_orphan_is_reflushed(
     original_file_fsync = plan_bundle_integrity._fsync_regular_file
 
     def recording_file_fsync(path: Path) -> None:
-        reflushed.append(path)
+        try:
+            path.relative_to(orphan_roots[0])
+        except ValueError:
+            pass
+        else:
+            reflushed.append(path)
         original_file_fsync(path)
 
     monkeypatch.setattr(
@@ -350,12 +516,6 @@ def test_crash_after_bundle_rename_cannot_select_until_orphan_is_reflushed(
         "_fsync_regular_file",
         recording_file_fsync,
     )
-    monkeypatch.setattr(
-        plan_authority,
-        "durable_replace_pointer_json",
-        original_pointer_write,
-    )
-
     published = publish_current(tmp_path, layout, outcome="clean")
 
     assert pointer.is_file()
@@ -699,7 +859,7 @@ def test_workspace_publication_refuses_live_authored_input_change_before_selecti
     assert not (tmp_path / "plans" / "current.json").exists()
 
 
-def test_workspace_publication_rolls_back_if_authored_input_changes_during_replace(
+def test_workspace_publication_leaves_wal_if_authored_input_changes_after_visibility(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -710,19 +870,20 @@ def test_workspace_publication_rolls_back_if_authored_input_changes_during_repla
     layout = run_artifacts.create(tmp_path, "publication-input-race")
     workspace = prepare_staging(layout)
     _write_plan(workspace, marker="racing-candidate")
-    real_replace = plan_authority.durable_replace_pointer_json
+    real_replace = authority_state_transaction.durable_replace_pointer_bytes
 
     def mutate_before_replace(*args, **kwargs):
-        brief.write_text("# new brief\n", encoding="utf-8")
+        if len(args) >= 2 and Path(args[1]) == tmp_path / "plans" / "current.json":
+            brief.write_text("# new brief\n", encoding="utf-8")
         return real_replace(*args, **kwargs)
 
     monkeypatch.setattr(
-        plan_authority,
-        "durable_replace_pointer_json",
+        authority_state_transaction,
+        "durable_replace_pointer_bytes",
         mutate_before_replace,
     )
 
-    with pytest.raises(PlanPublicationError, match="different authored inputs"):
+    with pytest.raises(SelectedAuthorityResolutionError, match="different authored inputs"):
         publish_current(
             tmp_path,
             layout,
@@ -730,10 +891,14 @@ def test_workspace_publication_rolls_back_if_authored_input_changes_during_repla
             source_root=workspace,
         )
 
-    assert not (tmp_path / "plans" / "current.json").exists()
+    assert (tmp_path / "plans" / "current.json").is_file()
+    assert (tmp_path / AUTHORITY_STATE_PENDING).is_file()
+    assert not (tmp_path / AUTHORITY_STATE_CURRENT).exists()
+    with pytest.raises(SelectedAuthorityResolutionError, match="pending"):
+        resolve_selected_authority(tmp_path)
 
 
-def test_failed_live_input_postcondition_restores_exact_prior_plan_head(
+def test_failed_live_input_postcondition_preserves_predecessor_coordinator_head(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -743,23 +908,26 @@ def test_failed_live_input_postcondition_restores_exact_prior_plan_head(
     publish_current(tmp_path, first, outcome="clean")
     pointer = tmp_path / "plans" / "current.json"
     predecessor = pointer.read_bytes()
+    coordinator = tmp_path / AUTHORITY_STATE_CURRENT
+    predecessor_coordinator = coordinator.read_bytes()
 
     second = run_artifacts.create(tmp_path, "racing-successor")
     workspace = prepare_staging(second)
     _write_plan(workspace, marker="successor")
-    real_replace = plan_authority.durable_replace_pointer_json
+    real_replace = authority_state_transaction.durable_replace_pointer_bytes
 
     def mutate_before_replace(*args, **kwargs):
-        (tmp_path / "brief.md").write_text("# changed intent\n", encoding="utf-8")
+        if len(args) >= 2 and Path(args[1]) == tmp_path / "plans" / "current.json":
+            (tmp_path / "brief.md").write_text("# changed intent\n", encoding="utf-8")
         return real_replace(*args, **kwargs)
 
     monkeypatch.setattr(
-        plan_authority,
-        "durable_replace_pointer_json",
+        authority_state_transaction,
+        "durable_replace_pointer_bytes",
         mutate_before_replace,
     )
 
-    with pytest.raises(PlanPublicationError, match="different authored inputs"):
+    with pytest.raises(SelectedAuthorityResolutionError, match="different authored inputs"):
         publish_current(
             tmp_path,
             second,
@@ -767,7 +935,9 @@ def test_failed_live_input_postcondition_restores_exact_prior_plan_head(
             source_root=workspace,
         )
 
-    assert pointer.read_bytes() == predecessor
+    assert pointer.read_bytes() != predecessor
+    assert coordinator.read_bytes() == predecessor_coordinator
+    assert (tmp_path / AUTHORITY_STATE_PENDING).is_file()
 
 
 def test_bundle_preserves_nested_plan_evidence_and_ready_unit_plans(
@@ -1313,13 +1483,13 @@ def test_consumer_view_preserves_jit_plan_and_authority_sidecar_as_one_pair(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _write_plan(tmp_path)
     rel = Path("plans/01_camera/unit.md")
-    layers = {
-        "schema": 4,
-        "layers": [{"id": "1", "stages": [{"id": "unit", "plan": rel.as_posix()}]}],
-    }
-    (tmp_path / "layers.json").write_text(json.dumps(layers) + "\n", encoding="utf-8")
     layout = run_artifacts.create(tmp_path, "plan-run")
-    publish_current(tmp_path, layout, outcome="clean")
+    bundle = publish_current(tmp_path, layout, outcome="clean")
+    _publish_fixture_materialization(
+        tmp_path,
+        bundle_hash=bundle.content_hash,
+        plan=rel,
+    )
     plan = tmp_path / rel
     plan.parent.mkdir(parents=True)
     plan.write_text("# unit\n" + "bounded execution\n" * 20, encoding="utf-8")

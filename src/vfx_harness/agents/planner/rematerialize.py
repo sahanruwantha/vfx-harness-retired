@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions, query
@@ -22,6 +21,9 @@ from vfx_harness.knowledge.recipes import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import log, log_message
 from vfx_harness.orchestration import plan_authority, unit_state
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     resolve_selected_authority,
@@ -44,6 +46,7 @@ from vfx_harness.orchestration.jit_materialization import (
     seed_materialization_candidate,
 )
 from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
+from vfx_harness.orchestration.unit_state_lock import unit_state_lock
 
 
 async def _materialize_deferred_layer(
@@ -347,20 +350,17 @@ MODEL = VERIFY_MODEL  # single-pass default
 
 
 async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str], bool], *, model, blender, max_turns):
-    """Replace a materialized layer view and move durable unit state through apply_replan.
+    """Replace one materialized layer through the atomic authority-state publisher.
 
     Materialization is a decision, and a decision proven wrong must be replaceable —
     layer 1 of run 20260823T154920Z shipped defective contracts, proxied claims, and a
     unit whose script escaped its own scope. This does NOT add a supersession authority:
-    the view is republished through `publish_materialization` and durable unit state
-    moves through `apply_replan`. Matching unit digests stay, including accepted
-    checkpoints. Changed, removed, or downstream-invalidated units are superseded
-    even if they had passed — that is a DAG amendment, not a discard. `--discard-accepted`
-    remains the heavier act: accepted orphans, and wiping state when the replan base
-    is unusable (HIR-0052).
+    `publish_materialization` owns pointer selection and every affected durable state
+    move in one transition. Matching semantic capsules retain accepted checkpoints;
+    changed and downstream-invalidated units retire in that same commit.
     """
 
-    owner, trigger, evidence, discard_accepted = authority
+    _owner, trigger, _evidence, discard_accepted = authority
     layer_id = str(layer.id)
     base_authority = resolve_selected_authority(shot.folder)
     if base_authority.plan is None:
@@ -394,27 +394,6 @@ async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str]
         )
 
     old_units = layer.stages
-    old_plan_hash = hashlib.sha256(
-        base_authority.artifact_paths["layers.json"].read_bytes()
-    ).hexdigest()
-    state_backed_base = False
-    if state:
-        # Durable state is the accepted base identity. Global republication can make
-        # the prior JIT view inert before remat starts, and a sibling materialization
-        # can change the combined layers.json hash without changing this layer's DAG.
-        # Use the state hash in both cases. If the currently selected layer no longer
-        # matches those stored unit identities, apply_replan performs a digest-backed
-        # state diff instead of pretending the new sparse/ready row is the old DAG.
-        old_plan_hash = str(state.get("plan_hash") or old_plan_hash)
-        try:
-            unit_state.validate_current(state, layer_id, old_units)
-        except ValueError:
-            old_units = ()
-            state_backed_base = True
-            log(
-                "selected layer no longer reconstructs the durable replan base; using digest-bound work-unit state",
-                1,
-            )
     bundle = base_authority.plan.bundle
     deferred = planner_package().load_layers_from_path(bundle.root / "layers.json")[layer_id]
     log(
@@ -447,108 +426,45 @@ async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str]
         selected_authority=base_authority,
     )
     published_authority = resolve_selected_authority(shot.folder)
-    refreshed = planner_package().load_layers(
-        shot,
-        selected_authority=published_authority,
-    )[layer_id]
-    new_plan_hash = hashlib.sha256(
-        published_authority.artifact_paths["layers.json"].read_bytes()
-    ).hexdigest()
-    if state:
-        try:
-            with authority_selection_lock(shot.folder, exclusive=False):
-                require_matching_authority_selection_token(
-                    published_authority.selection_token,
-                    read_authority_selection_heads(shot.folder).token,
-                )
-                try:
-                    unit_state.apply_replan(
-                        shot.folder,
-                        layer_id,
-                        old_units,
-                        refreshed.stages,
-                        old_plan_hash=old_plan_hash,
-                        new_plan_hash=new_plan_hash,
-                        owner=owner,
-                        trigger=trigger,
-                        evidence=evidence,
-                        discard_accepted=discard_accepted,
-                        state_backed_base=state_backed_base,
-                    )
-                except ValueError as exc:
-                    # An unreconstructable replan base may be superseded only through
-                    # the existing explicit discard authority (HIR-0052).
-                    if accepted and not discard_accepted:
-                        raise
-                    log(
-                        f"replan base unusable ({str(exc)[:90]}); "
-                        "superseding layer units",
-                        1,
-                    )
-                    unit_state.supersede_layer_units(
-                        shot.folder,
-                        layer_id,
-                        owner=owner,
-                        trigger=trigger,
-                        evidence=evidence,
-                        plan_hash=new_plan_hash,
-                        allow_accepted=discard_accepted,
-                    )
-        except (AuthoritySelectionConflict, AuthoritySelectionHeadError) as exc:
-            raise ValueError(
-                "selected authority changed before rematerialization state reconciliation"
-            ) from exc
-        log(
-            f"work-unit state superseded → {', '.join(u.id for u in refreshed.stages)}",
-            1,
-        )
-    return refreshed
-
-
-def _reconcile_materialized_layer_state(
-    shot,
-    layer,
-    *,
-    new_plan_hash: str,
-) -> bool:
-    """Move stale durable identity onto the selected materialized DAG (HIR-0133).
-
-    A newly selected sparse bundle can make a layer ``jit_deferred`` while durable
-    state still names the prior generation. Ordinary ``plan --layer`` materializes the
-    replacement without the explicit ``--rematerialize`` tuple, so the next call used
-    to fall into ``initialize`` and fail after publication. The selected view is already
-    validated design authority; current-schema durable hashes are the exact predecessor
-    identity. Reconcile those two authorities through the same state-backed transaction
-    used by rematerialization, never by reinitializing or discarding accepted work.
-    """
-
-    layer_id = str(layer.id)
-    state = unit_state.load(shot.folder, layer_id)
-    if not state or not (state.get("units") or {}):
-        return False
     try:
-        unit_state.validate_current(state, layer_id, layer.stages)
-        return False
-    except ValueError:
-        pass
-    old_plan_hash = str(state.get("plan_hash") or "")
-    unit_state.apply_replan(
-        shot.folder,
-        layer_id,
-        (),
-        layer.stages,
-        old_plan_hash=old_plan_hash,
-        new_plan_hash=new_plan_hash,
-        owner="vfx-harness.plan-layer",
-        trigger=("selected JIT materialization replaced a prior-generation durable unit DAG"),
-        evidence=[
-            "state/jit-layers/current.json",
-            f"state/work-units/layer_{layer_id}.json",
-        ],
-        state_backed_base=True,
-    )
+        with authority_selection_lock(shot.folder, exclusive=False):
+            require_matching_authority_selection_token(
+                published_authority.selection_token,
+                read_authority_selection_heads(shot.folder).token,
+            )
+            refreshed = planner_package().load_layers(
+                shot,
+                selected_authority=published_authority,
+            )[layer_id]
+            expected_digest = selected_layer_capsule_digest(
+                shot.folder,
+                layer_id,
+                published_authority,
+            )
+            with unit_state_lock(shot.folder, layer_id, exclusive=False):
+                refreshed_state = unit_state.load(shot.folder, layer_id)
+                if not refreshed_state:
+                    raise ValueError(
+                        "materialization publication did not create authority-bound "
+                        f"work-unit state for layer {layer_id}"
+                    )
+                unit_state.validate_current(
+                    refreshed_state,
+                    layer_id,
+                    refreshed.stages,
+                )
+                if refreshed_state.get("plan_hash") != expected_digest:
+                    raise ValueError(
+                        f"rematerialized layer {layer_id} state does not bind its "
+                        "semantic capsule"
+                    )
+    except (AuthoritySelectionConflict, AuthoritySelectionHeadError) as exc:
+        raise ValueError(
+            "selected authority changed before rematerialization state verification"
+        ) from exc
     log(
-        f"work-unit state reconciled from durable digests → {', '.join(unit.id for unit in layer.stages)}",
+        f"atomic authority-state transition selected {len(refreshed.stages)} unit(s) "
+        f"for layer {layer_id}",
         1,
     )
-    return True
+    return refreshed

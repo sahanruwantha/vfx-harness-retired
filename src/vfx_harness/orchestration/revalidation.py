@@ -14,23 +14,21 @@ from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 
-from vfx_harness.domain.layer_outcomes import (
-    OUTCOME_SCHEMA,
-    LayerOutcomeContractError,
-    parse_sealed_layer_outcome,
-)
+from vfx_harness.domain.layer_outcome_projections import CANONICAL_EVIDENCE_KINDS
+from vfx_harness.domain.layer_outcomes import OUTCOME_SCHEMA
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.work_units import (
     read_document,
     strict_topological_sparse_layer_ids,
 )
 from vfx_harness.infrastructure.config import Settings
+from vfx_harness.orchestration import layer_publication
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     resolve_selected_authority,
 )
-from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.layer_plans import work_unit_plan_path
+from vfx_harness.orchestration.ledger import Layer, load_layers_from_path
 from vfx_harness.orchestration.plan_authority import (
     selected_artifact_path,
 )
@@ -42,7 +40,8 @@ except PackageNotFoundError:
 
 
 RENDER_CAPTURE_SCHEMA = "vfx-harness.canonical-render-capture/v1"
-CANONICAL_EVIDENCE_KINDS = frozenset({"render", "executable_only"})
+DEFAULT_COMPARISON_MODE = "eevee"
+DEFAULT_COMPARISON_SCALE = 0.5
 _CANONICAL_COMMON_FIELDS = frozenset(
     {
         "evidence_kind",
@@ -108,7 +107,7 @@ def _safe_locator(root: Path, value: object) -> Path | None:
     return path if path.is_relative_to(root.resolve()) else None
 
 
-def _receipt_reasons(
+def render_capture_reasons(
     value: object,
     *,
     frame: int,
@@ -191,51 +190,39 @@ def _global_layers(folder: Path, selected_authority=None) -> list[dict]:
 
 def _prior_outcome_digests(
     folder: Path,
-    prior_layer_ids: tuple[str, ...],
-) -> dict[str, str | None]:
-    out: dict[str, str | None] = {}
-    for layer_id in prior_layer_ids:
-        path = layer_outcome_path(folder, layer_id)
+    prior_layers: tuple[Layer, ...],
+    selected_authority: ResolvedSelectedAuthority,
+) -> dict[str, str]:
+    """Bind revalidation only to complete current predecessor publications."""
+
+    out: dict[str, str] = {}
+    for layer in prior_layers:
+        layer_id = str(layer.id)
         try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            out[layer_id] = None
-            continue
-        if not isinstance(row, dict) or row.get("layer") != layer_id:
+            publication = layer_publication.require_current_layer_publication(
+                folder,
+                layer,
+                selected_authority,
+            )
+        except layer_publication.LayerPublicationConflict as exc:
             raise ValueError(
-                f"sealed prior outcome {path} does not name exact layer {layer_id!r}"
-            )
-        # A later REVALIDATE updates only this audit field.  It must not invalidate every
-        # downstream layer when the sealed inputs and pixels remained identical.
-        stable = {
-            key: row.get(key)
-            for key in (
-                "schema",
-                "layer",
-                "script",
-                "status",
-                "authoritative_total",
-                "authoritative_passed",
-                "failed_contracts",
-                "revalidation_manifest",
-                "canonical",
-            )
-        }
-        payload = json.dumps(stable, sort_keys=True, separators=(",", ":")).encode()
-        out[layer_id] = hashlib.sha256(payload).hexdigest()
+                f"revalidation cannot consume prior layer {layer_id} without a current "
+                f"receipt-backed publication: {exc}. Reconcile that layer's exact "
+                "terminal receipt projections before revalidation"
+            ) from exc
+        out[layer_id] = publication.outcome_sha256
     return out
 
 
-def _runtime_checks_digest(
-    folder: Path,
+def runtime_checks_digest_from_text(
+    runtime_checks_text: str,
     included_layer_ids: frozenset[str],
     known_layer_ids: frozenset[str],
-) -> str | None:
-    path = folder / "runtime_checks.json"
-    if not path.is_file():
-        return None
+) -> str:
+    """Project raw runtime-check bytes with the manifest's prefix semantics."""
+
     try:
-        rows = json.loads(path.read_text(encoding="utf-8"))
+        rows = json.loads(runtime_checks_text)
     except json.JSONDecodeError:
         return "invalid"
     selected = []
@@ -255,10 +242,30 @@ def _runtime_checks_digest(
     return hashlib.sha256(payload).hexdigest()
 
 
-def _harness_identity_paths(package: Path) -> tuple[Path, ...]:
+def _runtime_checks_digest(
+    folder: Path,
+    included_layer_ids: frozenset[str],
+    known_layer_ids: frozenset[str],
+    *,
+    runtime_checks_text: str | None = None,
+) -> str | None:
+    path = folder / "runtime_checks.json"
+    if runtime_checks_text is None and not path.is_file():
+        return None
+    return runtime_checks_digest_from_text(
+        path.read_text(encoding="utf-8")
+        if runtime_checks_text is None
+        else runtime_checks_text,
+        included_layer_ids,
+        known_layer_ids,
+    )
+
+
+def harness_identity_paths(package: Path) -> tuple[Path, ...]:
     """Hash files, expanding packages so a split cannot drop identity members."""
     roots = (
         package / "orchestration" / "revalidation.py",
+        package / "orchestration" / "layer_outcome_source_verification.py",
         package / "evidence" / "checks.py",
         package / "evidence" / "scene_checks",
         package / "agents" / "builder",
@@ -275,17 +282,39 @@ def _harness_identity_paths(package: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
+def current_model_identity() -> dict[str, str]:
+    """Return the exact live model settings that participate in revalidation."""
+
+    settings = Settings.from_environment(load_dotenv_file=False)
+    return {
+        "builder": settings.builder_model,
+        "script": settings.script_model,
+        "critic": settings.critic_model,
+        "reviewer": settings.reviewer_model,
+    }
+
+
 def input_manifest(
     folder: str | Path,
     layer,
     *,
     blender_version: str,
-    comparison_mode: str = "eevee",
-    comparison_scale: float = 0.5,
+    comparison_mode: str = DEFAULT_COMPARISON_MODE,
+    comparison_scale: float = DEFAULT_COMPARISON_SCALE,
     selected_authority: ResolvedSelectedAuthority | None = None,
+    runtime_checks_text: str | None = None,
 ) -> dict:
-    """Hash the complete deterministic boundary for one layer."""
-    root = Path(folder)
+    """Hash the complete deterministic boundary for one layer.
+
+    ``runtime_checks_text`` projects an already prepared, receipt-bound
+    replacement without publishing it.  This lets terminal authority seal the
+    exact post-reconciliation manifest while mutable runtime-check bytes remain
+    untouched until after terminal commit.
+    """
+
+    if runtime_checks_text is not None and not isinstance(runtime_checks_text, str):
+        raise ValueError("runtime_checks_text must be a string or null")
+    root = Path(folder).expanduser().resolve()
     selected_authority = (
         resolve_selected_authority(root)
         if selected_authority is None
@@ -313,6 +342,20 @@ def input_manifest(
     prefix_ids = tuple(order[: current_index + 1])
     prefix_rows = [selected_by_id[layer_id] for layer_id in prefix_ids]
     prior_ids = prefix_ids[:-1]
+    prior_layers: tuple[Layer, ...] = ()
+    if prior_ids:
+        selected_layers_path = (
+            root / "layers.json"
+            if selected_authority.plan is None
+            else selected_authority.artifact_paths["layers.json"]
+        )
+        typed_layers = load_layers_from_path(selected_layers_path)
+        if set(typed_layers) != set(order):
+            raise ValueError(
+                "selected typed layer authority does not match the exact global DAG "
+                "while deriving the replay prefix"
+            )
+        prior_layers = tuple(typed_layers[layer_id] for layer_id in prior_ids)
     paths = [
         root / "brief.md",
         (
@@ -366,30 +409,34 @@ def input_manifest(
     for path in paths:
         try:
             rel = str(path.relative_to(root))
-        except ValueError:
-            rel = str(path)
+        except ValueError as exc:
+            raise ValueError(
+                f"input manifest source escapes the shot root: {path}"
+            ) from exc
         files[rel] = digest(path)
     package = Path(__file__).resolve().parents[1]
-    settings = Settings.from_environment(load_dotenv_file=False)
-    harness_files = {str(path.relative_to(package)): digest(path) for path in _harness_identity_paths(package)}
+    harness_files = {
+        str(path.relative_to(package)): digest(path)
+        for path in harness_identity_paths(package)
+    }
     return {
         "harness_version": HARNESS_VERSION,
         "harness_files": dict(sorted(harness_files.items())),
         "blender_version": str(blender_version),
         "comparison": {"mode": comparison_mode, "scale": comparison_scale},
-        "models": {
-            "builder": settings.builder_model,
-            "script": settings.script_model,
-            "critic": settings.critic_model,
-            "reviewer": settings.reviewer_model,
-        },
+        "models": current_model_identity(),
         "files": dict(sorted(files.items())),
         "runtime_checks": _runtime_checks_digest(
             root,
             frozenset(prefix_ids),
             frozenset(order),
+            runtime_checks_text=runtime_checks_text,
         ),
-        "prior_outcomes": _prior_outcome_digests(root, prior_ids),
+        "prior_outcomes": _prior_outcome_digests(
+            root,
+            prior_layers,
+            selected_authority,
+        ),
     }
 
 
@@ -423,6 +470,7 @@ def _canonical_record_reasons(
     *,
     root: Path,
     manifest_sha256: str,
+    allow_qualitative_defects: bool = False,
 ) -> list[str]:
     if not isinstance(row, Mapping):
         return ["sealed canonical row is not an object"]
@@ -477,7 +525,7 @@ def _canonical_record_reasons(
     defects = row.get("qualitative_defects")
     if not isinstance(defects, list) or any(not isinstance(item, str) for item in defects):
         reasons.append(f"sealed qualitative defects are malformed for f{frame}")
-    elif defects:
+    elif defects and not allow_qualitative_defects:
         reasons.append(f"sealed outcome retains a qualitative defect at f{frame}")
 
     if kind == "render":
@@ -492,7 +540,7 @@ def _canonical_record_reasons(
         if _is_digest(render_sha256):
             reasons.extend(
                 f"{reason} for f{frame}"
-                for reason in _receipt_reasons(
+                for reason in render_capture_reasons(
                     row.get("render_capture"),
                     frame=frame,
                     render_sha256=render_sha256,
@@ -507,8 +555,14 @@ def canonical_records(
     canonical: list,
     *,
     input_manifest_sha256: str,
+    allow_qualitative_defects: bool = False,
 ) -> list[dict]:
-    """Seal producer-authored canonical kinds without inventing raster locators."""
+    """Seal terminal canonical evidence without inventing raster locators.
+
+    A failed terminal finalization must retain its observed qualitative defects so
+    reconciliation can publish one immutable failure source.  Passed-outcome sealing
+    and later eligibility keep the stricter no-defect rule.
+    """
 
     if not _is_digest(input_manifest_sha256):
         raise ValueError("canonical input_manifest_sha256 must be a lowercase SHA-256 digest")
@@ -566,69 +620,12 @@ def canonical_records(
             record,
             root=root,
             manifest_sha256=input_manifest_sha256,
+            allow_qualitative_defects=allow_qualitative_defects,
         )
         if reasons:
             raise ValueError("; ".join(reasons))
         records.append(record)
     return records
-
-
-def current_outcome_eligibility(
-    folder: str | Path,
-    layer,
-    outcome: object,
-    *,
-    selected_authority: ResolvedSelectedAuthority | None = None,
-) -> tuple[bool, tuple[str, ...]]:
-    """Evaluate one sealed outcome against freshly derived current input authority.
-
-    Callers supply the exact selected executable ``Layer``.  The sealed manifest owns
-    the Blender/comparison settings used to recompute the current manifest; callers may
-    not substitute convenient defaults.
-    """
-
-    expected_layer_id = str(layer.id)
-    try:
-        parse_sealed_layer_outcome(
-            outcome,
-            expected_layer_id=expected_layer_id,
-        )
-    except LayerOutcomeContractError as exc:
-        return False, (f"sealed outcome contract invalid:{exc.code}",)
-    assert isinstance(outcome, Mapping)
-    manifest = outcome.get("revalidation_manifest")
-    comparison = manifest.get("comparison") if isinstance(manifest, Mapping) else None
-    blender_version = manifest.get("blender_version") if isinstance(manifest, Mapping) else None
-    comparison_mode = comparison.get("mode") if isinstance(comparison, Mapping) else None
-    comparison_scale = comparison.get("scale") if isinstance(comparison, Mapping) else None
-    if (
-        not isinstance(blender_version, str)
-        or not blender_version.strip()
-        or not isinstance(comparison_mode, str)
-        or not comparison_mode.strip()
-        or not isinstance(comparison_scale, (int, float))
-        or isinstance(comparison_scale, bool)
-        or not math.isfinite(float(comparison_scale))
-        or float(comparison_scale) <= 0
-    ):
-        return False, ("sealed revalidation manifest is invalid",)
-    try:
-        manifest_kwargs = {
-            "blender_version": blender_version,
-            "comparison_mode": comparison_mode,
-            "comparison_scale": float(comparison_scale),
-        }
-        if selected_authority is not None:
-            manifest_kwargs["selected_authority"] = selected_authority
-        current_manifest = input_manifest(
-            folder,
-            layer,
-            **manifest_kwargs,
-        )
-    except (OSError, TypeError, ValueError):
-        return False, ("current input manifest is unavailable",)
-    eligible, reasons = eligibility(dict(outcome), current_manifest, folder)
-    return eligible, tuple(reasons)
 
 
 def eligibility(outcome: dict, current_manifest: dict, folder: str | Path) -> tuple[bool, list[str]]:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,7 +16,6 @@ from vfx_harness.agents.planner.kickoff import (
 )
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.planner.rematerialize import (
-    _reconcile_materialized_layer_state,
     _rematerialize_layer,
 )
 from vfx_harness.agents.planner.types import (
@@ -44,6 +42,9 @@ from vfx_harness.infrastructure.config import Settings
 from vfx_harness.knowledge.recipes import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import log, log_message
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.authority_selection_heads import (
     AuthoritySelectionHeadError,
@@ -58,13 +59,13 @@ from vfx_harness.orchestration.builder_execution_fence import (
     BuilderExecutionFenceLease,
     require_builder_execution_lease,
 )
+from vfx_harness.orchestration.layer_outcome_context import prior_outcomes_block
 from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 from vfx_harness.orchestration.layer_plans import (
     amendment_block,
     contract_gaps_block,
     global_plan_path,
     is_selected_bundle_member,
-    prior_outcomes_block,
     stamp_work_unit_plan,
     validate_work_unit_plan_authority,
     work_unit_plan_authority_path,
@@ -73,8 +74,17 @@ from vfx_harness.orchestration.layer_plans import (
 from vfx_harness.orchestration.ledger import load_layers
 from vfx_harness.orchestration.plan_authoring import clause_registry, registry_prompt_block
 from vfx_harness.orchestration.plan_authority import prepare_consumer_view, prepare_staging
-from vfx_harness.orchestration.unit_state import digest_matched_passed
-from vfx_harness.orchestration.unit_state import initialize as initialize_unit_state
+from vfx_harness.orchestration.unit_completion_state import (
+    authorize_completed_units_for_layer,
+)
+from vfx_harness.orchestration.unit_state import (
+    authorized_passed_unit_ids,
+    validate_current,
+)
+from vfx_harness.orchestration.unit_state import (
+    load as load_unit_state,
+)
+from vfx_harness.orchestration.unit_state_lock import unit_state_lock
 from vfx_harness.orchestration.work_unit_plan_transaction import (
     WorkUnitPlanTransactionConflict,
     work_unit_plan_transaction,
@@ -288,11 +298,11 @@ async def _generate_layer_plan(
     except KeyError as exc:
         raise KeyError(f"unknown layer {layer_id!r}; available: {', '.join(layers)}") from exc
     if rematerialize is not None:
-        # A prior remat that selected a hole then crashed leaves this layer
-        # jit_deferred in the live view. The replacement still needs the unpublished
-        # overlay and apply_replan — unpacking a 4-tuple as 3 and skipping unit-state
-        # movement is how remat5 would publish then die (HIR-0026). Accepted units
-        # are not a door refuse; apply_replan preserves matching digests (HIR-0052).
+        # A prior remat that crashed after publishing an intent is recovered from its
+        # immutable staged transition before a new replacement begins. The candidate
+        # must carry its unpublished overlay and gate-attested state effect together;
+        # accepted units are not a door refusal because the transaction preserves exact
+        # unchanged unit bindings (HIR-0026, HIR-0052, HIR-0171).
         layer = await _rematerialize_layer(
             shot, layer, rematerialize, model=model, blender=blender, max_turns=max_turns
         )
@@ -316,26 +326,30 @@ async def _generate_layer_plan(
         selected_authority=selected_authority,
     )
     layer = layers[str(layer_id)]
-    layers_hash = hashlib.sha256(
-        selected_authority.artifact_paths["layers.json"].read_bytes()
-    ).hexdigest()
     try:
         with authority_selection_lock(shot.folder, exclusive=False):
             require_matching_authority_selection_token(
                 selected_authority.selection_token,
                 read_authority_selection_heads(shot.folder).token,
             )
-            _reconcile_materialized_layer_state(
-                shot,
-                layer,
-                new_plan_hash=layers_hash,
-            )
-            state = initialize_unit_state(
+            layers_hash = selected_layer_capsule_digest(
                 shot.folder,
                 str(layer.id),
-                layer.stages,
-                plan_hash=layers_hash,
+                selected_authority,
             )
+            with unit_state_lock(shot.folder, str(layer.id), exclusive=False):
+                state = load_unit_state(shot.folder, str(layer.id))
+                if not state:
+                    raise ValueError(
+                        "materialization publication did not create authority-bound "
+                        f"work-unit state for layer {layer.id}"
+                    )
+                validate_current(state, str(layer.id), layer.stages)
+                if state.get("plan_hash") != layers_hash:
+                    raise ValueError(
+                        f"layer {layer.id} work-unit state does not bind its selected "
+                        "semantic authority capsule"
+                    )
     except (AuthoritySelectionConflict, AuthoritySelectionHeadError) as exc:
         raise ValueError(
             "selected authority changed before layer-plan state initialization"
@@ -345,7 +359,18 @@ async def _generate_layer_plan(
     passed = {
         uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
     }
-    sealed = digest_matched_passed(state, layer.stages)
+    authorized_completions = authorize_completed_units_for_layer(
+        shot.folder,
+        str(layer.id),
+        layer.stages,
+        expected_plan_hash=layers_hash,
+        selected_authority=selected_authority,
+    )
+    sealed = authorized_passed_unit_ids(
+        state,
+        layer.stages,
+        completion_authorization=authorized_completions,
+    )
     ready = ready_units(
         layer.stages, passed, sealed_producers=sealed
     )
@@ -409,7 +434,7 @@ async def _generate_layer_plan(
         x
         for x in (
             prior_outcomes_block(
-                shot.folder,
+                shot,
                 str(layer.id),
                 selected_authority=selected_authority,
             ),
@@ -438,6 +463,7 @@ async def _generate_layer_plan(
         contracts=contract_rows,
         units=layer.stages,
         durable_state=state,
+        completion_authorization=authorized_completions,
         helpers=(),
     )
     predecessor_cards = list(unit_card.get("predecessor_interfaces") or [])

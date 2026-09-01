@@ -9,10 +9,6 @@ from claude_agent_sdk import (
 from vfx_harness.agents.build_prompts import (
     critic_prompt,
 )
-from vfx_harness.agents.builder.attempt_guard import (
-    UnitAttemptAuthorityLost,
-    UnitAttemptGuard,
-)
 from vfx_harness.agents.builder.axes import _axes_need_motion, _critic_options
 from vfx_harness.agents.builder.critic_focus import (
     _apply_evidence_gate,
@@ -29,6 +25,10 @@ from vfx_harness.agents.builder.critic_focus import (
     _structured_or_text,
 )
 from vfx_harness.agents.builder.drain import _extract_json, _verdict
+from vfx_harness.agents.builder.execution_guard import (
+    ExecutionAuthorityLost,
+    ExecutionGuard,
+)
 from vfx_harness.agents.builder.models import PASS_MEAN, PASS_MIN, BuildTruncated, critic_model
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.application.preflight import model_phase_failure
@@ -60,7 +60,7 @@ async def _critique(
     focus_frames: list[int] | tuple[int, ...] | set[int] | None = None,
     active_unit=None,
     selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
-    attempt_guard: UnitAttemptGuard | None = None,
+    execution_guard: ExecutionGuard | None = None,
 ) -> dict:
     if selected_authority is None:
         selected_authority = authority_selection.resolve_selected_authority(
@@ -72,6 +72,8 @@ async def _critique(
         try:  # a motion strip so motion/finish axes are judged across frames, not a still
             stem = candidate_rel.split("/")[-1].split(".")[0]
             motion_rel, motion_frames = builder_package()._stash_motion_strip(session, shot, m, stem)
+        except ExecutionAuthorityLost:
+            raise
         except Exception as e:
             log(f"motion strip skipped: {str(e)[:80]}", 1)
     focus_references = _focus_references(
@@ -171,10 +173,10 @@ async def _critique(
                 frame=getattr(m, "frame", None),
                 model=critic_model(),
             ):
-                if attempt_guard is not None:
-                    attempt_guard.check(
-                        f"query {review_mode} critic for unit "
-                        f"{attempt_guard.unit.id} at frame {m.frame}"
+                if execution_guard is not None:
+                    execution_guard.check(
+                        f"query {review_mode} critic for {execution_guard.label} "
+                        f"at frame {m.frame}"
                     )
                 async for message in query(
                     prompt=_one_user_message(blocks),
@@ -212,15 +214,15 @@ async def _critique(
                                 f"critic {review_mode}: {phase_failure}",
                                 terminal_cause="model_session_failure",
                             )
-                if attempt_guard is not None:
-                    attempt_guard.check(
-                        f"consume {review_mode} critic result for unit "
-                        f"{attempt_guard.unit.id} at frame {m.frame}"
+                if execution_guard is not None:
+                    execution_guard.check(
+                        f"consume {review_mode} critic result for {execution_guard.label} "
+                        f"at frame {m.frame}"
                     )
             if acc.get("structured") or acc.get("text", "").strip():
                 break
             log(f"critic returned nothing (attempt {attempt}/3) — retrying", 1)
-        except UnitAttemptAuthorityLost:
+        except ExecutionAuthorityLost:
             raise
         except BuildTruncated:
             raise
@@ -500,6 +502,8 @@ async def _judge(
             motion_evidence = builder_package()._stash_motion_strip(
                 session, shot, m, stem, frames_override=motion_frames_override
             )
+        except ExecutionAuthorityLost:
+            raise
         except Exception as exc:
             log(f"motion strip skipped: {str(exc)[:80]}", 1)
     focus_references = _focus_references(
@@ -612,7 +616,7 @@ async def _judge(
             focused["focus_requested"] = requests
             focused["focus_panels"] = focus_panels
             first = focused
-        except UnitAttemptAuthorityLost:
+        except ExecutionAuthorityLost:
             raise
         except Exception as exc:
             first["focus_error"] = str(exc)[:200]

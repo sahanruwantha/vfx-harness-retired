@@ -168,6 +168,11 @@ def _current_due_request(
         raise ValueError(
             f"judgment debt {definition.debt_id} payment attempt requires due state, not {state.status}"
         )
+    if request.payment_generation_digest != state.payment_generation_digest:
+        raise ValueError(
+            f"judgment debt {definition.debt_id} payment attempt belongs to another "
+            "replay payment generation"
+        )
     return bundle.digest, definition, activation, states, selected.selection_token
 
 

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from threading import Event, Thread
 from types import SimpleNamespace
 
 from tests.architecture.test_staged_architecture import _unit
-from tests.unit_attempt_fixtures import ABSENT_SELECTION_TOKEN, pass_unit
+from tests.unit_attempt_fixtures import (
+    ABSENT_SELECTION_TOKEN,
+    legacy_apply_replan,
+    pass_unit,
+)
 from vfx_harness.agents.builder.unit_completion import resolve_completed_unit
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.orchestration import plan_due, unit_state
@@ -99,6 +104,11 @@ def test_resolution_io_does_not_block_invalidation_and_stale_row_is_inert(
         return original_write(path, text)
 
     monkeypatch.setattr(plan_due, "atomic_write", blocked_write)
+    monkeypatch.setattr(
+        plan_due,
+        "_current_completion_receipt_projection_for_bundle",
+        lambda *_args, **_kwargs: nullcontext({}),
+    )
 
     def resolve() -> None:
         try:
@@ -116,7 +126,7 @@ def test_resolution_io_does_not_block_invalidation_and_stale_row_is_inert(
 
     def invalidate() -> None:
         try:
-            unit_state.apply_replan(
+            legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,

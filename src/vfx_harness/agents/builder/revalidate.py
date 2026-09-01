@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from vfx_harness.agents.builder.attempt_guard import (
-    UnitAttemptAuthorityLost,
     UnitAttemptGuard,
 )
 from vfx_harness.agents.builder.evidence import (
@@ -23,6 +22,7 @@ from vfx_harness.agents.builder.evidence import (
     _unit_raster_mode,
     _unit_requires_raster,
 )
+from vfx_harness.agents.builder.execution_guard import ExecutionAuthorityLost
 from vfx_harness.agents.builder.models import _RESET
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import (
@@ -40,7 +40,7 @@ from vfx_harness.observability.log import (
 from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.observability.runlog import summary as run_summary
 from vfx_harness.observability.runlog import write as write_run
-from vfx_harness.orchestration.layer_plans import load_layer_outcome
+from vfx_harness.orchestration import layer_publication
 from vfx_harness.orchestration.ledger import Ledger, Milestone, plan_strips
 from vfx_harness.orchestration.revalidation import eligibility, input_manifest
 
@@ -52,7 +52,7 @@ def _blender_version(session: BlenderSession) -> str:
     try:
         row = session.run("RESULT = bpy.app.version_string", journal=False)
         return str(row.get("result") or row.get("RESULT") or "unknown")
-    except UnitAttemptAuthorityLost:
+    except ExecutionAuthorityLost:
         raise
     except Exception:
         return "unknown"
@@ -124,7 +124,25 @@ def _try_revalidate(
     if layer is None:
         return None
 
-    outcome = load_layer_outcome(shot.folder, str(layer.id))
+    try:
+        source_publication = layer_publication.require_current_layer_publication(
+            shot.folder,
+            layer,
+            selected_authority,
+        )
+    except layer_publication.LayerPublicationConflict:
+        return None
+    if active_unit is None or attempt_guard is None:
+        raise ValueError(
+            "unit revalidation requires an exact active work-unit attempt guard"
+        )
+    attempt_guard.require_unit_boundary(
+        m,
+        active_unit,
+        layer=layer,
+        script_rel=script_rel,
+    )
+    outcome = json.loads(source_publication.outcome_bytes)
     blender_version = _blender_version(session)
     manifest = input_manifest(
         shot.folder,
@@ -183,7 +201,7 @@ def _try_revalidate(
                 1,
             )
             return None
-    except UnitAttemptAuthorityLost:
+    except ExecutionAuthorityLost:
         raise
     except Exception as exc:
         log(f"REVALIDATE miss: deterministic replay failed ({str(exc)[:120]})", 1)
@@ -326,6 +344,31 @@ def _try_revalidate(
             1,
         )
         return None
+
+    current_publication = layer_publication.require_current_layer_publication(
+        shot.folder,
+        layer,
+        selected_authority,
+    )
+    if (
+        current_publication.receipt.receipt_digest
+        != source_publication.receipt.receipt_digest
+        or current_publication.outcome_sha256 != source_publication.outcome_sha256
+    ):
+        raise layer_publication.LayerPublicationConflict(
+            f"layer {layer.id} revalidation source changed during deterministic replay"
+        )
+    current_manifest = input_manifest(
+        shot.folder,
+        layer,
+        blender_version=blender_version,
+        selected_authority=selected_authority,
+    )
+    if current_manifest != manifest:
+        raise layer_publication.LayerPublicationConflict(
+            f"layer {layer.id} revalidation inputs or receipt-backed predecessor "
+            "publications changed during deterministic replay"
+        )
 
     best = dict(outcome.get("best") or {})
     for index, ((_frame, _ref), verdict) in enumerate(canonical):

@@ -11,13 +11,39 @@ import pytest
 from PIL import Image
 
 from tests.layer_outcome_fixtures import write_test_layer_outcome
-from tests.unit_attempt_fixtures import synthetic_completion_receipt
+from tests.unit_attempt_fixtures import pass_unit, synthetic_completion_receipt
+from vfx_harness.agents.builder.composition_helpers import (
+    compose_unit_artifact_source,
+)
+from vfx_harness.agents.builder.layer_artifact import (
+    commit_layer_artifact,
+    prepare_layer_artifact,
+)
+from vfx_harness.agents.builder.layer_finalization_guard import (
+    LayerFinalizationClaimGuard,
+)
+from vfx_harness.domain.judgment_debt_replay_receipts import (
+    ReplayPrefixLayerReceipt,
+    ReplayPrefixReceipt,
+    ReplayPrefixUnitReceipt,
+)
 from vfx_harness.domain.judgment_debts import (
     JudgmentDebtActivation,
     JudgmentDebtSeed,
     JudgmentPoint,
     JudgmentProvider,
     compile_judgment_debt,
+)
+from vfx_harness.domain.layer_finalizations import (
+    LAYER_FINALIZATION_PROJECTION_SCHEMA,
+    LayerEvaluationReceipt,
+    LayerFinalizationReceipt,
+    LayerReplayClaimRequirement,
+    LayerReplayEvaluationGroupPlan,
+    LayerReplayObservation,
+    LayerReplayPointObservation,
+    LayerReplayReceipt,
+    LayerReplayReceiptBinding,
 )
 from vfx_harness.domain.plan_records import (
     load_active_structured_decisions,
@@ -26,10 +52,14 @@ from vfx_harness.domain.plan_records import (
     load_requirements,
     read_selected_bundle_hash,
 )
+from vfx_harness.domain.unit_evaluation_receipts import ReplayInputBinding
 from vfx_harness.evaluation.plan_gate import _check_meta_records
 from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration import plan_bundle_integrity
+from vfx_harness.orchestration import plan_bundle_integrity, unit_state
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.jit_materialization import (
     MATERIALIZATION_SCHEMA,
@@ -42,17 +72,31 @@ from vfx_harness.orchestration.jit_materialization import (
 from vfx_harness.orchestration.jit_materialization.errors import (
     MaterializationSelectionConflict,
 )
+from vfx_harness.orchestration.layer_evaluation_receipts import (
+    commit_layer_evaluation_receipt,
+    prepare_layer_evaluation_receipt,
+)
+from vfx_harness.orchestration.layer_finalization_state import (
+    claim_layer_finalization,
+    complete_layer_finalization,
+)
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
+from vfx_harness.orchestration.layer_plans import (
+    build_layer_outcome_projection,
+    layer_finalization_canonical_rows,
+)
+from vfx_harness.orchestration.layer_replay_receipts import (
+    commit_layer_replay_receipt,
+    prepare_layer_replay_receipt,
+)
 from vfx_harness.orchestration.ledger import load_layers_from_path
-from vfx_harness.orchestration.plan_authority import publish_current, selected_artifact_path
+from vfx_harness.orchestration.plan_authority import publish_current as _publish_current
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
 from vfx_harness.orchestration.plan_due import (
     PlanDueError,
     require_due_clear,
     resolve_acceptance_completion,
     resolve_unit_completion,
-)
-from vfx_harness.orchestration.plan_inputs import (
-    exact_planning_input_identity_digest,
 )
 from vfx_harness.orchestration.revalidation import eligibility, input_manifest
 
@@ -595,42 +639,16 @@ def _attest_materialization(
     *,
     overlay_root: Path | None = None,
 ) -> None:
-    """Test-only attestation of the exact view bytes publication will select.
+    """Attest through the same prepared transition used by production finalization."""
 
-    Publication deliberately has no bypass for the terminal finalization receipt. Tests
-    that exercise the later selection boundary therefore compose the real proposed view
-    and bind the receipt to the same candidate, base token, view digest, and artifact
-    byte digests as production finalization.
-    """
-    import vfx_harness.orchestration.jit_materialization as materialization
-    from vfx_harness.orchestration.jit_materialization.view_pointer import (
-        canonical_view_hash,
+    from tests.materialization_support import (
+        attest_exact_materialization_view,
     )
 
-    bundle, materialized, bases, base_selection = materialization._composed_documents(
+    attest_exact_materialization_view(
         root,
         candidate,
         overlay_root=overlay_root,
-    )
-    documents = materialization._overlay_documents(materialized, bases)
-    artifact_hashes = {
-        name: hashlib.sha256(
-            (json.dumps(documents[name], indent=2, sort_keys=True) + "\n").encode(
-                "utf-8"
-            )
-        ).hexdigest()
-        for name in materialization.OVERLAY_ARTIFACTS
-    }
-    materialization.attest_materialization_finalization(
-        candidate,
-        bundle_hash=bundle.content_hash,
-        base_selection=base_selection,
-        proposed_view_hash=canonical_view_hash(documents),
-        proposed_artifact_hashes=artifact_hashes,
-        planning_inputs_digest=exact_planning_input_identity_digest(root),
-        consumer_marker_sha256=hashlib.sha256(
-            b"test-only-terminal-gate-marker"
-        ).hexdigest(),
     )
 
 
@@ -642,6 +660,265 @@ def _publish_materialization(
 ) -> Path:
     _attest_materialization(root, candidate, overlay_root=overlay_root)
     return publish_materialization(root, candidate, overlay_root=overlay_root)
+
+
+def _unit_reserved_roles(layer: dict) -> list[str]:
+    roles: set[str] = set()
+    for unit in layer.get("stages") or []:
+        mutates = unit.get("mutates") or {}
+        roles.update(str(role) for role in mutates.get("roles") or [])
+        roles.update(str(role) for role in unit.get("dresses") or [])
+    return sorted(roles)
+
+
+def _unit_provides(layer: dict) -> dict[str, list[str]]:
+    provided: dict[str, set[str]] = {}
+    for unit in layer.get("stages") or []:
+        roles = [str(role) for role in (unit.get("mutates") or {}).get("roles") or []]
+        for capability in unit.get("provides") or []:
+            provided.setdefault(str(capability), set()).update(roles)
+    return {key: sorted(values) for key, values in sorted(provided.items())}
+
+
+def _sparse_publication_rows(
+    root: Path,
+) -> list[tuple[dict, list[dict], list[dict]]]:
+    """Convert legacy ready fixture rows into strict sparse global authority.
+
+    The returned rows are the exact effective layers the fixture had already treated as
+    materialized.  Publication selects only deferred stubs; the test helper then installs
+    these rows through the real JIT transaction.
+    """
+
+    document = json.loads((root / "layers.json").read_text(encoding="utf-8"))
+    requirements = json.loads((root / "requirements.json").read_text(encoding="utf-8"))
+    owned_by_layer: dict[str, list[str]] = {}
+    for requirement in requirements["requirements"]:
+        resolution = requirement.get("resolution") or {}
+        if resolution.get("kind") == "deferred_owner":
+            owned_by_layer.setdefault(str(resolution["owner_layer"]), []).append(
+                str(requirement["id"])
+            )
+    ready_rows: list[tuple[dict, list[dict], list[dict]]] = []
+    sparse_rows: list[dict] = []
+    for row in document["layers"]:
+        if row.get("execution") == "jit_deferred":
+            deferred = json.loads(json.dumps(row))
+            deferred["jit"].setdefault("provides", {})
+            deferred["jit"]["required_outcomes"] = []
+            sparse_rows.append(deferred)
+            continue
+        ready = json.loads(json.dumps(row))
+        ready["execution"] = "ready"
+        ready.pop("jit", None)
+        ready_rows.append((ready, [], []))
+        layer_id = str(ready["id"])
+        owned_requirements = owned_by_layer.get(layer_id, [])
+        if not owned_requirements:
+            requirement_id = f"R-fixture-prerequisite-{layer_id}"
+            authored = requirements["requirements"][0]
+            requirements["requirements"].append(
+                {
+                    "id": requirement_id,
+                    "statement": authored["statement"],
+                    "citation": json.loads(json.dumps(authored["citation"])),
+                    "resolution": _deferred_owner(layer_id, "image"),
+                }
+            )
+            owned_requirements = [requirement_id]
+        sparse = {
+            key: json.loads(json.dumps(value))
+            for key, value in row.items()
+            if key
+            in {
+                "id",
+                "script",
+                "title",
+                "primary_judge",
+                "judge",
+                "owns",
+                "evidence_domains",
+                "reads",
+                "dressable",
+            }
+        }
+        sparse.update(
+            {
+                "execution": "jit_deferred",
+                "stages": [],
+                "jit": {
+                    "depends_on_layers": [],
+                    "required_outcomes": [],
+                    "provides": _unit_provides(ready),
+                    "reserved_roles": _unit_reserved_roles(ready),
+                    "owned_requirements": owned_requirements,
+                },
+            }
+        )
+        sparse_rows.append(sparse)
+    document["schema"] = 5
+    document["layers"] = sparse_rows
+    ready_ids = {str(row["id"]) for row, _scene, _image in ready_rows}
+    scene_document = json.loads((root / "scene_checks.json").read_text(encoding="utf-8"))
+    image_document = json.loads((root / "checks.json").read_text(encoding="utf-8"))
+    captured: list[tuple[dict, list[dict], list[dict]]] = []
+    for row, _scene, _image in ready_rows:
+        layer_id = str(row["id"])
+        captured.append(
+            (
+                row,
+                [
+                    json.loads(json.dumps(contract))
+                    for contract in scene_document["contracts"]
+                    if str(contract.get("owner_layer")) == layer_id
+                ],
+                [
+                    json.loads(json.dumps(contract))
+                    for contract in image_document["checks"]
+                    if str(contract.get("owner_layer")) == layer_id
+                ],
+            )
+        )
+    scene_document["contracts"] = [
+        row
+        for row in scene_document["contracts"]
+        if str(row.get("owner_layer")) not in ready_ids
+    ]
+    image_document["checks"] = [
+        row
+        for row in image_document["checks"]
+        if str(row.get("owner_layer")) not in ready_ids
+    ]
+    _write(root / "layers.json", document)
+    _write(root / "requirements.json", requirements)
+    _write(root / "scene_checks.json", scene_document)
+    _write(root / "checks.json", image_document)
+    return captured
+
+
+def _materialize_fixture_ready_layer(
+    root: Path,
+    bundle_hash: str,
+    layer: dict,
+    global_scene_contracts: list[dict],
+    global_image_contracts: list[dict],
+    *,
+    overlay_root: Path | None = None,
+) -> None:
+    layer_id = str(layer["id"])
+    existing_ids = {str(row["id"]) for row in global_scene_contracts}
+    scene_contracts = json.loads(json.dumps(global_scene_contracts))
+    required_context_ids = {
+        str(contract_id)
+        for unit in layer.get("stages") or []
+        for contract_id in (unit.get("evaluation") or {})
+        .get("composition_context", {})
+        .get("contract_ids", [])
+    }
+    missing_visibility = sorted(required_context_ids - existing_ids)
+    visibility_id_map: dict[str, str] = {}
+    if missing_visibility:
+        frames = tuple(
+            int(point["frame"])
+            for point in layer.get("judge") or []
+            if f"vis-f{int(point['frame'])}" in missing_visibility
+        )
+        for row in _vis_rows(layer_id, frames):
+            old_id = str(row["id"])
+            new_id = f"fixture-{layer_id}-{old_id}"
+            visibility_id_map[old_id] = new_id
+            row["id"] = new_id
+            scene_contracts.append(row)
+    image_contracts = json.loads(json.dumps(global_image_contracts))
+    materialized = _declaring(json.loads(json.dumps(layer)))
+    materialized["execution"] = "ready"
+    materialized.pop("jit", None)
+    for unit in materialized.get("stages") or []:
+        context = (unit.get("evaluation") or {}).get("composition_context") or {}
+        context["contract_ids"] = [
+            visibility_id_map.get(str(contract_id), str(contract_id))
+            for contract_id in context.get("contract_ids") or []
+        ]
+    sparse_layers = json.loads((root / "layers.json").read_text(encoding="utf-8"))[
+        "layers"
+    ]
+    sparse = next(row for row in sparse_layers if str(row["id"]) == layer_id)
+    binding_contract_ids = [
+        str(row["id"])
+        for row in [*scene_contracts, *image_contracts]
+    ]
+    if not binding_contract_ids:
+        raise AssertionError(
+            f"fixture ready layer {layer_id!r} has no scene contract for its owned requirement"
+        )
+    payload = root / f"fixture-materialize-{layer_id}.json"
+    _write(
+        payload,
+        {
+            "schema": MATERIALIZATION_SCHEMA,
+            "bundle_hash": bundle_hash,
+            "base_selection": _base_selection(root).to_dict(),
+            "layer": materialized,
+            "scene_contracts": scene_contracts,
+            "image_contracts": image_contracts,
+            "requirement_bindings": [
+                {
+                    "requirement_id": requirement_id,
+                    "contract_ids": [binding_contract_ids[0]],
+                }
+                for requirement_id in sparse["jit"]["owned_requirements"]
+            ],
+            "acceptance": [],
+        },
+    )
+    _publish_materialization(root, payload, overlay_root=overlay_root)
+
+
+def publish_current(
+    shot_folder: str | Path,
+    layout,
+    *,
+    outcome: str,
+    plan_path: str | Path | None = None,
+    source_root: str | Path | None = None,
+):
+    """Publish schema-5 fixture authority and restore pre-materialized test layers.
+
+    HIR-0171 forbids a ready row in global authority.  Older tests used such rows as
+    setup, so this adapter preserves their intended effective view through the public
+    sparse-publication plus JIT-materialization lifecycle.
+    """
+
+    root = Path(shot_folder).resolve()
+    source = Path(source_root).resolve() if source_root is not None else root
+    ready_rows = _sparse_publication_rows(source)
+    bundle = _publish_current(
+        root,
+        layout,
+        outcome=outcome,
+        plan_path=plan_path,
+        source_root=source_root,
+    )
+    if source == root:
+        for layer, scene_contracts, image_contracts in ready_rows:
+            _materialize_fixture_ready_layer(
+                root,
+                bundle.content_hash,
+                layer,
+                scene_contracts,
+                image_contracts,
+            )
+    return bundle
+
+
+def _publish_due_fixture(root: Path, layout):
+    """Select sparse authority while retaining the legacy due-record catalog under test."""
+
+    requirements = json.loads((root / "requirements.json").read_text(encoding="utf-8"))
+    requirements["requirements"][0]["resolution"] = _deferred_owner("1", "image")
+    _write(root / "requirements.json", requirements)
+    _sparse_publication_rows(root)
+    return _publish_current(root, layout, outcome="clean_with_deferred")
 
 
 def _jit_payload(root: Path, bundle_hash: str) -> Path:
@@ -696,9 +973,6 @@ def _jit_payload(root: Path, bundle_hash: str) -> Path:
 
 def _passed_layer_one_outcome(root: Path) -> None:
     layer = load_layers_from_path(selected_artifact_path(root, "layers.json"))["1"]
-    script = root / layer.script
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text("# sealed executable layer-one fixture\n", encoding="utf-8")
     for unit in layer.stages:
         plan = root / unit.plan
         plan.parent.mkdir(parents=True, exist_ok=True)
@@ -707,43 +981,284 @@ def _passed_layer_one_outcome(root: Path) -> None:
         reference = root / ref
         if not reference.is_file():
             raise AssertionError(f"fixture reference was not published before plan selection: {ref}")
+    selected_authority = resolve_selected_authority(root)
+    plan_hash = selected_layer_capsule_digest(
+        root,
+        layer.id,
+        selected_authority,
+    )
+    unit_state.initialize(
+        root,
+        layer.id,
+        layer.stages,
+        plan_hash=plan_hash,
+    )
+    state = unit_state.load(root, layer.id)
+    eligible = {
+        unit_id
+        for unit_id, row in state["units"].items()
+        if row.get("status") == "passed"
+    }
+    for unit in layer.stages:
+        if unit.id not in eligible:
+            pass_unit(
+                root,
+                layer.id,
+                unit,
+                layer.stages,
+                plan_hash=plan_hash,
+                eligible_passed=eligible,
+                selection_token=selected_authority.selection_token,
+            )
+            eligible.add(unit.id)
+
+    state = unit_state.load(root, layer.id)
+    parts: list[tuple[str, str, str]] = []
+    for unit in layer.stages:
+        completion = state["units"][unit.id]["completion_receipt"]
+        unit_script = str(completion["script_path"])
+        parts.append(
+            (
+                unit.id,
+                unit_script,
+                (root / unit_script).read_text(encoding="utf-8"),
+            )
+        )
+    evaluation_barrier = "# fixture evaluated-state barrier\npass"
+    proposed_source = compose_unit_artifact_source(
+        parts,
+        evaluation_barrier=evaluation_barrier,
+    ).encode("utf-8")
+    proposed_sha256 = hashlib.sha256(proposed_source).hexdigest()
+    claim = claim_layer_finalization(
+        root,
+        layer,
+        expected_plan_hash=plan_hash,
+        run_id="sealed-layer-one-fixture",
+        layer_script_sha256=proposed_sha256,
+        predecessor_inputs=(),
+        selection_token=selected_authority.selection_token,
+    )
+    claim_guard = LayerFinalizationClaimGuard.bind(
+        root,
+        claim,
+        layer.stages,
+        selected_authority,
+    )
+    prepared_artifact = prepare_layer_artifact(
+        root,
+        claim_guard,
+        evaluation_barrier=evaluation_barrier,
+    )
+    commit_layer_artifact(prepared_artifact, claim_guard)
+    replay_prefix = ReplayPrefixReceipt(
+        (
+            ReplayPrefixLayerReceipt(
+                layer_id=claim.layer_id,
+                layer_generation_digest=claim.plan_hash,
+                predecessor_layer_digests=(),
+                script_path=claim.layer_script_path,
+                script_sha256=proposed_sha256,
+                dependencies=(),
+                units=tuple(
+                    ReplayPrefixUnitReceipt(
+                        layer_id=claim.layer_id,
+                        unit_id=row.unit_id,
+                        unit_digest=row.unit_digest,
+                        checkpoint_unit_digest=row.unit_digest,
+                        script_path=row.script_path,
+                        script_sha256=row.script_sha256,
+                        checkpoint_script_sha256=row.script_sha256,
+                        completion_receipt_digest=row.completion_receipt_digest,
+                    )
+                    for row in claim.unit_inputs
+                ),
+                payer_claim_id=claim.claim_id,
+            ),
+        )
+    )
+    group_plan = LayerReplayEvaluationGroupPlan(
+        group_index=0,
+        planned_group_count=1,
+        requirement_ids=(),
+        debt_id=None,
+        definition_digest=None,
+        activation_digest=None,
+        payment_generation_digest=None,
+        judge_points=tuple((frame, ref) for frame, ref in layer.judges),
+        axes=("final_lock",),
+        claims=(
+            LayerReplayClaimRequirement(
+                claim_id="sealed-layer-one-final-lock",
+                authority="executable_required",
+                judge_frames=tuple(frame for frame, _ref in layer.judges),
+                evidence_ids=("final-lock",),
+            ),
+        ),
+        evidence_kind="executable_only",
+        render_mode=None,
+        render_scale=None,
+    )
+    point_evidence = (
+        {
+            "id": "final-lock",
+            "metric": "frame_delta",
+            "value": 0.0,
+            "target": "<= 0.01",
+            "pass": True,
+            "source": "interface_contract",
+            "authoritative": True,
+            "owner_layer": "1",
+            "fault_owner": "1",
+            "activates_at": "1",
+            "lifecycle": "layer",
+        },
+    )
+    points = tuple(
+        LayerReplayPointObservation.mint(
+            plan=group_plan,
+            frame=frame,
+            ref=ref,
+            ref_sha256=hashlib.sha256((root / ref).read_bytes()).hexdigest(),
+            evidence=point_evidence,
+        )
+        for frame, ref in layer.judges
+    )
+    replay = LayerReplayReceipt.mint(
+        claim=claim,
+        layer_script_sha256=proposed_sha256,
+        replay_inputs=(
+            ReplayInputBinding.mint(
+                script_path=layer.script,
+                script_sha256=proposed_sha256,
+            ),
+        ),
+        observation=LayerReplayObservation(
+            replay_prefix=replay_prefix,
+            plan=group_plan,
+            points=points,
+        ),
+        created_at="2026-09-01T00:01:00+00:00",
+    )
+    prepared_replay = prepare_layer_replay_receipt(root, replay)
+    stored_replay = commit_layer_replay_receipt(prepared_replay, claim_guard)
+    canonical = [
+        (
+            (frame, ref),
+            {
+                "evidence_kind": "executable_only",
+                "pass": True,
+                "mean": 5.0,
+                "decided_by": "unit_executable_evidence",
+                "issues": [],
+                "evidence": list(point_evidence),
+                "evidence_failures": [],
+                "missing_evidence": [],
+                "layer_replay_receipt_digest": replay.receipt_digest,
+            },
+        )
+        for frame, ref in layer.judges
+    ]
+    best = {"round": 1, "mean": 5.0, "render": None}
+    revalidation_projection = {
+        "schema": "vfx-harness.layer-image-check-revalidation/v1",
+        "layer_id": layer.id,
+        "source_sha256": None,
+        "replacement_sha256": None,
+        "replacement_text": None,
+        "result": {"kept": 0, "dropped": []},
+    }
+    outcome_projection = build_layer_outcome_projection(
+        root,
+        layer,
+        best=best,
+        canonical=canonical,
+        finalization_claim=claim,
+        final_status="passed",
+        blender_version="fixture",
+        revalidation_projection=revalidation_projection,
+        selected_authority=selected_authority,
+    )
+    receipt_canonical = layer_finalization_canonical_rows(canonical)
+    evaluation = LayerEvaluationReceipt.mint(
+        replay_receipts=(
+            LayerReplayReceiptBinding.mint(
+                locator=stored_replay.locator,
+                sha256=stored_replay.sha256,
+                receipt=replay,
+            ),
+        ),
+        evaluation_groups=[
+            {
+                "group_index": 0,
+                "result": "passed",
+                "requirement_ids": [],
+                "debt_id": None,
+                "definition_digest": None,
+                "activation_digest": None,
+                "canonical_start": 0,
+                "canonical_end": len(canonical),
+                "payment_failures": [],
+            }
+        ],
+        canonical=receipt_canonical,
+        created_at="2026-09-01T00:01:30+00:00",
+    )
+    prepared_evaluation = prepare_layer_evaluation_receipt(root, evaluation)
+    stored_evaluation = commit_layer_evaluation_receipt(
+        prepared_evaluation,
+        claim_guard,
+    )
+    receipt = LayerFinalizationReceipt.mint(
+        evaluation_receipt=evaluation,
+        evaluation_receipt_locator=stored_evaluation.locator,
+        evaluation_receipt_sha256=stored_evaluation.sha256,
+        projection={
+            "schema": LAYER_FINALIZATION_PROJECTION_SCHEMA,
+            "best": best,
+            "blender_version": "fixture",
+            "ablation": {"ok": True, "note": "fixture ablation"},
+            "revalidation": revalidation_projection,
+            "judgment_debts": [],
+            "finding": None,
+            "outcome": outcome_projection.as_dict(),
+            "ledger": {
+                "status": "passed",
+                "script": layer.script,
+                "script_sha256": proposed_sha256,
+            },
+        },
+        completed_at="2026-09-01T00:02:00+00:00",
+    )
+    complete_layer_finalization(
+        root,
+        receipt,
+        evaluation,
+        layer.stages,
+        selection_token=selected_authority.selection_token,
+    )
     write_test_layer_outcome(
         root,
         layer,
         status="passed",
         best={"round": 1, "mean": 5.0, "render": None},
-        canonical=[
-            (
-                (frame, ref),
-                {
-                    "evidence_kind": "executable_only",
-                    "pass": True,
-                    "mean": 5.0,
-                    "decided_by": "unit_executable_evidence",
-                    "issues": [],
-                    "evidence": [
-                        {
-                            "id": "final-lock",
-                            "metric": "frame_delta",
-                            "value": 0.0,
-                            "target": "<= 0.01",
-                            "pass": True,
-                            "source": "interface_contract",
-                            "authoritative": True,
-                            "owner_layer": "1",
-                            "fault_owner": "1",
-                            "activates_at": "1",
-                            "lifecycle": "layer",
-                        }
-                    ],
-                },
-            )
-            for frame, ref in layer.judges
-        ],
+        canonical=canonical,
         run_id="sealed-layer-one-fixture",
         attempt=1,
         blender_version="fixture",
+        selected_authority=selected_authority,
+        finalization_receipt=receipt,
     )
+    ledger = json.loads((root / "shot.json").read_text(encoding="utf-8"))
+    ledger.setdefault("milestones", {}).setdefault(layer.id, {}).update(
+        {
+            "status": "passed",
+            "script": layer.script,
+            "script_sha256": proposed_sha256,
+            "finalization_receipt_digest": receipt.receipt_digest,
+        }
+    )
+    _write(root / "shot.json", ledger)
 
 
 def test_producer_sealed_outcome_rejects_a_changed_layer_script(
@@ -1842,6 +2357,9 @@ def test_materialization_candidate_compare_and_swap_serializes_overlapping_write
 
 
 def test_materialization_finalization_attestation_is_revision_bound(tmp_path: Path) -> None:
+    from vfx_harness.domain.authority_state_records import (
+        AuthorityStateRecordRef,
+    )
     from vfx_harness.orchestration.authority_selection_transaction import (
         AuthoritySelectionToken,
     )
@@ -1864,6 +2382,12 @@ def test_materialization_finalization_attestation_is_revision_bound(tmp_path: Pa
         "value": 1,
     })
     bundle_hash = "a" * 64
+    head_ref = AuthorityStateRecordRef.mint(
+        locator=f"state/authority-state/objects/{'1' * 64}/record.json",
+        sha256="1" * 64,
+        record_schema="vfx-harness.authority-state-head/v1",
+        record_digest="2" * 64,
+    )
 
     attest_materialization_finalization(
         candidate,
@@ -1873,6 +2397,14 @@ def test_materialization_finalization_attestation_is_revision_bound(tmp_path: Pa
         proposed_artifact_hashes=dict.fromkeys(OVERLAY_ARTIFACTS, "e" * 64),
         planning_inputs_digest="f" * 64,
         consumer_marker_sha256="0" * 64,
+        publication_jit_pointer_sha256="1" * 64,
+        authority_transition_kind="noop",
+        authority_transition_intent_ref=None,
+        authority_capsule_set_digest="2" * 64,
+        authority_effects_digest=None,
+        authority_state_head_ref=head_ref,
+        before_state_hashes={},
+        after_state_hashes={},
     )
 
     assert materialization_finalization_attested(
@@ -1894,6 +2426,14 @@ def test_materialization_finalization_attestation_is_revision_bound(tmp_path: Pa
         proposed_artifact_hashes=dict.fromkeys(OVERLAY_ARTIFACTS, "e" * 64),
         planning_inputs_digest="f" * 64,
         consumer_marker_sha256="0" * 64,
+        publication_jit_pointer_sha256="1" * 64,
+        authority_transition_kind="noop",
+        authority_transition_intent_ref=None,
+        authority_capsule_set_digest="2" * 64,
+        authority_effects_digest=None,
+        authority_state_head_ref=head_ref,
+        before_state_hashes={},
+        after_state_hashes={},
     )
     assert not materialization_finalization_attested(
         candidate, bundle_hash="b" * 64
@@ -3313,14 +3853,19 @@ def test_jit_materialization_fails_closed_on_unbound_requirement(tmp_path: Path)
         )
 
 
-def test_jit_materialization_waits_for_declared_upstream_outcome(tmp_path: Path) -> None:
+def test_jit_materialization_waits_for_receipt_backed_upstream_publication(
+    tmp_path: Path,
+) -> None:
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
     layout = run_artifacts.create(tmp_path, "plan-run")
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = _jit_payload(tmp_path, bundle.content_hash)
 
-    with pytest.raises(ValueError, match="dependency 1 has a sealed outcome"):
+    with pytest.raises(
+        ValueError,
+        match="dependency 1 has a current receipt-backed publication",
+    ):
         _publish_materialization(tmp_path, payload)
 
 
@@ -3333,7 +3878,7 @@ def test_final_lock_is_typed_and_blocks_acceptance_until_matching_evidence(
     assert findings == []
     assert stats == {"requirements": 1, "open_obligations": 1, "open_assumptions": 0}
     layout = run_artifacts.create(tmp_path, "plan-run")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    bundle = _publish_due_fixture(tmp_path, layout)
 
     with pytest.raises(PlanDueError, match="O-final-lock"):
         require_due_clear(tmp_path, acceptance=True)
@@ -3655,7 +4200,7 @@ def test_unit_completion_obligation_is_discharged_only_by_declared_evidence(
     findings, _ = _check_meta_records(tmp_path)
     assert findings == []
     layout = run_artifacts.create(tmp_path, "plan-run")
-    publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    _publish_due_fixture(tmp_path, layout)
     wrong_receipt = synthetic_completion_receipt(
         "1", "lock", {("scene_contract", "wrong-contract")}
     )
@@ -3664,8 +4209,8 @@ def test_unit_completion_obligation_is_discharged_only_by_declared_evidence(
     )
     receipt_digest = receipt.receipt_digest
     monkeypatch.setattr(
-        "vfx_harness.orchestration.plan_due.current_completion_receipt_digests",
-        lambda _shot: nullcontext({("1", "lock"): receipt_digest}),
+        "vfx_harness.orchestration.plan_due._current_completion_receipt_projection_for_bundle",
+        lambda _shot, _bundle: nullcontext({("1", "lock"): receipt_digest}),
     )
 
     require_due_clear(tmp_path, layer="1", unit="lock")
@@ -3687,8 +4232,8 @@ def test_unit_completion_obligation_is_discharged_only_by_declared_evidence(
     require_due_clear(tmp_path, layer="1", unit="lock", completion=True)
 
     monkeypatch.setattr(
-        "vfx_harness.orchestration.plan_due.current_completion_receipt_digests",
-        lambda _shot: nullcontext({}),
+        "vfx_harness.orchestration.plan_due._current_completion_receipt_projection_for_bundle",
+        lambda _shot, _bundle: nullcontext({}),
     )
     with pytest.raises(PlanDueError, match=r"completion.*O-final-lock"):
         require_due_clear(tmp_path, layer="1", unit="lock", completion=True)
@@ -3767,7 +4312,7 @@ def test_acceptance_obligation_blocks_verdict_not_acceptance_entry(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _candidate(tmp_path)
     layout = run_artifacts.create(tmp_path, "plan-run")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    bundle = _publish_due_fixture(tmp_path, layout)
 
     # The finished-chain renderer must be allowed to run and produce this evidence.
     require_due_clear(
@@ -5019,45 +5564,29 @@ def test_direct_required_bbox_claims_are_projected_composition_context(
     assert [f for f in findings if f.check == "composition-coverage"]
 
 
-def test_revert_materialization_restores_global_authority(tmp_path, monkeypatch) -> None:
-    """Re-materialization must design against GLOBAL authority. Without reverting, the
-    discarded view's register — where this layer's owned requirements were already
-    resolved concretely by its predecessor — is the base, and the replacement trips
-    owned-means-owed for requirements it never closed itself."""
+def test_selected_revert_is_retired_and_preserves_live_authority(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A reverted design base cannot become live without a gated replacement."""
     from vfx_harness.orchestration.jit_materialization import revert_materialization
 
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    _candidate(tmp_path)
-    _add_deferred_layer(tmp_path)
-    layout = run_artifacts.create(tmp_path, "revert-run")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
-    payload = _jit_payload(tmp_path, bundle.content_hash)
-    _passed_layer_one_outcome(tmp_path)
-    _publish_materialization(tmp_path, payload)
+    pointer = tmp_path / "state" / "jit-layers" / "current.json"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_bytes(b'{"sentinel":"live-authority"}\n')
+    before = pointer.read_bytes()
 
-    from vfx_harness.orchestration.ledger import load_layers_from_path
-    from vfx_harness.orchestration.plan_authority import selected_artifact_path
+    with pytest.raises(
+        MaterializationSelectionConflict,
+        match="selected materialization revert is retired",
+    ):
+        revert_materialization(tmp_path, "2")
 
-    materialized = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))
-    assert materialized["2"].execution == "ready"
-
-    revert_materialization(tmp_path, "2")
-
-    reverted = load_layers_from_path(selected_artifact_path(tmp_path, "layers.json"))
-    assert reverted["2"].execution == "jit_deferred"
-    assert reverted["2"].stages == ()
-    register = json.loads(
-        selected_artifact_path(tmp_path, "requirements.json").read_text(encoding="utf-8")
-    )
-    owed = {
-        row["id"]: row["resolution"]["kind"]
-        for row in register["requirements"]
-        if row["id"] == "R-final-lock"
-    }
-    assert owed == {"R-final-lock": "deferred_owner"}
+    assert pointer.read_bytes() == before
 
 
-def test_crash_after_revert_view_rename_requires_orphan_reflush(
+def test_selected_revert_fails_before_view_or_pointer_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5067,92 +5596,44 @@ def test_crash_after_revert_view_rename_requires_orphan_reflush(
         "vfx_harness.orchestration.jit_materialization.publish"
     )
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    _candidate(tmp_path)
-    _add_deferred_layer(tmp_path)
-    layout = run_artifacts.create(tmp_path, "revert-durability")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
-    payload = _jit_payload(tmp_path, bundle.content_hash)
-    _passed_layer_one_outcome(tmp_path)
-    _publish_materialization(tmp_path, payload)
-
     pointer = tmp_path / "state" / "jit-layers" / "current.json"
+    pointer.parent.mkdir(parents=True)
+    pointer.write_bytes(b'{"sentinel":"live-authority"}\n')
     before = pointer.read_bytes()
-    selected_pointer = json.loads(before)
-    selected_view = (
-        tmp_path / selected_pointer["artifacts"]["layers.json"]
-    ).parent
     view_parent = tmp_path / "state" / "jit-layers" / "views"
-    original_directory_fsync = plan_bundle_integrity._fsync_directory
-    original_pointer_write = jit_publish.durable_replace_pointer_json
+    before_views: tuple[Path, ...] = ()
 
-    def crash_at_rename_parent(path: Path) -> None:
-        if path == view_parent:
-            raise OSError("injected crash after revert view rename")
-        original_directory_fsync(path)
-
-    def forbidden_pointer(*_args: object, **_kwargs: object) -> bytes:
-        raise AssertionError("pointer write crossed an incomplete revert-view barrier")
+    def forbidden_write(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("selected revert reached a retired write boundary")
 
     monkeypatch.setattr(
         plan_bundle_integrity,
         "_fsync_directory",
-        crash_at_rename_parent,
+        forbidden_write,
     )
     monkeypatch.setattr(
         jit_publish,
-        "durable_replace_pointer_json",
-        forbidden_pointer,
+        "durably_install_or_flush_view_directory",
+        forbidden_write,
     )
 
-    with pytest.raises(MaterializationSelectionConflict, match="durably install"):
+    with pytest.raises(
+        MaterializationSelectionConflict,
+        match="selected materialization revert is retired",
+    ):
         revert_materialization(tmp_path, "2")
 
     assert pointer.read_bytes() == before
-    orphan_views = tuple(path for path in view_parent.iterdir() if path != selected_view)
-    assert len(orphan_views) == 1
-
-    reflushed: list[Path] = []
-    original_file_fsync = plan_bundle_integrity._fsync_regular_file
-
-    def recording_file_fsync(path: Path) -> None:
-        reflushed.append(path)
-        original_file_fsync(path)
-
-    monkeypatch.setattr(
-        plan_bundle_integrity,
-        "_fsync_directory",
-        original_directory_fsync,
-    )
-    monkeypatch.setattr(
-        plan_bundle_integrity,
-        "_fsync_regular_file",
-        recording_file_fsync,
-    )
-    monkeypatch.setattr(
-        jit_publish,
-        "durable_replace_pointer_json",
-        original_pointer_write,
-    )
-
-    revert_materialization(tmp_path, "2")
-
-    assert pointer.read_bytes() != before
-    assert {
-        path.relative_to(orphan_views[0]).as_posix() for path in reflushed
-    } == {
-        "layers.json",
-        "scene_checks.json",
-        "checks.json",
-        "requirements.json",
-        "acceptance.json",
-    }
+    assert (
+        tuple(sorted(view_parent.iterdir())) if view_parent.is_dir() else ()
+    ) == before_views
 
 
-def test_materialization_publication_rolls_back_absent_jit_head_on_live_input_race(
+def test_materialization_publication_reports_live_input_race_after_atomic_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A tentative first JIT head cannot survive stale plan provenance."""
+    """A committed authority transition is never erased after its visibility boundary."""
 
     jit_publish = importlib.import_module(
         "vfx_harness.orchestration.jit_materialization.publish"
@@ -5168,30 +5649,34 @@ def test_materialization_publication_rolls_back_absent_jit_head_on_live_input_ra
     plan_pointer = tmp_path / "plans" / "current.json"
     plan_predecessor = plan_pointer.read_bytes()
     jit_pointer = tmp_path / "state" / "jit-layers" / "current.json"
-    real_replace = jit_publish.durable_replace_pointer_json
+    real_commit = jit_publish.commit_prepared_authority_state_transition_locked
 
-    def replace_then_mutate_authored_input(*args, **kwargs):
-        result = real_replace(*args, **kwargs)
+    def commit_then_mutate_authored_input(*args, **kwargs):
+        result = real_commit(*args, **kwargs)
         (tmp_path / "brief.md").write_text(
-            "Changed authored intent during tentative JIT selection.\n",
+            "Changed authored intent after the atomic JIT commit.\n",
             encoding="utf-8",
         )
         return result
 
     monkeypatch.setattr(
         jit_publish,
-        "durable_replace_pointer_json",
-        replace_then_mutate_authored_input,
+        "commit_prepared_authority_state_transition_locked",
+        commit_then_mutate_authored_input,
     )
 
-    with pytest.raises(MaterializationSelectionConflict, match="rolled back"):
+    with pytest.raises(
+        MaterializationSelectionConflict,
+        match="materialization publication selection conflict",
+    ):
         publish_materialization(tmp_path, candidate)
 
     assert plan_pointer.read_bytes() == plan_predecessor
-    assert not jit_pointer.exists()
+    assert jit_pointer.is_file()
+    assert not (tmp_path / "state" / "authority-state" / "pending.json").exists()
 
 
-def test_materialization_publication_rolls_back_on_decision_append_during_replace(
+def test_materialization_publication_reports_decision_race_after_atomic_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5211,10 +5696,10 @@ def test_materialization_publication_rolls_back_on_decision_append_during_replac
     plan_pointer = tmp_path / "plans" / "current.json"
     plan_predecessor = plan_pointer.read_bytes()
     jit_pointer = tmp_path / "state" / "jit-layers" / "current.json"
-    real_replace = jit_publish.durable_replace_pointer_json
+    real_commit = jit_publish.commit_prepared_authority_state_transition_locked
 
-    def replace_then_append_decision(*args, **kwargs):
-        result = real_replace(*args, **kwargs)
+    def commit_then_append_decision(*args, **kwargs):
+        result = real_commit(*args, **kwargs)
         resolutions = tmp_path / "state" / "plan-resolutions.jsonl"
         resolutions.parent.mkdir(parents=True, exist_ok=True)
         with resolutions.open("ab") as handle:
@@ -5223,54 +5708,44 @@ def test_materialization_publication_rolls_back_on_decision_append_during_replac
 
     monkeypatch.setattr(
         jit_publish,
-        "durable_replace_pointer_json",
-        replace_then_append_decision,
+        "commit_prepared_authority_state_transition_locked",
+        commit_then_append_decision,
     )
 
-    with pytest.raises(MaterializationSelectionConflict, match="rolled back"):
+    with pytest.raises(
+        MaterializationSelectionConflict,
+        match="materialization publication selection conflict",
+    ):
         publish_materialization(tmp_path, candidate)
 
     assert plan_pointer.read_bytes() == plan_predecessor
-    assert not jit_pointer.exists()
+    assert jit_pointer.is_file()
+    assert not (tmp_path / "state" / "authority-state" / "pending.json").exists()
 
 
-def test_materialization_revert_restores_exact_jit_predecessor_after_replace_failure(
+def test_selected_revert_preserves_exact_authority_heads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A revert write that fails after rename restores the prior JIT bytes exactly."""
+    """Refusal happens before either live authority pointer can be replaced."""
 
     from vfx_harness.orchestration.jit_materialization import revert_materialization
 
-    jit_publish = importlib.import_module(
-        "vfx_harness.orchestration.jit_materialization.publish"
-    )
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    _candidate(tmp_path)
-    _add_deferred_layer(tmp_path)
-    layout = run_artifacts.create(tmp_path, "jit-revert-postreplace-failure")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
-    candidate = _jit_payload(tmp_path, bundle.content_hash)
-    _passed_layer_one_outcome(tmp_path)
-    _publish_materialization(tmp_path, candidate)
     plan_pointer = tmp_path / "plans" / "current.json"
+    plan_pointer.parent.mkdir(parents=True)
+    plan_pointer.write_bytes(b'{"sentinel":"plan-head"}\n')
     plan_predecessor = plan_pointer.read_bytes()
     jit_pointer = tmp_path / "state" / "jit-layers" / "current.json"
+    jit_pointer.parent.mkdir(parents=True)
+    jit_pointer.write_bytes(b'{"sentinel":"jit-head"}\n')
     jit_predecessor = jit_pointer.read_bytes()
-    real_replace = jit_publish.durable_replace_pointer_json
 
-    def replace_then_fail(*args, **kwargs):
-        real_replace(*args, **kwargs)
-        raise OSError("injected failure after tentative JIT pointer replacement")
-
-    monkeypatch.setattr(
-        jit_publish,
-        "durable_replace_pointer_json",
-        replace_then_fail,
-    )
-
-    with pytest.raises(MaterializationSelectionConflict, match="rolled back"):
-        revert_materialization(tmp_path, "2")
+    with pytest.raises(
+        MaterializationSelectionConflict,
+        match="selected materialization revert is retired",
+    ):
+        revert_materialization(tmp_path, "2", select=True)
 
     assert plan_pointer.read_bytes() == plan_predecessor
     assert jit_pointer.read_bytes() == jit_predecessor
@@ -5290,11 +5765,15 @@ def test_unselected_revert_leaves_live_pointer(tmp_path, monkeypatch) -> None:
     bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
     payload = _jit_payload(tmp_path, bundle.content_hash)
     _passed_layer_one_outcome(tmp_path)
+    preserved_receipt = unit_state.load(tmp_path, "1")["layer_finalization"][
+        "terminal_receipt"
+    ]["receipt_digest"]
     _publish_materialization(tmp_path, payload)
-    # This test exercises overlay selection, not stale predecessor dispatch. Re-seal the
-    # fixture through the producer against the now-selected full view so that boundary is
-    # independently valid before the expected ownership error below.
-    _passed_layer_one_outcome(tmp_path)
+    assert (
+        unit_state.load(tmp_path, "1")["layer_finalization"]["terminal_receipt"]
+        ["receipt_digest"]
+        == preserved_receipt
+    )
 
     jit_publish = importlib.import_module(
         "vfx_harness.orchestration.jit_materialization.publish"
@@ -5361,53 +5840,20 @@ def test_unselected_revert_leaves_live_pointer(tmp_path, monkeypatch) -> None:
     assert after["2"].execution == "ready"
 
 
-def test_unselected_revert_overlay_identity_includes_exact_base_selection(
+def test_selected_revert_names_the_only_legal_replacement_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Semantic A→B→A selection cannot alias two equal-content remat overlays."""
-    from vfx_harness.orchestration.jit_materialization import (
-        OVERLAY_ARTIFACTS,
-        revert_materialization,
-    )
+    """The rejection teaches the gated overlay-to-publication transaction."""
+    from vfx_harness.orchestration.jit_materialization import revert_materialization
 
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    _candidate(tmp_path)
-    _add_deferred_layer(tmp_path)
-    layout = run_artifacts.create(tmp_path, "overlay-base-aba")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
-    candidate_path = _jit_payload(tmp_path, bundle.content_hash)
-    _passed_layer_one_outcome(tmp_path)
+    with pytest.raises(MaterializationSelectionConflict) as exc_info:
+        revert_materialization(tmp_path, "2", select=True)
 
-    # A1: layer 2 is materialized. Its unpublished revert is semantic B, bound to A1.
-    _publish_materialization(tmp_path, candidate_path)
-    _passed_layer_one_outcome(tmp_path)
-    first_overlay = revert_materialization(tmp_path, "2", select=False)
-    assert first_overlay is not None
-    first_base_path = first_overlay / ".authority-base.json"
-    first_base_bytes = first_base_path.read_bytes()
-    first_base = json.loads(first_base_bytes)
-
-    # Select B, then publish the same semantic A content under a later exact head.
-    revert_materialization(tmp_path, "2", select=True)
-    _passed_layer_one_outcome(tmp_path)
-    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
-    candidate["base_selection"] = _base_selection(tmp_path).to_dict()
-    _write(candidate_path, candidate)
-    _publish_materialization(tmp_path, candidate_path)
-
-    second_overlay = revert_materialization(tmp_path, "2", select=False)
-    assert second_overlay is not None
-    second_base = json.loads(
-        (second_overlay / ".authority-base.json").read_text(encoding="utf-8")
-    )
-
-    assert first_overlay != second_overlay
-    assert first_base["base_selection"] != second_base["base_selection"]
-    assert first_base_path.read_bytes() == first_base_bytes
-    assert all(
-        (first_overlay / name).read_bytes() == (second_overlay / name).read_bytes()
-        for name in OVERLAY_ARTIFACTS
+    assert str(exc_info.value) == (
+        "selected materialization revert is retired; prepare and gate a replacement "
+        "with select=False, then publish that candidate atomically"
     )
 
 
@@ -5416,9 +5862,9 @@ def test_unselected_revert_ignores_stale_view_after_republished_bundle(
 ) -> None:
     """A live JIT view belongs to one immutable global generation.
 
-    After global republication its plan revision is stale, so the newly selected sparse
-    bundle is already the effective authority and there is nothing to revert. The stale
-    pointer remains immutable audit state and cannot be mistaken for a current view.
+    Global republication atomically retires the JIT head, so the newly selected sparse
+    bundle is already the effective authority and there is nothing to revert. The prior
+    content-addressed view remains immutable audit state without remaining selected.
     """
     from vfx_harness.orchestration.jit_materialization import revert_materialization
 
@@ -5435,6 +5881,7 @@ def test_unselected_revert_ignores_stale_view_after_republished_bundle(
     old_view = json.loads(before)
     assert old_view["bundle_hash"] == first_bundle.content_hash
     assert old_view["materialized_layers"] == ["1", "2"]
+    old_view_root = (tmp_path / next(iter(old_view["artifacts"].values()))).parent
 
     (tmp_path / "plans" / "global.md").write_text(
         "# republished sparse authority\n", encoding="utf-8"
@@ -5446,7 +5893,8 @@ def test_unselected_revert_ignores_stale_view_after_republished_bundle(
     overlay = revert_materialization(tmp_path, "2", select=False)
 
     assert overlay is None
-    assert pointer.read_bytes() == before
+    assert not pointer.exists()
+    assert old_view_root.is_dir()
     selected = resolve_selected_authority(tmp_path)
     assert selected.assertion.effective_view is not None
     assert selected.assertion.effective_view.source == "bundle"

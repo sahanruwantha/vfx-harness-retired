@@ -15,6 +15,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from threading import local
 from typing import Any, ClassVar
 
 from vfx_harness.domain.authority_head_records import (
@@ -29,6 +30,14 @@ from vfx_harness.orchestration.builder_execution_fence import (
 )
 
 AUTHORITY_SELECTION_LOCK = Path("state/authority-selection/selection.lock")
+_SELECTED_AUTHORITY_POINTERS = frozenset(
+    {
+        Path("plans/current.json"),
+        Path("state/jit-layers/current.json"),
+        Path("state/authority-state/current.json"),
+        Path("state/authority-state/pending.json"),
+    }
+)
 _DIRECTORY_OPEN_FLAGS = (
     os.O_RDONLY
     | getattr(os, "O_CLOEXEC", 0)
@@ -53,6 +62,7 @@ _TEMP_OPEN_FLAGS = (
     | getattr(os, "O_CLOEXEC", 0)
     | getattr(os, "O_NOFOLLOW", 0)
 )
+_THREAD_LOCKS = local()
 
 
 class AuthoritySelectionConflict(ValueError):
@@ -97,6 +107,68 @@ class AuthoritySelectionToken:
             jit_revision=token.jit_revision,
             jit_pointer_sha256=token.jit_pointer_sha256,
         )
+
+
+@dataclass(slots=True)
+class _HeldAuthoritySelectionLock:
+    shot: Path
+    lock_path: Path
+    parent_descriptor: int
+    lock_descriptor: int
+    depth: int
+
+
+def _held_selection_locks() -> dict[str, _HeldAuthoritySelectionLock]:
+    """Return this thread's re-entrant selection locks by canonical path."""
+
+    held = getattr(_THREAD_LOCKS, "held", None)
+    if held is None:
+        held = {}
+        _THREAD_LOCKS.held = held
+    return held
+
+
+def _require_selection_lock_current(
+    binding: _HeldAuthoritySelectionLock,
+    phase: str,
+) -> None:
+    """Require the live namespace to retain the held parent and lock inode."""
+
+    current_parent: int | None = None
+    try:
+        current_parent = _open_directory_parts(
+            binding.shot,
+            AUTHORITY_SELECTION_LOCK.parts[:-1],
+            create=False,
+        )
+        assert current_parent is not None
+        current_parent_stat = os.fstat(current_parent)
+        held_parent_stat = os.fstat(binding.parent_descriptor)
+        current_lock_stat = os.stat(
+            AUTHORITY_SELECTION_LOCK.name,
+            dir_fd=current_parent,
+            follow_symlinks=False,
+        )
+        held_lock_stat = os.fstat(binding.lock_descriptor)
+        if (
+            not stat.S_ISREG(current_lock_stat.st_mode)
+            or (current_parent_stat.st_dev, current_parent_stat.st_ino)
+            != (held_parent_stat.st_dev, held_parent_stat.st_ino)
+            or (current_lock_stat.st_dev, current_lock_stat.st_ino)
+            != (held_lock_stat.st_dev, held_lock_stat.st_ino)
+        ):
+            raise AuthoritySelectionConflict(
+                f"authority selection lock path changed {phase}"
+            )
+    except AuthoritySelectionConflict:
+        raise
+    except OSError as exc:
+        raise AuthoritySelectionConflict(
+            f"authority selection lock path changed {phase}"
+        ) from exc
+    finally:
+        if current_parent is not None:
+            os.close(current_parent)
 
 
 def pointer_sha256(pointer_bytes: bytes | None) -> str | None:
@@ -423,6 +495,25 @@ def authority_selection_lock(
     if not isinstance(exclusive, bool):
         raise AuthoritySelectionConflict("authority selection lock mode must be boolean")
     shot = _shot_path(shot_folder)
+    lock_path = shot / AUTHORITY_SELECTION_LOCK
+    lock_key = str(lock_path)
+    held = _held_selection_locks()
+    binding = held.get(lock_key)
+    if binding is not None:
+        # Both public modes intentionally use one kernel-exclusive lock below.  A
+        # nested guard therefore already owns the strongest lock and must reuse that
+        # open-file description; opening the same inode again can self-deadlock under
+        # flock even within one process.
+        binding.depth += 1
+        try:
+            _require_selection_lock_current(binding, "during nested lock entry")
+            yield lock_path
+        finally:
+            try:
+                _require_selection_lock_current(binding, "during nested lock exit")
+            finally:
+                binding.depth -= 1
+        return
     lock_parent = _open_directory_parts(
         shot,
         AUTHORITY_SELECTION_LOCK.parts[:-1],
@@ -462,33 +553,22 @@ def authority_selection_lock(
         locked = True
         try:
             with stable_live_path_identity(shot / AUTHORITY_SELECTION_LOCK):
-                current_parent = _open_directory_parts(
-                    shot,
-                    AUTHORITY_SELECTION_LOCK.parts[:-1],
-                    create=False,
+                binding = _HeldAuthoritySelectionLock(
+                    shot=shot,
+                    lock_path=lock_path,
+                    parent_descriptor=lock_parent,
+                    lock_descriptor=descriptor,
+                    depth=1,
                 )
-                assert current_parent is not None
+                _require_selection_lock_current(binding, "during lock acquisition")
+                held[lock_key] = binding
                 try:
-                    current_parent_stat = os.fstat(current_parent)
-                    held_parent_stat = os.fstat(lock_parent)
-                    current_lock_stat = os.stat(
-                        AUTHORITY_SELECTION_LOCK.name,
-                        dir_fd=current_parent,
-                        follow_symlinks=False,
-                    )
-                    held_lock_stat = os.fstat(descriptor)
-                    if (
-                        (current_parent_stat.st_dev, current_parent_stat.st_ino)
-                        != (held_parent_stat.st_dev, held_parent_stat.st_ino)
-                        or (current_lock_stat.st_dev, current_lock_stat.st_ino)
-                        != (held_lock_stat.st_dev, held_lock_stat.st_ino)
-                    ):
-                        raise AuthoritySelectionConflict(
-                            "authority selection lock path changed during acquisition"
-                        )
+                    yield lock_path
                 finally:
-                    os.close(current_parent)
-                yield shot / AUTHORITY_SELECTION_LOCK
+                    try:
+                        _require_selection_lock_current(binding, "during lock exit")
+                    finally:
+                        held.pop(lock_key, None)
         except BuilderExecutionFenceError as exc:
             raise AuthoritySelectionConflict(str(exc)) from exc
     finally:
@@ -707,6 +787,11 @@ def durable_replace_file_bytes(
     if relative == AUTHORITY_SELECTION_LOCK:
         raise AuthoritySelectionConflict(
             "the permanent authority selection lock is not a replaceable file"
+        )
+    if relative in _SELECTED_AUTHORITY_POINTERS:
+        raise AuthoritySelectionConflict(
+            "selected authority heads require the authority-pointer transaction: "
+            f"{relative}"
         )
     if relative.parent != Path("."):
         durably_ensure_real_directory(shot, relative.parent)

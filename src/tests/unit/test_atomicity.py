@@ -9,9 +9,22 @@ from pathlib import Path
 import pytest
 
 from tests.unit.test_plan_improvements import _layer_doc, _write
-from tests.unit.test_plan_records import _add_deferred_layer, _candidate, _jit_payload
+from tests.unit.test_plan_records import (
+    _add_deferred_layer,
+    _candidate,
+    _jit_payload,
+)
 from tests.unit.test_plan_records import _write as _write_plan
-from tests.unit_attempt_fixtures import pass_unit
+from tests.unit.test_plan_records import (
+    publish_current as _publish_fixture_current,
+)
+from tests.unit_attempt_fixtures import (
+    fixture_completion_authorization,
+    fixture_live_completion_authority,
+    pass_unit,
+    synthetic_completion_authorization,
+    synthetic_completion_receipt,
+)
 from vfx_harness.agents.unit_scope import (
     compile_predecessor_interface,
     compile_scope_with_predecessors,
@@ -52,8 +65,11 @@ from vfx_harness.domain.work_units import (
 )
 from vfx_harness.evaluation.plan_gate import _check_evidence_coherence
 from vfx_harness.evidence.scene_checks import SUPPORTED_KINDS
+from vfx_harness.orchestration.unit_completion_authorizations import (
+    UnitCompletionAuthorizationError,
+)
 from vfx_harness.orchestration.unit_state import (
-    digest_matched_passed,
+    authorized_passed_unit_ids,
     initialize,
     ready_from_durable_state,
     replan_effects,
@@ -1091,8 +1107,17 @@ def test_stale_producer_digest_omits_publish_interfaces() -> None:
         producer_digest="producer-digest",
         durable_hash="producer-digest",
         durable_status="passed",
+        completion_authorized=True,
     )
     assert live["publish_interfaces"]
+    unauthorized = compile_predecessor_interface(
+        card,
+        producer_digest="producer-digest",
+        durable_hash="producer-digest",
+        durable_status="passed",
+    )
+    assert unauthorized["publish_interfaces"] == []
+    assert unauthorized["dependency_status"] == "stale"
     stale = compile_predecessor_interface(
         card,
         producer_digest="producer-digest",
@@ -1141,17 +1166,25 @@ def test_assembly_is_unready_until_producer_digest_and_interface_match(tmp_path:
     pass_unit(tmp_path, "3", blade, (blade, assembly), plan_hash=plan_hash)
     state = load(tmp_path, "3")
     passed = {uid for uid, row in state["units"].items() if row["status"] == "passed"}
-    sealed = digest_matched_passed(state, (blade, assembly))
+    authorized_receipts = fixture_completion_authorization(tmp_path, "3")
+    sealed = authorized_passed_unit_ids(
+        state,
+        (blade, assembly),
+        completion_authorization=authorized_receipts,
+    )
     ready = ready_units((blade, assembly), passed, sealed_producers=sealed)
     assert [unit.id for unit in ready] == ["iris_assembly"]
 
     state["units"][blade.id]["unit_hash"] = "0" * 64
-    stale_ready = ready_units(
-        (blade, assembly),
-        passed,
-        sealed_producers=digest_matched_passed(state, (blade, assembly)),
-    )
-    assert stale_ready == ()
+    with pytest.raises(
+        UnitCompletionAuthorizationError,
+        match="state changed",
+    ):
+        authorized_passed_unit_ids(
+            state,
+            (blade, assembly),
+            completion_authorization=authorized_receipts,
+        )
     assert unit_digest(blade) != "0" * 64
 
     derived_only = _unit(
@@ -1206,7 +1239,9 @@ def test_assembly_is_unready_until_producer_digest_and_interface_match(tmp_path:
     ],
 )
 def test_ready_query_refreshes_state_after_producer_passes(
-    tmp_path: Path, producer_id: str, successor_id: str
+    tmp_path: Path,
+    producer_id: str,
+    successor_id: str,
 ) -> None:
     """A scheduling decision may not reuse the snapshot from before a unit ran."""
     producer = _unit(
@@ -1233,13 +1268,20 @@ def test_ready_query_refreshes_state_after_producer_passes(
         plan_hash=plan_hash,
     )
 
-    assert digest_matched_passed(stale, (producer, successor)) == set()
-    ready = ready_from_durable_state(
-        tmp_path,
-        "1",
+    assert authorized_passed_unit_ids(
+        stale,
         (producer, successor),
-        eligible_passed={producer_id},
-    )
+        completion_authorization=None,
+    ) == set()
+    authorization = fixture_completion_authorization(tmp_path, "1")
+    with fixture_live_completion_authority(authorization):
+        ready = ready_from_durable_state(
+            tmp_path,
+            "1",
+            (producer, successor),
+            eligible_passed={producer_id},
+            completion_authorization=authorization,
+        )
     assert [unit.id for unit in ready] == [successor_id]
 
 
@@ -1457,17 +1499,35 @@ def test_builder_card_includes_authored_interfaces_digest_and_predecessors() -> 
         },
         _count_row("assembly-count", ["iris.assembly"]),
     ]
+    receipt = synthetic_completion_receipt(
+        "3",
+        blade.id,
+        {("scene_contract", "blade-mesh")},
+        unit_generation_digest=unit_digest(blade),
+    )
+    durable_state = {
+        "digest_schema": 4,
+        "layer": "3",
+        "plan_hash": receipt.claim.plan_hash,
+        "units": {
+            blade.id: {
+                "status": "passed",
+                "unit_hash": unit_digest(blade),
+                "completion_receipt": receipt.as_dict(),
+            },
+            assembly.id: {
+                "status": "pending",
+                "unit_hash": unit_digest(assembly),
+            },
+        },
+    }
     card = compile_scope_with_predecessors(
         unit=assembly,
         layer_id="3",
         contracts=rows,
         units=(blade, assembly),
-        durable_state={
-            "units": {
-                blade.id: {"status": "passed", "unit_hash": unit_digest(blade)},
-                assembly.id: {"status": "pending", "unit_hash": unit_digest(assembly)},
-            }
-        },
+        durable_state=durable_state,
+        completion_authorization=synthetic_completion_authorization(durable_state),
         helpers=(),
     )
     assert card["producer_unit_digest"] == unit_digest(assembly)
@@ -1512,16 +1572,31 @@ def test_builder_card_exposes_only_exact_consumed_interfaces() -> None:
         _count_row("blade-mesh", ["iris.blade_master"], kind="mesh_vertex_count"),
         _count_row("assembly-count", ["iris.assembly"]),
     ]
+    receipt = synthetic_completion_receipt(
+        "3",
+        blade.id,
+        {("scene_contract", "blade-mesh")},
+        unit_generation_digest=unit_digest(blade),
+    )
+    durable_state = {
+        "digest_schema": 4,
+        "layer": "3",
+        "plan_hash": receipt.claim.plan_hash,
+        "units": {
+            blade.id: {
+                "status": "passed",
+                "unit_hash": unit_digest(blade),
+                "completion_receipt": receipt.as_dict(),
+            },
+        },
+    }
     card = compile_scope_with_predecessors(
         unit=assembly,
         layer_id="3",
         contracts=rows,
         units=(blade, assembly),
-        durable_state={
-            "units": {
-                blade.id: {"status": "passed", "unit_hash": unit_digest(blade)},
-            }
-        },
+        durable_state=durable_state,
+        completion_authorization=synthetic_completion_authorization(durable_state),
         helpers=(),
     )
     expected = [("iris.blade.instance_interface", "instance_source")]
@@ -1772,12 +1847,14 @@ def test_materialization_refuses_mixed_clusters_and_keeps_single_cluster(
 ) -> None:
     from vfx_harness.observability import run_artifacts
     from vfx_harness.orchestration.jit_materialization import inspect_materialization
-    from vfx_harness.orchestration.plan_authority import publish_current
-
     _candidate(tmp_path)
     _add_deferred_layer(tmp_path)
     layout = run_artifacts.create(tmp_path, "atomicity")
-    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    bundle = _publish_fixture_current(
+        tmp_path,
+        layout,
+        outcome="clean_with_deferred",
+    )
     payload = _jit_payload(tmp_path, bundle.content_hash)
     document = json.loads(payload.read_text(encoding="utf-8"))
     polish = document["layer"]["stages"][0]

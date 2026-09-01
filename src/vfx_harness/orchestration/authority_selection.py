@@ -17,6 +17,15 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from vfx_harness.domain.authority_head_records import (
+    OVERLAY_ARTIFACTS,
+    JitViewPointer,
+    JitViewPointerError,
+    canonical_view_hash,
+    materialized_layers_from_document,
+    parse_jit_view_pointer,
+    require_materialized_layers_match,
+)
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_transaction_state import (
     SelectedAuthorityAssertionV2,
@@ -33,15 +42,6 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
     AuthoritySelectionToken,
     authority_selection_lock,
-)
-from vfx_harness.orchestration.jit_materialization.schema import OVERLAY_ARTIFACTS
-from vfx_harness.orchestration.jit_materialization.view_pointer import (
-    JitViewPointer,
-    JitViewPointerError,
-    canonical_view_hash,
-    materialized_layers_from_document,
-    parse_jit_view_pointer,
-    require_materialized_layers_match,
 )
 
 _BUNDLE_MANIFEST_FIELDS = frozenset(

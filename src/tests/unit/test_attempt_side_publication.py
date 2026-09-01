@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.architecture.test_staged_architecture import _unit
+from tests.unit_attempt_fixtures import legacy_apply_replan
 from vfx_harness.agents.builder.attempt_guard import (
     UnitAttemptAuthorityLost,
     UnitAttemptGuard,
@@ -41,6 +42,7 @@ def _building_guard(tmp_path: Path):
         units,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="side-file-race",
         selection_token=token,
         reason="fixture planning",
@@ -53,6 +55,7 @@ def _building_guard(tmp_path: Path):
         planning,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="side-file-race",
         selection_token=token,
         reason="fixture building",
@@ -358,7 +361,7 @@ def test_worklist_preparation_does_not_block_replan_and_stale_commit_is_discarde
 
     def replan() -> None:
         try:
-            unit_state.apply_replan(
+            legacy_apply_replan(
                 tmp_path,
                 "1",
                 units,

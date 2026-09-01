@@ -14,9 +14,35 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from vfx_harness.domain.layer_finalizations import LayerFinalizationReceipt
+from vfx_harness.domain.layer_outcome_projections import (
+    OUTCOME_RECEIPT_BOUND_FIELDS,
+    OUTCOME_SCHEMA,
+    LayerOutcomeProjection,
+)
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 
-OUTCOME_SCHEMA = 2
+_OUTCOME_FIELDS = frozenset(
+    {
+        "schema",
+        "at",
+        "layer",
+        "title",
+        "script",
+        "status",
+        "run_id",
+        "attempt",
+        "best",
+        "decided_by",
+        "authoritative_total",
+        "authoritative_passed",
+        "failed_contracts",
+        "interfaces",
+        "revalidation_manifest",
+        "canonical",
+        "finalization_receipt",
+    }
+)
 
 _EVIDENCE_FIELDS = (
     "id",
@@ -49,11 +75,12 @@ class LayerOutcomeContractError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SealedLayerOutcome:
-    """The dependency-facing projection of one schema-2 layer outcome."""
+    """The dependency-facing projection of one receipt-bound layer outcome."""
 
     layer_id: str
     status: str
     script: str | None
+    receipt_digest: str
     evidence: tuple[dict[str, Any], ...]
 
     @property
@@ -131,6 +158,14 @@ def parse_sealed_layer_outcome(
             "schema",
             f"sealed layer outcome schema must be {OUTCOME_SCHEMA}",
         )
+    found = set(value)
+    if found != _OUTCOME_FIELDS:
+        raise LayerOutcomeContractError(
+            "shape",
+            "sealed layer outcome fields mismatch; "
+            f"missing={sorted(_OUTCOME_FIELDS - found)}; "
+            f"unexpected={sorted(found - _OUTCOME_FIELDS)}",
+        )
     layer_id = value.get("layer")
     if not isinstance(layer_id, str) or layer_id != expected_layer_id:
         raise LayerOutcomeContractError(
@@ -151,6 +186,70 @@ def parse_sealed_layer_outcome(
             "script",
             "sealed layer outcome script must be a non-empty trimmed string when present",
         )
+    try:
+        receipt = LayerFinalizationReceipt.parse(
+            value.get("finalization_receipt"),
+            "sealed layer outcome.finalization_receipt",
+        )
+    except ValueError as exc:
+        raise LayerOutcomeContractError(
+            "finalization_receipt",
+            f"sealed layer outcome has an invalid finalization receipt: {exc}",
+        ) from exc
+    if receipt.claim.layer_id != layer_id:
+        raise LayerOutcomeContractError(
+            "finalization_layer",
+            "sealed layer outcome layer does not match its finalization receipt",
+        )
+    if receipt.final_status != status:
+        raise LayerOutcomeContractError(
+            "finalization_status",
+            "sealed layer outcome status does not match its finalization receipt",
+        )
+    if receipt.layer_script_path != script:
+        raise LayerOutcomeContractError(
+            "finalization_script",
+            "sealed layer outcome script does not match its finalization receipt",
+        )
+    if value.get("run_id") != receipt.claim.run_id:
+        raise LayerOutcomeContractError(
+            "finalization_run",
+            "sealed layer outcome run does not match its finalization receipt",
+        )
+    if value.get("attempt") != receipt.claim.attempt_revision:
+        raise LayerOutcomeContractError(
+            "finalization_attempt",
+            "sealed layer outcome attempt does not match its finalization receipt",
+        )
+    if value.get("at") != receipt.completed_at:
+        raise LayerOutcomeContractError(
+            "finalization_at",
+            "sealed layer outcome audit time does not match its finalization receipt",
+        )
+    try:
+        proposed = LayerOutcomeProjection.parse(
+            receipt.projection.get("outcome"),
+            claim=receipt.claim,
+            layer_script_path=receipt.layer_script_path,
+            final_status=receipt.final_status,
+            best=receipt.projection.get("best"),
+            receipt_canonical=receipt.canonical,
+            blender_version=str(receipt.projection.get("blender_version")),
+            where="sealed layer outcome receipt-bound projection",
+        )
+    except ValueError as exc:
+        raise LayerOutcomeContractError(
+            "finalization_projection",
+            f"sealed layer outcome has an invalid receipt-bound projection: {exc}",
+        ) from exc
+    expected_record = proposed.as_record()
+    for field in OUTCOME_RECEIPT_BOUND_FIELDS:
+        if value.get(field) != expected_record[field]:
+            raise LayerOutcomeContractError(
+                f"finalization_{field}",
+                f"sealed layer outcome {field} does not match its receipt-bound "
+                "proposed projection",
+            )
 
     interface_evidence: list[dict[str, Any]] = []
     for index, row in enumerate(_rows(value.get("interfaces"), "outcome.interfaces")):
@@ -239,5 +338,6 @@ def parse_sealed_layer_outcome(
         layer_id=layer_id,
         status=status,
         script=script,
+        receipt_digest=receipt.receipt_digest,
         evidence=tuple(unique[digest] for digest in sorted(unique)),
     )

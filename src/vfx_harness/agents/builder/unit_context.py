@@ -31,7 +31,13 @@ from vfx_harness.evidence.scene_checks import (
     load_rows,
 )
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
 from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
+from vfx_harness.orchestration.unit_completion_state import (
+    authorize_completed_units_for_layer,
+)
 from vfx_harness.orchestration.unit_state import load as load_unit_state_for_scope
 from vfx_harness.orchestration.unit_state import unit_digest
 
@@ -187,12 +193,25 @@ def compile_unit_build_context(
         durable_state = load_unit_state_for_scope(shot.folder, layer_id)
     except ValueError:
         durable_state = {}
+    layer_digest = selected_layer_capsule_digest(
+        shot.folder,
+        layer_id,
+        selected_authority,
+    )
+    completion_authorization = authorize_completed_units_for_layer(
+        shot.folder,
+        layer_id,
+        selected_units,
+        expected_plan_hash=layer_digest,
+        selected_authority=selected_authority,
+    )
     scope_card = compile_unit_scope_for_shot(
         shot,
         active_unit,
         layer_id,
         units=selected_units,
         durable_state=durable_state,
+        completion_authorization=completion_authorization,
         selected_authority=selected_authority,
     )
     scope_card["fault_owner_options"] = fault_owner_options

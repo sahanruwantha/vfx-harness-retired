@@ -151,8 +151,27 @@ def _write_plan_workspace(root: Path) -> None:
     (root / "refs" / "hero.txt").write_text("original ref\n", encoding="utf-8")
     (root / "plans").mkdir()
     (root / "plans" / "global.md").write_text("# global plan\n", encoding="utf-8")
+    layer = {
+        "id": "camera",
+        "script": "build/camera.py",
+        "title": "Camera",
+        "primary_judge": 1,
+        "judge": [{"frame": 1, "ref": "refs/hero.txt"}],
+        "owns": ["camera"],
+        "evidence_domains": ["scene"],
+        "reads": "Fixture camera authority",
+        "execution": "jit_deferred",
+        "stages": [],
+        "jit": {
+            "depends_on_layers": [],
+            "required_outcomes": [],
+            "provides": {"camera": ["camera.rig"]},
+            "reserved_roles": ["camera.rig"],
+            "owned_requirements": [],
+        },
+    }
     documents: dict[str, object] = {
-        "layers.json": {"schema": 5, "layers": []},
+        "layers.json": {"schema": 5, "layers": [layer]},
         "acceptance.json": [],
         "critic_axes.json": [],
         "checks.json": {"schema": 2, "checks": []},
@@ -185,7 +204,7 @@ def test_consumer_view_copies_and_binds_exact_planning_inputs(tmp_path: Path) ->
     (tmp_path / "state" / "plan-resolutions.jsonl").write_bytes(resolutions)
     (tmp_path / "state" / "work-units").mkdir()
     planning = run_artifacts.create(tmp_path, "plan")
-    plan_authority.publish_current(tmp_path, planning, outcome="clean")
+    plan_authority.publish_current(tmp_path, planning, outcome="clean_with_deferred")
     consumer = run_artifacts.create(tmp_path, "consumer")
 
     view = plan_authority.prepare_consumer_view(consumer)
@@ -234,7 +253,7 @@ def test_consumer_view_refuses_authored_capture_that_no_longer_matches_selected_
 ) -> None:
     _write_plan_workspace(tmp_path)
     planning = run_artifacts.create(tmp_path, "plan")
-    plan_authority.publish_current(tmp_path, planning, outcome="clean")
+    plan_authority.publish_current(tmp_path, planning, outcome="clean_with_deferred")
     selected = authority_selection.resolve_selected_authority(tmp_path)
     consumer = run_artifacts.create(tmp_path, "consumer")
     (tmp_path / "brief.md").write_text("# changed brief\n", encoding="utf-8")

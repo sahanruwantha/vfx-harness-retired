@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from vfx_harness.agents.builder.prior import _ARTIFACT_EVALUATION_BARRIER
 from vfx_harness.blender.artifact_execution import (
     ArtifactExecutionPolicyError,
     artifact_builtins,
@@ -242,6 +243,51 @@ operators.primitive_cube_add()
 RESULT = j.dumps({"ok": True})
 """
     )
+
+
+def test_artifact_policy_accepts_exact_current_frame_reevaluation_barrier() -> None:
+    validate_artifact_source(_ARTIFACT_EVALUATION_BARRIER)
+    validate_artifact_source(
+        "import bpy\n"
+        "bpy.context.scene.frame_set(int(bpy.context.scene.frame_current))\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "import bpy\n"
+            "scene = bpy.context.scene\n"
+            "escaped = (scene.frame_current,)\n"
+        ),
+        (
+            "import bpy\n"
+            "scene = bpy.context.scene\n"
+            "escaped = int(scene.frame_current)\n"
+        ),
+        (
+            "import bpy\n"
+            "scene = bpy.context.scene\n"
+            "scene.frame_set(int(scene.frame_current).bit_length())\n"
+        ),
+        (
+            "import bpy\n"
+            "scene = bpy.context.scene\n"
+            "scene.frame_set(int(scene.frame_end))\n"
+        ),
+        (
+            "import bpy\n"
+            "scene = bpy.context.scene\n"
+            "print(int(scene.frame_current))\n"
+        ),
+    ],
+)
+def test_current_frame_exception_cannot_escape_exact_reevaluation_call(
+    source: str,
+) -> None:
+    with pytest.raises(ArtifactExecutionPolicyError, match="capability cannot escape"):
+        validate_artifact_source(source)
 
 
 def test_rejected_artifact_cannot_overwrite_authoritative_script(tmp_path: Path) -> None:

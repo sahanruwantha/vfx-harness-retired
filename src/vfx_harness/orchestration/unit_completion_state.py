@@ -7,11 +7,13 @@ from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vfx_harness.domain.authority_head_records import (
     AuthoritySelectionTokenProjection,
     parse_authority_selection_token,
 )
+from vfx_harness.domain.authority_state_records import LayerAuthorityBinding
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest, require_digest
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.domain.work_units import WorkUnit, canonical_unit_script_path, validate_unit_dag
@@ -21,6 +23,10 @@ from vfx_harness.infrastructure.trusted_files import (
     require_trusted_file_unchanged,
 )
 from vfx_harness.orchestration import plan_bundle_integrity, unit_state
+from vfx_harness.orchestration.authority_receipt_lineage import (
+    UnitCompletionLineageAuthorization,
+    require_preserved_unit_completion_authorization,
+)
 from vfx_harness.orchestration.authority_selection_heads import (
     read_authority_selection_heads,
 )
@@ -28,6 +34,14 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
     authority_selection_lock,
     require_matching_authority_selection_token,
+)
+from vfx_harness.orchestration.authority_state_context import (
+    ResolvedAuthorityStateContext,
+    resolve_current_authority_state,
+)
+from vfx_harness.orchestration.unit_completion_authorizations import (
+    AuthorizedUnitCompletionSet,
+    completion_projection_digest,
 )
 from vfx_harness.orchestration.unit_evaluation_receipts import (
     StoredUnitEvaluationReceipt,
@@ -38,6 +52,11 @@ from vfx_harness.orchestration.unit_state_lock import (
     STATE_DIR,
     unit_state_lock,
 )
+
+if TYPE_CHECKING:
+    from vfx_harness.orchestration.authority_selection import (
+        ResolvedSelectedAuthority,
+    )
 
 
 class UnitCompletionConflict(ValueError):
@@ -73,6 +92,51 @@ def _selection_projection(
         selection_token.to_dict(),
         "work-unit completion authority selection token",
     )
+
+
+def _require_coordinator_layer_binding(
+    context: ResolvedAuthorityStateContext,
+    *,
+    layer_id: str,
+    units: tuple[WorkUnit, ...],
+    expected_plan_hash: str,
+    selection_token: AuthoritySelectionTokenProjection,
+) -> LayerAuthorityBinding:
+    """Close mutable state use on the immutable coordinator generation baseline.
+
+    Ordinary attempts and completions legitimately change the live state bytes after
+    a head is committed, so whole-state SHA equality would reject valid progress.
+    Layer/unit generation identity cannot change outside a new authority-state head.
+    """
+
+    images = {
+        image.layer_id: image for image in context.commit.installed_states
+    }
+    if len(images) != len(context.commit.installed_states):
+        raise UnitCompletionConflict(
+            "current coordinator contains duplicate layer-state bindings"
+        )
+    image = images.get(str(layer_id))
+    if image is None:
+        raise UnitCompletionConflict(
+            f"current coordinator has no state binding for layer {layer_id!r}"
+        )
+    binding = image.binding
+    expected_unit_ids = {unit.id for unit in units}
+    observed_unit_ids = {unit.unit_id for unit in binding.units}
+    if (
+        binding.transition_revision != context.head.revision
+        or binding.transition_proposal_digest != context.proposal.digest
+        or binding.selection_token != selection_token
+        or binding.layer_id != str(layer_id)
+        or binding.layer_generation_digest != expected_plan_hash
+        or observed_unit_ids != expected_unit_ids
+    ):
+        raise UnitCompletionConflict(
+            "work-unit completion request does not match the current coordinator "
+            f"layer/unit generation baseline for layer {layer_id!r}"
+        )
+    return binding
 
 
 def _prepare_completion_sources(
@@ -182,6 +246,7 @@ def require_completed_unit_receipt_in_state(
     *,
     expected_plan_hash: str,
     selection_token: AuthoritySelectionToken,
+    lineage_authorization: UnitCompletionLineageAuthorization | None = None,
 ) -> UnitCompletionReceipt:
     """Validate an exact receipt while the caller owns selection/state locks."""
 
@@ -221,12 +286,40 @@ def require_completed_unit_receipt_in_state(
         current.claim.layer_id != str(layer_id)
         or current.claim.unit_id != unit_id
         or current.claim.unit_digest != unit_state.unit_digest(unit)
-        or current.claim.plan_hash != expected_plan_hash
-        or current.claim.selection_token != projection
     ):
         raise UnitCompletionConflict(
-            "work-unit completion receipt belongs to another unit or authority selection"
+            "work-unit completion receipt belongs to another unit identity"
         )
+    if current.claim.selection_token == projection:
+        if lineage_authorization is not None:
+            raise UnitCompletionConflict(
+                "current-selection unit receipt must not carry lineage adoption"
+            )
+        if current.claim.plan_hash != expected_plan_hash:
+            raise UnitCompletionConflict(
+                "current-selection unit receipt belongs to another layer capsule"
+            )
+    else:
+        authorization = lineage_authorization
+        if (
+            authorization is None
+            or authorization.layer_id != str(layer_id)
+            or authorization.unit_id != unit_id
+            or authorization.receipt_digest != current.receipt_digest
+            or authorization.unit_digest != current.claim.unit_digest
+            or authorization.execution_selection_token
+            != current.claim.selection_token
+            or authorization.current_selection_token != projection
+            or authorization.execution_layer_generation_digest
+            != current.claim.plan_hash
+            or authorization.current_layer_generation_digest
+            != expected_plan_hash
+            or not authorization.traversed_head_digests
+        ):
+            raise UnitCompletionConflict(
+                "historical unit receipt lacks exact contiguous authority-state "
+                "lineage authorization"
+            )
     expected_script_path = canonical_unit_script_path(str(layer_id), unit_id)
     if current.script_path != expected_script_path:
         raise UnitCompletionConflict(
@@ -252,6 +345,7 @@ def completed_unit_attempt_guard(
     *,
     expected_plan_hash: str,
     selection_token: AuthoritySelectionToken,
+    lineage_authorization: UnitCompletionLineageAuthorization | None = None,
 ) -> Iterator[UnitCompletionReceipt]:
     """Hold selection-SH then state-SH around one receipt-owned publication."""
 
@@ -260,6 +354,15 @@ def completed_unit_attempt_guard(
     with authority_selection_lock(folder, exclusive=False):
         observed = read_authority_selection_heads(folder).token
         require_matching_authority_selection_token(selection_token, observed)
+        if lineage_authorization is not None:
+            context = resolve_current_authority_state(folder)
+            if (
+                context is None
+                or context.head_ref != lineage_authorization.current_head_ref
+            ):
+                raise UnitCompletionConflict(
+                    "authority-state unit receipt lineage changed before use"
+                )
         with unit_state_lock(folder, layer_id, exclusive=False):
             value = unit_state.load(folder, layer_id)
             if not value:
@@ -272,6 +375,7 @@ def completed_unit_attempt_guard(
                 receipt,
                 expected_plan_hash=expected_plan_hash,
                 selection_token=selection_token,
+                lineage_authorization=lineage_authorization,
             )
             if current != prepared.receipt:
                 raise UnitCompletionConflict(
@@ -288,6 +392,147 @@ def completed_unit_attempt_guard(
                 claim=current.claim,
             )
             yield current
+
+
+def authorize_completed_units_for_layer(
+    folder: str | Path,
+    layer_id: str,
+    units: tuple[WorkUnit, ...],
+    *,
+    expected_plan_hash: str,
+    selected_authority: ResolvedSelectedAuthority,
+) -> AuthorizedUnitCompletionSet:
+    """Return exact source- and coordinator-authorized passed receipts for a layer.
+
+    This is the shared scheduling boundary for current and historically preserved
+    unit completions.  It never derives authority from a bare ``passed`` lifecycle bit.
+    """
+
+    expected_plan_hash = require_digest(
+        expected_plan_hash,
+        "authorized completion receipt layer capsule",
+    )
+    projection = _selection_projection(selected_authority.selection_token)
+    with authority_selection_lock(folder, exclusive=False):
+        observed = read_authority_selection_heads(folder).token
+        require_matching_authority_selection_token(
+            selected_authority.selection_token,
+            observed,
+        )
+        context = resolve_current_authority_state(folder)
+        if context is None or context.head.selection_token != projection:
+            raise UnitCompletionConflict(
+                "selected authority has no exact current coordinator head"
+            )
+        coordinator_binding = _require_coordinator_layer_binding(
+            context,
+            layer_id=str(layer_id),
+            units=units,
+            expected_plan_hash=expected_plan_hash,
+            selection_token=projection,
+        )
+        authority_state_head_ref = context.head_ref
+    value = unit_state.load(folder, str(layer_id))
+    if not value:
+        raise UnitCompletionConflict("work-unit state is not initialized")
+    unit_state.validate_current(value, str(layer_id), units)
+    if value.get("plan_hash") != expected_plan_hash:
+        raise UnitCompletionConflict(
+            "work-unit state does not bind the selected semantic layer capsule"
+        )
+    receipts: dict[str, str] = {}
+    for unit in units:
+        slot = value["units"][unit.id]
+        if not isinstance(slot, Mapping) or slot.get("status") != "passed":
+            continue
+        try:
+            receipt = UnitCompletionReceipt.parse(
+                slot.get("completion_receipt"),
+                f"work-unit state {layer_id}.{unit.id}.completion_receipt",
+            )
+        except ValueError as exc:
+            raise UnitCompletionConflict(str(exc)) from exc
+        lineage = (
+            None
+            if receipt.claim.selection_token == projection
+            else require_preserved_unit_completion_authorization(
+                folder,
+                receipt,
+                selected_authority,
+            )
+        )
+        with completed_unit_attempt_guard(
+            folder,
+            str(layer_id),
+            unit.id,
+            units,
+            receipt,
+            expected_plan_hash=expected_plan_hash,
+            selection_token=selected_authority.selection_token,
+            lineage_authorization=lineage,
+        ) as current:
+            receipts[unit.id] = current.receipt_digest
+    with authority_selection_lock(folder, exclusive=False):
+        observed = read_authority_selection_heads(folder).token
+        require_matching_authority_selection_token(
+            selected_authority.selection_token,
+            observed,
+        )
+        context = resolve_current_authority_state(folder)
+        if context is None or context.head_ref != authority_state_head_ref:
+            raise UnitCompletionConflict(
+                "authority-state head changed while unit receipts were authorized"
+            )
+        if _require_coordinator_layer_binding(
+            context,
+            layer_id=str(layer_id),
+            units=units,
+            expected_plan_hash=expected_plan_hash,
+            selection_token=projection,
+        ) != coordinator_binding:
+            raise UnitCompletionConflict(
+                "coordinator layer binding changed while unit receipts were authorized"
+            )
+        with unit_state_lock(folder, str(layer_id), exclusive=False):
+            current_state = unit_state.load(folder, str(layer_id))
+            if not current_state:
+                raise UnitCompletionConflict(
+                    "work-unit state disappeared while receipts were authorized"
+                )
+            unit_state.validate_current(current_state, str(layer_id), units)
+            if current_state.get("plan_hash") != expected_plan_hash:
+                raise UnitCompletionConflict(
+                    "work-unit state changed layer generation while receipts were authorized"
+                )
+            current_receipts: dict[str, str] = {}
+            for unit in units:
+                slot = current_state["units"][unit.id]
+                if not isinstance(slot, Mapping) or slot.get("status") != "passed":
+                    continue
+                try:
+                    current_receipt = UnitCompletionReceipt.parse(
+                        slot.get("completion_receipt"),
+                        (
+                            "current authorized work-unit state "
+                            f"{layer_id}.{unit.id}.completion_receipt"
+                        ),
+                    )
+                except ValueError as exc:
+                    raise UnitCompletionConflict(str(exc)) from exc
+                current_receipts[unit.id] = current_receipt.receipt_digest
+            if current_receipts != receipts:
+                raise UnitCompletionConflict(
+                    "work-unit completion set changed while receipts were authorized"
+                )
+            projection_digest = completion_projection_digest(current_state)
+    return AuthorizedUnitCompletionSet(
+        layer_id=str(layer_id),
+        selection_token=projection,
+        authority_state_head_ref=authority_state_head_ref,
+        layer_generation_digest=expected_plan_hash,
+        completion_projection_digest=projection_digest,
+        receipts=tuple(sorted(receipts.items())),
+    )
 
 
 def _state_layer_ids(folder: str | Path) -> tuple[str, ...]:
@@ -315,17 +560,16 @@ def _state_layer_ids(folder: str | Path) -> tuple[str, ...]:
 
 
 @contextmanager
-def current_completion_receipt_digests(
+def source_verified_completion_receipt_digests(
     folder: str | Path,
 ) -> Iterator[Mapping[tuple[str, str], str]]:
-    """Optimistically expose live receipt digests without holding locks over callers.
+    """Optimistically expose source-verified receipt digests across one use.
 
-    This intentionally does not acquire the selection lock. Callers that compare the map
-    with selected authority own that separate verification.  Large receipt/script reads
-    happen between two short all-layer state snapshots.  The second snapshot runs after
-    the caller's resolution read and refuses a concurrent invalidation, so the caller
-    never treats a stale receipt-bound row as current while retaining state locks over
-    unrelated ledger I/O.
+    This proves immutable receipt/script/evaluator bytes, not current semantic
+    authorization. Callers must intersect the result with an
+    ``AuthorizedUnitCompletionSet`` before it can affect scheduling or due state.
+    Large reads happen between short all-layer state snapshots; the post-use snapshot
+    refuses concurrent replacement without retaining state locks over unrelated I/O.
     """
 
     layer_ids = _state_layer_ids(folder)

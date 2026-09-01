@@ -52,28 +52,173 @@ Exit codes: 0 clean · 3 at least one blocking finding
 
 from __future__ import annotations
 
-import json
+from dataclasses import dataclass
 from pathlib import Path
 
+from vfx_harness.domain.authority_preview_records import (
+    AUTHORITY_PREVIEW_REFERENCE_PATH,
+)
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.domain.work_units import ready_units
+from vfx_harness.evaluation.layer_publications import (
+    EvaluationLayerPublicationConflict,
+    receipt_backed_layer_prefix,
+)
+from vfx_harness.evaluation.plan_gate.preview_authorization import (
+    CandidatePreviewAuthorization,
+    candidate_preview_authorization,
+    candidate_preview_unit_authorization,
+)
 from vfx_harness.evaluation.plan_gate.types import (
     Finding,
     _global_executable_checks_apply,
 )
 from vfx_harness.evaluation.plan_gate.unit_deps import _check_unit_dependencies
-from vfx_harness.orchestration.layer_outcome_paths import (
-    layer_outcome_locator,
-    layer_outcome_path,
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
 )
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
+from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
+    require_matching_authority_selection_token,
+)
+from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_locator
 from vfx_harness.orchestration.layer_plans import (
     load_amendments,
     validate_work_unit_plan_authority,
     work_unit_plan_path,
 )
-from vfx_harness.orchestration.ledger import load_layers
-from vfx_harness.orchestration.unit_state import digest_matched_passed, validate_current
+from vfx_harness.orchestration.ledger import Layer, load_layers
+from vfx_harness.orchestration.plan_consumer_view import PlanConsumerViewMarker
+from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
+from vfx_harness.orchestration.unit_completion_authorizations import (
+    UnitCompletionAuthorization,
+)
+from vfx_harness.orchestration.unit_completion_state import (
+    authorize_completed_units_for_layer,
+)
+from vfx_harness.orchestration.unit_state import (
+    authorized_passed_unit_ids,
+    validate_current,
+)
 from vfx_harness.orchestration.unit_state import load as load_unit_state
+
+
+@dataclass(frozen=True, slots=True)
+class _SelectedPublicationContext:
+    """The live shot and exact selected generation behind one gate input folder."""
+
+    shot_folder: Path
+    selected_authority: ResolvedSelectedAuthority
+    layers: tuple[Layer, ...]
+    consumer_marker: PlanConsumerViewMarker | None = None
+
+
+def _selected_publication_context(folder: Path) -> _SelectedPublicationContext | None:
+    """Resolve selected publication authority, including a run-scoped gate snapshot.
+
+    A planner workspace with no selected plan is an explicit offline candidate and has
+    no accepted prefix.  A consumer view is different: its marker names the live shot
+    and exact base selection whose prior publications the staged candidate consumes.
+    """
+
+    marker_path = folder / ".plan-consumer-view.json"
+    consumer_marker: PlanConsumerViewMarker | None = None
+    if marker_path.is_symlink():
+        raise ValueError("plan consumer view marker must be a real regular file")
+    if marker_path.exists() and not marker_path.is_file():
+        raise ValueError("plan consumer view marker must be a real regular file")
+    if marker_path.is_file():
+        try:
+            marker = PlanConsumerViewMarker.from_bytes(marker_path.read_bytes())
+            consumer_marker = marker
+            selected = resolve_selected_authority(marker.shot)
+            require_matching_authority_selection_token(
+                marker.base_selection,
+                selected.selection_token,
+            )
+        except (
+            AuthoritySelectionConflict,
+            OSError,
+            SelectedAuthorityResolutionError,
+            ValueError,
+        ) as exc:
+            raise ValueError(
+                f"plan consumer view cannot resolve its exact selected base authority: {exc}"
+            ) from exc
+        shot_folder = marker.shot
+    else:
+        try:
+            selected = resolve_selected_authority(folder)
+        except SelectedAuthorityResolutionError as exc:
+            raise ValueError(f"selected plan authority is invalid: {exc}") from exc
+        if selected.plan is None:
+            return None
+        shot_folder = folder
+
+    if selected.plan is None:
+        raise ValueError("selected publication context has no selected plan authority")
+    shot = load_shot(shot_folder)
+    try:
+        ordered = selected_layer_chain(
+            shot,
+            selected_authority=selected,
+        )
+    except ValueError as exc:
+        raise ValueError(f"selected layer publication chain is invalid: {exc}") from exc
+    return _SelectedPublicationContext(
+        shot_folder=shot_folder,
+        selected_authority=selected,
+        layers=ordered,
+        consumer_marker=consumer_marker,
+    )
+
+
+def _completion_authorization_for_gate(
+    folder: Path,
+    *,
+    publication_context: _SelectedPublicationContext | None,
+    candidate_layer: Layer,
+    selected_layer: Layer | None,
+    state: dict,
+) -> UnitCompletionAuthorization | None:
+    """Resolve exact source-backed receipt authority for one gate candidate.
+
+    A candidate preview may carry preserved execution receipts across a proposed
+    transition, but only its typed transition reference can authorize those receipts.
+    Without that reference, the current coordinator can authorize receipts solely for
+    an exactly unchanged selected layer.
+    """
+
+    if publication_context is None:
+        return None
+    preview_path = folder / AUTHORITY_PREVIEW_REFERENCE_PATH
+    if preview_path.exists() or preview_path.is_symlink():
+        return candidate_preview_unit_authorization(
+            folder,
+            shot_folder=publication_context.shot_folder,
+            selected_authority=publication_context.selected_authority,
+            layer_id=str(candidate_layer.id),
+            state=state,
+        )
+    if selected_layer is None or candidate_layer != selected_layer:
+        return None
+    layer_digest = selected_layer_capsule_digest(
+        publication_context.shot_folder,
+        str(candidate_layer.id),
+        publication_context.selected_authority,
+    )
+    return authorize_completed_units_for_layer(
+        publication_context.shot_folder,
+        str(candidate_layer.id),
+        candidate_layer.stages,
+        expected_plan_hash=layer_digest,
+        selected_authority=publication_context.selected_authority,
+    )
 
 
 def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
@@ -129,54 +274,132 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
         return [*out, Finding("hierarchy", True, "layers.json", str(exc))], {}
 
     passed: set[str] = set()
-    for layer_id in layers:
-        path = layer_outcome_path(folder, layer_id)
-        if not path.is_file():
-            continue
-        try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(row, dict) or row.get("layer") != layer_id:
-                raise ValueError(
-                    f"sealed outcome does not name exact layer {layer_id!r}"
-                )
-            if row.get("status") == "passed":
-                passed.add(layer_id)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            out.append(
-                Finding(
-                    "hierarchy",
-                    True,
-                    layer_outcome_locator(layer_id),
-                    f"unreadable sealed outcome: {exc}",
-                )
-            )
-    ledger_passed: set[str] = set()
-    ledger_path = folder / "shot.json"
-    if ledger_path.is_file():
-        try:
-            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-            ledger_passed = {
-                str(lid)
-                for lid, row in (ledger.get("milestones") or {}).items()
-                if (
-                    isinstance(row, dict)
-                    and row.get("status") == "passed"
-                    and str(lid) in layers
-                )
-            }
-        except (OSError, json.JSONDecodeError) as exc:
-            out.append(Finding("hierarchy", True, "shot.json", f"unreadable: {exc}"))
-    for lid in sorted(ledger_passed - passed):
+    ordered_layers = tuple(layers.values())
+    selected_by_id: dict[str, Layer] = {}
+    preview_authorization: CandidatePreviewAuthorization | None = None
+    try:
+        publication_context = _selected_publication_context(folder)
+    except ValueError as exc:
         out.append(
             Finding(
                 "hierarchy",
                 True,
-                layer_outcome_locator(lid),
-                f"ledger marks layer {lid} passed but its sealed planning outcome is missing",
-                "revalidate that layer and publish its authoritative outcome before planning downstream work",
+                ".plan-consumer-view.json",
+                str(exc),
+                "refresh the gate snapshot from one current selected authority generation",
             )
         )
-    next_layer = next((layer for lid, layer in layers.items() if lid not in passed), None)
+        return out, {"unit_plans_required": 0, "layers_passed": 0}
+    if publication_context is not None:
+        selected_by_id = {layer.id: layer for layer in publication_context.layers}
+        ordered_layers = tuple(
+            layers[layer.id]
+            for layer in publication_context.layers
+            if layer.id in layers
+        )
+        if set(selected_by_id) != set(layers):
+            out.append(
+                Finding(
+                    "hierarchy",
+                    True,
+                    "layers.json",
+                    "candidate layer ids do not match the exact selected global layer DAG",
+                    "regenerate the consumer view from the current selected authority",
+                )
+            )
+            return out, {"unit_plans_required": 0, "layers_passed": 0}
+
+        preview_path = folder / AUTHORITY_PREVIEW_REFERENCE_PATH
+        preview_exists = preview_path.exists() or preview_path.is_symlink()
+        marker = publication_context.consumer_marker
+        candidate_view_differs = False
+        if marker is not None:
+            selected_view = (
+                publication_context.selected_authority.assertion.effective_view
+            )
+            candidate_view_differs = (
+                selected_view is None
+                or marker.view_source != selected_view.source
+                or marker.view_digest != selected_view.digest
+            )
+        if candidate_view_differs and not preview_exists:
+            out.append(
+                Finding(
+                    "hierarchy",
+                    True,
+                    AUTHORITY_PREVIEW_REFERENCE_PATH.as_posix(),
+                    "unpublished candidate view lacks a typed authority-state "
+                    "preview reference",
+                    "regenerate the isolated consumer view from the current "
+                    "candidate and selected base",
+                )
+            )
+            return out, {"unit_plans_required": 0, "layers_passed": 0}
+        if preview_exists:
+            try:
+                preview_authorization = candidate_preview_authorization(
+                    folder,
+                    shot_folder=publication_context.shot_folder,
+                    selected_authority=publication_context.selected_authority,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                out.append(
+                    Finding(
+                        "hierarchy",
+                        True,
+                        AUTHORITY_PREVIEW_REFERENCE_PATH.as_posix(),
+                        f"candidate authority preview is not authorized: {exc}",
+                        "regenerate the isolated consumer view from the current "
+                        "candidate and selected base",
+                    )
+                )
+                return out, {"unit_plans_required": 0, "layers_passed": 0}
+            if preview_authorization is None:  # pragma: no cover - path existed
+                raise AssertionError("candidate preview authorization disappeared")
+
+        # A staged materialization may legitimately change the first unpublished layer.
+        # Only the exact unchanged leading selected rows are candidates for carried
+        # publication; the shared verifier then decides whether each is truly current.
+        unchanged_selected: list[Layer] = []
+        for candidate in ordered_layers:
+            selected_layer = selected_by_id[candidate.id]
+            if preview_authorization is not None:
+                if (
+                    preview_authorization.finalization_receipt(candidate.id)
+                    is None
+                ):
+                    break
+            elif candidate != selected_layer:
+                break
+            unchanged_selected.append(selected_layer)
+        try:
+            published = receipt_backed_layer_prefix(
+                publication_context.shot_folder,
+                unchanged_selected,
+                publication_context.selected_authority,
+            )
+        except EvaluationLayerPublicationConflict as exc:
+            out.append(
+                Finding(
+                    "hierarchy",
+                    True,
+                    layer_outcome_locator(exc.layer_id),
+                    "selected prior layer lacks a current receipt-backed "
+                    f"publication: {exc}",
+                    "reconcile the exact terminal receipt projections before "
+                    "planning downstream work",
+                )
+            )
+            return out, {
+                "unit_plans_required": 0,
+                "layers_passed": exc.published_count,
+            }
+        passed = {str(layer.id) for layer in published}
+
+    next_layer = next(
+        (layer for layer in ordered_layers if str(layer.id) not in passed),
+        None,
+    )
     required = 0
     if next_layer is not None and not _global_executable_checks_apply(next_layer):
         # Deferred authority has no durable unit state until a pinned JIT overlay
@@ -193,7 +416,8 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
                     True,
                     f"state/work-units/layer_{next_layer.id}.json",
                     str(exc),
-                    "apply a transactional replan; stale unit state cannot authorize execution",
+                    "publish a validated authority replacement; stale unit state cannot "
+                    "authorize execution",
                     layer=str(next_layer.id),
                 )
             )
@@ -201,21 +425,57 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
         unit_passed = {
             uid for uid, row in (state.get("units") or {}).items() if row.get("status") == "passed"
         }
+        completion_authorization: UnitCompletionAuthorization | None = None
+        if publication_context is not None and unit_passed:
+            try:
+                completion_authorization = _completion_authorization_for_gate(
+                    folder,
+                    publication_context=publication_context,
+                    candidate_layer=next_layer,
+                    selected_layer=selected_by_id.get(str(next_layer.id)),
+                    state=state,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                out.append(
+                    Finding(
+                        "hierarchy",
+                        True,
+                        AUTHORITY_PREVIEW_REFERENCE_PATH.as_posix(),
+                        f"candidate authority preview is not authorized: {exc}",
+                        "regenerate the isolated consumer view from the current "
+                        "candidate and selected base",
+                        layer=str(next_layer.id),
+                    )
+                )
+                return out, {
+                    "unit_plans_required": 0,
+                    "layers_passed": len(passed),
+                }
 
+        sealed_producers = authorized_passed_unit_ids(
+            state,
+            next_layer.stages,
+            completion_authorization=completion_authorization,
+            allow_candidate=True,
+        )
         ready = ready_units(
             next_layer.stages,
             unit_passed,
-            sealed_producers=digest_matched_passed(state, next_layer.stages),
+            sealed_producers=sealed_producers,
         )
         required = len(ready)
-        if not ready:
+        all_units_sealed = sealed_producers == {
+            str(unit.id) for unit in next_layer.stages
+        }
+        if not ready and not all_units_sealed:
             out.append(
                 Finding(
                     "hierarchy",
                     True,
                     f"layer {next_layer.id} work-unit DAG",
                     "no work unit is ready although the layer has not passed",
-                    "resolve a blocked dependency or apply a transactional replan",
+                    "resolve a blocked dependency or publish a validated authority "
+                    "replacement",
                     layer=str(next_layer.id),
                 )
             )

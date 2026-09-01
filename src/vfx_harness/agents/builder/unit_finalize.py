@@ -28,7 +28,6 @@ from vfx_harness.agents.builder.critic_focus import (
     _unsatisfiable_pair_findings,
 )
 from vfx_harness.agents.builder.evidence import _unit_evidence_ids_by_frame
-from vfx_harness.agents.builder.layer_outcome import publish_unit_layer_outcome
 from vfx_harness.agents.builder.models import (
     _TRUNCATED,
     MAX_CANON_REPAIRS,
@@ -40,16 +39,9 @@ from vfx_harness.agents.builder.models import (
 )
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import _run_script_agent
-from vfx_harness.agents.builder.revalidate import _blender_version
 from vfx_harness.agents.builder.state import _APPROACH, _ERRORS, _JOURNAL_INFO, _RECIPES_USED
 from vfx_harness.agents.builder.unit_evaluation import publish_unit_evaluation_outcome
 from vfx_harness.agents.builder.verify import _verify_script
-from vfx_harness.evaluation.plan_gate import _builder_render
-from vfx_harness.evidence.checks import (
-    commit_layer_revalidation,
-    discard_layer_revalidation,
-    prepare_layer_revalidation,
-)
 from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import (
@@ -228,12 +220,8 @@ async def _persist_journal_and_finalize_script(
 async def _publish_unit_outcome(
     shot,
     m,
-    script_rel,
-    prior_paths,
-    session,
     layer,
     active_unit,
-    publish_layer,
     report_layer,
     verbose,
     ledger,
@@ -249,9 +237,8 @@ async def _publish_unit_outcome(
     _look_actions,
     scope,
     attempt_guard: UnitAttemptGuard,
-    *,
-    selected_authority: ResolvedSelectedAuthority | None = None,
 ):
+    attempt_guard.require_unit_boundary(m, active_unit, layer=layer)
     # The CANONICAL render is the deliverable — it is what the chain re-runs. If it
     # clears the bar the unit passed, whatever the live search scored on the way (with
     # finalize-from-best-snapshot the clean rebuild often outscores every live round:
@@ -266,60 +253,8 @@ async def _publish_unit_outcome(
         if canonical == "judge_conflict"
         else "failed"
     )
-    if layer is not None and publish_layer:
-        # The renders are final only now. A builder check authored mid-layer was proven
-        # against whatever render existed then, and a later attempt replaced it — three of
-        # layer 1's shipped as stale. Re-verify here, where "the render" stops moving,
-        # even when a noisy critic disagrees with it.
-        try:
-            attempt_guard.check(
-                f"start layer {layer.id} image-check revalidation"
-            )
-            revalidation = prepare_layer_revalidation(
-                shot.folder,
-                str(getattr(layer, "id", m.id)),
-                lambda c: _builder_render(shot.folder, c),
-                selected_authority=selected_authority,
-            )
-            try:
-                rv = attempt_guard.publish(
-                    f"revalidate layer {layer.id} image checks",
-                    lambda: commit_layer_revalidation(revalidation),
-                )
-            finally:
-                discard_layer_revalidation(revalidation)
-            if rv["dropped"]:
-                log(
-                    f"builder checks: {rv['kept']} held, {len(rv['dropped'])} dropped as "
-                    f"stale (authored against a render a later attempt replaced)",
-                    1,
-                )
-                for cid, why in rv["dropped"]:
-                    log(f"  dropped {cid}: {why}", 2)
-            elif rv["kept"]:
-                log(f"builder checks: all {rv['kept']} still hold on the final renders", 1)
-        except UnitAttemptAuthorityLost:
-            raise
-
-        blender_version = _blender_version(session)
-
-        if selected_authority is None:
-            raise ValueError("layer outcome publication requires selected authority")
-        outcome = publish_unit_layer_outcome(
-            shot.folder,
-            layer,
-            status=status,
-            best=best,
-            canonical=canon_verdicts,
-            run_id=RUN_ID,
-            ledger_attempt=int(ledger._slot(m).get("attempt") or 0),
-            blender_version=blender_version,
-            selected_authority=selected_authority,
-            attempt_guard=attempt_guard,
-        )
-        log(f"layer outcome → {outcome.relative_to(shot.folder)}", 1)
-    # Publishing the sealed outcome is part of completion. Marking the ledger first could
-    # let a later layer advance with no feedback artifact if the outcome write failed.
+    # This milestone is always unit-scoped (``layer@unit``). Layer publication is a
+    # separate boundary transaction after every constituent unit has completed.
     ledger.mark(m, status, best=best)
     if ok:
         candidate_path = str((best or {}).get("render") or "") or None
@@ -334,15 +269,6 @@ async def _publish_unit_outcome(
             replay_inputs=canonical_replay_inputs,
             candidate_path=candidate_path,
         )
-    if ok and layer is not None and publish_layer:
-        abl = await builder_package()._ablate(shot, layer, prior_paths, script_rel, session)
-        ledger.record_ablation(m, abl)
-        if abl.get("moved"):
-            log("ablation: " + " · ".join(f"{k}{v:+.0%}" for k, v in abl["moved"].items()), 1)
-        elif abl.get("note"):
-            log(f"ablation: {abl['note']}", 1)  # never silent — a skip is a result
-        if not abl["ok"]:
-            log(f"! {abl['note']}")
     if ok:
         v = ledger.snapshot_scripts(m, "pass")
         if v:
@@ -630,7 +556,7 @@ async def _run_canonical_repairs(
             out_replay_inputs=canonical_replay_inputs,
             authority_script_rel=authority_script_rel,
             selected_authority=selected_authority,
-            attempt_guard=attempt_guard,
+            execution_guard=attempt_guard,
         )
         delta = _repair_delta(pre_verdicts, canon_verdicts or [])
         was, now, broke = delta["was"], delta["now"], delta["broke"]

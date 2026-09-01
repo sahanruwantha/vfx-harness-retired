@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from vfx_harness.domain.authority_head_records import parse_authority_selection_token
 from vfx_harness.domain.unit_attempts import UnitAttemptClaim
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.domain.work_units import WorkUnit
+from vfx_harness.orchestration.authority_receipt_lineage import (
+    require_preserved_unit_completion_authorization,
+)
 from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
 from vfx_harness.orchestration.plan_due import require_due_clear, resolve_unit_completion
 from vfx_harness.orchestration.unit_completion_state import (
@@ -36,6 +40,19 @@ def resolve_completed_unit(
     while the resolution ledger was being published.
     """
 
+    current_projection = parse_authority_selection_token(
+        selected_authority.selection_token.to_dict(),
+        "selected authority for completed unit",
+    )
+    lineage_authorization = (
+        None
+        if receipt.claim.selection_token == current_projection
+        else require_preserved_unit_completion_authorization(
+            folder,
+            receipt,
+            selected_authority,
+        )
+    )
     with completed_unit_attempt_guard(
         folder,
         layer_id,
@@ -44,6 +61,7 @@ def resolve_completed_unit(
         receipt,
         expected_plan_hash=expected_plan_hash,
         selection_token=selected_authority.selection_token,
+        lineage_authorization=lineage_authorization,
     ) as current:
         state = load_unit_state(folder, layer_id)
         checkpoint_hash = str(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,43 +205,20 @@ def test_builder_prior_prefix_uses_selected_dag_not_script_names(
     shot = _selected_dag_fixture(tmp_path, monkeypatch)
     chain = selected_chain.selected_layer_chain(shot)
     (tmp_path / "build" / "00_orphan.py").write_text("# stray\n", encoding="utf-8")
-    receipts = {
-        (layer.id, unit.id): _digest(f"{layer.id}:{unit.id}")
-        for layer in chain
-        for unit in layer.stages
-    }
-
-    @contextmanager
-    def verified(_folder):
-        yield receipts
 
     monkeypatch.setattr(builder_prior, "selected_layer_chain", lambda *_args, **_kwargs: chain)
     monkeypatch.setattr(
-        builder_prior,
-        "Ledger",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            status=lambda _milestone: "passed",
-            stale=lambda _milestone: None,
+        builder_prior.layer_publication,
+        "require_current_layer_publication",
+        lambda _folder, layer, _selected: SimpleNamespace(
+            receipt=SimpleNamespace(
+                receipt_digest=_digest(f"{layer.id}:terminal"),
+                layer_script_path=layer.script,
+                layer_script_sha256=hashlib.sha256(
+                    (tmp_path / layer.script).read_bytes()
+                ).hexdigest(),
+            ),
         ),
-    )
-    monkeypatch.setattr(builder_prior, "current_completion_receipt_digests", verified)
-    monkeypatch.setattr(
-        builder_prior.unit_state,
-        "load",
-        lambda _folder, layer_id: {
-            "units": {
-                unit.id: {"status": "passed"}
-                for layer in chain
-                if layer.id == layer_id
-                for unit in layer.stages
-            }
-        },
-    )
-    monkeypatch.setattr(builder_prior.unit_state, "validate_current", lambda *_args: None)
-    monkeypatch.setattr(
-        builder_prior.unit_state,
-        "digest_matched_passed",
-        lambda _state, units: {unit.id for unit in units},
     )
 
     paths = builder_prior._prior_layer_paths(
@@ -256,7 +233,90 @@ def test_builder_prior_prefix_uses_selected_dag_not_script_names(
     ]
 
 
-def test_builder_prior_prefix_fails_closed_without_ledger_authority(
+def test_builder_prior_replay_refuses_source_swap_after_publication_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    chain = selected_chain.selected_layer_chain(shot)
+    monkeypatch.setattr(builder_prior, "selected_layer_chain", lambda *_args, **_kwargs: chain)
+
+    def publication(_folder, layer, _selected):
+        path = tmp_path / layer.script
+        return SimpleNamespace(
+            receipt=SimpleNamespace(
+                receipt_digest=_digest(f"{layer.id}:terminal"),
+                layer_script_path=layer.script,
+                layer_script_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+        )
+
+    monkeypatch.setattr(
+        builder_prior.layer_publication,
+        "require_current_layer_publication",
+        publication,
+    )
+    paths = builder_prior._prior_layer_paths(
+        shot,
+        chain[-1],
+        selected_authority=SimpleNamespace(),
+    )
+    paths[0].write_text("# substituted after selection\n", encoding="utf-8")
+
+    with pytest.raises(builder_prior.ChainBroken, match="changed before replay"):
+        builder_prior._run_prior_paths(
+            SimpleNamespace(run=lambda *_args, **_kwargs: pytest.fail("must not execute")),
+            paths,
+        )
+
+
+def test_builder_prior_replay_rechecks_terminal_receipts_after_blender_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    chain = selected_chain.selected_layer_chain(shot)
+    monkeypatch.setattr(builder_prior, "selected_layer_chain", lambda *_args, **_kwargs: chain)
+    receipt_digests = {
+        layer.id: _digest(f"{layer.id}:terminal") for layer in chain
+    }
+
+    def publication(_folder, layer, _selected):
+        path = tmp_path / layer.script
+        return SimpleNamespace(
+            receipt=SimpleNamespace(
+                receipt_digest=receipt_digests[layer.id],
+                layer_script_path=layer.script,
+                layer_script_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+        )
+
+    monkeypatch.setattr(
+        builder_prior.layer_publication,
+        "require_current_layer_publication",
+        publication,
+    )
+    paths = builder_prior._prior_layer_paths(
+        shot,
+        chain[-1],
+        selected_authority=SimpleNamespace(),
+    )
+    calls = 0
+
+    def run(_source, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            receipt_digests[chain[0].id] = _digest("replacement terminal")
+        return {}
+
+    with pytest.raises(builder_prior.ChainBroken, match="changed during replay"):
+        builder_prior._run_prior_paths(SimpleNamespace(run=run), paths)
+
+    assert calls == 2
+
+
+def test_builder_prior_prefix_fails_closed_without_terminal_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -264,14 +324,16 @@ def test_builder_prior_prefix_fails_closed_without_ledger_authority(
     chain = selected_chain.selected_layer_chain(shot)
     monkeypatch.setattr(builder_prior, "selected_layer_chain", lambda *_args, **_kwargs: chain)
     monkeypatch.setattr(
-        builder_prior,
-        "Ledger",
+        builder_prior.layer_publication,
+        "require_current_layer_publication",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            ValueError("shot.json is invalid JSON")
+            builder_prior.layer_publication.LayerPublicationConflict(
+                "shot.json is invalid JSON"
+            )
         ),
     )
 
-    with pytest.raises(ValueError, match="invalid JSON"):
+    with pytest.raises(builder_prior.UnpassedPrior, match="invalid JSON"):
         builder_prior._prior_layer_paths(
             shot,
             chain[-1],
@@ -284,6 +346,7 @@ def test_finished_chain_consumers_share_selected_global_dag_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    chain = selected_chain.selected_layer_chain(shot)
     expected = ["build/30_camera.py", "build/20_form.py", "build/01_composite.py"]
 
     replayed: list[str] = []
@@ -296,7 +359,27 @@ def test_finished_chain_consumers_share_selected_global_dag_order(
     )
     monkeypatch.setattr(acceptance, "_RESET", "reset")
     monkeypatch.setattr(acceptance, "_preamble", lambda _shot: "preamble")
-    monkeypatch.setattr(acceptance, "_unit_completion_failures", lambda *_args: [])
+    selected_marker = SimpleNamespace()
+    publications = tuple(SimpleNamespace(layer_id=layer.id) for layer in chain)
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_selected_authority",
+        lambda _root: selected_marker,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "selected_layer_chain",
+        lambda *_args, **_kwargs: chain,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "_current_layer_publications",
+        lambda _shot, _layers, selected: (
+            publications
+            if selected is selected_marker
+            else pytest.fail("acceptance used another selected authority")
+        ),
+    )
     monkeypatch.setattr(
         acceptance,
         "_run_artifact_script",
@@ -355,14 +438,77 @@ def test_finished_chain_consumers_share_selected_global_dag_order(
         "read_authority_selection_heads",
         lambda _root: SimpleNamespace(token=token),
     )
+    def publication(layer):
+        unit = layer.stages[0]
+        return SimpleNamespace(
+            receipt=SimpleNamespace(
+                receipt_digest=_digest(f"receipt:{layer.id}"),
+                claim=SimpleNamespace(
+                    unit_inputs=(
+                        SimpleNamespace(
+                            unit_id=unit.id,
+                            unit_digest=_digest(f"unit:{layer.id}"),
+                            completion_receipt_digest=_digest(
+                                f"completion:{layer.id}"
+                            ),
+                            script_path=unit.mutates.script_spans[0],
+                            script_sha256=_digest(f"script:{layer.id}"),
+                        ),
+                    ),
+                ),
+            ),
+            ledger_status="passed",
+            ledger_script_path=str(layer.script),
+            ledger_script_sha256=hashlib.sha256(
+                (shot.folder / layer.script).read_bytes()
+            ).hexdigest(),
+            outcome_locator=f"plans/outcomes/layer-{layer.id}.json",
+            outcome_sha256=_digest(f"outcome:{layer.id}"),
+        )
+
+    monkeypatch.setattr(
+        acceptance_stop.layer_publication,
+        "require_current_layer_publication",
+        lambda _root, layer, authority: (
+            publication(layer)
+            if authority is selected
+            else pytest.fail("acceptance used another authority snapshot")
+        ),
+    )
     snapshot = acceptance_stop.capture_acceptance_authority(
         shot,
         {"M1": Milestone("M1", 1, "refs/M1.png", "finished frame")},
     )
     assert [row["script"] for row in snapshot.chain] == expected
+    assert [row["finalization_receipt_digest"] for row in snapshot.chain] == [
+        _digest(f"receipt:{layer.id}") for layer in chain
+    ]
+    assert [row["layer_outcome"] for row in snapshot.chain] == [
+        f"plans/outcomes/layer-{layer.id}.json" for layer in chain
+    ]
+    assert all(
+        row["units"][0]["completion_receipt_digest"]
+        == _digest(f"completion:{layer.id}")
+        for row, layer in zip(snapshot.chain, chain, strict=True)
+    )
     assert resolution_calls == [shot.folder.resolve()]
 
-    assert [path.relative_to(shot.folder).as_posix() for path in render_shot._chain_scripts(shot)] == expected
+    monkeypatch.setattr(
+        render_shot.layer_publication,
+        "require_current_layer_publication",
+        lambda _root, layer, authority: (
+            publication(layer)
+            if authority is selected
+            else pytest.fail("render used another authority snapshot")
+        ),
+    )
+    assert [
+        path.relative_to(shot.folder).as_posix()
+        for path in render_shot._chain_scripts(
+            shot,
+            selected_authority=selected,
+        )
+    ] == expected
 
 
 def test_acceptance_replay_rejects_script_swap_before_execution_then_restore(
@@ -389,7 +535,23 @@ def test_acceptance_replay_rejects_script_swap_before_execution_then_restore(
 
     monkeypatch.setattr(acceptance, "_RESET", "reset")
     monkeypatch.setattr(acceptance, "_preamble", lambda _shot: "preamble")
-    monkeypatch.setattr(acceptance, "_unit_completion_failures", lambda *_args: [])
+    selected_marker = SimpleNamespace()
+    publications = tuple(SimpleNamespace(layer_id=layer.id) for layer in chain)
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_selected_authority",
+        lambda _root: selected_marker,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "selected_layer_chain",
+        lambda *_args, **_kwargs: chain,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "_current_layer_publications",
+        lambda _shot, _layers, _selected: publications,
+    )
 
     try:
         with pytest.raises(builder_prior.BlenderError, match="trusted path changed"):
@@ -401,6 +563,145 @@ def test_acceptance_replay_rejects_script_swap_before_execution_then_restore(
     finally:
         target.unlink(missing_ok=True)
         original.rename(target)
+
+
+def test_acceptance_authority_capture_rejects_publication_generation_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    chain = selected_chain.selected_layer_chain(shot)
+    token = AuthoritySelectionToken(
+        plan_revision=1,
+        plan_pointer_sha256=_digest("plan pointer"),
+        jit_revision=1,
+        jit_pointer_sha256=_digest("jit pointer"),
+    )
+    selected = SimpleNamespace(
+        plan=SimpleNamespace(
+            bundle=SimpleNamespace(
+                content_hash=_digest("bundle"),
+                root=tmp_path / "selected-global",
+            )
+        ),
+        assertion=SimpleNamespace(
+            effective_view=SimpleNamespace(digest=_digest("view")),
+        ),
+        artifact_paths={
+            "layers.json": tmp_path / "selected-executable-layers.json",
+            "acceptance.json": tmp_path / "acceptance.json",
+        },
+        selection_token=token,
+    )
+    calls = 0
+
+    def publication(_root, layer, authority):
+        nonlocal calls
+        assert authority is selected
+        calls += 1
+        generation = "before" if calls <= len(chain) else "replacement"
+        unit = layer.stages[0]
+        return SimpleNamespace(
+            receipt=SimpleNamespace(
+                receipt_digest=_digest(f"{generation}:{layer.id}"),
+                claim=SimpleNamespace(
+                    unit_inputs=(
+                        SimpleNamespace(
+                            unit_id=unit.id,
+                            unit_digest=_digest(f"unit:{layer.id}"),
+                            completion_receipt_digest=_digest(
+                                f"completion:{layer.id}"
+                            ),
+                            script_path=unit.mutates.script_spans[0],
+                            script_sha256=hashlib.sha256(
+                                (tmp_path / unit.mutates.script_spans[0]).read_bytes()
+                            ).hexdigest(),
+                        ),
+                    ),
+                ),
+            ),
+            ledger_status="passed",
+            ledger_script_path=str(layer.script),
+            ledger_script_sha256=hashlib.sha256(
+                (tmp_path / layer.script).read_bytes()
+            ).hexdigest(),
+            outcome_locator=f"plans/outcomes/layer-{layer.id}.json",
+            outcome_sha256=_digest(f"outcome:{generation}:{layer.id}"),
+        )
+
+    monkeypatch.setattr(
+        acceptance_stop.layer_publication,
+        "require_current_layer_publication",
+        publication,
+    )
+    monkeypatch.setattr(
+        acceptance_stop,
+        "current_judgment_debt_state_digest_for_authority",
+        lambda *_args: _digest("judgment-debt-state"),
+    )
+    monkeypatch.setattr(
+        acceptance_stop,
+        "authority_selection_lock",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        acceptance_stop,
+        "read_authority_selection_heads",
+        lambda _root: SimpleNamespace(token=token),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="publication changed during acceptance authority capture",
+    ):
+        acceptance_stop.capture_acceptance_authority(
+            shot,
+            {"M1": Milestone("M1", 1, "refs/M1.png", "finished frame")},
+            selected,
+        )
+
+
+def test_acceptance_replay_rejects_a_replaced_valid_layer_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot = _selected_dag_fixture(tmp_path, monkeypatch)
+    chain = selected_chain.selected_layer_chain(shot)
+    prepared = builder_prior._prepare_artifact_replay_inputs(
+        shot.folder,
+        [(str(layer.script), shot.folder / layer.script) for layer in chain],
+    )
+    selected = SimpleNamespace()
+    captures = iter(
+        (
+            tuple(SimpleNamespace(receipt=f"before:{layer.id}") for layer in chain),
+            tuple(SimpleNamespace(receipt=f"after:{layer.id}") for layer in chain),
+        )
+    )
+    monkeypatch.setattr(acceptance, "resolve_selected_authority", lambda _root: selected)
+    monkeypatch.setattr(
+        acceptance,
+        "selected_layer_chain",
+        lambda *_args, **_kwargs: chain,
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "_current_layer_publications",
+        lambda *_args, **_kwargs: next(captures),
+    )
+    monkeypatch.setattr(acceptance, "_RESET", "reset")
+    monkeypatch.setattr(acceptance, "_preamble", lambda _shot: "preamble")
+    monkeypatch.setattr(acceptance, "_run_artifact_script", lambda *_args: None)
+
+    with pytest.raises(
+        acceptance.IncompleteChain,
+        match="publication changed during acceptance replay",
+    ):
+        acceptance._chain(
+            SimpleNamespace(run=lambda _code: None),
+            shot,
+            prepared_inputs=prepared,
+        )
 
 
 def test_render_mp4_replays_selected_scripts_through_evaluated_frame_barrier(

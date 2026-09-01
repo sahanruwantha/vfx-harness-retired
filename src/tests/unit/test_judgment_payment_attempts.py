@@ -66,6 +66,7 @@ def _due_authority() -> tuple[JudgmentDebtDefinition, JudgmentDebtActivation, Ju
         definition,
         JudgmentDebtState.pending(definition),
         activation=activation,
+        payment_generation_digest=_digest("payment-generation"),
         layer_id=activation.payer_layer,
         replayed_unit_digests=activation.payer_unit_digests,
     )
@@ -84,6 +85,7 @@ def _request(
         owner_view_digest=_digest("owner-view"),
         payer_view_digest=_digest("payer-view"),
         replay_receipt_digest=_digest("replay-receipt"),
+        layer_replay_receipt_digest=_digest("layer-replay-receipt"),
         parent_chain_digest=_digest("parent-chain"),
         judge_point=point,
         observation_medium="workbench_solid",

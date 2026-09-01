@@ -10,7 +10,6 @@ import anyio
 import pytest
 from PIL import Image
 
-from tests.layer_outcome_fixtures import write_test_layer_outcome
 from tests.materialization_support import attest_exact_materialization_view
 from tests.unit.test_judgment_debt_materialization import (
     _camera_payload,
@@ -38,6 +37,9 @@ from vfx_harness.blender.observation_environment import (
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import unit_state_claims
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.jit_materialization import (
     MATERIALIZATION_SCHEMA,
@@ -45,13 +47,13 @@ from vfx_harness.orchestration.jit_materialization import (
 )
 from vfx_harness.orchestration.judgment_debt_state import (
     current_judgment_debt_states,
-    mark_judgment_debt_due,
-    replay_prefix_unit_digests,
+    replay_prefix_receipt,
     require_judgment_debts_satisfied,
 )
 from vfx_harness.orchestration.judgment_payment_attempts import (
     EVENTS as PAYMENT_ATTEMPT_EVENTS,
 )
+from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_authority import (
     publish_current,
@@ -110,9 +112,10 @@ def _pass_layer_unit(root: Path, layer_id: str, unit_id: str) -> None:
     artifact = root / unit.mutates.script_spans[0]
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(f"# deterministic fixture unit {layer_id}:{unit_id}\npass\n", encoding="utf-8")
-    plan_hash = hashlib.sha256(layers_path.read_bytes()).hexdigest()
+    selected = resolve_selected_authority(root)
+    plan_hash = selected_layer_capsule_digest(root, layer_id, selected)
     initialize(root, layer_id, layer.stages, plan_hash=plan_hash)
-    selection_token = resolve_selected_authority(root).selection_token
+    selection_token = selected.selection_token
     attempt = claim_for_build(
         root,
         layer_id,
@@ -243,31 +246,39 @@ async def _build_prepassed_layer(root: Path, layer_id: str, session: _ReplaySess
     await layer_runtime.build_layer(shot, layer, session, verbose=False)
 
 
-def _fixture_executable_evidence(_shot, layer, *_args, **_kwargs) -> list[dict]:
-    """Give executable-only fixture canonicals a real typed replay observation."""
-    layer_id = str(layer.id)
+def _fixture_executable_evidence(
+    _shot,
+    layer,
+    *_args,
+    active_unit=None,
+    **_kwargs,
+) -> list[dict]:
+    """Satisfy the exact evidence ids sealed into the active replay plan."""
+
+    del active_unit
+    claims = tuple(
+        claim
+        for unit in tuple(getattr(layer, "stages", ()) or ())
+        for claim in tuple(getattr(getattr(unit, "evaluation", None), "claims", ()) or ())
+    )
     return [
         {
-            "id": f"{layer_id}-executable-replay",
+            "id": str(evidence.id),
             "metric": "object_property",
             "value": 1.0,
             "target": ">= 1",
             "pass": True,
             "source": "builder_state",
             "authoritative": True,
-            "owner_layer": layer_id,
-            "fault_owner": layer_id,
-            "activates_at": layer_id,
+            "owner_layer": str(layer.id),
+            "fault_owner": str(layer.id),
+            "activates_at": str(layer.id),
             "lifecycle": "layer",
         }
+        for claim in claims
+        if getattr(claim, "required", False)
+        for evidence in tuple(getattr(claim, "evidence", ()) or ())
     ]
-
-
-def _publish_captured_outcome(root: Path, layer_id: str, captured: dict) -> Path:
-    layer = load_layers_from_path(selected_artifact_path(root, "layers.json"))[layer_id]
-    values = dict(captured)
-    values["attempt"] = values.pop("ledger_attempt")
-    return write_test_layer_outcome(root, layer, **values)
 
 
 def test_public_jit_pipeline_defers_then_settles_matching_form_debt_once(
@@ -277,7 +288,6 @@ def test_public_jit_pipeline_defers_then_settles_matching_form_debt_once(
     """Only the matching later form unit can activate and settle camera judgment debt."""
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     debt_judgments: list[str] = []
-    outcomes: list[dict] = []
 
     async def axes(*_args):
         return [("camera_alignment", "camera framing"), ("form", "rendered form")]
@@ -304,17 +314,16 @@ def test_public_jit_pipeline_defers_then_settles_matching_form_debt_once(
             "observation_reconciliation": [],
             "contract_gap": False,
             "judge_conflict": False,
-            "decided_by": "deterministic-fixture",
+            "decided_by": (
+                "deterministic-fixture"
+                if debt_ids
+                else "unit_executable_evidence"
+            ),
             "evidence": list(kwargs.get("evidence") or []),
         }
 
     builder = verify_runtime.builder_package()
     monkeypatch.setattr(layer_runtime, "ensure_axes", axes)
-    monkeypatch.setattr(
-        layer_runtime,
-        "publish_composed_layer_outcome",
-        lambda _folder, _layer, **kwargs: outcomes.append(dict(kwargs)),
-    )
     monkeypatch.setattr(layer_runtime, "_blender_version", lambda _session: "fixture")
     monkeypatch.setattr(layer_runtime.costlog, "bind", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(layer_runtime.costlog, "unbind", lambda: None)
@@ -346,7 +355,6 @@ def test_public_jit_pipeline_defers_then_settles_matching_form_debt_once(
     assert activation is None
     assert state.status == "pending_not_due"
 
-    _publish_captured_outcome(root, "1", outcomes[-1])
     _publish_payload(
         root,
         _payload_for_bundle(root, "form-jit.json", _form_payload(), bundle.content_hash),
@@ -359,19 +367,14 @@ def test_public_jit_pipeline_defers_then_settles_matching_form_debt_once(
     assert activation.payer_unit_digests == (("2:hall_form", unit_digest(form_unit)),)
     assert state.status == "pending_not_due"
 
-    camera_only_receipt = replay_prefix_unit_digests(
-        root,
-        replayed_layer_scripts=(root / "build" / "01_camera.py",),
-        replay_inputs=(
-            executed_replay_input(root, "build/01_camera.py"),
-        ),
-    )
-    with pytest.raises(ValueError, match=r"exact payer units.*missing=2:hall_form"):
-        mark_judgment_debt_due(
+    with pytest.raises(ValueError, match="exact payer finalization claim"):
+        replay_prefix_receipt(
             root,
-            definition.digest,
-            layer_id="2",
-            replayed_unit_digests=camera_only_receipt,
+            replayed_layer_scripts=(root / "build" / "01_camera.py",),
+            replay_inputs=(
+                executed_replay_input(root, "build/01_camera.py"),
+            ),
+            selected_authority=resolve_selected_authority(root),
         )
     assert current_judgment_debt_states(root)[0][2].status == "pending_not_due"
 
@@ -381,7 +384,12 @@ def test_public_jit_pipeline_defers_then_settles_matching_form_debt_once(
     anyio.run(_build_prepassed_layer, root, "2", session)
     assert current_judgment_debt_states(root)[0][2].status == "satisfied"
     assert debt_judgments == [definition.debt_id]
-    payment_verdict = outcomes[-1]["canonical"][0][1]
+    layer_two_outcome = json.loads(
+        layer_outcome_path(root, "2").read_text(encoding="utf-8")
+    )
+    payment_verdict = layer_two_outcome["finalization_receipt"]["canonical"][0][
+        "verdict"
+    ]
     assert payment_verdict["judgment_observation"]["request"]["definition_digest"] == definition.digest
     assert payment_verdict["judgment_observation"]["candidate_capture"]["png_sha256"]
     event_path = root / "state" / "judgment-debts.jsonl"
@@ -406,7 +414,6 @@ def test_public_pipeline_suppresses_unchanged_no_signal_payment_attempt(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     renders: list[str] = []
     critic_calls: list[str] = []
-    outcomes: list[dict] = []
 
     async def axes(*_args):
         return [("camera_alignment", "camera framing"), ("form", "rendered form")]
@@ -450,7 +457,7 @@ def test_public_pipeline_suppresses_unchanged_no_signal_payment_attempt(
             "observation_reconciliation": [],
             "contract_gap": False,
             "judge_conflict": False,
-            "decided_by": "deterministic-executable-fixture",
+            "decided_by": "unit_executable_evidence",
             "evidence": list(kwargs.get("evidence") or []),
         }
 
@@ -459,16 +466,8 @@ def test_public_pipeline_suppresses_unchanged_no_signal_payment_attempt(
         renders.append(Path(render_rel).name)
         return render_rel, receipt
 
-    def capture_outcome(_folder, _layer, **kwargs) -> None:
-        outcomes.append(dict(kwargs))
-
     builder = verify_runtime.builder_package()
     monkeypatch.setattr(layer_runtime, "ensure_axes", axes)
-    monkeypatch.setattr(
-        layer_runtime,
-        "publish_composed_layer_outcome",
-        capture_outcome,
-    )
     monkeypatch.setattr(layer_runtime, "_blender_version", lambda _session: "fixture")
     monkeypatch.setattr(layer_runtime.costlog, "bind", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(layer_runtime.costlog, "unbind", lambda: None)
@@ -495,7 +494,6 @@ def test_public_pipeline_suppresses_unchanged_no_signal_payment_attempt(
     _pass_layer_unit(root, "1", "camera")
     session = _ReplaySession()
     anyio.run(_build_prepassed_layer, root, "1", session)
-    _publish_captured_outcome(root, "1", outcomes[-1])
     _publish_payload(
         root,
         _payload_for_bundle(root, "form-jit.json", _form_payload(), bundle.content_hash),
@@ -505,30 +503,31 @@ def test_public_pipeline_suppresses_unchanged_no_signal_payment_attempt(
     anyio.run(_build_prepassed_layer, root, "2", session)
     definition, _activation, state = current_judgment_debt_states(root)[0]
     assert state.status == "due"
-    assert renders == ["2_canonical.png"]
+    assert renders == ["2_finalization_group_0_canonical.png"]
     assert critic_calls == []
     attempts = root / "state" / PAYMENT_ATTEMPT_EVENTS
     assert len(attempts.read_text(encoding="utf-8").splitlines()) == 1
-    assert outcomes[-1]["canonical"][0][1]["decided_by"] == "no_optical_signal"
+    outcome_path = layer_outcome_path(root, "2")
+    first_outcome = outcome_path.read_bytes()
+    first_record = json.loads(first_outcome)
+    first_verdict = first_record["finalization_receipt"]["canonical"][0]["verdict"]
+    assert first_verdict["decided_by"] == "no_optical_signal"
 
-    # Exact restart: replay is still re-proven, but raster and critic both stay idle.
+    # Exact restart reconciles the terminal receipt only. It cannot replay, rerender,
+    # rejudge, or rewrite the immutable outcome projection.
     anyio.run(_build_prepassed_layer, root, "2", session)
-    assert renders == ["2_canonical.png"]
+    assert renders == ["2_finalization_group_0_canonical.png"]
     assert critic_calls == []
     assert len(attempts.read_text(encoding="utf-8").splitlines()) == 1
-    cached = outcomes[-1]["canonical"][0][1]
-    assert cached["decided_by"] == "unchanged_payment_attempt"
-    assert cached["payment_attempt"]["suppressed"] is True
+    assert outcome_path.read_bytes() == first_outcome
     assert current_judgment_debt_states(root)[0][2].status == "due"
 
-    # A changed typed render environment is a changed observation input: exactly one new
-    # raster is legal, then its new no-signal result ratchets as well.
+    # Changing a live render environment is not authority to reopen a terminal attempt.
+    # A new observation requires a separately reviewed authority/state transaction.
     session.environment_revision = "different-render-environment"
     anyio.run(_build_prepassed_layer, root, "2", session)
-    assert len(renders) == 2
-    assert len(attempts.read_text(encoding="utf-8").splitlines()) == 2
-    anyio.run(_build_prepassed_layer, root, "2", session)
-    assert len(renders) == 2
-    assert len(attempts.read_text(encoding="utf-8").splitlines()) == 2
+    assert renders == ["2_finalization_group_0_canonical.png"]
+    assert len(attempts.read_text(encoding="utf-8").splitlines()) == 1
+    assert outcome_path.read_bytes() == first_outcome
     assert critic_calls == []
     assert resolve_current(root).content_hash == definition.seed.bundle_digest

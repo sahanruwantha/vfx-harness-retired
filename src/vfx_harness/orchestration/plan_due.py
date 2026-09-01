@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,13 +16,18 @@ from vfx_harness.domain.plan_records import (
     load_obligations,
     load_resolutions,
 )
-from vfx_harness.domain.stop_envelope_primitives import require_digest
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.observability.run_artifacts import shot_state_dir
+from vfx_harness.orchestration.authority_capsule_resolution import (
+    selected_layer_capsule_digest,
+)
+from vfx_harness.orchestration.authority_selection import resolve_selected_authority
+from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_authority import resolve_current
 from vfx_harness.orchestration.unit_completion_state import (
-    current_completion_receipt_digests,
+    authorize_completed_units_for_layer,
+    source_verified_completion_receipt_digests,
 )
 
 if TYPE_CHECKING:
@@ -47,24 +52,63 @@ def _locked_resolutions(path: Path):
 
 
 @contextmanager
-def _provided_completion_receipts(
-    receipts: Mapping[tuple[str, str], str],
+def _current_completion_receipt_projection_for_bundle(
+    shot_folder: str | Path,
+    bundle: PlanBundle | None,
 ):
-    """Adapt an outer state-guarded receipt map without reacquiring state locks."""
+    """Project verified receipt identities for the pure resolution-ledger parser.
 
-    current: dict[tuple[str, str], str] = {}
-    for key, digest in receipts.items():
-        if not isinstance(key, tuple) or len(key) != 2 or not all(
-            isinstance(part, str) and part.strip() == part and part for part in key
-        ):
-            raise ValueError(
-                "current completion receipt keys must be exact (layer, unit) strings"
-            )
-        current[(key[0], key[1])] = require_digest(
-            digest,
-            f"current completion receipt {key[0]}.{key[1]}",
+    This value map is not authorization.  Each row is admitted only after the typed
+    current-head attestation and immutable source closure agree; scheduling and state
+    mutation consumers must retain the typed attestation instead of this projection.
+    """
+
+    """Intersect exact source closure with current coordinator authorization."""
+
+    if bundle is None:
+        yield {}
+        return
+    selected = resolve_selected_authority(shot_folder)
+    if (
+        selected.plan is None
+        or selected.plan.bundle.content_hash != bundle.content_hash
+    ):
+        raise ValueError(
+            "selected plan authority changed before completion receipts were resolved"
         )
-    yield current
+    layers = load_layers_from_path(selected.artifact_paths["layers.json"])
+    with source_verified_completion_receipt_digests(shot_folder) as sourced:
+        current_projection: dict[tuple[str, str], str] = {}
+        for layer in layers.values():
+            if layer.execution != "ready":
+                continue
+            layer_id = str(layer.id)
+            layer_digest = selected_layer_capsule_digest(
+                shot_folder,
+                layer_id,
+                selected,
+            )
+            completion_set = authorize_completed_units_for_layer(
+                shot_folder,
+                layer_id,
+                layer.stages,
+                expected_plan_hash=layer_digest,
+                selected_authority=selected,
+            )
+            for unit_id, receipt_digest in completion_set.receipts:
+                key = (layer_id, unit_id)
+                if sourced.get(key) != receipt_digest:
+                    raise ValueError(
+                        f"authorized completion receipt {layer_id}.{unit_id} lacks "
+                        "its exact source closure"
+                    )
+                current_projection[key] = receipt_digest
+        yield current_projection
+        selected_after = resolve_selected_authority(shot_folder)
+        if selected_after.selection_token != selected.selection_token:
+            raise ValueError(
+                "selected authority changed while completion receipts were consumed"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +137,6 @@ def unresolved_due_for_bundle(
     completion: bool = False,
     record_kinds: frozenset[str] | None = None,
     expected_bundle_digest: str | None = None,
-    current_completion_receipts: Mapping[tuple[str, str], str] | None = None,
 ) -> tuple[DueRecord, ...]:
     if bundle is None:
         return ()
@@ -104,11 +147,10 @@ def unresolved_due_for_bundle(
         raise ValueError(
             "plan authority changed before the due-state boundary could be verified"
         )
-    if current_completion_receipts is None:
-        receipt_context = current_completion_receipt_digests(shot_folder)
-    else:
-        receipt_context = _provided_completion_receipts(current_completion_receipts)
-    with receipt_context as current_receipts:
+    with _current_completion_receipt_projection_for_bundle(
+        shot_folder,
+        bundle,
+    ) as current_receipts:
         resolved = load_resolutions(
             shot_state_dir(shot_folder) / RESOLUTIONS,
             bundle_hash=bundle.content_hash,
@@ -158,7 +200,6 @@ def unresolved_due(
     record_kinds: frozenset[str] | None = None,
     expected_bundle_digest: str | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
-    current_completion_receipts: Mapping[tuple[str, str], str] | None = None,
 ) -> tuple[DueRecord, ...]:
     bundle = (
         resolve_current(shot_folder)
@@ -178,7 +219,6 @@ def unresolved_due(
         completion=completion,
         record_kinds=record_kinds,
         expected_bundle_digest=expected_bundle_digest,
-        current_completion_receipts=current_completion_receipts,
     )
 
 
@@ -208,7 +248,6 @@ def require_due_clear_for_bundle(
     completion: bool = False,
     record_kinds: frozenset[str] | None = None,
     expected_bundle_digest: str | None = None,
-    current_completion_receipts: Mapping[tuple[str, str], str] | None = None,
 ) -> None:
     """Verify due state against an already selected bundle without relocking selection."""
 
@@ -221,7 +260,6 @@ def require_due_clear_for_bundle(
         completion=completion,
         record_kinds=record_kinds,
         expected_bundle_digest=expected_bundle_digest,
-        current_completion_receipts=current_completion_receipts,
     )
     _require_records_clear(
         records,
@@ -242,7 +280,6 @@ def require_due_clear(
     record_kinds: frozenset[str] | None = None,
     expected_bundle_digest: str | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
-    current_completion_receipts: Mapping[tuple[str, str], str] | None = None,
 ) -> None:
     records = unresolved_due(
         shot_folder,
@@ -253,7 +290,6 @@ def require_due_clear(
         record_kinds=record_kinds,
         expected_bundle_digest=expected_bundle_digest,
         selected_authority=selected_authority,
-        current_completion_receipts=current_completion_receipts,
     )
     _require_records_clear(
         records,

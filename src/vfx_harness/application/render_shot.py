@@ -37,7 +37,7 @@ from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration import authority_selection
+from vfx_harness.orchestration import authority_selection, layer_publication
 from vfx_harness.orchestration.authority_selection_heads import (
     AuthoritySelectionHeadError,
     read_authority_selection_heads,
@@ -140,10 +140,18 @@ def _chain_scripts(
     if not build_dir.is_dir():
         raise FileNotFoundError(f"no build/ in {shot.folder} — run the build stage first")
 
+    current_selected = selected_authority
+    if current_selected is None and not force:
+        try:
+            current_selected = authority_selection.resolve_selected_authority(
+                shot.folder
+            )
+        except authority_selection.SelectedAuthorityResolutionError as exc:
+            raise IncompleteRender(str(exc)) from exc
     layers = list(
         selected_layer_chain(
             shot,
-            selected_authority=selected_authority,
+            selected_authority=current_selected,
             expected_bundle_digest=expected_bundle_digest,
         )
     )
@@ -159,7 +167,7 @@ def _chain_scripts(
             raise FileNotFoundError(f"no layer matching {upto!r} in the plan")
         layers = layers[: matching[-1] + 1]
 
-    ledger = Ledger(shot, selected_authority=selected_authority)
+    ledger = Ledger(shot, selected_authority=current_selected)
     scripts, problems = [], []
     for g in layers:
         p = shot.folder / g.script
@@ -169,6 +177,18 @@ def _chain_scripts(
         st = ledger.status(g.as_milestone())
         if st != "passed":
             problems.append(f"layer {g.id} ({g.script}) is '{st}', not passed")
+        if not force:
+            assert current_selected is not None
+            try:
+                layer_publication.require_current_layer_publication(
+                    shot.folder,
+                    g,
+                    current_selected,
+                )
+            except layer_publication.LayerPublicationConflict as exc:
+                problems.append(
+                    f"layer {g.id} receipt-backed publication is invalid: {exc}"
+                )
         scripts.append(p)
     if problems and not force:
         raise IncompleteRender(
@@ -486,6 +506,28 @@ def _require_final_render_authority_current(
     require_snapshot_inputs_current(shot, snapshot)
 
 
+def _require_final_render_snapshot_current(
+    shot: Shot,
+    snapshot: FinalRenderSnapshot,
+    current_selected: authority_selection.ResolvedSelectedAuthority,
+) -> None:
+    """Verify captured inputs under caller-held selection/state locks.
+
+    The full accepted-outcome check re-enters the serialized selection lock through
+    every layer publication guard.  Publication performs that full check immediately
+    before acquiring the transaction locks, then uses this byte/state postcondition
+    while the locks are held through tentative rename and rollback.
+    """
+
+    if (
+        current_selected.selection_token
+        != snapshot.selected_authority.selection_token
+        or current_selected.assertion != snapshot.selected_authority.assertion
+    ):
+        raise FinalRenderSnapshotError("selected authority changed during final render")
+    require_snapshot_inputs_current(shot, snapshot)
+
+
 def _publish_final_render(
     shot: Shot,
     staged: Path,
@@ -495,6 +537,10 @@ def _publish_final_render(
     """Tentatively publish, postverify, and restore the predecessor on conflict."""
 
     try:
+        # This full verifier replays the receipt/v3-outcome/ledger read boundary for
+        # every selected layer after the expensive render, before any deliverable byte
+        # can replace its predecessor.
+        _require_final_render_authority_current(shot, snapshot)
         with _final_render_output_lock(output), authority_selection_lock(
             shot.folder,
             exclusive=False,
@@ -513,18 +559,18 @@ def _publish_final_render(
                 observed,
             )
             with final_render_state_locks(shot, snapshot):
-                _require_final_render_authority_current(
+                _require_final_render_snapshot_current(
                     shot,
                     snapshot,
-                    selected_authority=current_selected,
+                    current_selected,
                 )
                 _publish_media_transaction(
                     staged,
                     output,
-                    postcondition=lambda: _require_final_render_authority_current(
+                    postcondition=lambda: _require_final_render_snapshot_current(
                         shot,
                         snapshot,
-                        selected_authority=current_selected,
+                        current_selected,
                     ),
                 )
     except (

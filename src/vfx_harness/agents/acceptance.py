@@ -27,7 +27,7 @@ from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration import plan_due, unit_state
+from vfx_harness.orchestration import layer_publication, plan_due
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
@@ -143,25 +143,31 @@ def _require_acceptance_replay_current(
         raise IncompleteChain(str(exc)) from exc
 
 
-def _unit_completion_failures(shot: Shot, layers) -> list[str]:
-    """Name layers whose lifecycle projection lacks receipt-backed unit authority."""
+def _current_layer_publications(
+    shot: Shot,
+    layers,
+    selected_authority: ResolvedSelectedAuthority,
+) -> tuple[layer_publication.VerifiedLayerPublication, ...]:
+    """Capture every public layer boundary or report the complete invalid set."""
 
+    publications: list[layer_publication.VerifiedLayerPublication] = []
     failures: list[str] = []
     for layer in layers:
         try:
-            state = unit_state.load(shot.folder, str(layer.id))
-            unit_state.validate_current(state, str(layer.id), layer.stages)
-        except ValueError as exc:
-            failures.append(f"layer {layer.id} work-unit state is invalid: {exc}")
-            continue
-        sealed = unit_state.digest_matched_passed(state, layer.stages)
-        missing = [unit.id for unit in layer.stages if unit.id not in sealed]
-        if missing:
-            failures.append(
-                f"layer {layer.id} has no receipt-backed completion for "
-                + ", ".join(missing)
+            publications.append(
+                layer_publication.require_current_layer_publication(
+                    shot.folder,
+                    layer,
+                    selected_authority,
+                )
             )
-    return failures
+        except layer_publication.LayerPublicationConflict as exc:
+            failures.append(f"layer {layer.id}: {exc}")
+    if failures:
+        raise IncompleteChain(
+            "receipt-backed layer publication is incomplete — " + "; ".join(failures)
+        )
+    return tuple(publications)
 
 
 def _chain(
@@ -180,19 +186,32 @@ def _chain(
     reconcile() would mark real layer verdicts `superseded_by_acceptance` on the
     strength of that partial render, corrupting good records with a bad judgement.
     """
+    current_selected = selected_authority
+    if current_selected is None and not force:
+        try:
+            current_selected = resolve_selected_authority(shot.folder)
+        except SelectedAuthorityResolutionError as exc:
+            raise IncompleteChain(str(exc)) from exc
     layers = selected_layer_chain(
         shot,
-        selected_authority=selected_authority,
+        selected_authority=current_selected,
         expected_bundle_digest=expected_bundle_digest,
     )
-    ledger = Ledger(shot, selected_authority=selected_authority)
+    ledger = Ledger(shot, selected_authority=current_selected)
     missing = [f"layer {g.id} ({g.script}) has no script"
                for g in layers if not (shot.folder / g.script).is_file()]
     unpassed = [f"layer {g.id} is '{ledger.status(g.as_milestone())}'"
                 for g in layers
                 if (shot.folder / g.script).is_file()
                 and ledger.status(g.as_milestone()) != "passed"]
-    unpassed.extend(_unit_completion_failures(shot, layers))
+    publications_before: tuple[layer_publication.VerifiedLayerPublication, ...] = ()
+    if not force:
+        assert current_selected is not None
+        publications_before = _current_layer_publications(
+            shot,
+            layers,
+            current_selected,
+        )
     if (missing or unpassed) and not force:
         raise IncompleteChain(
             "refusing to judge an unfinished shot — " + "; ".join(missing + unpassed)
@@ -233,6 +252,16 @@ def _chain(
         ran.append(g.script)
     if not force:
         _require_acceptance_replay_current(prepared_inputs)
+        assert current_selected is not None
+        publications_after = _current_layer_publications(
+            shot,
+            layers,
+            current_selected,
+        )
+        if publications_after != publications_before:
+            raise IncompleteChain(
+                "receipt-backed layer publication changed during acceptance replay"
+            )
     return ran
 
 
@@ -260,10 +289,19 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
     moments = load_milestones(shot, selected_authority)
     if only:
         moments = {k: v for k, v in moments.items() if k == only} or moments
-    authority_before = acceptance_stop.capture_acceptance_authority(
-        shot,
-        moments,
-        selected_authority,
+    authority_before = (
+        acceptance_stop.capture_acceptance_authority(
+            shot,
+            moments,
+            selected_authority,
+            verify_layer_publications=False,
+        )
+        if force
+        else acceptance_stop.capture_acceptance_authority(
+            shot,
+            moments,
+            selected_authority,
+        )
     )
     replay_inputs = (
         ()
@@ -393,10 +431,19 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         if not only and publishable
         else None
     )
-    authority_after = acceptance_stop.capture_acceptance_authority(
-        shot,
-        moments,
-        selected_authority,
+    authority_after = (
+        acceptance_stop.capture_acceptance_authority(
+            shot,
+            moments,
+            selected_authority,
+            verify_layer_publications=False,
+        )
+        if force
+        else acceptance_stop.capture_acceptance_authority(
+            shot,
+            moments,
+            selected_authority,
+        )
     )
     if replay_inputs:
         _require_acceptance_replay_current(replay_inputs)

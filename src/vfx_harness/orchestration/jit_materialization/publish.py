@@ -15,11 +15,11 @@ from vfx_harness.observability.provenance import atomic_write
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
     authority_selection_lock,
-    durable_remove_pointer,
-    durable_replace_pointer_bytes,
-    durable_replace_pointer_json,
     durably_ensure_real_directory,
     require_matching_authority_selection_token,
+)
+from vfx_harness.orchestration.authority_state_transaction import (
+    commit_prepared_authority_state_transition_locked,
 )
 from vfx_harness.orchestration.jit_materialization.errors import (
     MaterializationSelectionConflict,
@@ -34,6 +34,10 @@ from vfx_harness.orchestration.jit_materialization.proposal import (
     ProposedMaterializationView,
     serialized_documents,
     serialized_hashes,
+)
+from vfx_harness.orchestration.jit_materialization.publication_checks import (
+    attested_transition_intent,
+    require_attested_publication,
 )
 from vfx_harness.orchestration.jit_materialization.schema import (
     CURRENT,
@@ -50,9 +54,12 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     materialization_finalization_path,
     read_materialization_finalization,
 )
+from vfx_harness.orchestration.jit_materialization.transition import (
+    prepare_materialization_publication,
+    prepare_materialization_publication_locked,
+)
 from vfx_harness.orchestration.jit_materialization.validate import validate_materialization
 from vfx_harness.orchestration.jit_materialization.view_pointer import (
-    JitViewPointer,
     canonical_view_hash,
 )
 from vfx_harness.orchestration.jit_materialization.view_store import (
@@ -75,7 +82,12 @@ _replace_and_postverify_jit_pointer = selection_commit.replace_and_postverify_ji
 _require_selected_jit_semantics = selection_commit.require_selected_jit_semantics
 _resolve_authority_from_locked_heads = selection_commit.resolve_authority_from_locked_heads
 _selected_authority = selection_commit.selected_authority
-_project_candidate_unit_state = candidate_preview.project_candidate_unit_state
+_project_candidate_authority_state = (
+    candidate_preview.project_candidate_authority_state
+)
+_stage_candidate_publication_view = (
+    candidate_preview.stage_candidate_publication_view
+)
 
 
 def revert_materialization(
@@ -94,12 +106,16 @@ def revert_materialization(
     rows revert to the bundle's deferred authority; every other layer's materialization
     is preserved untouched.
 
-    ``select=True`` (tests, explicit discard) writes the live pointer.
-    ``select=False`` writes the overlay directory only: remat uses it as the design
-    base and selects the replacement, or the previous pointer stays in force.
+    Selected reverts are retired: every JIT head mutation must carry a gated replacement
+    and its atomic authority-state transition. ``select=False`` writes only an overlay
+    design base; live authority remains unchanged until the replacement publishes.
     """
     shot = Path(shot_folder).resolve()
-    pointer_path = shot / CURRENT
+    if select:
+        raise MaterializationSelectionConflict(
+            "selected materialization revert is retired; prepare and gate a replacement "
+            "with select=False, then publish that candidate atomically"
+        )
     selected = (
         _selected_authority(shot)
         if selected_authority is None
@@ -180,93 +196,25 @@ def revert_materialization(
             for row in view_docs[name][key]
             if str(row.get("owner_layer") or row.get("activates_at") or "") != layer_id
         ]
-    still_materialized = sorted(
-        str(row.get("id")) for row in view_docs["layers.json"]["layers"] if row.get("execution") != "jit_deferred"
-    )
     view_hash = _canonical_view_hash(view_docs)
     payloads = serialized_documents(view_docs)
-    artifact_hashes = serialized_hashes(payloads)
-    store_digest = (
-        view_hash
-        if select
-        else overlay_store_digest(
-            view_hash=view_hash,
-            bundle_hash=bundle.content_hash,
-            base_selection=base_selection,
-        )
+    store_digest = overlay_store_digest(
+        view_hash=view_hash,
+        bundle_hash=bundle.content_hash,
+        base_selection=base_selection,
     )
     view = shot / STATE_DIR / "views" / store_digest
     view_members = dict(payloads)
-    if not select:
-        view_members[OVERLAY_BASE_FILE] = overlay_base_bytes(
-            bundle_hash=bundle.content_hash,
-            base_selection=base_selection,
-        )
+    view_members[OVERLAY_BASE_FILE] = overlay_base_bytes(
+        bundle_hash=bundle.content_hash,
+        base_selection=base_selection,
+    )
     durably_install_or_flush_view_directory(shot, view, view_members)
     load_judgment_debt_catalog(
         view / "requirements.json",
         selected_bundle_digest=bundle.content_hash,
     )
-    if not select:
-        return view
-    try:
-        with authority_selection_lock(shot, exclusive=True):
-            from vfx_harness.orchestration.authority_selection_heads import (  # noqa: PLC0415
-                read_authority_selection_heads,
-            )
-
-            heads = read_authority_selection_heads(shot)
-            require_matching_authority_selection_token(base_selection, heads.token)
-            live = _resolve_authority_from_locked_heads(shot, heads)
-            if (
-                live.plan is None
-                or live.plan.bundle.content_hash != bundle.content_hash
-            ):
-                raise ValueError(
-                    "materialization revert base no longer resolves to its selected global bundle"
-                )
-            durably_ensure_real_directory(shot, pointer_path.parent)
-            artifacts = {
-                name: (view / name).relative_to(shot).as_posix()
-                for name in OVERLAY_ARTIFACTS
-            }
-            current_pointer = JitViewPointer(
-                revision=heads.token.jit_revision,
-                plan_revision=heads.token.plan_revision,
-                bundle_hash=bundle.content_hash,
-                view_hash=view_hash,
-                materialized_layers=tuple(still_materialized),
-                artifacts=artifacts,
-                hashes=artifact_hashes,
-            )
-            if heads.jit == current_pointer:
-                _require_selected_jit_semantics(shot, heads, current_pointer)
-                return pointer_path
-            pointer = JitViewPointer(
-                revision=heads.token.jit_revision + 1,
-                plan_revision=heads.token.plan_revision,
-                bundle_hash=bundle.content_hash,
-                view_hash=view_hash,
-                materialized_layers=tuple(still_materialized),
-                artifacts=artifacts,
-                hashes=artifact_hashes,
-            )
-            _replace_and_postverify_jit_pointer(
-                shot,
-                pointer_path,
-                heads,
-                pointer,
-                operation="materialization revert",
-                replace_pointer_json=durable_replace_pointer_json,
-                replace_pointer_bytes=durable_replace_pointer_bytes,
-                remove_pointer=durable_remove_pointer,
-                verify_semantics=_require_selected_jit_semantics,
-            )
-    except MaterializationSelectionConflict:
-        raise
-    except (PlanPublicationError, ValueError) as exc:
-        raise MaterializationSelectionConflict(f"materialization revert selection conflict: {exc}") from exc
-    return pointer_path
+    return view
 
 
 def _owned_by(layer_row: dict | None) -> set[str]:
@@ -343,6 +291,7 @@ def _composed_documents(
         shot,
         global_layers[layer_id],
         executable_layers,
+        selected_authority=selected,
     )
     base_scene = bases["scene_checks.json"]
     base_requirements = bases["requirements.json"]
@@ -484,6 +433,11 @@ def stage_candidate_view(
     real consequences instead of the pre-publication world."""
     shot = Path(shot_folder).resolve()
     view = Path(view).resolve()
+    selected = (
+        _selected_authority(shot)
+        if selected_authority is None
+        else selected_authority
+    )
     marker_path = view / ".plan-consumer-view.json"
     if marker_path.is_symlink() or not marker_path.is_file():
         raise MaterializationSelectionConflict(
@@ -503,7 +457,7 @@ def stage_candidate_view(
         shot,
         materialization_path,
         overlay_root=overlay_root,
-        selected_authority=selected_authority,
+        selected_authority=selected,
         resolutions_path=view / "state" / "plan-resolutions.jsonl",
     )
     documents = _overlay_documents(materialized, bases)
@@ -550,25 +504,22 @@ def stage_candidate_view(
                     (state_link / child.name).symlink_to(child)
     pointer_dir = view / "state" / "jit-layers"
     pointer_dir.mkdir(parents=True, exist_ok=True)
-    pointer = JitViewPointer(
-        revision=base_selection.jit_revision + 1,
-        plan_revision=base_selection.plan_revision,
+    candidate_payload = Path(materialization_path).read_bytes()
+    publication = prepare_materialization_publication(
+        shot,
+        selected_before=selected,
+        documents=documents,
         bundle_hash=bundle.content_hash,
         view_hash=view_hash,
-        materialized_layers=tuple(
-            sorted(
-                str(row.get("id"))
-                for row in documents["layers.json"]["layers"]
-                if row.get("execution") != "jit_deferred"
-            )
-        ),
-        artifacts={name: name for name in OVERLAY_ARTIFACTS},
-        hashes=artifact_hashes,
+        artifact_hashes=artifact_hashes,
+        candidate_payload=candidate_payload,
+        candidate_digest=hashlib.sha256(candidate_payload).hexdigest(),
     )
+    _stage_candidate_publication_view(view, view_hash, payloads)
     pointer_path = pointer_dir / "current.json"
-    pointer_payload = canonical_json_bytes(pointer.as_dict())
+    pointer_payload = publication.pointer_payload
     pointer_path.write_bytes(pointer_payload)
-    _project_candidate_unit_state(shot, view, materialized)
+    _project_candidate_authority_state(view, publication)
     return ProposedMaterializationView(
         bundle=bundle,
         materialized=materialized,
@@ -584,6 +535,7 @@ def stage_candidate_view(
         ),
         consumer_marker_sha256=hashlib.sha256(marker_payload).hexdigest(),
         consumer_pointer_sha256=hashlib.sha256(pointer_payload).hexdigest(),
+        publication=publication,
     )
 
 
@@ -666,6 +618,32 @@ def finalize_materialization_candidate(
                         proposed_artifact_hashes=preview.artifact_hashes,
                         planning_inputs_digest=preview.planning_inputs_digest,
                         consumer_marker_sha256=preview.consumer_marker_sha256,
+                        publication_jit_pointer_sha256=(
+                            preview.publication.pointer_sha256
+                        ),
+                        authority_transition_kind=(
+                            preview.publication.transition_kind
+                        ),
+                        authority_transition_intent_ref=(
+                            None
+                            if preview.publication.transition is None
+                            else preview.publication.transition.intent_ref
+                        ),
+                        authority_capsule_set_digest=(
+                            preview.publication.capsule_set.capsule_set_digest
+                        ),
+                        authority_effects_digest=(
+                            preview.publication.effects_digest
+                        ),
+                        authority_state_head_ref=(
+                            preview.publication.authority_state_head_ref
+                        ),
+                        before_state_hashes=(
+                            preview.publication.before_state_hashes
+                        ),
+                        after_state_hashes=(
+                            preview.publication.after_state_hashes
+                        ),
                     )
             except (PlanPublicationError, ValueError) as exc:
                 raise MaterializationSelectionConflict(
@@ -712,6 +690,7 @@ def publish_materialization(
     candidate = Path(materialization_path)
     with materialization_candidate_lock(candidate):
         finalization = read_materialization_finalization(candidate)
+        attested_intent = attested_transition_intent(shot, finalization)
         if finalization.candidate_revision != materialization_candidate_revision(candidate):
             raise MaterializationSelectionConflict("materialization candidate changed after terminal finalization")
         try:
@@ -777,67 +756,45 @@ def publish_materialization(
                         "materialization planning inputs changed before JIT selection"
                     )
 
-                def verify_publication_semantics(
-                    verified_shot: Path,
-                    verified_heads,
-                    verified_pointer: JitViewPointer,
-                ) -> None:
-                    _require_selected_jit_semantics(
-                        verified_shot,
-                        verified_heads,
-                        verified_pointer,
-                    )
-                    if (
-                        exact_planning_input_identity_digest(verified_shot)
-                        != finalization.planning_inputs_digest
-                    ):
-                        raise ValueError(
-                            "materialization planning inputs changed during JIT selection"
-                        )
                 durably_ensure_real_directory(shot, pointer_path.parent)
-                proposed_layers = tuple(
-                    sorted(
-                        str(row.get("id"))
-                        for row in documents["layers.json"]["layers"]
-                        if row.get("execution") != "jit_deferred"
-                    )
-                )
-                artifacts = {
-                    name: (view / name).relative_to(shot).as_posix()
-                    for name in OVERLAY_ARTIFACTS
-                }
-                current_pointer = JitViewPointer(
-                    revision=heads.token.jit_revision,
-                    plan_revision=heads.token.plan_revision,
-                    bundle_hash=bundle.content_hash,
-                    view_hash=view_hash,
-                    materialized_layers=proposed_layers,
-                    artifacts=artifacts,
-                    hashes=artifact_hashes,
-                )
-                if heads.jit == current_pointer:
-                    verify_publication_semantics(shot, heads, current_pointer)
-                    return pointer_path
-                pointer = JitViewPointer(
-                    revision=heads.token.jit_revision + 1,
-                    plan_revision=heads.token.plan_revision,
-                    bundle_hash=bundle.content_hash,
-                    view_hash=view_hash,
-                    materialized_layers=proposed_layers,
-                    artifacts=artifacts,
-                    hashes=artifact_hashes,
-                )
-                _replace_and_postverify_jit_pointer(
+                candidate_payload = candidate.read_bytes()
+                publication = prepare_materialization_publication_locked(
                     shot,
-                    pointer_path,
-                    heads,
-                    pointer,
-                    operation="materialization publication",
-                    replace_pointer_json=durable_replace_pointer_json,
-                    replace_pointer_bytes=durable_replace_pointer_bytes,
-                    remove_pointer=durable_remove_pointer,
-                    verify_semantics=verify_publication_semantics,
+                    heads=heads,
+                    selected_before=live,
+                    documents=documents,
+                    bundle_hash=bundle.content_hash,
+                    view_hash=view_hash,
+                    artifact_hashes=artifact_hashes,
+                    candidate_payload=candidate_payload,
+                    candidate_digest=hashlib.sha256(candidate_payload).hexdigest(),
+                    prepared_at=(
+                        None if attested_intent is None else attested_intent.prepared_at
+                    ),
                 )
+                require_attested_publication(publication, finalization)
+                if publication.transition is not None:
+                    commit_prepared_authority_state_transition_locked(
+                        shot,
+                        publication.transition,
+                    )
+                verified_heads = read_authority_selection_heads(shot)
+                if verified_heads.jit != publication.pointer:
+                    raise ValueError(
+                        "materialization publication did not select the attested JIT pointer"
+                    )
+                _require_selected_jit_semantics(
+                    shot,
+                    verified_heads,
+                    publication.pointer,
+                )
+                if (
+                    exact_planning_input_identity_digest(shot)
+                    != finalization.planning_inputs_digest
+                ):
+                    raise ValueError(
+                        "materialization planning inputs changed during JIT selection"
+                    )
         except MaterializationSelectionConflict:
             raise
         except (PlanPublicationError, ValueError) as exc:

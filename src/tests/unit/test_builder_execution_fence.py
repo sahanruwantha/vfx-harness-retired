@@ -211,6 +211,7 @@ def test_exported_unit_planner_refuses_invalid_fence_leases_before_spend(
         units,
         expected_plan_hash=plan_hash,
         eligible_passed=set(),
+        completion_authorization=None,
         run_id="planner-fence",
         selection_token=token,
         reason="fixture planning",

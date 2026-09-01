@@ -199,12 +199,66 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
             layer.stages,
             plan_hash=_PLAN_HASH,
         )
+    definition, activation, state = _due_debt(
+        requirement_id="R-hall-read",
+        debt_subject="hall",
+        frame=40,
+    )
     decision = _load_one_due_decision("R-hall-read", "hall", 40)
     marked: list[tuple[str, str]] = []
+    events: list[str] = []
+    terminal_statuses: list[str] = []
     debt_state = "pending_not_due"
+    claim = SimpleNamespace(
+        mode="composed",
+        claim_id="lfc-form",
+        layer_script_path=layer.script,
+        layer_script_sha256="a" * 64,
+        predecessor_inputs=(),
+    )
+    replay_receipt = SimpleNamespace(
+        receipt_digest="b" * 64,
+        layer_script_sha256="a" * 64,
+        created_at="2026-09-01T00:00:00+00:00",
+        claim=claim,
+        observation=None,
+    )
+    stored_replay = SimpleNamespace(
+        receipt=replay_receipt,
+        locator="runs/test/checkpoints/layer-finalizations/lfc-form.json",
+        sha256="c" * 64,
+    )
+    terminal_receipt = SimpleNamespace(
+        receipt_digest="d" * 64,
+        completed_at="2026-09-01T00:00:00+00:00",
+        layer_script_path=layer.script,
+        layer_script_sha256="a" * 64,
+        claim=claim,
+        evaluation_receipt=None,
+        projection={"revalidation": {"schema": "fixture-revalidation"}},
+    )
+
+    class FakeGuard:
+        def __init__(self, authority) -> None:
+            self.claim = claim
+            self.authority = authority
+
+        @property
+        def label(self) -> str:
+            return "fixture finalization guard"
+
+        @property
+        def authority_binding(self) -> dict:
+            return {"fixture": True}
+
+        def check(self, _operation):
+            return self.authority
+
+        def publish(self, _operation, mutation):
+            return mutation()
 
     class FakeLedger:
-        def __init__(self, _shot) -> None:
+        def __init__(self, _shot, *_args, **_kwargs) -> None:
             self.slots: dict[str, dict] = {}
 
         def _slot(self, milestone) -> dict:
@@ -213,8 +267,8 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
         def begin(self, milestone) -> None:
             self._slot(milestone)["attempt"] = 1
 
-        def mark(self, _milestone, _status, *, best) -> None:
-            return None
+        def save(self) -> None:
+            events.append("ledger_projection")
 
     async def axes(*_args):
         return [("reference_match", "reference identity")]
@@ -224,11 +278,29 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
         active_unit,
         out_verdicts,
         on_replay_ready,
+        on_observation_ready,
         **_kwargs,
     ) -> str:
         assert active_unit.provisional_debt_ids == (decision["debt_id"],)
         assert on_replay_ready is not None
-        on_replay_ready(())
+        assert on_observation_ready is not None
+        replay_context = on_replay_ready(())
+        sealed, payment = on_observation_ready(
+            (),
+            (
+                {
+                    "frame": 40,
+                    "ref": "refs/hall.png",
+                    "render": "runs/test/evidence/renders/no-signal.png",
+                    "render_capture": {"png_sha256": "f" * 64},
+                    "evidence": (),
+                    "motion_evidence": None,
+                },
+            ),
+            replay_context,
+        )
+        assert sealed is replay_receipt
+        assert payment is not None
         out_verdicts.append(
             (
                 (40, "refs/hall.png"),
@@ -247,16 +319,31 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
         digest,
         *,
         layer_id,
-        replayed_unit_digests,
+        replay_receipt,
         **_kwargs,
     ) -> None:
         nonlocal debt_state
+        assert "terminal_receipt" in events
         marked.append((digest, layer_id))
-        assert replayed_unit_digests == (("2:hall_form", "1" * 64),)
+        assert tuple(map(tuple, replay_receipt.unit_digests)) == (
+            ("2:hall_form", "1" * 64),
+        )
+        events.append("debt_projection")
         debt_state = "due"
 
-    monkeypatch.setattr(layer_runtime, "Ledger", FakeLedger)
-    monkeypatch.setattr(layer_runtime, "active_plan_hash", lambda _folder: _PLAN_HASH)
+    monkeypatch.setattr(layer_runtime, "AuthorityBoundLedger", FakeLedger)
+    monkeypatch.setattr(
+        layer_runtime,
+        "selected_layer_capsule_digest",
+        lambda *_args: _PLAN_HASH,
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "authorize_completed_units_for_layer",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            unit_ids=frozenset({"hall_form", "hall_detail"}),
+        ),
+    )
     monkeypatch.setattr(layer_runtime, "_prior_layer_paths", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(layer_runtime, "load_layers", lambda *_args, **_kwargs: {"2": layer})
     monkeypatch.setattr(layer_runtime, "plan_strips", lambda *_args, **_kwargs: {})
@@ -266,18 +353,28 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
         "_load_provisional_decisions",
         lambda *_args, **_kwargs: (decision,),
     )
+    monkeypatch.setattr(
+        layer_runtime,
+        "current_judgment_debt_states_for_authority",
+        lambda *_args, **_kwargs: ((definition, activation, state),),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "payment_generation_for_replay",
+        lambda selected_definition, selected_activation, _prefix: SimpleNamespace(
+            digest="9" * 64
+        )
+        if (selected_definition, selected_activation) == (definition, activation)
+        else pytest.fail("payment generation used another debt authority"),
+    )
     monkeypatch.setattr(layer_runtime, "_unit_raster_mode", lambda _unit: "solid")
     monkeypatch.setattr(
         layer_runtime,
         "replay_prefix_receipt",
         lambda *_args, **_kwargs: SimpleNamespace(
-            unit_digests=(("2:hall_form", "1" * 64),)
+            unit_digests=(("2:hall_form", "1" * 64),),
+            as_dict=lambda: {"schema": "fixture-replay-prefix"},
         ),
-    )
-    monkeypatch.setattr(
-        layer_runtime,
-        "mark_judgment_debt_due",
-        mark_due,
     )
     monkeypatch.setattr(
         layer_runtime,
@@ -286,15 +383,192 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
     )
     monkeypatch.setattr(
         layer_runtime,
-        "resolve_current_judgment_debt",
-        lambda *_args, **_kwargs: pytest.fail("no-signal debt must stay due"),
+        "prepare_replay_inputs",
+        lambda *_args, **_kwargs: ((), ()),
     )
     monkeypatch.setattr(layer_runtime, "_verify_script", no_signal_verify)
     monkeypatch.setattr(
         layer_runtime,
-        "publish_composed_layer_outcome",
+        "current_layer_finalization_receipt",
         lambda *_args, **_kwargs: None,
     )
+    monkeypatch.setattr(
+        layer_runtime,
+        "claim_layer_finalization",
+        lambda *_args, layer_script_sha256, **_kwargs: (
+            setattr(claim, "layer_script_sha256", layer_script_sha256) or claim
+        ),
+    )
+    claim_guard = FakeGuard(claim)
+    monkeypatch.setattr(
+        layer_runtime.LayerFinalizationClaimGuard,
+        "bind",
+        lambda *_args, **_kwargs: claim_guard,
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "prepare_layer_artifact",
+        lambda *_args, **_kwargs: SimpleNamespace(sha256=claim.layer_script_sha256),
+    )
+    monkeypatch.setattr(layer_runtime, "commit_layer_artifact", lambda *_args: None)
+    monkeypatch.setattr(layer_runtime, "discard_layer_artifact", lambda *_args: None)
+
+    def mint_replay(**kwargs):
+        replay_receipt.observation = kwargs["observation"]
+        return replay_receipt
+
+    monkeypatch.setattr(
+        layer_runtime,
+        "LayerReplayPointObservation",
+        SimpleNamespace(mint=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "LayerReplayObservation",
+        lambda **kwargs: SimpleNamespace(execution_status="passed", **kwargs),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "LayerReplayReceipt",
+        SimpleNamespace(mint=mint_replay),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "prepare_layer_replay_receipt",
+        lambda *_args, **_kwargs: SimpleNamespace(receipt=replay_receipt),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "commit_layer_replay_receipt",
+        lambda *_args, **_kwargs: events.append("replay_receipt") or stored_replay,
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "discard_layer_replay_receipt",
+        lambda *_args, **_kwargs: None,
+    )
+
+    monkeypatch.setattr(
+        layer_runtime,
+        "JudgmentDebtPayment",
+        lambda **_kwargs: SimpleNamespace(deferred_payment_attempt_failures=()),
+    )
+    evaluation_receipt = SimpleNamespace(
+        receipt_digest="1" * 64,
+        final_status="failed",
+        claim=claim,
+    )
+
+    def mint_evaluation(**kwargs):
+        groups = kwargs["evaluation_groups"]
+        assert len(kwargs["replay_receipts"]) == 1
+        assert [row["result"] for row in groups] == ["failed"]
+        evaluation_receipt.replay_receipts = kwargs["replay_receipts"]
+        evaluation_receipt.evaluation_groups = groups
+        evaluation_receipt.canonical = kwargs["canonical"]
+        return evaluation_receipt
+
+    monkeypatch.setattr(
+        layer_runtime,
+        "LayerReplayReceiptBinding",
+        SimpleNamespace(mint=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "LayerEvaluationReceipt",
+        SimpleNamespace(mint=mint_evaluation),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "prepare_layer_evaluation_receipt",
+        lambda *_args, **_kwargs: SimpleNamespace(receipt=evaluation_receipt),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "commit_layer_evaluation_receipt",
+        lambda *_args, **_kwargs: events.append("evaluation_receipt")
+        or SimpleNamespace(
+            receipt=evaluation_receipt,
+            locator=(
+                "runs/test/checkpoints/layer-finalizations/"
+                "lfc-form/evaluation.json"
+            ),
+            sha256="2" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "discard_layer_evaluation_receipt",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def mint_terminal(**kwargs):
+        evaluation = kwargs["evaluation_receipt"]
+        terminal_statuses.append(evaluation.final_status)
+        terminal_receipt.evaluation_receipt = evaluation
+        terminal_receipt.projection = kwargs["projection"]
+        return terminal_receipt
+
+    monkeypatch.setattr(
+        layer_runtime,
+        "LayerFinalizationReceipt",
+        SimpleNamespace(mint=mint_terminal),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "complete_layer_finalization",
+        lambda *_args, **_kwargs: events.append("terminal_receipt"),
+    )
+    prepared_revalidation = SimpleNamespace(
+        source_sha256="e" * 64,
+        result={"kept": 0, "dropped": []},
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "prepare_layer_revalidation",
+        lambda *_args, **_kwargs: prepared_revalidation,
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "layer_revalidation_projection",
+        lambda _prepared: terminal_receipt.projection["revalidation"],
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "build_layer_outcome_projection",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            as_dict=lambda: {"schema": "fixture-outcome-projection"}
+        ),
+    )
+    monkeypatch.setattr(
+        layer_runtime,
+        "discard_layer_revalidation",
+        lambda *_args, **_kwargs: None,
+    )
+    def reconcile(_shot, _layer, receipt, **_kwargs):
+        assert "terminal_receipt" in events
+        events.append("revalidation_projection")
+        assert len(receipt.projection["judgment_debts"]) == 1
+        debt = receipt.projection["judgment_debts"][0]
+        assert debt["resolution"] is None
+        assert "replayed_unit_digests" not in debt
+        mark_due(
+            tmp_path,
+            debt["decision"]["definition_digest"],
+            layer_id="2",
+            replay_receipt=SimpleNamespace(
+                unit_digests=(("2:hall_form", "1" * 64),)
+            ),
+        )
+        events.extend(["outcome_projection", "ledger_projection"])
+        return SimpleNamespace(
+            revalidation={"kept": 0, "dropped": []},
+            finding=None,
+            outcome=tmp_path / "runs/test/reports/layers/2.json",
+            ledger=SimpleNamespace(),
+        )
+
+    monkeypatch.setattr(layer_runtime, "reconcile_layer_finalization", reconcile)
     monkeypatch.setattr(layer_runtime, "_blender_version", lambda _session: "test")
     monkeypatch.setattr(layer_runtime.costlog, "bind", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(layer_runtime.costlog, "unbind", lambda: None)
@@ -313,6 +587,16 @@ def test_no_signal_composition_marks_due_but_does_not_resolve_debt(
 
     assert marked == [(decision["definition_digest"], "2")]
     assert debt_state == "due"
+    assert terminal_statuses == ["failed"]
+    assert events == [
+        "replay_receipt",
+        "evaluation_receipt",
+        "terminal_receipt",
+        "revalidation_projection",
+        "debt_projection",
+        "outcome_projection",
+        "ledger_projection",
+    ]
 
 
 def test_acceptance_refuses_unresolved_judgment_debt_before_chain_work(

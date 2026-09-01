@@ -19,9 +19,14 @@ from typing import TYPE_CHECKING, Any
 from vfx_harness.domain.atomicity import residual_instrument_family, write_clusters
 from vfx_harness.domain.image_debts import image_contract_debt_cards
 from vfx_harness.domain.publish_interfaces import compile_unit_publish_interfaces
+from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.domain.work_units import WorkUnit, bound_claim_contract_ids
 from vfx_harness.evidence.scene_checks import deferred_subject_composition_forecast_ids_for_unit, load_rows
+from vfx_harness.orchestration.unit_completion_authorizations import (
+    AuthorizedUnitCompletionSet,
+)
 from vfx_harness.orchestration.unit_state import unit_digest as digest_of
+from vfx_harness.orchestration.unit_state_identity import authorized_passed_unit_ids
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
@@ -260,6 +265,7 @@ def compile_predecessor_interface(
     producer_digest: str = "",
     durable_hash: str = "",
     durable_status: str = "passed",
+    completion_authorized: bool = False,
     allowed_interface_keys: frozenset[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Project a passed dependency onto the interface its consumers may need."""
@@ -283,7 +289,11 @@ def compile_predecessor_interface(
         and bool(producer_digest)
         and durable_hash == producer_digest
     )
-    stale = durable_status != "passed" or not digest_matches
+    stale = (
+        durable_status != "passed"
+        or not digest_matches
+        or not completion_authorized
+    )
     return {
         "schema": INTERFACE_SCHEMA,
         "unit_id": str(card.get("unit_id") or ""),
@@ -325,6 +335,7 @@ def compile_scope_with_predecessors(
     contracts: Sequence[Mapping[str, Any]],
     units: Sequence[WorkUnit] = (),
     durable_state: Mapping[str, Any] | None = None,
+    completion_authorization: AuthorizedUnitCompletionSet | None = None,
     helpers: Sequence[Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Active-unit card plus digest-matched predecessor publish interfaces."""
@@ -363,6 +374,11 @@ def compile_scope_with_predecessors(
             if item.producer == uid
         )
     durable_rows = (durable_state or {}).get("units") or {}
+    authorized_predecessors = authorized_passed_unit_ids(
+        durable_state or {},
+        tuple(units),
+        completion_authorization=completion_authorization,
+    )
     predecessors: list[dict[str, Any]] = []
     for uid in unit.depends_on:
         producer = by_id.get(uid)
@@ -370,6 +386,18 @@ def compile_scope_with_predecessors(
             continue
         row = durable_rows.get(uid) or {}
         pred_digest = digest_of(producer)
+        completion_authorized = False
+        if row.get("status") == "passed":
+            receipt = UnitCompletionReceipt.parse(
+                row.get("completion_receipt"),
+                f"unit scope predecessor {layer_id}.{uid} completion receipt",
+            )
+            completion_authorized = (
+                uid in authorized_predecessors
+                and completion_authorization is not None
+                and completion_authorization.receipt_digest(uid)
+                == receipt.receipt_digest
+            )
         predecessors.append(
             compile_predecessor_interface(
                 compile_unit_scope(
@@ -382,6 +410,7 @@ def compile_scope_with_predecessors(
                 producer_digest=pred_digest,
                 durable_hash=str(row.get("unit_hash") or ""),
                 durable_status=str(row.get("status") or ""),
+                completion_authorized=completion_authorized,
                 allowed_interface_keys=consumed_by_producer[uid],
             )
         )
@@ -402,6 +431,7 @@ def compile_unit_scope_for_shot(
     *,
     units: Sequence[WorkUnit] = (),
     durable_state: Mapping[str, Any] | None = None,
+    completion_authorization: AuthorizedUnitCompletionSet | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> dict[str, Any]:
 
@@ -411,6 +441,7 @@ def compile_unit_scope_for_shot(
         contracts=load_rows(shot.folder, selected_authority),
         units=units,
         durable_state=durable_state,
+        completion_authorization=completion_authorization,
     )
 
 
