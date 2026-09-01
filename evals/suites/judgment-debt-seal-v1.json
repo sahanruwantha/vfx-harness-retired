@@ -1,0 +1,106 @@
+{
+  "schema": "vfx-harness.eval-suite/v1",
+  "id": "judgment-debt-seal-v1",
+  "description": "One real-model camera-to-mesh still proving provisional judgment debt and exact HIR-0170/HIR-0171 preservation.",
+  "protects": [
+    "HIR-0163",
+    "HIR-0165",
+    "HIR-0170",
+    "HIR-0171"
+  ],
+  "fixture": {
+    "manifest": "evals/fixtures/hir-0170-0171-two-layer-still/fixture.json",
+    "id": "hir-0170-0171-two-layer-still",
+    "digest": "f960e30369c998e75e8c52820f716e234bc5f256c9778f19b1a2033b892b5f19"
+  },
+  "grader": {
+    "path": "evals/graders/judgment_debt_seal_v1.py",
+    "sha256": "aa9adb886081c0829c8dd5286225665b799ad48b772e8ce158d1472195906b58"
+  },
+  "execution": {
+    "workspace_root": "artifacts/evaluations/workspaces",
+    "fresh_workspace": true,
+    "preflight": {
+      "strict": true
+    },
+    "plan": {
+      "until_clean": true,
+      "evaluation_gate": true
+    },
+    "run": {
+      "rounds": 2,
+      "acceptance": true,
+      "render": true
+    },
+    "trials": 1,
+    "forbidden_options": [
+      "--dry-run",
+      "--force",
+      "--from",
+      "--skip-accept",
+      "--skip-render",
+      "--upto"
+    ]
+  },
+  "invariants": {
+    "dag": {
+      "layer_count": 2,
+      "camera": {
+        "unit_count": 1,
+        "mutated_roles": [
+          "camera.primary"
+        ],
+        "unit_provides": [
+          "camera"
+        ]
+      },
+      "hero_mesh": {
+        "unit_count": 1,
+        "mutated_roles": [
+          "hero.monolith"
+        ],
+        "unit_provides": [
+          "geometry"
+        ],
+        "construction_route": "procedural",
+        "depends_on": "camera"
+      }
+    },
+    "judgment_debt": {
+      "count": 1,
+      "property": "camera_framing",
+      "owner": "camera",
+      "fault_owner": "camera",
+      "payer": "hero_mesh",
+      "subject_roles": [
+        "hero.monolith"
+      ],
+      "carrier_families": [
+        "mesh"
+      ],
+      "observation_medium": "workbench_solid",
+      "lifecycle": "persistent",
+      "initial_status": "pending_not_due",
+      "terminal_status": "satisfied",
+      "settlement_count": 1
+    },
+    "result": {
+      "run_state": "passed",
+      "layer_final_status": "passed",
+      "acceptance_passed": true,
+      "global_replans": 0,
+      "forced_execution": false
+    }
+  },
+  "metrics": [
+    "accepted_units",
+    "cost_usd",
+    "minutes",
+    "turns"
+  ],
+  "promotion": {
+    "required_passing_trials": 1,
+    "max_invariant_failures": 0
+  },
+  "suite_digest": "eb3b4f4b4cbbc9b898dd219706e356b10f3432f6a2ba1b8de7d72d01f0809d9e"
+}

@@ -162,6 +162,19 @@ phase, and write-ahead-log identity required by that transition. The motion cham
 not the next validation target; the remaining heterogeneous fixtures and real-model
 two-layer seal remain the required bridge.
 
+The tracked input package for that seal follows the repository evaluation split:
+`evals/fixtures/hir-0170-0171-two-layer-still/` owns the redistributable brief and deterministic
+Blender reference generator, `evals/suites/judgment-debt-seal-v1.json` owns the closed expected
+invariants, and `evals/graders/judgment_debt_seal_v1.py` owns refuse-overwrite staging and offline
+grading. Every fresh workspace and result stays below ignored `artifacts/evaluations/`. The
+staging receipt pins the exact Blender version, Blender 5.2 EEVEE settings, and generated reference PNG
+digest; the grader consumes selected plan/JIT authority, coordinator preservation lineage,
+current typed layer publications, unit state, judgment-debt state, acceptance, and final-render
+evidence without reading transcripts or inferring authority from filenames. The package and its
+architecture ratchet are local evidence only until a fresh public-CLI model run publishes the
+cost/latency baseline and passes that grader; merely staging it does not satisfy the real-model
+exit criterion.
+
 The new atomic authority-state transaction is deliberately not an amendment adapter. No
 mechanism yet binds successor authoring, finding consumption, or automatic action selection to
 that commit. There is still no dispatcher: amendment, retry, engineering recovery, environment
@@ -651,6 +664,12 @@ A two-layer still — camera provide, then one hero mesh with procedural constru
 a **tracked eval**, not a playground shot. Fresh run from brief through empty-scene
 acceptance is the regression. The exposing motion chamber returns to what it is good at:
 load-testing deferred subjects and generate routes **after** the small seal exists.
+
+The executable definition is the hashed
+[`judgment-debt-seal-v1` suite](../../evals/suites/judgment-debt-seal-v1.json), its hashed
+[`hir-0170-0171-two-layer-still` fixture](../../evals/fixtures/hir-0170-0171-two-layer-still/fixture.json),
+and the strict [offline grader](../../evals/graders/judgment_debt_seal_v1.py). Operational staging
+and public-command instructions live in [`evals/README.md`](../../evals/README.md).
 
 Use two levels of ratchet:
 

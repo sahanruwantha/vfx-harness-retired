@@ -1,0 +1,25 @@
+{
+  "schema": "vfx-harness.eval-fixture/v1",
+  "id": "hir-0170-0171-two-layer-still",
+  "shot_id": "hir-0170-0171-two-layer-still",
+  "description": "A redistributable two-layer camera-to-procedural-mesh still for HIR-0170/HIR-0171.",
+  "files": [
+    {
+      "path": "brief.md",
+      "sha256": "b624fe9d1585ac7074d359e383896d2b441251262b58c730071c73dbf5645d00",
+      "media_type": "text/markdown"
+    },
+    {
+      "path": "generate_reference.py",
+      "sha256": "387fa3edd8533372feb2b07f8c8de70281e56348e033ef13bc309413c95b0fa2",
+      "media_type": "text/x-python"
+    }
+  ],
+  "reference": {
+    "generator": "generate_reference.py",
+    "output": "refs/hero_monolith_f001.png",
+    "result_manifest": "reference-result.json",
+    "required_engine": "BLENDER_EEVEE"
+  },
+  "fixture_digest": "f960e30369c998e75e8c52820f716e234bc5f256c9778f19b1a2033b892b5f19"
+}
