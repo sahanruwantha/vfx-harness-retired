@@ -173,7 +173,65 @@ current typed layer publications, unit state, judgment-debt state, acceptance, a
 evidence without reading transcripts or inferring authority from filenames. The package and its
 architecture ratchet are local evidence only until a fresh public-CLI model run publishes the
 cost/latency baseline and passes that grader; merely staging it does not satisfy the real-model
-exit criterion.
+exit criterion. That run transmits the tracked synthetic fixture brief/reference and generated
+scene/render evidence to the configured Claude model service. It must not start from repository
+access or from this research plan alone: the operator must first give explicit data-transmission
+authorization for that exact seal run.
+
+The first attempt to execute that seal exposed a separate run-lifecycle defect before it produced
+a model result: an interrupted direct invocation could remain `running`, while the cooperative
+fallback misclassified operator cessation as a HIR-0164 `harness_defect` with an engineering
+action. Proposed HIR-0172 separates failure from interruption. Its initial local slice defines
+strict action-free interruption record shapes and a fail-closed owner-fence foundation, but
+deliberately cannot publish or authoritatively read an `interrupted` v2 status. The evaluation has
+no caller-selected success factory, and the canonical receipt/evaluation locators are reserved for
+a future independent evaluator and terminalizer. `RunStatusV2` remains a closed
+`running | passed | dry-run | failed | interrupted` union: `dry-run` selects only its non-accepting
+summary and owner claim, while `interrupted` is unavailable until its independent evaluation can
+be proven.
+
+HIR-0172 therefore has a strict prerequisite sequence, not a set of parallel best-effort patches:
+
+1. Complete the namespace-bound owner fence: bind the shot root, `runs/` directory, run root,
+   owner directory, fence, and claim by device/inode identity; close pre-lease and inherited-fork
+   windows; durably sync fence and
+   parent-directory creation before claim publication; and derive `direct | driver` from a closed
+   typed manifest dispatch shape rather than positional `argv` inference.
+2. Reuse the one descriptor-stable shot authority-selection lock as the capture fence and outer
+   fence for every sanctioned shot-authority writer. The total order is run terminalization lock,
+   owner fence, authority-selection lock, sorted unit-state locks, ledger lock,
+   plan-resolution-event lock, debt-event lock, then payment-attempt-event lock. Writer and
+   capture capabilities are process-bound; a process-wide at-fork registry closes inherited
+   descriptors without unlocking the parent. The lease binds the canonical shot root, path aliases
+   cannot create parallel capabilities, prepared writes prove their actual target shot at the
+   sink, and ordering is attached to real lock acquisition rather than wrapper markers.
+3. Publish strict `shot-ledger/v2` with a selected accepted-build head and complete derived edges
+   to each accepted layer generation, finalization receipt, composed script, outcome, applicable
+   acceptance evidence, and member digest. Rows preserve the selected DAG's stable topological
+   order and bind the existing full accepted-chain digest. A caller-provided ledger member list or
+   a digest invented from a reduced projection is not closure.
+4. Add authored `brief.md` and admissible `refs/` namespace capture plus exact selected
+   `refobs-*` registration/crop pairs. Represent current and pending authority as independently
+   rooted heterogeneous graphs that may share immutable nodes only through one canonical
+   deduplicated record table.
+5. Under the shared capture fence, copy the complete live source graph into a create-only,
+   content-addressed archive owned by the target run. Later historical verification reopens the
+   archive and live-capture provenance, not the mutable current shot tree; a valid later authority
+   change must not invalidate an already committed interruption fact.
+6. Restrict issuance to capabilities. Signal evidence requires the live exact owner lease plus an
+   owner-bound handler intent. Owner-loss evidence requires the reconciler's exact acquired fence
+   plus typed invocation identity. All receipt, owner-loss, authority, transcript-frontier, and
+   prior-status references are canonical; optional checkpoint/journal/candidate/boundary evidence
+   is either a closed parsed union or absent, never an arbitrary caller reference.
+7. Land the independent archive-reopening evaluator. Only after its heterogeneous graph,
+   corruption, fork, crash, and race tests pass may terminal commit, public signal/cancellation
+   integration, owner-loss reconciliation, and terminal readers be enabled.
+
+Until that sequence is complete, the HIR-0172 foundation is non-publishable by design. Byte hashes
+over a caller-enumerated list are insufficient, public CLI signal handling remains unintegrated,
+and a legacy ownerless `running` run is not retroactively repaired. Completing HIR-0172 neither
+satisfies nor replaces the fresh two-layer model seal, which remains separately gated on explicit
+operator authorization for external model-data transmission.
 
 The new atomic authority-state transaction is deliberately not an amendment adapter. No
 mechanism yet binds successor authoring, finding consumption, or automatic action selection to
@@ -1128,6 +1186,8 @@ an earlier semantic A -> B -> A state. Complete cross-layer fault routing remain
 - Land the deterministic two-layer lifecycle fixture in the ordinary architecture/
   integration suite.
 - Add the real-model two-layer still eval and publish cost/latency baselines.
+- Before invoking that eval, obtain explicit operator authorization to transmit its tracked
+  synthetic brief/reference and generated scene/render evidence to the configured model service.
 - Run the heterogeneous activation matrix and injected failures.
 
 **Exit**
