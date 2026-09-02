@@ -36,7 +36,10 @@ class JudgePoint:
         row = _mapping(value, where)
         frame = row.get("frame")
         if isinstance(frame, bool) or not isinstance(frame, int) or frame < 1:
-            raise ValueError(f"{where}.frame must be a positive integer")
+            raise ValueError(
+                f"{where}.frame must be a positive integer: frames are 1-based, t=0.0s is "
+                f"frame 1 and frame(t) = round(t*fps)+1 (found {frame!r})"
+            )
         return cls(frame, _relative_path(row.get("ref"), f"{where}.ref"))
 
 

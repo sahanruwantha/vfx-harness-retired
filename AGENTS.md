@@ -594,7 +594,10 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   A dependency root has no sealed outcomes to directory-Read (HIR-0029).
   A `keyframe_schedule` whose consecutive samples already exceed a same-role
   `curve_derivative_max.hi` is refused at materialization, authoring, and the
-  plan gate — interpolation cannot invent a third option (HIR-0030).
+  plan gate — interpolation cannot invent a third option (HIR-0030). Two `curve_derivative_max`
+  rows on the same roles and property whose floor window lies inside a lower cap window are
+  refused at the same boundaries — no curve satisfies both (HIR-0175). A falsification stop
+  compares the finding's selected layer capsule digest, never a whole-file hash (HIR-0175).
   A required claim that binds `visible_fraction` is repaired by a unit that
   `provides: ["camera"]` or mutates/dresses every `roles` selector on that row;
   a volume-only unit cannot bind mesh vis as required repair. Multi-role vis is

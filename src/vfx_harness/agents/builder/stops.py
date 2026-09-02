@@ -41,6 +41,7 @@ from vfx_harness.domain.unit_outcomes import (
 )
 from vfx_harness.observability.run_artifacts import RunLayout
 from vfx_harness.orchestration import (
+    authority_capsule_resolution,
     layer_plans,
     unit_state,
 )
@@ -324,12 +325,20 @@ def compile_hypothesis_falsification_stop(
             f"current={selected_bundle.digest}, finding={finding.bundle_hash}"
         )
     view_digest = selected_view.digest
-    layers_path = selected_authority.artifact_paths["layers.json"]
-    layers_digest = _sha256(layers_path)
-    if layers_digest != finding.plan_hash:
+    # The finding's plan_hash is the selected layer CAPSULE digest that durable unit
+    # state records (HIR-0171), never the byte hash of the whole layers.json: comparing
+    # the file hash refused the first real falsification after that change and turned
+    # a typed plan defect into an unclassified harness_defect stop
+    # (run 20260902T190446Z-88aeb3, HIR-0175).
+    layer_capsule_digest = authority_capsule_resolution.selected_layer_capsule_digest(
+        shot_root,
+        finding.layer,
+        selected_authority,
+    )
+    if layer_capsule_digest != finding.plan_hash:
         raise ValueError(
-            "hypothesis falsification belongs to a superseded selected layer view; "
-            f"current={layers_digest}, finding={finding.plan_hash}"
+            "hypothesis falsification belongs to a superseded selected layer capsule; "
+            f"current={layer_capsule_digest}, finding={finding.plan_hash}"
         )
 
     layer, current_unit = _current_unit(shot, finding, selected_authority)
@@ -622,7 +631,10 @@ def compile_hypothesis_falsification_stop(
         selected_authority_after.selection_token
         != selected_authority.selection_token
         or selected_authority_after.assertion != selected_authority.assertion
-        or _sha256(layers_path) != finding.plan_hash
+        or authority_capsule_resolution.selected_layer_capsule_digest(
+            shot_root, finding.layer, selected_authority_after
+        )
+        != finding.plan_hash
         or _sha256(unit_plan) != finding.unit_plan_hash
         or _sha256(state_path) != state_file_sha256
         or _sha256(finding_path) != finding_file_sha256

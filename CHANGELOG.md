@@ -7,6 +7,12 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Two `curve_derivative_max` rows on the same roles and property that contradict each
+  other (a floor inside a lower cap's window) are refused at staging, materialization,
+  and the plan gate; the falsification stop compiler compares the finding's layer
+  capsule digest, not a whole-file hash, so `cannot_express_in_scope` publishes its typed
+  plan defect; the planner kickoff and judge-frame rejection state the 1-based frame
+  convention ([HIR-0175](docs/improvements/HIR-0175-typed-abstention-reaches-a-typed-stop.md)).
 - `publish_unit_plan` stamps the bundle-pinned integrity sidecar with the bytes it
   publishes, so a unit-planning session's own `gate_preview` evaluates the draft
   instead of reporting it absent; the stale-claim remedy names `vfx units retry`

@@ -709,6 +709,72 @@ def schedule_smoothness_contradictions(rows: list[dict]) -> list[dict[str, str]]
     return out
 
 
+def _derivative_window(row: dict) -> tuple[int, int] | None:
+    frames = row.get("frames")
+    if isinstance(frames, (list, tuple)) and len(frames) == 2:
+        try:
+            lo, hi = int(frames[0]), int(frames[1])
+        except (TypeError, ValueError):
+            return None
+        return (lo, hi) if lo <= hi else None
+    return None
+
+
+def derivative_bound_contradictions(rows: list[dict]) -> list[dict[str, str]]:
+    """Pair a per-frame derivative floor with a same-role cap it can never clear.
+
+    ``curve_derivative_max`` reads max(|Δ|) per adjacent frame over a window. A ``min``
+    or ``band`` row demanding at least ``lo`` inside a window that a ``max`` or ``band``
+    row caps at ``hi < lo`` over a containing window is unsatisfiable by construction:
+    the required peak inside the inner window is also the peak the outer cap measures
+    (run 20260902T190446Z-88aeb3 spent a builder session proving exactly that; HIR-0175).
+    A partial overlap is not a contradiction — the peak may lie outside the cap.
+    """
+    derivatives = [
+        row for row in rows if isinstance(row, dict) and row.get("kind") == "curve_derivative_max"
+    ]
+    out: list[dict[str, str]] = []
+    for floor_row in derivatives:
+        if floor_row.get("op") not in {"min", "band"}:
+            continue
+        lo = floor_row.get("lo")
+        if isinstance(lo, bool) or not isinstance(lo, (int, float)):
+            continue
+        inner = _derivative_window(floor_row)
+        if inner is None:
+            continue
+        roles = tuple(sorted(str(role) for role in _selectors(floor_row, "roles")))
+        prop = str(floor_row.get("property") or "location")
+        for cap_row in derivatives:
+            if cap_row is floor_row or cap_row.get("op") not in {"max", "band"}:
+                continue
+            hi = _optional_hi(cap_row)
+            if hi is None or float(lo) <= hi + 1e-9:
+                continue
+            if tuple(sorted(str(role) for role in _selectors(cap_row, "roles"))) != roles:
+                continue
+            if str(cap_row.get("property") or "location") != prop:
+                continue
+            outer = _derivative_window(cap_row)
+            if outer is None or not (outer[0] <= inner[0] and inner[1] <= outer[1]):
+                continue
+            floor_id = str(floor_row.get("id") or "<missing>")
+            cap_id = str(cap_row.get("id") or "<missing>")
+            out.append({
+                "floor_id": floor_id,
+                "cap_id": cap_id,
+                "message": (
+                    f"{floor_id}: lo {lo} over frames {inner[0]}..{inner[1]} can never satisfy "
+                    f"{cap_id}: hi {hi} over frames {outer[0]}..{outer[1]} on the same roles "
+                    f"{list(roles)} and property {prop!r} — the peak the floor demands inside "
+                    "the inner window is the same peak the cap measures. Lower lo below hi, "
+                    "raise hi, or move the floor window outside the cap window; no curve "
+                    "satisfies both"
+                ),
+            })
+    return out
+
+
 def validate_row_set(rows: list[dict]) -> list[str]:
     """Cross-row contradictions no single row can reveal.
 
@@ -747,4 +813,5 @@ def validate_row_set(rows: list[dict]) -> list[str]:
                 "literal 'Value' socket and the pinned socket; declare 'socket' on this row"
             )
     findings.extend(row["message"] for row in schedule_smoothness_contradictions(rows))
+    findings.extend(row["message"] for row in derivative_bound_contradictions(rows))
     return findings

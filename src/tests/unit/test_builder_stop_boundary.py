@@ -162,7 +162,15 @@ def _fixture(
     layers_path = tmp_path / "selected" / "layers.json"
     layers_path.parent.mkdir(parents=True, exist_ok=True)
     layers_path.write_text('{"schema":5,"layers":[]}\n', encoding="utf-8")
-    plan_hash = _sha256(layers_path)
+    # Unit state and findings carry the selected layer CAPSULE digest (HIR-0171), which
+    # is never the byte hash of layers.json; the fixture pins that distinction.
+    plan_hash = hashlib.sha256(b"selected layer capsule").hexdigest()
+    assert plan_hash != _sha256(layers_path)
+    monkeypatch.setattr(
+        builder_stops.authority_capsule_resolution,
+        "selected_layer_capsule_digest",
+        lambda _folder, layer_id, _selected: plan_hash if str(layer_id) == "1" else "other",
+    )
     unit_plan = tmp_path / unit.plan
     unit_plan.parent.mkdir(parents=True, exist_ok=True)
     unit_plan.write_text("# exact gated unit plan\n", encoding="utf-8")
@@ -1507,3 +1515,17 @@ def test_build_layer_aba_token_change_refuses_first_durable_mutation(
     anyio.run(run)
     assert claim_calls == [unit.id]
     assert load_unit_state(tmp_path, "1") == state_before
+
+
+def test_falsification_of_a_superseded_layer_capsule_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shot, layout, finding, _unit_record = _fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        builder_stops.authority_capsule_resolution,
+        "selected_layer_capsule_digest",
+        lambda _folder, _layer_id, _selected: hashlib.sha256(b"replacement capsule").hexdigest(),
+    )
+    with pytest.raises(ValueError, match="superseded selected layer capsule"):
+        builder_stops.compile_hypothesis_falsification_stop(shot, layout, finding)

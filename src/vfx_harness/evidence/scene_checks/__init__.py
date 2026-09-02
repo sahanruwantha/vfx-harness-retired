@@ -162,6 +162,9 @@ from vfx_harness.evidence.scene_checks.validate import (
     data_block_carriers as data_block_carriers,
 )
 from vfx_harness.evidence.scene_checks.validate import (
+    derivative_bound_contradictions as derivative_bound_contradictions,
+)
+from vfx_harness.evidence.scene_checks.validate import (
     keyframe_schedule_matching_frames as keyframe_schedule_matching_frames,
 )
 from vfx_harness.evidence.scene_checks.validate import (

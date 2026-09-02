@@ -129,7 +129,8 @@ def planner_user_prompt(shot, registry_block: str) -> str:
     brief_hash = hashlib.sha256((shot.folder / "brief.md").read_bytes()).hexdigest()
     return (
         f"Plan shot '{shot.id}'. Build target: {shot.frames} frames @ {shot.fps}fps "
-        f"on {shot.engine}.\n\n"
+        f"on {shot.engine}. Frames are 1-based: frame 1 is t=0.0s and "
+        f"frame(t) = round(t*{shot.fps})+1, so every judge frame lies in 1..{shot.frames}.\n\n"
         f"Read `brief.md` for context. "
         f"{plan_workspace_read_card(shot.folder, first_reads=('brief.md',))} "
         f"{_refs_block(shot)}\n\n"
