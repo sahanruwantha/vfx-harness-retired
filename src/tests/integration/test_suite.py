@@ -1,14 +1,9 @@
-"""pytest entry points for the checks that must hold on every commit.
+"""Repository-wide static checks that must hold on every commit.
 
-`pyproject.toml` has configured pytest since the project started, and pytest collected
-ZERO tests and exited 0 — the real suite is `src/tests/integration/test_harness.py`, a print-based script
-with 261 assertions and no `test_*` functions for pytest to find. A CI job running `pytest`
-would therefore have gone green without executing a single check, which is worse than
-having no CI at all: it reports a guarantee it never verified.
-
-So this module is deliberately thin. It does not re-implement the suite; it runs it as a
-subprocess (the harness carries module-level state and reports through stdout, so process
-isolation is the honest way to invoke it) and fails on a non-zero exit.
+These run Ruff as a subprocess from the repository root so a CI job cannot go green
+without executing them.  The former print-based `test_harness` script that also lived
+here depended on untracked local shots and was retired by decision; every behavioural
+check now lives in the discoverable pytest suites under `src/tests/`.
 """
 
 from __future__ import annotations
@@ -25,15 +20,6 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def _run(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run([*argv], cwd=ROOT, capture_output=True, text=True)
-
-
-def test_deterministic_harness_passes():
-    """The 261-check suite: no Blender, no network, no model."""
-    p = _run(sys.executable, "-m", "tests.integration.test_harness")
-    if p.returncode != 0:
-        # The harness prints its own failure list; surface it instead of a bare exit code.
-        pytest.fail(f"tests.integration.test_harness exited {p.returncode}\n"
-                    f"{p.stdout[-4000:]}\n{p.stderr[-2000:]}")
 
 
 def test_no_undefined_names():

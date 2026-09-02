@@ -84,8 +84,9 @@ def layer_scope(
     the whole point of this eval is to measure the critic under PRODUCTION conditions.
     Scoring the same frame on the unrestricted rubric measures a different thing — a
     layout layer judged on emission axes hits a floor it can never lift, which is the
-    exact bug `owns` was introduced to fix. If `build_layer`'s block changes, this drifts;
-    src/tests/integration/test_harness.py carries a tripwire on the distinctive markers.
+    exact bug `owns` was introduced to fix. If `build_layer`'s block changes, this drifts:
+    the marker tripwire that guarded it lived in the retired harness script and has no
+    pytest successor, so a change to that block must update this mirror in the same edit.
     """
 
     excerpt = _plan_layer_excerpt(

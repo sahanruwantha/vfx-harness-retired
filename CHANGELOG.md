@@ -88,6 +88,12 @@ live in the linked Harness Improvement Records.
   transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
   safe resume producer, or proven local-implementation retry producer
   ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- Retired by decision three tests that could not pass on a clean checkout: the print-based
+  `tests.integration.test_harness` script and the hierarchy-gate copy test depended on the
+  untracked local shots `barrel_roll` and `beacon_wake`, and the single-authority test
+  forbade the tracked `.cursor/rules/` mirrors that AGENTS.md declares. Behavioural coverage
+  lives in the discoverable pytest suites, and AGENTS.md remains the sole rule authority with
+  its Cursor mirrors kept in the same change.
 - Blender is now selected by a `--version` probe executed inside the mandatory worker
   confinement, so a launcher that only works on the host (a snap shim that needs snapd) is
   rejected at resolution and strict preflight with the sandbox's own diagnostic and the

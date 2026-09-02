@@ -403,8 +403,6 @@ Requires **Blender 5.x** on `PATH` (headless) and Python ≥ 3.11.
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 cp .env.example .env          # set ONE auth variable (below)
 
-.venv/bin/python -m tests.integration.test_harness        # no Blender or network
-
 vfx preflight --strict
 vfx plan  shots/barrel_roll
 vfx build shots/barrel_roll --layer 1

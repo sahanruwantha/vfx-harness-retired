@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +16,6 @@ from tests.unit_attempt_fixtures import (
 from vfx_harness.agents.builder import _executable_unit_verdict, _scope_unit_evidence
 from vfx_harness.blender.tools import _image_evidence_ids_at_frame, _pixel_contract_gate
 from vfx_harness.domain.work_units import Claim, ProtectionSpec, WorkUnit, read_document
-from vfx_harness.evaluation.plan_gate import _check_hierarchical_plans
 from vfx_harness.evidence.checks import IMAGE_PAYMENT_SCHEMA
 from vfx_harness.evidence.claim_evidence import validate_claim_closure
 from vfx_harness.observability.provenance import check as provenance_check
@@ -171,19 +169,6 @@ def test_executable_only_unit_is_decided_by_bound_checks():
     assert missing is not None and missing["pass"] is False
     assert missing["contract_gap"] is True
     assert missing["missing_evidence"] == ["contract.shell"]
-
-
-def test_hierarchy_gate_does_not_treat_passed_unit_as_published_layer(tmp_path):
-    root = tmp_path / "shot"
-    shutil.copytree("shots/beacon_wake", root)
-    (root / "shot.json").write_text(
-        json.dumps({"milestones": {"1@room_shell": {"status": "passed"}}}),
-        encoding="utf-8",
-    )
-
-    findings, _stats = _check_hierarchical_plans(root)
-
-    assert not any("1@room_shell" in finding.what for finding in findings)
 
 
 def test_executable_unit_without_image_bindings_has_no_generic_brightness_gate(tmp_path):

@@ -4,7 +4,6 @@ import ast
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[3] / "src" / "vfx_harness"
-REPOSITORY = PACKAGE.parents[1]
 MAX_SOURCE_LINES = 900
 # Permanent: Blender launches and AST-parses worker.py by path.
 # Follow-on (out of this layout pass): prompts, guardrails, image checks.
@@ -56,11 +55,6 @@ def test_source_modules_stay_under_the_line_budget():
 def test_oversize_allowlist_names_existing_files():
     missing = sorted(name for name in OVERSIZE_ALLOWLIST if not (PACKAGE / name).is_file())
     assert not missing, "oversize allowlist names missing files: " + ", ".join(missing)
-
-
-def test_agent_instructions_have_one_authority():
-    assert (REPOSITORY / "AGENTS.md").is_file()
-    assert not (REPOSITORY / ".cursor" / "rules").exists()
 
 
 def test_domain_does_not_import_runtime_adapters():
