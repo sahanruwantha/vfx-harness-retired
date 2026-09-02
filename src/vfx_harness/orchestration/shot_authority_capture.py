@@ -22,14 +22,13 @@ from vfx_harness.orchestration.authority_selection_process_registry import (
 )
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
+    _require_current_authority_selection_binding,
     authority_selection_lock,
     canonical_authority_shot_path,
-    require_current_authority_selection_lock,
 )
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
-_CAPABILITY_KEY = object()
 _THREAD_FENCES = local()
 
 _INNER_LOCK_RANK = {
@@ -41,23 +40,20 @@ _INNER_LOCK_RANK = {
 }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class ShotAuthorityWriterCapability:
     """Opaque proof of a semantic shared writer lease for one exact shot."""
 
-    _key: object
     _shot: Path
     _lock_path: Path
-    _process_id: int = -1
-    _process_token: str = ""
-    _thread_id: int = -1
-    _exclusive: bool = False
+    _selection_binding: object
+    _process_id: int
+    _process_token: str
+    _thread_id: int
+    _exclusive: bool
 
-    def __post_init__(self) -> None:
-        if self._key is not _CAPABILITY_KEY:
-            raise AuthoritySelectionConflict(
-                "shot-authority capabilities are issued only by a writer or capture context"
-            )
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise AuthoritySelectionConflict("shot-authority capabilities are issued only by a writer or capture context")
 
     @property
     def shot(self) -> Path:
@@ -72,14 +68,9 @@ class ShotAuthorityWriterCapability:
         return self._exclusive
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class ShotAuthorityCaptureCapability(ShotAuthorityWriterCapability):
     """Opaque proof of an exclusive terminal authority-capture lease."""
-
-    def __post_init__(self) -> None:
-        super(ShotAuthorityCaptureCapability, self).__post_init__()
-        if not self._exclusive:
-            raise AuthoritySelectionConflict("terminal shot-authority capture capability must be exclusive")
 
 
 class _ActiveFence:
@@ -120,10 +111,13 @@ def _require_active(
     active = _fences().get(str(capability.shot))
     if active is None or active.capability is not capability:
         raise AuthoritySelectionConflict("shot-authority capability is not active on this thread")
-    require_current_authority_selection_lock(
+    binding = _require_current_authority_selection_binding(
         capability.shot,
         exclusive=capability.exclusive,
+        expected_binding=capability._selection_binding,
     )
+    if capability.lock_path != binding.lock_path:
+        raise AuthoritySelectionConflict("shot-authority capability names a different selection-lock path")
     return active
 
 
@@ -133,18 +127,20 @@ def _issue_capability(
     lock_path: Path,
     exclusive: bool,
 ) -> ShotAuthorityWriterCapability:
-    arguments = (
-        _CAPABILITY_KEY,
+    selection_binding = _require_current_authority_selection_binding(
         shot,
-        lock_path,
-        os.getpid(),
-        current_process_token(),
-        get_ident(),
-        exclusive,
+        exclusive=exclusive,
     )
-    if exclusive:
-        return ShotAuthorityCaptureCapability(*arguments)
-    return ShotAuthorityWriterCapability(*arguments)
+    capability_type = ShotAuthorityCaptureCapability if exclusive else ShotAuthorityWriterCapability
+    capability = object.__new__(capability_type)
+    object.__setattr__(capability, "_shot", shot)
+    object.__setattr__(capability, "_lock_path", lock_path)
+    object.__setattr__(capability, "_selection_binding", selection_binding)
+    object.__setattr__(capability, "_process_id", os.getpid())
+    object.__setattr__(capability, "_process_token", current_process_token())
+    object.__setattr__(capability, "_thread_id", get_ident())
+    object.__setattr__(capability, "_exclusive", exclusive)
+    return capability
 
 
 @contextmanager
@@ -255,6 +251,33 @@ def current_shot_authority_writer(
     return active.capability
 
 
+def require_live_shot_authority_writer(
+    capability: ShotAuthorityWriterCapability,
+    shot_folder: str | Path,
+) -> Path:
+    """Prove ``capability`` is the exact live writer generation for ``shot_folder``.
+
+    The returned path is the canonical shot root validated by the retained shot,
+    selection-parent, and selection-lock descriptors.  Callers must invoke this at
+    the final mutation boundary; possession of an expired or copied value is not
+    publication authority.
+    """
+
+    if not isinstance(capability, ShotAuthorityWriterCapability):
+        raise AuthoritySelectionConflict("authority writer requires a typed shot-authority writer capability")
+    shot = canonical_authority_shot_path(shot_folder)
+    try:
+        capability_shot = capability.shot
+    except AttributeError as exc:
+        raise AuthoritySelectionConflict(
+            "shot-authority capability was not issued by a writer or capture context"
+        ) from exc
+    if capability_shot != shot:
+        raise AuthoritySelectionConflict("shot-authority capability belongs to a different canonical shot")
+    _require_active(capability)
+    return shot
+
+
 def current_shot_authority_capture(
     shot_folder: str | Path,
 ) -> ShotAuthorityCaptureCapability:
@@ -285,6 +308,7 @@ __all__ = [
     "current_shot_authority_capture",
     "current_shot_authority_writer",
     "ordered_authority_inner_lock",
+    "require_live_shot_authority_writer",
     "shot_authority_capture",
     "shot_authority_writer",
     "shot_authority_writer_fence",

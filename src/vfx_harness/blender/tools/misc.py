@@ -177,16 +177,16 @@ def register_misc(
         try:
             publication = prepared.update.publication
             if publication is None:
-                if attempt_guard is not None:
-                    attempt_guard.check("finish duplicate builder question lookup")
-            else:
-                publish(
-                    f"record builder question for layer {layer_id}",
-                    lambda: prepared_publication.commit_prepared_file(
-                        publication,
-                        authority_binding=binding,
-                    ),
+                raise prepared_publication.FilePublicationConflict(
+                    "prepared supervisor question lacks an authoritative CAS publication"
                 )
+            publish(
+                f"record builder question for layer {layer_id}",
+                lambda: prepared_publication.commit_prepared_file(
+                    publication,
+                    authority_binding=binding,
+                ),
+            )
         except BaseException:
             escalate.discard_prepared_question(prepared)
             raise
@@ -230,15 +230,11 @@ def register_misc(
                 is_error=True,
             )
 
-        mutation_requested = any(
-            args.get(field) for field in ("items", "done", "note")
-        )
+        mutation_requested = any(args.get(field) for field in ("items", "done", "note"))
         if not mutation_requested:
             try:
                 if attempt_guard is not None:
-                    attempt_guard.check(
-                        f"start unit {layer_part}.{active_unit_id} worklist read"
-                    )
+                    attempt_guard.check(f"start unit {layer_part}.{active_unit_id} worklist read")
                 _worklist_path, state = worklists.load_unit_worklist(
                     shot_dir,
                     layer_id=layer_part,
@@ -246,12 +242,11 @@ def register_misc(
                     unit_hash=active_unit_hash,
                 )
                 if attempt_guard is not None:
-                    attempt_guard.check(
-                        f"finish unit {layer_part}.{active_unit_id} worklist read"
-                    )
+                    attempt_guard.check(f"finish unit {layer_part}.{active_unit_id} worklist read")
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 return _text(f"worklist refused: {exc}", is_error=True)
         else:
+
             def update_worklist(current):
                 if args.get("items"):
                     # A new attempt may restate its tickets, but it cannot erase an
@@ -485,7 +480,6 @@ def register_misc(
         judge: dict[int, str] = {}
         first_ref = ""
         try:
-
             layers_path = (
                 selected_artifact_path(root, "layers.json")
                 if selected_authority is None

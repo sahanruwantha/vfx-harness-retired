@@ -1050,7 +1050,7 @@ def _passed_layer_one_outcome(root: Path) -> None:
         claim_guard,
         evaluation_barrier=evaluation_barrier,
     )
-    commit_layer_artifact(prepared_artifact, claim_guard)
+    commit_layer_artifact(root, prepared_artifact, claim_guard)
     replay_prefix = ReplayPrefixReceipt(
         (
             ReplayPrefixLayerReceipt(
@@ -1140,8 +1140,12 @@ def _passed_layer_one_outcome(root: Path) -> None:
         ),
         created_at="2026-09-01T00:01:00+00:00",
     )
-    prepared_replay = prepare_layer_replay_receipt(root, replay)
-    stored_replay = commit_layer_replay_receipt(prepared_replay, claim_guard)
+    prepared_replay = prepare_layer_replay_receipt(root, replay, claim_guard)
+    stored_replay = commit_layer_replay_receipt(
+        root,
+        prepared_replay,
+        claim_guard,
+    )
     canonical = [
         (
             (frame, ref),
@@ -1204,8 +1208,13 @@ def _passed_layer_one_outcome(root: Path) -> None:
         canonical=receipt_canonical,
         created_at="2026-09-01T00:01:30+00:00",
     )
-    prepared_evaluation = prepare_layer_evaluation_receipt(root, evaluation)
+    prepared_evaluation = prepare_layer_evaluation_receipt(
+        root,
+        evaluation,
+        claim_guard,
+    )
     stored_evaluation = commit_layer_evaluation_receipt(
+        root,
         prepared_evaluation,
         claim_guard,
     )

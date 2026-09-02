@@ -25,14 +25,19 @@ from vfx_harness.domain.layer_outcomes import OUTCOME_SCHEMA
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.provenance import atomic_write
-from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
+from vfx_harness.orchestration.layer_finalization_publication_authority import (
+    LayerFinalizationPreparedMutationAuthorization,
+)
 from vfx_harness.orchestration.layer_outcome_publication import (
+    LayerOutcomeFinalizationGuard,
     LayerOutcomePublicationAuthority,
     PreparedLayerOutcomePublication,
-    capture_layer_outcome_source_identities,
+    PreparedLayerOutcomeVerification,
     commit_layer_outcome_publication,
     discard_layer_outcome_publication,
     prepare_layer_outcome_publication,
+    sealed_layer_outcome_projection,
+    sealed_layer_outcome_record,
 )
 
 if TYPE_CHECKING:
@@ -636,7 +641,7 @@ def build_layer_outcome_record(
         revalidation_projection=finalization_receipt.projection["revalidation"],
         selected_authority=selected_authority,
     )
-    expected = _sealed_layer_outcome_projection(finalization_receipt)
+    expected = sealed_layer_outcome_projection(finalization_receipt)
     if proposed != expected:
         mismatched = [
             field
@@ -660,41 +665,6 @@ def build_layer_outcome_record(
     }
 
 
-def _sealed_layer_outcome_projection(
-    finalization_receipt: LayerFinalizationReceipt,
-) -> LayerOutcomeProjection:
-    """Parse the immutable projection carried by one terminal receipt."""
-
-    if not isinstance(finalization_receipt, LayerFinalizationReceipt):
-        raise ValueError(
-            "sealed layer outcome requires a typed terminal finalization receipt"
-        )
-    return LayerOutcomeProjection.parse(
-        finalization_receipt.projection["outcome"],
-        claim=finalization_receipt.claim,
-        layer_script_path=finalization_receipt.layer_script_path,
-        final_status=finalization_receipt.final_status,
-        best=finalization_receipt.projection["best"],
-        receipt_canonical=finalization_receipt.canonical,
-        blender_version=str(finalization_receipt.projection["blender_version"]),
-        where="terminal finalization receipt outcome projection",
-    )
-
-
-def _sealed_layer_outcome_record(
-    finalization_receipt: LayerFinalizationReceipt,
-) -> dict:
-    """Reproduce byte-stable mutable outcome content from terminal authority."""
-
-    expected = _sealed_layer_outcome_projection(finalization_receipt)
-    return {
-        "schema": OUTCOME_SCHEMA,
-        "at": finalization_receipt.completed_at,
-        **expected.as_record(),
-        "finalization_receipt": finalization_receipt.as_dict(),
-    }
-
-
 def prepare_layer_outcome(
     folder: str | Path,
     layer,
@@ -705,6 +675,7 @@ def prepare_layer_outcome(
     blender_version: str,
     selected_authority: ResolvedSelectedAuthority,
     authority: LayerOutcomePublicationAuthority,
+    guard: LayerOutcomeFinalizationGuard,
 ) -> PreparedLayerOutcomePublication:
     """Hash causal inputs and fsync inert outcome bytes before authority locks."""
 
@@ -732,52 +703,35 @@ def prepare_layer_outcome(
     # The terminal receipt is the decision and already sealed this exact projection.
     # Reconciliation under a preserved successor must reproduce those historical bytes;
     # rebuilding its manifest against the successor token would mint a different record.
-    discovered = _sealed_layer_outcome_record(finalization_receipt)
+    discovered = sealed_layer_outcome_record(finalization_receipt)
     if discovered["title"] != str(layer.title):
         raise ValueError(
             "layer-outcome current layer title does not match terminal authority"
         )
-    # Source verification imports revalidation's deterministic primitives;
-    # keeping this reverse edge local avoids an orchestration import cycle.
-    from vfx_harness.orchestration.layer_outcome_source_verification import (  # noqa: PLC0415
-        verify_sealed_layer_outcome_sources,
-    )
-
-    source_paths = verify_sealed_layer_outcome_sources(
-        folder,
-        discovered,
-        finalization_receipt=finalization_receipt,
-    )
-    before = capture_layer_outcome_source_identities(source_paths)
-    record = _sealed_layer_outcome_record(finalization_receipt)
-    verified_paths = verify_sealed_layer_outcome_sources(
-        folder,
-        record,
-        finalization_receipt=finalization_receipt,
-    )
-    if verified_paths != source_paths:
-        raise ValueError("layer-outcome causal source closure changed during preparation")
-    after = capture_layer_outcome_source_identities(source_paths)
-    if after != before:
-        raise ValueError("layer-outcome causal inputs changed during preparation")
-    payload = (json.dumps(record, indent=2) + "\n").encode("utf-8")
     return prepare_layer_outcome_publication(
         folder,
-        layer_outcome_path(folder, str(layer.id)),
-        payload,
         authority=authority,
-        sources=after,
+        guard=guard,
     )
 
 
 def commit_layer_outcome(
+    folder: str | Path,
     prepared: PreparedLayerOutcomePublication,
     *,
     authority: LayerOutcomePublicationAuthority,
+    authorization: LayerFinalizationPreparedMutationAuthorization,
+    verification: PreparedLayerOutcomeVerification,
 ) -> Path:
     """Publish one prepared outcome inside its exact short authority guard."""
 
-    return commit_layer_outcome_publication(prepared, authority=authority)
+    return commit_layer_outcome_publication(
+        folder,
+        prepared,
+        authority=authority,
+        authorization=authorization,
+        verification=verification,
+    )
 
 
 def discard_layer_outcome(prepared: PreparedLayerOutcomePublication) -> None:

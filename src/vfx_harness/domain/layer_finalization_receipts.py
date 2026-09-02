@@ -526,9 +526,17 @@ def canonical_layer_finalization_receipt_bytes(
 
     if not isinstance(receipt, LayerFinalizationReceipt):
         raise ValueError("receipt must be a typed layer finalization receipt")
+    parsed = LayerFinalizationReceipt.parse(
+        receipt.as_dict(),
+        "layer finalization receipt serialization",
+    )
+    if parsed != receipt:
+        raise ValueError(
+            "layer finalization receipt serialization is not its strict parsed representation"
+        )
     return (
         json.dumps(
-            receipt.as_dict(),
+            parsed.as_dict(),
             allow_nan=False,
             ensure_ascii=False,
             indent=2,

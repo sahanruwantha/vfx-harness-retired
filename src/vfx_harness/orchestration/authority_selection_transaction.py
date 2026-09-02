@@ -164,6 +164,29 @@ def _require_selection_lock_current(
     )
 
 
+def _require_current_authority_selection_binding(
+    shot_folder: str | Path,
+    *,
+    exclusive: bool,
+    expected_binding: object | None = None,
+) -> _HeldAuthoritySelectionLock:
+    """Revalidate and return this thread's exact live selection-lock generation."""
+
+    shot = canonical_authority_shot_path(shot_folder)
+    lock_path = shot / AUTHORITY_SELECTION_LOCK
+    binding = _held_selection_locks().get(str(lock_path))
+    if binding is None:
+        raise AuthoritySelectionConflict("authority selection lock is not active on this thread")
+    if binding.shot != shot or binding.lock_path != lock_path:
+        raise AuthoritySelectionConflict("authority selection lock binding names a different canonical shot namespace")
+    if expected_binding is not None and binding is not expected_binding:
+        raise AuthoritySelectionConflict("authority selection lock belongs to a different live lease generation")
+    _require_selection_lock_current(binding, "while requiring the active lease")
+    if exclusive and not binding.exclusive:
+        raise AuthoritySelectionConflict("authority operation requires an exclusive selection-lock lease")
+    return binding
+
+
 def require_current_authority_selection_lock(
     shot_folder: str | Path,
     *,
@@ -171,19 +194,10 @@ def require_current_authority_selection_lock(
 ) -> Path:
     """Revalidate this thread's exact live selection-lock lease."""
 
-    shot = canonical_authority_shot_path(shot_folder)
-    lock_path = shot / AUTHORITY_SELECTION_LOCK
-    binding = _held_selection_locks().get(str(lock_path))
-    if binding is None:
-        raise AuthoritySelectionConflict(
-            "authority selection lock is not active on this thread"
-        )
-    _require_selection_lock_current(binding, "while requiring the active lease")
-    if exclusive and not binding.exclusive:
-        raise AuthoritySelectionConflict(
-            "authority operation requires an exclusive selection-lock lease"
-        )
-    return lock_path
+    return _require_current_authority_selection_binding(
+        shot_folder,
+        exclusive=exclusive,
+    ).lock_path
 
 
 def pointer_sha256(pointer_bytes: bytes | None) -> str | None:

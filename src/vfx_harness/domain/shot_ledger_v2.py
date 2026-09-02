@@ -23,6 +23,9 @@ from vfx_harness.domain.authority_state_records import (
     AuthorityStateRecordRef,
     authority_selection_token_dict,
 )
+from vfx_harness.domain.script_locators import (
+    is_composed_layer_script_locator,
+)
 from vfx_harness.domain.stop_envelope_primitives import (
     canonical_digest,
     list_value,
@@ -51,11 +54,10 @@ def _relative_locator(value: object, where: str) -> str:
 
 def _composed_script_locator(value: object, where: str) -> str:
     locator = _relative_locator(value, where)
-    path = PurePosixPath(locator)
-    if path.suffix != ".py" or not path.parts or path.parts[0] != "build":
-        raise ValueError(f"{where} must name a Python artifact below build/")
-    if len(path.parts) >= 2 and path.parts[1] == "units":
-        raise ValueError(f"{where} must name a composed layer script, not a unit script")
+    if not is_composed_layer_script_locator(locator):
+        raise ValueError(
+            f"{where} must name a composed Python artifact below build/, not a unit script"
+        )
     return locator
 
 

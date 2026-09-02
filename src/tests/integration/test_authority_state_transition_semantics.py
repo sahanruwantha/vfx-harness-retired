@@ -490,7 +490,7 @@ def test_selection_transition_revokes_active_claim_before_stale_postcheck(
     if boundary == "replay":
         real_commit = finalization_fixtures.commit_layer_replay_receipt
 
-        def transition_before_replay_postcheck(prepared, guard):
+        def transition_before_replay_postcheck(shot_folder, prepared, guard):
             observed["claim"] = prepared.receipt.claim
             observed["replay_locator"] = layer_replay_receipt_locator(
                 prepared.receipt.claim
@@ -499,7 +499,7 @@ def test_selection_transition_revokes_active_claim_before_stale_postcheck(
                 tmp_path,
                 _prepare_same_capsule_successor(tmp_path),
             )
-            return real_commit(prepared, guard)
+            return real_commit(shot_folder, prepared, guard)
 
         monkeypatch.setattr(
             finalization_fixtures,

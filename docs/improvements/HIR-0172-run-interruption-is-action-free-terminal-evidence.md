@@ -76,7 +76,7 @@ model-quality, retry, or authority-repair defect.
 ### Current foundation is deliberately non-publishable
 
 The current foundation defines the strict records, the namespace-bound owner-fence contract, the
-non-integrated `vfx-harness.shot-ledger/v2` value schema, and a non-integrated shot-authority lease
+non-integrated `vfx-harness.shot-ledger/v2` value schema, and a partially integrated shot-authority lease
 over the permanent selection lock. That lease is process-, thread-, shot-root-, and lock-inode-bound;
 uses a refcounted per-inode process mutex, a POSIX record lock, and an armed crash-safe live-identity
 claim; and records each inherited descriptor with its captured file identity. Managed acquisition,
@@ -87,8 +87,9 @@ regressions cover the pre-registration fork window, process death, same-shot ser
 distinct-shot concurrency, physical path aliases, foreign-thread context unwind, unexpected
 same-process descriptor closure/reuse, partial cleanup, acquisition interruption, and both directions
 of the legacy `flock` transition. The same managed fork-acquisition primitive now owns root-run fence
-opens and handoff as well. The shot-authority lease is not yet installed around every sanctioned
-writer or actual inner lock and write sink. The foundation also does not yet implement
+opens and handoff as well. The shot-authority lease is now installed at the final mutation boundary
+for the layer-finalization artifact/replay/evaluation/outcome chain, but not yet around every other
+sanctioned writer or its actual inner lock and sink. The foundation also does not yet implement
 the ledger writer/derivation boundary, the independent source-verifying evaluator, or the terminal
 status publisher/reader. The two selected record locators are already closed to
 `reports/interruption-receipt.json` and
@@ -112,6 +113,50 @@ authority capture must bind one descriptor-stable shot-authority fence across th
 window. Without those prerequisites, a caller could omit a source, alias an owner namespace,
 self-assert signal or owner-loss authority, or hide a change-and-revert window and still
 manufacture an apparently `satisfied` row.
+
+#### Bounded layer-finalization writer migration
+
+HIR-0172's second prerequisite now has one bounded production migration. The generic prepared-file
+transaction retains the exact shot and destination, predecessor, staged inode, publication-lock
+generation, and prepared bytes. It stores its commit policy at preparation, requires the matching
+commit authorization, rechecks the staged generation after policy execution, performs one CAS
+rename, rehashes the held published inode, and fsyncs the parent before reporting success.
+Descriptor and temporary ownership is process- and thread-bound, fork-safe, and
+interruption-cleaned; symlink, FIFO, substituted-lock, predecessor, staged-byte, post-rename-byte,
+and parent-directory identity replacement or rebinding fails closed.
+The generic API reserves composed `build/**/*.py` targets (excluding `build/units/`), the
+layer-finalization receipt namespace, and sealed outcome namespace. Before even reading a protected
+target or accepting a no-op, its typed owner must spend a process- and thread-bound, exact-shot,
+exact-path, one-shot staging authorization; protected staging also requires a stored commit policy.
+Public immediate publication, caller-selected subroot or ancestor re-rooting, normalized
+`..`/absolute aliases, physical symlink aliases, namespace squatting, and
+cross-path/family/shot/thread/fork authorization reuse fail closed.
+
+The first typed sink family using that substrate is the composed artifact, per-group replay
+receipt, aggregate evaluation receipt, and terminal layer outcome. Staging remains outside the
+short joint publication guard. At the mutation boundary the permanent selection-lock writer lease
+is outermost, the exact claim or terminal-receipt guard is actively held, and the builder guard
+privately issues one process-, thread-, shot-, selected-authority-, guard-, and hold-bound
+authorization for the exact opaque prepared transaction. The stored sink policy reopens its causal
+source closure and consumes that
+authorization immediately before rename; exact no-op paths consume the same authority before
+reporting success. Each typed adapter proves that its guard invoked and completed that exact
+mutation once before retiring the preparation or returning success. Typed preparations are opaque
+exact-object capabilities, so callers cannot
+transplant a generic publication, source audit, stored policy, no-op binding, or equal-but-distinct
+guard. Raw writer capabilities, copied, expired, or transferred authorizations, cross-shot targets,
+changed sources, wrong-sink token transplants, and forged payload bindings do not publish. Typed
+registries quiesce their locks before fork so clearing a payload proof cannot run a weak-reference
+cleanup through an inherited foreign-thread lock, and fallible post-commit readback retains cleanup
+authority without masking its primary failure.
+
+This is not completion of prerequisite 2. Other sanctioned authority writers and their real inner
+locks are not yet migrated, and there is still no fenced `shot-ledger/v2` writer, complete
+authored/refobs/current/pending source graph, run-owned archive, capability-bound interruption
+issuer, independent evaluator, terminalizer, public signal integration, owner-loss reconciler, or
+authoritative `interrupted` reader/status. The HIR remains proposed and non-publishable; focused
+publication regressions prove only this sink family, not the heterogeneous/crash matrix or the
+fresh real-model seal.
 
 ### Prerequisite implementation order
 

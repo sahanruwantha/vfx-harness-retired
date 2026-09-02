@@ -35,9 +35,6 @@ from vfx_harness.agents.builder import layer as builder_layer
 from vfx_harness.agents.builder import layer_finalization_reconcile
 from vfx_harness.agents.builder import prior as prior_runtime
 from vfx_harness.agents.builder import verify as verify_runtime
-from vfx_harness.agents.builder.layer_finalization_guard import (
-    LayerFinalizationAuthorityLost,
-)
 from vfx_harness.agents.builder.models import BuildAuthorityDefect
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.observability import run_artifacts
@@ -224,7 +221,7 @@ def test_restart_refuses_conflicting_preexisting_projection_bytes(
             encoding="utf-8",
         )
         match = "runtime image checks conflict"
-        error = LayerFinalizationAuthorityLost
+        error = ValueError
     elif surface == "outcome":
         outcome_path = layer_outcome_path(tmp_path, layer.id)
         outcome = json.loads(outcome_path.read_text(encoding="utf-8"))

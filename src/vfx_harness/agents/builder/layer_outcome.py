@@ -14,6 +14,10 @@ from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthor
 from vfx_harness.orchestration.layer_finalization_state import (
     authorize_terminal_layer_finalization_mutation,
 )
+from vfx_harness.orchestration.layer_outcome_publication import (
+    LayerOutcomePublicationConflict,
+    verify_prepared_layer_outcome,
+)
 from vfx_harness.orchestration.layer_plans import (
     commit_layer_outcome,
     discard_layer_outcome,
@@ -65,9 +69,9 @@ def publish_finalized_layer_outcome(
     """Project one outcome from the exact current terminal receipt.
 
     Expensive record assembly, source hashing, and fsync happen outside the
-    authority lock. Only the metadata-only CAS/rename is performed through the
-    receipt guard, so a superseded finalization can never publish its prepared
-    bytes.
+    authority lock. Only the bounded CAS, rename, stable rehash, and parent fsync
+    run through the receipt guard, so a superseded finalization can never publish
+    its prepared bytes.
     """
 
     if not isinstance(finalization_guard, LayerFinalizationReceiptGuard):
@@ -97,6 +101,7 @@ def publish_finalized_layer_outcome(
         blender_version=blender_version,
         selected_authority=selected_authority,
         authority=authority,
+        guard=finalization_guard,
     )
     try:
         _refuse_conflicting_current_projection(
@@ -104,12 +109,48 @@ def publish_finalized_layer_outcome(
             receipt_digest=receipt.receipt_digest,
             expected_sha256=prepared.payload_sha256,
         )
-        return finalization_guard.publish(
-            f"publish layer {layer.id} outcome",
-            lambda: commit_layer_outcome(prepared, authority=authority),
+        verification = verify_prepared_layer_outcome(
+            shot_folder,
+            prepared,
+            authority,
         )
-    finally:
-        discard_layer_outcome(prepared)
+        publication_calls = 0
+        publication_completed = False
+        committed: Path | None = None
+
+        def publish(authorization: object) -> Path:
+            nonlocal publication_calls, publication_completed, committed
+            publication_calls += 1
+            if publication_calls != 1:
+                raise LayerOutcomePublicationConflict(
+                    "layer outcome finalization guard invoked its prepared mutation more than once"
+                )
+            committed = commit_layer_outcome(
+                shot_folder,
+                prepared,
+                authority=authority,
+                authorization=authorization,
+                verification=verification,
+            )
+            publication_completed = True
+            return committed
+
+        finalization_guard.publish_prepared(
+            f"publish layer {layer.id} outcome",
+            prepared,
+            publish,
+        )
+        if publication_calls != 1 or not publication_completed or committed is None:
+            raise LayerOutcomePublicationConflict(
+                "layer outcome finalization guard returned without completing its exact prepared mutation"
+            )
+        return committed
+    except BaseException as exc:
+        try:
+            discard_layer_outcome(prepared)
+        except LayerOutcomePublicationConflict as cleanup_error:
+            exc.add_note(f"layer-outcome cleanup diagnostic: {cleanup_error}")
+        raise
 
 
 __all__ = ["publish_finalized_layer_outcome"]

@@ -72,7 +72,6 @@ from vfx_harness.orchestration.jit_materialization import (
 )
 from vfx_harness.orchestration.layer_evaluation_receipts import (
     commit_layer_evaluation_receipt,
-    discard_layer_evaluation_receipt,
     prepare_layer_evaluation_receipt,
 )
 from vfx_harness.orchestration.layer_finalization_state import (
@@ -81,7 +80,6 @@ from vfx_harness.orchestration.layer_finalization_state import (
 )
 from vfx_harness.orchestration.layer_replay_receipts import (
     commit_layer_replay_receipt,
-    discard_layer_replay_receipt,
     prepare_layer_replay_receipt,
 )
 from vfx_harness.orchestration.ledger import ledger_lock, load_layers_from_path
@@ -870,14 +868,12 @@ def _selected_contract_gap_fixture(
     projection["finding"] = prepared_finding
     _refresh_gap_resolution(projection, canonical)
 
-    prepared_replay = prepare_layer_replay_receipt(folder, replay)
-    try:
-        stored_replay = commit_layer_replay_receipt(
-            prepared_replay,
-            claim_guard,
-        )
-    finally:
-        discard_layer_replay_receipt(prepared_replay)
+    prepared_replay = prepare_layer_replay_receipt(folder, replay, claim_guard)
+    stored_replay = commit_layer_replay_receipt(
+        folder,
+        prepared_replay,
+        claim_guard,
+    )
     evaluation = LayerEvaluationReceipt.mint(
         replay_receipts=(
             LayerReplayReceiptBinding.mint(
@@ -904,14 +900,16 @@ def _selected_contract_gap_fixture(
         canonical=canonical,
         created_at="2026-09-01T10:01:30+00:00",
     )
-    prepared_evaluation = prepare_layer_evaluation_receipt(folder, evaluation)
-    try:
-        stored_evaluation = commit_layer_evaluation_receipt(
-            prepared_evaluation,
-            claim_guard,
-        )
-    finally:
-        discard_layer_evaluation_receipt(prepared_evaluation)
+    prepared_evaluation = prepare_layer_evaluation_receipt(
+        folder,
+        evaluation,
+        claim_guard,
+    )
+    stored_evaluation = commit_layer_evaluation_receipt(
+        folder,
+        prepared_evaluation,
+        claim_guard,
+    )
     terminal_receipt = LayerFinalizationReceipt.mint(
         evaluation_receipt=evaluation,
         evaluation_receipt_locator=stored_evaluation.locator,

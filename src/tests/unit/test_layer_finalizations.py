@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -947,6 +948,30 @@ def test_replay_receipt_is_pre_judgment_and_semantically_digested() -> None:
     )
     assert later.receipt_digest == replay.receipt_digest
     assert canonical_layer_replay_receipt_bytes(replay).endswith(b"\n")
+
+
+def test_canonical_receipt_serializers_refuse_structurally_forged_typed_values() -> None:
+    replay = _replay()
+    terminal = _terminal(replay)
+
+    with pytest.raises(ValueError, match="receipt_digest"):
+        canonical_layer_replay_receipt_bytes(
+            replace(replay, receipt_digest=_digest("forged replay receipt"))
+        )
+    with pytest.raises(ValueError, match="receipt_digest"):
+        canonical_layer_evaluation_receipt_bytes(
+            replace(
+                terminal.evaluation_receipt,
+                receipt_digest=_digest("forged evaluation receipt"),
+            )
+        )
+    with pytest.raises(ValueError, match="receipt_digest"):
+        canonical_layer_finalization_receipt_bytes(
+            replace(
+                terminal,
+                receipt_digest=_digest("forged finalization receipt"),
+            )
+        )
 
 
 def test_replay_receipt_requires_the_exact_prefix_and_finite_observation() -> None:

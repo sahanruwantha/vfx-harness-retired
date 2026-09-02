@@ -105,7 +105,15 @@ def prepare_question(
         normalized = question.strip().lower()
         for row in existing:
             if row["question"].strip().lower() == normalized:
-                return None, (int(row["id"]), False)
+                # A duplicate is a successful authoritative observation, not an
+                # advisory no-op. Stage the exact bytes that established the
+                # existing id so publication must still compare-and-swap against
+                # that predecessor before the caller can rely on the result.
+                if raw is None:
+                    raise prepared_publication.FilePublicationConflict(
+                        "duplicate supervisor question has no authoritative predecessor bytes"
+                    )
+                return raw, (int(row["id"]), False)
         qid = (max((row["id"] for row in existing), default=0)) + 1
         record = {
             "id": qid,
@@ -141,11 +149,15 @@ def commit_prepared_question(
 ) -> int:
     """Publish one prepared question and emit logs only after its CAS succeeds."""
 
-    if prepared.update.publication is not None:
-        prepared_publication.commit_prepared_file(
-            prepared.update.publication,
-            authority_binding=authority_binding,
+    publication = prepared.update.publication
+    if publication is None:
+        raise prepared_publication.FilePublicationConflict(
+            "prepared supervisor question lacks an authoritative CAS publication"
         )
+    prepared_publication.commit_prepared_file(
+        publication,
+        authority_binding=authority_binding,
+    )
     return log_committed_question(prepared)
 
 

@@ -7,6 +7,7 @@ import inspect
 from pathlib import Path
 
 from vfx_harness.agents.builder import revalidate, unit_finalize, unit_loop
+from vfx_harness.orchestration import layer_outcome_publication
 
 
 def test_unit_builder_exposes_no_layer_publication_switch() -> None:
@@ -49,3 +50,27 @@ def test_unit_revalidation_reasserts_exact_unit_boundary() -> None:
     assert source.index("attempt_guard.require_unit_boundary") < source.index(
         "ledger.mark(m, \"passed\""
     )
+
+
+def test_terminal_outcome_capability_exposes_no_generic_publication() -> None:
+    capability = layer_outcome_publication.PreparedLayerOutcomePublication
+
+    assert capability.__slots__ == ("__weakref__",)
+    assert "publication" not in capability.__dict__
+    assert "temporary_descriptor" not in capability.__dict__
+    attribute_source = inspect.getsource(capability.__getattr__)
+    assert '"publication"' not in attribute_source
+    assert '"temporary_descriptor"' not in attribute_source
+
+
+def test_terminal_outcome_physical_capability_has_one_module_owner() -> None:
+    package = Path(layer_outcome_publication.__file__).resolve().parents[1]
+    owner = Path(layer_outcome_publication.__file__).resolve()
+    violations = [
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*.py")
+        if path.resolve() != owner
+        and "_require_prepared_layer_outcome" in path.read_text(encoding="utf-8")
+    ]
+
+    assert not violations

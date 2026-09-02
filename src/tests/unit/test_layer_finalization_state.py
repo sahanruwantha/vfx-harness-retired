@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
 
+import vfx_harness.agents.builder.layer_finalization_guard as finalization_guard_module
 from tests.architecture.test_staged_architecture import _unit
 from tests.unit.test_authority_capsules import _global_documents, _materialize
 from tests.unit_attempt_fixtures import (
@@ -62,6 +68,7 @@ from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.unit_evaluation_receipts import ReplayInputBinding
 from vfx_harness.domain.work_units import WorkUnit, dependency_ordered_units
 from vfx_harness.orchestration import (
+    layer_finalization_publication_authority,
     layer_finalization_release,
     layer_finalization_state,
     unit_state,
@@ -503,7 +510,8 @@ def _publish_artifact(folder, guard: LayerFinalizationClaimGuard):
         guard,
         evaluation_barrier=_EVALUATION_BARRIER,
     )
-    return commit_layer_artifact(prepared, guard), prepared.sha256
+    sha256 = prepared.sha256
+    return commit_layer_artifact(folder, prepared, guard), sha256
 
 
 def _publish_replay(
@@ -646,8 +654,8 @@ def _publish_replay(
         ),
         created_at="2026-09-01T10:01:00+00:00",
     )
-    prepared = prepare_layer_replay_receipt(folder, replay)
-    return replay, commit_layer_replay_receipt(prepared, guard)
+    prepared = prepare_layer_replay_receipt(folder, replay, guard)
+    return replay, commit_layer_replay_receipt(folder, prepared, guard)
 
 
 def _complete_passed_layer(
@@ -764,8 +772,13 @@ def _complete_passed_layer(
         canonical=receipt_canonical,
         created_at="2026-09-01T10:01:30+00:00",
     )
-    prepared_evaluation = prepare_layer_evaluation_receipt(folder, evaluation)
+    prepared_evaluation = prepare_layer_evaluation_receipt(
+        folder,
+        evaluation,
+        claim_guard,
+    )
     stored_evaluation = commit_layer_evaluation_receipt(
+        folder,
         prepared_evaluation,
         claim_guard,
     )
@@ -1035,6 +1048,479 @@ def test_layer_artifact_can_publish_only_after_the_exact_claim(tmp_path) -> None
     assert source.count("fixture evaluated-state barrier") == 2
 
 
+def test_layer_artifact_noop_preserves_canonical_originating_shot(tmp_path) -> None:
+    layer = _layer(multi=True)
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    aliased_folder = tmp_path / "unused-component" / ".."
+    initial = prepare_layer_artifact(
+        aliased_folder,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    commit_layer_artifact(aliased_folder, initial, guard)
+
+    reused = prepare_layer_artifact(
+        aliased_folder,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+
+    assert reused.destination == tmp_path / layer.script
+    with pytest.raises(AttributeError):
+        _ = reused.publication
+    with pytest.raises(AttributeError):
+        _ = reused.shot
+    assert (
+        commit_layer_artifact(aliased_folder, reused, guard)
+        == tmp_path / layer.script
+    )
+
+
+def test_layer_artifact_noop_uses_publish_prepared_exactly_once(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    _publish_artifact(tmp_path, guard)
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    with pytest.raises(AttributeError):
+        _ = prepared.publication
+    publish_prepared = guard.publish_prepared
+    calls = 0
+
+    def counted_publish(_self, operation, transaction_binding, mutation):
+        nonlocal calls
+        calls += 1
+        assert transaction_binding is prepared
+        return publish_prepared(operation, transaction_binding, mutation)
+
+    monkeypatch.setattr(
+        LayerFinalizationClaimGuard,
+        "publish_prepared",
+        counted_publish,
+    )
+
+    assert commit_layer_artifact(tmp_path, prepared, guard) == tmp_path / layer.script
+    assert calls == 1
+
+
+def test_layer_artifact_replacement_refuses_guard_that_skips_mutation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    destination = prepared.destination
+
+    def skip_mutation(_self, _operation, transaction_binding, _mutation):
+        assert transaction_binding is prepared
+        return None
+
+    monkeypatch.setattr(
+        LayerFinalizationClaimGuard,
+        "publish_prepared",
+        skip_mutation,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="returned without completing its exact prepared mutation",
+    ):
+        commit_layer_artifact(tmp_path, prepared, guard)
+
+    assert not destination.exists()
+    discard_layer_artifact(prepared)
+    assert not tuple(
+        destination.parent.glob(f".{destination.name}.prepared.*")
+    )
+
+
+def test_layer_artifact_replacement_refuses_guard_invoking_mutation_twice(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    destination = prepared.destination
+    publish_prepared = guard.publish_prepared
+
+    def invoke_twice(_self, operation, transaction_binding, mutation):
+        assert transaction_binding is prepared
+
+        def duplicate(authorization):
+            mutation(authorization)
+            return mutation(authorization)
+
+        return publish_prepared(
+            operation,
+            transaction_binding,
+            duplicate,
+        )
+
+    monkeypatch.setattr(
+        LayerFinalizationClaimGuard,
+        "publish_prepared",
+        invoke_twice,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="invoked its prepared mutation more than once",
+    ):
+        commit_layer_artifact(tmp_path, prepared, guard)
+
+    assert destination.is_file()
+    discard_layer_artifact(prepared)
+
+
+def test_layer_artifact_success_retires_typed_preparation(tmp_path) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+
+    assert commit_layer_artifact(tmp_path, prepared, guard) == tmp_path / layer.script
+    with pytest.raises(ValueError, match="unregistered, expired, consumed"):
+        _ = prepared.sha256
+    with pytest.raises(ValueError, match="unregistered, expired, consumed"):
+        commit_layer_artifact(tmp_path, prepared, guard)
+    with pytest.raises(ValueError, match="unregistered, expired, consumed"):
+        discard_layer_artifact(prepared)
+
+
+def test_layer_artifact_refuses_foreign_thread_access(tmp_path) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    failures: list[BaseException] = []
+
+    def read_from_foreign_thread() -> None:
+        try:
+            _ = prepared.sha256
+        except BaseException as exc:  # asserted below
+            failures.append(exc)
+
+    worker = Thread(target=read_from_foreign_thread)
+    worker.start()
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert len(failures) == 1
+    assert "another process or thread" in str(failures[0])
+    discard_layer_artifact(prepared)
+
+
+def test_layer_artifact_noop_refuses_destination_changed_before_publish(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    destination, _sha256 = _publish_artifact(tmp_path, guard)
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    payload = destination.read_bytes()
+    replacement = tmp_path / "same-bytes-replacement.py"
+    replacement.write_bytes(payload)
+    replacement.replace(destination)
+
+    publish_called = False
+
+    def unexpected_publish(_self, *_args, **_kwargs):
+        nonlocal publish_called
+        publish_called = True
+        raise AssertionError("stale no-op reached guard.publish_prepared")
+
+    monkeypatch.setattr(
+        LayerFinalizationClaimGuard,
+        "publish_prepared",
+        unexpected_publish,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"trusted (?:path|file).*changed|rebound|destination changed|"
+            r"audit does not match"
+        ),
+    ):
+        commit_layer_artifact(tmp_path, prepared, guard)
+
+    assert publish_called is False
+    assert destination.read_bytes() == payload
+
+
+def test_layer_artifact_noop_refuses_destination_changed_during_publish(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    destination, _sha256 = _publish_artifact(tmp_path, guard)
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    payload = destination.read_bytes()
+    replacement = tmp_path / "same-bytes-during-publish.py"
+    replacement.write_bytes(payload)
+
+    publish_prepared = guard.publish_prepared
+
+    def publish_then_rebind(_self, operation, transaction_binding, mutation):
+        assert transaction_binding is prepared
+
+        def rebind_then_mutate(capability):
+            replacement.replace(destination)
+            return mutation(capability)
+
+        return publish_prepared(
+            operation,
+            transaction_binding,
+            rebind_then_mutate,
+        )
+
+    monkeypatch.setattr(
+        LayerFinalizationClaimGuard,
+        "publish_prepared",
+        publish_then_rebind,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"trusted (?:path|file).*changed|rebound|destination changed",
+    ):
+        commit_layer_artifact(tmp_path, prepared, guard)
+
+    assert destination.read_bytes() == payload
+
+
+def test_layer_artifact_noop_destination_binding_is_not_replaceable(tmp_path) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    destination, _sha256 = _publish_artifact(tmp_path, guard)
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    with pytest.raises(TypeError, match="dataclass instances"):
+        replace(prepared, existing_destination=None)
+    with pytest.raises(AttributeError):
+        _ = prepared.existing_destination
+    discard_layer_artifact(prepared)
+    assert destination.is_file()
+
+
+def test_layer_artifact_noop_rehashes_existing_destination_from_claim(
+    tmp_path,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    destination = tmp_path / layer.script
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"unrelated existing artifact\n")
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    with pytest.raises(AttributeError):
+        _ = prepared.publication
+    with pytest.raises(TypeError, match="dataclass instances"):
+        replace(prepared, publication=None)
+    commit_layer_artifact(tmp_path, prepared, guard)
+    assert hashlib.sha256(destination.read_bytes()).hexdigest() == guard.claim.layer_script_sha256
+
+
+def test_layer_artifact_preparation_refuses_another_guard_shot(tmp_path) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    foreign = tmp_path / "foreign-shot"
+    foreign.mkdir()
+
+    with pytest.raises(
+        ValueError,
+        match="preparation folder does not match its finalization guard shot",
+    ):
+        prepare_layer_artifact(
+            foreign,
+            guard,
+            evaluation_barrier=_EVALUATION_BARRIER,
+        )
+
+    assert not (foreign / layer.script).exists()
+
+
+def test_layer_artifact_commit_refuses_foreign_or_malformed_shot_binding(
+    tmp_path,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    foreign = tmp_path / "foreign-shot"
+    foreign.mkdir()
+
+    try:
+        with pytest.raises(ValueError, match="commit folder does not match"):
+            commit_layer_artifact(foreign, prepared, guard)
+        with pytest.raises(ValueError, match="belongs to another shot"):
+            commit_layer_artifact(
+                tmp_path,
+                prepared,
+                replace(guard, folder=foreign),
+            )
+        with pytest.raises(AttributeError):
+            _ = prepared.shot
+        with pytest.raises(TypeError, match="dataclass instances"):
+            replace(prepared, shot=str(tmp_path))
+    finally:
+        discard_layer_artifact(prepared)
+
+    assert not (tmp_path / layer.script).exists()
+
+
+@pytest.mark.parametrize("source_variant", ["mutated", "deleted"])
+def test_layer_artifact_commit_refuses_claim_source_drift(
+    tmp_path,
+    source_variant: str,
+) -> None:
+    layer = _layer(multi=True)
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    source = tmp_path / guard.claim.unit_inputs[-1].script_path
+    if source_variant == "mutated":
+        source.write_text("# changed after artifact preparation\n", encoding="utf-8")
+    else:
+        source.unlink()
+
+    try:
+        with pytest.raises(ValueError, match=r"changed|missing|not found"):
+            commit_layer_artifact(tmp_path, prepared, guard)
+    finally:
+        discard_layer_artifact(prepared)
+
+    assert not (tmp_path / layer.script).exists()
+
+
+def test_layer_artifact_commit_refuses_forged_staged_payload_fields(
+    tmp_path,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    with pytest.raises(AttributeError):
+        _ = prepared.publication
+    staged = list(prepared.destination.parent.glob(f".{prepared.destination.name}.prepared.*"))
+    assert len(staged) == 1
+    staged[0].write_bytes(b"forged staged artifact\n")
+
+    try:
+        with pytest.raises(ValueError, match="prepared side-file inode changed"):
+            commit_layer_artifact(tmp_path, prepared, guard)
+    finally:
+        discard_layer_artifact(prepared)
+
+    assert not (tmp_path / layer.script).exists()
+
+
+def test_layer_artifact_raw_sink_refuses_foreign_writer_capability(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    prepared = prepare_layer_artifact(
+        tmp_path,
+        guard,
+        evaluation_barrier=_EVALUATION_BARRIER,
+    )
+    foreign = tmp_path / "foreign-writer-shot"
+    foreign.mkdir()
+
+    try:
+        with finalization_guard_module.shot_authority_capture.shot_authority_writer_fence(
+            foreign
+        ) as foreign_capability:
+
+            def inject_foreign_capability(
+                _self,
+                _operation,
+                transaction_binding,
+                mutation,
+            ):
+                assert transaction_binding is prepared
+                return mutation(foreign_capability)
+
+            monkeypatch.setattr(
+                LayerFinalizationClaimGuard,
+                "publish_prepared",
+                inject_foreign_capability,
+            )
+            with pytest.raises(
+                ValueError,
+                match="exact typed finalization authorization",
+            ):
+                commit_layer_artifact(tmp_path, prepared, guard)
+    finally:
+        discard_layer_artifact(prepared)
+
+    assert not (tmp_path / layer.script).exists()
+
+
 def test_layer_artifact_proposal_refuses_symlinked_unit_source(tmp_path) -> None:
     layer = _layer()
     _pass_layer_units(tmp_path, layer)
@@ -1085,14 +1571,11 @@ def test_layer_artifact_commit_rechecks_claimed_digest(tmp_path) -> None:
         guard,
         evaluation_barrier=_EVALUATION_BARRIER,
     )
-    mismatched = replace(prepared, sha256=_digest("different staged artifact"))
-
     try:
-        with pytest.raises(
-            ValueError,
-            match="SHA-256 does not match the proposed composed bytes",
-        ):
-            commit_layer_artifact(mismatched, guard)
+        with pytest.raises(TypeError, match="dataclass instances"):
+            replace(prepared, sha256=_digest("different staged artifact"))
+        with pytest.raises(ValueError, match="cannot be copied"):
+            copy.copy(prepared)
     finally:
         discard_layer_artifact(prepared)
 
@@ -1106,9 +1589,10 @@ def test_layer_replay_receipt_is_create_only_for_one_claim(tmp_path) -> None:
     _path, script_sha256 = _publish_artifact(tmp_path, guard)
     replay, stored = _publish_replay(tmp_path, guard, script_sha256)
 
-    identical = prepare_layer_replay_receipt(tmp_path, replay)
-    assert identical.publication is None
-    assert commit_layer_replay_receipt(identical, guard).receipt == replay
+    identical = prepare_layer_replay_receipt(tmp_path, replay, guard)
+    with pytest.raises(AttributeError):
+        _ = identical.publication
+    assert commit_layer_replay_receipt(tmp_path, identical, guard).receipt == replay
 
     conflicting = LayerReplayReceipt.mint(
         claim=replay.claim,
@@ -1124,7 +1608,7 @@ def test_layer_replay_receipt_is_create_only_for_one_claim(tmp_path) -> None:
         LayerReplayReceiptConflict,
         match="immutable layer replay receipt conflicts",
     ):
-        prepare_layer_replay_receipt(tmp_path, conflicting)
+        prepare_layer_replay_receipt(tmp_path, conflicting, guard)
 
     assert json.loads((tmp_path / stored.locator).read_text()) == replay.as_dict()
 
@@ -1378,10 +1862,8 @@ with builder_execution_fence(root):
     # Neither the stale claim nor its replay can publish after release.
     with pytest.raises(LayerFinalizationAuthorityLost, match="lost authority"):
         stale_guard.check("publish stale critic result")
-    replay_again = prepare_layer_replay_receipt(tmp_path, replay)
-    assert replay_again.publication is None
     with pytest.raises(LayerFinalizationAuthorityLost, match="lost authority"):
-        commit_layer_replay_receipt(replay_again, stale_guard)
+        prepare_layer_replay_receipt(tmp_path, replay, stale_guard)
 
     # Exact repeat reconciles the committed receipt without rereading mutable
     # historical evidence; changed review authority still fails closed.
@@ -1731,6 +2213,620 @@ def test_terminal_commit_clears_claim_before_any_projection(tmp_path) -> None:
 
     receipt_guard.publish("fixture derived projection", project)
     assert observed == [receipt.receipt_digest]
+
+
+@pytest.mark.parametrize(
+    "guard_type",
+    [LayerFinalizationClaimGuard, LayerFinalizationReceiptGuard],
+)
+def test_publish_prepared_acquires_writer_before_finalization_hold(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    guard_type: type[LayerFinalizationClaimGuard]
+    | type[LayerFinalizationReceiptGuard],
+) -> None:
+    capability = object()
+    authorization = object()
+    transaction_binding = object()
+    events: list[str] = []
+
+    @contextmanager
+    def writer_fence(folder: str | Path) -> Iterator[object]:
+        assert Path(folder) == tmp_path
+        events.append("writer-enter")
+        try:
+            yield capability
+        finally:
+            events.append("writer-exit")
+
+    @contextmanager
+    def hold(_self: object, operation: str) -> Iterator[object]:
+        assert operation == "publish prepared fixture"
+        events.append("hold-enter")
+        try:
+            yield object()
+        finally:
+            events.append("hold-exit")
+
+    @contextmanager
+    def issue(**kwargs: object) -> Iterator[object]:
+        assert kwargs["guard"] is guard
+        assert kwargs["writer_capability"] is capability
+        assert kwargs["transaction_binding"] is transaction_binding
+        events.append("authorization-enter")
+        try:
+            yield authorization
+        finally:
+            events.append("authorization-exit")
+
+    def mutation(observed_authorization: object) -> str:
+        assert observed_authorization is authorization
+        events.append("mutation")
+        return "published"
+
+    monkeypatch.setattr(
+        finalization_guard_module.shot_authority_capture,
+        "shot_authority_writer_fence",
+        writer_fence,
+    )
+    monkeypatch.setattr(guard_type, "hold", hold)
+    claim = SimpleNamespace()
+    guard = (
+        guard_type(tmp_path, claim, (), SimpleNamespace())
+        if guard_type is LayerFinalizationClaimGuard
+        else guard_type(
+            tmp_path,
+            SimpleNamespace(claim=claim),
+            (),
+            SimpleNamespace(),
+        )
+    )
+    monkeypatch.setattr(
+        layer_finalization_publication_authority,
+        "_issue_layer_finalization_prepared_mutation_authorization",
+        issue,
+    )
+
+    assert (
+        guard.publish_prepared(
+            "publish prepared fixture",
+            transaction_binding,
+            mutation,
+        )
+        == "published"
+    )
+    assert events == [
+        "writer-enter",
+        "hold-enter",
+        "authorization-enter",
+        "mutation",
+        "authorization-exit",
+        "hold-exit",
+        "writer-exit",
+    ]
+
+
+@pytest.mark.parametrize(
+    "guard_type",
+    [LayerFinalizationClaimGuard, LayerFinalizationReceiptGuard],
+)
+def test_publish_prepared_delivers_the_exact_prepared_authorization(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    guard_type: type[LayerFinalizationClaimGuard]
+    | type[LayerFinalizationReceiptGuard],
+) -> None:
+    capability = object()
+    authorization = object()
+    transaction_binding = object()
+    delivered: list[object] = []
+
+    @contextmanager
+    def writer_fence(_folder: str | Path) -> Iterator[object]:
+        yield capability
+
+    @contextmanager
+    def hold(_self: object, _operation: str) -> Iterator[object]:
+        yield object()
+
+    @contextmanager
+    def issue(**kwargs: object) -> Iterator[object]:
+        assert kwargs["guard"] is guard
+        assert kwargs["writer_capability"] is capability
+        assert kwargs["transaction_binding"] is transaction_binding
+        yield authorization
+
+    def mutation(observed_authorization: object) -> object:
+        delivered.append(observed_authorization)
+        return observed_authorization
+
+    monkeypatch.setattr(
+        finalization_guard_module.shot_authority_capture,
+        "shot_authority_writer_fence",
+        writer_fence,
+    )
+    monkeypatch.setattr(guard_type, "hold", hold)
+    claim = SimpleNamespace()
+    guard = (
+        guard_type(tmp_path, claim, (), SimpleNamespace())
+        if guard_type is LayerFinalizationClaimGuard
+        else guard_type(
+            tmp_path,
+            SimpleNamespace(claim=claim),
+            (),
+            SimpleNamespace(),
+        )
+    )
+    monkeypatch.setattr(
+        layer_finalization_publication_authority,
+        "_issue_layer_finalization_prepared_mutation_authorization",
+        issue,
+    )
+
+    result = guard.publish_prepared(
+        "publish prepared fixture",
+        transaction_binding,
+        mutation,
+    )
+
+    assert result is authorization
+    assert delivered == [authorization]
+    assert delivered[0] is authorization
+
+
+@pytest.mark.parametrize(
+    "guard_type",
+    [LayerFinalizationClaimGuard, LayerFinalizationReceiptGuard],
+)
+def test_publish_prepared_releases_both_guards_when_mutation_raises(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    guard_type: type[LayerFinalizationClaimGuard]
+    | type[LayerFinalizationReceiptGuard],
+) -> None:
+    events: list[str] = []
+    authorization = object()
+    transaction_binding = object()
+
+    @contextmanager
+    def writer_fence(_folder: str | Path) -> Iterator[object]:
+        events.append("writer-enter")
+        try:
+            yield object()
+        finally:
+            events.append("writer-exit")
+
+    @contextmanager
+    def hold(_self: object, _operation: str) -> Iterator[object]:
+        events.append("hold-enter")
+        try:
+            yield object()
+        finally:
+            events.append("hold-exit")
+
+    @contextmanager
+    def issue(**_kwargs: object) -> Iterator[object]:
+        events.append("authorization-enter")
+        try:
+            yield authorization
+        finally:
+            events.append("authorization-exit")
+
+    def mutation(observed_authorization: object) -> None:
+        assert observed_authorization is authorization
+        events.append("mutation")
+        raise RuntimeError("fixture publication failed")
+
+    monkeypatch.setattr(
+        finalization_guard_module.shot_authority_capture,
+        "shot_authority_writer_fence",
+        writer_fence,
+    )
+    monkeypatch.setattr(guard_type, "hold", hold)
+    claim = SimpleNamespace()
+    guard = (
+        guard_type(tmp_path, claim, (), SimpleNamespace())
+        if guard_type is LayerFinalizationClaimGuard
+        else guard_type(
+            tmp_path,
+            SimpleNamespace(claim=claim),
+            (),
+            SimpleNamespace(),
+        )
+    )
+    monkeypatch.setattr(
+        layer_finalization_publication_authority,
+        "_issue_layer_finalization_prepared_mutation_authorization",
+        issue,
+    )
+
+    with pytest.raises(RuntimeError, match="fixture publication failed"):
+        guard.publish_prepared(
+            "publish prepared fixture",
+            transaction_binding,
+            mutation,
+        )
+
+    assert events == [
+        "writer-enter",
+        "hold-enter",
+        "authorization-enter",
+        "mutation",
+        "authorization-exit",
+        "hold-exit",
+        "writer-exit",
+    ]
+
+
+def test_claim_guard_does_not_reclassify_publication_value_error(tmp_path) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    failure = ValueError("fixture publication conflict")
+    transaction_binding = object()
+
+    def refuse(_authorization: object) -> None:
+        raise failure
+
+    with pytest.raises(ValueError, match="fixture publication conflict") as observed:
+        guard.publish_prepared(
+            "refuse prepared fixture",
+            transaction_binding,
+            refuse,
+        )
+
+    assert observed.value is failure
+
+
+@pytest.mark.parametrize(
+    "guard_type",
+    [LayerFinalizationClaimGuard, LayerFinalizationReceiptGuard],
+)
+def test_publish_prepared_noop_result_uses_one_writer_acquisition(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    guard_type: type[LayerFinalizationClaimGuard]
+    | type[LayerFinalizationReceiptGuard],
+) -> None:
+    existing = object()
+    authorization = object()
+    transaction_binding = object()
+    acquisitions = 0
+    holds = 0
+
+    @contextmanager
+    def writer_fence(_folder: str | Path) -> Iterator[object]:
+        nonlocal acquisitions
+        acquisitions += 1
+        yield object()
+
+    @contextmanager
+    def hold(_self: object, _operation: str) -> Iterator[object]:
+        nonlocal holds
+        holds += 1
+        yield object()
+
+    @contextmanager
+    def issue(**_kwargs: object) -> Iterator[object]:
+        yield authorization
+
+    monkeypatch.setattr(
+        finalization_guard_module.shot_authority_capture,
+        "shot_authority_writer_fence",
+        writer_fence,
+    )
+    monkeypatch.setattr(guard_type, "hold", hold)
+    claim = SimpleNamespace()
+    guard = (
+        guard_type(tmp_path, claim, (), SimpleNamespace())
+        if guard_type is LayerFinalizationClaimGuard
+        else guard_type(
+            tmp_path,
+            SimpleNamespace(claim=claim),
+            (),
+            SimpleNamespace(),
+        )
+    )
+    monkeypatch.setattr(
+        layer_finalization_publication_authority,
+        "_issue_layer_finalization_prepared_mutation_authorization",
+        issue,
+    )
+
+    observed = guard.publish_prepared(
+        "reuse existing prepared publication",
+        transaction_binding,
+        lambda observed_authorization: (
+            existing
+            if observed_authorization is authorization
+            else pytest.fail("guard delivered another authorization")
+        ),
+    )
+
+    assert observed is existing
+    assert acquisitions == 1
+    assert holds == 1
+
+
+def test_prepared_mutation_authorization_is_exact_and_one_shot(
+    tmp_path,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    observed: list[object] = []
+    transaction_binding = object()
+
+    def mutation(authorization: object) -> str:
+        observed.append(authorization)
+        with pytest.raises(ValueError, match="cannot be copied"):
+            copy.copy(authorization)
+        with pytest.raises(ValueError, match="cannot be copied"):
+            copy.deepcopy(authorization)
+        with pytest.raises(
+            ValueError,
+            match="exact guard and prepared transaction authority",
+        ):
+            layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+                authorization,
+                expected_guard=guard,
+                expected_shot=tmp_path,
+                expected_claim=guard.claim,
+                expected_transaction_binding=object(),
+            )
+        consumed = (
+            layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+                authorization,
+                expected_guard=guard,
+                expected_shot=tmp_path,
+                expected_claim=guard.claim,
+                expected_transaction_binding=transaction_binding,
+            )
+        )
+        assert consumed is None
+        assert (
+            finalization_guard_module.shot_authority_capture.current_shot_authority_writer(
+                tmp_path
+            )
+            is not None
+        )
+        with pytest.raises(
+            ValueError,
+            match="expired, or already consumed",
+        ):
+            layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+                authorization,
+                expected_guard=guard,
+                expected_shot=tmp_path,
+                expected_claim=guard.claim,
+                expected_transaction_binding=transaction_binding,
+            )
+        return "published"
+
+    assert (
+        guard.publish_prepared(
+            "publish one exact fixture",
+            transaction_binding,
+            mutation,
+        )
+        == "published"
+    )
+    assert len(observed) == 1
+    with pytest.raises(ValueError, match="expired, or already consumed"):
+        layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+            observed[0],
+            expected_guard=guard,
+            expected_shot=tmp_path,
+            expected_claim=guard.claim,
+            expected_transaction_binding=transaction_binding,
+        )
+
+
+def test_unconsumed_prepared_mutation_authorization_expires_before_guard_exit(
+    tmp_path,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    observed: list[object] = []
+    transaction_binding = object()
+
+    guard.publish_prepared(
+        "do not consume prepared fixture",
+        transaction_binding,
+        lambda authorization: observed.append(authorization),
+    )
+
+    assert len(observed) == 1
+    with pytest.raises(ValueError, match="unregistered, expired"):
+        layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+            observed[0],
+            expected_guard=guard,
+            expected_shot=tmp_path,
+            expected_claim=guard.claim,
+            expected_transaction_binding=transaction_binding,
+        )
+
+
+def test_prepared_mutation_authorization_refuses_equal_guard_substitution(
+    tmp_path,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    substituted_guard = replace(guard)
+    transaction_binding = object()
+
+    def mutation(authorization: object) -> None:
+        with pytest.raises(
+            ValueError,
+            match="exact guard and prepared transaction authority",
+        ):
+            layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+                authorization,
+                expected_guard=substituted_guard,
+                expected_shot=tmp_path,
+                expected_claim=guard.claim,
+                expected_transaction_binding=transaction_binding,
+            )
+        layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+            authorization,
+            expected_guard=guard,
+            expected_shot=tmp_path,
+            expected_claim=guard.claim,
+            expected_transaction_binding=transaction_binding,
+        )
+
+    guard.publish_prepared(
+        "refuse substituted guard fixture",
+        transaction_binding,
+        mutation,
+    )
+
+
+def test_prepared_mutation_authorization_refuses_thread_transfer(
+    tmp_path,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    transaction_binding = object()
+
+    def mutation(authorization: object) -> None:
+        failures: list[BaseException] = []
+
+        def consume_from_other_thread() -> None:
+            try:
+                layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+                    authorization,
+                    expected_guard=guard,
+                    expected_shot=tmp_path,
+                    expected_claim=guard.claim,
+                    expected_transaction_binding=transaction_binding,
+                )
+            except BaseException as exc:  # asserted below
+                failures.append(exc)
+
+        thread = Thread(target=consume_from_other_thread)
+        thread.start()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert len(failures) == 1
+        assert "another process or thread" in str(failures[0])
+        layer_finalization_publication_authority.consume_layer_finalization_prepared_mutation_authorization(
+            authorization,
+            expected_guard=guard,
+            expected_shot=tmp_path,
+            expected_claim=guard.claim,
+            expected_transaction_binding=transaction_binding,
+        )
+
+    guard.publish_prepared(
+        "refuse transferred fixture",
+        transaction_binding,
+        mutation,
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+def test_prepared_mutation_issuer_lock_is_reinitialized_in_fork_child() -> None:
+    lock_held = Event()
+    release_lock = Event()
+
+    def hold_issuer_lock() -> None:
+        with layer_finalization_publication_authority._ISSUER_LOCK:
+            lock_held.set()
+            assert release_lock.wait(5)
+
+    owner = Thread(target=hold_issuer_lock)
+    owner.start()
+    assert lock_held.wait(5)
+
+    read_descriptor, write_descriptor = os.pipe()
+    child = os.fork()
+    if child == 0:  # pragma: no branch - parent asserts the child result
+        os.close(read_descriptor)
+        acquired = layer_finalization_publication_authority._ISSUER_LOCK.acquire(
+            blocking=False
+        )
+        if acquired:
+            layer_finalization_publication_authority._ISSUER_LOCK.release()
+        os.write(write_descriptor, b"reset" if acquired else b"inherited-locked")
+        os.close(write_descriptor)
+        os._exit(0)
+
+    os.close(write_descriptor)
+    observed = os.read(read_descriptor, 64)
+    os.close(read_descriptor)
+    waited, status = os.waitpid(child, 0)
+    release_lock.set()
+    owner.join(5)
+
+    assert waited == child
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert observed == b"reset"
+    assert not owner.is_alive()
+
+
+def test_prepared_mutation_authorization_cannot_be_constructed() -> None:
+    authorization_type = (
+        layer_finalization_publication_authority.LayerFinalizationPreparedMutationAuthorization
+    )
+    with pytest.raises(ValueError, match="issued only"):
+        authorization_type()
+
+
+def test_duck_guard_cannot_mint_prepared_mutation_authorization(tmp_path) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+    duck_guard = SimpleNamespace(
+        folder=guard.folder,
+        claim=guard.claim,
+        selected_authority=guard.selected_authority,
+    )
+
+    with (
+        finalization_guard_module.shot_authority_capture.shot_authority_writer_fence(
+            tmp_path
+        ) as capability,
+        pytest.raises(ValueError, match="exact concrete claim or receipt guard"),
+        layer_finalization_publication_authority._issue_layer_finalization_prepared_mutation_authorization(
+            issuer=finalization_guard_module._PREPARED_MUTATION_ISSUER,
+            guard=duck_guard,
+            shot_folder=tmp_path,
+            claim=guard.claim,
+            receipt=None,
+            writer_capability=capability,
+            transaction_binding=object(),
+        ),
+    ):
+        pytest.fail("a duck guard minted prepared-mutation authority")
+
+
+def test_exact_guard_cannot_mint_prepared_authority_without_active_hold(
+    tmp_path,
+) -> None:
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, _claim(tmp_path, layer))
+
+    with (
+        finalization_guard_module.shot_authority_capture.shot_authority_writer_fence(
+            tmp_path
+        ) as capability,
+        pytest.raises(ValueError, match="exact finalization guard to be actively held"),
+        layer_finalization_publication_authority._issue_layer_finalization_prepared_mutation_authorization(
+            issuer=finalization_guard_module._PREPARED_MUTATION_ISSUER,
+            guard=guard,
+            shot_folder=tmp_path,
+            claim=guard.claim,
+            receipt=None,
+            writer_capability=capability,
+            transaction_binding=object(),
+        ),
+    ):
+        pytest.fail("an unheld exact guard minted prepared-mutation authority")
 
 
 def test_active_claim_cannot_publish_terminal_layer_ledger_status(tmp_path) -> None:

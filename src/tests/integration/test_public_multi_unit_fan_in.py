@@ -18,7 +18,6 @@ from tests.unit.test_layer_finalization_state import (
 from tests.unit_attempt_fixtures import ABSENT_SELECTION_TOKEN, pass_unit
 from vfx_harness.agents.builder.layer_artifact import (
     commit_layer_artifact,
-    discard_layer_artifact,
     prepare_layer_artifact,
     proposed_layer_artifact_sha256,
 )
@@ -52,7 +51,6 @@ from vfx_harness.evaluation import determinism
 from vfx_harness.orchestration import unit_state
 from vfx_harness.orchestration.layer_evaluation_receipts import (
     commit_layer_evaluation_receipt,
-    discard_layer_evaluation_receipt,
     prepare_layer_evaluation_receipt,
 )
 from vfx_harness.orchestration.layer_finalization_state import (
@@ -66,7 +64,6 @@ from vfx_harness.orchestration.layer_publication import (
 )
 from vfx_harness.orchestration.layer_replay_receipts import (
     commit_layer_replay_receipt,
-    discard_layer_replay_receipt,
     prepare_layer_replay_receipt,
 )
 from vfx_harness.orchestration.ledger import Layer, load_layers_from_path
@@ -351,10 +348,7 @@ def _claim_and_publish_artifact(
         guard,
         evaluation_barrier=_ARTIFACT_EVALUATION_BARRIER,
     )
-    try:
-        artifact = commit_layer_artifact(prepared, guard)
-    finally:
-        discard_layer_artifact(prepared)
+    artifact = commit_layer_artifact(root, prepared, guard)
     return guard, _digest(artifact.read_bytes())
 
 
@@ -459,11 +453,8 @@ def _publish_group(
         ),
         created_at=f"2026-09-01T10:0{group_index + 1}:00+00:00",
     )
-    prepared = prepare_layer_replay_receipt(root, receipt)
-    try:
-        stored = commit_layer_replay_receipt(prepared, guard)
-    finally:
-        discard_layer_replay_receipt(prepared)
+    prepared = prepare_layer_replay_receipt(root, receipt, guard)
+    stored = commit_layer_replay_receipt(root, prepared, guard)
     verdict = {
         "evidence_kind": "executable_only",
         "pass": True,
@@ -538,14 +529,16 @@ def _publish_fan_in(root: Path):
         canonical=canonical,
         created_at="2026-09-01T10:03:00+00:00",
     )
-    prepared_evaluation = prepare_layer_evaluation_receipt(root, evaluation)
-    try:
-        stored_evaluation = commit_layer_evaluation_receipt(
-            prepared_evaluation,
-            guard,
-        )
-    finally:
-        discard_layer_evaluation_receipt(prepared_evaluation)
+    prepared_evaluation = prepare_layer_evaluation_receipt(
+        root,
+        evaluation,
+        guard,
+    )
+    stored_evaluation = commit_layer_evaluation_receipt(
+        root,
+        prepared_evaluation,
+        guard,
+    )
 
     selected = _selected_authority(root)
     revalidation_projection = {

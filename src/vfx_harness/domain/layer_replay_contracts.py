@@ -182,9 +182,17 @@ def canonical_layer_replay_receipt_bytes(receipt: LayerReplayReceipt) -> bytes:
 
     if not isinstance(receipt, LayerReplayReceipt):
         raise ValueError("receipt must be a typed layer replay receipt")
+    parsed = LayerReplayReceipt.parse(
+        receipt.as_dict(),
+        "layer replay receipt serialization",
+    )
+    if parsed != receipt:
+        raise ValueError(
+            "layer replay receipt serialization is not its strict parsed representation"
+        )
     return (
         json.dumps(
-            receipt.as_dict(),
+            parsed.as_dict(),
             allow_nan=False,
             ensure_ascii=False,
             indent=2,

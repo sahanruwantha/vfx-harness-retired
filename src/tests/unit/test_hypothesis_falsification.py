@@ -265,8 +265,16 @@ def test_terminal_receipt_finding_reconciles_exactly_once(
     render = tmp_path / str(replay.observation.points[0].render)
     render.parent.mkdir(parents=True, exist_ok=True)
     render.write_bytes(b"qualitative render")
-    prepared_replay = prepare_layer_replay_receipt(tmp_path, replay)
-    stored_replay = commit_layer_replay_receipt(prepared_replay, claim_guard)
+    prepared_replay = prepare_layer_replay_receipt(
+        tmp_path,
+        replay,
+        claim_guard,
+    )
+    stored_replay = commit_layer_replay_receipt(
+        tmp_path,
+        prepared_replay,
+        claim_guard,
+    )
 
     source = layer.stages[0]
     finding = prepare_accepted_hypothesis_falsification(
@@ -318,8 +326,13 @@ def test_terminal_receipt_finding_reconciles_exactly_once(
         canonical=receipt_canonical,
         created_at="2026-09-01T10:01:30+00:00",
     )
-    prepared_evaluation = prepare_layer_evaluation_receipt(tmp_path, evaluation)
+    prepared_evaluation = prepare_layer_evaluation_receipt(
+        tmp_path,
+        evaluation,
+        claim_guard,
+    )
     stored_evaluation = commit_layer_evaluation_receipt(
+        tmp_path,
         prepared_evaluation,
         claim_guard,
     )

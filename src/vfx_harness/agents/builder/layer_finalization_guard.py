@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
+import vfx_harness.orchestration.shot_authority_capture as shot_authority_capture
 from vfx_harness.agents.builder.execution_guard import (
     ExecutionAuthorityLost,
     LedgerPublicationScope,
@@ -18,6 +19,7 @@ from vfx_harness.domain.layer_finalizations import (
     LayerFinalizationReceipt,
 )
 from vfx_harness.domain.work_units import WorkUnit
+from vfx_harness.orchestration import layer_finalization_publication_authority
 from vfx_harness.orchestration.authority_receipt_lineage import (
     require_preserved_layer_finalization_authorization,
 )
@@ -32,6 +34,55 @@ _T = TypeVar("_T")
 
 class LayerFinalizationAuthorityLost(ExecutionAuthorityLost):
     """The exact layer-finalization generation no longer owns publication."""
+
+
+@contextmanager
+def _translate_finalization_hold(
+    manager: AbstractContextManager[_T],
+    *,
+    operation: str,
+    label: str,
+) -> Iterator[_T]:
+    """Translate guard acquisition/release failures without masking body errors."""
+
+    try:
+        current = manager.__enter__()
+    except LayerFinalizationAuthorityLost:
+        raise
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise LayerFinalizationAuthorityLost(
+            f"{operation} refused because {label} lost authority: {exc}"
+        ) from exc
+    try:
+        yield current
+    except BaseException as body_error:
+        try:
+            suppress = manager.__exit__(
+                type(body_error),
+                body_error,
+                body_error.__traceback__,
+            )
+        except BaseException as exit_error:
+            if exit_error is body_error:
+                raise
+            if isinstance(exit_error, LayerFinalizationAuthorityLost):
+                raise
+            if isinstance(exit_error, (KeyError, OSError, TypeError, ValueError)):
+                raise LayerFinalizationAuthorityLost(
+                    f"{operation} refused because {label} lost authority: {exit_error}"
+                ) from exit_error
+            raise
+        if not suppress:
+            raise
+    else:
+        try:
+            manager.__exit__(None, None, None)
+        except LayerFinalizationAuthorityLost:
+            raise
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise LayerFinalizationAuthorityLost(
+                f"{operation} refused because {label} lost authority: {exc}"
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,20 +122,27 @@ class LayerFinalizationClaimGuard:
 
     @contextmanager
     def hold(self, operation: str) -> Iterator[LayerFinalizationClaim]:
-        try:
-            with active_layer_finalization_guard(
-                self.folder,
-                self.claim,
-                self.units,
-                selection_token=self.selected_authority.selection_token,
-            ) as current:
-                yield current
-        except LayerFinalizationAuthorityLost:
-            raise
-        except (KeyError, OSError, TypeError, ValueError) as exc:
-            raise LayerFinalizationAuthorityLost(
-                f"{operation} refused because {self.label} lost authority: {exc}"
-            ) from exc
+        manager = active_layer_finalization_guard(
+            self.folder,
+            self.claim,
+            self.units,
+            selection_token=self.selected_authority.selection_token,
+        )
+        with (
+            _translate_finalization_hold(
+                manager,
+                operation=operation,
+                label=self.label,
+            ) as current,
+            layer_finalization_publication_authority._hold_layer_finalization_prepared_mutation_guard(
+                issuer=_PREPARED_MUTATION_ISSUER,
+                guard=self,
+                shot_folder=self.folder,
+                claim=self.claim,
+                receipt=None,
+            ),
+        ):
+            yield current
 
     def check(self, operation: str) -> LayerFinalizationClaim:
         with self.hold(operation) as current:
@@ -93,6 +151,32 @@ class LayerFinalizationClaimGuard:
     def publish(self, operation: str, mutation: Callable[[], _T]) -> _T:
         with self.hold(operation):
             return mutation()
+
+    def publish_prepared(
+        self,
+        operation: str,
+        transaction_binding: object,
+        mutation: Callable[
+            [
+                layer_finalization_publication_authority.LayerFinalizationPreparedMutationAuthorization
+            ],
+            _T,
+        ],
+    ) -> _T:
+        with (
+            shot_authority_capture.shot_authority_writer_fence(self.folder) as capability,
+            self.hold(operation),
+            layer_finalization_publication_authority._issue_layer_finalization_prepared_mutation_authorization(
+                issuer=_PREPARED_MUTATION_ISSUER,
+                guard=self,
+                shot_folder=self.folder,
+                claim=self.claim,
+                receipt=None,
+                writer_capability=capability,
+                transaction_binding=transaction_binding,
+            ) as authorization,
+        ):
+            return mutation(authorization)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,20 +238,32 @@ class LayerFinalizationReceiptGuard:
                     self.selected_authority,
                 )
             )
-            with terminal_layer_finalization_guard(
-                self.folder,
-                self.receipt,
-                self.units,
-                selection_token=self.selected_authority.selection_token,
-                lineage_authorization=lineage_authorization,
-            ) as current:
-                yield current
-        except LayerFinalizationAuthorityLost:
-            raise
         except (KeyError, OSError, TypeError, ValueError) as exc:
             raise LayerFinalizationAuthorityLost(
                 f"{operation} refused because {self.label} lost authority: {exc}"
             ) from exc
+        manager = terminal_layer_finalization_guard(
+            self.folder,
+            self.receipt,
+            self.units,
+            selection_token=self.selected_authority.selection_token,
+            lineage_authorization=lineage_authorization,
+        )
+        with (
+            _translate_finalization_hold(
+                manager,
+                operation=operation,
+                label=self.label,
+            ) as current,
+            layer_finalization_publication_authority._hold_layer_finalization_prepared_mutation_guard(
+                issuer=_PREPARED_MUTATION_ISSUER,
+                guard=self,
+                shot_folder=self.folder,
+                claim=self.claim,
+                receipt=self.receipt,
+            ),
+        ):
+            yield current
 
     def check(self, operation: str) -> LayerFinalizationReceipt:
         with self.hold(operation) as current:
@@ -176,6 +272,40 @@ class LayerFinalizationReceiptGuard:
     def publish(self, operation: str, mutation: Callable[[], _T]) -> _T:
         with self.hold(operation):
             return mutation()
+
+    def publish_prepared(
+        self,
+        operation: str,
+        transaction_binding: object,
+        mutation: Callable[
+            [
+                layer_finalization_publication_authority.LayerFinalizationPreparedMutationAuthorization
+            ],
+            _T,
+        ],
+    ) -> _T:
+        with (
+            shot_authority_capture.shot_authority_writer_fence(self.folder) as capability,
+            self.hold(operation),
+            layer_finalization_publication_authority._issue_layer_finalization_prepared_mutation_authorization(
+                issuer=_PREPARED_MUTATION_ISSUER,
+                guard=self,
+                shot_folder=self.folder,
+                claim=self.claim,
+                receipt=self.receipt,
+                writer_capability=capability,
+                transaction_binding=transaction_binding,
+            ) as authorization,
+        ):
+            return mutation(authorization)
+
+
+_PREPARED_MUTATION_ISSUER = (
+    layer_finalization_publication_authority._bind_layer_finalization_prepared_mutation_issuer(
+        claim_guard_type=LayerFinalizationClaimGuard,
+        receipt_guard_type=LayerFinalizationReceiptGuard,
+    )
+)
 
 
 __all__ = [

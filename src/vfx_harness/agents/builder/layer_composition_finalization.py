@@ -10,21 +10,47 @@ replacement surfaces remain authoritative.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+from vfx_harness.agents.builder.layer_artifact import (
+    LayerArtifactPublicationConflict,
+)
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.layer_finalizations import (
     LayerFinalizationPredecessorInput,
 )
 from vfx_harness.orchestration import layer_publication
+from vfx_harness.orchestration.layer_evaluation_receipts import (
+    LayerEvaluationReceiptConflict,
+)
+from vfx_harness.orchestration.layer_replay_receipts import (
+    LayerReplayReceiptConflict,
+)
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import (
         ResolvedSelectedAuthority,
     )
     from vfx_harness.orchestration.ledger import Ledger
+
+
+def _discard_preserving_primary_error(
+    primary: BaseException,
+    discard: Callable[[object], None],
+    prepared: object,
+    *,
+    conflict_type: type[BaseException],
+    label: str,
+) -> None:
+    """Keep the causal failure while retaining a typed cleanup diagnostic."""
+
+    try:
+        discard(prepared)
+    except conflict_type as cleanup_error:
+        primary.add_note(f"{label} cleanup diagnostic: {cleanup_error}")
 
 
 def _json_ready(value):
@@ -153,10 +179,22 @@ async def finalize_composed_layer(
         finalization_guard,
         evaluation_barrier=runtime._ARTIFACT_EVALUATION_BARRIER,
     )
+    prepared_artifact_sha256 = prepared_artifact.sha256
     try:
-        runtime.commit_layer_artifact(prepared_artifact, finalization_guard)
-    finally:
-        runtime.discard_layer_artifact(prepared_artifact)
+        runtime.commit_layer_artifact(
+            shot.folder,
+            prepared_artifact,
+            finalization_guard,
+        )
+    except BaseException as exc:
+        _discard_preserving_primary_error(
+            exc,
+            runtime.discard_layer_artifact,
+            prepared_artifact,
+            conflict_type=LayerArtifactPublicationConflict,
+            label="layer-artifact",
+        )
+        raise
     runtime.log(f"published {finalization_claim.mode} layer artifact → {layer.script} ({finalization_claim.claim_id})")
 
     guarded_session = runtime.AttemptBoundBlenderSession(session, finalization_guard)
@@ -379,7 +417,7 @@ async def finalize_composed_layer(
         ):
             receipt = runtime.LayerReplayReceipt.mint(
                 claim=finalization_claim,
-                layer_script_sha256=prepared_artifact.sha256,
+                layer_script_sha256=prepared_artifact_sha256,
                 replay_inputs=replay_bindings,
                 observation=observation,
                 replay_status="ready",
@@ -388,14 +426,23 @@ async def finalize_composed_layer(
             prepared_replay = runtime.prepare_layer_replay_receipt(
                 shot.folder,
                 receipt,
+                finalization_guard,
             )
             try:
                 stored_layer_replay = runtime.commit_layer_replay_receipt(
+                    shot.folder,
                     prepared_replay,
                     finalization_guard,
                 )
-            finally:
-                runtime.discard_layer_replay_receipt(prepared_replay)
+            except BaseException as exc:
+                _discard_preserving_primary_error(
+                    exc,
+                    runtime.discard_layer_replay_receipt,
+                    prepared_replay,
+                    conflict_type=LayerReplayReceiptConflict,
+                    label="layer-replay-receipt",
+                )
+                raise
             stored_layer_replays.append(stored_layer_replay)
             runtime.require_replay_inputs_unchanged(
                 shot.folder,
@@ -622,14 +669,23 @@ async def finalize_composed_layer(
     prepared_evaluation = runtime.prepare_layer_evaluation_receipt(
         shot.folder,
         evaluation,
+        finalization_guard,
     )
     try:
         stored_evaluation = runtime.commit_layer_evaluation_receipt(
+            shot.folder,
             prepared_evaluation,
             finalization_guard,
         )
-    finally:
-        runtime.discard_layer_evaluation_receipt(prepared_evaluation)
+    except BaseException as exc:
+        _discard_preserving_primary_error(
+            exc,
+            runtime.discard_layer_evaluation_receipt,
+            prepared_evaluation,
+            conflict_type=LayerEvaluationReceiptConflict,
+            label="layer-evaluation-receipt",
+        )
+        raise
     status = evaluation.final_status
     best = {
         "round": 0,

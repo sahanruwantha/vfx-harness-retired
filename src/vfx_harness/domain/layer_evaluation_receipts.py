@@ -585,9 +585,17 @@ class LayerEvaluationReceipt:
 def canonical_layer_evaluation_receipt_bytes(receipt: LayerEvaluationReceipt) -> bytes:
     if not isinstance(receipt, LayerEvaluationReceipt):
         raise ValueError("receipt must be a typed layer evaluation receipt")
+    parsed = LayerEvaluationReceipt.parse(
+        receipt.as_dict(),
+        "layer evaluation receipt serialization",
+    )
+    if parsed != receipt:
+        raise ValueError(
+            "layer evaluation receipt serialization is not its strict parsed representation"
+        )
     return (
         json.dumps(
-            receipt.as_dict(),
+            parsed.as_dict(),
             allow_nan=False,
             ensure_ascii=False,
             indent=2,

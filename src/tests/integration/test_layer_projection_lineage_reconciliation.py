@@ -10,6 +10,9 @@ from tests.integration.test_authority_receipt_lineage import (
     _published_finalized_root,
 )
 from vfx_harness.agents.builder import layer as builder_layer
+from vfx_harness.agents.builder.layer_finalization_guard import (
+    LayerFinalizationReceiptGuard,
+)
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.layer_finalization_state import (
@@ -114,6 +117,12 @@ def test_outcome_reconciliation_refuses_preparation_source_drift(
         finalization_receipt=receipt,
         finalization_authorization=finalization_authorization,
     )
+    guard = LayerFinalizationReceiptGuard(
+        tmp_path,
+        receipt,
+        layer.stages,
+        selected,
+    )
 
     if source_change == "mutated":
         reference.write_bytes(b"changed after terminal finalization")
@@ -139,6 +148,7 @@ def test_outcome_reconciliation_refuses_preparation_source_drift(
             blender_version=str(receipt.projection["blender_version"]),
             selected_authority=selected,
             authority=authority,
+            guard=guard,
         )
 
     assert outcome.read_bytes() == original_outcome

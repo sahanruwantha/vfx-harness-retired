@@ -183,7 +183,7 @@ a model result: an interrupted direct invocation could remain `running`, while t
 fallback misclassified operator cessation as a HIR-0164 `harness_defect` with an engineering
 action. Proposed HIR-0172 separates failure from interruption. Its current local foundation defines
 strict action-free interruption record shapes, a fail-closed owner fence, a non-integrated strict
-`shot-ledger/v2` value contract, and a tested but non-integrated shot-authority lease over the
+`shot-ledger/v2` value contract, and a tested, partially integrated shot-authority lease over the
 permanent selection lock. The lease closes the pre-registration fork window with POSIX process-lock
 semantics, retains an armed crash-safe live-identity claim across accidental descriptor closure and
 legacy `flock` interoperability, and binds capabilities to the canonical shot, creator process, and
@@ -192,8 +192,10 @@ managed mutex, descriptor acquisition, local registration, and handoff transacti
 safe; fork-visible rows carry captured per-fd identities and shrink to only still-live originals before
 neutralized slots close. This prevents a stale numeric fd from closing an unrelated replacement. The
 same managed fork-acquisition primitive now covers root-run owner and reconciler fence opens. The
-shot-authority lease is not yet installed around every sanctioned writer, actual inner lock, and
-publication sink. The foundation deliberately has no ledger-v2 writer and cannot publish or
+shot-authority lease is now installed at the final mutation boundary for the layer-finalization
+artifact/replay/evaluation/outcome chain, but not yet around every other sanctioned writer or its
+actual inner lock and publication sink. The foundation deliberately has no ledger-v2 writer and
+cannot publish or
 authoritatively read an `interrupted` v2
 status. The evaluation has
 no caller-selected success factory, and the canonical receipt/evaluation locators are reserved for
@@ -201,6 +203,45 @@ a future independent evaluator and terminalizer. `RunStatusV2` remains a closed
 `running | passed | dry-run | failed | interrupted` union: `dry-run` selects only its non-accepting
 summary and owner claim, while `interrupted` is unavailable until its independent evaluation can
 be proven.
+
+HIR-0172's second prerequisite now has that one bounded production migration. The generic
+prepared-file transaction retains the exact shot and destination, predecessor, staged inode,
+publication-lock generation, and prepared bytes; stores its commit policy at preparation; requires
+the matching commit authorization; rechecks the staged generation after policy execution; performs
+one CAS rename; rehashes the held published inode; and fsyncs the parent before reporting success.
+Descriptor and temporary ownership is process- and thread-bound, fork-safe, and
+interruption-cleaned. Symlink, FIFO, substituted-lock, predecessor, staged-byte,
+post-rename-byte, and parent-directory identity replacement or rebinding fails closed. Duplicate supervisor-question lookup
+also stages the exact existing bytes and must win that CAS before returning the existing id.
+The generic API now reserves composed `build/**/*.py` targets (excluding `build/units/`), the
+layer-finalization receipt namespace, and sealed outcomes. A typed owner must spend one exact-shot,
+exact-path, process/thread/fork-bound staging authorization before a protected read or no-op, and a
+protected preparation cannot omit its stored commit policy. Public immediate writes,
+caller-selected subroot or ancestor re-rooting, normalized or physical aliases, namespace
+squatting, and cross-path/family/shot authorization reuse fail closed.
+
+The migrated typed sink chain is composed artifact, per-group replay receipt, aggregate evaluation
+receipt, and terminal layer outcome. Staging remains outside the short joint guard. The permanent
+selection-lock writer lease is outermost at mutation, the exact claim or terminal-receipt guard is
+actively held, and the builder guard privately issues a one-shot authorization bound to process,
+thread, shot, selected authority, exact guard, active hold, and exact opaque prepared transaction.
+The stored sink policy reopens its causal source closure and consumes that authorization immediately
+before rename; exact no-op paths consume the same authority. Typed preparations are opaque
+exact-object capabilities, and each adapter proves that its guard invoked and completed the exact
+prepared mutation once before returning success. Raw writer
+capabilities, generic-publication transplants, duck or equal-but-distinct guards, copied, expired,
+or transferred authorizations, cross-shot targets, changed sources, forged payload bindings, and
+caller-substituted policies do not publish. Typed registries quiesce before fork, and post-commit
+readback plus cleanup preserve the primary failure instead of replacing it with an expired-handle
+diagnostic.
+
+This is not completion of HIR-0172 prerequisite 2. Other sanctioned authority writers and their
+real inner locks are not yet migrated, and there is still no fenced `shot-ledger/v2` writer,
+complete authored/refobs/current/pending source graph, run-owned archive, capability-bound
+interruption issuer, independent evaluator, terminalizer, public signal integration, owner-loss
+reconciler, or authoritative `interrupted` reader/status. The HIR therefore remains proposed and
+non-publishable. Focused publication regressions prove only this sink family, not the heterogeneous
+crash matrix or fresh real-model seal.
 
 HIR-0172 therefore has a strict prerequisite sequence, not a set of parallel best-effort patches:
 
