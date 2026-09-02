@@ -21,11 +21,12 @@ from vfx_harness.domain.authority_state_record_primitives import (
 )
 
 AUTHORITY_STATE_RECOVERY_RESULT_SCHEMA = (
-    "vfx-harness.authority-state-recovery-result/v1"
+    "vfx-harness.authority-state-recovery-result/v2"
 )
 AUTHORITY_STATE_RECOVERY_DISPOSITIONS = frozenset(
     {"recovered", "already_current"}
 )
+AUTHORITY_STATE_RECOVERY_PROJECTIONS = frozenset({"republished", "current"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,12 +43,18 @@ class AuthorityStateRecoveryResult(_SemanticRecord):
     coordinator_head_ref: AuthorityStateRecordRef
     selection_token: AuthoritySelectionTokenProjection
     state_member_ids: tuple[str, ...]
+    accepted_build_projection: str
 
     def __post_init__(self) -> None:
         if self.disposition not in AUTHORITY_STATE_RECOVERY_DISPOSITIONS:
             raise AuthorityStateRecordError(
                 "authority-state recovery disposition must be recovered or "
                 "already_current"
+            )
+        if self.accepted_build_projection not in AUTHORITY_STATE_RECOVERY_PROJECTIONS:
+            raise AuthorityStateRecordError(
+                "authority-state recovery result.accepted_build_projection must be "
+                "republished or current"
             )
         _identifier(
             self.transaction_id,
@@ -125,6 +132,7 @@ class AuthorityStateRecoveryResult(_SemanticRecord):
                         f"{where}.state_member_ids",
                     )
                 ),
+                accepted_build_projection=row["accepted_build_projection"],
             ),
             row,
             where,
@@ -133,6 +141,7 @@ class AuthorityStateRecoveryResult(_SemanticRecord):
 
 __all__ = [
     "AUTHORITY_STATE_RECOVERY_DISPOSITIONS",
+    "AUTHORITY_STATE_RECOVERY_PROJECTIONS",
     "AUTHORITY_STATE_RECOVERY_RESULT_SCHEMA",
     "AuthorityStateRecoveryResult",
 ]

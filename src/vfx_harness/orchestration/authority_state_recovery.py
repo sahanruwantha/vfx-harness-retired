@@ -17,10 +17,12 @@ from vfx_harness.domain.authority_state_records import (
 from vfx_harness.evaluation.authority_state_transition import (
     evaluate_authority_state_transition,
 )
+from vfx_harness.orchestration import shot_ledger_v2_derivation
 from vfx_harness.orchestration.authority_selection_heads import (
     read_authority_selection_heads,
 )
 from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
     authority_selection_lock,
     durable_remove_pointer,
     durable_replace_pointer_bytes,
@@ -49,6 +51,9 @@ from vfx_harness.orchestration.authority_state_store import (
     remove_pending,
     replace_current_bytes,
 )
+from vfx_harness.orchestration.shot_authority_capture import (
+    shot_authority_writer_fence,
+)
 from vfx_harness.orchestration.unit_state_lock import (
     read_state_file_bytes,
     remove_state_file,
@@ -68,11 +73,17 @@ class AuthorityStateRecoveryObservation:
     disposition: str
     pending: AuthorityStatePendingPointer | None
     context: ResolvedAuthorityStateContext
+    accepted_build: str
 
     def __post_init__(self) -> None:
         if self.disposition not in {"recovered", "already_current"}:
             raise AuthorityStateRecoveryError(
                 "authority-state recovery observation has an unsupported disposition"
+            )
+        if self.accepted_build not in shot_ledger_v2_derivation.ACCEPTED_BUILD_PROJECTIONS:
+            raise AuthorityStateRecoveryError(
+                "authority-state recovery observation must record whether the "
+                "accepted-build index was republished or already current"
             )
         if (self.disposition == "recovered") is not (self.pending is not None):
             raise AuthorityStateRecoveryError(
@@ -216,6 +227,31 @@ def _require_staged_members(shot: Path, intent: AuthorityStateTransitionIntent) 
         )
 
 
+def _republish_accepted_build_index(shot: Path, *, revision: int) -> str:
+    """Republish the derived ledger member for the current head; a no-op when current.
+
+    A crash between successor-head selection and the member's republication leaves a
+    stale member that every reader refuses; rolling that projection forward is part
+    of recovery in both dispositions, and a current member is left byte-identical.
+    """
+
+    try:
+        with shot_authority_writer_fence(shot) as capability:
+            disposition, _ledger = shot_ledger_v2_derivation.republish_shot_ledger_index(
+                shot,
+                writer_capability=capability,
+                operation=f"authority-state-recovery/{revision}",
+            )
+    except (
+        shot_ledger_v2_derivation.ShotLedgerDerivationConflict,
+        AuthoritySelectionConflict,
+    ) as exc:
+        raise AuthorityStateRecoveryError(
+            f"accepted-build index republication failed during recovery: {exc}"
+        ) from exc
+    return disposition
+
+
 def _recover_pending_authority_state_locked(
     shot: Path,
 ) -> AuthorityStateRecoveryObservation:
@@ -238,6 +274,10 @@ def _recover_pending_authority_state_locked(
             disposition="already_current",
             pending=None,
             context=current,
+            accepted_build=_republish_accepted_build_index(
+                shot,
+                revision=current.head.revision,
+            ),
         )
     pending, intent = _load_pending_intent(shot)
     _require_staged_members(shot, intent)
@@ -378,6 +418,10 @@ def _recover_pending_authority_state_locked(
             disposition="recovered",
             pending=pending,
             context=resolved,
+            accepted_build=_republish_accepted_build_index(
+                shot,
+                revision=resolved.head.revision,
+            ),
         )
 
 

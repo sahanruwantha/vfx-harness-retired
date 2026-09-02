@@ -487,7 +487,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         )
         with shot_authority_writer_fence(shot.folder) as writer_capability:
             derived = shot_ledger_v2_derivation.derive_shot_ledger_index(
-                shot,
+                shot.folder,
                 selected_authority,
                 writer_capability=writer_capability,
                 acceptance_record=ledger.data.get("acceptance"),

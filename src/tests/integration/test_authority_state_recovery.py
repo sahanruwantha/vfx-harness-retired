@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -42,6 +43,7 @@ from vfx_harness.evaluation.authority_state_transition import (
 )
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import authority_state_transaction, unit_state
+from vfx_harness.orchestration import shot_ledger_v2_derivation as derivation
 from vfx_harness.orchestration import unit_state_lock as state_lock_module
 from vfx_harness.orchestration.authority_capsule_resolution import (
     selected_layer_capsule_digest,
@@ -165,6 +167,69 @@ def _inject_crash(
     )
 
 
+def _require_accepted_build_current(root: Path) -> None:
+    """The stored member binds the current head and re-derives byte-identically."""
+
+    stored = derivation.read_stored_shot_ledger_index(root)
+    assert stored is not None
+    payload = read_current_bytes(root)
+    assert payload is not None
+    assert stored.authority_state_head_ref.sha256 == hashlib.sha256(payload).hexdigest()
+    assert derivation.current_shot_ledger_index(root, resolve_selected_authority(root)) == stored
+
+
+@pytest.mark.parametrize(
+    ("boundary", "expected_projection"),
+    [
+        ("before_accepted_build_republication", "republished"),
+        ("after_accepted_build_republication", "current"),
+    ],
+)
+def test_committed_head_without_republished_index_is_repaired_by_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    expected_projection: str,
+) -> None:
+    """A death after the WAL clears but before the accepted-build member republishes
+    leaves committed authority and a stale member; recovery republishes it without
+    touching authority state, and a current member is an exact no-op (HIR-0172)."""
+
+    candidate = _finalized_root_candidate(tmp_path)
+    predecessor = read_current_bytes(tmp_path)
+    stale = derivation.read_stored_shot_ledger_index(tmp_path)
+    assert stale is not None
+    _inject_crash(monkeypatch, boundary)
+
+    with pytest.raises(_InjectedCrash):
+        publish_materialization(tmp_path, candidate)
+
+    assert read_pending_bytes(tmp_path) is None
+    successor = read_current_bytes(tmp_path)
+    assert successor is not None and successor != predecessor
+    observed = derivation.read_stored_shot_ledger_index(tmp_path)
+    assert observed is not None
+    if expected_projection == "republished":
+        assert observed == stale
+        with pytest.raises(derivation.ShotLedgerDerivationConflict, match="stale"):
+            derivation.current_shot_ledger_index(tmp_path, resolve_selected_authority(tmp_path))
+    else:
+        assert observed != stale
+    monkeypatch.undo()
+
+    recovered = recover_authority_state(tmp_path)
+
+    assert recovered.disposition == "already_current"
+    assert recovered.accepted_build_projection == expected_projection
+    assert read_current_bytes(tmp_path) == successor
+    _require_accepted_build_current(tmp_path)
+    ledger_bytes = (tmp_path / "shot.json").read_bytes()
+    repeated = recover_authority_state(tmp_path)
+    assert repeated.disposition == "already_current"
+    assert repeated.accepted_build_projection == "current"
+    assert (tmp_path / "shot.json").read_bytes() == ledger_bytes
+
+
 def _pending_intent(root: Path):
     pending = read_pending_authority_state(root)
     assert pending is not None
@@ -227,8 +292,10 @@ def test_pending_transition_recovers_exact_successor_once(
     assert recovered.disposition == "recovered"
     assert recovered.transition_revision == 2
     assert recovered.state_member_ids == ("1",)
+    assert recovered.accepted_build_projection == "republished"
     assert read_pending_bytes(tmp_path) is None
     assert read_current_bytes(tmp_path) != predecessor
+    _require_accepted_build_current(tmp_path)
     assert read_authority_selection_heads(tmp_path).token.jit_revision == 1
     state = load(tmp_path, "1")
     assert set(state["units"]) == {"lock"}
@@ -238,6 +305,7 @@ def test_pending_transition_recovers_exact_successor_once(
     repeated = recover_authority_state(tmp_path)
     assert repeated.disposition == "already_current"
     assert repeated.coordinator_head_ref == recovered.coordinator_head_ref
+    assert repeated.accepted_build_projection == "current"
     assert repeated.intent_ref == recovered.intent_ref
     assert read_current_bytes(tmp_path) == selected
     assert resolve_current_authority_state(tmp_path).head_ref == (

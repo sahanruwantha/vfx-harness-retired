@@ -29,6 +29,7 @@ def recover_authority_state(
         state_member_ids=tuple(
             member.layer_id for member in context.intent.state_members
         ),
+        accepted_build_projection=observation.accepted_build,
     )
     if result.transition_revision != context.intent.transition_revision:
         raise ValueError(

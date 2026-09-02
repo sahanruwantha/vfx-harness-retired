@@ -267,9 +267,11 @@ and the coordinator head's layer generations, with the acceptance-chain digest s
 acceptance through one `accepted_chain` module and acceptance bound only through durable
 per-moment evidence records. The typed transport reserves the member behind an opaque minted
 index, layer finalization and acceptance derive it inside their own ledger publications, and
-readers re-derive rather than trust it. Plan or JIT republication does not yet re-derive the
-member, so a superseded index is refused at the next read instead of being rewritten at
-publication; the merge of other legacy top-level keys stays unscoped.
+readers re-derive rather than trust it. Plan and JIT republication re-derive the member in the
+authority-state transaction once the successor head is current and the WAL is removed (every
+reader on the derivation path refuses a selected WAL), and `vfx recover-authority-state`
+republishes a member left stale by a death in that window while reporting
+`accepted_build_projection`; the merge of other legacy top-level keys stays unscoped.
 
 The fork-visible descriptor registry behind those writers now retains rather than drops every
 slot whose identity cannot be read. Adoption of an unreadable slot neutralizes it under deferred

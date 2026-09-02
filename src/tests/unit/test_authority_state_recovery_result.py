@@ -42,6 +42,7 @@ def _result() -> AuthorityStateRecoveryResult:
             jit_pointer_sha256=_digest("jit"),
         ),
         state_member_ids=("camera", "form"),
+        accepted_build_projection="republished",
     )
 
 
@@ -58,6 +59,7 @@ def test_authority_state_recovery_result_round_trips_strict_evidence() -> None:
         ("disposition", "rolled_back", "disposition"),
         ("transition_revision", 0, "positive integer"),
         ("state_member_ids", ["form", "camera"], "sorted and unique"),
+        ("accepted_build_projection", "skipped", "republished or current"),
     ],
 )
 def test_authority_state_recovery_result_rejects_tampering(

@@ -95,8 +95,11 @@ live in the linked Harness Improvement Records.
   bound through durable per-moment evidence records. Layer finalization and acceptance derive
   it inside their ledger publications, a crash-resume reconcile reproduces it byte for byte
   because chain rows bind every durable terminal receipt rather than the ledger slot being
-  rewritten, the transport refuses any other change to the member, and readers re-derive it
-  instead of trusting the stored value
+  rewritten, plan and JIT republication republish it inside the authority-state transaction
+  once the successor head is current, `vfx recover-authority-state` republishes a member left
+  stale by a death in that window and reports `accepted_build_projection` in its
+  `vfx-harness.authority-state-recovery-result/v2` record, the transport refuses any other
+  change to the member, and readers re-derive it instead of trusting the stored value
   ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - Retired by decision three tests that could not pass on a clean checkout: the print-based
   `tests.integration.test_harness` script and the hierarchy-gate copy test depended on the

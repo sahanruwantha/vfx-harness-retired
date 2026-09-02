@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration import authority_state_transaction
 from vfx_harness.orchestration.authority_selection import (
     SelectedAuthorityResolutionError,
     resolve_selected_authority,
@@ -20,6 +21,20 @@ from vfx_harness.orchestration.jit_materialization.schema import (
 )
 from vfx_harness.orchestration.jit_materialization.view_pointer import canonical_view_hash
 from vfx_harness.orchestration.plan_authority import publish_current
+
+
+@pytest.fixture(autouse=True)
+def _below_plan_gate_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These layer documents sit below the plan gate, so the accepted-build projection
+    that republication derives from gate-valid layer authority is stubbed here; the
+    public pipeline fixtures cover it (HIR-0172)."""
+
+    monkeypatch.setattr(
+        authority_state_transaction,
+        "republish_accepted_build_index",
+        lambda *_args, **_kwargs: "current",
+    )
+
 
 
 def _write_plan(root: Path, *, marker: str = "fixture") -> None:

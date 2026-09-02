@@ -13,6 +13,7 @@ from vfx_harness.evaluation.plan_gate.types import _materialized_view
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import (
     authority_selection,
+    authority_state_transaction,
     plan_authority,
     plan_consumer_view_projection,
 )
@@ -29,6 +30,20 @@ from vfx_harness.orchestration.plan_inputs import (
     exact_planning_input_identity,
     require_exact_planning_input_identity,
 )
+
+
+@pytest.fixture(autouse=True)
+def _below_plan_gate_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These layer documents sit below the plan gate, so the accepted-build projection
+    that republication derives from gate-valid layer authority is stubbed here; the
+    public pipeline fixtures cover it (HIR-0172)."""
+
+    monkeypatch.setattr(
+        authority_state_transaction,
+        "republish_accepted_build_index",
+        lambda *_args, **_kwargs: "current",
+    )
+
 
 
 def _digest(label: str) -> str:

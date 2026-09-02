@@ -14,7 +14,7 @@ from tests.unit.test_plan_authority import _write_plan
 from vfx_harness.agents.plan_tools import materialize_mcp
 from vfx_harness.agents.planner import kickoff
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration import authority_selection, plan_authority
+from vfx_harness.orchestration import authority_selection, authority_state_transaction, plan_authority
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.jit_materialization import (
     OVERLAY_ARTIFACTS,
@@ -28,6 +28,20 @@ from vfx_harness.orchestration.layer_plans import (
     stamp_work_unit_plan,
     validate_work_unit_plan_authority,
 )
+
+
+@pytest.fixture(autouse=True)
+def _below_plan_gate_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These layer documents sit below the plan gate, so the accepted-build projection
+    that republication derives from gate-valid layer authority is stubbed here; the
+    public pipeline fixtures cover it (HIR-0172)."""
+
+    monkeypatch.setattr(
+        authority_state_transaction,
+        "republish_accepted_build_index",
+        lambda *_args, **_kwargs: "current",
+    )
+
 
 
 def _deferred_row() -> dict[str, object]:

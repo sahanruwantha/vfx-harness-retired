@@ -46,6 +46,21 @@ def selected_layer_chain(
         selected = selected_authority or resolve_selected_authority(shot.folder)
     except SelectedAuthorityResolutionError as exc:
         raise ValueError(str(exc)) from exc
+    return selected_authority_layer_chain(
+        selected,
+        bundle=bundle,
+        expected_bundle_digest=expected_bundle_digest,
+    )
+
+
+def selected_authority_layer_chain(
+    selected: ResolvedSelectedAuthority,
+    *,
+    bundle: PlanBundle | None = None,
+    expected_bundle_digest: str | None = None,
+) -> tuple[Layer, ...]:
+    """Return the stable-order layer chain of one already-resolved selected authority."""
+
     if selected.plan is None or selected.assertion.effective_view is None:
         raise ValueError("selected layer chain requires selected plan authority")
     selected_bundle = selected.plan.bundle
@@ -73,3 +88,6 @@ def selected_layer_chain(
             "selected executable layer view does not contain the exact global layer set"
         )
     return tuple(selected[layer_id] for layer_id in order)
+
+
+__all__ = ["selected_authority_layer_chain", "selected_layer_chain"]

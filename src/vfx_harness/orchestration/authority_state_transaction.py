@@ -21,6 +21,7 @@ from vfx_harness.domain.authority_state_records import (
 from vfx_harness.evaluation.authority_state_transition import (
     evaluate_authority_state_transition,
 )
+from vfx_harness.orchestration import shot_ledger_v2_derivation
 from vfx_harness.orchestration.authority_layer_finalization_sources import (
     PreservedLayerFinalizationSourceConflict,
     require_transition_preserved_finalization_sources,
@@ -29,6 +30,7 @@ from vfx_harness.orchestration.authority_selection_heads import (
     read_authority_selection_heads,
 )
 from vfx_harness.orchestration.authority_selection_transaction import (
+    AuthoritySelectionConflict,
     AuthoritySelectionToken,
     authority_selection_lock,
     durable_remove_pointer,
@@ -60,6 +62,9 @@ from vfx_harness.orchestration.authority_state_store import (
 from vfx_harness.orchestration.authority_unit_completion_sources import (
     PreservedUnitCompletionSourceConflict,
     require_transition_preserved_unit_sources,
+)
+from vfx_harness.orchestration.shot_authority_capture import (
+    shot_authority_writer_fence,
 )
 from vfx_harness.orchestration.unit_state_lock import (
     read_state_file_bytes,
@@ -209,6 +214,35 @@ def _installed_states(
         for member in intent.state_members
         if member.after is not None
     )
+
+
+def republish_accepted_build_index(shot: Path, *, operation: str) -> str:
+    """Re-derive ``shot.json.accepted_build`` for the committed successor selection.
+
+    The derivation reads receipts, outcomes, and lineage through the ordinary readers,
+    which fail closed while a WAL is selected, so this runs only after the successor
+    head is current and the WAL is removed.  The fence nests on the exclusive selection
+    lease the caller already holds.  A failure here leaves committed authority intact
+    and a stale member that every reader refuses; recovery republishes it.
+    """
+
+    try:
+        with shot_authority_writer_fence(shot) as capability:
+            disposition, _ledger = shot_ledger_v2_derivation.republish_shot_ledger_index(
+                shot,
+                writer_capability=capability,
+                operation=operation,
+            )
+    except (
+        shot_ledger_v2_derivation.ShotLedgerDerivationConflict,
+        AuthoritySelectionConflict,
+    ) as exc:
+        raise AuthorityStateTransitionConflict(
+            "the successor authority-state head is committed but its accepted-build "
+            f"index could not be republished: {exc}; run `vfx recover-authority-state` "
+            "to republish it"
+        ) from exc
+    return disposition
 
 
 def _require_pending_exact(
@@ -381,6 +415,12 @@ def commit_prepared_authority_state_transition_locked(
                 raise AuthorityStateTransitionConflict(
                     "committed authority-state head did not resolve independently"
                 )
+            _authority_state_write_boundary("before_accepted_build_republication")
+            republish_accepted_build_index(
+                shot,
+                operation=f"authority-state-transition/{intent.transition_revision}",
+            )
+            _authority_state_write_boundary("after_accepted_build_republication")
             return head
         except BaseException:
             # Pending is the durable recovery authority.  Never roll back a plausible
@@ -408,4 +448,5 @@ __all__ = [
     "AuthorityStateTransitionConflict",
     "commit_prepared_authority_state_transition",
     "commit_prepared_authority_state_transition_locked",
+    "republish_accepted_build_index",
 ]

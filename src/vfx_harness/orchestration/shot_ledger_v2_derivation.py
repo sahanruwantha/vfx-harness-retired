@@ -21,7 +21,6 @@ from typing import Any
 
 from vfx_harness.domain.acceptance_outcomes import AcceptanceOutcome
 from vfx_harness.domain.authority_head_records import parse_authority_selection_token
-from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.layer_finalization_receipts import LayerFinalizationReceipt
 from vfx_harness.domain.shot_ledger_v2 import (
     AcceptanceMomentEvidenceBinding,
@@ -31,6 +30,7 @@ from vfx_harness.domain.shot_ledger_v2 import (
 )
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.infrastructure.trusted_files import TrustedFileError, TrustedFileSnapshot
+from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.orchestration import (
     accepted_chain,
     authority_receipt_lineage,
@@ -39,7 +39,11 @@ from vfx_harness.orchestration import (
     plan_bundle_integrity,
     selected_layer_chain,
 )
-from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
+from vfx_harness.orchestration.authority_selection import (
+    ResolvedSelectedAuthority,
+    SelectedAuthorityResolutionError,
+    resolve_selected_authority,
+)
 from vfx_harness.orchestration.layer_finalization_state import (
     LayerFinalizationConflict,
     current_layer_finalization_receipt,
@@ -56,6 +60,17 @@ from vfx_harness.orchestration.shot_ledger_index import (
     DerivedShotLedgerIndex,
     mint_derived_shot_ledger_index,
 )
+from vfx_harness.orchestration.shot_ledger_lock import LedgerSaveConflict
+from vfx_harness.orchestration.shot_ledger_publication import (
+    commit_shot_ledger_publication,
+    discard_prepared_shot_ledger_publication,
+    prepare_shot_ledger_publication,
+)
+
+ACCEPTED_BUILD_PROJECTION_BINDING_SCHEMA = (
+    "vfx-harness.accepted-build-projection-binding/v1"
+)
+ACCEPTED_BUILD_PROJECTIONS = frozenset({"republished", "current"})
 
 
 class ShotLedgerDerivationConflict(ValueError):
@@ -75,8 +90,8 @@ class FinalizingLayerPublication:
     receipt: LayerFinalizationReceipt
 
 
-def _root(shot: Shot) -> Path:
-    return Path(shot.folder).expanduser().absolute()
+def _root(shot_folder: str | Path) -> Path:
+    return Path(shot_folder).expanduser().absolute()
 
 
 def _snapshot(root: Path, locator: str, where: str) -> TrustedFileSnapshot:
@@ -286,7 +301,7 @@ def _acceptance_binding(
 
 
 def derive_shot_ledger_index(
-    shot: Shot,
+    shot_folder: str | Path,
     selected_authority: ResolvedSelectedAuthority,
     *,
     writer_capability: ShotAuthorityWriterCapability,
@@ -301,7 +316,7 @@ def derive_shot_ledger_index(
     one layer whose ledger projection is published together with this index.
     """
 
-    root = _root(shot)
+    root = _root(shot_folder)
     require_live_shot_authority_writer(writer_capability, root)
     if selected_authority.plan is None or selected_authority.assertion.effective_view is None:
         raise ShotLedgerDerivationConflict("accepted-build derivation requires selected plan authority")
@@ -325,10 +340,7 @@ def derive_shot_ledger_index(
         for image in context.commit.installed_states
     }
     try:
-        layers = selected_layer_chain.selected_layer_chain(
-            shot,
-            selected_authority=selected_authority,
-        )
+        layers = selected_layer_chain.selected_authority_layer_chain(selected_authority)
     except ValueError as exc:
         raise ShotLedgerDerivationConflict(str(exc)) from exc
 
@@ -461,19 +473,22 @@ def derive_shot_ledger_index(
     return mint_derived_shot_ledger_index(ledger)
 
 
-def read_stored_shot_ledger_index(shot_root: str | Path) -> ShotLedgerV2 | None:
-    """Parse the stored ``accepted_build`` member without trusting it as current."""
+def _ledger_document(root: Path) -> Mapping[str, Any]:
+    """Read the canonical ledger as an object, or an empty object when absent."""
 
-    root = Path(shot_root).expanduser().absolute()
     path = root / "shot.json"
     if not path.is_file():
-        return None
+        return {}
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ShotLedgerDerivationConflict(f"shot.json is unreadable: {exc}") from exc
     if not isinstance(document, Mapping):
         raise ShotLedgerDerivationConflict("shot.json must be a JSON object")
+    return document
+
+
+def _stored_index(document: Mapping[str, Any]) -> ShotLedgerV2 | None:
     stored = document.get(ACCEPTED_BUILD_KEY)
     if stored is None:
         return None
@@ -483,44 +498,133 @@ def read_stored_shot_ledger_index(shot_root: str | Path) -> ShotLedgerV2 | None:
         raise ShotLedgerDerivationConflict(f"stored accepted-build index is malformed: {exc}") from exc
 
 
+def read_stored_shot_ledger_index(shot_root: str | Path) -> ShotLedgerV2 | None:
+    """Parse the stored ``accepted_build`` member without trusting it as current."""
+
+    return _stored_index(_ledger_document(_root(shot_root)))
+
+
+def republish_shot_ledger_index(
+    shot_folder: str | Path,
+    *,
+    writer_capability: ShotAuthorityWriterCapability,
+    operation: str,
+) -> tuple[str, ShotLedgerV2]:
+    """Re-derive the member for the live selection and publish it only when it changed.
+
+    Plan and JIT republication call this right after their successor coordinator head
+    commits, and WAL recovery calls it in both dispositions, so the stored member never
+    outlives the selection it was derived from.  When the stored member already equals
+    the derivation the ledger is left byte-identical and ``"current"`` is returned;
+    otherwise the new generation commits through the typed transport and
+    ``"republished"`` is returned.  A shot without a ledger receives one holding only
+    the derived member.
+    """
+
+    root = _root(shot_folder)
+    require_live_shot_authority_writer(writer_capability, root)
+    if not isinstance(operation, str) or not operation.strip():
+        raise ShotLedgerDerivationConflict(
+            "accepted-build republication requires a non-empty operation name"
+        )
+    try:
+        selected = resolve_selected_authority(root)
+    except SelectedAuthorityResolutionError as exc:
+        raise ShotLedgerDerivationConflict(
+            f"accepted-build republication cannot resolve selected authority: {exc}"
+        ) from exc
+    document = _ledger_document(root)
+    stored = _stored_index(document)
+    derived = derive_shot_ledger_index(
+        root,
+        selected,
+        writer_capability=writer_capability,
+        acceptance_record=document.get("acceptance"),
+    )
+    if stored is not None and stored == derived.ledger:
+        return "current", derived.ledger
+    data: dict[str, Any] = (
+        dict(document) if document else {"shot": root.name, "milestones": {}}
+    )
+    binding = json.dumps(
+        {
+            "schema": ACCEPTED_BUILD_PROJECTION_BINDING_SCHEMA,
+            "operation": operation,
+            "selection_token": selected.selection_token.to_dict(),
+            "authority_state_head_ref": derived.ledger.authority_state_head_ref.as_dict(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    try:
+        prepared = prepare_shot_ledger_publication(
+            root / "shot.json",
+            data,
+            data,
+            frozenset(),
+            run_id=RUN_ID,
+            authority_binding=binding,
+            derived_index=derived,
+        )
+    except LedgerSaveConflict as exc:
+        raise ShotLedgerDerivationConflict(
+            f"accepted-build republication could not be prepared: {exc}"
+        ) from exc
+    try:
+        commit_shot_ledger_publication(
+            prepared,
+            authority_binding=binding,
+            writer_capability=writer_capability,
+        )
+    except LedgerSaveConflict as exc:
+        discard_prepared_shot_ledger_publication(prepared)
+        raise ShotLedgerDerivationConflict(
+            f"accepted-build republication could not commit: {exc}"
+        ) from exc
+    except BaseException:
+        discard_prepared_shot_ledger_publication(prepared)
+        raise
+    return "republished", derived.ledger
+
+
 def current_shot_ledger_index(
-    shot: Shot,
+    shot_folder: str | Path,
     selected_authority: ResolvedSelectedAuthority,
 ) -> ShotLedgerV2:
     """Return the stored index only when a fresh derivation reproduces it exactly."""
 
-    root = _root(shot)
+    root = _root(shot_folder)
     stored = read_stored_shot_ledger_index(root)
     if stored is None:
         raise ShotLedgerDerivationConflict(
-            "shot.json has no accepted-build index; a layer finalization or acceptance "
-            "publication derives it"
+            "shot.json has no accepted-build index; an authority-state publication, "
+            "layer finalization, or acceptance publication derives it"
         )
     with shot_authority_writer_fence(root) as capability:
-        try:
-            document = json.loads((root / "shot.json").read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ShotLedgerDerivationConflict(f"shot.json is unreadable: {exc}") from exc
-        acceptance_record = document.get("acceptance") if isinstance(document, Mapping) else None
+        document = _ledger_document(root)
         derived = derive_shot_ledger_index(
-            shot,
+            root,
             selected_authority,
             writer_capability=capability,
-            acceptance_record=acceptance_record,
+            acceptance_record=document.get("acceptance"),
         )
     if derived.ledger != stored:
         raise ShotLedgerDerivationConflict(
             "stored accepted-build index is stale: re-derivation yields "
-            f"{derived.ledger.index_digest}, stored {stored.index_digest}; the next "
-            "layer finalization or acceptance publication republishes it"
+            f"{derived.ledger.index_digest}, stored {stored.index_digest}; "
+            "`vfx recover-authority-state` or the next authority-state, finalization, "
+            "or acceptance publication republishes it"
         )
     return stored
 
 
 __all__ = [
+    "ACCEPTED_BUILD_PROJECTIONS",
+    "ACCEPTED_BUILD_PROJECTION_BINDING_SCHEMA",
     "FinalizingLayerPublication",
     "ShotLedgerDerivationConflict",
     "current_shot_ledger_index",
     "derive_shot_ledger_index",
     "read_stored_shot_ledger_index",
+    "republish_shot_ledger_index",
 ]

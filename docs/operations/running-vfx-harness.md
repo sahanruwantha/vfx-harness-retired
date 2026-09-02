@@ -115,10 +115,13 @@ boundary before any other plan, build, or evaluation command:
 The command selects no alternative and performs no planning, Blender, render, critic, or model
 work. It verifies the pending intent and every live member against their exact before/after
 identities, rolls forward only the already staged successor, independently evaluates the
-resulting commit, and prints one `vfx-harness.authority-state-recovery-result/v1` record. Its
-`coordinator_head_ref`, `intent_ref`, selection token, and state-member ids are the deterministic
-recovery evidence. Repeating it with no pending WAL is a state no-op and reports
-`already_current` for the same verified head.
+resulting commit, republishes the derived `shot.json` `accepted_build` member for the recovered
+head, and prints one `vfx-harness.authority-state-recovery-result/v2` record. Its
+`coordinator_head_ref`, `intent_ref`, selection token, state-member ids, and
+`accepted_build_projection` (`republished` or `current`) are the deterministic recovery evidence.
+Repeating it with no pending WAL is a state no-op and reports `already_current` for the same
+verified head; the only write it may then make is republishing an accepted-build member left
+stale by a death between head selection and that member's republication.
 
 An unchanged completed unit may keep its immutable receipt across a transition that changes a
 sibling and therefore the containing layer generation. Every contiguous coordinator edge must
@@ -392,9 +395,9 @@ render, snapshot, or script into the current run and call that a resume.
   through a generic durable-file helper. Canonical writes use the typed shot-ledger transport;
   isolated consumer or candidate copies must prove a physically different root. The
   `accepted_build` member of `shot.json` is the strict accepted-build index; it is derived by the
-  harness at layer finalization and acceptance and re-derived by every reader, so never edit it
-  and never read it as proof without that re-derivation. The rest of the file is still a fenced
-  legacy projection.
+  harness at plan and JIT republication, layer finalization, acceptance, and authority-state
+  recovery, and re-derived by every reader, so never edit it and never read it as proof without
+  that re-derivation. The rest of the file is still a fenced legacy projection.
 - Plan-consumer scratch views require Linux 5.17+ with unprivileged fanotify target-FID reporting
   and `openat2` on a local filesystem that exports file handles. An unsupported kernel, filesystem,
   or sandbox fails closed at the first consumer-view allocation; `vfx preflight --strict` does not

@@ -31,6 +31,7 @@ _TYPED_PUBLICATION_OWNERS = frozenset(
     {
         "orchestration/ledger.py",
         "orchestration/shot_ledger_publication.py",
+        "orchestration/shot_ledger_v2_derivation.py",
     }
 )
 _PREPARED_COMMIT_OWNERS = frozenset(

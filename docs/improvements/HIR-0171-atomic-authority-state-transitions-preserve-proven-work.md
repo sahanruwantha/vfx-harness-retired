@@ -409,9 +409,11 @@ choose a recent file, widen authority, or rerun paid work.
 
 The supported operator boundary is `vfx recover-authority-state <shot>`. It invokes only this
 deterministic roll-forward protocol and emits one strict
-`vfx-harness.authority-state-recovery-result/v1` joining the transition intent, coordinator head,
-selection token, revision, and affected state-member ids. When no WAL is pending, the command
-re-verifies the current evaluated head and returns `already_current` without changing state.
+`vfx-harness.authority-state-recovery-result/v2` joining the transition intent, coordinator head,
+selection token, revision, affected state-member ids, and the accepted-build projection
+disposition. When no WAL is pending, the command re-verifies the current evaluated head and
+returns `already_current` without changing authority state; the derived `shot.json`
+`accepted_build` member is republished only when a death left it stale (HIR-0172).
 Planner, Blender, render, critic, judgment, and model entry points are outside this boundary.
 
 `already_current` is not whole-state SHA equality with the commit image: ordinary lifecycle

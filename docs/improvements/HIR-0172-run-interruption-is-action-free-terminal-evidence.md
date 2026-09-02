@@ -219,13 +219,33 @@ prefix ends in front of the first non-passed receipt. A preserved receipt reconc
 successor selection binds through the same contiguous lineage authorization the publication
 verifier requires. A selected authority without an evaluated coordinator head cannot derive the
 member and fails closed; fixtures below the coordinator boundary stub the derivation rather than
-publish an index they cannot bind. Every acceptance ledger publication re-derives the index
-under the writer fence before staging. Readers never trust the stored member: the reader
-re-derives under a shared fence and refuses a stale index, so a plan or JIT republication that
-supersedes layers is detected at the next read even though republication itself does not yet
-re-derive the member. Callers never enumerate accepted files; the merge of other legacy
-top-level keys and base `Ledger.save()` remain unscoped, and the independent archive-reopening
-evaluator of prerequisite 7 is still absent.
+publish an index they cannot bind, and unit fixtures whose layer documents sit below the plan
+gate (an unknown global capability, empty owned requirements) stub the republication for the
+same reason, since the executable-layer parser refuses such authority. Every acceptance ledger
+publication re-derives the index under the writer fence before staging.
+
+Plan and JIT republication re-derive the member inside the authority-state transaction. Every
+reader on the derivation path — receipts, sealed outcomes, lineage authorization, the selected
+view — fails closed while a WAL is selected, by design, so the republication runs at the one
+point where the successor is complete: after the successor coordinator head resolves and the
+WAL is removed, while the committing thread still holds the exclusive selection lease. The
+writer fence nests on that lease, the derivation resolves the successor selection, and the
+member commits through the typed transport only when it differs from the stored one; an equal
+member is left byte-identical. Layers whose terminal receipts the transition archived as
+superseded fall out of the accepted prefix, preserved receipts bind through lineage
+authorization, and a shot without a ledger receives one holding only the derived member.
+The one remaining window — a death after the WAL clears and before the member commits —
+leaves committed authority and a stale member that every reader refuses; recovery closes
+it. `vfx recover-authority-state` republishes the member in both dispositions: a
+roll-forward republishes it as part of the successor, and `already_current` re-derives it
+and republishes only when stale, which is the one projection an already-current recovery may
+write; its typed result records `accepted_build_projection` as `republished` or `current`. A
+republication failure after the head commits reports that the head is committed and names
+the recovery command; it never rolls authority back. Readers still never trust the stored
+member: the reader re-derives under a shared fence and refuses a stale index. Callers never
+enumerate accepted files; the merge of other legacy top-level keys and base `Ledger.save()`
+remain unscoped, and the independent archive-reopening evaluator of prerequisite 7 is still
+absent.
 
 #### Fork-safe descriptor ownership and kernel-proven consumer directories
 
@@ -556,6 +576,8 @@ recovery controller or an authority-state transaction.
 | A caller writes `accepted_build` rows, copies the derived index, or a failed terminal receipt reconciles | Preparation refuses the rows and the copy; the failed layer ends the accepted prefix instead of failing the publication |
 | A process dies after terminal debt resolution and the layer reconciles again, with the terminal receipt failed or left due | The resumed reconcile publishes byte-identical `shot.json` and sealed-outcome bytes: the failed receipt's row binds through receipt verification, never through the slot being rewritten |
 | A preserved terminal receipt reconciles under a successor selection | The row binds through the contiguous lineage authorization; an unauthorized token is a derivation conflict |
+| Two layers are accepted, then a document successor transition changes the second layer's capsule | The same transaction that selects the successor head republishes `accepted_build` with the preserved first layer only, bound to the new head and token, and the reader verifies it at once |
+| A process dies after the WAL clears but before the member republishes, or right after it does | Recovery reports `already_current` with `accepted_build_projection` `republished` or `current`, the member binds the current head and re-derives byte-identically, and repeating recovery leaves `shot.json` byte-identical |
 
 The key regression is a real subprocess test, not a raised exception inside the context manager:
 enter the public direct invocation, publish kickoff, block in an external-session-shaped AnyIO

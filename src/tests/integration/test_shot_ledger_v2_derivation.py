@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,10 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
+from tests.integration.test_authority_receipt_lineage import (
+    _commit_document_successor,
+    _selected_documents,
+)
 from tests.integration.test_judgment_debt_public_pipeline import (
     _build_prepassed_layer,
     _fixture_executable_evidence,
@@ -29,12 +34,12 @@ from vfx_harness.domain.acceptance_outcomes import (
     AcceptanceOutcome,
 )
 from vfx_harness.domain.authority_head_records import AuthoritySelectionTokenProjection
-from vfx_harness.domain.brief import load_shot
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import accepted_chain
 from vfx_harness.orchestration import shot_ledger_v2_derivation as derivation
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
+from vfx_harness.orchestration.authority_state_store import read_current_bytes
 from vfx_harness.orchestration.plan_authority import publish_current
 from vfx_harness.orchestration.shot_authority_capture import (
     shot_authority_writer_fence,
@@ -87,15 +92,14 @@ def _accepted_ids(root: Path) -> list[str]:
 
 
 def _verified(root: Path):
-    return derivation.current_shot_ledger_index(load_shot(root), resolve_selected_authority(root))
+    return derivation.current_shot_ledger_index(root, resolve_selected_authority(root))
 
 
 def _derive(root: Path, acceptance_record=None):
-    shot = load_shot(root)
     selected = resolve_selected_authority(root)
     with shot_authority_writer_fence(root) as capability:
         return derivation.derive_shot_ledger_index(
-            shot,
+            root,
             selected,
             writer_capability=capability,
             acceptance_record=acceptance_record,
@@ -117,11 +121,11 @@ def _two_accepted_layers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     assert _accepted_ids(root) == ["1"]
     assert _verified(root).accepted_layers[0].layer_id == "1"
 
-    # A JIT republication changes the selection: the stored index is stale until the
-    # next finalization or acceptance derives it again, and readers refuse it meanwhile.
+    # A JIT republication changes the selection; the authority-state transaction
+    # re-derives the member for its successor head, so readers verify it at once.
     _publish_payload(root, _payload_for_bundle(root, "form-jit.json", _form_payload(), bundle.content_hash))
-    with pytest.raises(derivation.ShotLedgerDerivationConflict, match="stale"):
-        _verified(root)
+    assert _accepted_ids(root) == ["1"]
+    assert _verified(root).accepted_layers[0].layer_id == "1"
 
     _pass_layer_unit(root, "2", "hall_form")
     anyio.run(_build_prepassed_layer, root, "2", session)
@@ -289,3 +293,37 @@ def test_acceptance_binds_only_a_passing_outcome_with_verifiable_evidence(
         match="does not hash to the typed outcome's evidence digest",
     ):
         _derive(root, acceptance_record=record)
+
+
+def _current_head_sha256(root: Path) -> str:
+    payload = read_current_bytes(root)
+    assert payload is not None
+    return hashlib.sha256(payload).hexdigest()
+
+
+def test_republication_re_derives_the_index_inside_the_authority_state_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A republication that supersedes an accepted layer shrinks the stored prefix in
+    the same transaction that selects the successor head (HIR-0172)."""
+
+    root = _two_accepted_layers(tmp_path, monkeypatch)
+    before = derivation.read_stored_shot_ledger_index(root)
+    assert before is not None
+    assert [row.layer_id for row in before.accepted_layers] == ["1", "2"]
+    assert before.authority_state_head_ref.sha256 == _current_head_sha256(root)
+
+    documents = json.loads(
+        json.dumps(_selected_documents(root)).replace("hall.mass", "hall.core")
+    )
+    _commit_document_successor(root, documents)
+
+    stored = derivation.read_stored_shot_ledger_index(root)
+    assert stored is not None
+    assert [row.layer_id for row in stored.accepted_layers] == ["1"]
+    assert stored.accepted_layers[0] == before.accepted_layers[0]
+    assert stored.authority_state_head_ref.sha256 == _current_head_sha256(root)
+    assert stored.authority_state_head_ref != before.authority_state_head_ref
+    assert stored.selection_token != before.selection_token
+    assert _verified(root) == stored

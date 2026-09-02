@@ -128,8 +128,11 @@ operation.
   sealed outcomes, composed script bytes, and the coordinator head. Its chain rows bind every
   durable terminal receipt whatever its status, the accepted prefix ends in front of the first
   non-passed receipt, and a selected authority without an evaluated coordinator head cannot
-  publish the member. Callers never supply accepted rows, the transport refuses any other change
-  to that member, and readers re-derive it rather than trust the stored value (HIR-0172).
+  publish the member. Plan and JIT republication republish it inside the authority-state
+  transaction once the successor head is current and the WAL is removed, and
+  `vfx recover-authority-state` republishes a member left stale by a death in that window.
+  Callers never supply accepted rows, the transport refuses any other change to that member, and
+  readers re-derive it rather than trust the stored value (HIR-0172).
 - Run output never becomes authority by proximity. Promotion from evidence into a contract,
   plan, HIR, or ADR is an explicit decision (ADR-0002).
 - Builder image payments use `vfx-harness.image-payment/v2`: the harness captures the
@@ -498,7 +501,9 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   every ordinary reader/publisher fail closed. Recover it only through
   `vfx recover-authority-state <shot>`; that command verifies the exact staged before/after
   identities, performs no planning/Blender/render/critic/model work, and returns a typed result.
-  Repeating recovery after the committed head is current is an exact state no-op.
+  Repeating recovery after the committed head is current is an exact state no-op apart from
+  republishing a stale derived `accepted_build` projection, which its typed result reports as
+  `accepted_build_projection` (HIR-0172).
   An immutable completed-unit receipt may cross a changed layer transition only when every
   contiguous immediate-predecessor edge preserves its exact unit binding and complete source
   closure. Changed or downstream-invalidated units are superseded even if they had passed. A
