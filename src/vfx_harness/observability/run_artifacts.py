@@ -251,6 +251,15 @@ class RunLayout:
         _atomic_json(out, value)
         return out
 
+    def write_evidence(self, namespace: str, name: str, value: dict[str, Any]) -> Path:
+        """Publish one named structured evidence record under this run's evidence tree."""
+        for label, part in (("evidence namespace", namespace), ("evidence name", name)):
+            if not _SAFE_ID.fullmatch(part):
+                raise ValueError(f"invalid {label}: {part!r}")
+        out = self.evidence / namespace / f"{name}.json"
+        _atomic_json(out, value)
+        return out
+
     def write_stop_envelope(self, envelope: StopEnvelope) -> Path:
         """Publish and read back the run's one immutable terminal stop envelope."""
         if not isinstance(envelope, StopEnvelope):

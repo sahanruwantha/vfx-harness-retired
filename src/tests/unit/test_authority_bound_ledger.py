@@ -75,8 +75,11 @@ def test_two_writer_ledger_cas_has_one_explicit_loser(tmp_path, monkeypatch) -> 
     for name, ledger in writers.items():
         original = ledger.prepare_save
 
-        def prepare(*, authority_binding=None, _name=name, _original=original):
-            candidate = _original(authority_binding=authority_binding)
+        def prepare(*, authority_binding=None, derived_index=None, _name=name, _original=original):
+            candidate = _original(
+                authority_binding=authority_binding,
+                derived_index=derived_index,
+            )
             prepare_counts[_name] += 1
             prepared.wait(5)
             return candidate
@@ -173,7 +176,7 @@ def test_replan_does_not_wait_for_attempt_bound_ledger_prepare(
     captured_bindings: list[str] = []
     failures: list[BaseException] = []
 
-    def blocked_prepare(self, *, authority_binding=None):
+    def blocked_prepare(self, *, authority_binding=None, derived_index=None):
         candidate = original_prepare(
             self,
             authority_binding=authority_binding,

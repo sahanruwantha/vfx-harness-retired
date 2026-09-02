@@ -122,7 +122,14 @@ operation.
   interruption authority. Plan-consumer scratch roots and descendants are created only through the
   kernel-proven owned-directory primitive (fanotify target-FID plus `openat2`); an unsupported
   kernel or filesystem fails closed before any consumer write, and a descriptor whose identity
-  cannot be read is retained and poisons the process rather than being assumed closed (HIR-0172).
+  cannot be read is retained and poisons the process rather than being assumed closed. The
+  `accepted_build` member of `shot.json` is the strict `vfx-harness.shot-ledger/v2` index derived
+  only by the shot-ledger derivation writer from selected authority, passed terminal receipts,
+  sealed outcomes, composed script bytes, and the coordinator head. Its chain rows bind every
+  durable terminal receipt whatever its status, the accepted prefix ends in front of the first
+  non-passed receipt, and a selected authority without an evaluated coordinator head cannot
+  publish the member. Callers never supply accepted rows, the transport refuses any other change
+  to that member, and readers re-derive it rather than trust the stored value (HIR-0172).
 - Run output never becomes authority by proximity. Promotion from evidence into a contract,
   plan, HIR, or ADR is an explicit decision (ADR-0002).
 - Builder image payments use `vfx-harness.image-payment/v2`: the harness captures the

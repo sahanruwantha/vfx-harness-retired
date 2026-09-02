@@ -88,6 +88,16 @@ live in the linked Harness Improvement Records.
   transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
   safe resume producer, or proven local-implementation retry producer
   ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- `shot.json` now carries a strict `vfx-harness.shot-ledger/v2` accepted-build index under
+  `accepted_build`, derived only by the shot-ledger derivation writer from the selected DAG's
+  stable order, passed terminal receipts, sealed outcomes, composed script bytes, and the
+  coordinator head, with the acceptance-chain digest shared with acceptance and acceptance
+  bound through durable per-moment evidence records. Layer finalization and acceptance derive
+  it inside their ledger publications, a crash-resume reconcile reproduces it byte for byte
+  because chain rows bind every durable terminal receipt rather than the ledger slot being
+  rewritten, the transport refuses any other change to the member, and readers re-derive it
+  instead of trusting the stored value
+  ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - Retired by decision three tests that could not pass on a clean checkout: the print-based
   `tests.integration.test_harness` script and the hierarchy-gate copy test depended on the
   untracked local shots `barrel_roll` and `beacon_wake`, and the single-authority test

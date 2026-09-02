@@ -70,14 +70,23 @@ def test_terminal_reconciliation_projects_without_execution_or_judgment(
         def __init__(self, *_args, execution_guard, **_kwargs) -> None:
             assert isinstance(execution_guard, Guard)
             self.slot: dict = {}
+            self.data: dict = {}
 
         def _slot(self, _milestone):
             return self.slot
 
-        def save(self) -> None:
+        def save(self, *, derived_index=None) -> None:
+            assert derived_index is None
             events.append("ledger")
 
     monkeypatch.setattr(reconciliation, "AuthorityBoundLedger", FakeLedger)
+    # This fixture sits below the coordinator boundary; the accepted-build index
+    # needs real selected authority and is covered by the public pipeline tests.
+    monkeypatch.setattr(
+        reconciliation.shot_ledger_v2_derivation,
+        "derive_shot_ledger_index",
+        lambda *_args, **_kwargs: None,
+    )
 
     result = reconciliation.reconcile_layer_finalization(
         shot,

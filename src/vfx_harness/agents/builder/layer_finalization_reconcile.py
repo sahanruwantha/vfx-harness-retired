@@ -29,6 +29,7 @@ from vfx_harness.domain.layer_finalizations import (
 from vfx_harness.evidence.layer_revalidation_projection import (
     reconcile_layer_revalidation_projection,
 )
+from vfx_harness.orchestration import shot_ledger_v2_derivation
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
 )
@@ -40,6 +41,9 @@ from vfx_harness.orchestration.layer_finalization_state import (
     authorize_terminal_layer_finalization_mutation,
 )
 from vfx_harness.orchestration.ledger import Ledger
+from vfx_harness.orchestration.shot_authority_capture import (
+    shot_authority_writer_fence,
+)
 from vfx_harness.orchestration.unit_state import (
     record_prepared_accepted_hypothesis_falsification,
 )
@@ -171,7 +175,18 @@ def _reconcile_ledger(
         receipt_digest=receipt.receipt_digest,
     )
     slot.update(expected)
-    ledger.save()
+    with shot_authority_writer_fence(shot.folder) as writer_capability:
+        derived = shot_ledger_v2_derivation.derive_shot_ledger_index(
+            shot,
+            selected_authority,
+            writer_capability=writer_capability,
+            acceptance_record=ledger.data.get("acceptance"),
+            finalizing=shot_ledger_v2_derivation.FinalizingLayerPublication(
+                layer=layer,
+                receipt=receipt,
+            ),
+        )
+        ledger.save(derived_index=derived)
     return ledger
 
 

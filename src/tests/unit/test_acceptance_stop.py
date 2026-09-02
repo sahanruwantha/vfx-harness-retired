@@ -270,6 +270,11 @@ def _patch_acceptance(
         lambda _folder, _selected, *, operation, mutation: mutation(),
     )
     monkeypatch.setattr(
+        acceptance.shot_ledger_v2_derivation,
+        "derive_shot_ledger_index",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
         acceptance,
         "require_judgment_debts_satisfied",
         lambda _folder, _selected=None: None,

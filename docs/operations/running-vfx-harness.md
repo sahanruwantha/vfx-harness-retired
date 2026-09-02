@@ -390,8 +390,11 @@ render, snapshot, or script into the current run and call that a resume.
 - Treat `build/` and `shot.json` as the current accepted deterministic chain and ledger.
 - Never write, remove, or replace the live `<shot>/shot.json` or its `shot.json.lock` directly or
   through a generic durable-file helper. Canonical writes use the typed shot-ledger transport;
-  isolated consumer or candidate copies must prove a physically different root. That transport is
-  still a fenced legacy projection until the strict accepted-build v2 derivation writer lands.
+  isolated consumer or candidate copies must prove a physically different root. The
+  `accepted_build` member of `shot.json` is the strict accepted-build index; it is derived by the
+  harness at layer finalization and acceptance and re-derived by every reader, so never edit it
+  and never read it as proof without that re-derivation. The rest of the file is still a fenced
+  legacy projection.
 - Plan-consumer scratch views require Linux 5.17+ with unprivileged fanotify target-FID reporting
   and `openat2` on a local filesystem that exports file handles. An unsupported kernel, filesystem,
   or sandbox fails closed at the first consumer-view allocation; `vfx preflight --strict` does not

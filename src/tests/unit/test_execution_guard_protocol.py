@@ -95,9 +95,13 @@ def test_ledger_accepts_and_binds_structural_execution_guard(
     captured: list[dict] = []
     original_prepare = Ledger.prepare_save
 
-    def capture_prepare(self, *, authority_binding=None):
+    def capture_prepare(self, *, authority_binding=None, derived_index=None):
         captured.append(json.loads(authority_binding))
-        return original_prepare(self, authority_binding=authority_binding)
+        return original_prepare(
+            self,
+            authority_binding=authority_binding,
+            derived_index=derived_index,
+        )
 
     monkeypatch.setattr(Ledger, "prepare_save", capture_prepare)
     ledger = AuthorityBoundLedger(

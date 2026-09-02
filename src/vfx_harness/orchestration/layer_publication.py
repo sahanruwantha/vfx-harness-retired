@@ -142,6 +142,7 @@ def _require_exact_outcome(
     *,
     layer_id: str,
     receipt: LayerFinalizationReceipt,
+    expect_passed: bool = True,
 ) -> SealedLayerOutcome:
     try:
         outcome = parse_sealed_layer_outcome(
@@ -159,9 +160,14 @@ def _require_exact_outcome(
             f"layer {layer_id} outcome does not embed the exact current terminal "
             "finalization receipt"
         )
-    if outcome.status != "passed":
+    if expect_passed and outcome.status != "passed":
         raise LayerPublicationConflict(
             f"layer {layer_id} outcome is {outcome.status!r}, not 'passed'"
+        )
+    if not expect_passed and outcome.status == "passed":
+        raise LayerPublicationConflict(
+            f"layer {layer_id} outcome is 'passed' although its terminal receipt is "
+            f"{receipt.final_status!r}"
         )
     return outcome
 
@@ -202,6 +208,46 @@ def _require_exact_ledger_slot(
             f"layer {layer_id} ledger script SHA-256 does not match the terminal receipt"
         )
     return str(status), str(receipt_digest), str(script_path), str(script_sha256)
+
+
+def capture_sealed_outcome_projection(
+    folder: str | Path,
+    *,
+    layer_id: str,
+    receipt: LayerFinalizationReceipt,
+    expect_passed: bool = True,
+) -> tuple[SealedLayerOutcome, TrustedFileSnapshot]:
+    """Read and verify the sealed outcome that embeds one exact terminal receipt.
+
+    This is the outcome half of a publication capture for a caller that publishes
+    the ledger slot in the same transaction and therefore cannot read it from disk.
+    ``expect_passed`` states the terminal status the caller binds: a current
+    publication consumed by successors must be passed, while an accepted-build
+    chain row binds a failed receipt's outcome and refuses a passed one.
+    """
+
+    if not isinstance(receipt, LayerFinalizationReceipt):
+        raise LayerPublicationConflict(
+            "sealed outcome capture requires a typed terminal receipt"
+        )
+    layer_id = str(layer_id)
+    if receipt.claim.layer_id != layer_id:
+        raise LayerPublicationConflict(
+            f"layer {layer_id} outcome capture received another layer's receipt"
+        )
+    root = Path(folder).expanduser().absolute()
+    snapshot = _read_snapshot(
+        root,
+        layer_outcome_path(root, layer_id),
+        f"layer {layer_id} sealed outcome",
+    )
+    outcome = _require_exact_outcome(
+        _json_object(snapshot, f"layer {layer_id} sealed outcome"),
+        layer_id=layer_id,
+        receipt=receipt,
+        expect_passed=expect_passed,
+    )
+    return outcome, snapshot
 
 
 def capture_layer_publication_projections(
@@ -560,6 +606,7 @@ __all__ = [
     "LayerPublicationConflict",
     "VerifiedLayerPublication",
     "capture_layer_publication_projections",
+    "capture_sealed_outcome_projection",
     "require_current_layer_publication",
     "require_layer_publication_projections_unchanged",
 ]

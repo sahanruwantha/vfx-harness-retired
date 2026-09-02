@@ -476,3 +476,29 @@ def test_layer_publication_refuses_another_selected_authority(tmp_path) -> None:
         match="authority selection changed",
     ):
         require_current_layer_publication(tmp_path, layer, selected)
+
+
+def test_sealed_outcome_capture_binds_the_expected_terminal_status(tmp_path) -> None:
+    """The capture binds the status its caller names; a passed outcome cannot bind a
+    failed receipt's chain row (HIR-0172 accepted-build index)."""
+
+    layer, _claim_guard, _replay, _stored, receipt = _finalize(tmp_path)
+    _write_projections(tmp_path, receipt)
+
+    outcome, _snapshot = layer_publication.capture_sealed_outcome_projection(
+        tmp_path,
+        layer_id=layer.id,
+        receipt=receipt,
+    )
+    assert outcome.status == "passed"
+
+    with pytest.raises(
+        LayerPublicationConflict,
+        match="outcome is 'passed' although its terminal receipt is",
+    ):
+        layer_publication.capture_sealed_outcome_projection(
+            tmp_path,
+            layer_id=layer.id,
+            receipt=receipt,
+            expect_passed=False,
+        )

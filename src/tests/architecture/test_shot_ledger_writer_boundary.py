@@ -658,3 +658,64 @@ def test_consumer_ledger_destination_issuer_has_one_owner() -> None:
         "plan-consumer ledger destination issuer escaped typed sink owners: "
         + ", ".join(violations)
     )
+
+
+def test_accepted_build_index_has_one_derivation_owner() -> None:
+    allowed = {
+        "mint_derived_shot_ledger_index": {
+            "orchestration/shot_ledger_index.py",
+            "orchestration/shot_ledger_v2_derivation.py",
+        },
+        "derive_shot_ledger_index": {
+            "agents/acceptance.py",
+            "agents/builder/layer_finalization_reconcile.py",
+            "orchestration/shot_ledger_v2_derivation.py",
+        },
+    }
+    violations: list[str] = []
+    for path in _sources():
+        relative = _relative(path)
+        for node in ast.walk(_tree(path)):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in allowed and relative not in allowed[alias.name]:
+                        violations.append(f"{relative}:{node.lineno}:import:{alias.name}")
+            if not isinstance(node, ast.Call):
+                continue
+            name = _called_name(node)
+            if name in allowed and relative not in allowed[name]:
+                violations.append(f"{relative}:{node.lineno}:call:{name}")
+    assert not violations, (
+        "accepted-build index derivation escaped its exact owners: "
+        + ", ".join(violations)
+    )
+    # The transport reserves the member: no module assigns accepted_build through a
+    # ledger document, and only the owning modules name the reserved key symbol.
+    owners = {
+        "orchestration/shot_ledger_publication.py",
+        "orchestration/shot_ledger_v2_derivation.py",
+        "orchestration/shot_ledger_index.py",
+    }
+    writes: list[str] = []
+    for path in _sources():
+        relative = _relative(path)
+        for node in ast.walk(_tree(path)):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and relative not in owners
+                and any(alias.name == "ACCEPTED_BUILD_KEY" for alias in node.names)
+            ):
+                writes.append(f"{relative}:{node.lineno}:import:ACCEPTED_BUILD_KEY")
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "accepted_build"
+                ):
+                    writes.append(f"{relative}:{node.lineno}:assign:accepted_build")
+    assert not writes, (
+        "accepted_build must only be replaced through the derived index: "
+        + ", ".join(writes)
+    )

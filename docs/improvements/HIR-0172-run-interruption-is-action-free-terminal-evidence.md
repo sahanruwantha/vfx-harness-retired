@@ -186,6 +186,47 @@ string and a successful physical fence are not `shot-ledger/v2` evidence. The ne
 one semantic writer that derives the complete accepted member graph from selected authority and
 terminal receipts; callers must not supply those rows.
 
+#### Derived accepted-build index
+
+That writer now exists. `shot.json` keeps its legacy milestone log, but its `accepted_build`
+member is a `vfx-harness.shot-ledger/v2` value that only `shot_ledger_v2_derivation` derives.
+Accepted layers are the leading layers of the selected DAG's stable topological order whose
+current terminal receipt is `passed` and whose sealed outcome, composed script bytes, and legacy
+ledger projection verify through the existing publication verifier; each row binds the
+coordinator head's `layer_generation_digest`, the exact receipt digest, the composed script
+locator and SHA-256, and the canonical sealed-outcome locator and SHA-256. The index binds the
+coordinator head reference and the exact selection token, and refuses a head that does not
+authorize that selection or lacks a binding for an accepted layer. Its `accepted_chain_digest`
+is the same `acceptance-chain/v2` digest acceptance judges: both now derive their rows through
+one `accepted_chain` module, so the ledger cannot carry a second projection of the chain.
+Acceptance is bound only when a passing typed outcome names this exact bundle, view, and chain
+and every moment has a durable evidence record whose canonical digest is the outcome's
+evidence digest; acceptance publishes those records under the run's `evidence/acceptance/`
+tree and names them in its ledger record. An outcome for another chain, a missing record, or a
+partial prefix leaves `acceptance` null; a record that does not hash to its evidence digest is a
+conflict.
+
+The typed transport reserves the member: only an opaque index minted by the derivation writer
+may replace it, hand-authored rows are refused at preparation, and ordinary publications carry
+the stored member forward unchanged. Layer finalization derives the index in the same ledger
+publication that projects its slot, taking the finalizing layer's row from its durable receipt
+and sealed outcome because that slot is still in flight. Every layer with a durable terminal
+receipt contributes that receipt-bound chain row whatever its status: a failed receipt binds
+through the same receipt, predecessor-prefix, and sealed-outcome verification with the expected
+status made explicit, so the chain digest never depends on the ledger slot the same publication
+rewrites and a crash-resume derivation reproduces the first one byte for byte. The accepted
+prefix ends in front of the first non-passed receipt. A preserved receipt reconciling under a
+successor selection binds through the same contiguous lineage authorization the publication
+verifier requires. A selected authority without an evaluated coordinator head cannot derive the
+member and fails closed; fixtures below the coordinator boundary stub the derivation rather than
+publish an index they cannot bind. Every acceptance ledger publication re-derives the index
+under the writer fence before staging. Readers never trust the stored member: the reader
+re-derives under a shared fence and refuses a stale index, so a plan or JIT republication that
+supersedes layers is detected at the next read even though republication itself does not yet
+re-derive the member. Callers never enumerate accepted files; the merge of other legacy
+top-level keys and base `Ledger.save()` remain unscoped, and the independent archive-reopening
+evaluator of prerequisite 7 is still absent.
+
 #### Fork-safe descriptor ownership and kernel-proven consumer directories
 
 The fork-visible descriptor registry treats every observation as tri-state. A slot that still
@@ -511,6 +552,10 @@ recovery controller or an authority-state transaction.
 | Signal handler forks immediately after the create-only owner-claim open | The child observes the staging descriptor closed while the parent's claim publication completes |
 | Lease release meets a corrupted fork registry or a substituted fence descriptor | The reconciled registry row stays visible through every neutralization, substitution never touches the reused slot, and retained rows surface as the typed cleanup failure |
 | Plan-consumer directory creation races a name swap, or the host lacks target-FID reporting | Adoption refuses a handle mismatch, and the unsupported platform fails closed before any consumer write |
+| Two layers finalize on the public pipeline, then a composed script or an acceptance evidence record changes | The stored `accepted_build` index lists the exact accepted prefix in selected order and the reader refuses it once re-derivation differs |
+| A caller writes `accepted_build` rows, copies the derived index, or a failed terminal receipt reconciles | Preparation refuses the rows and the copy; the failed layer ends the accepted prefix instead of failing the publication |
+| A process dies after terminal debt resolution and the layer reconciles again, with the terminal receipt failed or left due | The resumed reconcile publishes byte-identical `shot.json` and sealed-outcome bytes: the failed receipt's row binds through receipt verification, never through the slot being rewritten |
+| A preserved terminal receipt reconciles under a successor selection | The row binds through the contiguous lineage authorization; an unauthorized token is a derivation conflict |
 
 The key regression is a real subprocess test, not a raised exception inside the context manager:
 enter the public direct invocation, publish kickoff, block in an external-session-shaped AnyIO

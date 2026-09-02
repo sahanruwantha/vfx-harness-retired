@@ -42,6 +42,10 @@ from vfx_harness.orchestration.shot_authority_capture import (
     ShotAuthorityWriterCapability,
     require_live_shot_authority_writer,
 )
+from vfx_harness.orchestration.shot_ledger_index import (
+    ACCEPTED_BUILD_KEY,
+    DerivedShotLedgerIndex,
+)
 from vfx_harness.orchestration.shot_ledger_lock import (
     LedgerSaveConflict,
     canonical_shot_ledger_path,
@@ -241,13 +245,27 @@ def _merge_payload(
     loaded: Mapping[str, Any],
     touched: frozenset[str],
     run_id: str,
+    derived_index: DerivedShotLedgerIndex | None,
 ) -> bytes:
     merged = dict(on_disk)
     for key, value in data.items():
-        if key == "milestones":
+        if key in {"milestones", ACCEPTED_BUILD_KEY}:
             continue
         if key not in on_disk or value != loaded.get(key):
             merged[key] = value
+    # The accepted-build index is derived, never merged from caller data.
+    if derived_index is not None:
+        if not isinstance(derived_index, DerivedShotLedgerIndex):
+            raise LedgerSaveConflict(
+                "shot-ledger accepted_build requires the opaque index minted by the "
+                "derivation writer"
+            )
+        merged[ACCEPTED_BUILD_KEY] = derived_index.as_dict()
+    elif data.get(ACCEPTED_BUILD_KEY) != loaded.get(ACCEPTED_BUILD_KEY):
+        raise LedgerSaveConflict(
+            "shot-ledger accepted_build may change only through the derivation "
+            "writer; callers never supply accepted rows"
+        )
     slots = dict(on_disk.get("milestones", {}))
     local_slots = data.get("milestones", {})
     for layer_id in touched:
@@ -293,6 +311,7 @@ def prepare_shot_ledger_publication(
     *,
     run_id: str,
     authority_binding: str | None,
+    derived_index: DerivedShotLedgerIndex | None = None,
 ) -> PreparedShotLedgerPublication:
     """Merge and fsync one opaque exact ledger generation under ledger EX only."""
 
@@ -347,7 +366,14 @@ def prepare_shot_ledger_publication(
                             f"ledger root must be a JSON object: {destination}; repair it before retrying"
                         )
                     on_disk = parsed
-                payload = _merge_payload(on_disk, data, loaded, touched, run_id)
+                payload = _merge_payload(
+                    on_disk,
+                    data,
+                    loaded,
+                    touched,
+                    run_id,
+                    derived_index,
+                )
                 digest = hashlib.sha256(payload).hexdigest()
                 return (None if current == payload else payload), digest
 

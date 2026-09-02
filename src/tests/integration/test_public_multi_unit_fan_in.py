@@ -16,6 +16,7 @@ from tests.unit.test_layer_finalization_state import (
     _lower_boundary_receipt_authority as _lower_boundary_receipt_authority,
 )
 from tests.unit_attempt_fixtures import ABSENT_SELECTION_TOKEN, pass_unit
+from vfx_harness.agents.builder import layer_finalization_reconcile
 from vfx_harness.agents.builder.layer_artifact import (
     commit_layer_artifact,
     prepare_layer_artifact,
@@ -593,13 +594,22 @@ def _publish_fan_in(root: Path):
         layer.stages,
         selection_token=ABSENT_SELECTION_TOKEN,
     )
-    reconciled = reconcile_layer_finalization(
-        load_shot(root),
-        layer,
-        receipt,
-        selected_authority=selected,
-        strips={},
-    )
+    # This facade sits below the authority-state coordinator: it has no evaluated
+    # head, so the accepted-build index derivation is covered by the public
+    # pipeline fixture rather than exercised here.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            layer_finalization_reconcile.shot_ledger_v2_derivation,
+            "derive_shot_ledger_index",
+            lambda *_args, **_kwargs: None,
+        )
+        reconciled = reconcile_layer_finalization(
+            load_shot(root),
+            layer,
+            receipt,
+            selected_authority=selected,
+            strips={},
+        )
     publication = require_current_layer_publication(root, layer, selected)
     return layer, receipt, selected, reconciled, publication
 

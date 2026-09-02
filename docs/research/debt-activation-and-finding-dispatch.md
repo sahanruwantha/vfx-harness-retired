@@ -258,8 +258,18 @@ handoff, validation, and cleanup without holding the fork mutex across blocking 
 This remains fenced legacy transport, not the strict accepted-build root. The merge still admits
 legacy `milestones`, `acceptance`, `runs`, and arbitrary changed top-level mappings; base
 `Ledger.save()` remains semantically unscoped. A binding string and a writer lease prove where and
-when bytes moved, not that the bytes are a complete `shot-ledger/v2` graph. The next bounded step
-is the sole derivation writer described below.
+when bytes moved, not that the bytes are a complete `shot-ledger/v2` graph.
+
+That derivation writer is now implemented as `shot.json.accepted_build`: a strict
+`vfx-harness.shot-ledger/v2` index derived only by `shot_ledger_v2_derivation` from the selected
+DAG's stable order, current passed terminal receipts, sealed outcome bytes, composed script bytes,
+and the coordinator head's layer generations, with the acceptance-chain digest shared with
+acceptance through one `accepted_chain` module and acceptance bound only through durable
+per-moment evidence records. The typed transport reserves the member behind an opaque minted
+index, layer finalization and acceptance derive it inside their own ledger publications, and
+readers re-derive rather than trust it. Plan or JIT republication does not yet re-derive the
+member, so a superseded index is refused at the next read instead of being rewritten at
+publication; the merge of other legacy top-level keys stays unscoped.
 
 The fork-visible descriptor registry behind those writers now retains rather than drops every
 slot whose identity cannot be read. Adoption of an unreadable slot neutralizes it under deferred

@@ -8,11 +8,9 @@ only the human-decision transition until a revision-checked unit owner exists.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from vfx_harness.agents import acceptance_stop_evidence
@@ -38,7 +36,14 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
 )
 from vfx_harness.observability.run_artifacts import RunLayout
-from vfx_harness.orchestration import generate_construction, layer_publication
+from vfx_harness.orchestration import layer_publication
+from vfx_harness.orchestration.accepted_chain import (
+    accepted_chain_digest,
+    accepted_chain_rows,
+    inside_shot,
+    legacy_ledger_statuses,
+    sha256_of,
+)
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
@@ -60,41 +65,6 @@ from vfx_harness.orchestration.judgment_debt_state import (
 from vfx_harness.orchestration.ledger import Milestone, load_milestones
 from vfx_harness.orchestration.plan_due import require_due_clear
 from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
-from vfx_harness.orchestration.unit_state import unit_digest
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _inside(root: Path, relative: str, where: str) -> Path:
-    candidate = (root / relative).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"{where} escapes the shot root: {relative!r}") from exc
-    return candidate
-
-
-def _ledger_statuses(shot: Shot) -> dict[str, str]:
-    path = shot.folder / "shot.json"
-    if not path.is_file():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"acceptance cannot pin unreadable ledger authority: {path}") from exc
-    if not isinstance(value, dict) or not isinstance(value.get("milestones", {}), dict):
-        raise ValueError("acceptance cannot pin malformed shot.json milestone authority")
-    return {
-        str(layer_id): str(row.get("status") or "pending")
-        for layer_id, row in value.get("milestones", {}).items()
-        if isinstance(row, dict)
-    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,12 +97,7 @@ class AcceptanceAuthoritySnapshot:
 
     @property
     def chain_digest(self) -> str:
-        return canonical_digest(
-            {
-                "schema": "vfx-harness.acceptance-chain/v2",
-                "chain": list(self.chain),
-            }
-        )
+        return accepted_chain_digest(self.chain)
 
 
 def _selected_moment_index(
@@ -204,9 +169,8 @@ def capture_acceptance_authority(
         layers_path = selected.artifact_paths["layers.json"]
     except KeyError as exc:
         raise ValueError("selected acceptance authority omits a required artifact") from exc
-    statuses = _ledger_statuses(shot)
+    statuses = legacy_ledger_statuses(shot_root)
 
-    chain: list[dict[str, Any]] = []
     layers = tuple(selected_layer_chain(
         shot,
         bundle=bundle_before,
@@ -232,90 +196,21 @@ def capture_acceptance_authority(
                 + "; ".join(failures)
             )
 
-    for layer_index, layer in enumerate(layers):
-        layer_script = _inside(shot_root, layer.script, f"layer {layer.id} script")
-        try:
-            construction = generate_construction.prepare_construction_replay_input(
-                shot_root,
-                layer_script,
-            )
-        except generate_construction.GenerateConstructionError as exc:
-            raise ValueError(
-                f"acceptance cannot capture construction replay authority for "
-                f"layer {layer.id}: {exc}"
-            ) from exc
-        publication = publications[layer_index] if verify_layer_publications else None
-        if publication is None:
-            units = []
-            for unit in layer.stages:
-                script_path = _inside(
-                    shot_root,
-                    unit.mutates.script_spans[0],
-                    f"layer {layer.id} unit {unit.id} script",
-                )
-                units.append(
-                    {
-                        "unit_id": unit.id,
-                        "unit_digest": unit_digest(unit),
-                        "completion_receipt_digest": None,
-                        "script": unit.mutates.script_spans[0],
-                        "script_sha256": (
-                            _sha256(script_path) if script_path.is_file() else None
-                        ),
-                    }
-                )
-        else:
-            units = [
+    chain = list(
+        accepted_chain_rows(
+            shot_root,
+            layers,
+            (
                 {
-                    "unit_id": unit.unit_id,
-                    "unit_digest": unit.unit_digest,
-                    "completion_receipt_digest": unit.completion_receipt_digest,
-                    "script": unit.script_path,
-                    "script_sha256": unit.script_sha256,
+                    str(layer.id): publication
+                    for layer, publication in zip(layers, publications, strict=True)
                 }
-                for unit in publication.receipt.claim.unit_inputs
-            ]
-        chain.append(
-            {
-                "layer_id": layer.id,
-                "status": (
-                    statuses.get(str(layer.id), "pending")
-                    if publication is None
-                    else publication.ledger_status
-                ),
-                "script": (
-                    layer.script
-                    if publication is None
-                    else publication.ledger_script_path
-                ),
-                "script_sha256": (
-                    _sha256(layer_script) if publication is None and layer_script.is_file()
-                    else (
-                        None
-                        if publication is None
-                        else publication.ledger_script_sha256
-                    )
-                ),
-                "replay_dependencies": (
-                    []
-                    if construction is None
-                    else [
-                        dependency.as_dict()
-                        for dependency in construction.dependencies
-                    ]
-                ),
-                "units": units,
-                "finalization_receipt_digest": (
-                    None if publication is None else publication.receipt.receipt_digest
-                ),
-                "layer_outcome": (
-                    None if publication is None else publication.outcome_locator
-                ),
-                "layer_outcome_sha256": (
-                    None if publication is None else publication.outcome_sha256
-                ),
-            }
+                if verify_layer_publications
+                else {}
+            ),
+            ledger_statuses=statuses,
         )
+    )
 
     if verify_layer_publications:
         observed_again: list[layer_publication.VerifiedLayerPublication] = []
@@ -344,7 +239,7 @@ def capture_acceptance_authority(
 
     selected_rows: list[dict[str, Any]] = []
     for moment_id, moment in moments.items():
-        reference = _inside(
+        reference = inside_shot(
             shot_root,
             str(moment.ref),
             f"acceptance moment {moment_id} reference",
@@ -356,7 +251,7 @@ def capture_acceptance_authority(
                 "id": str(moment_id),
                 "frame": int(moment.frame),
                 "ref": str(moment.ref),
-                "ref_sha256": _sha256(reference),
+                "ref_sha256": sha256_of(reference),
                 "fingerprint": moment.fingerprint,
             }
         )
@@ -368,8 +263,8 @@ def capture_acceptance_authority(
             shot_root,
             selected,
         ),
-        acceptance_artifact_sha256=_sha256(acceptance_path),
-        layers_artifact_sha256=_sha256(layers_path),
+        acceptance_artifact_sha256=sha256_of(acceptance_path),
+        layers_artifact_sha256=sha256_of(layers_path),
         selected_moments=selected_moments,
         chain=tuple(chain),
     )
@@ -386,8 +281,8 @@ def capture_acceptance_authority(
     if (
         current_judgment_debt_state_digest_for_authority(shot_root, selected)
         != snapshot.judgment_debt_state_digest
-        or _sha256(acceptance_path) != snapshot.acceptance_artifact_sha256
-        or _sha256(layers_path) != snapshot.layers_artifact_sha256
+        or sha256_of(acceptance_path) != snapshot.acceptance_artifact_sha256
+        or sha256_of(layers_path) != snapshot.layers_artifact_sha256
     ):
         raise ValueError("selected acceptance bundle/view changed while its before-state was read")
     return snapshot
@@ -404,8 +299,8 @@ def _capture_payload(
     )
     render_relative = row["render"]
     reference_relative = row["ref"]
-    render = _inside(shot.folder.resolve(), render_relative, f"acceptance moment {moment_id} render")
-    reference = _inside(shot.folder.resolve(), reference_relative, f"acceptance moment {moment_id} reference")
+    render = inside_shot(shot.folder.resolve(), render_relative, f"acceptance moment {moment_id} render")
+    reference = inside_shot(shot.folder.resolve(), reference_relative, f"acceptance moment {moment_id} reference")
     if not render.is_file() or not reference.is_file():
         raise ValueError(f"acceptance moment {moment_id} evidence is missing")
 
@@ -414,8 +309,8 @@ def _capture_payload(
         "moment_id": moment_id,
         "render_locator": render_relative,
         "reference_locator": reference_relative,
-        "render_sha256": _sha256(render),
-        "reference_sha256": _sha256(reference),
+        "render_sha256": sha256_of(render),
+        "reference_sha256": sha256_of(reference),
         "moment": dict(row),
     }
 
@@ -494,12 +389,17 @@ def _causal_failure(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def compile_acceptance_outcome(
+def acceptance_moment_captures(
     shot: Shot,
     authority: AcceptanceAuthoritySnapshot,
     results: Mapping[str, Mapping[str, Any]],
-) -> AcceptanceOutcome:
-    """Seal a complete acceptance attempt without treating failure as success."""
+) -> dict[str, dict[str, Any]]:
+    """Return each moment's exact semantic capture in selected-moment order.
+
+    The canonical digest of every capture is that moment's ``evidence_digest`` in the
+    typed outcome, so a durable copy of the capture is the evidence record a ledger
+    binding can re-verify without the acceptance session.
+    """
 
     selected = _selected_moment_index(authority)
     expected_ids = tuple(selected)
@@ -508,20 +408,35 @@ def compile_acceptance_outcome(
             "acceptance outcome does not cover the exact selected moment set; "
             f"expected={list(expected_ids)}, found={list(results)}"
         )
-    moment_outcomes: list[AcceptanceMomentOutcome] = []
-    for moment_id, result in results.items():
-        semantic = _semantic_selected_capture(
+    return {
+        moment_id: _semantic_selected_capture(
             _capture_payload(shot, moment_id, result),
             selected[moment_id],
         )
-        moment_outcomes.append(
-            AcceptanceMomentOutcome(
-                moment_id=moment_id,
-                passed=semantic["pass"],
-                decided_by=semantic["decided_by"],
-                evidence_digest=canonical_digest(semantic),
-            )
+        for moment_id, result in results.items()
+    }
+
+
+def compile_acceptance_outcome(
+    shot: Shot,
+    authority: AcceptanceAuthoritySnapshot,
+    results: Mapping[str, Mapping[str, Any]],
+) -> AcceptanceOutcome:
+    """Seal a complete acceptance attempt without treating failure as success."""
+
+    moment_outcomes = [
+        AcceptanceMomentOutcome(
+            moment_id=moment_id,
+            passed=semantic["pass"],
+            decided_by=semantic["decided_by"],
+            evidence_digest=canonical_digest(semantic),
         )
+        for moment_id, semantic in acceptance_moment_captures(
+            shot,
+            authority,
+            results,
+        ).items()
+    ]
     return AcceptanceOutcome(
         authority_digest=authority.digest,
         bundle_digest=authority.bundle_digest,
@@ -702,7 +617,7 @@ def compile_acceptance_stop(
     evidence_ref = StopEvidenceRef(
         kind="stop_evidence",
         locator=evidence_path.relative_to(shot.folder.resolve()).as_posix(),
-        sha256=_sha256(evidence_path),
+        sha256=sha256_of(evidence_path),
         record_schema="vfx-harness.acceptance-stop-evidence/v1",
         record_digest=evidence_record_digest,
     )

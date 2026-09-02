@@ -28,7 +28,7 @@ from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration import layer_publication, plan_due
+from vfx_harness.orchestration import layer_publication, plan_due, shot_ledger_v2_derivation
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
@@ -472,7 +472,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
         return result
 
     def publish_ledger(operation: str) -> str:
-        """Stage outside authority locks, then commit in the global writer order."""
+        """Derive the accepted-build index, stage, then commit in writer order."""
 
         if replay_inputs:
             _require_acceptance_replay_current(replay_inputs)
@@ -485,25 +485,34 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             sort_keys=True,
             separators=(",", ":"),
         )
-        prepared = ledger.prepare_save(authority_binding=binding)
-        committed = False
-        try:
-            if replay_inputs:
-                _require_acceptance_replay_current(replay_inputs)
-
-            def commit() -> str:
+        with shot_authority_writer_fence(shot.folder) as writer_capability:
+            derived = shot_ledger_v2_derivation.derive_shot_ledger_index(
+                shot,
+                selected_authority,
+                writer_capability=writer_capability,
+                acceptance_record=ledger.data.get("acceptance"),
+            )
+            prepared = ledger.prepare_save(
+                authority_binding=binding,
+                derived_index=derived,
+            )
+            committed = False
+            try:
                 if replay_inputs:
                     _require_acceptance_replay_current(replay_inputs)
-                result = ledger.commit_prepared_save(
-                    prepared,
-                    authority_binding=binding,
-                    writer_capability=writer_capability,
-                )
-                if replay_inputs:
-                    _require_acceptance_replay_current(replay_inputs)
-                return result
 
-            with shot_authority_writer_fence(shot.folder) as writer_capability:
+                def commit() -> str:
+                    if replay_inputs:
+                        _require_acceptance_replay_current(replay_inputs)
+                    result = ledger.commit_prepared_save(
+                        prepared,
+                        authority_binding=binding,
+                        writer_capability=writer_capability,
+                    )
+                    if replay_inputs:
+                        _require_acceptance_replay_current(replay_inputs)
+                    return result
+
                 result = commit_selected_authority(
                     shot.folder,
                     selected_authority,
@@ -511,12 +520,12 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
                     mutation=commit,
                 )
                 committed = True
-            if replay_inputs:
-                _require_acceptance_replay_current(replay_inputs)
-            return result
-        finally:
-            if not committed:
-                ledger.discard_prepared_save(prepared)
+            finally:
+                if not committed:
+                    ledger.discard_prepared_save(prepared)
+        if replay_inputs:
+            _require_acceptance_replay_current(replay_inputs)
+        return result
 
     if not only and publishable:
         # A frame-unspecified contract is evaluated at every acceptance moment.  One
@@ -552,6 +561,22 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
     }
     if outcome is not None:
         acceptance_record["outcome"] = outcome.as_dict()
+        # Each moment's exact semantic capture is published as a durable evidence
+        # record whose canonical digest is the outcome's evidence digest, so the
+        # accepted-build index can bind acceptance without this session.
+        layout = run_artifacts.ensure(shot.folder, command="acceptance")
+        acceptance_record["evidence_records"] = {
+            moment_id: layout.write_evidence(
+                "acceptance",
+                f"moment-{moment_id.encode('utf-8').hex()}",
+                capture,
+            ).relative_to(shot.folder).as_posix()
+            for moment_id, capture in acceptance_stop.acceptance_moment_captures(
+                shot,
+                authority_before,
+                results,
+            ).items()
+        }
     if force:
         acceptance_record["authoritative"] = False
         acceptance_record["reason"] = "forced_debug_preview"

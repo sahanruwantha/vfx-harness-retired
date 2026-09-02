@@ -23,6 +23,7 @@ from vfx_harness.orchestration.selected_authority_guard import (
 from vfx_harness.orchestration.shot_authority_capture import (
     shot_authority_writer_fence,
 )
+from vfx_harness.orchestration.shot_ledger_index import DerivedShotLedgerIndex
 
 
 class AuthorityBoundLedger(Ledger):
@@ -165,7 +166,7 @@ class AuthorityBoundLedger(Ledger):
                 "terminal layer ledger projection must exactly name its finalization receipt"
             )
 
-    def save(self) -> None:
+    def save(self, *, derived_index: DerivedShotLedgerIndex | None = None) -> None:
         execution_guard = self._builder_execution_guard
         execution_binding = dict(execution_guard.authority_binding)
         reserved = {"schema", "selection_token"} & set(execution_binding)
@@ -187,7 +188,10 @@ class AuthorityBoundLedger(Ledger):
             separators=(",", ":"),
         )
         execution_guard.check("start builder ledger publication staging")
-        prepared = super().prepare_save(authority_binding=binding)
+        prepared = super().prepare_save(
+            authority_binding=binding,
+            derived_index=derived_index,
+        )
         callback_completed = False
         try:
             callback_calls = 0

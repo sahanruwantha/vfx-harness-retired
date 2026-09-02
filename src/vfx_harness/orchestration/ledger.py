@@ -34,6 +34,7 @@ from vfx_harness.orchestration.shot_authority_capture import (
     ShotAuthorityWriterCapability,
     shot_authority_writer_fence,
 )
+from vfx_harness.orchestration.shot_ledger_index import DerivedShotLedgerIndex
 from vfx_harness.orchestration.shot_ledger_lock import (
     LedgerSaveConflict as LedgerSaveConflict,
 )
@@ -747,8 +748,13 @@ class Ledger:
         self,
         *,
         authority_binding: str | None = None,
+        derived_index: DerivedShotLedgerIndex | None = None,
     ) -> PreparedShotLedgerPublication:
-        """Prepare one exact-generation merge while holding ledger EX only."""
+        """Prepare one exact-generation merge while holding ledger EX only.
+
+        ``derived_index`` is the only way the ``accepted_build`` member changes; it
+        comes from the shot-ledger derivation writer, never from this instance's data.
+        """
 
         try:
             return prepare_shot_ledger_publication(
@@ -758,6 +764,7 @@ class Ledger:
                 frozenset(self._touched),
                 run_id=RUN_ID,
                 authority_binding=authority_binding,
+                derived_index=derived_index,
             )
         except json.JSONDecodeError as exc:
             # Treating a corrupt ledger as empty would clobber every accepted row.
@@ -786,7 +793,7 @@ class Ledger:
     def discard_prepared_save(prepared: PreparedShotLedgerPublication) -> None:
         discard_prepared_shot_ledger_publication(prepared)
 
-    def save(self) -> None:
+    def save(self, *, derived_index: DerivedShotLedgerIndex | None = None) -> None:
         """Write back only the layers this instance touched.
 
         A shot's layers run as separate processes (and can overlap with an out-of-band
@@ -798,7 +805,7 @@ class Ledger:
         target identity before one atomic rename. A racing writer therefore produces an
         explicit ``LedgerSaveConflict`` instead of a lost update or invisible retry.
         """
-        prepared = self.prepare_save()
+        prepared = self.prepare_save(derived_index=derived_index)
         committed = False
         try:
             with shot_authority_writer_fence(self.shot.folder) as capability:
