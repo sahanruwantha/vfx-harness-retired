@@ -13,6 +13,7 @@ Writes an `acceptance` block into shot.json next to `milestones`.
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +41,9 @@ from vfx_harness.orchestration.selected_authority_guard import (
     commit_selected_authority,
 )
 from vfx_harness.orchestration.selected_layer_chain import selected_layer_chain
+from vfx_harness.orchestration.shot_authority_capture import (
+    shot_authority_writer_fence,
+)
 
 from ..blender.session import BlenderError, BlenderSession
 from . import acceptance_stop, acceptance_stop_evidence
@@ -467,6 +471,53 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             _require_acceptance_replay_current(replay_inputs)
         return result
 
+    def publish_ledger(operation: str) -> str:
+        """Stage outside authority locks, then commit in the global writer order."""
+
+        if replay_inputs:
+            _require_acceptance_replay_current(replay_inputs)
+        binding = json.dumps(
+            {
+                "schema": "vfx-harness.acceptance-ledger-publication-binding/v1",
+                "selection_token": selected_authority.selection_token.to_dict(),
+                "operation": operation,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        prepared = ledger.prepare_save(authority_binding=binding)
+        committed = False
+        try:
+            if replay_inputs:
+                _require_acceptance_replay_current(replay_inputs)
+
+            def commit() -> str:
+                if replay_inputs:
+                    _require_acceptance_replay_current(replay_inputs)
+                result = ledger.commit_prepared_save(
+                    prepared,
+                    authority_binding=binding,
+                    writer_capability=writer_capability,
+                )
+                if replay_inputs:
+                    _require_acceptance_replay_current(replay_inputs)
+                return result
+
+            with shot_authority_writer_fence(shot.folder) as writer_capability:
+                result = commit_selected_authority(
+                    shot.folder,
+                    selected_authority,
+                    operation=operation,
+                    mutation=commit,
+                )
+                committed = True
+            if replay_inputs:
+                _require_acceptance_replay_current(replay_inputs)
+            return result
+        finally:
+            if not committed:
+                ledger.discard_prepared_save(prepared)
+
     if not only and publishable:
         # A frame-unspecified contract is evaluated at every acceptance moment.  One
         # passing reading cannot permanently satisfy the obligation when another
@@ -508,7 +559,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             log("! --repair is ignored for a forced debugging preview")
     else:
         ledger.data["acceptance"] = acceptance_record
-        publish("publish acceptance outcome", ledger.save)
+        publish_ledger("publish acceptance outcome")
         if not only:                  # a partial run cannot judge the whole chain
             acceptance_record["superseded"] = publish(
                 "reconcile accepted layer outcomes",
@@ -522,7 +573,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             plan = repair_plan(shot, results, selected_authority)
             acceptance_record["repair_plan"] = plan
             ledger.data["acceptance"] = acceptance_record
-            publish("publish acceptance repair diagnosis", ledger.save)
+            publish_ledger("publish acceptance repair diagnosis")
             if plan:
                 log(
                     f"! {len(plan)} failing moment group(s) diagnose layer(s) "
@@ -534,7 +585,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
                     "unit-state mutation")
             acceptance_record["repaired"] = []
             ledger.data["acceptance"] = acceptance_record
-            publish("publish terminal acceptance record", ledger.save)
+            publish_ledger("publish terminal acceptance record")
     destination = "run-scoped debug preview" if force else str(ledger.path)
     log(f"acceptance: {acceptance_record['passed']}/{len(results)} moments passed "
         f"→ {destination}")
@@ -592,8 +643,6 @@ def reconcile(
         ledger._slot(m)["superseded_by_acceptance"] = {"frames": bad, "at": _now_str()}
         notes.append(note)
         log(f"! {note}")
-    if notes:
-        ledger.save()
     return notes
 
 

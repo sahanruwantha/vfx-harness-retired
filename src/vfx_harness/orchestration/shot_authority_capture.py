@@ -17,6 +17,7 @@ from pathlib import Path
 from threading import get_ident, local
 from typing import ParamSpec, TypeVar
 
+from vfx_harness.observability import fork_coordination
 from vfx_harness.orchestration.authority_selection_process_registry import (
     current_process_token,
 )
@@ -94,7 +95,11 @@ def _clear_child_thread_fences() -> None:
     _THREAD_FENCES.fences = {}
 
 
-os.register_at_fork(after_in_child=_clear_child_thread_fences)
+fork_coordination.register_fork_participant(
+    "orchestration.shot_authority_capture",
+    lock_factory=None,
+    after_in_child=_clear_child_thread_fences,
+)
 
 
 def _require_active(

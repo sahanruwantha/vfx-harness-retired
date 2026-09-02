@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from vfx_harness.evaluation.plan_gate.types import _materialized_view
 from vfx_harness.observability import run_artifacts
-from vfx_harness.orchestration import authority_selection, plan_authority
+from vfx_harness.orchestration import (
+    authority_selection,
+    plan_authority,
+    plan_consumer_view_projection,
+)
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
@@ -248,6 +253,41 @@ def test_consumer_view_copies_and_binds_exact_planning_inputs(tmp_path: Path) ->
     assert (view / "state" / "plan-resolutions.jsonl").read_bytes() == resolutions
 
 
+def test_consumer_view_ledger_snapshot_is_descriptor_created_and_distinct(
+    tmp_path: Path,
+) -> None:
+    _write_plan_workspace(tmp_path)
+    ledger_payload = b'{"schema":"fixture-ledger","milestones":{}}\n'
+    canonical_ledger = tmp_path / "shot.json"
+    canonical_ledger.write_bytes(ledger_payload)
+    canonical_identity = (
+        canonical_ledger.stat().st_dev,
+        canonical_ledger.stat().st_ino,
+    )
+    planning = run_artifacts.create(tmp_path, "plan")
+    plan_authority.publish_current(
+        tmp_path,
+        planning,
+        outcome="clean_with_deferred",
+    )
+    consumer = run_artifacts.create(tmp_path, "consumer")
+
+    view = plan_authority.prepare_consumer_view(consumer)
+    projected_ledger = view / "shot.json"
+
+    assert projected_ledger.read_bytes() == ledger_payload
+    assert not projected_ledger.is_symlink()
+    assert (
+        projected_ledger.stat().st_dev,
+        projected_ledger.stat().st_ino,
+    ) != canonical_identity
+    assert canonical_ledger.read_bytes() == ledger_payload
+    assert (
+        canonical_ledger.stat().st_dev,
+        canonical_ledger.stat().st_ino,
+    ) == canonical_identity
+
+
 def test_consumer_view_refuses_authored_capture_that_no_longer_matches_selected_plan(
     tmp_path: Path,
 ) -> None:
@@ -266,6 +306,171 @@ def test_consumer_view_refuses_authored_capture_that_no_longer_matches_selected_
             consumer,
             selected_authority=selected,
         )
+
+
+def test_prepare_consumer_view_refuses_final_destination_equal_to_live_shot(
+    tmp_path: Path,
+) -> None:
+    hostile_root = tmp_path / "hostile-run"
+    shot = hostile_root / "scratch" / "plan-consumer-view"
+    shot.mkdir(parents=True)
+    _write_plan_workspace(shot)
+    sentinel = shot / "canonical-sentinel.txt"
+    sentinel.write_text("preserve live shot\n", encoding="utf-8")
+    planning = run_artifacts.create(shot, "plan")
+    plan_authority.publish_current(
+        shot,
+        planning,
+        outcome="clean_with_deferred",
+    )
+    before = {
+        path.relative_to(shot).as_posix(): path.read_bytes()
+        for path in shot.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    hostile_layout = run_artifacts.RunLayout(
+        shot=shot,
+        run_id="hostile",
+        root=hostile_root,
+    )
+
+    with pytest.raises(
+        plan_authority.PlanPublicationError,
+        match="exact canonical",
+    ):
+        plan_authority.prepare_consumer_view(hostile_layout)
+
+    after = {
+        path.relative_to(shot).as_posix(): path.read_bytes()
+        for path in shot.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    assert after == before
+    assert sentinel.read_text(encoding="utf-8") == "preserve live shot\n"
+
+
+def test_prepare_consumer_view_refuses_foreign_shot_at_computed_destination(
+    tmp_path: Path,
+) -> None:
+    shot = tmp_path / "shot-a"
+    shot.mkdir()
+    _write_plan_workspace(shot)
+    planning = run_artifacts.create(shot, "plan")
+    plan_authority.publish_current(
+        shot,
+        planning,
+        outcome="clean_with_deferred",
+    )
+
+    foreign_root = tmp_path / "forged-run-root"
+    foreign_shot = foreign_root / "scratch" / "plan-consumer-view"
+    foreign_shot.mkdir(parents=True)
+    (foreign_shot / "shot.json").write_bytes(
+        b'{"shot":"foreign","milestones":{}}\n'
+    )
+    (foreign_shot / "sentinel.bin").write_bytes(b"foreign-shot-must-survive\x00")
+    before = {
+        path.relative_to(foreign_shot).as_posix(): path.read_bytes()
+        for path in foreign_shot.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    forged = run_artifacts.RunLayout(
+        shot=shot,
+        run_id="forged",
+        root=foreign_root,
+    )
+
+    with pytest.raises(
+        plan_authority.PlanPublicationError,
+        match="exact canonical",
+    ):
+        plan_authority.prepare_consumer_view(forged)
+
+    after = {
+        path.relative_to(foreign_shot).as_posix(): path.read_bytes()
+        for path in foreign_shot.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    assert after == before
+    assert foreign_shot.is_dir()
+
+
+def test_population_rejects_temp_rebound_to_canonical_shot_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_plan_workspace(tmp_path)
+    planning = run_artifacts.create(tmp_path, "plan")
+    plan_authority.publish_current(
+        tmp_path,
+        planning,
+        outcome="clean_with_deferred",
+    )
+    consumer = run_artifacts.create(tmp_path, "consumer")
+    protected_files = (
+        tmp_path / "brief.md",
+        tmp_path / "refs" / "hero.txt",
+        tmp_path / "plans" / "global.md",
+        tmp_path / "layers.json",
+    )
+    protected_directories = (
+        tmp_path / "refs",
+        tmp_path / "plans",
+    )
+    before_bytes = {path: path.read_bytes() for path in protected_files}
+    before_directories = {
+        path: (
+            path.stat().st_dev,
+            path.stat().st_ino,
+            path.stat().st_mode,
+            path.stat().st_mtime_ns,
+            path.stat().st_ctime_ns,
+        )
+        for path in protected_directories
+    }
+    original = plan_consumer_view_projection.ensure_directory
+    attacked = False
+    detached = consumer.scratch / "detached-consumer-view"
+
+    def rebind_before_first_population_write(
+        capability: object,
+        relative: str | Path,
+    ) -> None:
+        nonlocal attacked
+        if not attacked:
+            temporaries = tuple(
+                consumer.scratch.glob(".plan-consumer-view.tmp-*")
+            )
+            assert len(temporaries) == 1
+            temporary = temporaries[0]
+            os.rename(temporary, detached)
+            temporary.symlink_to(tmp_path, target_is_directory=True)
+            attacked = True
+        original(capability, relative)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        plan_consumer_view_projection,
+        "ensure_directory",
+        rebind_before_first_population_write,
+    )
+
+    with pytest.raises(plan_authority.PlanPublicationError):
+        plan_authority.prepare_consumer_view(consumer)
+
+    assert attacked
+    assert detached.is_dir()
+    assert (detached / ".plan-consumer-view.json").is_file()
+    assert {path: path.read_bytes() for path in protected_files} == before_bytes
+    assert {
+        path: (
+            path.stat().st_dev,
+            path.stat().st_ino,
+            path.stat().st_mode,
+            path.stat().st_mtime_ns,
+            path.stat().st_ctime_ns,
+        )
+        for path in protected_directories
+    } == before_directories
 
 
 def test_exact_planning_input_identity_rejects_full_decision_suffix_drift(

@@ -110,6 +110,15 @@ operation.
   change only through planning, amendment, or an explicit reviewed repair; `build/` and
   `shot.json` are the accepted deterministic chain and ledger; `state/` is durable cross-run
   state; `runs/` is generated audit evidence — never hand-edit a run to make it pass.
+- The live canonical `<shot>/shot.json` may be written only through the typed shot-ledger
+  publication transport. Generic prepared/durable writers reserve every `shot.json` and
+  `shot.json.lock` target, and scratch/view projection adapters must prove their destination is
+  physically distinct from the live shot root. A writer fence or caller binding string proves
+  physical serialization only; it is not strict `shot-ledger/v2`, accepted-build closure, or
+  interruption authority. Plan-consumer scratch roots and descendants are created only through the
+  kernel-proven owned-directory primitive (fanotify target-FID plus `openat2`); an unsupported
+  kernel or filesystem fails closed before any consumer write, and a descriptor whose identity
+  cannot be read is retained and poisons the process rather than being assumed closed (HIR-0172).
 - Run output never becomes authority by proximity. Promotion from evidence into a contract,
   plan, HIR, or ADR is an explicit decision (ADR-0002).
 - Builder image payments use `vfx-harness.image-payment/v2`: the harness captures the

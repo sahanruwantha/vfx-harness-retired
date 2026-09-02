@@ -8,13 +8,9 @@ resumed sessions read the ledger to know what's done.
 
 from __future__ import annotations
 
-import fcntl
 import fnmatch
 import hashlib
 import json
-import os
-import stat
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,16 +29,21 @@ from vfx_harness.domain.work_units import (
 )
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.runid import RUN_ID
-from vfx_harness.orchestration.ledger_publication import (
+from vfx_harness.orchestration.plan_authority import selected_artifact_path
+from vfx_harness.orchestration.shot_authority_capture import (
+    ShotAuthorityWriterCapability,
+    shot_authority_writer_fence,
+)
+from vfx_harness.orchestration.shot_ledger_lock import (
     LedgerSaveConflict as LedgerSaveConflict,
 )
-from vfx_harness.orchestration.ledger_publication import (
-    PreparedLedgerPublication,
-    commit_ledger_publication_locked,
-    discard_prepared_ledger_publication,
-    prepare_ledger_publication_locked,
+from vfx_harness.orchestration.shot_ledger_lock import ledger_lock as ledger_lock
+from vfx_harness.orchestration.shot_ledger_publication import (
+    PreparedShotLedgerPublication,
+    commit_shot_ledger_publication,
+    discard_prepared_shot_ledger_publication,
+    prepare_shot_ledger_publication,
 )
-from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
@@ -529,51 +530,6 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-@contextmanager
-def ledger_lock(path: str | Path, *, exclusive: bool, blocking: bool = True):
-    """Hold the ledger sidecar lock for a complete read or write transaction.
-
-    Short outer authority guards use ``blocking=False`` so a large ledger-only
-    preparation cannot make those narrower locks wait behind ledger I/O.
-    """
-
-    if not isinstance(exclusive, bool):
-        raise ValueError("ledger lock mode must be boolean")
-    if not isinstance(blocking, bool):
-        raise ValueError("ledger lock blocking mode must be boolean")
-    path = Path(path)
-    lock = path.with_name(path.name + ".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    flags = (
-        os.O_RDWR
-        | os.O_CREAT
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    try:
-        descriptor = os.open(lock, flags, 0o600)
-    except OSError as exc:
-        raise ValueError(f"ledger lock must be a real regular file: {lock}") from exc
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise ValueError(f"ledger lock must be a regular file: {lock}")
-        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
-        if not blocking:
-            operation |= fcntl.LOCK_NB
-        try:
-            fcntl.flock(descriptor, operation)
-        except BlockingIOError as exc:
-            raise LedgerSaveConflict(
-                f"ledger lock is busy: {lock}; retry from current shot.json"
-            ) from exc
-        try:
-            yield
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
-        os.close(descriptor)
-
-
 class Ledger:
     """Read/modify/write `shot.json` for one shot."""
 
@@ -791,44 +747,44 @@ class Ledger:
         self,
         *,
         authority_binding: str | None = None,
-    ) -> PreparedLedgerPublication:
+    ) -> PreparedShotLedgerPublication:
         """Prepare one exact-generation merge while holding ledger EX only."""
 
-        with ledger_lock(self.path, exclusive=True):
-            try:
-                return prepare_ledger_publication_locked(
-                    self.path,
-                    self.data,
-                    self._loaded,
-                    frozenset(self._touched),
-                    run_id=RUN_ID,
-                    authority_binding=authority_binding,
-                )
-            except json.JSONDecodeError as exc:
-                # Treating a corrupt ledger as empty would clobber every accepted row.
-                print(
-                    f"! shot.json unreadable on merge, NOT clobbering ({exc})",
-                    flush=True,
-                )
-                raise
+        try:
+            return prepare_shot_ledger_publication(
+                self.path,
+                self.data,
+                self._loaded,
+                frozenset(self._touched),
+                run_id=RUN_ID,
+                authority_binding=authority_binding,
+            )
+        except json.JSONDecodeError as exc:
+            # Treating a corrupt ledger as empty would clobber every accepted row.
+            print(
+                f"! shot.json unreadable on merge, NOT clobbering ({exc})",
+                flush=True,
+            )
+            raise
 
     def commit_prepared_save(
         self,
-        prepared: PreparedLedgerPublication,
+        prepared: PreparedShotLedgerPublication,
         *,
         authority_binding: str | None = None,
+        writer_capability: ShotAuthorityWriterCapability,
     ) -> str:
-        """CAS-publish prepared bytes under a fresh ledger EX transaction."""
+        """CAS-publish prepared bytes under the exact live shot writer."""
 
-        with ledger_lock(self.path, exclusive=True):
-            return commit_ledger_publication_locked(
-                prepared,
-                authority_binding=authority_binding,
-            )
+        return commit_shot_ledger_publication(
+            prepared,
+            authority_binding=authority_binding,
+            writer_capability=writer_capability,
+        )
 
     @staticmethod
-    def discard_prepared_save(prepared: PreparedLedgerPublication) -> None:
-        discard_prepared_ledger_publication(prepared)
+    def discard_prepared_save(prepared: PreparedShotLedgerPublication) -> None:
+        discard_prepared_shot_ledger_publication(prepared)
 
     def save(self) -> None:
         """Write back only the layers this instance touched.
@@ -843,7 +799,14 @@ class Ledger:
         explicit ``LedgerSaveConflict`` instead of a lost update or invisible retry.
         """
         prepared = self.prepare_save()
+        committed = False
         try:
-            self.commit_prepared_save(prepared)
+            with shot_authority_writer_fence(self.shot.folder) as capability:
+                self.commit_prepared_save(
+                    prepared,
+                    writer_capability=capability,
+                )
+                committed = True
         finally:
-            self.discard_prepared_save(prepared)
+            if not committed:
+                self.discard_prepared_save(prepared)

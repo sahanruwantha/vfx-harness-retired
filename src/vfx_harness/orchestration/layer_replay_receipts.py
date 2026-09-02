@@ -7,7 +7,8 @@ import json
 import os
 import threading
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -25,6 +26,7 @@ from vfx_harness.infrastructure.trusted_files import (
     read_trusted_file,
     require_trusted_file_unchanged,
 )
+from vfx_harness.observability import fork_coordination
 from vfx_harness.observability.prepared_publication import (
     FilePublicationConflict,
     PreparedFilePayloadVerification,
@@ -148,14 +150,6 @@ _PREPARED_REPLAY_RECEIPT_PROCESS_TOKEN = object()
 _PREPARED_REPLAY_RECEIPT_THREAD_LOCAL = threading.local()
 
 
-def _before_prepared_replay_receipt_fork() -> None:
-    _PREPARED_REPLAY_RECEIPT_LOCK.acquire()
-
-
-def _after_prepared_replay_receipt_fork_parent() -> None:
-    _PREPARED_REPLAY_RECEIPT_LOCK.release()
-
-
 def _after_prepared_replay_receipt_fork_child() -> None:
     global _PREPARED_REPLAY_RECEIPT_LOCK
     global _PREPARED_REPLAY_RECEIPT_PROCESS_TOKEN
@@ -167,11 +161,17 @@ def _after_prepared_replay_receipt_fork_child() -> None:
     _PREPARED_REPLAY_RECEIPT_THREAD_LOCAL = threading.local()
 
 
-os.register_at_fork(
-    before=_before_prepared_replay_receipt_fork,
-    after_in_parent=_after_prepared_replay_receipt_fork_parent,
+fork_coordination.register_fork_participant(
+    "orchestration.layer_replay_receipts",
+    lock_factory=lambda: _PREPARED_REPLAY_RECEIPT_LOCK,
     after_in_child=_after_prepared_replay_receipt_fork_child,
 )
+
+
+@contextmanager
+def _prepared_replay_receipt_locked() -> Iterator[None]:
+    with fork_coordination.fork_coordinated_lock(_PREPARED_REPLAY_RECEIPT_LOCK):
+        yield
 
 
 def _current_prepared_replay_receipt_thread_token() -> object:
@@ -193,7 +193,7 @@ def _prepared_layer_replay_receipt_gone(
     identifier: int,
     observed: weakref.ReferenceType[PreparedLayerReplayReceipt],
 ) -> None:
-    with _PREPARED_REPLAY_RECEIPT_LOCK:
+    with _prepared_replay_receipt_locked():
         entry = _PREPARED_REPLAY_RECEIPTS.get(identifier)
         if entry is not None and entry.reference is observed:
             _PREPARED_REPLAY_RECEIPTS.pop(identifier, None)
@@ -204,7 +204,7 @@ def _require_prepared_layer_replay_receipt(
 ) -> _PreparedLayerReplayReceiptRecord:
     if type(prepared) is not PreparedLayerReplayReceipt:
         raise LayerReplayReceiptConflict("layer replay receipt operation requires an exact prepared capability")
-    with _PREPARED_REPLAY_RECEIPT_LOCK:
+    with _prepared_replay_receipt_locked():
         entry = _PREPARED_REPLAY_RECEIPTS.get(id(prepared))
         if entry is None or entry.reference() is not prepared:
             raise LayerReplayReceiptConflict(
@@ -257,7 +257,7 @@ def _mint_prepared_layer_replay_receipt(
         prepared,
         lambda observed, key=identifier: _prepared_layer_replay_receipt_gone(key, observed),
     )
-    with _PREPARED_REPLAY_RECEIPT_LOCK:
+    with _prepared_replay_receipt_locked():
         if identifier in _PREPARED_REPLAY_RECEIPTS:  # pragma: no cover - live id guarantee
             raise LayerReplayReceiptConflict("prepared layer replay receipt identity collided with a live capability")
         _PREPARED_REPLAY_RECEIPTS[identifier] = _PreparedLayerReplayReceiptEntry(
@@ -271,7 +271,7 @@ def _retire_prepared_layer_replay_receipt(
     prepared: PreparedLayerReplayReceipt,
 ) -> _PreparedLayerReplayReceiptRecord:
     record = _require_prepared_layer_replay_receipt(prepared)
-    with _PREPARED_REPLAY_RECEIPT_LOCK:
+    with _prepared_replay_receipt_locked():
         entry = _PREPARED_REPLAY_RECEIPTS.get(id(prepared))
         if entry is None or entry.reference() is not prepared:
             raise LayerReplayReceiptConflict(

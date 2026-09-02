@@ -8,6 +8,8 @@ import json
 import os
 import shutil
 import signal
+import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -17,6 +19,7 @@ from typing import Any
 import pytest
 
 import vfx_harness.observability.run_owner_fork_guard as run_owner_fork_guard
+import vfx_harness.observability.run_owner_fork_registry as run_owner_fork_registry
 from vfx_harness.orchestration import authority_selection_process_registry as registry
 from vfx_harness.orchestration import authority_selection_transaction as transaction
 from vfx_harness.orchestration import builder_execution_fence
@@ -307,6 +310,102 @@ def test_fork_child_closes_selection_descriptors_held_by_another_thread(
     assert contender_acquired.is_set()
     assert failures == []
     assert result == {"descriptors_closed": True}
+
+
+def test_fork_child_close_without_effect_never_leaves_exact_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_pid = os.getpid()
+    original_close = registry.os.close
+    failed = False
+
+    with authority_selection_lock(tmp_path, exclusive=True):
+        registration = _current_binding(tmp_path).registration
+        target = registration.descriptor_identities[-1]
+
+        def fail_child_neutral_close(descriptor: int) -> None:
+            nonlocal failed
+            if (
+                os.getpid() != parent_pid
+                and descriptor == target.descriptor
+                and not failed
+            ):
+                failed = True
+                raise OSError("injected child neutral close without effect")
+            original_close(descriptor)
+
+        monkeypatch.setattr(registry.os, "close", fail_child_neutral_close)
+        result = _in_fork(
+            lambda: {
+                "exact_authority_released": not target.is_current(),
+                "registry_empty": not registry._REGISTRY,
+            }
+        )
+
+    assert result == {
+        "exact_authority_released": True,
+        "registry_empty": True,
+    }
+
+
+def test_fork_child_exits_if_authority_dup2_release_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_pid = os.getpid()
+    original_dup2 = registry.os.dup2
+
+    with authority_selection_lock(tmp_path, exclusive=True):
+        target = _current_binding(tmp_path).registration.descriptors[-1]
+
+        def fail_child_authority_dup2(
+            source: int,
+            destination: int,
+            *,
+            inheritable: bool = True,
+        ) -> int:
+            if os.getpid() != parent_pid and destination == target:
+                raise OSError("injected child authority dup2 failure")
+            return original_dup2(source, destination, inheritable=inheritable)
+
+        monkeypatch.setattr(registry.os, "dup2", fail_child_authority_dup2)
+        child = os.fork()
+        if child == 0:  # pragma: no cover - run-owner terminal handler exits first
+            os._exit(0)
+        waited, status = os.waitpid(child, 0)
+
+    assert waited == child
+    assert os.waitstatus_to_exitcode(status) == (
+        run_owner_fork_registry.CHILD_AUTHORITY_CLEANUP_EXIT
+    )
+
+
+def test_fork_child_exits_if_authority_release_cannot_be_observed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_pid = os.getpid()
+    original_fstat = registry.os.fstat
+
+    with authority_selection_lock(tmp_path, exclusive=True):
+        target = _current_binding(tmp_path).registration.descriptors[-1]
+
+        def fail_child_authority_fstat(descriptor: int) -> os.stat_result:
+            if os.getpid() != parent_pid and descriptor == target:
+                raise OSError(errno.EIO, "injected child authority fstat failure")
+            return original_fstat(descriptor)
+
+        monkeypatch.setattr(registry.os, "fstat", fail_child_authority_fstat)
+        child = os.fork()
+        if child == 0:  # pragma: no cover - registry terminal handler exits first
+            os._exit(0)
+        waited, status = os.waitpid(child, 0)
+
+    assert waited == child
+    assert os.waitstatus_to_exitcode(status) == (
+        run_owner_fork_registry.CHILD_AUTHORITY_CLEANUP_EXIT
+    )
 
 
 def test_fork_child_context_unwind_cannot_close_reused_descriptor(
@@ -664,8 +763,8 @@ def test_handoff_failure_retires_registration_before_fd_reuse_and_fork(
     assert len(registrations) == 1
     retired_descriptors = registrations[0].descriptors
     assert registry._REGISTRY == {}
-    assert run_owner_fork_guard._PENDING_DESCRIPTORS == {}
-    assert run_owner_fork_guard._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry.PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_registry.ACTIVE_DESCRIPTORS == {}
 
     opened: list[int] = []
     reused: int | None = None
@@ -1087,7 +1186,7 @@ def test_live_context_close_and_reuse_never_closes_unrelated_descriptor(
         os.close(reused)
 
     assert registry._REGISTRY == {}
-    assert run_owner_fork_guard._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry.ACTIVE_DESCRIPTORS == {}
 
 
 def test_registration_insert_before_return_rolls_back_exact_row_and_fds(
@@ -1115,8 +1214,8 @@ def test_registration_insert_before_return_rolls_back_exact_row_and_fds(
 
     assert len(inserted) == 1
     assert registry._REGISTRY == {}
-    assert run_owner_fork_guard._PENDING_DESCRIPTORS == {}
-    assert run_owner_fork_guard._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry.PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_registry.ACTIVE_DESCRIPTORS == {}
     retired = set(inserted[0].descriptors)
     opened: list[int] = []
     reused: int | None = None
@@ -1150,9 +1249,9 @@ def test_handoff_interruption_after_active_insert_repairs_both_states(
                 raise RuntimeError("injected active handoff interruption")
 
     active = InterruptAfterFirstInsert(
-        run_owner_fork_guard._ACTIVE_DESCRIPTORS
+        run_owner_fork_registry.ACTIVE_DESCRIPTORS
     )
-    monkeypatch.setattr(run_owner_fork_guard, "_ACTIVE_DESCRIPTORS", active)
+    monkeypatch.setattr(run_owner_fork_registry, "ACTIVE_DESCRIPTORS", active)
 
     with (
         pytest.raises(RuntimeError, match="active handoff interruption"),
@@ -1161,8 +1260,8 @@ def test_handoff_interruption_after_active_insert_repairs_both_states(
         pass
 
     assert registry._REGISTRY == {}
-    assert run_owner_fork_guard._PENDING_DESCRIPTORS == {}
-    assert run_owner_fork_guard._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry.PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_registry.ACTIVE_DESCRIPTORS == {}
     with authority_selection_lock(tmp_path, exclusive=True):
         pass
 
@@ -1269,7 +1368,7 @@ def test_incomplete_cleanup_raises_typed_composite_retaining_body(
         unlock_record_lock=False,
     )
     assert registry._REGISTRY == {}
-    assert run_owner_fork_guard._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry.ACTIVE_DESCRIPTORS == {}
 
 
 def test_partial_neutralization_shrinks_rows_before_ambiguous_close(
@@ -1305,7 +1404,7 @@ def test_partial_neutralization_shrinks_rows_before_ambiguous_close(
     )
     partial = next(iter(registry._REGISTRY.values()))
     assert partial.descriptors == (failed_descriptor,)
-    active = next(iter(run_owner_fork_guard._ACTIVE_DESCRIPTORS.values()))
+    active = next(iter(run_owner_fork_registry.ACTIVE_DESCRIPTORS.values()))
     assert tuple(item.descriptor for item in active) == (failed_descriptor,)
 
     retired_numbers = {
@@ -1322,6 +1421,11 @@ def test_partial_neutralization_shrinks_rows_before_ambiguous_close(
             if descriptor in retired_numbers:
                 reused = descriptor
         assert reused is not None
+        # The initial injected failure deliberately leaves exact authority live.
+        # Fork-child policy must terminate if that same injection prevents
+        # neutralization, so restore dup2 before testing that already-retired
+        # numeric slots are not revisited by child cleanup.
+        monkeypatch.setattr(registry.os, "dup2", original_dup2)
         assert _in_fork(
             lambda: {"reused_descriptor_alive": os.fstat(reused) is not None}
         ) == {"reused_descriptor_alive": True}
@@ -1404,6 +1508,27 @@ def test_open_failure_abort_close_after_effect_cannot_register_reused_fd(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    isolation_key = "VFX_TEST_AUTHORITY_ABORT_CLOSE_AFTER_EFFECT"
+    if os.environ.get(isolation_key) != "1":
+        environment = dict(os.environ)
+        environment[isolation_key] = "1"
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                f"{__file__}::{test_open_failure_abort_close_after_effect_cannot_register_reused_fd.__name__}",
+            ],
+            cwd=Path(__file__).resolve().parents[3],
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return
+
     original_open = transaction.os.open
     original_close = transaction.os.close
     original_track = run_owner_fork_guard.ForkProtectedAcquisition.track
@@ -1435,16 +1560,16 @@ def test_open_failure_abort_close_after_effect_cannot_register_reused_fd(
     monkeypatch.setattr(transaction.os, "close", close_after_effect)
     with (
         pytest.raises(
-            AuthoritySelectionConflict,
-            match="real regular file",
+            registry.AuthoritySelectionCleanupFailure,
+            match="cleanup failed",
         ),
         authority_selection_lock(tmp_path, exclusive=True),
     ):
         pass
 
     assert interrupted_close is not None
-    assert run_owner_fork_guard._PENDING_DESCRIPTORS == {}
-    assert run_owner_fork_guard._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry.PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_registry.ACTIVE_DESCRIPTORS == {}
     assert registry._REGISTRY == {}
     opened: list[int] = []
     reused: int | None = None
@@ -1500,7 +1625,7 @@ def test_managed_acquisition_constructor_failure_publishes_no_pending_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_constructor = run_owner_fork_guard.ForkProtectedAcquisition
-    baseline_pending = dict(run_owner_fork_guard._PENDING_DESCRIPTORS)
+    baseline_pending = dict(run_owner_fork_registry.PENDING_DESCRIPTORS)
 
     def fail_constructor(*args, **kwargs):
         raise RuntimeError("injected acquisition constructor failure")
@@ -1516,7 +1641,7 @@ def test_managed_acquisition_constructor_failure_publishes_no_pending_row(
     ):
         pass
 
-    assert baseline_pending == run_owner_fork_guard._PENDING_DESCRIPTORS
+    assert baseline_pending == run_owner_fork_registry.PENDING_DESCRIPTORS
     monkeypatch.setattr(
         run_owner_fork_guard,
         "ForkProtectedAcquisition",
@@ -1554,8 +1679,8 @@ def test_first_track_failure_neutralizes_unadopted_descriptor_before_fork(
     assert interrupted_descriptor is not None
     assert _descriptors_are_closed((interrupted_descriptor,))
     assert registry._REGISTRY == {}
-    assert run_owner_fork_guard._PENDING_DESCRIPTORS == {}
-    assert run_owner_fork_guard._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry.PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_registry.ACTIVE_DESCRIPTORS == {}
     reused = os.open(os.devnull, os.O_RDONLY)
     try:
         assert reused == interrupted_descriptor

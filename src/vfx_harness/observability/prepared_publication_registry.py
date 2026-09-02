@@ -10,6 +10,7 @@ import weakref
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.observability import fork_coordination
 from vfx_harness.observability import prepared_publication_capabilities as _capabilities
 from vfx_harness.observability.prepared_publication_capabilities import (
     PreparedFilePayloadVerification,
@@ -26,7 +27,13 @@ from vfx_harness.observability.prepared_publication_descriptors import (
     drain_inert_descriptors as _drain_inert_descriptors,
 )
 from vfx_harness.observability.prepared_publication_descriptors import (
+    neutralize_fork_child_descriptors as _neutralize_fork_child_descriptors,
+)
+from vfx_harness.observability.prepared_publication_descriptors import (
     neutralize_guarded_descriptor as _neutralize_guarded_descriptor,
+)
+from vfx_harness.observability.prepared_publication_descriptors import (
+    require_prepared_descriptor_admission as _require_descriptor_admission,
 )
 from vfx_harness.observability.prepared_publication_records import (
     FileIdentity,
@@ -64,14 +71,6 @@ _VERIFICATIONS: dict[int, _VerificationEntry] = {}
 _PENDING_ACQUISITIONS: dict[object, _PendingAcquisition] = {}
 
 
-def _before_fork() -> None:
-    _REGISTRY_LOCK.acquire()
-
-
-def _after_fork_parent() -> None:
-    _REGISTRY_LOCK.release()
-
-
 def _after_fork_child() -> None:
     global _PROCESS_TOKEN, _REGISTRY_LOCK, _THREAD_LOCAL
 
@@ -85,14 +84,7 @@ def _after_fork_child() -> None:
             descriptors.update(entry.record.guarded_descriptors)
         elif entry.phase.name == "cleanup_required":
             descriptors.update(entry.phase.cleanup_descriptors)
-    for guarded in sorted(
-        descriptors,
-        key=lambda item: item.descriptor,
-        reverse=True,
-    ):
-        if guarded.is_current():
-            with contextlib.suppress(OSError):
-                os.close(guarded.descriptor)
+    _neutralize_fork_child_descriptors(descriptors)
     _PUBLICATIONS.clear()
     _VERIFICATIONS.clear()
     _PENDING_ACQUISITIONS.clear()
@@ -101,9 +93,9 @@ def _after_fork_child() -> None:
     _THREAD_LOCAL = threading.local()
 
 
-os.register_at_fork(
-    before=_before_fork,
-    after_in_parent=_after_fork_parent,
+fork_coordination.register_fork_participant(
+    "observability.prepared_publication_registry",
+    lock_factory=lambda: _REGISTRY_LOCK,
     after_in_child=_after_fork_child,
 )
 
@@ -140,7 +132,7 @@ def _drain_orphaned_descriptors_locked() -> None:
 def arm_descriptor_acquisition(token: object) -> None:
     """Arm caller-owned cleanup before opening any retained descriptor."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         _drain_inert_descriptors()
         _drain_orphaned_descriptors_locked()
         _drain_orphaned_publications_locked()
@@ -152,7 +144,7 @@ def arm_descriptor_acquisition(token: object) -> None:
 def bind_pending_temporary(token: object, parent_descriptor: int, name: str) -> None:
     """Bind a known name before its staged inode can be opened."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         acquisition = _pending_acquisition(token)
         if acquisition.temporary is not None:
             raise PreparedPublicationRegistryError("prepared temporary candidate is already bound")
@@ -162,7 +154,7 @@ def bind_pending_temporary(token: object, parent_descriptor: int, name: str) -> 
 def clear_pending_temporary(token: object) -> None:
     """Clear a candidate name that was proven to preexist this acquisition."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         acquisition = _pending_acquisition(token)
         temporary = acquisition.temporary
         if temporary is not None and temporary.staged_descriptors:
@@ -191,7 +183,8 @@ def open_pending_descriptor(
 ) -> int:
     """Open one path directly into its fork-visible acquisition row."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
+        _require_descriptor_admission()
         acquisition = _pending_acquisition(token)
         rows = acquisition.descriptors
         temporary = acquisition.temporary
@@ -260,7 +253,7 @@ def open_pending_descriptor(
 def retire_pending_descriptor(token: object, descriptor: int) -> None:
     """Close one exact pending descriptor before replacing it with read-only access."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         rows = _pending_rows(token)
         guarded = next(
             (item for item in rows if item.descriptor == descriptor),
@@ -291,7 +284,7 @@ def pending_descriptor_identities(
 ) -> tuple[GuardedDescriptor, ...]:
     """Return the exact pending identities in their authoritative order."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         rows = tuple(_pending_rows(token))
         if tuple(item.descriptor for item in rows) != descriptors:
             raise PreparedPublicationRegistryError("prepared descriptor set differs from its pending acquisition")
@@ -311,7 +304,7 @@ def _require_owner(record: _PreparedFilePublicationRecord) -> None:
 def _resolve_entry(publication: PreparedFilePublication) -> _PublicationEntry:
     if not isinstance(publication, PreparedFilePublication):
         raise PreparedPublicationRegistryError("prepared file operation requires an exact typed publication capability")
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _PUBLICATIONS.get(id(publication))
         if entry is None or entry.reference() is not publication:
             raise PreparedPublicationRegistryError(
@@ -499,7 +492,7 @@ def _drain_dead_verifications_locked() -> None:
 
 
 def _publication_gone(publication_id: int, reference: weakref.ReferenceType[Any]) -> None:
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _PUBLICATIONS.get(publication_id)
         if entry is not None and entry.reference is reference:
             if entry.phase.name == "consumed":
@@ -555,7 +548,7 @@ def register_prepared_file(
         ),
     )
     installed = _PublicationEntry(reference=reference, record=record)
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         acquisition = _pending_acquisition(acquisition_token)
         rows = tuple(acquisition.descriptors)
         if rows != record.guarded_descriptors:
@@ -587,7 +580,7 @@ def register_prepared_file(
 def abandon_prepared_file_registration(publication: PreparedFilePublication) -> None:
     """Consume a just-registered row after an enclosing construction failure."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _PUBLICATIONS.get(id(publication))
         if entry is None or entry.reference() is not publication:
             return
@@ -657,7 +650,7 @@ def _abort_descriptor_acquisition_locked(token: object) -> None:
 def abort_descriptor_acquisition(token: object) -> None:
     """Retire every exact pending descriptor after failed preparation."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         acquisition = _PENDING_ACQUISITIONS.get(token)
         if acquisition is None:
             return
@@ -678,7 +671,7 @@ def _verification_gone(
     verification_id: int,
     reference: weakref.ReferenceType[Any],
 ) -> None:
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _VERIFICATIONS.get(verification_id)
         if entry is None or entry.reference is not reference:
             return
@@ -704,7 +697,7 @@ def mint_payload_verification(
 ) -> PreparedFilePayloadVerification:
     """Mint the sole current verification generation for one publication."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _require_active_entry(publication)
         _drain_dead_verifications_locked()
         _invalidate_verification_locked(entry)
@@ -749,7 +742,7 @@ def consume_payload_verification(
 
     if not isinstance(verification, PreparedFilePayloadVerification):
         raise PreparedPublicationRegistryError("prepared payload verification requires an exact typed capability")
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         publication_entry = _require_active_entry(publication)
         verification_id = id(verification)
         entry = _VERIFICATIONS.get(verification_id)
@@ -780,7 +773,7 @@ def consume_payload_verification(
 def require_no_payload_verification(publication: PreparedFilePublication) -> None:
     """Allow proofless commit only when this publication was never verified."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _require_active_entry(publication)
         if entry.verification_generation:
             raise PreparedPublicationRegistryError(
@@ -794,7 +787,7 @@ def begin_prepared_file_commit(
 ) -> None:
     """Move one active exact capability into a non-reentrant commit phase."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _require_active_entry(publication)
         entry.phase = _PublicationPhase(
             "committing",
@@ -808,7 +801,7 @@ def cancel_prepared_file_commit(
 ) -> None:
     """Restore a pre-rename transaction after its exact commit attempt stops."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _resolve_entry(publication)
         if entry.phase == _ACTIVE_PHASE:
             # The begin call failed before it installed this token.
@@ -830,7 +823,7 @@ def complete_prepared_file_commit(
 ) -> None:
     """Consume the exact non-reentrant commit phase and retire its resources."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _resolve_entry(publication)
         if (
             entry.phase.name != "committing"
@@ -855,7 +848,7 @@ def consume_prepared_file(
 ) -> None:
     """Consume a capability and retire only its exact registered resources."""
 
-    with _REGISTRY_LOCK:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
         entry = _resolve_entry(publication)
         if entry.phase.name == "consumed":
             _drain_inert_descriptors()

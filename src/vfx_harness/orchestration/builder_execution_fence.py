@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
 
+from vfx_harness.observability import fork_coordination
+
 BUILDER_EXECUTION_FENCE = Path("state/builder-execution/fence.lock")
 
 _IPC_CREAT = 0o1000
@@ -67,7 +69,11 @@ def _invalidate_forked_live_identity_claims() -> None:
     _LIVE_IDENTITY_PROCESS_TOKEN = object()
 
 
-os.register_at_fork(after_in_child=_invalidate_forked_live_identity_claims)
+fork_coordination.register_fork_participant(
+    "orchestration.builder_execution_fence",
+    lock_factory=None,
+    after_in_child=_invalidate_forked_live_identity_claims,
+)
 
 
 class BuilderExecutionFenceLease:

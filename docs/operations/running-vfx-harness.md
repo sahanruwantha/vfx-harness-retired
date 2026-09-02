@@ -381,6 +381,14 @@ render, snapshot, or script into the current run and call that a resume.
 - Edit `brief.md` and `refs/` only to change authored intent.
 - Edit plans/contracts through planning, amendment, or an explicit reviewed repair.
 - Treat `build/` and `shot.json` as the current accepted deterministic chain and ledger.
+- Never write, remove, or replace the live `<shot>/shot.json` or its `shot.json.lock` directly or
+  through a generic durable-file helper. Canonical writes use the typed shot-ledger transport;
+  isolated consumer or candidate copies must prove a physically different root. That transport is
+  still a fenced legacy projection until the strict accepted-build v2 derivation writer lands.
+- Plan-consumer scratch views require Linux 5.17+ with unprivileged fanotify target-FID reporting
+  and `openat2` on a local filesystem that exports file handles. An unsupported kernel, filesystem,
+  or sandbox fails closed at the first consumer-view allocation; `vfx preflight --strict` does not
+  yet probe this capability.
 - Treat `state/` as durable cross-run operational state.
 - Treat `runs/` as generated audit evidence. Do not hand-edit a run to make it pass.
 - Ignore shot-root `logs/`, `renders/`, `.artifacts/`, `.snapshots/`, and `.versions/`; they are

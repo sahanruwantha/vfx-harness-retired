@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -18,7 +19,7 @@ import pytest
 
 import vfx_harness.observability.run_owner_fence as run_owner_fence_module
 import vfx_harness.observability.run_owner_fence_files as run_owner_fence_files_module
-import vfx_harness.observability.run_owner_fork_guard as run_owner_fork_guard_module
+import vfx_harness.observability.run_owner_fork_registry as run_owner_fork_registry_module
 from vfx_harness.domain.run_owner_claims import RunOwnerClaim
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.observability.run_owner_fence import (
@@ -1019,20 +1020,37 @@ def test_release_keeps_registry_visible_through_close_and_closes_on_registry_err
     )
     token = lease._registry_token
     claim = lease.claim
-    real_close = run_owner_fence_module._close_acquisition
+    lease_descriptors = {item.descriptor for item in lease._registry_descriptors}
+    original_dup2 = os.dup2
+    registry_visible_at_release: list[bool] = []
 
-    def asserting_close(**kwargs: object) -> None:
-        assert token in run_owner_fork_guard_module._ACTIVE_DESCRIPTORS
-        real_close(**kwargs)
+    def asserting_dup2(
+        source: int,
+        destination: int,
+        *,
+        inheritable: bool = True,
+    ) -> int:
+        if destination in lease_descriptors:
+            registry_visible_at_release.append(
+                token in run_owner_fork_registry_module.ACTIVE_DESCRIPTORS
+            )
+        return original_dup2(source, destination, inheritable=inheritable)
 
-    monkeypatch.setattr(run_owner_fence_module, "_close_acquisition", asserting_close)
-    run_owner_fork_guard_module._ACTIVE_DESCRIPTORS.pop(token)
+    monkeypatch.setattr(os, "dup2", asserting_dup2)
+    run_owner_fork_registry_module.ACTIVE_DESCRIPTORS.pop(token)
 
-    with pytest.raises(RunOwnerFenceError, match="absent from the fork descriptor registry"):
+    with pytest.raises(
+        RunOwnerFenceError,
+        match="cleanup reconciled every still-live exact descriptor",
+    ):
         lease.release()
 
-    assert token not in run_owner_fork_guard_module._ACTIVE_DESCRIPTORS
-    monkeypatch.setattr(run_owner_fence_module, "_close_acquisition", real_close)
+    monkeypatch.setattr(os, "dup2", original_dup2)
+    # Every authority release happened while the reconciled row was registered,
+    # so a fork during release would still have neutralized the lease slots.
+    assert len(registry_visible_at_release) == len(lease_descriptors)
+    assert all(registry_visible_at_release)
+    assert token not in run_owner_fork_registry_module.ACTIVE_DESCRIPTORS
     with acquire_run_reconciler_fence(root, prior_owner=claim):
         pass
 
@@ -1232,8 +1250,8 @@ def test_managed_fork_guard_entry_failure_does_not_pin_run_owner_acquisition(
             owner_kind="direct",
         )
 
-    assert run_owner_fork_guard_module._PENDING_DESCRIPTORS == {}
-    assert run_owner_fork_guard_module._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry_module.PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_registry_module.ACTIVE_DESCRIPTORS == {}
     monkeypatch.setattr(
         run_owner_fence_module,
         "managed_fork_protected_acquisition",
@@ -1264,11 +1282,11 @@ def test_run_owner_handoff_interruption_repairs_guard_for_reconciler(
                 raise RuntimeError("injected run-owner active handoff interruption")
 
     active = InterruptAfterFirstInsert(
-        run_owner_fork_guard_module._ACTIVE_DESCRIPTORS
+        run_owner_fork_registry_module.ACTIVE_DESCRIPTORS
     )
     monkeypatch.setattr(
-        run_owner_fork_guard_module,
-        "_ACTIVE_DESCRIPTORS",
+        run_owner_fork_registry_module,
+        "ACTIVE_DESCRIPTORS",
         active,
     )
     with pytest.raises(RuntimeError, match="active handoff interruption"):
@@ -1279,8 +1297,8 @@ def test_run_owner_handoff_interruption_repairs_guard_for_reconciler(
             owner_kind="direct",
         )
 
-    assert run_owner_fork_guard_module._PENDING_DESCRIPTORS == {}
-    assert run_owner_fork_guard_module._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry_module.PENDING_DESCRIPTORS == {}
+    assert run_owner_fork_registry_module.ACTIVE_DESCRIPTORS == {}
     claim = read_run_owner_claim(root, run_id="run-001")
     with acquire_run_reconciler_fence(root, prior_owner=claim):
         pass
@@ -1319,6 +1337,77 @@ def test_run_owner_release_skips_closed_and_reused_fence_descriptor(
     finally:
         os.close(reused)
 
-    assert run_owner_fork_guard_module._ACTIVE_DESCRIPTORS == {}
+    assert run_owner_fork_registry_module.ACTIVE_DESCRIPTORS == {}
     with acquire_run_reconciler_fence(root, prior_owner=lease.claim):
         pass
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork semantics")
+def test_claim_staging_descriptor_is_registered_before_a_signal_can_fork(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handler that forks after the claim open must find the slot neutralized."""
+
+    root, _manifest = _run_root(tmp_path)
+    result_reader, result_writer = os.pipe()
+    prior_handler = signal.getsignal(signal.SIGUSR1)
+    prior_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGUSR1})
+    opened: dict[str, int] = {}
+    child_status: list[int] = []
+    original_open = os.open
+
+    def fork_from_signal(_signum: int, _frame: object) -> None:
+        child = os.fork()
+        if child == 0:  # pragma: no cover - assertions execute in the parent
+            os.close(result_reader)
+            try:
+                os.fstat(opened["descriptor"])
+            except OSError as exc:
+                result = b"absent" if exc.errno == errno.EBADF else b"unproven"
+            else:
+                result = b"live"
+            os.write(result_writer, result)
+            os.close(result_writer)
+            os._exit(0)
+        _, status = os.waitpid(child, 0)
+        child_status.append(os.waitstatus_to_exitcode(status))
+
+    def open_then_signal(
+        path: str | bytes | Path,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            "descriptor" not in opened
+            and isinstance(path, str)
+            and path.startswith(".claim.tmp.")
+        ):
+            opened["descriptor"] = descriptor
+            os.kill(os.getpid(), signal.SIGUSR1)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", open_then_signal)
+    signal.signal(signal.SIGUSR1, fork_from_signal)
+    try:
+        with acquire_run_owner_fence(
+            root,
+            run_id="run-001",
+            command="plan",
+            owner_kind="direct",
+        ):
+            pass
+    finally:
+        signal.signal(signal.SIGUSR1, prior_handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
+        monkeypatch.setattr(os, "open", original_open)
+
+    assert "descriptor" in opened
+    assert os.read(result_reader, 16) == b"absent"
+    os.close(result_reader)
+    os.close(result_writer)
+    assert child_status == [0]
+    assert run_owner_fork_registry_module.ACTIVE_DESCRIPTORS == {}

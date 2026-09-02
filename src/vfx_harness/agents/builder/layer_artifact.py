@@ -6,7 +6,8 @@ import hashlib
 import os
 import threading
 import weakref
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from vfx_harness.infrastructure.trusted_files import (
     read_trusted_file,
     require_trusted_file_unchanged,
 )
+from vfx_harness.observability import fork_coordination
 from vfx_harness.observability.prepared_publication import (
     FilePublicationConflict,
     PreparedFilePayloadVerification,
@@ -129,14 +131,6 @@ _PREPARED_ARTIFACT_PROCESS_TOKEN = object()
 _PREPARED_ARTIFACT_THREAD_LOCAL = threading.local()
 
 
-def _before_prepared_artifact_fork() -> None:
-    _PREPARED_ARTIFACT_LOCK.acquire()
-
-
-def _after_prepared_artifact_fork_parent() -> None:
-    _PREPARED_ARTIFACT_LOCK.release()
-
-
 def _after_prepared_artifact_fork_child() -> None:
     global _PREPARED_ARTIFACT_LOCK
     global _PREPARED_ARTIFACT_PROCESS_TOKEN
@@ -148,11 +142,17 @@ def _after_prepared_artifact_fork_child() -> None:
     _PREPARED_ARTIFACT_THREAD_LOCAL = threading.local()
 
 
-os.register_at_fork(
-    before=_before_prepared_artifact_fork,
-    after_in_parent=_after_prepared_artifact_fork_parent,
+fork_coordination.register_fork_participant(
+    "agents.builder.layer_artifact",
+    lock_factory=lambda: _PREPARED_ARTIFACT_LOCK,
     after_in_child=_after_prepared_artifact_fork_child,
 )
+
+
+@contextmanager
+def _prepared_artifact_locked() -> Iterator[None]:
+    with fork_coordination.fork_coordinated_lock(_PREPARED_ARTIFACT_LOCK):
+        yield
 
 
 def _current_prepared_artifact_thread_token() -> object:
@@ -170,7 +170,7 @@ def _prepared_layer_artifact_gone(
     identifier: int,
     observed: weakref.ReferenceType[PreparedLayerArtifact],
 ) -> None:
-    with _PREPARED_ARTIFACT_LOCK:
+    with _prepared_artifact_locked():
         entry = _PREPARED_ARTIFACTS.get(identifier)
         if entry is not None and entry.reference is observed:
             _PREPARED_ARTIFACTS.pop(identifier, None)
@@ -183,7 +183,7 @@ def _require_prepared_layer_artifact(
         raise LayerArtifactPublicationConflict(
             "layer artifact operation requires an exact prepared capability"
         )
-    with _PREPARED_ARTIFACT_LOCK:
+    with _prepared_artifact_locked():
         entry = _PREPARED_ARTIFACTS.get(id(prepared))
         if entry is None or entry.reference() is not prepared:
             raise LayerArtifactPublicationConflict(
@@ -238,7 +238,7 @@ def _mint_prepared_layer_artifact(
         thread_id=threading.get_ident(),
         thread_token=_current_prepared_artifact_thread_token(),
     )
-    with _PREPARED_ARTIFACT_LOCK:
+    with _prepared_artifact_locked():
         if identifier in _PREPARED_ARTIFACTS:  # pragma: no cover - live id guarantee
             raise LayerArtifactPublicationConflict(
                 "prepared layer artifact identity collided with a live capability"
@@ -254,7 +254,7 @@ def _retire_prepared_layer_artifact(
     prepared: PreparedLayerArtifact,
 ) -> _PreparedLayerArtifactRecord:
     record = _require_prepared_layer_artifact(prepared)
-    with _PREPARED_ARTIFACT_LOCK:
+    with _prepared_artifact_locked():
         entry = _PREPARED_ARTIFACTS.get(id(prepared))
         if entry is None or entry.reference() is not prepared:
             raise LayerArtifactPublicationConflict(

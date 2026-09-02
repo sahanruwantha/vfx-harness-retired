@@ -332,13 +332,19 @@ def _cmd_plan(argv: list[str]) -> int:
             try:
                 resolve_current(folder)
 
-                temporary = tempfile.TemporaryDirectory(prefix="vfx-plan-eval-")
-                scratch_root = Path(temporary.name) / "scratch"
+                runs = folder.resolve() / "runs"
+                runs.mkdir(parents=True, exist_ok=True)
+                temporary = tempfile.TemporaryDirectory(
+                    prefix="plan-eval-",
+                    dir=runs,
+                )
+                ephemeral_root = Path(temporary.name)
+                scratch_root = ephemeral_root / "scratch"
                 scratch_root.mkdir()
                 ephemeral = run_artifacts.RunLayout(
                     shot=folder.resolve(),
-                    run_id="ephemeral-plan-eval",
-                    root=Path(temporary.name),
+                    run_id=ephemeral_root.name,
+                    root=ephemeral_root,
                 )
                 evaluation_roots.append((prepare_consumer_view(ephemeral), temporary))
             except PlanPublicationError as exc:

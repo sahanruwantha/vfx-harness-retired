@@ -19,6 +19,9 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionToken,
 )
 from vfx_harness.orchestration.ledger import Ledger, LedgerSaveConflict, Milestone
+from vfx_harness.orchestration.shot_authority_capture import (
+    shot_authority_writer_fence,
+)
 
 
 def _shot(tmp_path) -> Shot:
@@ -98,7 +101,7 @@ def test_two_writer_ledger_cas_has_one_explicit_loser(tmp_path, monkeypatch) -> 
     assert len(successes) == 1
     loser = next(name for name in writers if name not in successes)
     assert isinstance(failures[loser], LedgerSaveConflict)
-    assert "Restart the owning operation" in str(failures[loser])
+    assert "no update was written" in str(failures[loser])
 
     stored = json.loads((tmp_path / "shot.json").read_text(encoding="utf-8"))
     winner = successes[0]
@@ -108,36 +111,45 @@ def test_two_writer_ledger_cas_has_one_explicit_loser(tmp_path, monkeypatch) -> 
     assert list(tmp_path.glob(".shot.json.prepared.*")) == []
 
 
-def test_prepared_ledger_refuses_substituted_temporary_name(tmp_path) -> None:
+def test_prepared_ledger_is_opaque_and_requires_its_exact_binding(tmp_path) -> None:
     shot = _shot(tmp_path)
     ledger = Ledger(shot)
     ledger.data["candidate"] = {"accepted": True}
     prepared = ledger.prepare_save(authority_binding="fixture-authority")
-    held_elsewhere = prepared.temporary.with_name(
-        f"{prepared.temporary.name}.held-elsewhere"
-    )
-    prepared.temporary.rename(held_elsewhere)
-    prepared.temporary.write_text(
-        json.dumps({"candidate": {"accepted": "substituted"}}),
-        encoding="utf-8",
-    )
-
+    assert prepared.destination == tmp_path / "shot.json"
+    assert len(prepared.payload_sha256) == 64
+    with pytest.raises(AttributeError):
+        _ = prepared.temporary
+    with pytest.raises(AttributeError):
+        _ = prepared.authority_binding
     try:
-        with pytest.raises(
-            LedgerSaveConflict,
-            match="name no longer binds its held inode",
+        with (
+            shot_authority_writer_fence(tmp_path) as capability,
+            pytest.raises(LedgerSaveConflict, match="authority binding changed"),
         ):
             ledger.commit_prepared_save(
                 prepared,
+                authority_binding="different-authority",
+                writer_capability=capability,
+            )
+        assert not (tmp_path / "shot.json").exists()
+        with shot_authority_writer_fence(tmp_path) as capability:
+            ledger.commit_prepared_save(
+                prepared,
                 authority_binding="fixture-authority",
+                writer_capability=capability,
             )
     finally:
-        ledger.discard_prepared_save(prepared)
+        if not (tmp_path / "shot.json").exists():
+            ledger.discard_prepared_save(prepared)
 
-    assert not (tmp_path / "shot.json").exists()
-    assert json.loads(prepared.temporary.read_text(encoding="utf-8")) == {
-        "candidate": {"accepted": "substituted"}
+    assert json.loads((tmp_path / "shot.json").read_text(encoding="utf-8"))[
+        "candidate"
+    ] == {
+        "accepted": True
     }
+    with pytest.raises(LedgerSaveConflict, match="consumed"):
+        _ = prepared.destination
 
 
 def test_replan_does_not_wait_for_attempt_bound_ledger_prepare(
@@ -158,7 +170,7 @@ def test_replan_does_not_wait_for_attempt_bound_ledger_prepare(
     prepare_started = Event()
     release_prepare = Event()
     replan_done = Event()
-    captured = []
+    captured_bindings: list[str] = []
     failures: list[BaseException] = []
 
     def blocked_prepare(self, *, authority_binding=None):
@@ -166,7 +178,8 @@ def test_replan_does_not_wait_for_attempt_bound_ledger_prepare(
             self,
             authority_binding=authority_binding,
         )
-        captured.append(candidate)
+        assert authority_binding is not None
+        captured_bindings.append(authority_binding)
         prepare_started.set()
         assert release_prepare.wait(5)
         return candidate
@@ -210,7 +223,7 @@ def test_replan_does_not_wait_for_attempt_bound_ledger_prepare(
 
     assert len(failures) == 1
     assert isinstance(failures[0], UnitAttemptAuthorityLost)
-    binding = json.loads(captured[0].authority_binding)
+    binding = json.loads(captured_bindings[0])
     assert binding["attempt"]["claim_id"] == guard.claim.claim_id
     assert binding["selection_token"] == guard.selected_authority.selection_token.to_dict()
     assert not (tmp_path / "shot.json").exists()

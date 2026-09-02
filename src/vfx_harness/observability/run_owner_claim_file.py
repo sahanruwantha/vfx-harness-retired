@@ -10,6 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 
 from vfx_harness.domain.run_owner_claims import RUN_OWNER_CLAIM_LOCATOR, RunOwnerClaim
+from vfx_harness.observability.run_owner_fork_guard import ForkProtectedAcquisition
 
 _CLAIM_NAME = RUN_OWNER_CLAIM_LOCATOR.rsplit("/", maxsplit=1)[-1]
 _CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -57,14 +58,39 @@ class PreparedRunOwnerClaimFile:
         return self.device, self.inode
 
 
-def allocate_run_owner_claim_file(owner_descriptor: int) -> PreparedRunOwnerClaimFile:
-    """Allocate and verify the staging inode before the claim contract is minted."""
+def _discard_unpublished_staging(
+    owner_descriptor: int,
+    temporary: str,
+    descriptor: int | None,
+    acquisition: ForkProtectedAcquisition,
+) -> None:
+    """Retire a registered staging slot, then drop the never-published name."""
+
+    try:
+        if descriptor is not None:
+            acquisition.retire(descriptor)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(temporary, dir_fd=owner_descriptor)
+
+
+def allocate_run_owner_claim_file(
+    owner_descriptor: int,
+    acquisition: ForkProtectedAcquisition,
+) -> PreparedRunOwnerClaimFile:
+    """Allocate and verify the staging inode inside the armed fork-guard transaction.
+
+    The create-only open happens through the acquisition, so the descriptor is
+    registered under deferred signals before any handler can fork.  A child then
+    neutralizes it instead of inheriting an unregistered staging slot.
+    """
 
     temporary = f".claim.tmp.{os.getpid()}.{secrets.token_hex(8)}"
     descriptor: int | None = None
-    allocated = False
     try:
-        descriptor = os.open(temporary, _CREATE_FLAGS, 0o600, dir_fd=owner_descriptor)
+        descriptor = acquisition.open_descriptor(
+            lambda: os.open(temporary, _CREATE_FLAGS, 0o600, dir_fd=owner_descriptor)
+        )
         os.set_inheritable(descriptor, False)
         if os.get_inheritable(descriptor):  # pragma: no cover - kernel contract guard
             raise RunOwnerClaimFileError("owner claim staging descriptor remained inheritable")
@@ -72,23 +98,18 @@ def allocate_run_owner_claim_file(owner_descriptor: int) -> PreparedRunOwnerClai
         _require_regular(observed, "owner claim staging file")
         if observed.st_nlink != 1:
             raise RunOwnerClaimFileError("owner claim staging inode must initially have exactly one name")
-        allocated = True
         return PreparedRunOwnerClaimFile(
             temporary_name=temporary,
             descriptor=descriptor,
             device=observed.st_dev,
             inode=observed.st_ino,
         )
-    except RunOwnerClaimFileError:
+    except BaseException as exc:
+        # A failed adoption already neutralized the slot; the name may still exist.
+        _discard_unpublished_staging(owner_descriptor, temporary, descriptor, acquisition)
+        if isinstance(exc, OSError):
+            raise RunOwnerClaimFileError("could not allocate the create-only owner claim inode") from exc
         raise
-    except OSError as exc:
-        raise RunOwnerClaimFileError("could not allocate the create-only owner claim inode") from exc
-    finally:
-        if descriptor is not None and not allocated:
-            with suppress(OSError):
-                os.close(descriptor)
-            with suppress(FileNotFoundError):
-                os.unlink(temporary, dir_fd=owner_descriptor)
 
 
 def _named_identity(owner_descriptor: int, name: str, where: str) -> os.stat_result:
@@ -128,16 +149,18 @@ def _require_published_single_name(
 def discard_run_owner_claim_file(
     owner_descriptor: int,
     prepared: PreparedRunOwnerClaimFile,
+    acquisition: ForkProtectedAcquisition,
 ) -> None:
-    """Close and retire an unpublished staging name without erasing crash evidence."""
+    """Retire the registered staging slot and its unpublished name, keeping crash evidence."""
 
-    if prepared.descriptor is not None:
-        with suppress(OSError):
-            os.close(prepared.descriptor)
-        prepared.descriptor = None
-    if not prepared.canonical_link_created or prepared.staging_link_removed:
-        with suppress(FileNotFoundError):
-            os.unlink(prepared.temporary_name, dir_fd=owner_descriptor)
+    descriptor, prepared.descriptor = prepared.descriptor, None
+    try:
+        if descriptor is not None:
+            acquisition.retire(descriptor)
+    finally:
+        if not prepared.canonical_link_created or prepared.staging_link_removed:
+            with suppress(FileNotFoundError):
+                os.unlink(prepared.temporary_name, dir_fd=owner_descriptor)
 
 
 def publish_run_owner_claim_file(

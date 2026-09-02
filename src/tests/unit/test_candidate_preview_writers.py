@@ -10,11 +10,13 @@ from typing import Any
 
 import pytest
 
-from vfx_harness.domain.authority_head_records import canonical_view_hash
+from tests.plan_consumer_view_fixtures import registered_consumer_view
+from vfx_harness.domain.authority_head_records import (
+    canonical_view_hash,
+)
 from vfx_harness.domain.authority_preview_records import (
     AUTHORITY_PREVIEW_REFERENCE_PATH,
 )
-from vfx_harness.orchestration import plan_bundle_integrity
 from vfx_harness.orchestration.jit_materialization.candidate_preview import (
     project_candidate_authority_state,
     stage_candidate_publication_view,
@@ -22,6 +24,10 @@ from vfx_harness.orchestration.jit_materialization.candidate_preview import (
 from vfx_harness.orchestration.jit_materialization.schema import OVERLAY_ARTIFACTS
 from vfx_harness.orchestration.jit_materialization.transition import (
     PreparedMaterializationPublication,
+)
+from vfx_harness.orchestration.plan_consumer_view_mutation import (
+    PlanConsumerViewMutationConflict,
+    mutating_plan_consumer_view,
 )
 
 
@@ -80,12 +86,14 @@ def _publication(
 def test_stage_candidate_view_rejects_path_shaped_hash_before_writing(
     tmp_path: Path,
 ) -> None:
-    view = tmp_path / "view"
-    view.mkdir()
+    shot, view, marker = registered_consumer_view(tmp_path)
     _view_hash, payloads = _overlay_payloads()
 
-    with pytest.raises(ValueError, match="lowercase SHA-256"):
-        stage_candidate_publication_view(view, "../../escaped", payloads)
+    with (
+        mutating_plan_consumer_view(shot, view, marker) as capability,
+        pytest.raises(ValueError, match="lowercase SHA-256"),
+    ):
+        stage_candidate_publication_view(capability, "../../escaped", payloads)
 
     assert not (view / "state").exists()
     assert not (tmp_path / "escaped").exists()
@@ -94,16 +102,18 @@ def test_stage_candidate_view_rejects_path_shaped_hash_before_writing(
 def test_stage_candidate_view_rejects_non_finite_json_before_writing(
     tmp_path: Path,
 ) -> None:
-    view = tmp_path / "view"
-    view.mkdir()
+    shot, view, marker = registered_consumer_view(tmp_path)
     view_hash, payloads = _overlay_payloads()
     payloads["requirements.json"] = (
         b'{\n  "requirements": NaN,\n'
         b'  "schema": "vfx-harness.requirements/v2"\n}\n'
     )
 
-    with pytest.raises(ValueError, match="non-finite number"):
-        stage_candidate_publication_view(view, view_hash, payloads)
+    with (
+        mutating_plan_consumer_view(shot, view, marker) as capability,
+        pytest.raises(ValueError, match="non-finite number"),
+    ):
+        stage_candidate_publication_view(capability, view_hash, payloads)
 
     assert not (view / "state").exists()
 
@@ -111,52 +121,55 @@ def test_stage_candidate_view_rejects_non_finite_json_before_writing(
 def test_stage_candidate_view_rejects_symlinked_storage_ancestor(
     tmp_path: Path,
 ) -> None:
-    view = tmp_path / "view"
+    shot, view, marker = registered_consumer_view(tmp_path)
     outside = tmp_path / "outside"
-    view.mkdir()
     outside.mkdir()
     (view / "state").symlink_to(outside, target_is_directory=True)
     view_hash, payloads = _overlay_payloads()
 
-    with pytest.raises(
-        plan_bundle_integrity.PlanPublicationError,
-        match="symlink path components",
+    with (
+        mutating_plan_consumer_view(shot, view, marker) as capability,
+        pytest.raises(PlanConsumerViewMutationConflict),
     ):
-        stage_candidate_publication_view(view, view_hash, payloads)
+        stage_candidate_publication_view(capability, view_hash, payloads)
 
     assert list(outside.iterdir()) == []
 
 
-def test_stage_candidate_view_rejects_symlinked_preview_root_ancestor(
+def test_stage_candidate_view_refuses_a_symlinked_alias_of_the_installed_view(
     tmp_path: Path,
 ) -> None:
-    real_parent = tmp_path / "real"
-    real_view = real_parent / "view"
-    real_view.mkdir(parents=True)
+    shot, view, marker = registered_consumer_view(tmp_path)
     linked_parent = tmp_path / "linked"
-    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    linked_parent.symlink_to(view.parent, target_is_directory=True)
     view_hash, payloads = _overlay_payloads()
 
-    with pytest.raises(ValueError, match=r"preview root.*symlink"):
-        stage_candidate_publication_view(linked_parent / "view", view_hash, payloads)
+    with (
+        pytest.raises(PlanConsumerViewMutationConflict),
+        mutating_plan_consumer_view(shot, linked_parent / view.name, marker) as capability,
+    ):
+        stage_candidate_publication_view(capability, view_hash, payloads)
 
-    assert not (real_view / "state").exists()
+    assert not (view / "state").exists()
 
 
 def test_stage_candidate_view_is_install_or_verify_and_refuses_conflict(
     tmp_path: Path,
 ) -> None:
-    view = tmp_path / "view"
-    view.mkdir()
+    shot, view, marker = registered_consumer_view(tmp_path)
     view_hash, payloads = _overlay_payloads()
 
-    root = stage_candidate_publication_view(view, view_hash, payloads)
-    assert stage_candidate_publication_view(view, view_hash, payloads) == root
-    conflict = root / "layers.json"
-    conflict.write_bytes(b"{}\n")
+    with mutating_plan_consumer_view(shot, view, marker) as capability:
+        root = stage_candidate_publication_view(capability, view_hash, payloads)
+        assert stage_candidate_publication_view(capability, view_hash, payloads) == root
+        conflict = root / "layers.json"
+        conflict.write_bytes(b"{}\n")
 
-    with pytest.raises(ValueError, match=r"immutable.*conflicts"):
-        stage_candidate_publication_view(view, view_hash, payloads)
+        with pytest.raises(
+            PlanConsumerViewMutationConflict,
+            match=r"differ|conflict",
+        ):
+            stage_candidate_publication_view(capability, view_hash, payloads)
 
     assert conflict.read_bytes() == b"{}\n"
 
@@ -164,8 +177,7 @@ def test_stage_candidate_view_is_install_or_verify_and_refuses_conflict(
 def test_project_candidate_state_rejects_forged_layer_before_writing(
     tmp_path: Path,
 ) -> None:
-    view = tmp_path / "view"
-    view.mkdir()
+    shot, view, marker = registered_consumer_view(tmp_path)
     forged_layer = "x/../../../../escaped"
     payload = _state_payload(forged_layer)
     payload_hash = hashlib.sha256(payload).hexdigest()
@@ -176,8 +188,11 @@ def test_project_candidate_state_rejects_forged_layer_before_writing(
         after_payloads={forged_layer: payload},
     )
 
-    with pytest.raises(ValueError, match="canonical layer identifier"):
-        project_candidate_authority_state(view, publication)
+    with (
+        mutating_plan_consumer_view(shot, view, marker) as capability,
+        pytest.raises(ValueError, match="canonical layer identifier"),
+    ):
+        project_candidate_authority_state(capability, publication)
 
     assert not (view / "state").exists()
     assert not (tmp_path / "escaped.json").exists()
@@ -186,8 +201,7 @@ def test_project_candidate_state_rejects_forged_layer_before_writing(
 def test_project_candidate_state_requires_exact_transition_member_keyset(
     tmp_path: Path,
 ) -> None:
-    view = tmp_path / "view"
-    view.mkdir()
+    shot, view, marker = registered_consumer_view(tmp_path)
     payload = _state_payload("safe")
     payload_hash = hashlib.sha256(payload).hexdigest()
     transition = SimpleNamespace(
@@ -206,8 +220,11 @@ def test_project_candidate_state_requires_exact_transition_member_keyset(
         transition=transition,
     )
 
-    with pytest.raises(ValueError, match="prepared transition"):
-        project_candidate_authority_state(view, publication)
+    with (
+        mutating_plan_consumer_view(shot, view, marker) as capability,
+        pytest.raises(ValueError, match="prepared transition"),
+    ):
+        project_candidate_authority_state(capability, publication)
 
     assert not (view / "state").exists()
 
@@ -215,9 +232,9 @@ def test_project_candidate_state_requires_exact_transition_member_keyset(
 def test_project_candidate_state_rejects_symlinked_state_namespace(
     tmp_path: Path,
 ) -> None:
-    view = tmp_path / "view"
+    shot, view, marker = registered_consumer_view(tmp_path)
     outside = tmp_path / "outside"
-    (view / "state").mkdir(parents=True)
+    (view / "state").mkdir()
     outside.mkdir()
     (view / "state" / "work-units").symlink_to(
         outside,
@@ -230,8 +247,11 @@ def test_project_candidate_state_rejects_symlinked_state_namespace(
         after_payloads={},
     )
 
-    with pytest.raises(ValueError, match="isolated real directory"):
-        project_candidate_authority_state(view, publication)
+    with (
+        mutating_plan_consumer_view(shot, view, marker) as capability,
+        pytest.raises(ValueError, match="isolated real directory"),
+    ):
+        project_candidate_authority_state(capability, publication)
 
     assert list(outside.iterdir()) == []
 
@@ -239,7 +259,7 @@ def test_project_candidate_state_rejects_symlinked_state_namespace(
 def test_project_candidate_state_refuses_predecessor_conflict_without_overwrite(
     tmp_path: Path,
 ) -> None:
-    view = tmp_path / "view"
+    shot, view, marker = registered_consumer_view(tmp_path)
     state_dir = view / "state" / "work-units"
     state_dir.mkdir(parents=True)
     expected_payload = _state_payload("safe")
@@ -253,15 +273,17 @@ def test_project_candidate_state_refuses_predecessor_conflict_without_overwrite(
         after_payloads={"safe": expected_payload},
     )
 
-    with pytest.raises(ValueError, match="predecessor hash changed"):
-        project_candidate_authority_state(view, publication)
+    with (
+        mutating_plan_consumer_view(shot, view, marker) as capability,
+        pytest.raises(ValueError, match="predecessor hash changed"),
+    ):
+        project_candidate_authority_state(capability, publication)
 
     assert conflict.read_bytes() == b"conflicting predecessor\n"
 
 
 def test_zero_ready_noop_projects_an_exact_empty_namespace(tmp_path: Path) -> None:
-    view = tmp_path / "view"
-    view.mkdir()
+    shot, view, marker = registered_consumer_view(tmp_path)
     reference_path = view / AUTHORITY_PREVIEW_REFERENCE_PATH
     reference_path.write_text("stale preview", encoding="utf-8")
     publication = _publication(
@@ -271,7 +293,8 @@ def test_zero_ready_noop_projects_an_exact_empty_namespace(tmp_path: Path) -> No
         after_payloads={},
     )
 
-    project_candidate_authority_state(view, publication)
+    with mutating_plan_consumer_view(shot, view, marker) as capability:
+        project_candidate_authority_state(capability, publication)
 
     state = view / "state" / "work-units"
     assert state.is_dir()

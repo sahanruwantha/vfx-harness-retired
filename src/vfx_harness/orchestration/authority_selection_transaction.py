@@ -28,6 +28,7 @@ from vfx_harness.observability.run_owner_fork_guard import (
     RunOwnerForkGuardCleanupError,
     managed_fork_protected_acquisition,
 )
+from vfx_harness.orchestration import shot_ledger_paths
 from vfx_harness.orchestration.authority_selection_process_registry import (
     AuthoritySelectionCleanupFailure,
     AuthoritySelectionConflict,
@@ -748,6 +749,7 @@ def durable_replace_pointer_bytes(
         raise AuthoritySelectionConflict(
             "the permanent authority selection lock is not a replaceable pointer"
         )
+    shot_ledger_paths.require_not_shot_ledger_target(relative)
     parent = _open_directory_parts(
         shot,
         relative.parts[:-1],
@@ -822,6 +824,7 @@ def durable_replace_file_bytes(
         raise AuthoritySelectionConflict("durable file payload must be bytes")
     shot = _shot_path(shot_folder)
     relative = _relative_in_shot(shot, file_path, "durable file")
+    shot_ledger_paths.require_not_shot_ledger_target(relative)
     if relative == AUTHORITY_SELECTION_LOCK:
         raise AuthoritySelectionConflict(
             "the permanent authority selection lock is not a replaceable file"
@@ -856,6 +859,7 @@ def durable_remove_pointer(
 
     shot = _shot_path(shot_folder)
     relative = _relative_in_shot(shot, pointer_path, "authority pointer")
+    shot_ledger_paths.require_not_shot_ledger_target(relative)
     if relative == AUTHORITY_SELECTION_LOCK:
         raise AuthoritySelectionConflict(
             "the permanent authority selection lock is not a removable pointer"

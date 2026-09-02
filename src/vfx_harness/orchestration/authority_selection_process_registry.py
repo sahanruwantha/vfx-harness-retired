@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import secrets
@@ -14,10 +15,13 @@ from pathlib import Path
 from threading import get_ident
 
 import vfx_harness.orchestration.builder_execution_fence as builder_execution_fence
+from vfx_harness.observability import fork_coordination
 from vfx_harness.observability.run_owner_fork_guard import (
     ForkProtectedAcquisition,
     GuardedDescriptor,
     active_descriptor_close,
+)
+from vfx_harness.observability.run_owner_fork_registry import (
     replace_active_descriptors_locked,
 )
 
@@ -29,6 +33,19 @@ _REGISTRY: dict[str, DescriptorLeaseRegistration] = {}
 _SHOT_MUTEX_GUARD = threading.Lock()
 _SHOT_MUTEXES: dict[tuple[int, int], _ShotProcessMutexEntry] = {}
 _PROCESS_TOKEN = secrets.token_hex(16)
+_CHILD_UNPROVEN_AUTHORITY_EXIT = 88
+
+
+@contextmanager
+def _registry_locked() -> Iterator[None]:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
+        yield
+
+
+@contextmanager
+def _shot_mutex_guard_locked() -> Iterator[None]:
+    with fork_coordination.fork_coordinated_lock(_SHOT_MUTEX_GUARD):
+        yield
 
 
 class AuthoritySelectionConflict(ValueError):
@@ -334,7 +351,7 @@ def _retire_shot_process_mutex_reservation(
     key: tuple[int, int],
     entry: _ShotProcessMutexEntry,
 ) -> None:
-    with _SHOT_MUTEX_GUARD:
+    with _shot_mutex_guard_locked():
         observed = _SHOT_MUTEXES.get(key)
         if observed is None or observed.mutex is not entry.mutex:
             raise AuthoritySelectionConflict(
@@ -359,7 +376,7 @@ def shot_process_mutex(key: tuple[int, int]) -> Iterator[None]:
     # Reserve inline while the guard is held. There is no function-return gap in
     # which an acquired/reserved resource exists before this context owns cleanup.
     try:
-        with _SHOT_MUTEX_GUARD:
+        with _shot_mutex_guard_locked():
             observed = _SHOT_MUTEXES.get(key)
             if observed is None:
                 entry = _ShotProcessMutexEntry(threading.Lock(), 1)
@@ -384,11 +401,8 @@ def shot_process_mutex(key: tuple[int, int]) -> Iterator[None]:
 def descriptor_registry_mutation() -> Iterator[None]:
     """Exclude fork across descriptor open/register or retire/close sequences."""
 
-    _REGISTRY_LOCK.acquire()
-    try:
+    with _registry_locked():
         yield
-    finally:
-        _REGISTRY_LOCK.release()
 
 
 def register_descriptors_locked(
@@ -525,13 +539,7 @@ def registered_descriptor_close(
             yield proof
         finally:
             if not proof.published:
-                proof.publish_retained(
-                    tuple(
-                        item
-                        for item in registration.descriptor_identities
-                        if item.is_current()
-                    )
-                )
+                proof.publish_retained(_retained_identities(registration))
 
 
 def _neutralize_registered_descriptors(
@@ -591,11 +599,7 @@ def _neutralize_registered_descriptors(
         # subset before these now-/dev/null numeric slots are closed. A dup2
         # failure leaves its original fd open and registered; it is never passed
         # to ambiguous close.
-        retained = tuple(
-            identity
-            for identity in registration.descriptor_identities
-            if identity.is_current()
-        )
+        retained = _retained_identities(registration)
         proof.publish_retained(retained)
         for descriptor in substituted:
             try:
@@ -624,31 +628,31 @@ def neutralize_registered_descriptors(
     except AuthoritySelectionCleanupFailure:
         raise
     except BaseException as exc:
-        retained = tuple(
-            identity
-            for identity in registration.descriptor_identities
-            if identity.is_current()
-        )
         raise AuthoritySelectionCleanupFailure(
             errors=(exc,),
-            retained=retained,
+            retained=_retained_identities(registration),
         ) from exc
+
+
+def _retained_identities(
+    registration: DescriptorLeaseRegistration,
+) -> tuple[GuardedDescriptor, ...]:
+    """Rows still live or unreadable; an unreadable slot is never assumed closed."""
+
+    return tuple(
+        identity
+        for identity in registration.descriptor_identities
+        if identity.is_current_or_unproven()
+    )
 
 
 def _descriptor_matches_identity(
     descriptor: int,
     expected: GuardedDescriptor,
 ) -> bool:
-    try:
-        observed = os.fstat(descriptor)
-    except OSError:
-        return False
-    return (
-        observed.st_dev == expected.device
-        and observed.st_ino == expected.inode
-        and stat.S_IFMT(observed.st_mode) == expected.file_type
-        and observed.st_rdev == expected.special_device
-    )
+    """Whether the slot names the expected identity; unreadable raises and poisons."""
+
+    return expected.rebased(descriptor).is_current()
 
 
 def registration_is_current(registration: DescriptorLeaseRegistration) -> bool:
@@ -673,9 +677,24 @@ def _after_fork_child() -> None:
         for identity in registration.descriptor_identities
     }
     for identity in descriptors:
-        if identity.is_current():
-            with suppress(OSError):
-                os.close(identity.descriptor)
+        try:
+            observed = os.fstat(identity.descriptor)
+        except OSError as exc:
+            if exc.errno == errno.EBADF:
+                continue
+            # An unreadable numeric slot cannot prove that inherited authority
+            # was released by the earlier run-owner participant.
+            os._exit(_CHILD_UNPROVEN_AUTHORITY_EXIT)
+        if (
+            observed.st_dev == identity.device
+            and observed.st_ino == identity.inode
+            and stat.S_IFMT(observed.st_mode) == identity.file_type
+            and observed.st_rdev == identity.special_device
+        ):
+            # This registry is a verifier, not a second close owner. Retrying a
+            # numeric close after another participant's ambiguous outcome could
+            # close a reused foreign fd. Exact authority still live is terminal.
+            os._exit(_CHILD_UNPROVEN_AUTHORITY_EXIT)
     _REGISTRY.clear()
     _PROCESS_TOKEN = secrets.token_hex(16)
     _REGISTRY_LOCK = threading.RLock()
@@ -683,7 +702,16 @@ def _after_fork_child() -> None:
     _SHOT_MUTEX_GUARD = threading.Lock()
 
 
-os.register_at_fork(after_in_child=_after_fork_child)
+fork_coordination.register_fork_participant(
+    "orchestration.authority_selection_process_registry.shot_mutex",
+    lock_factory=lambda: _SHOT_MUTEX_GUARD,
+    after_in_child=lambda: None,
+)
+fork_coordination.register_fork_participant(
+    "orchestration.authority_selection_process_registry.registry",
+    lock_factory=lambda: _REGISTRY_LOCK,
+    after_in_child=_after_fork_child,
+)
 
 
 __all__ = [

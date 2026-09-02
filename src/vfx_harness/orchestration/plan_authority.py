@@ -15,7 +15,6 @@ import hashlib
 import json
 import os
 import shutil
-import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,33 +23,25 @@ from typing import Any
 from vfx_harness.domain.authority_head_records import canonical_json_bytes
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.run_artifacts import RunLayout
-from vfx_harness.orchestration import plan_bundle_integrity, plan_consumer_state_snapshot
+from vfx_harness.orchestration import (
+    plan_bundle_integrity,
+    plan_consumer_view_mutation,
+    plan_consumer_view_population,
+)
 from vfx_harness.orchestration.authority_selection_transaction import (
     authority_selection_lock,
     require_matching_authority_selection_token,
 )
-from vfx_harness.orchestration.plan_consumer_view import (
-    OVERLAY_ARTIFACTS,
-    PlanConsumerViewMarker,
-)
+from vfx_harness.orchestration.plan_consumer_view import OVERLAY_ARTIFACTS
 from vfx_harness.orchestration.plan_inputs import (
     PROVENANCE_SCHEMA,
     workspace_base_selection,
 )
 from vfx_harness.orchestration.plan_inputs import (
-    authored_input_bytes as _authored_input_bytes,
-)
-from vfx_harness.orchestration.plan_inputs import (
     authored_inputs as _authored_inputs,
 )
 from vfx_harness.orchestration.plan_inputs import (
-    decision_input_bytes as _decision_input_bytes,
-)
-from vfx_harness.orchestration.plan_inputs import (
     decision_inputs as _decision_inputs,
-)
-from vfx_harness.orchestration.plan_inputs import (
-    exact_planning_input_identity as _exact_planning_input_identity,
 )
 from vfx_harness.orchestration.plan_inputs import (
     prepare_staging as prepare_staging,
@@ -720,6 +711,14 @@ def prepare_consumer_view(
     that interface without copying published bytes back to the shot root or allowing a
     mixture of plan generations.
     """
+    try:
+        view = (
+            plan_consumer_view_mutation.require_plan_consumer_view_install_destination(
+                layout
+            )
+        )
+    except plan_consumer_view_mutation.PlanConsumerViewMutationConflict as exc:
+        raise PlanPublicationError(str(exc)) from exc
     # Selection resolution verifies both heads and every effective artifact while it
     # holds the shared authority lock. The resulting paths all belong to that one token;
     # no later per-artifact pointer lookup can mix plan or JIT generations.
@@ -738,125 +737,16 @@ def prepare_consumer_view(
     if selected.plan is None or selected.assertion.effective_view is None:
         raise PlanPublicationError("a plan consumer view requires selected plan authority")
     bundle = selected.plan.bundle
-    effective_view = selected.assertion.effective_view
     try:
         bundle.root.relative_to(layout.shot)
     except ValueError as exc:
         raise PlanPublicationError("plan consumer snapshot belongs to another shot") from exc
-    view = layout.scratch / "plan-consumer-view"
-    temp = Path(tempfile.mkdtemp(prefix=".plan-consumer-view.tmp-", dir=layout.scratch))
-    try:
-        provenance = plan_bundle_integrity.read_schema_object(
-            layout.shot,
-            selected.artifact_paths["plan.provenance.json"],
-            "selected plan bundle provenance",
-            schema=PROVENANCE_SCHEMA,
-            fields=_PROVENANCE_FIELDS,
-        )
-        authored_bytes = _authored_input_bytes(layout.shot)
-        decision_bytes = _decision_input_bytes(layout.shot)
-        (temp / "refs").mkdir()
-        for name, payload in authored_bytes.items():
-            target = temp / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
-        for name, payload in decision_bytes.items():
-            target = temp / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
-        captured_authored, captured_decisions = _exact_planning_input_identity(temp)
-        if provenance.get("authored_inputs") != captured_authored:
-            raise PlanPublicationError(
-                "plan consumer snapshot was captured from different authored inputs"
-            )
-        _verify_decision_inputs(temp, provenance.get("decision_inputs"))
-
-        (temp / "plans").mkdir()
-        for name in bundle.artifacts:
-            try:
-                source = selected.artifact_paths[name]
-            except KeyError as exc:
-                raise PlanPublicationError(f"selected authority omits bundle artifact {name!r}") from exc
-            target = temp / "plans" / "global.md" if name == "global.md" else temp / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.symlink_to(source)
-        artifact_hashes = {
-            name: hashlib.sha256(selected.artifact_paths[name].read_bytes()).hexdigest() for name in OVERLAY_ARTIFACTS
-        }
-        marker = PlanConsumerViewMarker(
-            shot=layout.shot,
-            bundle=bundle.root,
-            content_hash=bundle.content_hash,
-            base_selection=selected.selection_token,
-            view_source=effective_view.source,
-            view_digest=effective_view.digest,
-            artifact_hashes=artifact_hashes,
-            authored_inputs=captured_authored,
-            decision_inputs=captured_decisions,
-        )
-        (temp / ".plan-consumer-view.json").write_bytes(
-            canonical_json_bytes(marker.to_dict()),
-        )
-        try:
-            layers = json.loads(
-                selected.artifact_paths["layers.json"].read_text(encoding="utf-8")
-            )["layers"]
-            if not isinstance(layers, list) or any(
-                not isinstance(layer, dict) for layer in layers
-            ):
-                raise TypeError("layers must be a list of objects")
-        except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            raise PlanPublicationError("published layers.json is unreadable") from exc
-        # Mutable execution authority is captured into the same isolated generation;
-        # the view never follows live ledger, work-unit, or outcome names afterward.
-        plan_consumer_state_snapshot.snapshot_consumer_execution_authority(
-            layout,
-            temp,
-            layers,
-        )
-        # This import is delayed to avoid the plan-authority/layer-plans module cycle,
-        # but resolved once per consumer view rather than once per staged unit.
-        from vfx_harness.orchestration.layer_plans import (  # noqa: PLC0415
-            validate_work_unit_plan_authority,
-            work_unit_plan_authority_path,
-        )
-
-        for layer in layers:
-            for unit in layer.get("stages") or []:
-                rel = Path(str(unit.get("plan") or ""))
-                source = layout.shot / rel
-                if source.is_file():
-                    try:
-                        # staging feeds the gate, which runs before attestation exists
-                        validate_work_unit_plan_authority(
-                            layout.shot,
-                            source,
-                            require_gate=False,
-                            selected_authority=selected,
-                        )
-                    except ValueError:
-                        continue
-                    target = temp / rel
-                    if target.exists() or target.is_symlink():
-                        continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.symlink_to(source)
-                    source_authority = work_unit_plan_authority_path(source)
-                    target_authority = work_unit_plan_authority_path(target)
-                    if not source_authority.is_file():
-                        raise PlanPublicationError(f"JIT unit plan authority sidecar is missing: {source_authority}")
-                    target_authority.symlink_to(source_authority)
-        if view.exists():
-            previous = view.with_name(view.name + f".old.{os.getpid()}")
-            os.replace(view, previous)
-            os.replace(temp, view)
-            shutil.rmtree(previous)
-        else:
-            os.replace(temp, view)
-    except BaseException:
-        shutil.rmtree(temp, ignore_errors=True)
-        raise
-    return view
+    return plan_consumer_view_population.populate_plan_consumer_view(
+        layout,
+        selected,
+        bundle,
+        view,
+    )
 
 
 def snapshot_repair_input(layout: RunLayout, round_number: int, source: str | Path) -> Path:

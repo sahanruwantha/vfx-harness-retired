@@ -23,6 +23,7 @@ from vfx_harness.domain.layer_finalizations import (
     LayerFinalizationClaim,
     LayerFinalizationReceipt,
 )
+from vfx_harness.observability import fork_coordination
 from vfx_harness.orchestration.authority_selection_process_registry import (
     canonical_authority_shot_path,
     current_process_token,
@@ -125,6 +126,18 @@ _ISSUER_BINDING: _PreparedMutationIssuerBinding | None = None
 _BUILDER_GUARD_MODULE = "vfx_harness.agents.builder.layer_finalization_guard"
 
 
+@contextmanager
+def _registry_locked() -> Iterator[None]:
+    with fork_coordination.fork_coordinated_lock(_REGISTRY_LOCK):
+        yield
+
+
+@contextmanager
+def _issuer_locked() -> Iterator[None]:
+    with fork_coordination.fork_coordinated_lock(_ISSUER_LOCK):
+        yield
+
+
 def _thread_token() -> object:
     token = getattr(_THREAD_LOCAL, "prepared_mutation_token", None)
     if token is None:
@@ -143,14 +156,23 @@ def _after_fork_child() -> None:
     _ACTIVE_HOLD_LOCAL = threading.local()
 
 
-os.register_at_fork(after_in_child=_after_fork_child)
+fork_coordination.register_fork_participant(
+    "orchestration.layer_finalization_publication_authority.issuer",
+    lock_factory=lambda: _ISSUER_LOCK,
+    after_in_child=lambda: None,
+)
+fork_coordination.register_fork_participant(
+    "orchestration.layer_finalization_publication_authority.registry",
+    lock_factory=lambda: _REGISTRY_LOCK,
+    after_in_child=_after_fork_child,
+)
 
 
 def _authorization_gone(
     identifier: int,
     observed: weakref.ReferenceType[LayerFinalizationPreparedMutationAuthorization],
 ) -> None:
-    with _REGISTRY_LOCK:
+    with _registry_locked():
         entry = _REGISTRY.get(identifier)
         if entry is not None and entry.reference is observed:
             _REGISTRY.pop(identifier, None)
@@ -188,7 +210,7 @@ def _bind_layer_finalization_prepared_mutation_issuer(
         raise LayerFinalizationPreparedMutationConflict(
             "prepared-mutation issuer binding requires the exact concrete builder guard classes"
         )
-    with _ISSUER_LOCK:
+    with _issuer_locked():
         global _ISSUER_BINDING
 
         if _ISSUER_BINDING is not None:
@@ -209,7 +231,7 @@ def _require_issuer_guard_type(
     guard: object,
     receipt: LayerFinalizationReceipt | None,
 ) -> _PreparedMutationIssuerBinding:
-    with _ISSUER_LOCK:
+    with _issuer_locked():
         binding = _ISSUER_BINDING
         if (
             binding is None
@@ -433,7 +455,7 @@ def _mint_layer_finalization_prepared_mutation_authorization(
         thread_id=threading.get_ident(),
         thread_token=_thread_token(),
     )
-    with _REGISTRY_LOCK:
+    with _registry_locked():
         if identifier in _REGISTRY:  # pragma: no cover - live object identity
             raise LayerFinalizationPreparedMutationConflict(
                 "prepared-mutation authorization identity collided with a live authorization"
@@ -447,7 +469,7 @@ def _invalidate_layer_finalization_prepared_mutation_authorization(
 ) -> None:
     """Invalidate an unconsumed authorization before either owning guard exits."""
 
-    with _REGISTRY_LOCK:
+    with _registry_locked():
         entry = _REGISTRY.get(id(authorization))
         if entry is None:
             return
@@ -520,7 +542,7 @@ def consume_layer_finalization_prepared_mutation_authorization(
         raise LayerFinalizationPreparedMutationConflict(
             "prepared mutation expected shot is not one canonical shot root"
         ) from exc
-    with _REGISTRY_LOCK:
+    with _registry_locked():
         entry = _REGISTRY.get(id(authorization))
         if entry is None or entry.reference() is not authorization:
             raise LayerFinalizationPreparedMutationConflict(

@@ -112,7 +112,7 @@ def test_ledger_accepts_and_binds_structural_execution_guard(
             "layer_finalization_claim": "layer-finalization-3-1",
         }
     )
-    ledger.save()
+    assert ledger.save() is None
 
     assert captured == [
         {
@@ -125,6 +125,58 @@ def test_ledger_accepts_and_binds_structural_execution_guard(
         ("check", "start builder ledger publication staging"),
         ("publish", "builder ledger publication"),
     ]
+
+
+def _layer_claim_ledger(tmp_path, guard: _LayerShapedGuard) -> AuthorityBoundLedger:
+    selected = SimpleNamespace(
+        selection_token=AuthoritySelectionToken(0, None, 0, None),
+    )
+    ledger = AuthorityBoundLedger(
+        _shot(tmp_path),
+        selected,
+        execution_guard=guard,
+    )
+    ledger._slot(Milestone("3", 1, "refs/layer.png", "fixture")).update(
+        {
+            "status": "in_progress",
+            "script": "build/layer_3.py",
+            "layer_finalization_claim": "layer-finalization-3-1",
+        }
+    )
+    return ledger
+
+
+def test_builder_ledger_refuses_guard_that_skips_exact_mutation(tmp_path) -> None:
+    class _SkippingGuard(_LayerShapedGuard):
+        def publish(self, operation: str, mutation: Callable[[], _T]) -> None:
+            del mutation
+            self.events.append(("publish", operation))
+
+    ledger = _layer_claim_ledger(tmp_path, _SkippingGuard())
+
+    with pytest.raises(ValueError, match="invoke and complete its exact mutation once"):
+        ledger.save()
+
+    assert not (tmp_path / "shot.json").exists()
+    assert list(tmp_path.glob(".shot.json.prepared.*")) == []
+
+
+def test_builder_ledger_refuses_guard_that_invokes_exact_mutation_twice(
+    tmp_path,
+) -> None:
+    class _DoubleGuard(_LayerShapedGuard):
+        def publish(self, operation: str, mutation: Callable[[], _T]) -> _T:
+            self.events.append(("publish", operation))
+            mutation()
+            return mutation()
+
+    ledger = _layer_claim_ledger(tmp_path, _DoubleGuard())
+
+    with pytest.raises(ValueError, match="invoked its exact mutation more than once"):
+        ledger.save()
+
+    assert (tmp_path / "shot.json").is_file()
+    assert list(tmp_path.glob(".shot.json.prepared.*")) == []
 
 
 def test_verify_script_uses_guard_label_without_unit_access(

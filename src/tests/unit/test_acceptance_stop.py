@@ -23,6 +23,7 @@ from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
+    AuthoritySelectionToken,
 )
 from vfx_harness.orchestration.ledger import Milestone
 
@@ -250,7 +251,11 @@ def _patch_acceptance(
     passed: bool,
 ) -> list[str]:
     authority = _authority()
-    selected_authority = SimpleNamespace(plan=None, artifact_paths={})
+    selected_authority = SimpleNamespace(
+        plan=None,
+        artifact_paths={},
+        selection_token=AuthoritySelectionToken(0, None, 0, None),
+    )
     moments = {"M1": Milestone("M1", 1, "refs/M1.png", "finished frame")}
     transcript_events: list[str] = []
 
@@ -739,8 +744,24 @@ def test_acceptance_keeps_one_snapshot_across_same_semantic_aba(
     layout = run_artifacts.create(tmp_path, "acceptance-selection-aba")
     _patch_acceptance(monkeypatch, shot, layout, passed=True)
     semantic = SimpleNamespace(bundle_digest=_digest("bundle"), view_digest=_digest("view"))
-    entry = SimpleNamespace(selection_token=(1, 1), assertion=semantic)
-    returned = SimpleNamespace(selection_token=(3, 3), assertion=semantic)
+    entry = SimpleNamespace(
+        selection_token=AuthoritySelectionToken(
+            1,
+            _digest("entry plan head"),
+            1,
+            _digest("entry jit head"),
+        ),
+        assertion=semantic,
+    )
+    returned = SimpleNamespace(
+        selection_token=AuthoritySelectionToken(
+            3,
+            _digest("returned plan head"),
+            3,
+            _digest("returned jit head"),
+        ),
+        assertion=semantic,
+    )
     resolution_calls: list[Path] = []
     observed: list[tuple[str, object]] = []
 

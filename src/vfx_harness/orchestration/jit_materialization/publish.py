@@ -11,7 +11,7 @@ import vfx_harness.orchestration.jit_materialization.selection_commit as selecti
 from vfx_harness.domain.authority_head_records import canonical_json_bytes
 from vfx_harness.domain.plan_records import load_judgment_debt_catalog
 from vfx_harness.evaluation import plan_gate
-from vfx_harness.observability.provenance import atomic_write
+from vfx_harness.orchestration import plan_consumer_installed_projection
 from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
     authority_selection_lock,
@@ -55,6 +55,7 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     read_materialization_finalization,
 )
 from vfx_harness.orchestration.jit_materialization.transition import (
+    PreparedMaterializationPublication,
     prepare_materialization_publication,
     prepare_materialization_publication_locked,
 )
@@ -67,6 +68,11 @@ from vfx_harness.orchestration.jit_materialization.view_store import (
 )
 from vfx_harness.orchestration.ledger import load_layers_from_path
 from vfx_harness.orchestration.plan_consumer_view import PlanConsumerViewMarker
+from vfx_harness.orchestration.plan_consumer_view_mutation import (
+    PlanConsumerViewMutationCapability,
+    PlanConsumerViewMutationConflict,
+    mutating_plan_consumer_view,
+)
 from vfx_harness.orchestration.plan_inputs import (
     PlanPublicationError,
     exact_planning_input_identity_digest,
@@ -460,15 +466,6 @@ def stage_candidate_view(
         selected_authority=selected,
         resolutions_path=view / "state" / "plan-resolutions.jsonl",
     )
-    documents = _overlay_documents(materialized, bases)
-    payloads = serialized_documents(documents)
-    artifact_hashes = serialized_hashes(payloads)
-    view_hash = canonical_view_hash(documents)
-    for name, payload in payloads.items():
-        target = view / name
-        if target.is_symlink() or target.exists():
-            target.unlink()
-        target.write_bytes(payload)
     if (
         marker.shot != shot
         or marker.bundle != bundle.root
@@ -478,48 +475,132 @@ def stage_candidate_view(
         raise MaterializationSelectionConflict(
             "plan consumer view marker does not name the candidate's exact base selection"
         )
-    staged_marker = PlanConsumerViewMarker(
-        shot=marker.shot,
-        bundle=marker.bundle,
-        content_hash=marker.content_hash,
-        base_selection=marker.base_selection,
-        view_source="jit",
-        view_digest=view_hash,
-        artifact_hashes=artifact_hashes,
-        authored_inputs=marker.authored_inputs,
-        decision_inputs=marker.decision_inputs,
-    )
-    marker_payload = canonical_json_bytes(staged_marker.to_dict())
-    atomic_write(marker_path, marker_payload.decode("utf-8"))
-    # the view's state/ is a symlink to the shot's; replace it with a copy whose
-    # jit-layers pointer pins the candidate documents just written
-    state_link = view / "state"
-    if state_link.is_symlink():
-        real_state = state_link.resolve()
-        state_link.unlink()
-        state_link.mkdir()
-        if real_state.is_dir():
-            for child in real_state.iterdir():
-                if child.name != "jit-layers":
-                    (state_link / child.name).symlink_to(child)
-    pointer_dir = view / "state" / "jit-layers"
-    pointer_dir.mkdir(parents=True, exist_ok=True)
-    candidate_payload = Path(materialization_path).read_bytes()
-    publication = prepare_materialization_publication(
-        shot,
-        selected_before=selected,
-        documents=documents,
-        bundle_hash=bundle.content_hash,
-        view_hash=view_hash,
-        artifact_hashes=artifact_hashes,
-        candidate_payload=candidate_payload,
-        candidate_digest=hashlib.sha256(candidate_payload).hexdigest(),
-    )
-    _stage_candidate_publication_view(view, view_hash, payloads)
-    pointer_path = pointer_dir / "current.json"
-    pointer_payload = publication.pointer_payload
-    pointer_path.write_bytes(pointer_payload)
-    _project_candidate_authority_state(view, publication)
+    documents = _overlay_documents(materialized, bases)
+    payloads = serialized_documents(documents)
+    artifact_hashes = serialized_hashes(payloads)
+    view_hash = canonical_view_hash(documents)
+
+    def stage_under_mutation(
+        mutation_capability: PlanConsumerViewMutationCapability,
+    ) -> tuple[bytes, bytes, PreparedMaterializationPublication]:
+        for name, payload in payloads.items():
+            # The installed view links each overlay member to the selected bundle
+            # member; the candidate document replaces that verified link with a
+            # real file rather than writing through it.
+            if (
+                plan_consumer_installed_projection.member_kind(
+                    mutation_capability,
+                    name,
+                )
+                == "symlink"
+            ):
+                plan_consumer_installed_projection.remove_symlink(
+                    mutation_capability,
+                    name,
+                )
+            plan_consumer_installed_projection.replace_regular_file(
+                mutation_capability,
+                name,
+                payload,
+            )
+        staged_marker = PlanConsumerViewMarker(
+            shot=marker.shot,
+            bundle=marker.bundle,
+            content_hash=marker.content_hash,
+            base_selection=marker.base_selection,
+            view_source="jit",
+            view_digest=view_hash,
+            artifact_hashes=artifact_hashes,
+            authored_inputs=marker.authored_inputs,
+            decision_inputs=marker.decision_inputs,
+        )
+        marker_payload = canonical_json_bytes(staged_marker.to_dict())
+        plan_consumer_installed_projection.replace_regular_file(
+            mutation_capability,
+            ".plan-consumer-view.json",
+            marker_payload,
+        )
+        # the view's state/ is a symlink to the shot's; replace it with a copy whose
+        # jit-layers pointer pins the candidate documents just written
+        state_kind = plan_consumer_installed_projection.member_kind(
+            mutation_capability,
+            "state",
+        )
+        if state_kind == "symlink":
+            state_target = plan_consumer_installed_projection.read_symlink(
+                mutation_capability,
+                "state",
+            )
+            real_state = Path(state_target)
+            if not real_state.is_absolute():
+                real_state = view / real_state
+            real_state = real_state.resolve()
+            plan_consumer_installed_projection.remove_symlink(
+                mutation_capability,
+                "state",
+            )
+            plan_consumer_installed_projection.ensure_directory(
+                mutation_capability,
+                "state",
+            )
+            if real_state.is_dir():
+                for child in real_state.iterdir():
+                    if child.name != "jit-layers":
+                        plan_consumer_installed_projection.create_symlink(
+                            mutation_capability,
+                            f"state/{child.name}",
+                            child,
+                        )
+        elif state_kind is None:
+            plan_consumer_installed_projection.ensure_directory(
+                mutation_capability,
+                "state",
+            )
+        elif state_kind != "directory":
+            raise PlanConsumerViewMutationConflict(
+                "candidate plan-consumer state must be absent, a real directory, "
+                "or its registered predecessor symlink"
+            )
+        plan_consumer_installed_projection.ensure_directory(
+            mutation_capability,
+            "state/jit-layers",
+        )
+        candidate_payload = Path(materialization_path).read_bytes()
+        publication = prepare_materialization_publication(
+            shot,
+            selected_before=selected,
+            documents=documents,
+            bundle_hash=bundle.content_hash,
+            view_hash=view_hash,
+            artifact_hashes=artifact_hashes,
+            candidate_payload=candidate_payload,
+            candidate_digest=hashlib.sha256(candidate_payload).hexdigest(),
+        )
+        _stage_candidate_publication_view(
+            mutation_capability,
+            view_hash,
+            payloads,
+        )
+        pointer_payload = publication.pointer_payload
+        plan_consumer_installed_projection.replace_regular_file(
+            mutation_capability,
+            "state/jit-layers/current.json",
+            pointer_payload,
+        )
+        _project_candidate_authority_state(mutation_capability, publication)
+        return marker_payload, pointer_payload, publication
+
+    try:
+        with mutating_plan_consumer_view(
+            shot,
+            view,
+            marker,
+        ) as mutation_capability:
+            marker_payload, pointer_payload, publication = stage_under_mutation(
+                mutation_capability
+            )
+    except PlanConsumerViewMutationConflict as exc:
+        raise MaterializationSelectionConflict(str(exc)) from exc
     return ProposedMaterializationView(
         bundle=bundle,
         materialized=materialized,

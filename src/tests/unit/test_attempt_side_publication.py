@@ -1713,7 +1713,7 @@ def test_dup2_return_interruption_closes_neutralized_descriptor(
     prepared_publication.discard_prepared_file(update.publication)
 
 
-def test_consumed_discard_drains_final_interrupted_inert_descriptor(
+def test_dup2_return_interruption_still_closes_neutral_descriptor_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1748,10 +1748,9 @@ def test_consumed_discard_drains_final_interrupted_inert_descriptor(
         ):
             prepared_publication.discard_prepared_file(update.publication)
 
-    assert os.fstat(final_descriptor)
-    prepared_publication.discard_prepared_file(update.publication)
     with pytest.raises(OSError):
         os.fstat(final_descriptor)
+    prepared_publication.discard_prepared_file(update.publication)
 
 
 def test_signal_mask_is_restored_when_blocking_call_is_interrupted(

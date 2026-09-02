@@ -34,6 +34,7 @@ from vfx_harness.observability.run_owner_fence_files import (
     RUN_OWNER_FENCE,
     RunOwnerClaimExists,
     RunOwnerFenceActive,
+    RunOwnerFenceCleanupError,
     RunOwnerFenceError,
     RunOwnerFenceSubstituted,
 )
@@ -83,7 +84,6 @@ from vfx_harness.observability.run_owner_fork_guard import (
     ForkProtectedAcquisition,
     GuardedDescriptor,
     RunOwnerForkGuardError,
-    active_descriptor_close,
     managed_fork_protected_acquisition,
 )
 from vfx_harness.observability.run_owner_manifest import (
@@ -101,6 +101,7 @@ __all__ = [
     "RUN_OWNER_FENCE",
     "RunOwnerClaimExists",
     "RunOwnerFenceActive",
+    "RunOwnerFenceCleanupError",
     "RunOwnerFenceError",
     "RunOwnerFenceLease",
     "RunOwnerFenceSubstituted",
@@ -142,19 +143,10 @@ def _retire_claim_staging(
     acquisition: ForkProtectedAcquisition,
     owner_descriptor: int,
     prepared: PreparedRunOwnerClaimFile,
-    *,
-    tracked: bool,
 ) -> None:
     if not acquisition.belongs_to_current_process:
         return
-    if tracked and prepared.descriptor is not None:
-        try:
-            acquisition.retire(prepared.descriptor)
-        finally:
-            prepared.descriptor = None
-            discard_run_owner_claim_file(owner_descriptor, prepared)
-        return
-    discard_run_owner_claim_file(owner_descriptor, prepared)
+    discard_run_owner_claim_file(owner_descriptor, prepared, acquisition)
 
 
 def _read_named_regular(
@@ -412,22 +404,16 @@ class RunOwnerFenceLease:
             self._owner_descriptor,
             self._fence_descriptor,
         )
-        try:
-            if tuple(
-                item.descriptor for item in self._registry_descriptors
-            ) != descriptors:
-                raise RunOwnerFenceError(
-                    "run owner lease descriptors differ from their captured fork identities"
-                )
-            with active_descriptor_close(
-                self._registry_token,
-                self._registry_descriptors,
-            ):
-                _close_guarded_acquisition(
-                    self._registry_descriptors
-                )
-        except RunOwnerForkGuardError as exc:
-            raise RunOwnerFenceError(str(exc)) from exc
+        if tuple(
+            item.descriptor for item in self._registry_descriptors
+        ) != descriptors:
+            raise RunOwnerFenceError(
+                "run owner lease descriptors differ from their captured fork identities"
+            )
+        _close_guarded_acquisition(
+            self._registry_token,
+            self._registry_descriptors,
+        )
 
     def __enter__(self) -> RunOwnerFenceLease:
         try:
@@ -457,7 +443,6 @@ def _acquire_run_owner_fence_managed(
     owner_descriptor: int | None = None
     fence_descriptor: int | None = None
     prepared = None
-    prepared_tracked = False
     try:
         namespace = _open_run_namespace(run_root, run_id, acquisition=acquisition)
         root = namespace.root
@@ -527,12 +512,7 @@ def _acquire_run_owner_fence_managed(
             )
         except ValueError as exc:
             raise RunOwnerFenceError(str(exc)) from exc
-        prepared = allocate_run_owner_claim_file(owner_descriptor)
-        prepared_descriptor = prepared.descriptor
-        if prepared_descriptor is None:  # pragma: no cover - allocator contract
-            raise RunOwnerFenceError("owner claim allocator returned a closed staging descriptor")
-        acquisition.adopt_descriptor(prepared_descriptor)
-        prepared_tracked = True
+        prepared = allocate_run_owner_claim_file(owner_descriptor, acquisition)
         claim = RunOwnerClaim(
             run_id=run_id,
             command=manifest.command,
@@ -567,14 +547,8 @@ def _acquire_run_owner_fence_managed(
         except RunOwnerClaimFileError as exc:
             raise RunOwnerFenceError(str(exc)) from exc
         finally:
-            _retire_claim_staging(
-                acquisition,
-                owner_descriptor,
-                prepared,
-                tracked=prepared_tracked,
-            )
+            _retire_claim_staging(acquisition, owner_descriptor, prepared)
             prepared = None
-            prepared_tracked = False
         observed = _read_claim_from_descriptors(
             shot_descriptor,
             runs_descriptor,
@@ -627,12 +601,7 @@ def _acquire_run_owner_fence_managed(
         return lease
     except BaseException:
         if prepared is not None and owner_descriptor is not None:
-            _retire_claim_staging(
-                acquisition,
-                owner_descriptor,
-                prepared,
-                tracked=prepared_tracked,
-            )
+            _retire_claim_staging(acquisition, owner_descriptor, prepared)
         raise
 
 

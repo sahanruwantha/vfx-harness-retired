@@ -7,6 +7,8 @@ import json
 import os
 import threading
 import weakref
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -27,6 +29,7 @@ from vfx_harness.infrastructure.trusted_files import (
     bind_trusted_file_absence,
     open_pinned_trusted_file,
 )
+from vfx_harness.observability import fork_coordination
 from vfx_harness.observability.prepared_publication import (
     FilePublicationConflict,
     PreparedFilePayloadVerification,
@@ -216,14 +219,6 @@ _PREPARED_OUTCOME_PROCESS_TOKEN = object()
 _PREPARED_OUTCOME_THREAD_LOCAL = threading.local()
 
 
-def _before_prepared_outcome_fork() -> None:
-    _PREPARED_OUTCOME_LOCK.acquire()
-
-
-def _after_prepared_outcome_fork_parent() -> None:
-    _PREPARED_OUTCOME_LOCK.release()
-
-
 def _after_prepared_outcome_fork_child() -> None:
     global _PREPARED_OUTCOME_LOCK
     global _PREPARED_OUTCOME_PROCESS_TOKEN
@@ -235,11 +230,17 @@ def _after_prepared_outcome_fork_child() -> None:
     _PREPARED_OUTCOME_THREAD_LOCAL = threading.local()
 
 
-os.register_at_fork(
-    before=_before_prepared_outcome_fork,
-    after_in_parent=_after_prepared_outcome_fork_parent,
+fork_coordination.register_fork_participant(
+    "orchestration.layer_outcome_publication",
+    lock_factory=lambda: _PREPARED_OUTCOME_LOCK,
     after_in_child=_after_prepared_outcome_fork_child,
 )
+
+
+@contextmanager
+def _prepared_outcome_locked() -> Iterator[None]:
+    with fork_coordination.fork_coordinated_lock(_PREPARED_OUTCOME_LOCK):
+        yield
 
 
 def _current_prepared_outcome_thread_token() -> object:
@@ -257,7 +258,7 @@ def _prepared_layer_outcome_gone(
     identifier: int,
     observed: weakref.ReferenceType[PreparedLayerOutcomePublication],
 ) -> None:
-    with _PREPARED_OUTCOME_LOCK:
+    with _prepared_outcome_locked():
         entry = _PREPARED_OUTCOMES.get(identifier)
         if entry is not None and entry.reference is observed:
             _PREPARED_OUTCOMES.pop(identifier, None)
@@ -270,7 +271,7 @@ def _require_prepared_layer_outcome(
         raise LayerOutcomePublicationConflict(
             "layer-outcome operation requires an exact prepared capability"
         )
-    with _PREPARED_OUTCOME_LOCK:
+    with _prepared_outcome_locked():
         entry = _PREPARED_OUTCOMES.get(id(prepared))
         if entry is None or entry.reference() is not prepared:
             raise LayerOutcomePublicationConflict(
@@ -339,7 +340,7 @@ def _mint_prepared_layer_outcome(
         thread_id=threading.get_ident(),
         thread_token=_current_prepared_outcome_thread_token(),
     )
-    with _PREPARED_OUTCOME_LOCK:
+    with _prepared_outcome_locked():
         if identifier in _PREPARED_OUTCOMES:  # pragma: no cover - live id guarantee
             raise LayerOutcomePublicationConflict(
                 "prepared layer outcome identity collided with a live capability"
@@ -352,7 +353,7 @@ def _retire_prepared_layer_outcome(
     prepared: PreparedLayerOutcomePublication,
 ) -> _PreparedLayerOutcomeRecord:
     record = _require_prepared_layer_outcome(prepared)
-    with _PREPARED_OUTCOME_LOCK:
+    with _prepared_outcome_locked():
         entry = _PREPARED_OUTCOMES.get(id(prepared))
         if entry is None or entry.reference() is not prepared:
             raise LayerOutcomePublicationConflict(

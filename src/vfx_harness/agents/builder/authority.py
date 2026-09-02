@@ -20,6 +20,9 @@ from vfx_harness.orchestration.selected_authority_guard import (
 from vfx_harness.orchestration.selected_authority_guard import (
     selected_authority_commit as selected_authority_commit,
 )
+from vfx_harness.orchestration.shot_authority_capture import (
+    shot_authority_writer_fence,
+)
 
 
 class AuthorityBoundLedger(Ledger):
@@ -185,14 +188,37 @@ class AuthorityBoundLedger(Ledger):
         )
         execution_guard.check("start builder ledger publication staging")
         prepared = super().prepare_save(authority_binding=binding)
+        callback_completed = False
         try:
-            execution_guard.publish(
-                "builder ledger publication",
-                lambda: Ledger.commit_prepared_save(
-                    self,
-                    prepared,
-                    authority_binding=binding,
-                ),
-            )
+            callback_calls = 0
+
+            with shot_authority_writer_fence(self.shot.folder) as writer_capability:
+
+                def commit() -> str:
+                    nonlocal callback_calls, callback_completed
+
+                    callback_calls += 1
+                    if callback_calls != 1:
+                        raise ValueError(
+                            "builder ledger guard invoked its exact mutation more than once"
+                        )
+                    result = Ledger.commit_prepared_save(
+                        self,
+                        prepared,
+                        authority_binding=binding,
+                        writer_capability=writer_capability,
+                    )
+                    callback_completed = True
+                    return result
+
+                execution_guard.publish(
+                    "builder ledger publication",
+                    commit,
+                )
+                if callback_calls != 1 or not callback_completed:
+                    raise ValueError(
+                        "builder ledger guard must invoke and complete its exact mutation once"
+                    )
         finally:
-            Ledger.discard_prepared_save(prepared)
+            if not callback_completed:
+                Ledger.discard_prepared_save(prepared)

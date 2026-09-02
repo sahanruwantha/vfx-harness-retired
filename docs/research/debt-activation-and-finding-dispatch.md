@@ -193,10 +193,11 @@ safe; fork-visible rows carry captured per-fd identities and shrink to only stil
 neutralized slots close. This prevents a stale numeric fd from closing an unrelated replacement. The
 same managed fork-acquisition primitive now covers root-run owner and reconciler fence opens. The
 shot-authority lease is now installed at the final mutation boundary for the layer-finalization
-artifact/replay/evaluation/outcome chain, but not yet around every other sanctioned writer or its
-actual inner lock and publication sink. The foundation deliberately has no ledger-v2 writer and
-cannot publish or
-authoritatively read an `interrupted` v2
+artifact/replay/evaluation/outcome chain and every canonical legacy `Ledger` commit. The ledger
+path is a physical transport boundary only; it neither derives accepted members nor emits strict
+v2 authority. Other sanctioned writers are not all migrated to their actual inner lock and
+publication sink. The foundation deliberately has no ledger-v2 derivation writer and cannot
+publish or authoritatively read an `interrupted` v2
 status. The evaluation has
 no caller-selected success factory, and the canonical receipt/evaluation locators are reserved for
 a future independent evaluator and terminalizer. `RunStatusV2` remains a closed
@@ -242,6 +243,33 @@ interruption issuer, independent evaluator, terminalizer, public signal integrat
 reconciler, or authoritative `interrupted` reader/status. The HIR therefore remains proposed and
 non-publishable. Focused publication regressions prove only this sink family, not the heterogeneous
 crash matrix or fresh real-model seal.
+
+The canonical `<shot>/shot.json` physical sink now has a second bounded migration. Preparation
+rereads under the real ledger lock, stages and verifies one exact legacy merge, and returns an
+opaque process/thread/shot-bound capability. Generic prepared and durable replace/remove paths
+reserve every `shot.json` and `shot.json.lock` destination, including re-rooted paths, while
+isolated consumer and candidate projections prove that their raw copy destination is not the live
+shot namespace.
+Commit order is shared shot-authority writer fence, exact builder or acceptance owner guard when
+one exists, ordered `shot_ledger` rank, actual nonblocking ledger EX, prepared CAS, and trusted
+readback. Fork-visible descriptor ownership spans component traversal, pending acquisition,
+handoff, validation, and cleanup without holding the fork mutex across blocking `flock`.
+
+This remains fenced legacy transport, not the strict accepted-build root. The merge still admits
+legacy `milestones`, `acceptance`, `runs`, and arbitrary changed top-level mappings; base
+`Ledger.save()` remains semantically unscoped. A binding string and a writer lease prove where and
+when bytes moved, not that the bytes are a complete `shot-ledger/v2` graph. The next bounded step
+is the sole derivation writer described below.
+
+The fork-visible descriptor registry behind those writers now retains rather than drops every
+slot whose identity cannot be read. Adoption of an unreadable slot neutralizes it under deferred
+signals and poisons admission; a slot that cannot be neutralized stays registered as unproven and
+terminates fork children; the run-owner claim file is allocated inside the armed acquisition so a
+signal-triggered fork cannot inherit its staging descriptor; and lease release plus every other
+neutralizer consumer report typed retained state instead of duck-typed attributes. Plan-consumer
+scratch roots and descendants are created through a kernel-proven fanotify target-FID and
+`openat2` primitive that refuses a swapped inode and fails closed on unsupported kernels or
+filesystems. Strict preflight does not yet report that capability.
 
 HIR-0172 therefore has a strict prerequisite sequence, not a set of parallel best-effort patches:
 

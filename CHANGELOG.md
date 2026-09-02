@@ -88,6 +88,18 @@ live in the linked Harness Improvement Records.
   transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
   safe resume producer, or proven local-implementation retry producer
   ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- Canonical `shot.json` commits now use one opaque prepared transaction under the shared
+  shot-authority writer fence and ordered real ledger lock, with exact CAS/readback and
+  interruption- and fork-safe descriptor ownership. Generic file writers cannot target either
+  `shot.json` or its `shot.json.lock`, and plan-consumer/candidate copies require an exact
+  physically isolated view whose directories are created through a kernel-proven fanotify
+  target-FID and `openat2` primitive (Linux 5.17+ on a local filesystem; unsupported hosts fail
+  closed). The fork-visible descriptor registry now retains unreadable slots instead of assuming
+  them closed, neutralizes an unreadable adoption, allocates the owner claim inside the armed
+  acquisition, and reports typed retained state on lease release. This is a legacy transport
+  boundary only; strict `shot-ledger/v2` accepted-member derivation and
+  interruption publication remain disabled
+  ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - A normal full render now requires a complete passing
   `vfx-harness.acceptance-outcome/v1` for the exact current bundle, materialized view,
   accepted layer/unit script chain, selected moments, and unchanged render/reference

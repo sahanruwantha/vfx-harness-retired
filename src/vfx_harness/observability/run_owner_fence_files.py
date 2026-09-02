@@ -17,6 +17,9 @@ from vfx_harness.domain.run_owner_claims import (
 from vfx_harness.observability.run_owner_fork_guard import (
     ForkProtectedAcquisition,
     GuardedDescriptor,
+    RunOwnerForkGuardCleanupError,
+    RunOwnerForkGuardError,
+    neutralize_active_descriptors,
 )
 
 RUN_OWNER_DIRECTORY = Path("owner")
@@ -39,6 +42,32 @@ class RunOwnerFenceActive(RunOwnerFenceError):
 
 class RunOwnerFenceSubstituted(RunOwnerFenceError):
     """A canonical owner namespace no longer names its claim-bound inode."""
+
+
+class RunOwnerFenceCleanupError(RunOwnerFenceError):
+    """Lease release retained exact descriptors; route to engineering."""
+
+    def __init__(
+        self,
+        errors: tuple[BaseException, ...],
+        *,
+        retained_authority: tuple[GuardedDescriptor, ...],
+        retained_neutral: tuple[GuardedDescriptor, ...],
+        retained_unproven: tuple[int, ...],
+    ) -> None:
+        self.errors = errors
+        self.retained_authority = retained_authority
+        self.retained_neutral = retained_neutral
+        self.retained_unproven = retained_unproven
+        super().__init__(
+            "run owner fence release could not neutralize every lease descriptor; "
+            "retained_authority="
+            f"{tuple(item.descriptor for item in retained_authority)!r}; "
+            "retained_neutral="
+            f"{tuple(item.descriptor for item in retained_neutral)!r}; "
+            f"retained_unproven={retained_unproven!r}; "
+            "route to engineering"
+        )
 
 
 class RunOwnerClaimExists(RunOwnerFenceError):
@@ -500,56 +529,67 @@ def close_acquisition(
 
 
 def close_guarded_acquisition(
+    token: object,
     descriptors: tuple[GuardedDescriptor, ...],
 ) -> None:
-    """Close only numeric slots still joined to this exact lease identity."""
+    """Unlock the exact fence, then neutralize every lease slot through the registry.
 
-    errors: list[BaseException] = []
+    Retained state outranks every other diagnostic: a slot that is still live,
+    still neutral, or unreadable surfaces as :class:`RunOwnerFenceCleanupError`
+    with the exact rows.  A fence whose identity changed before release is a
+    :class:`RunOwnerFenceSubstituted` failure that never touches the reused
+    slot.  Other cleanup diagnostics attach to the primary failure as notes.
+    """
+
+    diagnostics: list[BaseException] = []
     fence = descriptors[-1]
-    if fence.is_current():
-        try:
-            close_acquisition(
-                fence_descriptor=fence.descriptor,
-                owner_descriptor=None,
-                root_descriptor=None,
-                runs_descriptor=None,
-                shot_descriptor=None,
-                locked=True,
-            )
-        except BaseException as exc:
-            errors.append(exc)
+    try:
+        fence_current = fence.is_current()
+    except RunOwnerForkGuardError as exc:
+        # Unreadable is not closed; the neutralizer retains and reports it.
+        fence_current = False
+        diagnostics.append(exc)
     else:
-        errors.append(
-            RunOwnerFenceSubstituted(
-                "run owner fence descriptor changed identity before release"
-            )
-        )
-    for guarded in reversed(descriptors[:-1]):
-        if not guarded.is_current():
-            errors.append(
+        if not fence_current:
+            diagnostics.append(
                 RunOwnerFenceSubstituted(
-                    "run owner directory descriptor changed identity before release"
+                    "run owner fence descriptor changed identity before release"
                 )
             )
-            continue
+    if fence_current:
         try:
-            os.close(guarded.descriptor)
-        except BaseException as exc:
-            errors.append(exc)
-    if not errors:
+            fcntl.flock(fence.descriptor, fcntl.LOCK_UN)
+        except OSError as exc:
+            diagnostics.append(exc)
+    try:
+        neutralize_active_descriptors(token, descriptors)
+    except RunOwnerForkGuardCleanupError as exc:
+        if exc.retains_authority:
+            raise RunOwnerFenceCleanupError(
+                (*diagnostics, *exc.errors),
+                retained_authority=exc.retained_authority,
+                retained_neutral=exc.retained_neutral,
+                retained_unproven=exc.retained_unproven,
+            ) from exc
+        diagnostics.extend(exc.errors)
+    if not diagnostics:
         return
-    primary = errors[0]
-    if isinstance(primary, RunOwnerFenceError):
-        for diagnostic in errors[1:]:
+    primary = next(
+        (item for item in diagnostics if isinstance(item, RunOwnerFenceError)),
+        None,
+    )
+    cause: BaseException | None = None
+    if primary is None:
+        cause = diagnostics[0]
+        primary = RunOwnerFenceError(
+            "run owner fence cleanup failed: "
+            f"{type(cause).__name__}: {cause}"
+        )
+    for diagnostic in diagnostics:
+        if diagnostic is not primary and diagnostic is not cause:
             primary.add_note(
                 f"cleanup diagnostic: {type(diagnostic).__name__}: {diagnostic}"
             )
-        raise primary
-    failure = RunOwnerFenceError(
-        "run owner fence cleanup reported an operating-system failure"
-    )
-    for diagnostic in errors:
-        failure.add_note(
-            f"cleanup diagnostic: {type(diagnostic).__name__}: {diagnostic}"
-        )
-    raise failure from primary
+    if cause is not None:
+        raise primary from cause
+    raise primary

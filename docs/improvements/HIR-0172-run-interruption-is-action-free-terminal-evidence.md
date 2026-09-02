@@ -88,10 +88,12 @@ distinct-shot concurrency, physical path aliases, foreign-thread context unwind,
 same-process descriptor closure/reuse, partial cleanup, acquisition interruption, and both directions
 of the legacy `flock` transition. The same managed fork-acquisition primitive now owns root-run fence
 opens and handoff as well. The shot-authority lease is now installed at the final mutation boundary
-for the layer-finalization artifact/replay/evaluation/outcome chain, but not yet around every other
-sanctioned writer or its actual inner lock and sink. The foundation also does not yet implement
-the ledger writer/derivation boundary, the independent source-verifying evaluator, or the terminal
-status publisher/reader. The two selected record locators are already closed to
+for the layer-finalization artifact/replay/evaluation/outcome chain and every canonical legacy
+`Ledger` commit. The latter is a physical transport boundary only: it does not derive or emit
+strict accepted-build authority. Other sanctioned writers are not all migrated to their actual
+inner lock and sink. The foundation also does not yet implement the strict ledger derivation
+boundary, the independent source-verifying evaluator, or the terminal status publisher/reader.
+The two selected record locators are already closed to
 `reports/interruption-receipt.json` and
 `reports/interruption-receipt-evaluation.json`; alternate nearby files have no authority.
 
@@ -157,6 +159,62 @@ issuer, independent evaluator, terminalizer, public signal integration, owner-lo
 authoritative `interrupted` reader/status. The HIR remains proposed and non-publishable; focused
 publication regressions prove only this sink family, not the heterogeneous/crash matrix or the
 fresh real-model seal.
+
+#### Bounded legacy shot-ledger transport migration
+
+The canonical `<shot>/shot.json` physical sink now has one typed transport. Preparation rereads
+the current generation under the real ledger lock, merges the legacy mapping, and returns an
+opaque exact-object capability bound to the creator process, thread, shot, predecessor, staged
+inode, payload digest, and authority binding. Generic prepared-file and durable replace/remove
+APIs reserve every `shot.json` and `shot.json.lock` destination, including re-rooted paths.
+Isolated plan-consumer and unpublished-candidate projections must prove that their destination is
+not the live shot namespace before writing their non-authoritative copy.
+
+Commit acquires the shared shot-authority writer fence first. Builder publication then proves its
+exact attempt/finalization guard, while acceptance proves its selected-authority and replay-input
+generation. The typed sink finally enters the ordered `shot_ledger` rank, acquires the actual
+nonblocking ledger EX lock, revalidates the live writer, performs the prepared CAS, and reads back
+the exact digest. Preparation and blocking reads never retain the process-wide fork-acquisition
+mutex; pending, active, validation, handoff, and cleanup descriptors remain fork-visible and
+identity-bound throughout their lifetime. A replaced root, lock, predecessor, staging name,
+parent, payload, writer capability, thread, or process fails closed.
+
+This migration does **not** close accepted-build semantics. `_merge_payload` still accepts the
+legacy `milestones`/`acceptance`/`runs` projection and arbitrary changed top-level mappings, and
+public base `Ledger.save()` has no unit, finalization, or acceptance owner. An authority-binding
+string and a successful physical fence are not `shot-ledger/v2` evidence. The next ledger step is
+one semantic writer that derives the complete accepted member graph from selected authority and
+terminal receipts; callers must not supply those rows.
+
+#### Fork-safe descriptor ownership and kernel-proven consumer directories
+
+The fork-visible descriptor registry treats every observation as tri-state. A slot that still
+names its captured identity is live, `EBADF` proves it closed, and any other read failure is
+unproven: it poisons the process for engineering, admission and cleanup retain it, and a forked
+child that cannot prove inherited authority released terminates with exit 86. A persistent
+identity-capture failure during adoption no longer leaves the caller's slot live, untracked, and
+fork-inheritable: the slot is replaced with the private neutral identity under deferred signals
+and closed exactly once, and a slot that cannot even be neutralized stays registered as unproven.
+The run-owner claim file is allocated through the same armed acquisition, so a signal handler that
+forks immediately after the create-only open finds the staging descriptor neutralized rather than
+inherited. Lease release unlocks the exact fence and then neutralizes every lease slot through the
+registry; retained authority, neutral, or unproven rows surface as one typed cleanup failure that
+outranks substitution and operating-system diagnostics. Every other consumer of the neutralizer
+(the ledger lock, plan-consumer transactions, and authority selection) reads only that typed
+state instead of duck-typing a retained attribute or collapsing an unreadable slot into closed.
+
+Plan-consumer scratch roots and every descendant directory are created through one kernel-proven
+primitive. The already-held parent is marked with fanotify `FAN_REPORT_TARGET_FID` before
+`mkdirat`; the resulting `FAN_CREATE` event must carry the parent's handle, the exact child name,
+and the created directory's opaque file handle; the child is opened with `openat2` under
+`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV`; and adoption
+requires `name_to_handle_at` on that descriptor to equal the event's target handle. A name swap
+between creation and capture therefore cannot turn a foreign inode into owned state, and the
+proven staging inode reaches its final name only through a no-replace rename. This requires Linux
+5.17 (or the target-FID backport), an unprivileged fanotify listener, and a local filesystem that
+exports file handles. `ENOSYS`, `EPERM`, `ENODEV`, `EOPNOTSUPP`, a queue overflow, a malformed or
+duplicate event, or a handle mismatch fails closed before any consumer write. Strict preflight
+does not yet probe this capability; that report is a separate bounded step.
 
 ### Prerequisite implementation order
 
@@ -449,6 +507,10 @@ recovery controller or an authority-state transaction.
 | Independent-layer ids sort differently from stable DAG order | Ledger v2 retains the selected topological order, while duplicate, omitted, or reordered accepted rows fail source verification |
 | Plan amendment/resolution, authority pending WAL, work-unit, debt, or payment-attempt bytes change | Closed authority equality fails even when plan and JIT pointers are unchanged |
 | Legacy run has `running` but no owner claim/fence | New reconciler refuses migration rather than guessing that the owner died |
+| Descriptor adoption cannot read the opened slot's identity | The slot is neutralized and closed once and admission is poisoned; a slot that cannot be neutralized is retained as unproven and a forked child exits 86 |
+| Signal handler forks immediately after the create-only owner-claim open | The child observes the staging descriptor closed while the parent's claim publication completes |
+| Lease release meets a corrupted fork registry or a substituted fence descriptor | The reconciled registry row stays visible through every neutralization, substitution never touches the reused slot, and retained rows surface as the typed cleanup failure |
+| Plan-consumer directory creation races a name swap, or the host lacks target-FID reporting | Adoption refuses a handle mismatch, and the unsupported platform fails closed before any consumer write |
 
 The key regression is a real subprocess test, not a raised exception inside the context manager:
 enter the public direct invocation, publish kickoff, block in an external-session-shaped AnyIO
@@ -504,4 +566,7 @@ hosts, and platforms without equivalent lock and process-control semantics requi
 validated backend and otherwise leave the run unclassified rather than guessing.
 
 This HIR does not implement a daemon, automatic recovery controller, model-session resume,
-distributed lease service, or retroactive repair of legacy orphan runs.
+distributed lease service, or retroactive repair of legacy orphan runs. Strict preflight does not
+yet report the fanotify target-FID and `openat2` capability that plan-consumer directory creation
+requires; an unsupported host fails closed at its first consumer-view allocation instead of at
+preflight.

@@ -2732,40 +2732,68 @@ def test_prepared_mutation_authorization_refuses_thread_transfer(
 def test_prepared_mutation_issuer_lock_is_reinitialized_in_fork_child() -> None:
     lock_held = Event()
     release_lock = Event()
+    fork_started = Event()
+    fork_completed = Event()
+    failures: list[BaseException] = []
+    results: list[tuple[int, bytes]] = []
 
     def hold_issuer_lock() -> None:
-        with layer_finalization_publication_authority._ISSUER_LOCK:
-            lock_held.set()
-            assert release_lock.wait(5)
+        try:
+            with layer_finalization_publication_authority._issuer_locked():
+                lock_held.set()
+                if not release_lock.wait(5):
+                    raise AssertionError("issuer-lock release timed out")
+        except BaseException as exc:  # asserted in the owning thread
+            failures.append(exc)
 
     owner = Thread(target=hold_issuer_lock)
     owner.start()
     assert lock_held.wait(5)
 
     read_descriptor, write_descriptor = os.pipe()
-    child = os.fork()
-    if child == 0:  # pragma: no branch - parent asserts the child result
-        os.close(read_descriptor)
-        acquired = layer_finalization_publication_authority._ISSUER_LOCK.acquire(
-            blocking=False
-        )
-        if acquired:
-            layer_finalization_publication_authority._ISSUER_LOCK.release()
-        os.write(write_descriptor, b"reset" if acquired else b"inherited-locked")
-        os.close(write_descriptor)
-        os._exit(0)
+    def fork_after_barrier() -> None:
+        try:
+            fork_started.set()
+            child = os.fork()
+            if child == 0:  # pragma: no branch - parent asserts the child result
+                os.close(read_descriptor)
+                acquired = (
+                    layer_finalization_publication_authority._ISSUER_LOCK.acquire(
+                        blocking=False
+                    )
+                )
+                if acquired:
+                    layer_finalization_publication_authority._ISSUER_LOCK.release()
+                os.write(
+                    write_descriptor,
+                    b"reset" if acquired else b"inherited-locked",
+                )
+                os.close(write_descriptor)
+                os._exit(0)
+            os.close(write_descriptor)
+            observed = os.read(read_descriptor, 64)
+            os.close(read_descriptor)
+            waited, status = os.waitpid(child, 0)
+            if waited != child:
+                raise AssertionError("fork child wait returned another process")
+            results.append((os.waitstatus_to_exitcode(status), observed))
+        except BaseException as exc:  # asserted in the owning thread
+            failures.append(exc)
+        finally:
+            fork_completed.set()
 
-    os.close(write_descriptor)
-    observed = os.read(read_descriptor, 64)
-    os.close(read_descriptor)
-    waited, status = os.waitpid(child, 0)
+    forker = Thread(target=fork_after_barrier)
+    forker.start()
+    assert fork_started.wait(5)
+    assert not fork_completed.wait(0.1)
     release_lock.set()
     owner.join(5)
+    forker.join(5)
 
-    assert waited == child
-    assert os.waitstatus_to_exitcode(status) == 0
-    assert observed == b"reset"
     assert not owner.is_alive()
+    assert not forker.is_alive()
+    assert failures == []
+    assert results == [(0, b"reset")]
 
 
 def test_prepared_mutation_authorization_cannot_be_constructed() -> None:

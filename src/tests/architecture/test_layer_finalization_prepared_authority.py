@@ -14,6 +14,8 @@ from vfx_harness.orchestration import (
     layer_finalization_publication_authority,
     layer_outcome_publication,
     layer_replay_receipts,
+    plan_consumer_ledger_projection,
+    shot_ledger_publication,
 )
 
 
@@ -223,6 +225,8 @@ def test_destination_issuer_surface_is_closed_to_typed_sink_modules() -> None:
         Path(layer_replay_receipts.__file__).resolve(),
         Path(layer_evaluation_receipts.__file__).resolve(),
         Path(layer_outcome_publication.__file__).resolve(),
+        Path(plan_consumer_ledger_projection.__file__).resolve(),
+        Path(shot_ledger_publication.__file__).resolve(),
     }
     for symbol in {
         "_bind_prepared_publication_destination_issuer",
@@ -277,11 +281,18 @@ def test_typed_preparation_registries_quiesce_every_fork() -> None:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "register_at_fork"
+            and node.func.attr == "register_fork_participant"
         ]
         assert len(registrations) == 1, module.__name__
         assert {keyword.arg for keyword in registrations[0].keywords} == {
-            "before",
-            "after_in_parent",
+            "lock_factory",
             "after_in_child",
         }, module.__name__
+        coordinated = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "fork_coordinated_lock"
+        ]
+        assert len(coordinated) == 1, module.__name__

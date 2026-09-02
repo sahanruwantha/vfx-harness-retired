@@ -15,8 +15,10 @@ from vfx_harness.domain.authority_preview_records import (
     AUTHORITY_PREVIEW_REFERENCE_PATH,
     AuthorityPreviewReference,
 )
-from vfx_harness.observability.provenance import atomic_write
-from vfx_harness.orchestration import plan_bundle_integrity
+from vfx_harness.orchestration import (
+    plan_bundle_integrity,
+    plan_consumer_installed_projection,
+)
 from vfx_harness.orchestration.jit_materialization.schema import (
     OVERLAY_ARTIFACTS,
     STATE_DIR,
@@ -25,6 +27,13 @@ from vfx_harness.orchestration.jit_materialization.transition import (
     PreparedMaterializationPublication,
 )
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_locator
+from vfx_harness.orchestration.plan_consumer_ledger_projection import (
+    update_plan_consumer_ledger,
+)
+from vfx_harness.orchestration.plan_consumer_view_mutation import (
+    PlanConsumerViewMutationCapability,
+    require_plan_consumer_view_mutation,
+)
 from vfx_harness.orchestration.unit_state_lock import unit_state_path
 from vfx_harness.orchestration.unit_state_serialization import (
     WorkUnitStateSerializationError,
@@ -144,39 +153,6 @@ def _canonical_overlay_payloads(
         copied[name] = payload
         documents[name] = document
     return copied, documents
-
-
-def _verify_immutable_view(
-    view: Path,
-    root: Path,
-    expected: Mapping[str, bytes],
-) -> None:
-    plan_bundle_integrity.require_real_directory(
-        view,
-        root,
-        "candidate publication preview view",
-    )
-    try:
-        children = tuple(root.iterdir())
-    except OSError as exc:
-        raise ValueError(f"candidate publication preview view is unreadable: {root}") from exc
-    observed = {child.name for child in children}
-    if observed != set(expected):
-        raise ValueError(
-            "candidate publication preview member set conflicts with its address; "
-            f"missing={sorted(set(expected) - observed)}; "
-            f"unexpected={sorted(observed - set(expected))}"
-        )
-    for child in children:
-        if child.is_symlink() or not child.is_file():
-            raise ValueError(f"candidate publication preview members must be real files: {child.name}")
-        snapshot = plan_bundle_integrity.read_real_file_snapshot(
-            root,
-            child,
-            f"candidate publication preview member {child.name}",
-        )
-        if snapshot.payload != expected[child.name]:
-            raise ValueError(f"immutable candidate publication preview conflicts with staged bytes: {child.name}")
 
 
 def _hash_mapping(value: object, where: str) -> dict[str, str]:
@@ -359,6 +335,7 @@ def _validate_publication_projection(
 
 
 def _prepare_preview_state_directory(
+    capability: PlanConsumerViewMutationCapability,
     view: Path,
     before_hashes: Mapping[str, str],
 ) -> Path:
@@ -369,125 +346,100 @@ def _prepare_preview_state_directory(
         view / "state" / "work-units",
         "candidate preview work-unit state",
     )
-    if preview_dir.is_symlink():
-        raise ValueError("candidate preview work-unit state must be an isolated real directory")
-    if preview_dir.exists():
-        plan_bundle_integrity.require_real_directory(
-            view,
-            preview_dir,
-            "candidate preview work-unit state",
-        )
-    else:
+    plan_consumer_installed_projection.ensure_directory(capability, "state")
+    kind = plan_consumer_installed_projection.member_kind(
+        capability,
+        "state/work-units",
+    )
+    if kind is None:
         if before_hashes:
             raise ValueError("candidate preview work-unit state omits prepared predecessor files")
-        plan_bundle_integrity.ensure_real_directories(
-            view,
-            preview_dir,
-            "candidate preview work-unit state",
+        plan_consumer_installed_projection.ensure_directory(
+            capability,
+            "state/work-units",
         )
+    elif kind != "directory":
+        raise ValueError("candidate preview work-unit state must be an isolated real directory")
 
     expected = {
         _state_target(view, layer_id, "candidate preview predecessor").name: digest
         for layer_id, digest in before_hashes.items()
     }
-    try:
-        children = tuple(preview_dir.iterdir())
-    except OSError as exc:
-        raise ValueError(f"candidate preview work-unit state is unreadable: {preview_dir}") from exc
-    observed = {child.name for child in children}
+    observed = set(
+        plan_consumer_installed_projection.list_directory(
+            capability,
+            "state/work-units",
+        )
+    )
     if observed != set(expected):
         raise ValueError(
             "candidate preview work-unit state differs from the prepared predecessor; "
             f"missing={sorted(set(expected) - observed)}; "
             f"unexpected={sorted(observed - set(expected))}"
         )
-    for child in children:
-        if child.is_symlink() or not child.is_file():
-            raise ValueError(f"candidate preview work-unit state must contain only real snapshot files: {child.name}")
-        snapshot = plan_bundle_integrity.read_real_file_snapshot(
-            preview_dir,
-            child,
-            f"candidate preview predecessor state {child.name}",
+    for name, digest in expected.items():
+        payload = plan_consumer_installed_projection.read_regular_file(
+            capability,
+            f"state/work-units/{name}",
         )
-        if snapshot.sha256 != expected[child.name]:
-            raise ValueError(f"candidate preview work-unit predecessor hash changed: {child.name}")
+        if hashlib.sha256(payload).hexdigest() != digest:
+            raise ValueError(f"candidate preview work-unit predecessor hash changed: {name}")
     return preview_dir
 
 
 def _verify_projected_state_directory(
+    capability: PlanConsumerViewMutationCapability,
     view: Path,
     expected_payloads: Mapping[str, bytes],
 ) -> None:
-    preview_dir = view / "state" / "work-units"
-    plan_bundle_integrity.require_real_directory(
-        view,
-        preview_dir,
-        "candidate preview projected work-unit state",
-    )
     expected = {
         _state_target(view, layer_id, "candidate preview successor").name: payload
         for layer_id, payload in expected_payloads.items()
     }
-    children = tuple(preview_dir.iterdir())
-    observed = {child.name for child in children}
+    observed = set(
+        plan_consumer_installed_projection.list_directory(
+            capability,
+            "state/work-units",
+        )
+    )
     if observed != set(expected):
         raise ValueError(
             "candidate preview projected state member set differs from the successor; "
             f"missing={sorted(set(expected) - observed)}; "
             f"unexpected={sorted(observed - set(expected))}"
         )
-    for child in children:
-        if child.is_symlink() or not child.is_file():
-            raise ValueError(f"candidate preview projected state must contain only real files: {child.name}")
-        snapshot = plan_bundle_integrity.read_real_file_snapshot(
-            preview_dir,
-            child,
-            f"candidate preview successor state {child.name}",
+    for name, payload in expected.items():
+        observed_payload = plan_consumer_installed_projection.read_regular_file(
+            capability,
+            f"state/work-units/{name}",
         )
-        if snapshot.payload != expected[child.name]:
-            raise ValueError(f"candidate preview successor state bytes differ: {child.name}")
+        if observed_payload != payload:
+            raise ValueError(f"candidate preview successor state bytes differ: {name}")
 
 
 def stage_candidate_publication_view(
-    view: Path,
+    capability: PlanConsumerViewMutationCapability,
     view_hash: str,
     payloads: Mapping[str, bytes],
 ) -> Path:
     """Install or verify the future pointer's immutable content-addressed view."""
 
-    view = _canonical_preview_root(view)
     if not plan_bundle_integrity.is_digest(view_hash):
         raise ValueError("candidate publication preview view_hash must be a lowercase SHA-256 digest")
     copied, documents = _canonical_overlay_payloads(payloads)
     if canonical_view_hash(documents) != view_hash:
         raise ValueError("candidate publication preview view_hash does not address its exact documents")
-    parent = _contained_path(
-        view,
-        view / STATE_DIR / "views",
-        "candidate publication preview views directory",
+    relative = f"{STATE_DIR}/views/{view_hash}"
+    root = plan_consumer_installed_projection.install_immutable_directory(
+        capability,
+        relative,
+        copied,
     )
-    plan_bundle_integrity.ensure_real_directories(
-        view,
-        parent,
-        "candidate publication preview views directory",
+    plan_consumer_installed_projection.require_directory_payloads(
+        capability,
+        relative,
+        copied,
     )
-    root = _contained_path(
-        view,
-        parent / view_hash,
-        "candidate publication preview target",
-    )
-    if not root.exists() and not root.is_symlink():
-        try:
-            plan_bundle_integrity.durably_install_bundle_directory(
-                view,
-                root,
-                copied,
-            )
-        except plan_bundle_integrity.PlanPublicationError:
-            # A concurrent install is legal only when its exact immutable bytes won.
-            if not root.exists() and not root.is_symlink():
-                raise
-    _verify_immutable_view(view, root, copied)
     return root
 
 
@@ -511,7 +463,7 @@ def _record_ids(record: dict[str, Any], field: str) -> frozenset[str]:
 
 
 def _project_candidate_ledger(
-    view: Path,
+    capability: PlanConsumerViewMutationCapability,
     layer_id: str,
     record: dict[str, Any],
     state: dict[str, Any],
@@ -528,21 +480,6 @@ def _project_candidate_ledger(
     if not reopened:
         return False
 
-    path = view / "shot.json"
-    if not path.exists() and not path.is_symlink():
-        return True
-    snapshot = plan_bundle_integrity.read_real_file_snapshot(
-        view,
-        path,
-        "candidate preview ledger",
-    )
-    try:
-        ledger = json.loads(snapshot.payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("candidate preview shot.json is not readable JSON") from exc
-    if not isinstance(ledger, dict) or not isinstance(ledger.get("milestones"), dict):
-        raise ValueError("candidate preview shot.json must contain a milestones object")
-
     added = _record_ids(record, "added")
     removed = _record_ids(record, "removed")
     changed = _record_ids(record, "changed")
@@ -550,55 +487,80 @@ def _project_candidate_ledger(
     preserved = _record_ids(record, "preserved")
     orphaned = _record_ids(record, "orphaned") if "orphaned" in record else frozenset()
     affected = added | removed | changed | invalidated | preserved | orphaned
-    milestones = ledger["milestones"]
 
-    aggregate = milestones.get(layer_id)
-    if aggregate is not None:
-        if not isinstance(aggregate, dict):
-            raise ValueError(f"candidate preview ledger milestone {layer_id} must be an object")
-        aggregate["status"] = "pending"
+    def project(current: bytes | None) -> tuple[bytes | None, bool]:
+        if current is None:
+            return None, True
+        try:
+            ledger = json.loads(current)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("candidate preview shot.json is not readable JSON") from exc
+        if not isinstance(ledger, dict) or not isinstance(
+            ledger.get("milestones"),
+            dict,
+        ):
+            raise ValueError(
+                "candidate preview shot.json must contain a milestones object"
+            )
+        milestones = ledger["milestones"]
 
-    unit_prefix = f"{layer_id}@"
-    for milestone_id, slot in milestones.items():
-        if not isinstance(milestone_id, str) or not milestone_id.startswith(unit_prefix):
-            continue
-        unit_id = milestone_id[len(unit_prefix) :]
-        if unit_id not in affected:
-            continue
-        if not isinstance(slot, dict):
-            raise ValueError(f"candidate preview ledger milestone {milestone_id} must be an object")
-        slot["status"] = statuses.get(unit_id, "superseded")
+        aggregate = milestones.get(layer_id)
+        if aggregate is not None:
+            if not isinstance(aggregate, dict):
+                raise ValueError(
+                    f"candidate preview ledger milestone {layer_id} must be an object"
+                )
+            aggregate["status"] = "pending"
 
-    atomic_write(path, json.dumps(ledger, indent=2) + "\n")
-    return True
+        unit_prefix = f"{layer_id}@"
+        for milestone_id, slot in milestones.items():
+            if not isinstance(milestone_id, str) or not milestone_id.startswith(
+                unit_prefix
+            ):
+                continue
+            unit_id = milestone_id[len(unit_prefix) :]
+            if unit_id not in affected:
+                continue
+            if not isinstance(slot, dict):
+                raise ValueError(
+                    f"candidate preview ledger milestone {milestone_id} must be an object"
+                )
+            slot["status"] = statuses.get(unit_id, "superseded")
+
+        payload = (json.dumps(ledger, indent=2) + "\n").encode("utf-8")
+        return (None if payload == current else payload), True
+
+    projected, _digest = update_plan_consumer_ledger(capability, project)
+    return projected
 
 
-def _remove_reopened_outcome(view: Path, layer_id: str) -> None:
+def _remove_reopened_outcome(
+    capability: PlanConsumerViewMutationCapability,
+    view: Path,
+    layer_id: str,
+) -> None:
     """Remove one affected sealed outcome from scratch, never from live authority."""
 
-    outcomes = view / "plans" / "outcomes"
-    plan_bundle_integrity.require_real_directory(
-        view,
-        outcomes,
-        "candidate preview outcomes",
-    )
     path = _contained_path(
         view,
         view / layer_outcome_locator(layer_id),
         "candidate preview outcome",
     )
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise ValueError(f"candidate preview outcome must be absent or a real regular file: {path}")
-    path.unlink(missing_ok=True)
+    plan_consumer_installed_projection.remove_regular_file(
+        capability,
+        path.relative_to(view).as_posix(),
+    )
 
 
 def project_candidate_authority_state(
-    view: Path,
+    capability: PlanConsumerViewMutationCapability,
     publication: PreparedMaterializationPublication,
 ) -> None:
     """Install the gate-attested all-layer transition into isolated scratch."""
 
-    view = _canonical_preview_root(view)
+    view = _canonical_preview_root(
+        require_plan_consumer_view_mutation(capability)
+    )
     validated = _validate_publication_projection(view, publication)
     reference_path = _contained_path(
         view,
@@ -607,14 +569,25 @@ def project_candidate_authority_state(
     )
     if reference_path.is_symlink() or (reference_path.exists() and not reference_path.is_file()):
         raise ValueError("candidate authority preview reference must be absent or a real file")
-    _prepare_preview_state_directory(view, validated.before_hashes)
+    _prepare_preview_state_directory(capability, view, validated.before_hashes)
     for layer_id, payload in validated.after_payloads.items():
         target = _state_target(view, layer_id, "candidate preview successor")
-        atomic_write(target, payload.decode("utf-8"))
+        plan_consumer_installed_projection.replace_regular_file(
+            capability,
+            target.relative_to(view).as_posix(),
+            payload,
+        )
     prepared = publication.transition
     if prepared is None:
-        _verify_projected_state_directory(view, validated.after_payloads)
-        reference_path.unlink(missing_ok=True)
+        _verify_projected_state_directory(
+            capability,
+            view,
+            validated.after_payloads,
+        )
+        plan_consumer_installed_projection.remove_regular_file(
+            capability,
+            reference_path.relative_to(view).as_posix(),
+        )
         return
     for row in validated.effect_rows:
         target = _state_target(
@@ -623,7 +596,10 @@ def project_candidate_authority_state(
             "candidate preview transition effect",
         )
         if row.after_state is None:
-            target.unlink(missing_ok=True)
+            plan_consumer_installed_projection.remove_regular_file(
+                capability,
+                target.relative_to(view).as_posix(),
+            )
             projected = {"units": {}}
         else:
             projected = validated.after_states[row.layer_id]
@@ -637,10 +613,19 @@ def project_candidate_authority_state(
             "invalidated": list(effect.invalidated_unit_ids),
             "preserved": [unit.unit_id for unit in effect.preserved_units],
         }
-        if _project_candidate_ledger(view, row.layer_id, record, projected):
-            _remove_reopened_outcome(view, row.layer_id)
+        if _project_candidate_ledger(
+            capability,
+            row.layer_id,
+            record,
+            projected,
+        ):
+            _remove_reopened_outcome(capability, view, row.layer_id)
 
-    _verify_projected_state_directory(view, validated.after_payloads)
+    _verify_projected_state_directory(
+        capability,
+        view,
+        validated.after_payloads,
+    )
     reference = AuthorityPreviewReference.mint(
         transition_intent_ref=prepared.intent_ref,
         predecessor_head_ref=publication.authority_state_head_ref,
@@ -651,10 +636,13 @@ def project_candidate_authority_state(
         before_state_hashes=publication.before_state_hashes,
         after_state_hashes=publication.after_state_hashes,
     )
-    atomic_write(reference_path, reference.to_bytes().decode("utf-8"))
+    plan_consumer_installed_projection.replace_regular_file(
+        capability,
+        reference_path.relative_to(view).as_posix(),
+        reference.to_bytes(),
+    )
 
 
 __all__ = [
-    "project_candidate_authority_state",
     "stage_candidate_publication_view",
 ]

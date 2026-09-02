@@ -172,10 +172,12 @@ claim before any model can consume it and clears the generated context on failur
 `shot.json` publication is a two-transaction compare-and-swap. Preparation holds ledger EX only
 while it rereads and merges current rows, writes and fsyncs an unreferenced same-parent inode, and
 binds that inode to the exact prior ledger identity plus selected-authority and active-attempt
-identity. Commit holds the short attempt guard and then ledger EX, rechecks the prior target,
-prepared inode, parent, and binding, and performs only the atomic rename plus directory fsync. A
-concurrent ledger writer yields a typed `LedgerSaveConflict`; the stale temp is discarded and no
-automatic retry can invisibly reinterpret the owning builder operation.
+identity. Commit first holds the shared shot-authority writer fence, then the short attempt guard,
+then the ordered real ledger EX lock. It rechecks the live writer, prior target, prepared inode,
+parent, and binding, performs the atomic rename plus directory fsync, and reads back the exact
+digest. A concurrent ledger writer yields a typed `LedgerSaveConflict`; the stale temp is
+discarded and no automatic retry can invisibly reinterpret the owning builder operation. This is
+a guarded legacy builder projection, not a strict `shot-ledger/v2` accepted-build root.
 
 Shot-bound Blender workers run under mandatory bubblewrap confinement with a synthetic filesystem
 view. The worker receives explicit system-runtime roots and a descriptor-pinned harness runtime;

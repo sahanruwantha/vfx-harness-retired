@@ -2,120 +2,88 @@
 
 from __future__ import annotations
 
+import errno
 import os
-import stat
-import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 
-
-class RunOwnerForkGuardError(RuntimeError):
-    """A descriptor acquisition crossed a process boundary or registry invariant."""
-
-
-class RunOwnerForkGuardCleanupError(RunOwnerForkGuardError):
-    """A managed acquisition retained exact live descriptors after cleanup failed."""
-
-    def __init__(
-        self,
-        errors: tuple[BaseException, ...],
-        retained: tuple[GuardedDescriptor, ...],
-    ) -> None:
-        self.errors = errors
-        self.retained = retained
-        super().__init__(
-            "fork-protected acquisition cleanup could not neutralize every "
-            f"descriptor; retained={tuple(item.descriptor for item in retained)!r}; "
-            "route to engineering"
-        )
-
-
-_FORK_LOCK = threading.RLock()
-
-
-@dataclass(frozen=True, slots=True)
-class GuardedDescriptor:
-    """A numeric descriptor joined to the file identity captured at ownership."""
-
-    descriptor: int
-    device: int
-    inode: int
-    file_type: int
-    special_device: int
-
-    @classmethod
-    def capture(cls, descriptor: int) -> GuardedDescriptor:
-        observed = os.fstat(descriptor)
-        return cls(
-            descriptor=descriptor,
-            device=observed.st_dev,
-            inode=observed.st_ino,
-            file_type=stat.S_IFMT(observed.st_mode),
-            special_device=observed.st_rdev,
-        )
-
-    def is_current(self) -> bool:
-        """Whether the numeric slot still names the captured file identity."""
-
-        try:
-            observed = os.fstat(self.descriptor)
-        except OSError:
-            return False
-        return (
-            observed.st_dev == self.device
-            and observed.st_ino == self.inode
-            and stat.S_IFMT(observed.st_mode) == self.file_type
-            and observed.st_rdev == self.special_device
-        )
-
-
-_PENDING_DESCRIPTORS: dict[object, list[GuardedDescriptor]] = {}
-_ACTIVE_DESCRIPTORS: dict[object, tuple[GuardedDescriptor, ...]] = {}
-
-
-def _before_fork() -> None:
-    # Other threads block until a pending acquisition reaches active handoff or
-    # cleanup. The acquisition thread may enter reentrantly for an intentional
-    # fork; its pending descriptors are already visible to the child callback.
-    _FORK_LOCK.acquire()
-
-
-def _after_fork_parent() -> None:
-    _FORK_LOCK.release()
+from vfx_harness.observability import fork_coordination
+from vfx_harness.observability import run_owner_fork_registry as _registry
+from vfx_harness.observability.run_owner_descriptor_identity import (
+    PROCESS_CLEANUP_POISON,
+    GuardedDescriptor,
+    RunOwnerForkGuardCleanupError,
+    RunOwnerForkGuardError,
+    record_unproven_identity,
+)
 
 
 def _after_fork_child() -> None:
-    global _FORK_LOCK
+    if _registry.UNPROVEN_DESCRIPTORS:
+        # The parent could not read or neutralize these slots; the child cannot
+        # prove that inherited authority is released either.
+        os._exit(_registry.CHILD_AUTHORITY_CLEANUP_EXIT)
+    candidates = (
+        *(
+            guarded
+            for rows in _registry.PENDING_DESCRIPTORS.values()
+            for guarded in rows
+        ),
+        *(
+            guarded
+            for rows in _registry.ACTIVE_DESCRIPTORS.values()
+            for guarded in rows
+        ),
+        *(record.guarded for record in _registry.INERT_DESCRIPTORS.values()),
+    )
+    live_by_descriptor: dict[int, GuardedDescriptor] = {}
+    try:
+        for guarded in candidates:
+            if guarded.is_current():
+                live_by_descriptor[guarded.descriptor] = guarded
+    except BaseException:
+        os._exit(_registry.CHILD_AUTHORITY_CLEANUP_EXIT)
+    _registry.PENDING_DESCRIPTORS.clear()
+    _registry.ACTIVE_DESCRIPTORS.clear()
+    _registry.INERT_DESCRIPTORS.clear()
+    _registry.INERT_CLOSES_IN_FLIGHT.clear()
+    _registry.ORPHANED_AUTHORITY_TOKENS.clear()
+    if not live_by_descriptor:
+        return
 
-    descriptors = {
-        descriptor
-        for rows in (*_PENDING_DESCRIPTORS.values(), *_ACTIVE_DESCRIPTORS.values())
-        for descriptor in rows
-    }
-    _PENDING_DESCRIPTORS.clear()
-    _ACTIVE_DESCRIPTORS.clear()
-    for guarded in sorted(
-        descriptors,
-        key=lambda item: item.descriptor,
-        reverse=True,
-    ):
-        if guarded.is_current():
-            with suppress(OSError):
-                # Never issue LOCK_UN here. Closing the child's duplicate leaves
-                # the parent's lock intact. A stale numeric slot is never touched.
-                os.close(guarded.descriptor)
-    # The pre-fork RLock may retain recursion/owner state that names a vanished
-    # thread. The child starts a fresh registry generation and a fresh lock.
-    _FORK_LOCK = threading.RLock()
+    child_token = object()
+    guarded = tuple(
+        live_by_descriptor[descriptor]
+        for descriptor in sorted(live_by_descriptor)
+    )
+    _registry.ACTIVE_DESCRIPTORS[child_token] = guarded
+    _registry.ORPHANED_AUTHORITY_TOKENS.add(child_token)
+    try:
+        neutralize_active_descriptors(child_token, guarded)
+    except BaseException:
+        try:
+            retained_authority = tuple(
+                item
+                for item in _registry.ACTIVE_DESCRIPTORS.get(child_token, ())
+                if item.is_current()
+            )
+        except BaseException:
+            os._exit(_registry.CHILD_AUTHORITY_CLEANUP_EXIT)
+        if retained_authority:
+            # A child that pins inherited authority can deadlock the parent even
+            # if it never performs another harness operation. There is no caller
+            # stack to route through, so terminate deterministically.
+            os._exit(_registry.CHILD_AUTHORITY_CLEANUP_EXIT)
+    finally:
+        if not _registry.ACTIVE_DESCRIPTORS.get(child_token):
+            _registry.ORPHANED_AUTHORITY_TOKENS.discard(child_token)
 
-
-os.register_at_fork(
-    before=_before_fork,
-    after_in_parent=_after_fork_parent,
+fork_coordination.register_fork_participant(
+    "observability.run_owner_fork_guard",
+    lock_factory=None,
     after_in_child=_after_fork_child,
 )
-
 
 @dataclass(slots=True)
 class ForkProtectedAcquisition:
@@ -138,7 +106,7 @@ class ForkProtectedAcquisition:
             and self._finished
             and tuple(
                 guarded.descriptor
-                for guarded in _ACTIVE_DESCRIPTORS.get(self.token, ())
+                for guarded in _registry.ACTIVE_DESCRIPTORS.get(self.token, ())
             )
             == descriptors
         )
@@ -149,15 +117,15 @@ class ForkProtectedAcquisition:
         return (
             self.belongs_to_current_process
             and self._finished
-            and self.token not in _PENDING_DESCRIPTORS
-            and self.token not in _ACTIVE_DESCRIPTORS
+            and self.token not in _registry.PENDING_DESCRIPTORS
+            and self.token not in _registry.ACTIVE_DESCRIPTORS
         )
 
     def _pending(self) -> list[GuardedDescriptor]:
         if not self.belongs_to_current_process:
             raise RunOwnerForkGuardError("forked child cannot continue its parent's descriptor acquisition")
         try:
-            return _PENDING_DESCRIPTORS[self.token]
+            return _registry.PENDING_DESCRIPTORS[self.token]
         except KeyError as exc:
             raise RunOwnerForkGuardError("descriptor acquisition is absent from the pending fork registry") from exc
 
@@ -185,7 +153,22 @@ class ForkProtectedAcquisition:
                 # The caller still owns this exact numeric slot. Capture it
                 # directly so managed unwind can neutralize it even when an
                 # injected track failure occurred before the normal append.
-                rows.append(GuardedDescriptor.capture(descriptor))
+                try:
+                    rows.append(GuardedDescriptor.capture(descriptor))
+                except OSError as capture_error:
+                    if capture_error.errno == errno.EBADF:
+                        raise RunOwnerForkGuardError(
+                            "descriptor acquisition opener returned a closed "
+                            f"descriptor {descriptor}"
+                        ) from adoption_error
+                    # The identity is unreadable, so no registry row can be
+                    # built.  The slot is still ours: release it now rather
+                    # than leaving it live, untracked, and fork-inheritable.
+                    _neutralize_unproven_slot(
+                        descriptor,
+                        capture_error,
+                        adoption_error,
+                    )
             try:
                 self.retire(descriptor)
             except BaseException as cleanup_error:
@@ -198,13 +181,10 @@ class ForkProtectedAcquisition:
     def open_descriptor(self, opener: Callable[[], int]) -> int:
         """Open and adopt one fd inside an already-armed cleanup transaction."""
 
-        descriptor: int | None = None
-        try:
+        with _registry.block_descriptor_cleanup_signals():
             descriptor = opener()
             self.adopt_descriptor(descriptor)
             return descriptor
-        except BaseException:
-            raise
 
     def guarded_descriptors(
         self,
@@ -216,9 +196,9 @@ class ForkProtectedAcquisition:
             raise RunOwnerForkGuardError(
                 "forked child cannot inspect its parent's descriptor acquisition"
             )
-        rows = _PENDING_DESCRIPTORS.get(self.token)
+        rows = _registry.PENDING_DESCRIPTORS.get(self.token)
         if rows is None:
-            active = _ACTIVE_DESCRIPTORS.get(self.token)
+            active = _registry.ACTIVE_DESCRIPTORS.get(self.token)
             if active is None:
                 raise RunOwnerForkGuardError(
                     "descriptor acquisition is absent from the fork registry"
@@ -257,35 +237,38 @@ class ForkProtectedAcquisition:
             # stale row without touching the unrelated replacement.
             rows.remove(guarded)
             return
-        null_descriptor: int | None = None
-        substituted = False
-        try:
-            null_descriptor = os.open(
-                os.devnull,
-                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
-            )
-            os.set_inheritable(null_descriptor, False)
-            # dup2 atomically releases the tracked file while keeping its numeric
-            # slot allocated.  The at-fork registry can safely name that slot
-            # until it is removed: it now refers only to /dev/null, never to a
-            # concurrently reused application descriptor.
-            os.dup2(null_descriptor, descriptor, inheritable=False)
-            substituted = True
+        close_error: BaseException | None = None
+        with _registry.block_descriptor_cleanup_signals():
+            try:
+                os.dup2(
+                    _registry.NEUTRALIZER_DESCRIPTOR,
+                    descriptor,
+                    inheritable=False,
+                )
+            except BaseException as exc:
+                raise RunOwnerForkGuardError(
+                    "could not safely neutralize a pending descriptor"
+                ) from exc
+            if not _descriptor_matches(descriptor, _registry.NEUTRALIZER_IDENTITY):
+                raise RunOwnerForkGuardError(
+                    "pending descriptor did not become the exact neutral identity"
+                )
             rows.remove(guarded)
-            with suppress(OSError):
+            _registry.INERT_CLOSES_IN_FLIGHT.add(descriptor)
+            try:
                 os.close(descriptor)
-        except OSError as exc:
-            if substituted:  # pragma: no cover - close errors are suppressed above
-                return
-            # A failed dup2 leaves the original descriptor known-live. Never
-            # issue an ambiguous close and then retain its numeric slot: the
-            # close may take effect before raising and a later fork could close
-            # an unrelated descriptor that reused the number.
-            raise RunOwnerForkGuardError("could not safely retire a pending descriptor") from exc
-        finally:
-            if null_descriptor is not None:
-                with suppress(OSError):
-                    os.close(null_descriptor)
+            except BaseException as exc:
+                # The raw close may have succeeded before raising.  Never retain
+                # or retry this numeric slot; it now names at worst neutral data.
+                close_error = exc
+                PROCESS_CLEANUP_POISON.append(exc)
+            finally:
+                _registry.INERT_CLOSES_IN_FLIGHT.discard(descriptor)
+        if close_error is not None:
+            raise RunOwnerForkGuardError(
+                "pending descriptor neutral close had an ambiguous outcome; "
+                "the process is poisoned and no numeric slot will be retried"
+            ) from close_error
 
     def handoff(self, descriptors: tuple[int, ...]) -> object:
         rows = self._pending()
@@ -298,19 +281,19 @@ class ForkProtectedAcquisition:
             )
         try:
             guarded_descriptors = tuple(rows)
-            _ACTIVE_DESCRIPTORS[self.token] = guarded_descriptors
-            del _PENDING_DESCRIPTORS[self.token]
+            _registry.ACTIVE_DESCRIPTORS[self.token] = guarded_descriptors
+            del _registry.PENDING_DESCRIPTORS[self.token]
             self._finished = True
         except BaseException:
-            # The creator still owns _FORK_LOCK here, so restore the complete
+            # The creator still owns the fork barrier here, so restore the complete
             # pending state before exposing the failure to its abort path. This
             # closes every interruption point between the two registry rows.
             self._finished = False
-            _ACTIVE_DESCRIPTORS.pop(self.token, None)
-            _PENDING_DESCRIPTORS[self.token] = list(guarded_descriptors)
+            _registry.ACTIVE_DESCRIPTORS.pop(self.token, None)
+            _registry.PENDING_DESCRIPTORS[self.token] = list(guarded_descriptors)
             raise
         if not self.guard_managed:
-            _FORK_LOCK.release()
+            fork_coordination.release_fork_barrier()
         return self.token
 
     def abort(self) -> None:
@@ -321,22 +304,22 @@ class ForkProtectedAcquisition:
             # The child callback closed inherited descriptors, cleared the copied
             # registry, and replaced its lock. It must not release the new lock.
             return
-        _PENDING_DESCRIPTORS.pop(self.token, None)
+        _registry.PENDING_DESCRIPTORS.pop(self.token, None)
         if not self.guard_managed:
-            _FORK_LOCK.release()
-
+            fork_coordination.release_fork_barrier()
 
 def begin_fork_protected_acquisition() -> ForkProtectedAcquisition:
     """Exclude concurrent fork and expose every opened fd to child cleanup."""
 
-    _FORK_LOCK.acquire()
+    fork_coordination.acquire_fork_barrier()
+    try:
+        _registry.require_descriptor_acquisition_admission_locked()
+    except BaseException:
+        fork_coordination.release_fork_barrier()
+        raise
     token = object()
-    if token in _PENDING_DESCRIPTORS:  # pragma: no cover - object identity guarantee
-        _FORK_LOCK.release()
-        raise RunOwnerForkGuardError("descriptor acquisition token collision")
-    _PENDING_DESCRIPTORS[token] = []
+    _registry.PENDING_DESCRIPTORS[token] = []
     return ForkProtectedAcquisition(token=token, creator_pid=os.getpid())
-
 
 @contextmanager
 def managed_fork_protected_acquisition() -> Iterator[ForkProtectedAcquisition]:
@@ -348,16 +331,15 @@ def managed_fork_protected_acquisition() -> Iterator[ForkProtectedAcquisition]:
         creator_pid=os.getpid(),
         guard_managed=True,
     )
-    with _FORK_LOCK:
-        if token in _PENDING_DESCRIPTORS:  # pragma: no cover - identity guarantee
-            raise RunOwnerForkGuardError("descriptor acquisition token collision")
+    with fork_coordination.fork_barrier():
+        _registry.require_descriptor_acquisition_admission_locked()
         body_error: BaseException | None = None
         try:
-            _PENDING_DESCRIPTORS[token] = []
+            _registry.PENDING_DESCRIPTORS[token] = []
             yield acquisition
         except BaseException as exc:
             body_error = exc
-        pending = _PENDING_DESCRIPTORS.get(token)
+        pending = _registry.PENDING_DESCRIPTORS.get(token)
         cleanup_errors: list[BaseException] = []
         if pending is not None:
             for guarded in tuple(reversed(pending)):
@@ -367,17 +349,23 @@ def managed_fork_protected_acquisition() -> Iterator[ForkProtectedAcquisition]:
                     cleanup_errors.append(exc)
             remaining = tuple(
                 guarded.descriptor
-                for guarded in _PENDING_DESCRIPTORS.get(token, ())
+                for guarded in _registry.PENDING_DESCRIPTORS.get(token, ())
             )
             if remaining:
                 try:
                     acquisition.handoff(remaining)
                 except BaseException as exc:
                     cleanup_errors.append(exc)
+                pending_after_handoff = _registry.PENDING_DESCRIPTORS.pop(token, None)
+                if pending_after_handoff:
+                    _registry.ACTIVE_DESCRIPTORS[token] = tuple(pending_after_handoff)
+                    acquisition._finished = True
+                if _registry.ACTIVE_DESCRIPTORS.get(token):
+                    _registry.ORPHANED_AUTHORITY_TOKENS.add(token)
             else:
                 acquisition.abort()
         if cleanup_errors:
-            retained = tuple(_ACTIVE_DESCRIPTORS.get(token, ()))
+            retained = tuple(_registry.ACTIVE_DESCRIPTORS.get(token, ()))
             failure = RunOwnerForkGuardCleanupError(
                 tuple(cleanup_errors),
                 retained,
@@ -388,7 +376,6 @@ def managed_fork_protected_acquisition() -> Iterator[ForkProtectedAcquisition]:
         if body_error is not None:
             raise body_error
 
-
 @contextmanager
 def active_descriptor_close(
     token: object,
@@ -396,11 +383,14 @@ def active_descriptor_close(
 ) -> Iterator[None]:
     """Keep exact live identities fork-visible through owning cleanup."""
 
-    _FORK_LOCK.acquire()
+    fork_coordination.acquire_fork_barrier()
     invariant_error: RunOwnerForkGuardError | None = None
+    body_error: BaseException | None = None
+    unproven_error: RunOwnerForkGuardError | None = None
     visible = descriptors
+    remaining: tuple[GuardedDescriptor, ...] = ()
     try:
-        registered = _ACTIVE_DESCRIPTORS.get(token)
+        registered = _registry.ACTIVE_DESCRIPTORS.get(token)
         if registered is None:
             invariant_error = RunOwnerForkGuardError("active lease is absent from the fork descriptor registry")
             registered = ()
@@ -411,36 +401,315 @@ def active_descriptor_close(
         visible = tuple(
             {guarded.descriptor: guarded for guarded in (*registered, *descriptors)}.values()
         )
-        _ACTIVE_DESCRIPTORS[token] = visible
-        yield
+        _registry.ACTIVE_DESCRIPTORS[token] = visible
+        try:
+            yield
+        except BaseException as exc:
+            body_error = exc
     finally:
-        remaining = tuple(guarded for guarded in visible if guarded.is_current())
-        if remaining:
-            _ACTIVE_DESCRIPTORS[token] = remaining
-        else:
-            _ACTIVE_DESCRIPTORS.pop(token, None)
-        _FORK_LOCK.release()
+        try:
+            live: list[GuardedDescriptor] = []
+            for guarded in visible:
+                try:
+                    current = guarded.is_current()
+                except RunOwnerForkGuardError as exc:
+                    # Unreadable is not closed: keep the row and report it.
+                    current = True
+                    if unproven_error is None:
+                        unproven_error = exc
+                if current:
+                    live.append(guarded)
+            remaining = tuple(live)
+            if remaining:
+                _registry.ACTIVE_DESCRIPTORS[token] = remaining
+            else:
+                _registry.ACTIVE_DESCRIPTORS.pop(token, None)
+        finally:
+            fork_coordination.release_fork_barrier()
+    if unproven_error is not None:
+        failure = RunOwnerForkGuardCleanupError(
+            (unproven_error, *(() if invariant_error is None else (invariant_error,))),
+            retained_authority=remaining,
+            retained_unproven=tuple(sorted(_registry.UNPROVEN_DESCRIPTORS)),
+        )
+        if body_error is not None:
+            failure.add_note(
+                f"primary cleanup failure: {type(body_error).__name__}: {body_error}"
+            )
+            raise failure from body_error
+        raise failure
+    if body_error is not None:
+        if invariant_error is not None:
+            body_error.add_note(f"fork registry diagnostic: {invariant_error}")
+        raise body_error
     if invariant_error is not None:
         raise invariant_error
 
+def _descriptor_matches(
+    descriptor: int,
+    expected: GuardedDescriptor,
+) -> bool:
+    return expected.rebased(descriptor).is_current()
 
-def replace_active_descriptors_locked(
-    token: object,
-    expected: tuple[GuardedDescriptor, ...],
-    retained: tuple[GuardedDescriptor, ...],
+def _neutralize_unproven_slot(
+    descriptor: int,
+    capture_error: OSError,
+    adoption_error: BaseException,
 ) -> None:
-    """Shrink one active row while its owning close holds the fork guard."""
+    """Release a caller-owned slot whose identity cannot be read, then raise.
 
-    observed = _ACTIVE_DESCRIPTORS.get(token)
-    if observed != expected:
-        raise RunOwnerForkGuardError(
-            "active descriptor row changed before partial cleanup publication"
+    The process is poisoned first: an unreadable identity is never treated as
+    absence.  The slot is then replaced with the private neutral identity under
+    blocked signals and closed exactly once.  If the replacement cannot be
+    proven, the numeric slot stays retained as unproven so admission refuses
+    new acquisitions and a forked child terminates instead of inheriting it.
+    """
+
+    failure = record_unproven_identity(descriptor, capture_error)
+    failure.__cause__ = capture_error
+    with _registry.block_descriptor_cleanup_signals():
+        _registry.UNPROVEN_DESCRIPTORS.add(descriptor)
+        try:
+            os.dup2(_registry.NEUTRALIZER_DESCRIPTOR, descriptor, inheritable=False)
+            neutralized = _descriptor_matches(descriptor, _registry.NEUTRALIZER_IDENTITY)
+        except BaseException as exc:
+            cleanup_failure = RunOwnerForkGuardCleanupError(
+                (failure, exc),
+                retained_unproven=(descriptor,),
+            )
+            cleanup_failure.add_note(
+                "adoption diagnostic: "
+                f"{type(adoption_error).__name__}: {adoption_error}"
+            )
+            raise cleanup_failure from exc
+        if not neutralized:
+            raise RunOwnerForkGuardCleanupError(
+                (
+                    failure,
+                    RunOwnerForkGuardError(
+                        "unproven descriptor did not become the exact neutral identity"
+                    ),
+                ),
+                retained_unproven=(descriptor,),
+            ) from adoption_error
+        _registry.UNPROVEN_DESCRIPTORS.discard(descriptor)
+        # One raw close for a slot that now names only neutral data; a raised
+        # close is recorded and never retried against this numeric slot.
+        _registry.INERT_CLOSES_IN_FLIGHT.add(descriptor)
+        try:
+            os.close(descriptor)
+        except BaseException as exc:
+            PROCESS_CLEANUP_POISON.append(exc)
+            failure.add_note(
+                f"neutral close diagnostic: {type(exc).__name__}: {exc}"
+            )
+        finally:
+            _registry.INERT_CLOSES_IN_FLIGHT.discard(descriptor)
+    raise failure from adoption_error
+
+def neutralize_active_descriptors(
+    token: object,
+    descriptors: tuple[GuardedDescriptor, ...],
+) -> None:
+    """Release exact active fds before any ambiguous raw-close outcome.
+
+    Each live authority descriptor is first replaced with the process-private
+    neutral identity.  The active fork row is then shrunk while the numeric
+    slot is still occupied, so a later close that succeeds before raising can
+    never make a same-inode reused slot look like the original lease.  An inert
+    close that fails without taking effect remains registered for engineering;
+    it is never retried ambiguously in this call.  Every failure surfaces as a
+    typed cleanup error whose retained rows are computed conservatively: a slot
+    whose identity cannot be read is retained, never assumed closed.
+    """
+
+    try:
+        _neutralize_active_descriptors(token, descriptors)
+    except RunOwnerForkGuardCleanupError:
+        raise
+    except BaseException as exc:
+        with fork_coordination.fork_barrier():
+            retained_authority, retained_neutral = _registry.retained_rows_locked(token)
+            retained_unproven = tuple(sorted(_registry.UNPROVEN_DESCRIPTORS))
+        raise RunOwnerForkGuardCleanupError(
+            (exc,),
+            retained_authority=retained_authority,
+            retained_neutral=retained_neutral,
+            retained_unproven=retained_unproven,
+        ) from exc
+
+def _neutralize_active_descriptors(
+    token: object,
+    descriptors: tuple[GuardedDescriptor, ...],
+) -> None:
+    errors: list[BaseException] = []
+    with fork_coordination.fork_barrier():
+        # A retry for this exact cleanup token may safely drain only neutral
+        # rows that the same prior transition retained before any raw close.
+        errors.extend(_registry.drain_inert_descriptors_locked(owner_token=token))
+        retained, reconciliation_error = _registry.reconcile_active_descriptors_locked(
+            token,
+            descriptors,
         )
-    if any(item not in expected for item in retained):
-        raise RunOwnerForkGuardError(
-            "partial cleanup retained an identity outside its active lease"
+        if reconciliation_error is not None:
+            errors.append(reconciliation_error)
+        if not _registry.NEUTRALIZER_IDENTITY.is_current():
+            raise RunOwnerForkGuardCleanupError(
+                (RunOwnerForkGuardError("descriptor neutralizer is no longer live"),),
+                retained_authority=retained,
+            )
+        for guarded in reversed(tuple(retained)):
+            if guarded not in retained:
+                continue
+            if not guarded.is_current():
+                errors.append(
+                    RunOwnerForkGuardError(
+                        "active descriptor changed before neutralization"
+                    )
+                )
+                retained = _registry.publish_neutralized_descriptor(
+                    token,
+                    retained,
+                    guarded,
+                )
+                continue
+
+            inert = _registry.neutral_descriptor(guarded.descriptor)
+            neutralized = False
+            authority_released = False
+            transition_aborted = False
+            try:
+                with _registry.block_descriptor_cleanup_signals():
+                    _registry.INERT_DESCRIPTORS[inert.descriptor] = (
+                        _registry.InertDescriptorRecord(
+                            guarded=inert,
+                            owner_token=token,
+                            in_flight=True,
+                        )
+                    )
+                    try:
+                        os.dup2(
+                            _registry.NEUTRALIZER_DESCRIPTOR,
+                            guarded.descriptor,
+                            inheritable=False,
+                        )
+                    except BaseException as exc:
+                        errors.append(exc)
+                        transition_aborted = True
+                    else:
+                        authority_released = True
+
+                    try:
+                        neutralized = _descriptor_matches(
+                            guarded.descriptor,
+                            _registry.NEUTRALIZER_IDENTITY,
+                        )
+                    except BaseException as exc:
+                        errors.append(exc)
+                        transition_aborted = True
+                        neutralized = inert.is_current()
+
+                    authority_released = authority_released or neutralized
+                    if authority_released:
+                        retained = tuple(
+                            item for item in retained if item != guarded
+                        )
+                        observed = _registry.ACTIVE_DESCRIPTORS.get(token, ())
+                        active_retained = tuple(
+                            item for item in observed if item != guarded
+                        )
+                        if active_retained:
+                            _registry.ACTIVE_DESCRIPTORS[token] = active_retained
+                        else:
+                            _registry.ACTIVE_DESCRIPTORS.pop(token, None)
+
+                    if not neutralized:
+                        _registry.INERT_DESCRIPTORS.pop(inert.descriptor, None)
+                        if authority_released:
+                            errors.append(
+                                RunOwnerForkGuardError(
+                                    "neutralized authority descriptor was rebound "
+                                    "before exact cleanup"
+                                )
+                            )
+                        continue
+
+                    if transition_aborted:
+                        _registry.INERT_DESCRIPTORS[inert.descriptor] = (
+                            _registry.InertDescriptorRecord(
+                                guarded=inert,
+                                owner_token=token,
+                                in_flight=False,
+                            )
+                        )
+                        continue
+
+                    # Remove all future close authority before the sole raw-close
+                    # attempt. A raised close can mean either outcome and the fd
+                    # number can already have been reused with identical stat data.
+                    _registry.INERT_DESCRIPTORS.pop(inert.descriptor, None)
+                    _registry.INERT_CLOSES_IN_FLIGHT.add(inert.descriptor)
+                    try:
+                        os.close(inert.descriptor)
+                    except BaseException as exc:
+                        errors.append(exc)
+                        PROCESS_CLEANUP_POISON.append(exc)
+                    finally:
+                        _registry.INERT_CLOSES_IN_FLIGHT.discard(inert.descriptor)
+            except BaseException as exc:
+                errors.append(exc)
+                current = _registry.INERT_DESCRIPTORS.get(inert.descriptor)
+                if current is not None and current.in_flight:
+                    if inert.is_current():
+                        _registry.INERT_DESCRIPTORS[inert.descriptor] = (
+                            _registry.InertDescriptorRecord(
+                                guarded=inert,
+                                owner_token=token,
+                                in_flight=False,
+                            )
+                        )
+                    else:
+                        _registry.INERT_DESCRIPTORS.pop(inert.descriptor, None)
+                if authority_released:
+                    retained = tuple(item for item in retained if item != guarded)
+                    observed = _registry.ACTIVE_DESCRIPTORS.get(token, ())
+                    active_retained = tuple(
+                        item for item in observed if item != guarded
+                    )
+                    if active_retained:
+                        _registry.ACTIVE_DESCRIPTORS[token] = active_retained
+                    else:
+                        _registry.ACTIVE_DESCRIPTORS.pop(token, None)
+        retained = tuple(
+            item
+            for item in _registry.ACTIVE_DESCRIPTORS.get(token, ())
+            if item.is_current()
         )
-    if retained:
-        _ACTIVE_DESCRIPTORS[token] = retained
-    else:
-        _ACTIVE_DESCRIPTORS.pop(token, None)
+        if retained:
+            _registry.ACTIVE_DESCRIPTORS[token] = retained
+        else:
+            _registry.ACTIVE_DESCRIPTORS.pop(token, None)
+        inert_retained = _registry.live_inert_descriptors_locked(
+            owner_token=token,
+        )
+    if errors or retained or inert_retained:
+        raise RunOwnerForkGuardCleanupError(
+            tuple(errors),
+            retained_authority=retained,
+            retained_neutral=inert_retained,
+        )
+
+def drain_inert_descriptors() -> None:
+    """Make one close attempt for rows that have never been closed before."""
+
+    with fork_coordination.fork_barrier():
+        errors = (
+            *_registry.drain_inert_descriptors_locked(),
+            *PROCESS_CLEANUP_POISON,
+        )
+        retained = _registry.live_inert_descriptors_locked()
+    if errors or retained:
+        raise RunOwnerForkGuardCleanupError(
+            tuple(errors),
+            retained_neutral=retained,
+        )

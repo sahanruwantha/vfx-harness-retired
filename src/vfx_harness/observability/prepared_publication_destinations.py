@@ -19,6 +19,8 @@ from typing import Any
 from vfx_harness.domain.script_locators import (
     is_composed_layer_script_locator,
 )
+from vfx_harness.domain.shot_ledger_paths import is_shot_ledger_target
+from vfx_harness.observability import fork_coordination
 from vfx_harness.observability.prepared_publication_capabilities import (
     PreparedPublicationRegistryError,
 )
@@ -130,20 +132,20 @@ _OWNER_SPECS = {
         "vfx_harness.orchestration.layer_outcome_publication",
         "PreparedLayerOutcomePublication",
     ),
+    "shot-ledger": _OwnerSpec(
+        "vfx_harness.orchestration.shot_ledger_publication",
+        "PreparedShotLedgerPublication",
+    ),
+    "plan-consumer-ledger": _OwnerSpec(
+        "vfx_harness.orchestration.plan_consumer_view_capabilities",
+        "PlanConsumerViewMutationCapability",
+    ),
 }
 _LOCK = threading.RLock()
 _PROCESS_TOKEN = object()
 _THREAD_LOCAL = threading.local()
 _ISSUERS: dict[str, _IssuerBinding] = {}
 _AUTHORIZATIONS: dict[int, _AuthorizationEntry] = {}
-
-
-def _before_fork() -> None:
-    _LOCK.acquire()
-
-
-def _after_fork_parent() -> None:
-    _LOCK.release()
 
 
 def _after_fork_child() -> None:
@@ -165,9 +167,9 @@ def _after_fork_child() -> None:
     }
 
 
-os.register_at_fork(
-    before=_before_fork,
-    after_in_parent=_after_fork_parent,
+fork_coordination.register_fork_participant(
+    "observability.prepared_publication_destinations",
+    lock_factory=lambda: _LOCK,
     after_in_child=_after_fork_child,
 )
 
@@ -210,6 +212,8 @@ def normalize_prepared_publication_destination(
 
 def _protected_family_for_parts(parts: tuple[str, ...]) -> tuple[bool, str | None]:
     relative = Path(*parts)
+    if is_shot_ledger_target(relative):
+        return True, "shot-ledger"
     if is_composed_layer_script_locator(relative.as_posix()):
         return True, "layer-artifact"
     if parts in {("build",), ("build", "units")}:
@@ -265,6 +269,19 @@ def _protected_family(
     return True, next(iter(matches))
 
 
+def _owner_may_authorize_family(owner_family: str, family: str) -> bool:
+    """Keep canonical shot.json reserved while permitting one proven scratch copy.
+
+    Namespace classification intentionally treats every basename ``shot.json`` as
+    canonical by default.  The alternate family is not inferred from a path; only
+    the isolated-view owner can mint its exact one-shot authorization.
+    """
+
+    return owner_family == family or (
+        family == "shot-ledger" and owner_family == "plan-consumer-ledger"
+    )
+
+
 def _bind_prepared_publication_destination_issuer(
     *,
     family: str,
@@ -284,7 +301,7 @@ def _bind_prepared_publication_destination_issuer(
         raise PreparedPublicationDestinationConflict(
             "protected destination issuer binding requires its exact typed owner"
         )
-    with _LOCK:
+    with fork_coordination.fork_coordinated_lock(_LOCK):
         if family in _ISSUERS:
             raise PreparedPublicationDestinationConflict(
                 f"protected destination family is already bound: {family}"
@@ -303,7 +320,7 @@ def _bind_prepared_publication_destination_issuer(
 def _require_issuer(
     issuer: _PreparedPublicationDestinationIssuer,
 ) -> _IssuerBinding:
-    with _LOCK:
+    with fork_coordination.fork_coordinated_lock(_LOCK):
         matches = [
             binding
             for binding in _ISSUERS.values()
@@ -329,7 +346,7 @@ def _authorization_gone(
     identifier: int,
     observed: weakref.ReferenceType[_PreparedPublicationDestinationAuthorization],
 ) -> None:
-    with _LOCK:
+    with fork_coordination.fork_coordinated_lock(_LOCK):
         entry = _AUTHORIZATIONS.get(identifier)
         if entry is not None and entry.reference is observed:
             _AUTHORIZATIONS.pop(identifier, None)
@@ -349,7 +366,11 @@ def _issue_prepared_publication_destination_authorization(
         destination,
     )
     protected, family = _protected_family(relative, target=_target)
-    if not protected or family != binding.family:
+    if (
+        not protected
+        or family is None
+        or not _owner_may_authorize_family(binding.family, family)
+    ):
         raise PreparedPublicationDestinationConflict(
             f"typed {binding.family} owner cannot authorize destination {relative.as_posix()}"
         )
@@ -371,7 +392,7 @@ def _issue_prepared_publication_destination_authorization(
         thread_id=threading.get_ident(),
         thread_token=_thread_token(),
     )
-    with _LOCK:
+    with fork_coordination.fork_coordinated_lock(_LOCK):
         if identifier in _AUTHORIZATIONS:  # pragma: no cover - live id guarantee
             raise PreparedPublicationDestinationConflict(
                 "protected destination authorization identity collided"
@@ -404,7 +425,7 @@ def consume_prepared_publication_destination_authorization(
         raise PreparedPublicationDestinationConflict(
             f"protected {family} destination requires its exact typed owner authorization"
         )
-    with _LOCK:
+    with fork_coordination.fork_coordinated_lock(_LOCK):
         entry = _AUTHORIZATIONS.get(id(authorization))
         if entry is None or entry.reference() is not authorization:
             raise PreparedPublicationDestinationConflict(
@@ -421,7 +442,7 @@ def consume_prepared_publication_destination_authorization(
                 "protected destination authorization belongs to another process or thread"
             )
         if (
-            record.family != family
+            not _owner_may_authorize_family(record.family, family)
             or record.shot != shot
             or record.relative != relative
         ):
@@ -430,7 +451,7 @@ def consume_prepared_publication_destination_authorization(
             )
         _require_issuer(record.issuer)
         _AUTHORIZATIONS.pop(id(authorization), None)
-        return family
+        return record.family
 
 
 __all__: list[str] = []
