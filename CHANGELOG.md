@@ -41,6 +41,9 @@ live in the linked Harness Improvement Records.
   owning requirement, so an executable-only unit no longer owes raster rounds for a
   claim nothing can pay
   ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- The `vfx run` driver terminalizes an exception no stage classified as `failed`
+  exactly once instead of leaving the run `running` under a dead owner
+  ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - The root owner's signal handler mints a typed `RecordedSignalIntent`; the
   terminalizer selects an owned interruption only from that record and accepts no
   kind string, and an architecture test pins the handler as its sole issuer

@@ -148,7 +148,7 @@ def _terminalize_success(layout: run_artifacts.RunLayout, lease: RunOwnerFenceLe
     layout.write_inventory()
 
 
-def _terminalize_failure(
+def terminalize_failure(
     layout: run_artifacts.RunLayout,
     lease: RunOwnerFenceLease,
     command: str,
@@ -279,7 +279,7 @@ def invocation(
         except RunCancellation as cancellation:
             raise terminalize_cancellation(shot, layout, lease, cancellation) from None
         except BaseException as exc:
-            _terminalize_failure(layout, lease, command, exc)
+            terminalize_failure(layout, lease, command, exc)
             raise
         else:
             _terminalize_success(layout, lease, command)

@@ -255,6 +255,28 @@ def main() -> None:
                 lease,
                 cancellation,
             ) from None
+        except BaseException as exc:
+            _terminalize_unhandled(layout, lease, exc)
+            raise
+
+
+def _terminalize_unhandled(
+    layout: run_artifacts.RunLayout,
+    lease: run_owner_boundary.RunOwnerFenceLease,
+    exc: BaseException,
+) -> None:
+    """Select ``failed`` for an exception no stage classified, exactly once.
+
+    The driver's typed stops select their terminal status before raising SystemExit;
+    anything else that escapes ``_drive`` (run 20260902T185214Z-2d588f: an unreadable
+    selected view) used to leave the run ``running`` under a dead owner for the
+    reconciler to find. The root owner selects exactly one terminal status itself.
+    """
+    try:
+        run_terminalizer.read_running_status_bytes(layout.root, lease.claim)
+    except run_terminalizer.RunTerminalizationConflict:
+        return
+    run_owner_boundary.terminalize_failure(layout, lease, "run", exc)
 
 
 def _drive(

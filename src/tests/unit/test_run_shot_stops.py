@@ -331,3 +331,27 @@ def test_run_allocates_layout_then_stops_on_strict_preflight_before_any_stage(
     envelope = layout.read_terminal_stop()
     assert envelope.stop_class == "infrastructure_failure"
     assert [action.transaction_id for action in envelope.actions] == ["recover_environment"]
+
+
+def test_driver_terminalizes_an_unhandled_exception_as_failed_exactly_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exception no stage classified must not leave the run running (HIR-0172)."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    with owned_run(tmp_path, "driver-crashed", command="run", dispatch_kind="driver") as (layout, lease):
+        run_shot._terminalize_unhandled(
+            layout, lease, ValueError("layers.json.layers[1] authority 'human_required' is retired")
+        )
+        status = json.loads(layout.status.read_text(encoding="utf-8"))
+        assert status["state"] == "failed"
+        assert status["exit_code"] == 1
+        assert status["stop_envelope"] == "reports/stop-envelope.json"
+        summary = json.loads((layout.root / "reports" / "summary.json").read_text(encoding="utf-8"))
+        assert summary["state"] == "failed"
+        assert "retired" in summary["detail"]
+        first = layout.status.read_bytes()
+
+        # A second unhandled exception after terminal selection changes nothing.
+        run_shot._terminalize_unhandled(layout, lease, RuntimeError("later"))
+        assert layout.status.read_bytes() == first

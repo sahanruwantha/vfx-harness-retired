@@ -458,6 +458,13 @@ carries it, `terminalize_interruption` accepts only that record and refuses any 
 The reconciler's owner-loss issuance was already capability-bound through the acquired fence.
 Canonical reference locators for optional checkpoint/journal/candidate context remain open.
 
+Run `20260902T185214Z-2d588f` (2026-09-03) proved the reconciler on a real dead owner: the
+driver's `main` handled only cancellation, a strict-migration `ValueError` from an unreadable
+selected view escaped, and the run stayed `running`; `vfx reconcile` selected `interrupted`
+(owner lost) from the released fence. The driver now terminalizes any exception no stage
+classified through `terminalize_failure` when the status is still running, exactly once
+(`test_driver_terminalizes_an_unhandled_exception_as_failed_exactly_once`).
+
 ### Failure and interruption remain disjoint
 
 New runs use a run-status schema whose terminal union is closed. Every state retains the exact
