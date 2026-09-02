@@ -88,6 +88,14 @@ live in the linked Harness Improvement Records.
   transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
   safe resume producer, or proven local-implementation retry producer
   ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- Interruption evidence now has its run-owned immutable archive and independent evaluator in
+  bounded form: a fence-held capturer classifies every closed authority source through one
+  domain function, copies exact bytes into `archive/interruption/objects/<sha256>` under the
+  target run, and publishes a closed archive manifest the receipt binds; the evaluator derives
+  `satisfied | failed` by reopening only the run's records and archive with a closed issue
+  vocabulary, so a later valid authority change cannot falsify a committed interruption.
+  Terminal `interrupted` publication remains refused until the terminalizer lands
+  ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - `shot.json` now carries a strict `vfx-harness.shot-ledger/v2` accepted-build index under
   `accepted_build`, derived only by the shot-ledger derivation writer from the selected DAG's
   stable order, passed terminal receipts, sealed outcomes, composed script bytes, and the

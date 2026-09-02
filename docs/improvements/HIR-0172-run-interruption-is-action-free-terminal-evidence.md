@@ -91,8 +91,9 @@ opens and handoff as well. The shot-authority lease is now installed at the fina
 for the layer-finalization artifact/replay/evaluation/outcome chain and every canonical legacy
 `Ledger` commit. The latter is a physical transport boundary only: it does not derive or emit
 strict accepted-build authority. Other sanctioned writers are not all migrated to their actual
-inner lock and sink. The foundation also does not yet implement the strict ledger derivation
-boundary, the independent source-verifying evaluator, or the terminal status publisher/reader.
+inner lock and sink. The foundation now implements the strict ledger derivation boundary, the
+fence-held capture into a run-owned archive, and the independent source-verifying evaluator; the
+terminal status publisher/reader remains unimplemented.
 The two selected record locators are already closed to
 `reports/interruption-receipt.json` and
 `reports/interruption-receipt-evaluation.json`; alternate nearby files have no authority.
@@ -246,6 +247,48 @@ member: the reader re-derives under a shared fence and refuses a stale index. Ca
 enumerate accepted files; the merge of other legacy top-level keys and base `Ledger.save()`
 remain unscoped, and the independent archive-reopening evaluator of prerequisite 7 is still
 absent.
+
+#### Run-owned archive and independent evaluator
+
+Prerequisites 6 and 8 now have their mechanism in bounded form. One pure domain
+classification turns a source's kind, locator, and exact bytes into its typed identity, and it is
+the only implementation both the capturer and the evaluator call. Typed kinds decode strictly
+(UTF-8, no duplicate keys, no non-finite numbers) and digest through a closed registry:
+authority-state records through their own typed parsers, plan and view pointers through the
+domain parsers and canonical JSON, any other schema-bearing object as canonical JSON. Every other
+kind is an exact opaque byte stream, and failures map to the closed invalid-reason vocabulary.
+The selected `state/authority-state/current.json` holds the coordinator head record itself, so
+the current-pointer identity binds the head schema and the closure's head row is that head's
+content-addressed object copy.
+
+The capturer runs only while the caller holds the shared shot-authority writer fence. It walks the
+closed families from the live shot — plan pointer, bundle manifest and its declared artifacts,
+effective view pointer and its artifacts, amendment and resolution streams; `shot.json` with every
+composed script, sealed outcome, and acceptance evidence member the stored accepted-build index
+names, plus the judgment streams; the current head and the record graph it reaches (commit,
+evaluation, intent, proposal, capsule set), the pending pointer and its graph, and every
+work-unit state member — classifies each source, and copies its exact bytes into create-only
+content-addressed storage under the target run (`archive/interruption/objects/<sha256>`). A
+symlinked or unreadable source, a dangling pointer, or a graph the closure schema cannot
+represent refuses capture rather than publishing a projection. Transcript frontiers derive from
+the exact transcript bytes through one pure function shared with the evaluator, and those bytes
+are archived too. Two captures bracket terminalization; an authority change between them is
+unrepresentable and refuses. The closed archive manifest lists every archived object by
+namespace, locator, byte count, and SHA-256, binds the observed closure digest, and the receipt
+binds that manifest by reference and requires it to cover every closure source and frontier.
+
+The evaluator derives `satisfied | failed` solely from the target run: it reopens the receipt
+(without one there is no evaluation at all), the owner claim through the descriptor-bound reader
+that joins it to the manifest, the authority observation, every transcript frontier record, the
+archive manifest, any owner-loss observation with its reconciler manifest and prior-status
+snapshot, and every archived object, whose bytes it re-classifies through the same domain function
+and compares to the recorded identity. Every mismatch, absence, or stale reference maps to the
+closed issue vocabulary the evaluation record enforces; the evaluator mutates nothing and never
+reads the live shot tree, so a later valid authority change leaves a committed interruption
+verifiable while a fresh live capture sees the new authority. The terminal commit path, public
+signal integration, owner-loss reconciliation, capability-bound issuance, and authored-input and
+`refobs-*` capture (prerequisites 4 and 7) remain open, and `interrupted` status publication and
+authoritative read-back remain refused.
 
 #### Fork-safe descriptor ownership and kernel-proven consumer directories
 
@@ -578,6 +621,11 @@ recovery controller or an authority-state transaction.
 | A preserved terminal receipt reconciles under a successor selection | The row binds through the contiguous lineage authorization; an unauthorized token is a derivation conflict |
 | Two layers are accepted, then a document successor transition changes the second layer's capsule | The same transaction that selects the successor head republishes `accepted_build` with the preserved first layer only, bound to the new head and token, and the reader verifies it at once |
 | A process dies after the WAL clears but before the member republishes, or right after it does | Recovery reports `already_current` with `accepted_build_projection` `republished` or `current`, the member binds the current head and re-derives byte-identically, and repeating recovery leaves `shot.json` byte-identical |
+| Two accepted layers with plan, JIT view, ledger, head graph, and work-unit state are captured under the fence and sealed as an operator interruption | The receipt's closure is present and valid in every family, the evaluator is `satisfied` from the archive alone, and appending a plan amendment afterwards leaves the evaluation satisfied while a fresh live capture yields a different authority digest |
+| Authority changes between the before and after snapshots | Capture refuses; no observation, manifest, or receipt is minted |
+| An archived source's bytes change or the object is removed; a transcript's archived bytes change; the archive manifest, authority observation, frontier record, or owner claim is rewritten | Evaluation is `failed` with the exact issue ids (`archive_object_mismatch`, `archive_object_missing`, `archive_manifest_mismatch` and `archive_ref_mismatch`, `authority_observation_mismatch` and `authority_ref_mismatch`, `transcript_frontier_mismatch` and `transcript_frontier_ref_mismatch`, `owner_claim_unverified`, `owner_claim_mismatch`, `owner_ref_mismatch`); whitespace-only claim rewrites mismatch only the byte reference |
+| The receipt itself is rewritten or absent | No evaluation exists; the evaluator reports the run's interruption authority unavailable instead of minting `failed` |
+| An `owner_lost` receipt binds a reconciler manifest and a prior running-status snapshot | Evaluation is `satisfied`; rewriting the snapshot fails it with `prior_status_snapshot_mismatch` |
 
 The key regression is a real subprocess test, not a raised exception inside the context manager:
 enter the public direct invocation, publish kickoff, block in an external-session-shaped AnyIO

@@ -10,6 +10,7 @@ import pytest
 
 from tests.unit.test_stop_envelopes import _local_stop
 from vfx_harness.domain.run_lifecycle import (
+    INTERRUPTION_ARCHIVE_MANIFEST_LOCATOR,
     INTERRUPTION_AUTHORITY_OBSERVATION_LOCATOR,
     INTERRUPTION_OWNER_LOSS_OBSERVATION_LOCATOR,
     INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
@@ -18,8 +19,10 @@ from vfx_harness.domain.run_lifecycle import (
     RUN_OWNER_LOSS_RECONCILER_MANIFEST_LOCATOR,
     RUN_OWNER_LOSS_RECONCILER_MANIFEST_SCHEMA,
     AcceptedStateSourceClosure,
+    ArchivedSourceObject,
     AuthoritySourceIdentity,
     DurableStateSourceClosure,
+    InterruptionArchiveManifest,
     InterruptionAuthorityObservation,
     InterruptionAuthoritySourceClosure,
     InterruptionReceiptEvaluation,
@@ -33,6 +36,7 @@ from vfx_harness.domain.run_lifecycle import (
     RunStatusV2,
     SelectedPlanSourceClosure,
     interruption_evaluation_receipt_binding,
+    iter_authority_sources,
     transcript_frontier_record_locator,
 )
 
@@ -159,6 +163,28 @@ def _prior_running_status(owner: RunOwnerClaim) -> PriorRunningStatusEvidence:
     )
 
 
+def _archive(
+    owner: RunOwnerClaim,
+    authority: InterruptionAuthorityObservation,
+    frontiers: tuple[InterruptionTranscriptFrontier, ...],
+) -> InterruptionArchiveManifest:
+    return InterruptionArchiveManifest.mint(
+        run_id=owner.run_id,
+        captured_at=_T1,
+        authority_digest=authority.before.authority_digest,
+        objects=[
+            *(
+                ArchivedSourceObject("shot", source.locator, source.byte_count, source.sha256)
+                for source in iter_authority_sources(authority.before.source_closure)
+            ),
+            *(
+                ArchivedSourceObject("run", row.locator, row.byte_count, row.sha256)
+                for row in frontiers
+            ),
+        ],
+    )
+
+
 def _receipt(
     *,
     interruption_kind: str = "operator_interrupt",
@@ -167,6 +193,7 @@ def _receipt(
     owner = _owner()
     authority = _authority_observation()
     frontier = _frontier()
+    archive = _archive(owner, authority, (frontier,))
     signal_number = {
         "operator_interrupt": 2,
         "termination_request": 15,
@@ -181,6 +208,8 @@ def _receipt(
         owner_loss_ref=(None if owner_loss is None else _ref(INTERRUPTION_OWNER_LOSS_OBSERVATION_LOCATOR, owner_loss)),
         authority=authority,
         authority_ref=_ref(INTERRUPTION_AUTHORITY_OBSERVATION_LOCATOR, authority),
+        archive=archive,
+        archive_ref=_ref(INTERRUPTION_ARCHIVE_MANIFEST_LOCATOR, archive),
         transcript_frontiers=(frontier,),
         transcript_frontier_refs=(_ref(transcript_frontier_record_locator(frontier), frontier),),
         signal_number=signal_number,
@@ -357,6 +386,7 @@ def test_owner_loss_requires_exact_reacquired_fence_and_unknown_exit_without_wai
     loss = _owner_loss(owner)
     authority = _authority_observation()
     frontier = _frontier()
+    archive = _archive(owner, authority, (frontier,))
     receipt = RunInterruptionReceipt(
         run_id=owner.run_id,
         interruption_kind="owner_lost",
@@ -367,6 +397,8 @@ def test_owner_loss_requires_exact_reacquired_fence_and_unknown_exit_without_wai
         owner_loss_ref=_ref(INTERRUPTION_OWNER_LOSS_OBSERVATION_LOCATOR, loss),
         authority=authority,
         authority_ref=_ref(INTERRUPTION_AUTHORITY_OBSERVATION_LOCATOR, authority),
+        archive=archive,
+        archive_ref=_ref(INTERRUPTION_ARCHIVE_MANIFEST_LOCATOR, archive),
         transcript_frontiers=(frontier,),
         transcript_frontier_refs=(_ref(transcript_frontier_record_locator(frontier), frontier),),
         signal_number=None,
@@ -495,7 +527,7 @@ def test_evaluation_structurally_binds_receipt_without_an_outcome_factory() -> N
     assert not hasattr(InterruptionReceiptEvaluation, "mint")
 
     with pytest.raises(ValueError, match="cannot contain issues"):
-        replace(satisfied, issue_ids=("invented_issue",))
+        replace(satisfied, issue_ids=("authority_changed",))
     with pytest.raises(ValueError, match="must name at least one"):
         replace(satisfied, status="failed")
 
@@ -737,4 +769,15 @@ def test_status_matrix_rejects_unrelated_stop_action_and_dispatch_fields() -> No
             hybrid,
             selected_record=receipt,
             interruption_evaluation=evaluation,
+        )
+
+
+def test_evaluation_issue_ids_are_a_closed_vocabulary() -> None:
+    receipt = _receipt()
+    with pytest.raises(ValueError, match="closed evaluator vocabulary"):
+        InterruptionReceiptEvaluation(
+            **interruption_evaluation_receipt_binding(receipt),
+            status="failed",
+            issue_ids=("invented_issue",),
+            evaluated_at=_T3,
         )

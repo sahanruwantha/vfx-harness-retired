@@ -60,12 +60,44 @@ _STATUS_FIELDS = frozenset(
 )
 
 
+INTERRUPTION_EVALUATION_ISSUES = frozenset(
+    {
+        "archive_manifest_mismatch",
+        "archive_manifest_unreadable",
+        "archive_object_mismatch",
+        "archive_object_missing",
+        "archive_ref_mismatch",
+        "authority_changed",
+        "authority_observation_mismatch",
+        "authority_observation_unreadable",
+        "authority_ref_mismatch",
+        "owner_claim_mismatch",
+        "owner_claim_unverified",
+        "owner_loss_mismatch",
+        "owner_loss_ref_mismatch",
+        "owner_loss_unreadable",
+        "owner_ref_mismatch",
+        "prior_status_snapshot_mismatch",
+        "prior_status_snapshot_unreadable",
+        "reconciler_manifest_mismatch",
+        "source_identity_mismatch",
+        "transcript_bytes_mismatch",
+        "transcript_frontier_mismatch",
+        "transcript_frontier_ref_mismatch",
+        "transcript_frontier_unreadable",
+    }
+)
+
+
 def _issue_ids(value: tuple[str, ...], where: str) -> tuple[str, ...]:
     if not isinstance(value, tuple):
         raise ValueError(f"{where} must be a tuple")
     rows = tuple(require_id(item, f"{where}[{index}]") for index, item in enumerate(value))
     if rows != tuple(sorted(set(rows))):
         raise ValueError(f"{where} must be sorted and unique")
+    unknown = sorted(set(rows) - INTERRUPTION_EVALUATION_ISSUES)
+    if unknown:
+        raise ValueError(f"{where} names issues outside the closed evaluator vocabulary: {unknown}")
     return rows
 
 
@@ -82,6 +114,8 @@ class InterruptionReceiptEvaluation:
     owner_ref_digest: str
     authority_observation_digest: str
     authority_ref_digest: str
+    archive_manifest_digest: str
+    archive_ref_digest: str
     transcript_frontier_digests: tuple[str, ...]
     transcript_frontier_ref_digests: tuple[str, ...]
     owner_loss_observation_digest: str | None
@@ -117,6 +151,14 @@ class InterruptionReceiptEvaluation:
         require_digest(
             self.authority_ref_digest,
             "InterruptionReceiptEvaluation.authority_ref_digest",
+        )
+        require_digest(
+            self.archive_manifest_digest,
+            "InterruptionReceiptEvaluation.archive_manifest_digest",
+        )
+        require_digest(
+            self.archive_ref_digest,
+            "InterruptionReceiptEvaluation.archive_ref_digest",
         )
         if not isinstance(self.transcript_frontier_digests, tuple) or not isinstance(
             self.transcript_frontier_ref_digests,
@@ -199,6 +241,8 @@ class InterruptionReceiptEvaluation:
             "owner_ref_digest": self.owner_ref_digest,
             "authority_observation_digest": self.authority_observation_digest,
             "authority_ref_digest": self.authority_ref_digest,
+            "archive_manifest_digest": self.archive_manifest_digest,
+            "archive_ref_digest": self.archive_ref_digest,
             "transcript_frontier_digests": list(self.transcript_frontier_digests),
             "transcript_frontier_ref_digests": list(self.transcript_frontier_ref_digests),
             "owner_loss_observation_digest": self.owner_loss_observation_digest,
@@ -234,6 +278,8 @@ class InterruptionReceiptEvaluation:
                 "owner_ref_digest",
                 "authority_observation_digest",
                 "authority_ref_digest",
+                "archive_manifest_digest",
+                "archive_ref_digest",
                 "transcript_frontier_digests",
                 "transcript_frontier_ref_digests",
                 "owner_loss_observation_digest",
@@ -264,6 +310,8 @@ class InterruptionReceiptEvaluation:
             owner_ref_digest=row["owner_ref_digest"],
             authority_observation_digest=row["authority_observation_digest"],
             authority_ref_digest=row["authority_ref_digest"],
+            archive_manifest_digest=row["archive_manifest_digest"],
+            archive_ref_digest=row["archive_ref_digest"],
             transcript_frontier_digests=tuple(raw_frontiers),
             transcript_frontier_ref_digests=tuple(raw_frontier_refs),
             owner_loss_observation_digest=row["owner_loss_observation_digest"],
@@ -305,6 +353,8 @@ def interruption_evaluation_receipt_binding(
         "owner_ref_digest": receipt.owner_ref.digest,
         "authority_observation_digest": receipt.authority.digest,
         "authority_ref_digest": receipt.authority_ref.digest,
+        "archive_manifest_digest": receipt.archive.digest,
+        "archive_ref_digest": receipt.archive_ref.digest,
         "transcript_frontier_digests": tuple(row.digest for row in receipt.transcript_frontiers),
         "transcript_frontier_ref_digests": tuple(row.digest for row in receipt.transcript_frontier_refs),
         "owner_loss_observation_digest": (None if receipt.owner_loss is None else receipt.owner_loss.digest),

@@ -133,6 +133,12 @@ operation.
   `vfx recover-authority-state` republishes a member left stale by a death in that window.
   Callers never supply accepted rows, the transport refuses any other change to that member, and
   readers re-derive it rather than trust the stored value (HIR-0172).
+  An interruption receipt binds a run-owned content-addressed archive of the exact authority
+  sources and transcripts captured under the shared shot-authority fence, and the independent
+  evaluator derives `satisfied | failed` only by reopening that archive through the one domain
+  source classification, never the live shot tree. A run without a readable receipt has no
+  evaluation, and `interrupted` status publication stays refused until the terminalizer lands
+  (HIR-0172).
 - Run output never becomes authority by proximity. Promotion from evidence into a contract,
   plan, HIR, or ADR is an explicit decision (ADR-0002).
 - Builder image payments use `vfx-harness.image-payment/v2`: the harness captures the

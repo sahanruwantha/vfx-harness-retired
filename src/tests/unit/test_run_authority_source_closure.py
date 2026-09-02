@@ -152,7 +152,7 @@ def _valid_closure(*, ledger_label: str = "ledger-a") -> InterruptionAuthoritySo
         current_pointer=_source(
             "durable_state_pointer",
             "state/authority-state/current.json",
-            "vfx-harness.authority-state-record-ref/v1",
+            "vfx-harness.authority-state-head/v1",
         ),
         head=head,
         records=reversed(
@@ -507,7 +507,7 @@ def test_current_and_pending_roots_share_one_canonical_object_table() -> None:
     current_pointer = _source(
         "durable_state_pointer",
         "state/authority-state/current.json",
-        "vfx-harness.authority-state-record-ref/v1",
+        "vfx-harness.authority-state-head/v1",
     )
     head = _state_record("vfx-harness.authority-state-head/v1", "shared head")
     shared = _state_record(

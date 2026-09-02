@@ -11,7 +11,7 @@ PACKAGE = Path(__file__).resolve().parents[3] / "src" / "vfx_harness"
 DOMAIN_STATUS = PACKAGE / "domain" / "run_status.py"
 DOMAIN_INTERRUPTION = PACKAGE / "domain" / "run_interruption_records.py"
 DOMAIN_OWNER_LOSS = PACKAGE / "domain" / "run_owner_loss.py"
-FUTURE_EVALUATOR = "observability/run_interruption_evaluator.py"
+EVALUATOR = "evaluation/run_interruption.py"
 FUTURE_TERMINALIZER = "observability/run_interruption_terminalizer.py"
 FUTURE_OWNER_LOSS_CAPTURE = "observability/run_owner_loss_capture.py"
 
@@ -109,13 +109,13 @@ def test_only_future_evaluator_may_construct_an_evaluation_in_production() -> No
             if (
                 isinstance(node, ast.Call)
                 and _called_name(node) == "InterruptionReceiptEvaluation"
-                and relative != FUTURE_EVALUATOR
+                and relative != EVALUATOR
             ):
                 violations.append(f"{relative}:{node.lineno}")
 
     assert not violations, (
-        "interruption evaluations may be issued only after the future evaluator "
-        "source-verifies their complete closure: " + ", ".join(violations)
+        "interruption evaluations may be issued only by the independent evaluator after it "
+        "source-verifies their complete archive closure: " + ", ".join(violations)
     )
 
 
@@ -123,7 +123,7 @@ def test_only_future_evaluator_may_parse_an_evaluation_in_production() -> None:
     violations: list[str] = []
     for path in _sources():
         relative = _relative(path)
-        if relative == FUTURE_EVALUATOR:
+        if relative == EVALUATOR:
             continue
         for node in ast.walk(_tree(path)):
             if (
@@ -136,8 +136,8 @@ def test_only_future_evaluator_may_parse_an_evaluation_in_production() -> None:
                 violations.append(f"{relative}:{node.lineno}")
 
     assert not violations, (
-        "a structurally parsed interruption evaluation is not authoritative until "
-        "the future evaluator reopens its complete source closure: " + ", ".join(violations)
+        "a structurally parsed interruption evaluation is not authoritative outside the "
+        "independent evaluator that reopens its complete archive closure: " + ", ".join(violations)
     )
 
 

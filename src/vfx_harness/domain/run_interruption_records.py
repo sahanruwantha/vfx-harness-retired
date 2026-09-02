@@ -8,6 +8,8 @@ of the run-status matrix and gives interruption its own action-free receipt.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -16,6 +18,10 @@ from vfx_harness.domain.run_authority_source_closure import (
     InterruptionAuthoritySourceClosure,
 )
 from vfx_harness.domain.run_ids import require_run_id
+from vfx_harness.domain.run_interruption_archive import (
+    INTERRUPTION_ARCHIVE_MANIFEST_LOCATOR,
+    InterruptionArchiveManifest,
+)
 from vfx_harness.domain.run_lifecycle_primitives import (
     chronological as _chronological,
 )
@@ -343,6 +349,60 @@ class InterruptionTranscriptFrontier:
         return candidate
 
 
+def derive_transcript_frontier(
+    *,
+    run_id: str,
+    locator: str,
+    payload: bytes,
+    captured_at: str,
+) -> InterruptionTranscriptFrontier:
+    """Derive the exact frontier of one transcript byte stream.
+
+    The capturer and the independent evaluator share this one derivation, so a
+    frontier is a pure function of the archived bytes.  A byte stream that does not
+    end with a newline has a truncated tail; the last complete line that parses as a
+    sequenced event names the frontier; nothing is invented after a real ``close``.
+    """
+
+    if not isinstance(payload, (bytes, bytearray)):
+        raise ValueError("transcript frontier derivation requires exact bytes")
+    payload = bytes(payload)
+    truncated_tail = bool(payload) and not payload.endswith(b"\n")
+    complete = payload[: payload.rfind(b"\n") + 1] if b"\n" in payload else b""
+    last_sequence: int | None = None
+    last_kind: str | None = None
+    for line in complete.split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        sequence = event.get("seq")
+        kind = event.get("kind")
+        if (
+            isinstance(sequence, int)
+            and not isinstance(sequence, bool)
+            and sequence >= 1
+            and isinstance(kind, str)
+            and kind
+        ):
+            last_sequence, last_kind = sequence, kind
+    return InterruptionTranscriptFrontier(
+        run_id=run_id,
+        locator=locator,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_count=len(payload),
+        truncated_tail=truncated_tail,
+        last_complete_sequence=last_sequence,
+        last_complete_kind=last_kind,
+        state="closed" if last_kind == "close" and not truncated_tail else "incomplete",
+        captured_at=captured_at,
+    )
+
+
 def _frontiers(
     value: Iterable[InterruptionTranscriptFrontier],
     where: str,
@@ -375,6 +435,8 @@ class RunInterruptionReceipt:
     owner_loss_ref: RunRecordRef | None
     authority: InterruptionAuthorityObservation
     authority_ref: RunRecordRef
+    archive: InterruptionArchiveManifest
+    archive_ref: RunRecordRef
     transcript_frontiers: tuple[InterruptionTranscriptFrontier, ...]
     transcript_frontier_refs: tuple[RunRecordRef, ...]
     signal_number: int | None
@@ -414,9 +476,29 @@ class RunInterruptionReceipt:
         )
         if self.authority_ref.locator != INTERRUPTION_AUTHORITY_OBSERVATION_LOCATOR:
             raise ValueError("interruption authority reference must select its canonical report locator")
+        if not isinstance(self.archive, InterruptionArchiveManifest):
+            raise ValueError("interruption receipt requires the typed run-owned archive manifest")
+        if self.archive.run_id != self.run_id:
+            raise ValueError("interruption receipt archive names another run")
+        if self.archive.authority_digest != self.authority.before.authority_digest:
+            raise ValueError("interruption receipt archive does not bind the observed authority closure")
+        if not isinstance(self.archive_ref, RunRecordRef):
+            raise ValueError("interruption receipt requires the typed archive manifest reference")
+        self.archive_ref.require_record(
+            schema=InterruptionArchiveManifest.SCHEMA,
+            digest=self.archive.digest,
+            where="interruption archive reference",
+        )
+        if self.archive_ref.locator != INTERRUPTION_ARCHIVE_MANIFEST_LOCATOR:
+            raise ValueError("interruption archive reference must select its canonical report locator")
+        self.archive.require_covers_closure(self.authority.before.source_closure)
         frontiers = _frontiers(
             self.transcript_frontiers,
             "RunInterruptionReceipt.transcript_frontiers",
+        )
+        self.archive.require_covers(
+            ((("run", row.locator, row.byte_count, row.sha256)) for row in frontiers),
+            "interruption archive transcript coverage",
         )
         object.__setattr__(self, "transcript_frontiers", frontiers)
         if any(row.run_id != self.run_id for row in frontiers):
@@ -440,6 +522,7 @@ class RunInterruptionReceipt:
         all_refs = (
             self.owner_ref,
             self.authority_ref,
+            self.archive_ref,
             *refs,
             *(
                 ()
@@ -509,6 +592,16 @@ class RunInterruptionReceipt:
             self.interrupted_at,
             "interruption receipt authority/seal",
         )
+        _chronological(
+            self.owner.claimed_at,
+            self.archive.captured_at,
+            "interruption receipt owner/archive",
+        )
+        _chronological(
+            self.archive.captured_at,
+            self.interrupted_at,
+            "interruption receipt archive/seal",
+        )
         for frontier in frontiers:
             _chronological(
                 self.owner.claimed_at,
@@ -544,6 +637,8 @@ class RunInterruptionReceipt:
             "owner_loss_ref": (None if self.owner_loss_ref is None else self.owner_loss_ref.as_dict()),
             "authority": self.authority.as_dict(),
             "authority_ref": self.authority_ref.as_dict(),
+            "archive": self.archive.as_dict(),
+            "archive_ref": self.archive_ref.as_dict(),
             "transcript_frontiers": [row.as_dict() for row in self.transcript_frontiers],
             "transcript_frontier_refs": [row.as_dict() for row in self.transcript_frontier_refs],
             "signal_number": self.signal_number,
@@ -575,6 +670,8 @@ class RunInterruptionReceipt:
                 "owner_loss_ref",
                 "authority",
                 "authority_ref",
+                "archive",
+                "archive_ref",
                 "transcript_frontiers",
                 "transcript_frontier_refs",
                 "signal_number",
@@ -624,6 +721,8 @@ class RunInterruptionReceipt:
                 row["authority_ref"],
                 f"{where}.authority_ref",
             ),
+            archive=InterruptionArchiveManifest.from_dict(row["archive"], f"{where}.archive"),
+            archive_ref=RunRecordRef.from_dict(row["archive_ref"], f"{where}.archive_ref"),
             transcript_frontiers=tuple(
                 InterruptionTranscriptFrontier.from_dict(
                     frontier,

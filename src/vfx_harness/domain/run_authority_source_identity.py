@@ -8,6 +8,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 AUTHORITY_SOURCE_IDENTITY_SCHEMA = "vfx-harness.interruption-authority-source-identity/v1"
@@ -65,7 +66,9 @@ _FIXED_RECORD_SCHEMAS = {
     "plan_pointer": "vfx-harness.plan-pointer/v2",
     "plan_bundle_manifest": "vfx-harness.plan-bundle/v1",
     "effective_view_pointer": "vfx-harness.jit-layer-view/v2",
-    "durable_state_pointer": "vfx-harness.authority-state-record-ref/v1",
+    # ``state/authority-state/current.json`` holds the exact bytes of the selected
+    # coordinator head record; its content-addressed object copy is the closure's head.
+    "durable_state_pointer": "vfx-harness.authority-state-head/v1",
     "durable_state_pending": "vfx-harness.authority-state-pending/v1",
 }
 _TYPED_SOURCE_KINDS = frozenset(
@@ -82,6 +85,9 @@ _OPAQUE_ONLY_SOURCE_KINDS = frozenset(
         "judgment_payment_attempts",
     }
 )
+FIXED_RECORD_SCHEMAS = MappingProxyType(dict(_FIXED_RECORD_SCHEMAS))
+TYPED_SOURCE_KINDS = _TYPED_SOURCE_KINDS
+OPAQUE_ONLY_SOURCE_KINDS = _OPAQUE_ONLY_SOURCE_KINDS
 
 
 def canonical_digest(value: Mapping[str, Any]) -> str:
@@ -392,6 +398,9 @@ def require_family_state(value: object, expected: str, where: str) -> None:
 __all__ = [
     "AUTHORITY_SOURCE_IDENTITY_SCHEMA",
     "BUNDLE_MANIFEST_PATTERN",
+    "FIXED_RECORD_SCHEMAS",
+    "OPAQUE_ONLY_SOURCE_KINDS",
+    "TYPED_SOURCE_KINDS",
     "VIEW_MEMBER_PATTERN",
     "AuthoritySourceIdentity",
     "canonical_digest",

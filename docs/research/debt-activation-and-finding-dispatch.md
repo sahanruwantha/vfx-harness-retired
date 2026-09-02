@@ -318,7 +318,12 @@ HIR-0172 therefore has a strict prerequisite sequence, not a set of parallel bes
    is either a closed parsed union or absent, never an arbitrary caller reference.
 7. Land the independent archive-reopening evaluator. Only after its heterogeneous graph,
    corruption, fork, crash, and race tests pass may terminal commit, public signal/cancellation
-   integration, owner-loss reconciliation, and terminal readers be enabled.
+   integration, owner-loss reconciliation, and terminal readers be enabled. The fence-held
+   capture into a run-owned content-addressed archive and the evaluator that reopens only that
+   archive now exist in bounded form (one shared domain classification, a closed archive
+   manifest, a closed issue vocabulary, corruption and owner-loss matrices on the public
+   fixture); authored/refobs capture, capability-bound issuance, the terminal commit path, and
+   the process-level signal and fork matrices remain open.
 
 Until that sequence is complete, the HIR-0172 foundation is non-publishable by design. Byte hashes
 over a caller-enumerated list are insufficient, public CLI signal handling remains unintegrated,

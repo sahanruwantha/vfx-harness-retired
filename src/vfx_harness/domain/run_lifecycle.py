@@ -25,6 +25,19 @@ from vfx_harness.domain.run_authority_source_identity import (
     SOURCE_STATES,
     AuthoritySourceIdentity,
 )
+from vfx_harness.domain.run_authority_source_records import (
+    classify_authority_source,
+    decode_strict_json_object,
+)
+from vfx_harness.domain.run_interruption_archive import (
+    INTERRUPTION_ARCHIVE_MANIFEST_LOCATOR,
+    INTERRUPTION_ARCHIVE_MANIFEST_SCHEMA,
+    INTERRUPTION_ARCHIVE_OBJECT_DIRECTORY,
+    ArchivedSourceObject,
+    InterruptionArchiveManifest,
+    archive_object_locator,
+    iter_authority_sources,
+)
 from vfx_harness.domain.run_interruption_records import (
     INTERRUPTION_AUTHORITY_OBSERVATION_LOCATOR,
     INTERRUPTION_AUTHORITY_OBSERVATION_SCHEMA,
@@ -40,6 +53,7 @@ from vfx_harness.domain.run_interruption_records import (
     InterruptionTranscriptFrontier,
     RunAuthoritySnapshot,
     RunInterruptionReceipt,
+    derive_transcript_frontier,
     transcript_frontier_record_locator,
 )
 from vfx_harness.domain.run_owner_claims import (
@@ -58,6 +72,7 @@ from vfx_harness.domain.run_owner_loss import (
 )
 from vfx_harness.domain.run_record_refs import RUN_RECORD_REF_SCHEMA, RunRecordRef
 from vfx_harness.domain.run_status import (
+    INTERRUPTION_EVALUATION_ISSUES,
     INTERRUPTION_EVALUATION_STATUSES,
     INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
     INTERRUPTION_RECEIPT_EVALUATION_SCHEMA,
@@ -77,9 +92,13 @@ __all__ = [
     "AUTHORITY_SOURCE_IDENTITY_SCHEMA",
     "DURABLE_STATE_SOURCE_CLOSURE_SCHEMA",
     "FAMILY_STATES",
+    "INTERRUPTION_ARCHIVE_MANIFEST_LOCATOR",
+    "INTERRUPTION_ARCHIVE_MANIFEST_SCHEMA",
+    "INTERRUPTION_ARCHIVE_OBJECT_DIRECTORY",
     "INTERRUPTION_AUTHORITY_OBSERVATION_LOCATOR",
     "INTERRUPTION_AUTHORITY_OBSERVATION_SCHEMA",
     "INTERRUPTION_AUTHORITY_SOURCE_CLOSURE_SCHEMA",
+    "INTERRUPTION_EVALUATION_ISSUES",
     "INTERRUPTION_EVALUATION_STATUSES",
     "INTERRUPTION_KINDS",
     "INTERRUPTION_OWNER_LOSS_OBSERVATION_LOCATOR",
@@ -113,8 +132,10 @@ __all__ = [
     "STOP_ENVELOPE_LOCATOR",
     "TRANSCRIPT_FRONTIER_STATES",
     "AcceptedStateSourceClosure",
+    "ArchivedSourceObject",
     "AuthoritySourceIdentity",
     "DurableStateSourceClosure",
+    "InterruptionArchiveManifest",
     "InterruptionAuthorityObservation",
     "InterruptionAuthoritySourceClosure",
     "InterruptionReceiptEvaluation",
@@ -127,7 +148,12 @@ __all__ = [
     "RunRecordRef",
     "RunStatusV2",
     "SelectedPlanSourceClosure",
+    "archive_object_locator",
+    "classify_authority_source",
+    "decode_strict_json_object",
+    "derive_transcript_frontier",
     "interruption_evaluation_receipt_binding",
+    "iter_authority_sources",
     "require_interruption_evaluation_binds_receipt",
     "running_status_snapshot_locator",
     "transcript_frontier_record_locator",
