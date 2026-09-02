@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,9 @@ from vfx_harness.domain.run_owner_loss import (
 )
 from vfx_harness.domain.run_record_refs import RunRecordRef
 from vfx_harness.domain.run_status import (
+    INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
     InterruptionReceiptEvaluation,
+    RunStatusV2,
     interruption_evaluation_receipt_binding,
 )
 from vfx_harness.observability.run_interruption_archive import (
@@ -56,6 +59,39 @@ from vfx_harness.observability.run_owner_fence import (
 
 class InterruptionEvaluationUnavailable(ValueError):
     """No exact receipt exists to bind, so no evaluation can be produced."""
+
+
+class InterruptionAuthorityUnavailable(ValueError):
+    """The run's interrupted status cannot be source-verified and authorizes nothing."""
+
+
+RUN_STATUS_LOCATOR = "status.json"
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedInterruptedRun:
+    """One interrupted terminal status whose closure was re-verified from the archive."""
+
+    status: RunStatusV2
+    receipt: RunInterruptionReceipt
+    evaluation: InterruptionReceiptEvaluation
+    verification: InterruptionReceiptEvaluation
+
+    @property
+    def legal_transactions(self) -> tuple[()]:
+        return ()
+
+    @property
+    def retryable(self) -> bool:
+        return False
+
+    @property
+    def resume_authorized(self) -> bool:
+        return False
+
+    @property
+    def dispatch_authority(self) -> bool:
+        return False
 
 
 def _sha256(payload: bytes) -> str:
@@ -297,8 +333,83 @@ def evaluate_interruption_receipt(
     )
 
 
+def read_interrupted_run(
+    shot_root: str | Path,
+    run_id: str,
+    *,
+    verified_at: str,
+) -> VerifiedInterruptedRun:
+    """Authoritatively read one interrupted run by re-verifying its closure.
+
+    The selected status must bind the exact receipt and a satisfied evaluation by
+    digest, and a fresh evaluation from the archive must still be satisfied; any other
+    outcome leaves the run's interruption authority unavailable.  The reader derives an
+    empty legal-transaction set and no retry, resume, or dispatch authority.
+    """
+
+    run_root = Path(shot_root).expanduser().absolute() / "runs" / run_id
+    try:
+        payload = read_run_record_bytes(run_root, RUN_STATUS_LOCATOR)
+    except RunInterruptionArchiveError as exc:
+        raise InterruptionAuthorityUnavailable(f"run {run_id} has no readable status: {exc}") from exc
+    document, reason = decode_strict_json_object(payload)
+    if document is None:
+        raise InterruptionAuthorityUnavailable(f"run {run_id} status is not one JSON object: {reason}")
+    if document.get("state") != "interrupted":
+        raise InterruptionAuthorityUnavailable(
+            f"run {run_id} status is {document.get('state')!r}, not an interrupted terminal status"
+        )
+    try:
+        receipt = reopen_interruption_receipt(shot_root, run_id)
+    except InterruptionEvaluationUnavailable as exc:
+        raise InterruptionAuthorityUnavailable(str(exc)) from exc
+    try:
+        evaluation_payload = read_run_record_bytes(run_root, INTERRUPTION_RECEIPT_EVALUATION_LOCATOR)
+    except RunInterruptionArchiveError as exc:
+        raise InterruptionAuthorityUnavailable(f"run {run_id} has no readable interruption evaluation: {exc}") from exc
+    evaluation_document, reason = decode_strict_json_object(evaluation_payload)
+    if evaluation_document is None:
+        raise InterruptionAuthorityUnavailable(f"run {run_id} interruption evaluation is not a JSON object: {reason}")
+    try:
+        evaluation = InterruptionReceiptEvaluation.from_dict(
+            evaluation_document,
+            "interruption receipt evaluation",
+            receipt=receipt,
+        )
+    except ValueError as exc:
+        raise InterruptionAuthorityUnavailable(f"run {run_id} interruption evaluation is invalid: {exc}") from exc
+    if evaluation.status != "satisfied":
+        raise InterruptionAuthorityUnavailable(f"run {run_id} selected an unsatisfied interruption evaluation")
+    try:
+        status = RunStatusV2.from_dict(
+            document,
+            selected_record=receipt,
+            owner=receipt.owner,
+            interruption_evaluation=evaluation,
+            where="run status",
+        )
+    except ValueError as exc:
+        raise InterruptionAuthorityUnavailable(
+            f"run {run_id} status does not select its exact receipt and evaluation: {exc}"
+        ) from exc
+    verification = evaluate_interruption_receipt(shot_root, run_id, evaluated_at=verified_at)
+    if verification.status != "satisfied":
+        raise InterruptionAuthorityUnavailable(
+            f"run {run_id} interruption closure no longer verifies: {', '.join(verification.issue_ids)}"
+        )
+    return VerifiedInterruptedRun(
+        status=status,
+        receipt=receipt,
+        evaluation=evaluation,
+        verification=verification,
+    )
+
+
 __all__ = [
+    "InterruptionAuthorityUnavailable",
     "InterruptionEvaluationUnavailable",
+    "VerifiedInterruptedRun",
     "evaluate_interruption_receipt",
+    "read_interrupted_run",
     "reopen_interruption_receipt",
 ]

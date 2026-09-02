@@ -12,7 +12,7 @@ DOMAIN_STATUS = PACKAGE / "domain" / "run_status.py"
 DOMAIN_INTERRUPTION = PACKAGE / "domain" / "run_interruption_records.py"
 DOMAIN_OWNER_LOSS = PACKAGE / "domain" / "run_owner_loss.py"
 EVALUATOR = "evaluation/run_interruption.py"
-FUTURE_TERMINALIZER = "observability/run_interruption_terminalizer.py"
+TERMINALIZER = "orchestration/run_interruption_terminalizer.py"
 FUTURE_OWNER_LOSS_CAPTURE = "observability/run_owner_loss_capture.py"
 
 
@@ -81,7 +81,7 @@ def test_ephemeral_interruption_facts_have_no_public_issuance_factory(
 @pytest.mark.parametrize(
     ("class_name", "allowed_path"),
     (
-        ("RunInterruptionReceipt", FUTURE_TERMINALIZER),
+        ("RunInterruptionReceipt", TERMINALIZER),
         ("RunOwnerLossObservation", FUTURE_OWNER_LOSS_CAPTURE),
     ),
 )
@@ -145,7 +145,7 @@ def test_only_future_terminalizer_may_construct_run_status_directly() -> None:
     violations: list[str] = []
     for path in _sources():
         relative = _relative(path)
-        if relative == FUTURE_TERMINALIZER:
+        if relative == TERMINALIZER:
             continue
         for node in ast.walk(_tree(path)):
             if not isinstance(node, ast.Call):
@@ -165,5 +165,5 @@ def test_only_future_terminalizer_may_construct_run_status_directly() -> None:
 
     assert not violations, (
         "direct run-status construction and interrupted status minting belong only "
-        "to the future terminalizer after evaluator read-back: " + ", ".join(violations)
+        "to the terminalizer after evaluator read-back: " + ", ".join(violations)
     )

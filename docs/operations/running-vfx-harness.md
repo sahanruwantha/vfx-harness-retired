@@ -332,6 +332,9 @@ For the latest run, read:
 2. `runs/<run-id>/manifest.json` — schema, invocation, layout, and authority.
 3. `runs/<run-id>/status.json` — `running`, `passed`, `failed`, `interrupted`, or `dry-run`;
    an unaccepted terminal status selects `reports/stop-envelope.json` and its exact digest.
+   An interrupted v2 run selects `reports/interruption-receipt.json` and its satisfied
+   `reports/interruption-receipt-evaluation.json` by exact digest; that status authorizes no
+   transaction, and its reader re-evaluates the run-owned archive before trusting it (HIR-0172).
 4. `runs/<run-id>/reports/summary.json` — decisions, findings, cost, and trajectory.
 5. `runs/<run-id>/artifacts.json` — exact catalog for locating supporting detail.
 

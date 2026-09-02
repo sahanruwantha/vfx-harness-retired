@@ -92,18 +92,21 @@ for the layer-finalization artifact/replay/evaluation/outcome chain and every ca
 `Ledger` commit. The latter is a physical transport boundary only: it does not derive or emit
 strict accepted-build authority. Other sanctioned writers are not all migrated to their actual
 inner lock and sink. The foundation now implements the strict ledger derivation boundary, the
-fence-held capture into a run-owned archive, and the independent source-verifying evaluator; the
-terminal status publisher/reader remains unimplemented.
+fence-held capture into a run-owned archive, the independent source-verifying evaluator, and the
+exactly-once terminal commit path with its source-verifying interrupted reader; public signal
+integration, owner-loss reconciliation, capability-bound issuance, and authored/refobs capture
+remain unimplemented.
 The two selected record locators are already closed to
 `reports/interruption-receipt.json` and
 `reports/interruption-receipt-evaluation.json`; alternate nearby files have no authority.
 
 This intermediate state fails closed. `InterruptionReceiptEvaluation` has no public factory that
 lets a caller choose `satisfied`, and its pure receipt-binding helper derives identity fields only
-— never status or issues. Generic `RunStatusV2` publication and read-back refuse `interrupted`
-until the named independent evaluator and terminalizer boundaries exist. The records can be
-round-tripped structurally in pure tests, but no current production caller can turn them into a
-selected interrupted status.
+— never status or issues. `RunStatusV2` selects `interrupted` only for the typed receipt, a
+satisfied evaluation that binds that exact receipt, the exact owner claim the receipt binds, an
+evaluation time not after selection, and the receipt-derived exit code; the terminalizer is the
+only production minter, and the only authoritative reader re-evaluates the archive before it
+returns a status.
 
 Before that refusal may be removed, the evaluator must be able to prove the complete graph rather
 than only rehash caller-enumerated files. In particular, the strict ledger value must be emitted by
@@ -289,6 +292,27 @@ verifiable while a fresh live capture sees the new authority. The terminal commi
 signal integration, owner-loss reconciliation, capability-bound issuance, and authored-input and
 `refobs-*` capture (prerequisites 4 and 7) remain open, and `interrupted` status publication and
 authoritative read-back remain refused.
+
+#### Terminal commit path
+
+The root owner terminalizes while it still holds its exclusive run-owner fence. It requires a v2
+`running` status that selects the held claim and refuses a non-running status or an existing
+receipt, because terminal selection is exactly once. Under the shared shot-authority fence it
+captures the before/after observation and archive, publishes the observation, transcript
+frontiers, and archive manifest, mints the receipt from the recorded signal kind, publishes it,
+and only then lets the independent evaluator reopen the archive. An unsatisfied evaluation stops
+there: the run keeps its running status and its interruption authority is unavailable, which
+the later owner-loss reconciler may complete from the prepared records. A satisfied evaluation
+is published at its canonical locator, followed by an interruption summary that carries zero
+legal transactions and no retry, resume, or dispatch authority, the artifact inventory, and the
+terminal status, which replaces the exact `running` bytes observed at entry through an atomic
+rename; the latest-run projection follows, and the terminalizer reads its own status back
+through the authoritative reader. That reader selects the receipt and satisfied evaluation by
+digest, re-evaluates the archive, and derives the empty legal-transaction set; a run whose
+archive no longer verifies has interruption authority unavailable even though its status is
+selected. A death before status selection leaves the run running with its prepared records and
+the terminalizer refuses to mint a second semantic receipt. The lease is checked live before
+the receipt and before the status are published, and nothing here mutates shot authority.
 
 #### Fork-safe descriptor ownership and kernel-proven consumer directories
 
@@ -626,6 +650,11 @@ recovery controller or an authority-state transaction.
 | An archived source's bytes change or the object is removed; a transcript's archived bytes change; the archive manifest, authority observation, frontier record, or owner claim is rewritten | Evaluation is `failed` with the exact issue ids (`archive_object_mismatch`, `archive_object_missing`, `archive_manifest_mismatch` and `archive_ref_mismatch`, `authority_observation_mismatch` and `authority_ref_mismatch`, `transcript_frontier_mismatch` and `transcript_frontier_ref_mismatch`, `owner_claim_unverified`, `owner_claim_mismatch`, `owner_ref_mismatch`); whitespace-only claim rewrites mismatch only the byte reference |
 | The receipt itself is rewritten or absent | No evaluation exists; the evaluator reports the run's interruption authority unavailable instead of minting `failed` |
 | An `owner_lost` receipt binds a reconciler manifest and a prior running-status snapshot | Evaluation is `satisfied`; rewriting the snapshot fails it with `prior_status_snapshot_mismatch` |
+| The root owner terminalizes an operator interruption of a v2 running run | One receipt, one satisfied evaluation, an interruption summary with zero legal transactions, the inventory, an `interrupted` status selecting receipt and evaluation by digest with exit 130, and the latest projection exist; a second terminalization refuses and the status bytes are unchanged; the authoritative reader re-verifies the archive and derives no retry, resume, or dispatch authority |
+| The evaluator does not satisfy the closure during terminalization | The run keeps its exact running status and latest projection, the receipt exists, no evaluation is published, and the interrupted reader reports authority unavailable |
+| The process dies after the evaluation publishes but before status selection | The run stays running with receipt and evaluation prepared; a repeat terminalization refuses a second receipt |
+| An archived object changes after an interrupted status commits | The reader refuses with the closure no longer verifying; the status file alone grants nothing |
+| The run has no status, a v1 running status, or the owner asks to terminalize `owner_lost` | Each refuses before any record is minted |
 
 The key regression is a real subprocess test, not a raised exception inside the context manager:
 enter the public direct invocation, publish kickoff, block in an external-session-shaped AnyIO

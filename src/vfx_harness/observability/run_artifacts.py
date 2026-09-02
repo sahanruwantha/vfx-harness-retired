@@ -874,6 +874,12 @@ def shot_state_dir(shot_folder: str | Path) -> Path:
     return Path(shot_folder) / "state"
 
 
+def write_latest_projection(layout: RunLayout, *, state: str) -> None:
+    """Project one run into ``runs/latest.json``, the reading order's first step."""
+
+    _write_latest(layout, state=state)
+
+
 def _write_latest(layout: RunLayout, *, state: str) -> None:
     _atomic_json(
         layout.shot / "runs" / "latest.json",

@@ -88,6 +88,14 @@ live in the linked Harness Improvement Records.
   transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
   safe resume producer, or proven local-implementation retry producer
   ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- Interrupted runs now commit exactly once through the terminalizer: the root owner, holding
+  its live fence, captures the authority observation, publishes the receipt, lets the
+  independent evaluator reopen the archive, and then publishes the evaluation, an interruption
+  summary with zero legal transactions, the inventory, the v2 `interrupted` status selecting
+  receipt and evaluation by digest, and the latest projection. An unsatisfied evaluation leaves
+  the run running with interruption authority unavailable, and the authoritative reader
+  re-evaluates the archive before returning a status
+  ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - Interruption evidence now has its run-owned immutable archive and independent evaluator in
   bounded form: a fence-held capturer classifies every closed authority source through one
   domain function, copies exact bytes into `archive/interruption/objects/<sha256>` under the

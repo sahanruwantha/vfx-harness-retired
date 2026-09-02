@@ -45,7 +45,8 @@ operation.
   `manifest.json`, `status.json`, `reports/summary.json`, `artifacts.json`. Fail closed on an
   unsupported manifest schema. For an unaccepted terminal run, `status.json` selects
   `reports/stop-envelope.json` by exact digest; that closed envelope is machine dispatch
-  authority. `status.json` `detail` and the exit-code digit are operator diagnostics only
+  authority. An interrupted v2 run selects `reports/interruption-receipt.json` and its
+  satisfied evaluation by digest and authorizes no transaction. `status.json` `detail` and the exit-code digit are operator diagnostics only
   (HIR-0037, HIR-0164). Materialization writes
   `logs/transcripts/plan/materialize-layer-*.jsonl` (HIR-0038). Open detail
   (`reports/layers/`, `plan_gate.json`, `evidence/`,
@@ -137,7 +138,12 @@ operation.
   sources and transcripts captured under the shared shot-authority fence, and the independent
   evaluator derives `satisfied | failed` only by reopening that archive through the one domain
   source classification, never the live shot tree. A run without a readable receipt has no
-  evaluation, and `interrupted` status publication stays refused until the terminalizer lands
+  evaluation. Only the terminalizer, holding the live root-owner fence, selects `interrupted`:
+  it captures, publishes the receipt, lets the evaluator reopen the archive, then publishes the
+  evaluation, summary, inventory, terminal status, and latest projection exactly once, replacing
+  the exact `running` bytes it observed; an unsatisfied evaluation leaves the run running with
+  interruption authority unavailable. The authoritative interrupted reader re-evaluates the
+  archive and derives zero legal transactions and no retry, resume, or dispatch authority
   (HIR-0172).
 - Run output never becomes authority by proximity. Promotion from evidence into a contract,
   plan, HIR, or ADR is an explicit decision (ADR-0002).

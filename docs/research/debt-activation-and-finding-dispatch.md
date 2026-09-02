@@ -322,8 +322,12 @@ HIR-0172 therefore has a strict prerequisite sequence, not a set of parallel bes
    capture into a run-owned content-addressed archive and the evaluator that reopens only that
    archive now exist in bounded form (one shared domain classification, a closed archive
    manifest, a closed issue vocabulary, corruption and owner-loss matrices on the public
-   fixture); authored/refobs capture, capability-bound issuance, the terminal commit path, and
-   the process-level signal and fork matrices remain open.
+   fixture). The exactly-once terminal commit path now exists too: the root owner, holding its
+   live fence, captures, publishes the receipt, lets the evaluator reopen the archive, then
+   publishes evaluation, summary, inventory, terminal `interrupted` status, and the latest
+   projection, and the authoritative reader re-evaluates the archive; authored/refobs capture,
+   capability-bound issuance, public signal integration, owner-loss reconciliation, and the
+   process-level signal and fork matrices remain open.
 
 Until that sequence is complete, the HIR-0172 foundation is non-publishable by design. Byte hashes
 over a caller-enumerated list are insufficient, public CLI signal handling remains unintegrated,

@@ -706,31 +706,56 @@ def test_running_and_failed_statuses_both_retain_the_exact_root_owner() -> None:
         )
 
 
-def test_interrupted_status_publication_and_authoritative_read_are_refused() -> None:
+def _mint_interrupted(receipt, evaluation, **overrides) -> RunStatusV2:
+    arguments = {
+        "run_id": _RUN,
+        "state": "interrupted",
+        "updated_at": _T3,
+        "record_locator": INTERRUPTION_RECEIPT_LOCATOR,
+        "selected_record": receipt,
+        "owner": receipt.owner,
+        "owner_locator": "owner/claim.json",
+        "interruption_evaluation_locator": INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
+        "interruption_evaluation": evaluation,
+        **overrides,
+    }
+    return RunStatusV2.mint(**arguments)
+
+
+def test_interrupted_status_selects_only_a_satisfied_evaluation_of_its_receipt() -> None:
     receipt = _receipt()
     evaluation = _evaluation(receipt)
-    status = _structural_interrupted_status(receipt, evaluation)
+    status = _mint_interrupted(receipt, evaluation)
+    assert status == _structural_interrupted_status(receipt, evaluation)
     assert status.exit_code == 130
     assert status.stop_envelope is None
     assert status.interruption_receipt_digest == receipt.digest
     assert status.interruption_evaluation_digest == evaluation.digest
-
-    with pytest.raises(ValueError, match="publication is unavailable"):
-        RunStatusV2.mint(
-            run_id=_RUN,
-            state="interrupted",
-            updated_at=_T3,
-            record_locator=INTERRUPTION_RECEIPT_LOCATOR,
-            selected_record=receipt,
-            interruption_evaluation_locator=INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
-            interruption_evaluation=evaluation,
-        )
-    with pytest.raises(ValueError, match="interrupted authority is unavailable"):
+    assert (
         RunStatusV2.from_dict(
             status.as_dict(),
             selected_record=receipt,
+            owner=receipt.owner,
             interruption_evaluation=evaluation,
         )
+        == status
+    )
+
+    with pytest.raises(ValueError, match="satisfied independent evaluation"):
+        _mint_interrupted(receipt, _evaluation(receipt, status="failed"))
+    with pytest.raises(ValueError, match="requires the independent evaluation"):
+        _mint_interrupted(receipt, None)
+    other = _evaluation(_receipt(interruption_kind="termination_request"))
+    with pytest.raises(ValueError, match="does not bind the exact receipt closure"):
+        _mint_interrupted(receipt, other)
+    with pytest.raises(ValueError, match="interruption evaluation/status selection"):
+        _mint_interrupted(receipt, evaluation, updated_at=_T2)
+    with pytest.raises(ValueError, match="derived from its receipt"):
+        _mint_interrupted(receipt, evaluation, exit_code=1)
+    with pytest.raises(ValueError, match="exact owner claim"):
+        _mint_interrupted(receipt, evaluation, owner=_owner(claimed_at=_T1))
+    with pytest.raises(ValueError, match="canonical interruption evaluation locator"):
+        _mint_interrupted(receipt, evaluation, interruption_evaluation_locator="reports/other.json")
 
 
 def test_interrupted_status_structure_requires_canonical_record_locators() -> None:
@@ -764,10 +789,11 @@ def test_status_matrix_rejects_unrelated_stop_action_and_dispatch_fields() -> No
     hybrid = status.as_dict()
     hybrid["stop_envelope"] = "reports/stop-envelope.json"
     hybrid["stop_envelope_digest"] = _digest("stop")
-    with pytest.raises(ValueError, match="interrupted authority is unavailable"):
+    with pytest.raises(ValueError, match="does not match its selected record and state matrix"):
         RunStatusV2.from_dict(
             hybrid,
             selected_record=receipt,
+            owner=receipt.owner,
             interruption_evaluation=evaluation,
         )
 

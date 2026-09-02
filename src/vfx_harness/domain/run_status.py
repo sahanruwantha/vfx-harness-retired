@@ -601,10 +601,37 @@ class RunStatusV2:
             pairs["stop_envelope"] = locator
             pairs["stop_envelope_digest"] = selected_record.digest
         elif state == "interrupted":
-            raise ValueError(
-                "interrupted status publication is unavailable until the independent "
-                "source-verifying evaluator and terminal selection boundary are implemented"
+            if not isinstance(selected_record, RunInterruptionReceipt):
+                raise ValueError("interrupted status requires the exact typed interruption receipt")
+            if selected_record.run_id != run_id:
+                raise ValueError("interrupted status receipt names another run")
+            if locator != INTERRUPTION_RECEIPT_LOCATOR:
+                raise ValueError("interrupted status must select the canonical interruption receipt locator")
+            if not isinstance(interruption_evaluation, InterruptionReceiptEvaluation):
+                raise ValueError("interrupted status requires the independent evaluation of its receipt")
+            require_interruption_evaluation_binds_receipt(interruption_evaluation, selected_record)
+            if interruption_evaluation.status != "satisfied":
+                raise ValueError("interrupted status requires a satisfied independent evaluation")
+            evaluation_locator = relative_locator(
+                interruption_evaluation_locator,
+                "run status interruption evaluation locator",
             )
+            if evaluation_locator != INTERRUPTION_RECEIPT_EVALUATION_LOCATOR:
+                raise ValueError("interrupted status must select the canonical interruption evaluation locator")
+            chronological(
+                interruption_evaluation.evaluated_at,
+                updated_at,
+                "interruption evaluation/status selection",
+            )
+            if exit_code is not None and exit_code != selected_record.exit_code:
+                raise ValueError("interrupted status exit code must be derived from its receipt")
+            if not isinstance(owner, RunOwnerClaim) or owner != selected_record.owner:
+                raise ValueError("interrupted status must retain the exact owner claim its receipt binds")
+            pairs["interruption_receipt"] = locator
+            pairs["interruption_receipt_digest"] = selected_record.digest
+            pairs["interruption_evaluation"] = evaluation_locator
+            pairs["interruption_evaluation_digest"] = interruption_evaluation.digest
+            derived_exit = selected_record.exit_code
         else:
             raise ValueError(f"run status state must be one of {sorted(RUN_STATES)}")
         if not isinstance(owner, RunOwnerClaim):
@@ -658,11 +685,6 @@ class RunStatusV2:
         if value.get("schema") != cls.SCHEMA:
             raise ValueError(f"{where}.schema must be {cls.SCHEMA!r}")
         state = value.get("state")
-        if state == "interrupted":
-            raise ValueError(
-                f"{where} interrupted authority is unavailable until its independent "
-                "source-verifying reader is implemented"
-            )
         locator_field = {
             "running": "owner_claim",
             "passed": "summary",
