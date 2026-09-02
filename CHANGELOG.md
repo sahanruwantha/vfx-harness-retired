@@ -88,6 +88,12 @@ live in the linked Harness Improvement Records.
   transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
   safe resume producer, or proven local-implementation retry producer
   ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- Blender is now selected by a `--version` probe executed inside the mandatory worker
+  confinement, so a launcher that only works on the host (a snap shim that needs snapd) is
+  rejected at resolution and strict preflight with the sandbox's own diagnostic and the
+  `BLENDER_BIN` next action, instead of timing out at worker boot; the packaged real binary
+  is selected automatically and the preflight probe specification advances to revision 4
+  ([HIR-0173](docs/improvements/HIR-0173-blender-resolution-proves-the-launcher-inside-confinement.md)).
 - Canonical `shot.json` commits now use one opaque prepared transaction under the shared
   shot-authority writer fence and ordered real ledger lock, with exact CAS/readback and
   interruption- and fork-safe descriptor ownership. Generic file writers cannot target either

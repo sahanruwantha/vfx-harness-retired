@@ -35,6 +35,13 @@ not create a shot run or advance shot authority. `vfx run` instead creates its s
 run before invoking strict preflight, so a failed probe can publish a run-scoped
 `infrastructure_failure` stop before any paid stage starts.
 
+Blender is resolved by running `--version` inside the same bubblewrap confinement the worker
+uses, so a launcher that only works on the host is refused here with the sandbox's own
+diagnostic. Snap installs are the common case: `/snap/bin/blender` needs snapd and capabilities
+the confinement withholds, while the package's real binary `/snap/blender/current/blender` runs;
+the resolver tries that path automatically, and `BLENDER_BIN` names any other real binary
+(HIR-0173).
+
 Stop if preflight fails. Authentication, Blender, or configuration failures can resemble an empty
 successful agent session and must not be diagnosed as a VFX-quality problem.
 

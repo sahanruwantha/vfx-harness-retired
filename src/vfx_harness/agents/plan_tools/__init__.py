@@ -27,4 +27,4 @@ from vfx_harness.agents.plan_tools.spike import _ready_measure_refs as _ready_me
 from vfx_harness.agents.plan_tools.spike import _spike as _spike
 from vfx_harness.agents.plan_tools.spike import _spike_ineligibility as _spike_ineligibility
 from vfx_harness.agents.plan_tools.spike import _SpikeBudget as _SpikeBudget
-from vfx_harness.blender.session import resolve_blender as resolve_blender
+from vfx_harness.blender.resolution import resolve_blender as resolve_blender

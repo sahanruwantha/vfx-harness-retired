@@ -39,6 +39,7 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 
+from vfx_harness.blender import resolution as blender_resolution
 from vfx_harness.blender.session import BlenderError, BlenderSession
 from vfx_harness.domain.environment_results import (
     EnvironmentCheck,
@@ -147,12 +148,13 @@ def auth() -> dict:
             "present": sorted(present), "decoys": sorted(decoys)}
 
 
-def _command_path(command: str) -> str | None:
-    candidate = Path(command).expanduser()
-    if candidate.is_absolute() or candidate.parent != Path("."):
-        resolved = candidate.resolve()
-        return str(resolved) if resolved.is_file() and os.access(resolved, os.X_OK) else None
-    return shutil.which(command)
+def _resolve_blender(requested: str) -> tuple[str | None, list[str]]:
+    """Select Blender through the confined resolver; its diagnostic is the problem text."""
+
+    try:
+        return blender_resolution.resolve_blender(requested, shot_bound=True), []
+    except BlenderError as exc:
+        return None, [str(exc)]
 
 
 def _safe_auth() -> dict:
@@ -328,16 +330,12 @@ def check(blender: str | None = None) -> dict:
     except (OSError, ValueError) as exc:
         configuration = {"ok": False, "problems": [str(exc)]}
     configured_blender = configured_blender or "blender"
-    resolved_blender = _command_path(configured_blender)
+    resolved_blender, blender_problems = _resolve_blender(configured_blender)
     blender_result = {
         "ok": resolved_blender is not None,
         "requested": configured_blender,
         "resolved": resolved_blender,
-        "problems": (
-            []
-            if resolved_blender is not None
-            else [f"Blender executable {configured_blender!r} is not available or executable."]
-        ),
+        "problems": blender_problems,
     }
     confinement = _probe_blender_confinement(resolved_blender)
     builder_fence = _probe_builder_execution_fence()
@@ -365,16 +363,12 @@ def probe(blender: str | None = None) -> dict:
         configuration = {"ok": False, "problems": [str(exc)]}
         a = _safe_auth()
         requested = blender or os.environ.get("BLENDER_BIN") or "blender"
-        resolved = _command_path(requested)
+        resolved, blender_problems = _resolve_blender(requested)
         blender_result = {
             "ok": resolved is not None,
             "requested": requested,
             "resolved": resolved,
-            "problems": (
-                []
-                if resolved is not None
-                else [f"Blender executable {requested!r} is not available or executable."]
-            ),
+            "problems": blender_problems,
         }
         confinement = _probe_blender_confinement(resolved)
         builder_fence = _probe_builder_execution_fence()
@@ -532,12 +526,19 @@ def environment_result(value: dict) -> EnvironmentResult:
             check_id="blender_executable",
             passed=blender_passed,
             observed_digest=canonical_digest(blender_safe),
-            expected="The configured Blender executable resolves to an executable file.",
+            expected=(
+                "The configured Blender executable prints its identity inside the "
+                "mandatory filesystem confinement."
+            ),
             found=blender_found,
             next_action=(
                 "No Blender recovery is required."
                 if blender_passed
-                else "Install Blender or select a valid executable, then run strict preflight again."
+                else (
+                    "Set BLENDER_BIN to a Blender executable that runs inside the "
+                    "confinement (a packaged install must name its real binary), then "
+                    "run strict preflight again."
+                )
             ),
         ),
     )
@@ -546,7 +547,7 @@ def environment_result(value: dict) -> EnvironmentResult:
         checks=checks,
         probe_spec=EnvironmentProbeSpec(
             probe_id="preflight",
-            probe_revision=3,
+            probe_revision=4,
             check_ids=tuple(sorted(check.check_id for check in checks)),
         ),
     )

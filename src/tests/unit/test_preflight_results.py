@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from vfx_harness.application import preflight
+from vfx_harness.blender import resolution as blender_resolution
 from vfx_harness.domain.environment_results import EnvironmentResult
 from vfx_harness.observability import run_artifacts
 
@@ -50,7 +51,7 @@ def test_environment_result_round_trips_and_rejects_stale_summary() -> None:
     result = preflight.environment_result(_failed_raw())
 
     assert result.ok is False
-    assert result.as_dict()["probe_spec"]["probe_revision"] == 3
+    assert result.as_dict()["probe_spec"]["probe_revision"] == 4
     assert EnvironmentResult.from_dict(result.as_dict(), "result") == result
 
     stale = deepcopy(result.as_dict())
@@ -65,7 +66,7 @@ def test_environment_result_round_trips_and_rejects_stale_summary() -> None:
         EnvironmentResult.from_dict(legacy, "result")
 
     changed_probe = deepcopy(result.as_dict())
-    changed_probe["probe_spec"]["probe_revision"] = 4
+    changed_probe["probe_spec"]["probe_revision"] = 5
     with pytest.raises(ValueError, match="probe_spec_digest is stale"):
         EnvironmentResult.from_dict(changed_probe, "result")
 
@@ -171,7 +172,7 @@ def test_confinement_failure_is_a_typed_preflight_failure() -> None:
     failed = [check for check in result.checks if not check.passed]
     assert [check.check_id for check in failed] == ["blender_confinement"]
     assert result.probe_spec is not None
-    assert result.probe_spec.probe_revision == 3
+    assert result.probe_spec.probe_revision == 4
 
 
 def test_builder_fence_failure_is_a_typed_preflight_failure() -> None:
@@ -203,3 +204,43 @@ def test_builder_fence_probe_exercises_live_exclusion() -> None:
         "mechanism": "sysv-sem-undo+descriptor-flock",
         "problems": [],
     }
+
+
+def test_check_reports_the_confined_resolution_diagnostic_as_the_blender_problem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(requested: str, *, shot_bound: bool = True) -> str:
+        raise blender_resolution.BlenderResolutionError(
+            requested,
+            (
+                blender_resolution.BlenderCandidateRejection(
+                    "/snap/bin/blender",
+                    "timeout waiting for snap system profiles to get updated",
+                ),
+            ),
+            shot_bound=shot_bound,
+        )
+
+    monkeypatch.setattr(preflight.blender_resolution, "resolve_blender", refuse)
+    preflight._probe_blender_confinement.cache_clear()
+
+    result = preflight.check(blender="blender")
+
+    assert result["ok"] is False
+    assert result["blender"]["requested"] == "blender"
+    assert result["blender"]["resolved"] is None
+    assert result["blender"]["ok"] is False
+    (problem,) = result["blender"]["problems"]
+    assert "mandatory filesystem confinement" in problem
+    assert "/snap/bin/blender: timeout waiting for snap system profiles" in problem
+    assert "BLENDER_BIN" in problem
+    assert result["blender_confinement"]["problems"] == [
+        "Blender confinement cannot run until Blender resolves."
+    ]
+    typed = preflight.environment_result(result)
+    executable = next(
+        check for check in typed.checks if check.check_id == "blender_executable"
+    )
+    assert executable.passed is False
+    assert "inside the mandatory filesystem confinement" in executable.expected
+    assert "BLENDER_BIN" in executable.next_action

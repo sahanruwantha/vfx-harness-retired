@@ -34,7 +34,11 @@ operation.
 
 - Run `vfx preflight --strict` before spending model budget. Authentication, Blender, or
   configuration failures can resemble an empty successful agent session; never diagnose them as
-  a VFX-quality problem.
+  a VFX-quality problem. Blender is selected only by a `--version` probe run inside the
+  mandatory worker confinement; a launcher that works on the host but not in the sandbox
+  (a snap shim that needs snapd) is rejected at resolution and strict preflight with the
+  confinement's diagnostic, never discovered at worker boot. Point `BLENDER_BIN` at the real
+  binary when the packaged launcher is unusable (HIR-0173).
 - The normal operation is `vfx run`. It stops on the first unaccepted boundary; do not force
   downstream work past it. `--force` is a bounded debugging experiment, never a deliverable.
 - Reading order after any invocation: `runs/latest.json`, then the selected run's

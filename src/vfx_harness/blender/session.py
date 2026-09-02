@@ -9,14 +9,12 @@ import json
 import os
 import queue
 import secrets
-import shutil
 import stat
 import subprocess
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 from vfx_harness.blender.filesystem_confinement import (
@@ -25,6 +23,9 @@ from vfx_harness.blender.filesystem_confinement import (
     prepared_worker_command,
 )
 from vfx_harness.blender.observation_environment import validate_observation_request
+from vfx_harness.blender.resolution import (
+    resolve_blender,
+)
 from vfx_harness.infrastructure.trusted_files import (
     PinnedTrustedFile,
     TrustedDirectoryBinding,
@@ -339,44 +340,6 @@ def discard_prepared_parent_publish(prepared: PreparedParentPublication) -> None
     _discard_prepared_parent_publish(prepared)
 
 
-@lru_cache(maxsize=8)
-def resolve_blender(requested: str) -> str:
-    """Resolve and smoke-test the real Blender binary before starting a worker.
-
-    Desktop launchers (notably Snap shims) can exist and still be unusable in the current
-    process context.  Selection is based on a successful ``--version`` execution, not on
-    a filename existing, and diagnostics from every rejected candidate are preserved.
-    """
-    candidates = []
-    for value in (
-        requested,
-        shutil.which(requested),
-        os.environ.get("BLENDER_BIN"),
-        "/snap/blender/current/blender",
-        "/usr/bin/blender",
-    ):
-        if value and value not in candidates:
-            candidates.append(str(value))
-    failures = []
-    for candidate in candidates:
-        path = shutil.which(candidate) or candidate
-        if not Path(path).is_file():
-            failures.append(f"{candidate}: not found")
-            continue
-        try:
-            probe = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=15, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            failures.append(f"{path}: {type(exc).__name__}: {exc}")
-            continue
-        if probe.returncode == 0 and "Blender" in (probe.stdout + probe.stderr):
-            # Do not resolve symlinks: multi-call launchers such as /snap/bin/blender
-            # select the application from argv[0]; resolving it to /usr/bin/snap breaks it.
-            return str(path)
-        reason = (probe.stderr or probe.stdout or f"exit {probe.returncode}").strip()
-        failures.append(f"{path}: {reason[-240:]}")
-    raise BlenderError("no runnable Blender binary; " + "; ".join(failures))
-
-
 class BlenderSession:
     """A long-lived headless Blender process holding one scene in memory.
 
@@ -433,7 +396,7 @@ class BlenderSession:
 
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> BlenderSession:
-        self.blender = resolve_blender(self.blender)
+        self.blender = resolve_blender(self.blender, shot_bound=self.cwd is not None)
         blender_argv = [self.blender, "--background", "--factory-startup"]
         if self.blend_file:
             blender_argv.append(self.blend_file)
