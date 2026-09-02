@@ -44,6 +44,11 @@ def _failed_raw() -> dict:
             "mechanism": "sysv-sem-undo+descriptor-flock",
             "problems": [],
         },
+        "plan_consumer_directory": {
+            "ok": True,
+            "mechanism": "fanotify-target-fid+openat2",
+            "problems": [],
+        },
     }
 
 
@@ -51,7 +56,7 @@ def test_environment_result_round_trips_and_rejects_stale_summary() -> None:
     result = preflight.environment_result(_failed_raw())
 
     assert result.ok is False
-    assert result.as_dict()["probe_spec"]["probe_revision"] == 4
+    assert result.as_dict()["probe_spec"]["probe_revision"] == 5
     assert EnvironmentResult.from_dict(result.as_dict(), "result") == result
 
     stale = deepcopy(result.as_dict())
@@ -66,7 +71,7 @@ def test_environment_result_round_trips_and_rejects_stale_summary() -> None:
         EnvironmentResult.from_dict(legacy, "result")
 
     changed_probe = deepcopy(result.as_dict())
-    changed_probe["probe_spec"]["probe_revision"] = 5
+    changed_probe["probe_spec"]["probe_revision"] = 6
     with pytest.raises(ValueError, match="probe_spec_digest is stale"):
         EnvironmentResult.from_dict(changed_probe, "result")
 
@@ -107,6 +112,7 @@ def test_strict_preflight_emits_typed_result_and_optional_output(
     assert {check["check_id"] for check in stdout["checks"]} == {
         "builder_execution_fence",
         "blender_confinement",
+        "plan_consumer_directory",
         "blender_executable",
         "credential_configuration",
         "runtime_configuration",
@@ -147,6 +153,11 @@ def test_preflight_result_never_serializes_credential_values() -> None:
                 "mechanism": "sysv-sem-undo+descriptor-flock",
                 "problems": [],
             },
+            "plan_consumer_directory": {
+                "ok": True,
+                "mechanism": "fanotify-target-fid+openat2",
+                "problems": [],
+            },
         }
     )
 
@@ -172,7 +183,7 @@ def test_confinement_failure_is_a_typed_preflight_failure() -> None:
     failed = [check for check in result.checks if not check.passed]
     assert [check.check_id for check in failed] == ["blender_confinement"]
     assert result.probe_spec is not None
-    assert result.probe_spec.probe_revision == 4
+    assert result.probe_spec.probe_revision == 5
 
 
 def test_builder_fence_failure_is_a_typed_preflight_failure() -> None:
@@ -244,3 +255,19 @@ def test_check_reports_the_confined_resolution_diagnostic_as_the_blender_problem
     assert executable.passed is False
     assert "inside the mandatory filesystem confinement" in executable.expected
     assert "BLENDER_BIN" in executable.next_action
+
+
+
+def test_confinement_smoke_root_is_a_valid_v2_shot_id(tmp_path) -> None:
+    """The smoke's scratch root names a v2 run manifest shot id (HIR-0172)."""
+
+    import tempfile
+
+    from vfx_harness.application import preflight
+    from vfx_harness.domain.stop_envelope_primitives import require_id
+    from vfx_harness.observability import run_artifacts
+
+    root = tempfile.mkdtemp(prefix=preflight.PREFLIGHT_ROOT_PREFIX, dir=tmp_path)
+    require_id(Path(root).name, "preflight scratch shot id")
+    layout = run_artifacts.create(root, "smoke-001", command="build")
+    assert layout.manifest.is_file()

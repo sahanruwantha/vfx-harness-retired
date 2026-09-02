@@ -393,6 +393,23 @@ the fault-owning unit under the existing operator procedure. The manual `vfx uni
 command above is not a typed resume or automatic retry transaction. Never copy a random old
 render, snapshot, or script into the current run and call that a resume.
 
+### Reconcile a run whose owner died
+
+A run that still says `running` after its process is gone is reconciled only by acquiring its
+recorded owner fence; nothing about the process id, the status age, or a quiet transcript has
+authority:
+
+```bash
+.venv/bin/vfx reconcile shots/<shot-id> --run-id <run-id>
+```
+
+The command runs as its own owned run and prints one typed reconciliation result. `owner_live`
+means the fence is still held and nothing was written; `owner_lost` means the released fence was
+acquired and the run now selects an action-free `owner_lost` receipt with a satisfied evaluation;
+`completed_prepared` means the owner had already published its receipt and evaluation and only
+the status selection was missing; `already_terminal` returns the receipt or terminal status that
+already exists. A legacy run without an owner claim is not reconcilable (HIR-0172).
+
 ## 6. Authority and editing rules
 
 - Edit `brief.md` and `refs/` only to change authored intent.

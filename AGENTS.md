@@ -38,7 +38,9 @@ operation.
   mandatory worker confinement; a launcher that works on the host but not in the sandbox
   (a snap shim that needs snapd) is rejected at resolution and strict preflight with the
   confinement's diagnostic, never discovered at worker boot. Point `BLENDER_BIN` at the real
-  binary when the packaged launcher is unusable (HIR-0173).
+  binary when the packaged launcher is unusable (HIR-0173). Strict preflight also proves the kernel-owned plan-consumer
+  directory primitive (`plan_consumer_directory`), so an unsupported host fails before spend
+  rather than at its first consumer view (HIR-0172).
 - The normal operation is `vfx run`. It stops on the first unaccepted boundary; do not force
   downstream work past it. `--force` is a bounded debugging experiment, never a deliverable.
 - Reading order after any invocation: `runs/latest.json`, then the selected run's
@@ -145,7 +147,9 @@ operation.
   acquire the run-owner fence before publishing `running`, record the first SIGINT/SIGTERM as
   intent and cancel by raising, and select exactly one terminal status; a stage inherited inside
   a driver publishes only its typed stop envelope, and a cancellation with no recorded intent is
-  a failure, never an interruption. Only the terminalizer, holding the live root-owner fence, selects `interrupted`:
+  a failure, never an interruption. A run left `running` by a dead owner is reconciled only through
+  `vfx reconcile <shot> --run-id <run>`, which proves loss by acquiring the exact recorded fence,
+  never from PID absence, status age, or transcript silence; a held fence changes nothing. Only the terminalizer, holding the live root-owner fence, selects `interrupted`:
   it captures, publishes the receipt, lets the evaluator reopen the archive, then publishes the
   evaluation, summary, inventory, terminal status, and latest projection exactly once, replacing
   the exact `running` bytes it observed; an unsatisfied evaluation leaves the run running with

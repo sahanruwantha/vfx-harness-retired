@@ -13,7 +13,7 @@ DOMAIN_INTERRUPTION = PACKAGE / "domain" / "run_interruption_records.py"
 DOMAIN_OWNER_LOSS = PACKAGE / "domain" / "run_owner_loss.py"
 EVALUATOR = "evaluation/run_interruption.py"
 TERMINALIZER = "orchestration/run_terminalizer.py"
-FUTURE_OWNER_LOSS_CAPTURE = "observability/run_owner_loss_capture.py"
+OWNER_LOSS_ISSUER = "orchestration/run_owner_loss_reconciler.py"
 
 
 def _sources() -> list[Path]:
@@ -82,10 +82,10 @@ def test_ephemeral_interruption_facts_have_no_public_issuance_factory(
     ("class_name", "allowed_path"),
     (
         ("RunInterruptionReceipt", TERMINALIZER),
-        ("RunOwnerLossObservation", FUTURE_OWNER_LOSS_CAPTURE),
+        ("RunOwnerLossObservation", OWNER_LOSS_ISSUER),
     ),
 )
-def test_ephemeral_interruption_facts_have_one_future_production_issuer(
+def test_ephemeral_interruption_facts_have_one_production_issuer(
     class_name: str,
     allowed_path: str,
 ) -> None:

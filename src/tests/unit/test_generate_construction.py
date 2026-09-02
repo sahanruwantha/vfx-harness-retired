@@ -612,3 +612,31 @@ def test_vfx_asset_and_generate_builder_path_fail_closed() -> None:
     assert "import_asset" in mcp_source
     prepare_source = inspect.getsource(stage_generate_unit)
     assert "ensure(" not in prepare_source
+
+
+
+def test_construction_namespace_creates_the_build_root_for_a_fresh_shot(tmp_path: Path) -> None:
+    """A freshly started shot has no build/ yet; the namespace guard creates it durably."""
+
+    from vfx_harness.orchestration.generate_construction import (
+        GenerateConstructionError,
+        ensure_construction_read_namespace,
+    )
+
+    shot = tmp_path / "fresh-shot"
+    shot.mkdir()
+    assert not (shot / "build").exists()
+
+    namespace = ensure_construction_read_namespace(shot)
+
+    assert namespace == shot / "build" / "construction"
+    assert (shot / "build").is_dir() and not (shot / "build").is_symlink()
+    assert namespace.is_dir()
+    assert ensure_construction_read_namespace(shot) == namespace
+
+    aliased = tmp_path / "aliased-shot"
+    aliased.mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    (aliased / "build").symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(GenerateConstructionError, match="real non-symlink"):
+        ensure_construction_read_namespace(aliased)

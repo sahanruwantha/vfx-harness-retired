@@ -64,6 +64,10 @@ from vfx_harness.orchestration.builder_execution_fence import (
     BuilderExecutionFenceError,
     builder_execution_fence,
 )
+from vfx_harness.orchestration.plan_consumer_owned_directory import (
+    PlanConsumerViewMutationConflict,
+    probe_owned_directory_primitive,
+)
 
 # What the Agent SDK / Claude Code CLI actually reads, in the precedence measured above.
 _READ = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -171,6 +175,11 @@ def _safe_auth() -> dict:
         }
 
 
+# The smoke's scratch shot is a v2 run root: its folder name becomes the manifest shot id
+# and must be identifier-shaped, so the private root cannot carry a leading dot.
+PREFLIGHT_ROOT_PREFIX = "vfxh-preflight-"
+
+
 @lru_cache(maxsize=8)
 def _probe_blender_confinement(resolved_blender: str | None) -> dict:
     """Exercise the real shot-bound worker capability view without durable state."""
@@ -192,7 +201,7 @@ def _probe_blender_confinement(resolved_blender: str | None) -> dict:
         previous_run_dir = os.environ.get("VFXH_RUN_DIR")
         previous_canary = os.environ.get("VFXH_PREFLIGHT_HOST_CANARY")
         try:
-            temporary_root = Path(tempfile.mkdtemp(prefix=".vfxh-preflight-"))
+            temporary_root = Path(tempfile.mkdtemp(prefix=PREFLIGHT_ROOT_PREFIX))
             refs = temporary_root / "refs"
             refs.mkdir()
             declared = refs / "declared.txt"
@@ -320,6 +329,31 @@ def _probe_builder_execution_fence() -> dict:
     }
 
 
+def _probe_plan_consumer_directory() -> dict:
+    """Prove the kernel-owned directory primitive on this host and filesystem."""
+
+    problems: list[str] = []
+    temporary_root: Path | None = None
+    try:
+        temporary_root = Path(tempfile.mkdtemp(prefix="vfxh-consumer-preflight-"))
+        probe_owned_directory_primitive(temporary_root, where="preflight plan-consumer directory")
+    except (PlanConsumerViewMutationConflict, OSError, RuntimeError, ValueError) as exc:
+        message = str(exc)
+        if temporary_root is not None:
+            message = message.replace(str(temporary_root), "<private-consumer-preflight-root>")
+        problems.append(
+            f"plan-consumer directory smoke failed ({type(exc).__name__}): " + message[-400:]
+        )
+    finally:
+        if temporary_root is not None:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+    return {
+        "ok": not problems,
+        "mechanism": "fanotify-target-fid+openat2",
+        "problems": problems,
+    }
+
+
 def check(blender: str | None = None) -> dict:
     a = _safe_auth()
     configuration = {"ok": True, "problems": []}
@@ -339,6 +373,7 @@ def check(blender: str | None = None) -> dict:
     }
     confinement = _probe_blender_confinement(resolved_blender)
     builder_fence = _probe_builder_execution_fence()
+    consumer_directory = _probe_plan_consumer_directory()
     return {
         "ok": bool(
             a["ok"]
@@ -346,12 +381,14 @@ def check(blender: str | None = None) -> dict:
             and blender_result["ok"]
             and confinement["ok"]
             and builder_fence["ok"]
+            and consumer_directory["ok"]
         ),
         "auth": a,
         "configuration": configuration,
         "blender": blender_result,
         "blender_confinement": confinement,
         "builder_execution_fence": builder_fence,
+        "plan_consumer_directory": consumer_directory,
     }
 
 
@@ -390,19 +427,33 @@ def environment_result(value: dict) -> EnvironmentResult:
     blender = value.get("blender") if isinstance(value, dict) else None
     confinement = value.get("blender_confinement") if isinstance(value, dict) else None
     builder_fence = value.get("builder_execution_fence") if isinstance(value, dict) else None
+    consumer_directory = value.get("plan_consumer_directory") if isinstance(value, dict) else None
     if not all(
         isinstance(row, dict)
-        for row in (auth_result, configuration, blender, confinement, builder_fence)
+        for row in (auth_result, configuration, blender, confinement, builder_fence, consumer_directory)
     ):
         raise ValueError(
-            "preflight result requires auth, configuration, Blender, and Blender "
-            "confinement, and builder-fence observations"
+            "preflight result requires auth, configuration, Blender, Blender confinement, "
+            "builder-fence, and plan-consumer-directory observations"
         )
     assert isinstance(auth_result, dict)
     assert isinstance(configuration, dict)
     assert isinstance(blender, dict)
     assert isinstance(confinement, dict)
     assert isinstance(builder_fence, dict)
+    assert isinstance(consumer_directory, dict)
+    consumer_passed = bool(consumer_directory.get("ok"))
+    consumer_safe = {
+        "schema": "vfx-harness.plan-consumer-directory-observation/v1",
+        "ok": consumer_passed,
+        "mechanism": consumer_directory.get("mechanism"),
+        "problems": list(consumer_directory.get("problems") or []),
+    }
+    consumer_found = (
+        "Plan-consumer directories publish through fanotify target-FID reporting and openat2."
+        if consumer_passed
+        else "; ".join(consumer_safe["problems"]) or "plan-consumer directory probe failed"
+    )
     safe_observation = {
         "schema": "vfx-harness.auth-observation/v1",
         "using": auth_result.get("using"),
@@ -499,6 +550,24 @@ def environment_result(value: dict) -> EnvironmentResult:
             ),
         ),
         EnvironmentCheck(
+            check_id="plan_consumer_directory",
+            passed=consumer_passed,
+            observed_digest=canonical_digest(consumer_safe),
+            expected=(
+                "Plan-consumer scratch directories are created through the kernel-proven "
+                "fanotify target-FID and openat2 primitive on this host and filesystem."
+            ),
+            found=consumer_found,
+            next_action=(
+                "No plan-consumer directory recovery is required."
+                if consumer_passed
+                else (
+                    "Run on Linux 5.17 or newer with unprivileged fanotify target-FID reporting "
+                    "and openat2 on a local filesystem, then run strict preflight again."
+                )
+            ),
+        ),
+        EnvironmentCheck(
             check_id="credential_configuration",
             passed=auth_passed,
             observed_digest=canonical_digest(safe_observation),
@@ -547,7 +616,7 @@ def environment_result(value: dict) -> EnvironmentResult:
         checks=checks,
         probe_spec=EnvironmentProbeSpec(
             probe_id="preflight",
-            probe_revision=4,
+            probe_revision=5,
             check_ids=tuple(sorted(check.check_id for check in checks)),
         ),
     )

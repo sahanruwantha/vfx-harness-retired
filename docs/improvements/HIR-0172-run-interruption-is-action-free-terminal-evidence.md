@@ -95,8 +95,9 @@ inner lock and sink. The foundation now implements the strict ledger derivation 
 fence-held capture into a run-owned archive, the independent source-verifying evaluator, and the
 exactly-once terminal commit path with its source-verifying interrupted reader, and the
 root-owner boundary that mints every public run as the v2 generation and terminalizes recorded
-SIGINT/SIGTERM intent; owner-loss reconciliation, capability-bound issuance, authored/refobs
-capture, and the process-level signal and fork matrices remain unimplemented.
+SIGINT/SIGTERM intent, and the model-free owner-loss reconciler that proves loss only by
+acquiring the exact recorded fence; capability-bound issuance, authored/refobs capture, and the
+process-level signal and fork matrices remain unimplemented.
 The two selected record locators are already closed to
 `reports/interruption-receipt.json` and
 `reports/interruption-receipt-evaluation.json`; alternate nearby files have no authority.
@@ -336,6 +337,22 @@ with the `driver` dispatch. `status.json` carries only the selected record locat
 terminal diagnostics such as `terminal_cause` and `stop_class` live in `reports/summary.json`,
 which the passed status binds by digest and promotion reads for the plan outcome. Prior-generation
 runs fail closed in every reader.
+
+#### Owner-loss reconciliation
+
+`vfx reconcile <shot> --run-id <run>` is the explicit model-free boundary. It runs as its own
+owned v2 run, reads the target's source-verified owner claim (a legacy ownerless run is not
+reconcilable), returns the already selected receipt when the target is no longer running, and
+otherwise attempts non-blocking exclusive acquisition of the exact recorded fence. A held fence
+means the owner is live and nothing is written. After acquiring, it snapshots the exact running
+status bytes as prior-status evidence, archives its own manifest into the target run, and either
+completes an already prepared source-valid receipt without changing its bytes or captures the
+current authority and transcript frontiers and mints one `owner_lost` receipt with unknown signal
+and exit. The terminalizer then evaluates, publishes evaluation, summary, inventory, terminal
+status, and the latest projection under the reconciler's lease, and reads the status back. Its
+typed result carries `owner_live`, `already_terminal`, `completed_prepared`, or `owner_lost`.
+Strict preflight now also proves the kernel-owned plan-consumer directory primitive on the
+host and filesystem (`plan_consumer_directory`, probe revision 5).
 
 #### Fork-safe descriptor ownership and kernel-proven consumer directories
 
@@ -682,6 +699,11 @@ recovery controller or an authority-state transaction.
 | A second signal arrives while the first intent drains | One receipt, one terminal status, and the delivery is only counted |
 | `KeyboardInterrupt` is raised with no recorded intent | The run fails with exit 130 and `cancelled_without_intent`; no receipt is minted |
 | A stage fails inside a driver run | The stage publishes only its typed stop envelope; the root run's running status is untouched until the driver selects the terminal status |
+| A reconciler targets a run whose owner still holds the fence | `owner_live`; no byte of the target run changes |
+| The owner released its fence with the run still `running` | One `owner_lost` receipt with unknown signal and exit, a satisfied evaluation, an `interrupted` status with null exit, and the reconciler manifest archived in the target; a repeat returns `already_terminal` with the same receipt |
+| The owner died after publishing receipt and evaluation but before status selection | `completed_prepared`: the receipt bytes are unchanged and the status selects them |
+| The target is already terminal or has no verifiable owner claim | `already_terminal`, or a typed refusal for the legacy ownerless run |
+| Strict preflight runs on a host without fanotify target-FID reporting or openat2 | `plan_consumer_directory` fails with the primitive's own diagnostic before any spend |
 
 The key regression is a real subprocess test, not a raised exception inside the context manager:
 enter the public direct invocation, publish kickoff, block in an external-session-shaped AnyIO
@@ -737,7 +759,4 @@ hosts, and platforms without equivalent lock and process-control semantics requi
 validated backend and otherwise leave the run unclassified rather than guessing.
 
 This HIR does not implement a daemon, automatic recovery controller, model-session resume,
-distributed lease service, or retroactive repair of legacy orphan runs. Strict preflight does not
-yet report the fanotify target-FID and `openat2` capability that plan-consumer directory creation
-requires; an unsupported host fails closed at its first consumer-view allocation instead of at
-preflight.
+distributed lease service, or retroactive repair of legacy orphan runs.

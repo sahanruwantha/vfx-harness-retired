@@ -88,6 +88,15 @@ live in the linked Harness Improvement Records.
   transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
   safe resume producer, or proven local-implementation retry producer
   ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- The construction read-namespace guard creates the shot's `build/` root durably on a freshly
+  started shot instead of crashing the first builder stage, and still refuses a symlinked or
+  non-directory `build` (found by the first real run on a clean shot).
+- `vfx reconcile <shot> --run-id <run>` proves owner loss for one exact run by acquiring its
+  recorded fence and publishes an action-free `owner_lost` interruption, completes a prepared
+  receipt left by an owner that died before status selection, and leaves a live owner
+  untouched. Strict preflight now proves the kernel-owned plan-consumer directory primitive
+  (`plan_consumer_directory`, probe revision 5), and its confinement smoke root is a valid v2 shot
+  id ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - Every public run is now the `vfx-harness.run/v2` generation and the v1 writers are gone: the
   manifest carries a typed dispatch discriminant, the root owner acquires its claim and fence
   before publishing a `vfx-harness.run-status/v2` running status, SIGINT and SIGTERM record

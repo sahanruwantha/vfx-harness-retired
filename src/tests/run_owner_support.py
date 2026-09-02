@@ -24,6 +24,20 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
+class MonotonicClock:
+    """Real-time timestamps that strictly increase across one test transaction."""
+
+    def __init__(self) -> None:
+        self._last = ""
+
+    def __call__(self) -> str:
+        value = now()
+        while value <= self._last:
+            value = now()
+        self._last = value
+        return value
+
+
 @contextmanager
 def owned_run(
     shot: str | Path,
@@ -98,4 +112,4 @@ def pass_run(
     )
 
 
-__all__ = ["fail_run", "now", "owned_run", "pass_run"]
+__all__ = ["MonotonicClock", "fail_run", "now", "owned_run", "pass_run"]

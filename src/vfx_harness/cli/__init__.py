@@ -16,6 +16,7 @@ _COMMANDS = {
     "inspect": "vfx_harness.application.inspect_run:main",
     "plan": "vfx_harness.agents.planner:main",
     "preflight": "vfx_harness.application.preflight:main",
+    "reconcile": "vfx_harness.application.reconcile_run:main",
     "recover-authority-state": (
         "vfx_harness.application.authority_state_recovery:main"
     ),

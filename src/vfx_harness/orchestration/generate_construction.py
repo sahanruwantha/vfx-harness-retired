@@ -82,7 +82,12 @@ ToGlbFn = Callable[..., dict]
 
 
 def ensure_construction_read_namespace(shot_folder: str | Path) -> Path:
-    """Create only the construction CAS namespace under the outer builder fence."""
+    """Create the build root and construction CAS namespace under the outer builder fence.
+
+    A freshly started shot has no ``build/`` until its first unit publishes a script, so
+    the accepted-chain root is created here as a real directory; a symlinked or
+    non-directory ``build`` still fails closed.
+    """
 
     shot = Path(shot_folder).expanduser().absolute()
     shot_descriptor: int | None = None
@@ -90,11 +95,21 @@ def ensure_construction_read_namespace(shot_folder: str | Path) -> Path:
     construction_descriptor: int | None = None
     try:
         shot_descriptor = os.open(shot, _DIRECTORY_OPEN_FLAGS)
+        created_build = False
+        try:
+            os.mkdir("build", mode=0o755, dir_fd=shot_descriptor)
+            created_build = True
+        except FileExistsError:
+            pass
         build_descriptor = os.open(
             "build",
             _DIRECTORY_OPEN_FLAGS,
             dir_fd=shot_descriptor,
         )
+        if not stat.S_ISDIR(os.fstat(build_descriptor).st_mode):
+            raise GenerateConstructionError("build root must be a real non-symlink directory")
+        if created_build:
+            os.fsync(shot_descriptor)
         created = False
         try:
             os.mkdir("construction", mode=0o755, dir_fd=build_descriptor)

@@ -16,7 +16,7 @@ RUN_MANIFEST_SCHEMA = "vfx-harness.run/v2"
 RUN_MANIFEST_LOCATOR = "manifest.json"
 RUN_DISPATCH_SCHEMA = "vfx-harness.run-dispatch/v1"
 
-_DIRECT_OWNER_COMMANDS = frozenset({"accept", "build", "plan", "render"})
+_DIRECT_OWNER_COMMANDS = frozenset({"accept", "build", "plan", "reconcile", "render"})
 
 _MANIFEST_FIELDS = frozenset(
     {

@@ -49,6 +49,11 @@ def _failed_raw() -> dict:
             "mechanism": "sysv-sem-undo+descriptor-flock",
             "problems": [],
         },
+        "plan_consumer_directory": {
+            "ok": True,
+            "mechanism": "fanotify-target-fid+openat2",
+            "problems": [],
+        },
     }
 
 
@@ -83,6 +88,11 @@ def _passing_raw(*, secret: str | None = None) -> dict:
         "builder_execution_fence": {
             "ok": True,
             "mechanism": "sysv-sem-undo+descriptor-flock",
+            "problems": [],
+        },
+        "plan_consumer_directory": {
+            "ok": True,
+            "mechanism": "fanotify-target-fid+openat2",
             "problems": [],
         },
     }

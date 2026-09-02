@@ -29,6 +29,7 @@ from vfx_harness.domain.run_interruption_records import (
     transcript_frontier_record_locator,
 )
 from vfx_harness.domain.run_owner_claims import RUN_OWNER_CLAIM_LOCATOR, RunOwnerClaim
+from vfx_harness.domain.run_owner_loss import RunOwnerLossObservation
 from vfx_harness.domain.run_record_refs import RunRecordRef
 from vfx_harness.domain.run_status import (
     INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
@@ -78,9 +79,16 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _require_owner_lease(lease: RunOwnerFenceLease, run_root: Path) -> RunOwnerClaim:
-    if not isinstance(lease, RunOwnerFenceLease) or lease.acquisition_kind != "owner":
-        raise RunTerminalizationConflict("terminal commit requires the live root-owner fence lease")
+def _require_lease(
+    lease: RunOwnerFenceLease,
+    run_root: Path,
+    *,
+    kinds: frozenset[str] = frozenset({"owner"}),
+) -> RunOwnerClaim:
+    if not isinstance(lease, RunOwnerFenceLease) or lease.acquisition_kind not in kinds:
+        raise RunTerminalizationConflict(
+            f"terminal commit requires a live {' or '.join(sorted(kinds))} fence lease"
+        )
     try:
         lease.require_current_identity()
     except RunOwnerFenceError as exc:
@@ -140,7 +148,7 @@ def publish_running_status(
     """Publish the v2 ``running`` status that selects the held owner claim."""
 
     run = Path(run_root).expanduser().absolute()
-    claim = _require_owner_lease(lease, run)
+    claim = _require_lease(lease, run)
     status = RunStatusV2.mint(
         run_id=claim.run_id,
         state="running",
@@ -165,7 +173,7 @@ def _commit_terminal_status(
 ) -> str:
     """Replace the exact observed running bytes with one terminal status and project it."""
 
-    _require_owner_lease(lease, run_root)
+    _require_lease(lease, run_root, kinds=frozenset({"owner", "reconciler"}))
     payload = record_bytes(status)
     _replace_status(run_root, payload, expected_current=running_bytes)
     run_artifacts.write_latest_projection(
@@ -187,7 +195,7 @@ def publish_passed_status(
     """Select the exact run summary as ``passed`` or ``dry-run`` terminal authority."""
 
     run = Path(run_root).expanduser().absolute()
-    claim = _require_owner_lease(lease, run)
+    claim = _require_lease(lease, run)
     _running, running_bytes = _read_running_status(run, claim)
     status = RunStatusV2.mint(
         run_id=claim.run_id,
@@ -215,7 +223,7 @@ def publish_failed_status(
     """Select one typed stop envelope as ``failed`` terminal authority."""
 
     run = Path(run_root).expanduser().absolute()
-    claim = _require_owner_lease(lease, run)
+    claim = _require_lease(lease, run)
     _running, running_bytes = _read_running_status(run, claim)
     status = RunStatusV2.mint(
         run_id=claim.run_id,
@@ -286,30 +294,13 @@ def _summary(receipt: RunInterruptionReceipt, evaluation: InterruptionReceiptEva
     }
 
 
-def terminalize_interruption(
-    shot_root: str | Path,
-    run_root: str | Path,
+def _capture_and_publish_sources(
+    shot: Path,
+    run: Path,
     *,
-    lease: RunOwnerFenceLease,
-    interruption_kind: str,
+    claim: RunOwnerClaim,
     clock: Callable[[], str],
-    detail: str | None = None,
-) -> TerminalizedInterruption:
-    """Commit one owned interruption exactly once from source-verified evidence."""
-
-    shot = Path(shot_root).expanduser().absolute()
-    run = Path(run_root).expanduser().absolute()
-    claim = _require_owner_lease(lease, run)
-    if interruption_kind not in OWNED_INTERRUPTION_KINDS:
-        raise RunTerminalizationConflict(
-            f"the root owner may terminalize only {sorted(OWNED_INTERRUPTION_KINDS)}; "
-            "owner loss belongs to the reconciler"
-        )
-    _running, running_bytes = _read_running_status(run, claim)
-    if os.path.lexists(run / INTERRUPTION_RECEIPT_LOCATOR):
-        raise RunTerminalizationConflict(
-            "an interruption receipt already exists for this run; terminal selection is exactly once"
-        )
+) -> tuple[Any, RunRecordRef, tuple[RunRecordRef, ...], RunRecordRef, RunRecordRef]:
     try:
         with shot_authority_writer_fence(shot) as capability:
             captured = run_interruption_capture.capture_interruption_observation(
@@ -332,36 +323,28 @@ def terminalize_interruption(
         owner_payload = read_run_record_bytes(run, RUN_OWNER_CLAIM_LOCATOR)
     except RunInterruptionArchiveError as exc:
         raise RunTerminalizationConflict(f"interruption source publication failed: {exc}") from exc
-    signal = _KIND_SIGNAL[interruption_kind]
-    receipt = RunInterruptionReceipt(
-        run_id=claim.run_id,
-        interruption_kind=interruption_kind,
-        terminalizer_kind="owner",
-        owner=claim,
-        owner_ref=RunRecordRef(
-            locator=RUN_OWNER_CLAIM_LOCATOR,
-            sha256=_sha256(owner_payload),
-            record_schema=claim.SCHEMA,
-            record_digest=claim.digest,
-        ),
-        owner_loss=None,
-        owner_loss_ref=None,
-        authority=captured.observation,
-        authority_ref=authority_ref,
-        archive=captured.archive,
-        archive_ref=archive_ref,
-        transcript_frontiers=captured.frontiers,
-        transcript_frontier_refs=frontier_refs,
-        signal_number=signal,
-        exit_code=128 + signal,
-        interrupted_at=clock(),
+    owner_ref = RunRecordRef(
+        locator=RUN_OWNER_CLAIM_LOCATOR,
+        sha256=_sha256(owner_payload),
+        record_schema=claim.SCHEMA,
+        record_digest=claim.digest,
     )
-    _require_owner_lease(lease, run)
-    try:
-        publish_run_record(run, INTERRUPTION_RECEIPT_LOCATOR, receipt)
-    except RunInterruptionArchiveError as exc:
-        raise RunTerminalizationConflict(f"interruption receipt publication failed: {exc}") from exc
-    _terminal_write_boundary("after_receipt_publication")
+    return captured, authority_ref, frontier_refs, archive_ref, owner_ref
+
+
+def _select_interrupted(
+    shot: Path,
+    run: Path,
+    *,
+    lease: RunOwnerFenceLease,
+    claim: RunOwnerClaim,
+    receipt: RunInterruptionReceipt,
+    running_bytes: bytes,
+    clock: Callable[[], str],
+    detail: str | None,
+) -> TerminalizedInterruption:
+    """Evaluate a published receipt and select it exactly once as the terminal status."""
+
     evaluation = interruption_evaluation.evaluate_interruption_receipt(
         shot,
         claim.run_id,
@@ -412,14 +395,183 @@ def terminalize_interruption(
     )
 
 
+def terminalize_interruption(
+    shot_root: str | Path,
+    run_root: str | Path,
+    *,
+    lease: RunOwnerFenceLease,
+    interruption_kind: str,
+    clock: Callable[[], str],
+    detail: str | None = None,
+) -> TerminalizedInterruption:
+    """Commit one owned interruption exactly once from source-verified evidence."""
+
+    shot = Path(shot_root).expanduser().absolute()
+    run = Path(run_root).expanduser().absolute()
+    claim = _require_lease(lease, run)
+    if interruption_kind not in OWNED_INTERRUPTION_KINDS:
+        raise RunTerminalizationConflict(
+            f"the root owner may terminalize only {sorted(OWNED_INTERRUPTION_KINDS)}; "
+            "owner loss belongs to the reconciler"
+        )
+    _running, running_bytes = _read_running_status(run, claim)
+    if os.path.lexists(run / INTERRUPTION_RECEIPT_LOCATOR):
+        raise RunTerminalizationConflict(
+            "an interruption receipt already exists for this run; terminal selection is exactly once"
+        )
+    captured, authority_ref, frontier_refs, archive_ref, owner_ref = _capture_and_publish_sources(
+        shot,
+        run,
+        claim=claim,
+        clock=clock,
+    )
+    signal = _KIND_SIGNAL[interruption_kind]
+    receipt = RunInterruptionReceipt(
+        run_id=claim.run_id,
+        interruption_kind=interruption_kind,
+        terminalizer_kind="owner",
+        owner=claim,
+        owner_ref=owner_ref,
+        owner_loss=None,
+        owner_loss_ref=None,
+        authority=captured.observation,
+        authority_ref=authority_ref,
+        archive=captured.archive,
+        archive_ref=archive_ref,
+        transcript_frontiers=captured.frontiers,
+        transcript_frontier_refs=frontier_refs,
+        signal_number=signal,
+        exit_code=128 + signal,
+        interrupted_at=clock(),
+    )
+    _require_lease(lease, run)
+    try:
+        publish_run_record(run, INTERRUPTION_RECEIPT_LOCATOR, receipt)
+    except RunInterruptionArchiveError as exc:
+        raise RunTerminalizationConflict(f"interruption receipt publication failed: {exc}") from exc
+    _terminal_write_boundary("after_receipt_publication")
+    return _select_interrupted(
+        shot,
+        run,
+        lease=lease,
+        claim=claim,
+        receipt=receipt,
+        running_bytes=running_bytes,
+        clock=clock,
+        detail=detail,
+    )
+
+
+def terminalize_owner_loss(
+    shot_root: str | Path,
+    run_root: str | Path,
+    *,
+    lease: RunOwnerFenceLease,
+    owner_loss: RunOwnerLossObservation,
+    owner_loss_ref: RunRecordRef,
+    running_bytes: bytes,
+    clock: Callable[[], str],
+) -> TerminalizedInterruption:
+    """Commit one ``owner_lost`` interruption from the reconciler's acquired fence."""
+
+    shot = Path(shot_root).expanduser().absolute()
+    run = Path(run_root).expanduser().absolute()
+    claim = _require_lease(lease, run, kinds=frozenset({"reconciler"}))
+    if os.path.lexists(run / INTERRUPTION_RECEIPT_LOCATOR):
+        raise RunTerminalizationConflict(
+            "an interruption receipt already exists for this run; complete it instead of minting another"
+        )
+    captured, authority_ref, frontier_refs, archive_ref, owner_ref = _capture_and_publish_sources(
+        shot,
+        run,
+        claim=claim,
+        clock=clock,
+    )
+    receipt = RunInterruptionReceipt(
+        run_id=claim.run_id,
+        interruption_kind="owner_lost",
+        terminalizer_kind="reconciler",
+        owner=claim,
+        owner_ref=owner_ref,
+        owner_loss=owner_loss,
+        owner_loss_ref=owner_loss_ref,
+        authority=captured.observation,
+        authority_ref=authority_ref,
+        archive=captured.archive,
+        archive_ref=archive_ref,
+        transcript_frontiers=captured.frontiers,
+        transcript_frontier_refs=frontier_refs,
+        signal_number=None,
+        exit_code=None,
+        interrupted_at=clock(),
+    )
+    _require_lease(lease, run, kinds=frozenset({"reconciler"}))
+    try:
+        publish_run_record(run, INTERRUPTION_RECEIPT_LOCATOR, receipt)
+    except RunInterruptionArchiveError as exc:
+        raise RunTerminalizationConflict(f"interruption receipt publication failed: {exc}") from exc
+    _terminal_write_boundary("after_receipt_publication")
+    return _select_interrupted(
+        shot,
+        run,
+        lease=lease,
+        claim=claim,
+        receipt=receipt,
+        running_bytes=running_bytes,
+        clock=clock,
+        detail="owner lost; reconciled from the released fence",
+    )
+
+
+def complete_prepared_interruption(
+    shot_root: str | Path,
+    run_root: str | Path,
+    *,
+    lease: RunOwnerFenceLease,
+    running_bytes: bytes,
+    clock: Callable[[], str],
+) -> TerminalizedInterruption:
+    """Select an already prepared, source-valid receipt without changing its bytes."""
+
+    shot = Path(shot_root).expanduser().absolute()
+    run = Path(run_root).expanduser().absolute()
+    claim = _require_lease(lease, run, kinds=frozenset({"reconciler"}))
+    try:
+        receipt = interruption_evaluation.reopen_interruption_receipt(shot, claim.run_id)
+    except interruption_evaluation.InterruptionEvaluationUnavailable as exc:
+        raise RunTerminalizationConflict(f"prepared interruption receipt cannot be reopened: {exc}") from exc
+    if receipt.owner != claim:
+        raise RunTerminalizationConflict("prepared interruption receipt binds another owner claim")
+    return _select_interrupted(
+        shot,
+        run,
+        lease=lease,
+        claim=claim,
+        receipt=receipt,
+        running_bytes=running_bytes,
+        clock=clock,
+        detail="prepared interruption completed by the reconciler",
+    )
+
+
+def read_running_status_bytes(run_root: str | Path, claim: RunOwnerClaim) -> bytes:
+    """Return the exact v2 running bytes that select ``claim``; anything else refuses."""
+
+    _status, payload = _read_running_status(Path(run_root).expanduser().absolute(), claim)
+    return payload
+
+
 __all__ = [
     "INTERRUPTION_SUMMARY_SCHEMA",
     "OWNED_INTERRUPTION_KINDS",
     "RUN_STATUS_LOCATOR",
     "RunTerminalizationConflict",
     "TerminalizedInterruption",
+    "complete_prepared_interruption",
     "publish_failed_status",
     "publish_passed_status",
     "publish_running_status",
+    "read_running_status_bytes",
     "terminalize_interruption",
+    "terminalize_owner_loss",
 ]

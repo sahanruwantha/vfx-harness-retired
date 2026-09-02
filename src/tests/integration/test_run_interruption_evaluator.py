@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from tests.integration.test_judgment_debt_public_pipeline import _public_fixture_root
 from tests.integration.test_shot_ledger_v2_derivation import _two_accepted_layers
+from tests.run_owner_support import MonotonicClock
 from vfx_harness.domain.prior_running_status import PriorRunningStatusEvidence
 from vfx_harness.domain.run_authority_source_identity import canonical_digest
 from vfx_harness.domain.run_interruption_archive import (
@@ -51,15 +51,10 @@ def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-class _Clock:
-    """Strictly increasing second-resolution timestamps after the owner claim."""
-
-    def __init__(self) -> None:
-        self._at = datetime.now(UTC).replace(microsecond=0)
-
-    def __call__(self) -> str:
-        self._at += timedelta(seconds=1)
-        return self._at.isoformat(timespec="seconds")
+# Status and receipt timestamps must follow the owner claim minted by the live fence
+# acquisition; a second-resolution clock floored before that acquisition read earlier
+# than the microsecond claim whenever the two straddled a second boundary.
+_Clock = MonotonicClock
 
 
 def _manifest(run_id: str, shot_id: str) -> dict:

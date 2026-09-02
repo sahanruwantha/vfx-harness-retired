@@ -22,11 +22,15 @@ import struct
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from vfx_harness.observability.prepared_publication_descriptors import (
     block_deferred_signals,
 )
-from vfx_harness.observability.run_owner_fork_guard import ForkProtectedAcquisition
+from vfx_harness.observability.run_owner_fork_guard import (
+    ForkProtectedAcquisition,
+    managed_fork_protected_acquisition,
+)
 from vfx_harness.orchestration.plan_consumer_view_cleanup import (
     move_owned_directory_noreplace,
 )
@@ -482,6 +486,28 @@ def create_and_capture_empty_directory(
         )
     acquisition.retire(watch)
     return child_descriptor, held_identity
+
+
+def probe_owned_directory_primitive(parent: Path, *, where: str) -> None:
+    """Prove the kernel-owned directory primitive inside one caller-owned scratch parent.
+
+    Strict preflight uses this to fail closed before any spend on a host or filesystem
+    without unprivileged fanotify target-FID reporting or ``openat2``.  The probe leaves
+    only the empty published child behind for the caller to remove.
+    """
+
+    parent_descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        with managed_fork_protected_acquisition() as acquisition:
+            descriptor, _identity = create_and_publish_empty_directory(
+                parent_descriptor,
+                "owned-directory-probe",
+                acquisition,
+                where=where,
+            )
+            os.close(descriptor)
+    finally:
+        os.close(parent_descriptor)
 
 
 def create_and_publish_empty_directory(

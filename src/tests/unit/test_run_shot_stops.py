@@ -305,6 +305,11 @@ def test_run_allocates_layout_then_stops_on_strict_preflight_before_any_stage(
                 "mechanism": "sysv-sem-undo+descriptor-flock",
                 "problems": [],
             },
+            "plan_consumer_directory": {
+                "ok": True,
+                "mechanism": "fanotify-target-fid+openat2",
+                "problems": [],
+            },
         },
     )
     monkeypatch.setattr(
