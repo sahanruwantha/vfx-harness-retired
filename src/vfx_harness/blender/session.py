@@ -388,6 +388,14 @@ class BlenderSession:
         self._run_root = layout.root if layout else None
         self.snapshots = layout.checkpoints / "blender" if layout else self.artifacts
         self.snapshots.mkdir(parents=True, exist_ok=True)
+        # Journals are checkpoint evidence beside the .blend snapshots: the finalizer
+        # distils the accepted prefix from them. The session mints their one destination
+        # so publication containment and the finalizer can never name different roots
+        # (run 20260902T165518Z-004470 refused every journal against the snapshot root).
+        self.journals = (
+            layout.checkpoints / "journals" if layout else self.artifacts / "journals"
+        )
+        self.journals.mkdir(parents=True, exist_ok=True)
         self._worker_publications = self.artifacts / "parent-publications"
         self._worker_publications.mkdir(parents=True, exist_ok=True)
         self.proc: subprocess.Popen | None = None
@@ -690,10 +698,11 @@ class BlenderSession:
         if path is not None:
             destination = Path(path).absolute()
             try:
-                destination.relative_to(self.snapshots.absolute())
+                destination.relative_to(self.journals.absolute())
             except ValueError as exc:
                 raise BlenderError(
-                    f"journal publication must stay under {self.snapshots}, found {destination}"
+                    f"journal publication must stay under {self.journals}, found "
+                    f"{destination}; take the destination from journal_destination()"
                 ) from exc
             scratch = self._worker_publications / "journals"
             scratch.mkdir(parents=True, exist_ok=True)
@@ -761,6 +770,15 @@ class BlenderSession:
         if publication is not None:
             _discard_prepared_parent_publish(publication)
 
+    def journal_destination(self, name: str) -> Path:
+        """Mint the one checkpoint-owned publication path for a journal file."""
+
+        if not name or name != Path(name).name or name in {".", ".."}:
+            raise BlenderError(
+                f"journal name must be a plain file name, found {name!r}"
+            )
+        return self.journals / name
+
     def journal(
         self,
         path: str | None = None,
@@ -787,5 +805,45 @@ class BlenderSession:
         return self.call("replay", start=start)
 
     def restore(self, blend: str) -> dict:
-        """Restore a .blend checkpoint (exact scene state at snapshot time)."""
-        return self.call("restore", blend=blend)
+        """Restore a .blend checkpoint (exact scene state at snapshot time).
+
+        Parent-published checkpoints live under ``checkpoints/blender``, a root the
+        confined worker cannot see: the first best-round restore under confinement died
+        with ENOENT inside the sandbox (run 20260902T165518Z-004470, 2.exterior_massing).
+        The parent re-stages the exact published bytes into the worker's publication
+        scratch, verifies them, and hands the worker that visible path (HIR-0174).
+        """
+        published = Path(blend).absolute()
+        if not hasattr(self, "_worker_publications"):
+            return self.call("restore", blend=str(published))
+        scratch = self._worker_publications / "snapshots"
+        try:
+            published.relative_to(self.snapshots.absolute())
+        except ValueError:
+            try:
+                published.relative_to(scratch.absolute())
+            except ValueError as exc:
+                raise BlenderError(
+                    f"restore accepts a published checkpoint under {self.snapshots} or "
+                    f"its staged copy under {scratch}, found {published}"
+                ) from exc
+            staged = published
+            if not staged.is_file():
+                raise BlenderError(f"staged checkpoint is absent: {staged}") from None
+        else:
+            if not published.is_file():
+                raise BlenderError(f"published checkpoint is absent: {published}")
+            payload = published.read_bytes()
+            digest = hashlib.sha256(payload).hexdigest()
+            scratch.mkdir(parents=True, exist_ok=True)
+            staged = scratch / published.name
+            if not (
+                staged.is_file()
+                and hashlib.sha256(staged.read_bytes()).hexdigest() == digest
+            ):
+                temporary = staged.with_name(f".{staged.name}.restore.{os.getpid()}")
+                temporary.write_bytes(payload)
+                os.replace(temporary, staged)
+        result = self.call("restore", blend=str(staged))
+        result["checkpoint"] = str(published)
+        return result

@@ -50,6 +50,39 @@ def keyframe_schedule_path_aliases(path: str) -> tuple[str, ...]:
     return (token, f"data.{token}")
 
 
+def data_block_carriers(hosts, paths) -> tuple[list, list]:
+    """Split selected hosts into carriers of the sampled paths and typed-out hosts.
+
+    Mirrors the probe rule (HIR-0174): a ``data.*`` alias names a data-block property,
+    so a host with no data-block (``host.data is None`` — an Empty pivot, a control
+    marker) cannot carry it unless some object-level alias of the same path reads on
+    it. A host WITH a data-block that lacks the attribute is not typed out: it stays a
+    failing measurement. Callers fail closed when no carrier remains.
+    """
+    aliases = [alias for path in paths for alias in keyframe_schedule_path_aliases(path)]
+    if not any(alias.startswith("data.") for alias in aliases):
+        return list(hosts), []
+
+    def _reads(host, alias: str) -> bool:
+        value = host
+        try:
+            for token in alias.split("."):
+                value = value[int(token)] if token.isdigit() else getattr(value, token)
+        except (AttributeError, IndexError, KeyError, TypeError):
+            return False
+        return True
+
+    typed_out = [
+        host
+        for host in hosts
+        if getattr(host, "data", None) is None
+        and not any(
+            not alias.startswith("data.") and _reads(host, alias) for alias in aliases
+        )
+    ]
+    return [host for host in hosts if host not in typed_out], typed_out
+
+
 def keyframe_schedule_matching_frames(
     *,
     object_paths: dict[str, set[int]],

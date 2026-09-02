@@ -38,7 +38,7 @@ from vfx_harness.agents.builder.models import (
     script_model,
 )
 from vfx_harness.agents.builder.pkg import builder_package
-from vfx_harness.agents.builder.prior import _run_script_agent
+from vfx_harness.agents.builder.script_agent import _run_script_agent
 from vfx_harness.agents.builder.state import _APPROACH, _ERRORS, _JOURNAL_INFO, _RECIPES_USED
 from vfx_harness.agents.builder.unit_evaluation import publish_unit_evaluation_outcome
 from vfx_harness.agents.builder.verify import _verify_script
@@ -90,42 +90,42 @@ async def _persist_journal_and_finalize_script(
     *,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ):
-    # Persist the deterministic recipe regardless — it's the artifact of record.
+    # Persist the deterministic recipe: the accepted run_bpy prefix is the evidence the
+    # finalizer distils, so its capture is a phase boundary, not a nicety. A refused or
+    # failed capture fails the finalize closed here; a finalizer kicked off without it
+    # re-derives the scene from memory, which the finalize prompt itself names as the
+    # drift mechanism (run 20260902T165518Z-004470 reconstructed both journals from
+    # the build transcript).
     journal_rel = None
-    try:  # a transcript to prune beats re-authoring 20KB+ from memory
-        layout = run_artifacts.ensure(shot.folder, command="build")
-        journal = layout.checkpoints / "journals" / f"layer-{m.id}.py"
-        journal.parent.mkdir(parents=True, exist_ok=True)
-        jrel = journal.relative_to(shot.folder).as_posix()
-        # The finalizer must see the SELECTED checkpoint's prefix, not every call
-        # ever accepted: the scene was just restored to the best round, so later
-        # rounds' calls describe a world that no longer exists.
-        if selected_authority is not None:
-            require_selected_authority_unchanged(
-                shot.folder,
-                selected_authority,
-                operation=f"capture unit {m.id} journal",
-            )
-        info = session.journal(
-            path=str(journal),
-            start=unit_journal_start,
-            limit=(best.get("snap") or {}).get("journal_index"),
+    journal = session.journal_destination(f"layer-{m.id}.py")
+    jrel = journal.relative_to(shot.folder).as_posix()
+    # The finalizer must see the SELECTED checkpoint's prefix, not every call
+    # ever accepted: the scene was just restored to the best round, so later
+    # rounds' calls describe a world that no longer exists.
+    if selected_authority is not None:
+        require_selected_authority_unchanged(
+            shot.folder,
+            selected_authority,
+            operation=f"capture unit {m.id} journal",
         )
-        if info.get("calls"):
-            journal_rel = jrel
-            _JOURNAL_INFO.clear()
-            _JOURNAL_INFO.update(info)
-            log(f"journal: {info['calls']} accepted run_bpy calls ({info['chars'] // 1024}KB) → {jrel}")
-            if info.get("dropped"):
-                log(
-                    f"truncated to selected round r{best['round']}: "
-                    f"{info['dropped']} call(s) from discarded rounds excluded",
-                    1,
-                )
-    except UnitAttemptAuthorityLost:
-        raise
-    except Exception as e:  # never block finalize on a nicety
-        log(f"journal unavailable ({str(e)[:60]})")
+    info = session.journal(
+        path=str(journal),
+        start=unit_journal_start,
+        limit=(best.get("snap") or {}).get("journal_index"),
+    )
+    if info.get("calls"):
+        journal_rel = jrel
+        _JOURNAL_INFO.clear()
+        _JOURNAL_INFO.update(info)
+        log(f"journal: {info['calls']} accepted run_bpy calls ({info['chars'] // 1024}KB) → {jrel}")
+        if info.get("dropped"):
+            log(
+                f"truncated to selected round r{best['round']}: "
+                f"{info['dropped']} call(s) from discarded rounds excluded",
+                1,
+            )
+    else:
+        log(f"journal: no accepted run_bpy call in the selected prefix of unit {m.id}")
     phase["mode"] = "finalize"
     probe_judges = list(
         layer.judges if layer is not None else [(m.frame, m.ref)]

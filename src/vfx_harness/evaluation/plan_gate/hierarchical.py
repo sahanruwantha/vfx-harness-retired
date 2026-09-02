@@ -503,7 +503,15 @@ def _check_hierarchical_plans(folder: Path) -> tuple[list[Finding], dict]:
                         + ("" if status == "pending" else f" although its state is {status!r}"),
                         "the build flow generates and gate-attests it at kickoff"
                         if status == "pending"
-                        else f"run `vfx plan {folder} --layer {next_layer.id} --unit {unit.id}`",
+                        else (
+                            "the active unit-planning session publishes it through "
+                            "publish_unit_plan, which stamps it into the consumer view; "
+                            f"with no live session the {status!r} claim is stale: "
+                            f"`vfx units retry {folder} --layer {next_layer.id} --unit "
+                            f"{unit.id} --reason ... --evidence ...` releases it and "
+                            f"`vfx build {folder} --layer {next_layer.id}` regenerates "
+                            "the plan"
+                        ),
                     )
                 )
             else:

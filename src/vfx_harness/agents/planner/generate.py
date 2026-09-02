@@ -490,6 +490,7 @@ async def _generate_layer_plan(
             "publish_unit_plan",
         }),
         unit_plan_target=target,
+        unit_plan_selected_authority=selected_authority,
     )
     rserver, rnames = build_recipe_tools()
     unit_plan_tools = _phase_tools(

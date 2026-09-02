@@ -66,6 +66,35 @@ def test_lookless_reference_comparison_defaults_to_workbench() -> None:
     ) == ("solid", 0.5)
 
 
+def test_first_comparison_scale_reaches_the_measurement_floor() -> None:
+    """HIR-0174: the omitted first scale is derived from the shot's frame height so the
+    default comparison never measures an upscaled plate; the round lock and an explicit
+    scale still win."""
+    from vfx_harness.blender.tools import _comparison_mode_scale
+    from vfx_harness.blender.tools.reports import _METRIC_H, measurement_floor_scale
+
+    assert measurement_floor_scale(640) == 0.5
+    assert measurement_floor_scale(720) == 0.45
+    assert measurement_floor_scale(960) == 0.4
+    assert measurement_floor_scale(1080) == 0.4
+    assert measurement_floor_scale(200) == 1.0
+    assert measurement_floor_scale(None) == 0.4
+    for height in (480, 640, 720, 960, 1080, 2160):
+        assert measurement_floor_scale(height) * height >= _METRIC_H - 1e-9
+    with pytest.raises(ValueError, match="resolution_y must be positive"):
+        measurement_floor_scale(0)
+
+    assert _comparison_mode_scale({}, None, look_actions=False, resolution_y=640) == ("solid", 0.5)
+    assert _comparison_mode_scale({"scale": 0.35}, None, look_actions=False, resolution_y=640) == (
+        "solid",
+        0.35,
+    )
+    assert _comparison_mode_scale({}, ("solid", 0.4, None), look_actions=False, resolution_y=640) == (
+        "solid",
+        0.4,
+    )
+
+
 def test_capabilities_are_validated_against_a_closed_vocabulary() -> None:
     assert parse_look_capabilities(["material", "detail"], "unit.look") == (
         "material",
@@ -525,7 +554,7 @@ def test_lookless_nonexecutable_claim_still_skips_critic(monkeypatch) -> None:
                 SimpleNamespace(
                     required=True,
                     moments=(1,),
-                    authority="human_required",
+                    authority="qualified_qualitative_required",
                     evidence=(),
                 ),
             )

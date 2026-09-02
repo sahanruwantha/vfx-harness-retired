@@ -20,6 +20,7 @@ from vfx_harness.blender.tools.payment import _capture_image_artifact, _payment_
 from vfx_harness.blender.tools.probe import register_probe
 from vfx_harness.blender.tools.render import register_render
 from vfx_harness.blender.tools.reports import SERVER_NAME, _layer_feedback_policy
+from vfx_harness.domain.brief import load_shot
 from vfx_harness.evidence.metrics import look_vector
 
 
@@ -44,6 +45,9 @@ def build_blender_tools(
     legacy path for schema-4 layers with no declaring work unit."""
     assets_dir = Path(assets_dir) if assets_dir else None
     shot_dir = Path(shot_dir) if shot_dir else None
+    # The comparison floor is a function of THIS shot's frame height, read from the
+    # brief the way every render tool reads it; a fixed default assumed one resolution.
+    resolution_y = load_shot(shot_dir).resolution[1] if shot_dir else None
     comparison_state = comparison_state if comparison_state is not None else {"round": 1}
     comparison_locks: dict = {}
     feedback_policy = (
@@ -211,6 +215,7 @@ def build_blender_tools(
     diff_frames, verify_change, compare_frame, render_frames, import_asset = register_compare(
         **closed,
         selected_authority=selected_authority,
+        resolution_y=resolution_y,
     )
     probe_control = register_probe(**closed)
     script_map, find_in_script, worklist, cannot_express_in_scope, measure_regions, propose_checks = register_misc(

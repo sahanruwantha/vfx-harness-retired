@@ -167,3 +167,32 @@ def test_only_future_terminalizer_may_construct_run_status_directly() -> None:
         "direct run-status construction and interrupted status minting belong only "
         "to the terminalizer after evaluator read-back: " + ", ".join(violations)
     )
+
+
+SIGNAL_ISSUER = "orchestration/run_owner_boundary.py"
+
+
+def test_recorded_signal_intent_is_minted_only_by_the_signal_handler() -> None:
+    """Only a delivered SIGINT/SIGTERM can select an owned interruption: the terminalizer
+    takes the typed record and no production code but the handler mints it."""
+    minters: dict[str, set[str]] = {}
+    for path in _sources():
+        tree = _tree(path)
+        enclosing: dict[ast.AST, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # Outer functions are walked first; the innermost enclosing name wins.
+                for child in ast.walk(node):
+                    enclosing[child] = node.name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _called_name(node) == "RecordedSignalIntent":
+                minters.setdefault(_relative(path), set()).add(enclosing.get(node, "<module>"))
+    assert minters == {SIGNAL_ISSUER: {"handler"}}
+    terminalizer = _tree(PACKAGE / TERMINALIZER)
+    function = next(
+        node for node in terminalizer.body
+        if isinstance(node, ast.FunctionDef) and node.name == "terminalize_interruption"
+    )
+    names = {row.arg for row in function.args.kwonlyargs}
+    assert "intent" in names
+    assert "interruption_kind" not in names

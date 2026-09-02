@@ -8,6 +8,7 @@ return image content blocks, so the agent literally sees the frames it makes.
 from __future__ import annotations
 
 import fnmatch
+import math
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -248,6 +249,26 @@ def _check_report(kind: str, r: dict) -> str:
 # while the full-res reference downscaled — the very asymmetry this is fixing, just moved.
 # Measuring below every accepted render height means neither image is ever upscaled.
 _METRIC_H = 320
+# The bare default the builder gets when it names no scale and no round lock exists.
+# It is only a floor: `measurement_floor_scale` raises it until the render reaches
+# _METRIC_H, because the 1920x960 arithmetic above is one shot's, not a law — on a
+# 1280x640 shot 0.4 rendered 256px and every default comparison measured an upscaled
+# plate while warning the builder to guess a larger scale (run 20260902T165518Z-004470).
+_DEFAULT_PREVIEW_SCALE = 0.4
+
+
+def measurement_floor_scale(resolution_y: int | None) -> float:
+    """Smallest preview scale whose render height reaches the metric floor.
+
+    ``None`` (no shot authority, test servers only) keeps the bare default.
+    """
+    if resolution_y is None:
+        return _DEFAULT_PREVIEW_SCALE
+    height = int(resolution_y)
+    if height <= 0:
+        raise ValueError(f"resolution_y must be positive, found {resolution_y!r}")
+    floor = math.ceil(_METRIC_H / height * 100) / 100
+    return min(1.0, max(_DEFAULT_PREVIEW_SCALE, floor))
 # DISPLAY is a SEPARATE question from METRIC and the two must not be reconciled.
 #
 # _METRIC_H exists to stop resampling asymmetry: measure below every accepted render
@@ -370,16 +391,28 @@ def _comparison_lock_error(locks: dict, key: tuple, settings: tuple) -> str | No
     )
 
 
-def _comparison_mode_scale(args: dict, base_lock: tuple | None, *, look_actions: bool = True) -> tuple[str, float]:
+def _comparison_mode_scale(
+    args: dict,
+    base_lock: tuple | None,
+    *,
+    look_actions: bool = True,
+    resolution_y: int | None = None,
+) -> tuple[str, float]:
     """Resolve omitted values from the round lock and typed look authority.
 
     A crop inherits the already-locked full-frame mode.  The first comparison uses
     Workbench solid for a look-less unit and EEVEE for a look-owning unit, matching
     the other live preview tools (HIR-0131).  An explicit mode remains authoritative.
+    An omitted first scale is the measurement floor for this shot's resolution, so the
+    default comparison never measures an upscaled plate (HIR-0174).
     """
     default_mode = preview_render_mode(look_actions, None, look_default="eevee")
     mode = args.get("mode", base_lock[0] if base_lock else default_mode)
-    scale = float(args["scale"] if "scale" in args else (base_lock[1] if base_lock else 0.4))
+    scale = float(
+        args["scale"]
+        if "scale" in args
+        else (base_lock[1] if base_lock else measurement_floor_scale(resolution_y))
+    )
     return mode, scale
 
 

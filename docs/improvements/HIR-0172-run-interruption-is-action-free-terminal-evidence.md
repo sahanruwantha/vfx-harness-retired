@@ -451,6 +451,13 @@ Until all eight steps are implemented and validated, no public signal handler, r
 writer, inspection reader, or test helper may turn the foundation records into authoritative
 interruption publication.
 
+Signal-intent issuance (step 7, first half) landed with HIR-0174's batch: the root owner's
+handler mints a typed `RecordedSignalIntent` (`domain/run_signal_intent.py`), `RunCancellation`
+carries it, `terminalize_interruption` accepts only that record and refuses any other value, and
+`test_run_interruption_issuance_boundary.py` pins the handler as the sole production minter.
+The reconciler's owner-loss issuance was already capability-bound through the acquired fence.
+Canonical reference locators for optional checkpoint/journal/candidate context remain open.
+
 ### Failure and interruption remain disjoint
 
 New runs use a run-status schema whose terminal union is closed. Every state retains the exact

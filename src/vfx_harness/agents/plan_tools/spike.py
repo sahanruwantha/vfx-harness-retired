@@ -24,6 +24,7 @@ from vfx_harness.domain.plan_records import (
 )
 from vfx_harness.evidence.scene_checks import _holds, validate_row
 from vfx_harness.observability.provenance import atomic_write
+from vfx_harness.orchestration.layer_plans import stamp_work_unit_plan
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 
@@ -31,8 +32,16 @@ def _publish_unit_plan_content(
     shot_folder: str | Path,
     target_path: str | Path,
     content: str,
+    *,
+    selected_authority=None,
 ) -> tuple[Path, int]:
-    """Atomically publish content to the one harness-selected unit-plan target."""
+    """Atomically publish content to the one harness-selected unit-plan target.
+
+    The bundle-pinned integrity sidecar is stamped in the same publication so the
+    consumer view admits the draft: a session's own gate_preview reported every fresh
+    unit plan as absent while only the post-session stamp made it visible (run
+    20260902T165518Z-004470). Gate attestation still comes only from the terminal gate.
+    """
     root = Path(shot_folder).resolve()
     target = Path(target_path).resolve()
     try:
@@ -51,6 +60,7 @@ def _publish_unit_plan_content(
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(target, content.rstrip() + "\n")
+    stamp_work_unit_plan(root, target, selected_authority=selected_authority)
     return target, lines
 
 

@@ -10,9 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.run_owner_support import fail_run, owned_run
+from tests.run_owner_support import MonotonicClock, fail_run, owned_run
 from vfx_harness.application import run_shot
 from vfx_harness.application.inspect_run import collect
+from vfx_harness.domain.run_signal_intent import RecordedSignalIntent
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
 from vfx_harness.domain.stop_transaction_state import (
@@ -254,7 +255,9 @@ def test_driver_terminalizes_a_recorded_signal_intent_without_a_stop_envelope(
             tmp_path,
             layout,
             lease,
-            run_owner_boundary.RunCancellation("operator_interrupt", 2),
+            run_owner_boundary.RunCancellation(
+                RecordedSignalIntent("operator_interrupt", 2, MonotonicClock()())
+            ),
         )
 
     assert interrupted.code == 130

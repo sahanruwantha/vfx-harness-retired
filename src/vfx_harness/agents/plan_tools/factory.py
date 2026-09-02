@@ -36,6 +36,7 @@ def build_plan_tools(
     candidate_materialization: str | Path | None = None,
     overlay_root: str | Path | None = None,
     unit_plan_target: str | Path | None = None,
+    unit_plan_selected_authority=None,
 ):
     shot_folder = Path(shot_folder)
     work = Path(tempfile.mkdtemp(prefix="planlab-"))  # raw ffmpeg output
@@ -169,6 +170,7 @@ def build_plan_tools(
         "include_gate": include_gate,
         "measure_ref_paths": measure_ref_paths,
         "unit_plan_target": unit_plan_target,
+        "unit_plan_selected_authority": unit_plan_selected_authority,
         "candidate_materialization": candidate_materialization,
         "overlay_root": overlay_root,
         "materialization_write_lock": materialization_write_lock,

@@ -17,16 +17,20 @@ TEMPORAL_EVIDENCE = {"none", "keyframes", "motion"}
 CLAIM_AUTHORITIES = {
     "executable_required",
     "qualified_qualitative_required",
-    "human_required",
     "advisory",
 }
+# Retired vocabulary keeps a teaching rejection: nothing in the runtime produces a
+# human decision for a unit claim, so such a claim could only drag an executable-only
+# unit into raster rounds it cannot pay (HIR-0174). The human domain is judgment debt
+# on the owning requirement (approved_start / planner_start, HIR-0124, HIR-0163).
+RETIRED_CLAIM_AUTHORITIES = {"human_required"}
+RETIRED_EVIDENCE_KINDS = {"human_decision"}
 CLAIM_KINDS = {"atomic", "interaction"}
 EVIDENCE_KINDS = {
     "scene_contract",
     "image_contract",
     "semantic_diff",
     "qualification",
-    "human_decision",
 }
 UNIT_STATES = {
     "pending",

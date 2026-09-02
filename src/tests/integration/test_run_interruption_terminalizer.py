@@ -15,7 +15,9 @@ from tests.integration.test_run_interruption_evaluator import (
     _Clock,
     _owned_run,
 )
+from tests.run_owner_support import now
 from vfx_harness.domain.run_interruption_records import INTERRUPTION_RECEIPT_LOCATOR
+from vfx_harness.domain.run_signal_intent import RecordedSignalIntent
 from vfx_harness.domain.run_status import INTERRUPTION_RECEIPT_EVALUATION_LOCATOR
 from vfx_harness.evaluation import run_interruption as evaluator
 from vfx_harness.observability.run_owner_fence import acquire_run_owner_fence
@@ -34,6 +36,13 @@ def _lease(run_root: Path):
     return acquire_run_owner_fence(run_root, run_id=_RUN, command="plan", owner_kind="direct")
 
 
+def _intent(kind: str) -> RecordedSignalIntent:
+    """A test-minted intent; production mints one only inside the signal handler."""
+    return RecordedSignalIntent(
+        kind, {"operator_interrupt": 2, "termination_request": 15}[kind], now()
+    )
+
+
 def test_terminalizer_commits_an_interrupted_status_exactly_once(tmp_path: Path) -> None:
     root = _bare_shot(tmp_path)
     run_root = _owned_run(root)
@@ -47,7 +56,7 @@ def test_terminalizer_commits_an_interrupted_status_exactly_once(tmp_path: Path)
             root,
             run_root,
             lease=lease,
-            interruption_kind="operator_interrupt",
+            intent=_intent("operator_interrupt"),
             clock=clock,
         )
 
@@ -76,7 +85,7 @@ def test_terminalizer_commits_an_interrupted_status_exactly_once(tmp_path: Path)
                 root,
                 run_root,
                 lease=lease,
-                interruption_kind="operator_interrupt",
+                intent=_intent("operator_interrupt"),
                 clock=clock,
             )
         assert (run_root / "status.json").read_bytes() == status_bytes
@@ -109,7 +118,7 @@ def test_unsatisfied_evaluation_leaves_the_run_running(tmp_path: Path, monkeypat
                 root,
                 run_root,
                 lease=lease,
-                interruption_kind="termination_request",
+                intent=_intent("termination_request"),
                 clock=clock,
             )
     assert (run_root / "status.json").read_bytes() == running_bytes
@@ -144,7 +153,7 @@ def test_death_before_status_selection_keeps_running_and_refuses_a_second_receip
                 root,
                 run_root,
                 lease=lease,
-                interruption_kind="operator_interrupt",
+                intent=_intent("operator_interrupt"),
                 clock=clock,
             )
         assert (run_root / "status.json").read_bytes() == running_bytes
@@ -156,7 +165,7 @@ def test_death_before_status_selection_keeps_running_and_refuses_a_second_receip
                 root,
                 run_root,
                 lease=lease,
-                interruption_kind="operator_interrupt",
+                intent=_intent("operator_interrupt"),
                 clock=clock,
             )
     assert (run_root / "status.json").read_bytes() == running_bytes
@@ -172,7 +181,7 @@ def test_reader_refuses_a_committed_run_whose_archive_no_longer_verifies(tmp_pat
             root,
             run_root,
             lease=lease,
-            interruption_kind="operator_interrupt",
+            intent=_intent("operator_interrupt"),
             clock=clock,
         )
     archived = result.receipt.archive.object_for("shot", "plans/current.json")
@@ -192,7 +201,7 @@ def test_terminalizer_requires_a_v2_running_status_and_an_owned_kind(tmp_path: P
                 root,
                 run_root,
                 lease=lease,
-                interruption_kind="operator_interrupt",
+                intent=_intent("operator_interrupt"),
                 clock=clock,
             )
         (run_root / "status.json").write_text(
@@ -204,7 +213,7 @@ def test_terminalizer_requires_a_v2_running_status_and_an_owned_kind(tmp_path: P
                 root,
                 run_root,
                 lease=lease,
-                interruption_kind="operator_interrupt",
+                intent=_intent("operator_interrupt"),
                 clock=clock,
             )
         terminalizer.publish_running_status(run_root, lease=lease, updated_at=clock())
@@ -213,7 +222,7 @@ def test_terminalizer_requires_a_v2_running_status_and_an_owned_kind(tmp_path: P
                 root,
                 run_root,
                 lease=lease,
-                interruption_kind="owner_lost",
+                intent="owner_lost",
                 clock=clock,
             )
     assert not (run_root / INTERRUPTION_RECEIPT_LOCATOR).exists()

@@ -35,6 +35,7 @@ def register_session_tools(**closed):
     measure_cache_path = closed["measure_cache_path"]
     measure_ref_paths = closed["measure_ref_paths"]
     unit_plan_target = closed["unit_plan_target"]
+    unit_plan_selected_authority = closed["unit_plan_selected_authority"]
     @tool(
         "publish_unit_plan",
         "Publish the complete bounded work-unit plan to the exact target selected by "
@@ -57,7 +58,10 @@ def register_session_tools(**closed):
         try:
             content = str(args.get("content") or "")
             target, lines = _publish_unit_plan_content(
-                shot_folder, unit_plan_target, content
+                shot_folder,
+                unit_plan_target,
+                content,
+                selected_authority=unit_plan_selected_authority,
             )
         except (OSError, ValueError) as exc:
             return _text(f"unit plan publication refused: {exc}", is_error=True)

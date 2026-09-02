@@ -7,6 +7,44 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- `publish_unit_plan` stamps the bundle-pinned integrity sidecar with the bytes it
+  publishes, so a unit-planning session's own `gate_preview` evaluates the draft
+  instead of reporting it absent; the stale-claim remedy names `vfx units retry`
+  and `vfx build --layer`, not the retired `--unit` flag
+  ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- `keyframe_schedule` and `object_property` rows on `data.*` paths judge every
+  selected host that owns a data-block; a host with none (a camera rig's Empty pivot)
+  is typed out and named, and a selection with no carrier fails closed
+  ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- The Blender session mints the one `checkpoints/journals/` destination for unit
+  journals; the finalizer takes it from the session and a refused or failed journal
+  capture fails the finalize closed instead of degrading the finalizer prompt
+  ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- Artifact execution-policy rejections name the line, expression, capability chain,
+  and legal replay forms; finalize/repair script sessions journal their kickoff and
+  continuation prompts in the build transcript
+  ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- The first `compare_frame` scale is derived from the shot's frame height so the
+  default comparison reaches the measurement height instead of measuring an upscaled
+  plate; `render_pass` counts as applicable only for units with typed look feedback
+  ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- The unit scope card and kickoff name the camera-owned deferred subject rows the
+  dependency-complete geometry producer pays or protects as required evidence; only a
+  partial producer's rows remain diagnostic forecasts
+  ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- `BlenderSession.restore` re-stages a parent-published checkpoint into the confined
+  worker's scratch and verifies the bytes before the worker opens it; the first
+  best-round restore under confinement had died with ENOENT
+  ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- `human_required` claim authority and `human_decision` evidence are retired from
+  work-unit claims with a teaching rejection; the human domain is judgment debt on the
+  owning requirement, so an executable-only unit no longer owes raster rounds for a
+  claim nothing can pay
+  ([HIR-0174](docs/improvements/HIR-0174-sessions-receive-their-own-artifacts.md)).
+- The root owner's signal handler mints a typed `RecordedSignalIntent`; the
+  terminalizer selects an owned interruption only from that record and accepts no
+  kind string, and an architecture test pins the handler as its sole issuer
+  ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - A camera-providing sparse layer may reserve only its camera grant. Extra form
   selectors fail at ownership mapping and the plan gate, so global publication
   cannot combine camera provide with later subject-form namespaces

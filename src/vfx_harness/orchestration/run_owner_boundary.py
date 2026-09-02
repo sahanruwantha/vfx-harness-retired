@@ -21,25 +21,32 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.run_signal_intent import SIGNAL_INTERRUPTION_KINDS, RecordedSignalIntent
 from vfx_harness.domain.run_status import RUN_SUMMARY_SCHEMA, STOP_ENVELOPE_LOCATOR
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.run_owner_fence import RunOwnerFenceLease, acquire_run_owner_fence
 from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.orchestration import run_terminalizer
 
-SIGNAL_INTERRUPTION_KINDS = {
-    int(signal.SIGINT): "operator_interrupt",
-    int(signal.SIGTERM): "termination_request",
-}
-
 
 class RunCancellation(BaseException):
     """Cancellation requested by a recorded SIGINT or SIGTERM intent."""
 
-    def __init__(self, kind: str, signal_number: int) -> None:
-        super().__init__(f"run cancellation requested by {kind} (signal {signal_number})")
-        self.kind = kind
-        self.signal_number = signal_number
+    def __init__(self, intent: RecordedSignalIntent) -> None:
+        if not isinstance(intent, RecordedSignalIntent):
+            raise TypeError("run cancellation carries only a RecordedSignalIntent")
+        super().__init__(
+            f"run cancellation requested by {intent.kind} (signal {intent.signal_number})"
+        )
+        self.intent = intent
+
+    @property
+    def kind(self) -> str:
+        return self.intent.kind
+
+    @property
+    def signal_number(self) -> int:
+        return self.intent.signal_number
 
 
 class RunInterrupted(SystemExit):
@@ -55,9 +62,16 @@ class RunInterrupted(SystemExit):
 class SignalIntent:
     """The first recorded cessation intent; later deliveries converge on it."""
 
-    kind: str | None = None
-    signal_number: int | None = None
+    intent: RecordedSignalIntent | None = None
     deliveries: int = 0
+
+    @property
+    def kind(self) -> str | None:
+        return None if self.intent is None else self.intent.kind
+
+    @property
+    def signal_number(self) -> int | None:
+        return None if self.intent is None else self.intent.signal_number
 
 
 def _now() -> str:
@@ -94,11 +108,15 @@ def signal_intent_scope() -> Iterator[SignalIntent]:
 
     def handler(signum: int, _frame: Any) -> None:
         intent.deliveries += 1
-        if intent.kind is not None:
+        if intent.intent is not None:
             return
-        intent.kind = SIGNAL_INTERRUPTION_KINDS[int(signum)]
-        intent.signal_number = int(signum)
-        raise RunCancellation(intent.kind, int(signum))
+        # The only production issuer of a RecordedSignalIntent (architecture-pinned):
+        # the terminalizer accepts no kind string, so nothing but a delivered signal can
+        # select `interrupted` for an owned run.
+        intent.intent = RecordedSignalIntent(
+            SIGNAL_INTERRUPTION_KINDS[int(signum)], int(signum), _now()
+        )
+        raise RunCancellation(intent.intent)
 
     previous = {signum: signal.signal(signum, handler) for signum in SIGNAL_INTERRUPTION_KINDS}
     try:
@@ -189,13 +207,13 @@ def terminalize_cancellation(
             shot,
             layout.root,
             lease=lease,
-            interruption_kind=cancellation.kind,
+            intent=cancellation.intent,
             clock=_MonotonicClock(),
         )
     except run_terminalizer.RunTerminalizationConflict as exc:
         # The run keeps its running status; its interruption authority is unavailable.
         interrupted = RunInterrupted(
-            128 + cancellation.signal_number,
+            cancellation.intent.exit_code,
             layout.run_id,
             detail=f"interruption authority unavailable: {exc}",
         )

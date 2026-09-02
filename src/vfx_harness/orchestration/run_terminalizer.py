@@ -31,6 +31,7 @@ from vfx_harness.domain.run_interruption_records import (
 from vfx_harness.domain.run_owner_claims import RUN_OWNER_CLAIM_LOCATOR, RunOwnerClaim
 from vfx_harness.domain.run_owner_loss import RunOwnerLossObservation
 from vfx_harness.domain.run_record_refs import RunRecordRef
+from vfx_harness.domain.run_signal_intent import RecordedSignalIntent
 from vfx_harness.domain.run_status import (
     INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
     RUN_SUMMARY_LOCATOR,
@@ -53,8 +54,6 @@ from vfx_harness.orchestration.shot_authority_capture import shot_authority_writ
 
 RUN_STATUS_LOCATOR = "status.json"
 INTERRUPTION_SUMMARY_SCHEMA = "vfx-harness.interruption-summary/v1"
-OWNED_INTERRUPTION_KINDS = frozenset({"operator_interrupt", "termination_request"})
-_KIND_SIGNAL = {"operator_interrupt": 2, "termination_request": 15}
 
 
 class RunTerminalizationConflict(ValueError):
@@ -400,19 +399,24 @@ def terminalize_interruption(
     run_root: str | Path,
     *,
     lease: RunOwnerFenceLease,
-    interruption_kind: str,
+    intent: RecordedSignalIntent,
     clock: Callable[[], str],
     detail: str | None = None,
 ) -> TerminalizedInterruption:
-    """Commit one owned interruption exactly once from source-verified evidence."""
+    """Commit one owned interruption exactly once from source-verified evidence.
+
+    Only a ``RecordedSignalIntent`` minted by the root owner's signal handler selects an
+    owned interruption; a kind string is not accepted, and owner loss belongs to the
+    reconciler (HIR-0172).
+    """
 
     shot = Path(shot_root).expanduser().absolute()
     run = Path(run_root).expanduser().absolute()
     claim = _require_lease(lease, run)
-    if interruption_kind not in OWNED_INTERRUPTION_KINDS:
+    if not isinstance(intent, RecordedSignalIntent):
         raise RunTerminalizationConflict(
-            f"the root owner may terminalize only {sorted(OWNED_INTERRUPTION_KINDS)}; "
-            "owner loss belongs to the reconciler"
+            "the root owner terminalizes only a RecordedSignalIntent minted by its signal "
+            f"handler, found {type(intent).__name__}; owner loss belongs to the reconciler"
         )
     _running, running_bytes = _read_running_status(run, claim)
     if os.path.lexists(run / INTERRUPTION_RECEIPT_LOCATOR):
@@ -425,10 +429,9 @@ def terminalize_interruption(
         claim=claim,
         clock=clock,
     )
-    signal = _KIND_SIGNAL[interruption_kind]
     receipt = RunInterruptionReceipt(
         run_id=claim.run_id,
-        interruption_kind=interruption_kind,
+        interruption_kind=intent.kind,
         terminalizer_kind="owner",
         owner=claim,
         owner_ref=owner_ref,
@@ -440,8 +443,8 @@ def terminalize_interruption(
         archive_ref=archive_ref,
         transcript_frontiers=captured.frontiers,
         transcript_frontier_refs=frontier_refs,
-        signal_number=signal,
-        exit_code=128 + signal,
+        signal_number=intent.signal_number,
+        exit_code=intent.exit_code,
         interrupted_at=clock(),
     )
     _require_lease(lease, run)
@@ -563,7 +566,6 @@ def read_running_status_bytes(run_root: str | Path, claim: RunOwnerClaim) -> byt
 
 __all__ = [
     "INTERRUPTION_SUMMARY_SCHEMA",
-    "OWNED_INTERRUPTION_KINDS",
     "RUN_STATUS_LOCATOR",
     "RunTerminalizationConflict",
     "TerminalizedInterruption",

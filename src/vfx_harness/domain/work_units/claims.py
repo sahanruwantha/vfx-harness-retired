@@ -15,6 +15,8 @@ from vfx_harness.domain.work_units.parsing import (
     CLAIM_AUTHORITIES,
     CLAIM_KINDS,
     EVIDENCE_KINDS,
+    RETIRED_CLAIM_AUTHORITIES,
+    RETIRED_EVIDENCE_KINDS,
     TEMPORAL_EVIDENCE,
     _id,
     _mapping,
@@ -71,6 +73,13 @@ class EvidenceBinding:
     def parse(cls, value: Any, where: str) -> EvidenceBinding:
         row = _mapping(value, where)
         kind = row.get("kind")
+        if kind in RETIRED_EVIDENCE_KINDS:
+            raise ValueError(
+                f"{where}.kind {kind!r} is retired: no runtime producer pays a human "
+                "decision on a work-unit claim. Bind executable evidence or a "
+                "qualification, and pay the human domain as approved_start / "
+                "planner_start judgment debt on the owning requirement (HIR-0174)"
+            )
         if kind not in EVIDENCE_KINDS:
             raise ValueError(f"{where}.kind must be one of {sorted(EVIDENCE_KINDS)}")
         extra = sorted(set(row) - {"kind", "id", "moments"})
@@ -147,6 +156,15 @@ class Claim:
         if not isinstance(required, bool):
             raise ValueError(f"{where}.required must be boolean")
         authority = row.get("authority")
+        if authority in RETIRED_CLAIM_AUTHORITIES:
+            raise ValueError(
+                f"{where}.authority {authority!r} is retired: no runtime producer pays a "
+                "human decision on a work-unit claim, and such a claim only forces an "
+                "executable-only unit into raster rounds it cannot pay. Use "
+                "executable_required or qualified_qualitative_required, and pay the human "
+                "domain as approved_start / planner_start judgment debt on the owning "
+                "requirement (HIR-0174)"
+            )
         if authority not in CLAIM_AUTHORITIES:
             raise ValueError(f"{where}.authority must be one of {sorted(CLAIM_AUTHORITIES)}")
         if required and authority == "advisory":
@@ -206,8 +224,6 @@ class Claim:
             raise ValueError(f"{where} executable authority requires executable evidence bindings")
         if authority == "qualified_qualitative_required" and "qualification" not in evidence_kinds:
             raise ValueError(f"{where} qualified qualitative authority requires a qualification binding")
-        if authority == "human_required" and "human_decision" not in evidence_kinds:
-            raise ValueError(f"{where} human authority requires a human_decision binding")
         coordination_owner = row.get("coordination_owner")
         participants = _strings(row.get("participants", []), f"{where}.participants")
         controls = _strings(row.get("controls", []), f"{where}.controls")

@@ -10,6 +10,7 @@ import pytest
 from tests.integration.test_run_interruption_evaluator import _bare_shot
 from tests.run_owner_support import MonotonicClock, owned_run, pass_run
 from vfx_harness.domain.run_interruption_records import INTERRUPTION_RECEIPT_LOCATOR
+from vfx_harness.domain.run_signal_intent import RecordedSignalIntent
 from vfx_harness.evaluation import run_interruption as evaluator
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.run_owner_fence import acquire_run_owner_fence
@@ -103,7 +104,7 @@ def test_prepared_receipt_is_completed_without_changing_its_bytes(
                 root,
                 layout.root,
                 lease=lease,
-                interruption_kind="operator_interrupt",
+                intent=RecordedSignalIntent("operator_interrupt", 2, MonotonicClock()()),
                 clock=MonotonicClock(),
             )
     monkeypatch.undo()

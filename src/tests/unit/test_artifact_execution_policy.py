@@ -744,3 +744,21 @@ print('confined')
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "confined"
+
+
+def test_alias_escape_rejection_names_line_capability_and_legal_forms() -> None:
+    source = (
+        "import bpy\n"
+        "bpy.ops.mesh.primitive_cube_add(location=(0.0, 0.0, 0.0))\n"
+        "obj = bpy.context.active_object\n"
+        'obj.name = "aim_target"\n'
+        'bvfx_role(obj, "camera.aim", owner_layer="1")\n'
+    )
+    with pytest.raises(ArtifactExecutionPolicyError) as exc:
+        validate_artifact_source(source)
+    message = str(exc.value)
+    assert "cannot escape a tracked attribute or simple alias" in message
+    assert "line 5 uses `obj`" in message
+    assert "bpy.context.active_object" in message
+    assert "bpy.data.objects.new(...)" in message
+    assert "bvfx_* helper return value" in message

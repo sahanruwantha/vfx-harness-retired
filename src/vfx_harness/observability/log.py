@@ -150,7 +150,10 @@ def tool_use_summary(*, motion_owned: bool = False, revalidation: bool = False,
     mutations = (int(automatic_scene_checks) if automatic_scene_checks
                  else TOOL_USE.get(_MCP + "run_bpy", 0))
     applicable = {
-        "render_pass": not revalidation,
+        # Isolated passes show a look-owning builder what it is judged on; an
+        # executable-only unit owes no raster, so an unused render_pass there is not a
+        # prompt that failed to land (run 20260902T165518Z-004470 layer 1).
+        "render_pass": not revalidation and bool(look_feedback_applicable),
         "check_scene": not revalidation,
         "diff_frames": not revalidation and (motion_owned or mutations >= 2),
         "verify_change": not revalidation and mutations >= 2,

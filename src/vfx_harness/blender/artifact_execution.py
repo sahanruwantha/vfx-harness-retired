@@ -343,6 +343,32 @@ def _is_exact_current_frame_reevaluation_read(
     )
 
 
+def _alias_escape_message(
+    source: str,
+    node: ast.expr,
+    chains: set[tuple[str, ...]],
+) -> str:
+    """Name the escaping expression, its capability, and the legal replay forms.
+
+    The bare "cannot escape a tracked attribute or simple alias" sent a finalizer to read
+    harness source for the rule (run 20260902T165518Z-004470); a rejection must teach the
+    contract, the observed value, and the next legal action.
+    """
+
+    segment = ast.get_source_segment(source, node) or ast.dump(node)
+    capability = " / ".join(".".join(chain) for chain in sorted(chains)) or "bpy"
+    return (
+        "artifact bpy capability cannot escape a tracked attribute or simple alias: "
+        f"line {node.lineno} uses `{segment}` (a handle on {capability}) as a value. A "
+        "bpy attribute chain, or a name bound to one, may only be read through further "
+        "attributes, invoked directly, or rebound to a simple name — never passed as an "
+        "argument, stored, returned, or compared. Take scene data from a call result "
+        "instead (`bpy.data.objects.new(...)`, `bpy.data.objects.get('name')`, "
+        "`bpy.data.cameras.new(...)`, or a bvfx_* helper return value): call results are "
+        "plain values the policy does not track."
+    )
+
+
 def validate_artifact_source(source: str) -> ast.Module:
     """Parse and reject any capability outside the artifact replay vocabulary."""
 
@@ -374,7 +400,7 @@ def validate_artifact_source(source: str) -> ast.Module:
                 and not _is_simple_name_alias_value(node, parent)
             ):
                 raise ArtifactExecutionPolicyError(
-                    "artifact bpy capability cannot escape a tracked attribute or simple alias"
+                    _alias_escape_message(source, node, chains)
                 )
         elif isinstance(node, ast.Attribute):
             if node.attr.startswith("__") or node.attr.endswith("__"):
@@ -405,7 +431,7 @@ def validate_artifact_source(source: str) -> ast.Module:
                 )
             ):
                 raise ArtifactExecutionPolicyError(
-                    "artifact Blender capability cannot escape a tracked simple alias"
+                    _alias_escape_message(source, node, chains)
                 )
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             targets = (

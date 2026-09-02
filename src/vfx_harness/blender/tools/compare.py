@@ -49,6 +49,7 @@ def register_compare(
     _black_search_stop,
     _register_candidate,
     selected_authority=None,
+    resolution_y=None,
 ):
     @tool(
         "diff_frames",
@@ -238,7 +239,12 @@ def register_compare(
         base_lock = comparison_locks.get((round_id, "base"))
         # Omitted crop settings INHERIT the round base instead of silently returning to
         # defaults and failing the lock established by a full-frame comparison.
-        mode, scale = _comparison_mode_scale(args, base_lock, look_actions=feedback_policy["look_actions"])
+        mode, scale = _comparison_mode_scale(
+            args,
+            base_lock,
+            look_actions=feedback_policy["look_actions"],
+            resolution_y=resolution_y,
+        )
         crop = args.get("crop")
         if crop is not None:
             try:

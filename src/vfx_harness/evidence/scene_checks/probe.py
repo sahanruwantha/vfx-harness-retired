@@ -132,6 +132,29 @@ def _eval_property(target,path):
         try: return _raw_property(target, alias)
         except Exception as exc: last=exc
     raise last
+def _readable(target,path):
+    try: _raw_property(target,path); return True
+    except Exception: return False
+def _carriers(objects,paths):
+    # A `data.*` alias names a DATA-BLOCK property. A host with no data-block at all (an
+    # Empty pivot in a camera rig, a control marker) cannot carry it and is typed out of
+    # the closure; a host WITH a data-block that lacks the attribute remains a failing
+    # measurement. The closure must keep at least one carrier — the caller fails closed
+    # otherwise — so a typed-out host can never hide a subject (HIR-0174).
+    aliases=[a for path in paths for a in _path_aliases(path)]
+    if not any(str(a).startswith('data.') for a in aliases): return list(objects),[]
+    typed_out=[o for o in objects if getattr(o,'data',None) is None
+               and not any(not str(a).startswith('data.') and _readable(o,a) for a in aliases)]
+    return [o for o in objects if o not in typed_out],typed_out
+def _nocarrier(row,paths,typed_out):
+    return ('roles '+repr(_p(row,'roles'))+' matched only hosts without a data-block for '
+            'data-block path(s) '+repr(sorted(str(p) for p in paths))+': '
+            +', '.join(o.name+' ['+o.type+']' for o in typed_out)
+            +'; tag the data-block host (Camera/Light/Mesh) with the role or bind the row on '
+            'its role')
+def _typed_out_note(typed_out):
+    return ('no data-block, not a carrier: '
+            +', '.join(o.name+' ['+o.type+']' for o in typed_out)) if typed_out else ''
 def _host_fcurves(o):
     rows=[]
     for fc in _fcurves(o):
@@ -264,8 +287,11 @@ for row in _rows:
             if not tested: raise ValueError('no radial faces to test on the selection')
             value=sum(tested)/len(tested)
         elif kind=='object_property':
-            vs=[_property(o,row['property']) for o in objects]
-            if not vs: raise ValueError(_missobj(row))
+            if not objects: raise ValueError(_missobj(row))
+            carriers,typed_out=_carriers(objects,[row['property']])
+            if not carriers: raise ValueError(_nocarrier(row,[row['property']],typed_out))
+            note=_typed_out_note(typed_out)
+            vs=[_property(o,row['property']) for o in carriers]
             if max(vs)-min(vs)>float(row.get('uniform_tol',1e-6)):
                 raise ValueError('selected objects do not share one property value')
             value=sum(vs)/len(vs)
@@ -342,7 +368,9 @@ for row in _rows:
             samples=row['samples']; expected_frames={{int(s['frame']) for s in samples}}
             paths=set(samples[0]['values']); deltas=[]; miss=[]
             miss_floor=float(row.get('hi') or 0)+1.0
-            for o in objects:
+            carriers,typed_out=_carriers(objects,paths)
+            if not carriers: raise ValueError(_nocarrier(row,paths,typed_out))
+            for o in carriers:
                 present=_present_paths(o)
                 frames_ok=True
                 for path in paths:
@@ -369,8 +397,9 @@ for row in _rows:
                             deltas.append(miss_floor)
                 if not frames_ok:
                     deltas.append(miss_floor)
-            if miss:
-                note='; '.join(miss)[:400]
+            notes=([_typed_out_note(typed_out)] if typed_out else [])+miss
+            if notes:
+                note='; '.join(notes)[:400]
             value=max(deltas) if deltas else 0.0
         elif kind=='onset_order':
             other=_objects({{**row,

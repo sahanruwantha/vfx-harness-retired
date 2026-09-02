@@ -34,7 +34,7 @@ LOOK_REQUIRES_IMAGE_DOMAIN_RULE = (
     "executable seal and not a critic look vote."
 )
 
-LOOK_IMAGE_EVIDENCE_KINDS = frozenset({"image_contract", "qualification", "human_decision"})
+LOOK_IMAGE_EVIDENCE_KINDS = frozenset({"image_contract", "qualification"})
 
 
 def _evidence_kind(item: Any) -> str:

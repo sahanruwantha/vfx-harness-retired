@@ -360,9 +360,10 @@ def register_gate_tools(**closed):
             return _text(
                 body
                 + "\n\nGATE PLATEAU: findings are unchanged from the previous preview. "
-                "Anything you cannot fix from inside this session (missing unit plan, "
-                "another layer's authority) belongs to the outer flow — finish your "
-                "artifact and report the residue.",
+                "A finding on this session's own artifact is fixed by publishing it "
+                "again (publish_unit_plan / patch_materialization); anything else "
+                "(another layer's authority, a global DAG row) belongs to the outer "
+                "flow — finish your artifact and report the residue.",
                 is_error=True,
             )
         prior_preview_signature = signature

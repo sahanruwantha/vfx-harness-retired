@@ -159,6 +159,9 @@ from vfx_harness.evidence.scene_checks.validate import (
     curve_derivative_note as curve_derivative_note,
 )
 from vfx_harness.evidence.scene_checks.validate import (
+    data_block_carriers as data_block_carriers,
+)
+from vfx_harness.evidence.scene_checks.validate import (
     keyframe_schedule_matching_frames as keyframe_schedule_matching_frames,
 )
 from vfx_harness.evidence.scene_checks.validate import (

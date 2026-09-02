@@ -145,7 +145,8 @@ operation.
   source classification, never the live shot tree. A run without a readable receipt has no
   evaluation. The direct-command boundary and the whole-shot driver own every public run: they
   acquire the run-owner fence before publishing `running`, record the first SIGINT/SIGTERM as
-  intent and cancel by raising, and select exactly one terminal status; a stage inherited inside
+  a typed `RecordedSignalIntent` that only the signal handler mints (the terminalizer accepts no
+  kind string) and cancel by raising, and select exactly one terminal status; a stage inherited inside
   a driver publishes only its typed stop envelope, and a cancellation with no recorded intent is
   a failure, never an interruption. A run left `running` by a dead owner is reconciled only through
   `vfx reconcile <shot> --run-id <run>`, which proves loss by acquiring the exact recorded fence,
@@ -333,7 +334,9 @@ effect.
   and escalates. A forced pick among unsupported options is a harness defect.
 - Rejections teach: tool failures and validation rejections name the violated contract, expected
   versus found, and the legal next actions. A selector miss reports both sides — what was
-  requested and what actually exists (HIR-0018).
+  requested and what actually exists (HIR-0018). An artifact execution-policy rejection names
+  the line, the escaping expression, its capability chain, and the legal replay forms
+  (HIR-0174).
 - A JSON-pointer list miss reports the live length, valid indices, stable row ids when
   present, and `-` as the final-token append action. Negative indices never mutate from
   the end; candidate repair does not make the materializer guess list occupancy (HIR-0105).
@@ -725,7 +728,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   a separate terminal `gate_preview`; every subsequent patch invalidates attestation and
   requires finalization again (HIR-0141).
   Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
-  `log_message` journals only when bound (HIR-0038).
+  `log_message` journals only when bound (HIR-0038). `publish_unit_plan` stamps the
+  bundle-pinned integrity sidecar with the bytes it publishes so the session's own
+  `gate_preview` evaluates the draft; gate attestation remains the terminal gate's alone, and
+  a stale `planning` claim with no live session is released only through `vfx units retry`
+  before `vfx build --layer` regenerates the plan (HIR-0174).
 - A decision is made globally only if it is needed before the first unit, alters the DAG, is
   irreversible, or is expensive to be wrong about later; otherwise defer it to the owning layer
   (ADR-0005).
@@ -842,6 +849,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
 - Every metric kind declares the evidence domain it can certify (scene, temporal,
   projected_composition, image); a claim binds only evidence that can certify its domain. Counts
   prove existence — never timing, ordering, or appearance (HIR-0014).
+- `keyframe_schedule` and `object_property` rows on `data.*` paths judge every selected host
+  that owns a data-block: a host with none (a rig's Empty pivot) is typed out and named in the
+  note, a data-block that lacks the attribute is a failing measurement, and a selection with no
+  carrier fails closed. `bvfx_camera_rig` tags the pivot `<role>` and the camera
+  `<role>.camera`; the rig is not demolished to pass a lens contract (HIR-0174).
 - No implicit frames or moments: frame-sensitive contracts declare `frame`; plans declare the
   primary moment explicitly; motion claims bind exact temporal contract ids; evidence modes are
   declared, never inferred (HIR-0015, ADR-0003).
@@ -874,7 +886,10 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
 - Blocking authority is earned. Executable contracts and qualified qualitative claims may block
   autonomously; an unqualified qualitative claim becomes executable evidence, is requalified, or
   routes to audited human adjudication — never silently optional. Changing the judge model,
-  prompt, evidence layout, or claim semantics invalidates qualification.
+  prompt, evidence layout, or claim semantics invalidates qualification. Work-unit claims carry
+  `executable_required`, `qualified_qualitative_required`, or `advisory` authority;
+  `human_required` / `human_decision` are retired because no runtime producer pays them — the
+  human domain is judgment debt on the owning requirement (HIR-0174).
 - A critic panel estimates score noise; bare pass votes do not refute a qualified actionable
   observation because passing scorecards carry no blocking proposition. A nominal passing
   majority with uncontradicted actionable dissent remains `REVISE` and preserves that exact
@@ -930,7 +945,8 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   names `object=` as the next action, and `list_keyframes` lists every host
   including data-block curves (`data.energy` on a Light) (HIR-0041, HIR-0050).
   Kickoff, `CLAUDE.md`, and the `unit_scope` tool share one compiled card for the
-  active unit: mutation roles/controls/dresses/spans, bound contracts, claims, judge frames,
+  active unit: mutation roles/controls/dresses/spans, bound contracts, the camera-owned
+  deferred subject rows the unit pays or protects as required evidence (HIR-0174), claims, judge frames,
   the `run_bpy` helper inventory, including parameter and return contracts compiled from
   the worker source, authored publish interfaces, the producer digest, declared consumes,
   and exact consumed, digest-matched direct-predecessor publish interfaces. The kickoff keeps every evaluator field on the exact
@@ -945,7 +961,13 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   Its plan publishes through a harness-bound content sink with no path argument; generic
   `Write` is not part of the JIT unit-planner surface (HIR-0091).
   Finalizer journals start after reset/dependency replay and end
-  at the selected checkpoint. Layer materialization has no raw `Read` surface: kickoff compiles
+  at the selected checkpoint. The Blender session mints the one checkpoint-owned journal
+  destination (`checkpoints/journals/`) and `restore` re-stages a parent-published checkpoint
+  into the confined worker's scratch with verified bytes, because the worker cannot see
+  `checkpoints/`; a refused or failed journal capture fails the unit
+  finalize closed, never degrades the finalizer to memory re-derivation, and every finalize or
+  repair script session journals its kickoff and continuation prompts in the build transcript
+  (HIR-0174). Layer materialization has no raw `Read` surface: kickoff compiles
   only the exact global layer row, owned requirements, active structured decisions, compact
   required upstream outcomes, and semantic/dressable dependency interfaces; full registers and
   outcome reports stay outside model context. Context scales with the active delta (HIR-0054).
@@ -976,7 +998,8 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   `path_clearance_min` or `BVHTree.FromMesh` name the bound instrument (HIR-0034).
   Live `render_frame` / `verify_change` default to Workbench `solid` when the
   unit has no look capabilities; canonical EEVEE remains the sealed artifact
-  (HIR-0036). Repair `probe_candidate` on a look-owning unit also returns draft
+  (HIR-0036). The first `compare_frame` scale is the measurement floor derived from the
+  shot's frame height, never a fixed fraction that assumes one resolution (HIR-0174). Repair `probe_candidate` on a look-owning unit also returns draft
   EEVEE `look_render`; solid is geometry, not the critic plate (HIR-0042). Live
   `run_bpy` stays open when a look-owning unit binds no image contract; 0/0
   image rows are not critic handoff (HIR-0044). An

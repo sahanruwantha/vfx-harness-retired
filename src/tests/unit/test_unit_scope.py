@@ -200,8 +200,10 @@ def test_early_geometry_producer_gets_nonpayable_deferred_bbox_forecast() -> Non
     assert "building-bbox-f176" not in {
         row["id"] for row in mass_card["contracts"]
     }
+    assert mass_card["deferred_subject_payments"] == []
     formatted = format_unit_scope_card(mass_card)
     assert "complete-subject payer alone can satisfy" in formatted
+    assert "building-bbox-f176" in formatted.split("deferred subject forecasts")[1]
 
     roof_card = compile_scope_with_predecessors(
         unit=roof,
@@ -211,6 +213,17 @@ def test_early_geometry_producer_gets_nonpayable_deferred_bbox_forecast() -> Non
         helpers=(),
     )
     assert roof_card["deferred_subject_forecasts"] == []
+    # The dependency-complete producer pays the row: the card names it as required,
+    # exactly as the runtime already requires it (HIR-0174).
+    assert roof_card["deferred_subject_payments"] == [{
+        **deferred,
+        "required_before_freeze": True,
+        "acceptance_evidence": True,
+    }]
+    roof_formatted = format_unit_scope_card(roof_card)
+    payments_section = roof_formatted.split("deferred subject rows this unit pays")[1]
+    assert "building-bbox-f176" in payments_section.split("deferred subject forecasts")[0]
+    assert "REQUIRED BEFORE FREEZE" in roof_formatted
 
 
 def test_unit_scope_keeps_exact_evaluator_fields_for_bound_contract() -> None:

@@ -189,7 +189,12 @@ KIND_DEFINITIONS = {
     "mesh_vertex_count": "evaluated mesh vertex total across matched object roles",
     "smooth_fraction": "fraction of matched mesh polygons using smooth shading",
     "radial_inward_fraction": "fraction where radial XY normal dot face centre <= 0 (inward)",
-    "object_property": "numeric property read from every semantically selected object",
+    "object_property": (
+        "numeric property read from every semantically selected object; a `data.*` "
+        "property is read from every selected host that owns a data-block, hosts with no "
+        "data-block (Empties, control markers) are typed out and named in the note, and a "
+        "selection with no data-block host fails closed"
+    ),
     "visible_fraction": (
         "of each named role's ON-SCREEN surface samples at the declared frame, the "
         "fraction whose camera ray reaches that role's surface before any other object; "
@@ -222,7 +227,10 @@ KIND_DEFINITIONS = {
         "maximum property error against an exact semantic keyframe schedule; any missing or "
         "extra keyed frame fails the contract. Sample path P matches object P, object "
         "`data.P`, or the data-block P fcurve; a path miss names those aliases and the "
-        "data_paths present and fails closed — it is not an unmeasurable binding defect"
+        "data_paths present and fails closed — it is not an unmeasurable binding defect. "
+        "A data-block path is judged on every selected host that owns a data-block; "
+        "hosts with none (a rig's Empty pivot) are typed out and named, and a selection "
+        "with no data-block host fails closed"
     ),
     "frame_delta": "mean absolute rendered-pixel delta between two declared frames",
     "curve_derivative_max": (

@@ -176,3 +176,75 @@ def test_smooth_fraction_none_stays_inapplicable() -> None:
     )
     assert "INAPPLICABLE to its subject" in text
     assert "re-materialization, not a repair" in text
+
+
+class _Host:
+    def __init__(self, name: str, type_: str, data=None, **attrs) -> None:
+        self.name = name
+        self.type = type_
+        self.data = data
+        for key, value in attrs.items():
+            setattr(self, key, value)
+
+
+class _CameraData:
+    lens = 32.0
+
+
+def test_data_block_path_types_out_hosts_without_a_data_block() -> None:
+    from vfx_harness.evidence.scene_checks import data_block_carriers
+
+    pivot = _Host("cam_rig", "EMPTY", location=(0.0, -40.0, 160.0))
+    camera = _Host("camera", "CAMERA", data=_CameraData(), location=(0.0, 0.0, 0.0))
+
+    carriers, typed_out = data_block_carriers([pivot, camera], ["data.lens"])
+    assert [host.name for host in carriers] == ["camera"]
+    assert [host.name for host in typed_out] == ["cam_rig"]
+
+    # The bare alias resolves to the data-block too: the Empty still cannot carry it.
+    carriers, typed_out = data_block_carriers([pivot, camera], ["lens"])
+    assert [host.name for host in carriers] == ["camera"]
+    assert [host.name for host in typed_out] == ["cam_rig"]
+
+
+def test_object_level_paths_keep_every_host() -> None:
+    from vfx_harness.evidence.scene_checks import data_block_carriers
+
+    pivot = _Host("cam_rig", "EMPTY", location=(0.0, -40.0, 160.0))
+    camera = _Host("camera", "CAMERA", data=_CameraData(), location=(0.0, 0.0, 0.0))
+
+    carriers, typed_out = data_block_carriers([pivot, camera], ["location"])
+    assert [host.name for host in carriers] == ["cam_rig", "camera"]
+    assert typed_out == []
+
+
+def test_a_data_block_that_lacks_the_attribute_is_not_typed_out() -> None:
+    from vfx_harness.evidence.scene_checks import data_block_carriers
+
+    class _MeshData:
+        vertices = ()
+
+    mesh = _Host("wall", "MESH", data=_MeshData())
+    pivot = _Host("marker", "EMPTY")
+    carriers, typed_out = data_block_carriers([mesh, pivot], ["data.lens"])
+    # The mesh stays a (failing) measurement host; only the data-less Empty is typed out.
+    assert [host.name for host in carriers] == ["wall"]
+    assert [host.name for host in typed_out] == ["marker"]
+
+    carriers, typed_out = data_block_carriers([pivot], ["data.lens"])
+    assert carriers == []
+    assert [host.name for host in typed_out] == ["marker"]
+
+
+def test_probe_types_carriers_before_measuring_property_contracts() -> None:
+    row = _schedule_row(samples=[
+        {"frame": 38, "values": {"data.lens": 32.0}},
+        {"frame": 200, "values": {"data.lens": 38.0}},
+    ])
+    probe = _blender_probe([row], 38)
+    compile(probe, "<carrier-probe>", "exec")
+    assert "carriers,typed_out=_carriers(objects,paths)" in probe
+    assert "if not carriers: raise ValueError(_nocarrier(row,paths,typed_out))" in probe
+    assert "carriers,typed_out=_carriers(objects,[row['property']])" in probe
+    assert "no data-block, not a carrier" in probe
+    assert "matched only hosts without a data-block" in probe

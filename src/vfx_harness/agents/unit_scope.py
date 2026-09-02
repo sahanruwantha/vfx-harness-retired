@@ -21,7 +21,11 @@ from vfx_harness.domain.image_debts import image_contract_debt_cards
 from vfx_harness.domain.publish_interfaces import compile_unit_publish_interfaces
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
 from vfx_harness.domain.work_units import WorkUnit, bound_claim_contract_ids
-from vfx_harness.evidence.scene_checks import deferred_subject_composition_forecast_ids_for_unit, load_rows
+from vfx_harness.evidence.scene_checks import (
+    deferred_subject_composition_forecast_ids_for_unit,
+    deferred_subject_composition_ids_for_unit,
+    load_rows,
+)
 from vfx_harness.orchestration.unit_completion_authorizations import (
     AuthorizedUnitCompletionSet,
 )
@@ -365,6 +369,22 @@ def compile_scope_with_predecessors(
         }
         for contract_id in forecast_ids
     ]
+    # The dependency-complete producer PAYS the camera-owned deferred rows and every
+    # later overlapping geometry unit protects them; the runtime already required them,
+    # but the card never named them, so the payer read its own failing row as another
+    # layer's business (run 20260902T165518Z-004470, 2.exterior_massing; HIR-0174).
+    payment_ids = deferred_subject_composition_ids_for_unit(
+        contracts, units, unit, layer_id
+    )
+    card["deferred_subject_payments"] = [
+        {
+            **_contract_row(contract_by_id[contract_id]),
+            "required_before_freeze": True,
+            "acceptance_evidence": True,
+        }
+        for contract_id in payment_ids
+        if contract_id in contract_by_id
+    ]
     by_id = {item.id: item for item in units}
     consumed_by_producer: dict[str, frozenset[tuple[str, str]]] = {}
     for uid in unit.depends_on:
@@ -474,6 +494,11 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         for row in (card.get("deferred_subject_forecasts") or [])
         if isinstance(row, Mapping)
     ) or "  - (none)"
+    payments = "\n".join(
+        _format_bound_contract(row)
+        for row in (card.get("deferred_subject_payments") or [])
+        if isinstance(row, Mapping)
+    ) or "  - (none)"
     debts = "\n".join(
         f"  - `{row['id']}` frame={row.get('frame')} property={row.get('property')} "
         f"axis={row.get('axis')}"
@@ -527,6 +552,9 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         f"judge frames: {frames or 'none'} (primary f{judge.get('primary')})\n"
         f"claims:\n{claims}\n"
         f"bound scene contracts:\n{contracts}\n"
+        "deferred subject rows this unit pays or protects (camera-owned, evaluated at "
+        "their declared frames, REQUIRED BEFORE FREEZE — this unit is the "
+        f"dependency-complete producer, not a bystander):\n{payments}\n"
         "deferred subject forecasts (diagnostic only; the complete-subject payer "
         f"alone can satisfy these rows):\n{forecasts}\n"
         f"owed image-contract debts (propose_checks, exact id/frame/property/axis):\n"
