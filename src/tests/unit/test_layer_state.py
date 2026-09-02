@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.run_owner_support import owned_run, pass_run
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import layer_state
 
@@ -29,18 +30,18 @@ def test_layer_state_survives_run_boundaries_without_becoming_run_output(
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
 
-    first = run_artifacts.create(shot, "run-first")
-    started = layer_state.start(shot, "form", [(7, "refs/profile.png")])
+    with owned_run(shot, "run-first") as (first, lease):
+        started = layer_state.start(shot, "form", [(7, "refs/profile.png")])
 
-    assert started["attempts"] == 1
-    assert (shot / "state" / "layer_state.json").is_file()
-    assert not (first.root / "state").exists()
-    first.set_status("passed", exit_code=0)
+        assert started["attempts"] == 1
+        assert (shot / "state" / "layer_state.json").is_file()
+        assert not (first.root / "state").exists()
+        pass_run(first, lease)
 
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    second = run_artifacts.create(shot, "run-second")
-    carried = layer_state.start(shot, "form", [(19, "refs/action.png")])
-    latest = json.loads((shot / "runs" / "latest.json").read_text(encoding="utf-8"))
+    with owned_run(shot, "run-second") as (second, _lease):
+        carried = layer_state.start(shot, "form", [(19, "refs/action.png")])
+        latest = json.loads((shot / "runs" / "latest.json").read_text(encoding="utf-8"))
 
     assert carried["attempts"] == 2
     assert carried["frames"] == {"19": {"ref": "refs/action.png"}}

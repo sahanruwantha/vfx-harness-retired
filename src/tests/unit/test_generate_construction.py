@@ -25,8 +25,8 @@ from vfx_harness.domain.refobs import (
     promoted_glb_relpath,
 )
 from vfx_harness.domain.work_units import WorkUnit
-from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import generate_construction as construction_runtime
+from vfx_harness.orchestration import run_owner_boundary
 from vfx_harness.orchestration.generate_construction import (
     CONSTRUCTION_PIN,
     GenerateConstructionError,
@@ -541,9 +541,9 @@ def test_evaluator_replay_receipt_binds_pointer_and_glb_identity(
 
 @pytest.mark.skipif(shutil.which("blender") is None, reason="Blender is unavailable")
 def test_confined_blender_imports_glb_through_held_memfd(tmp_path: Path) -> None:
-    with run_artifacts.invocation(
+    with run_owner_boundary.invocation(
         tmp_path,
-        "construction-memfd-smoke",
+        "build",
         shot_id="construction-memfd-smoke",
     ):
         session = BlenderSession(blender="blender", cwd=tmp_path).start()

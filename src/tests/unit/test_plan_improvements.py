@@ -23,6 +23,7 @@ from vfx_harness.evaluation.plan_gate import (
 from vfx_harness.evidence.metrics import METRIC_SET, canonical_fingerprint, look_vector
 from vfx_harness.evidence.scene_checks import _blender_probe, functional_evidence, validate_row
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration import run_owner_boundary
 
 
 def _form_layer() -> dict:
@@ -251,17 +252,19 @@ def test_plan_check_cannot_bind_process_local_adversary(tmp_path: Path) -> None:
 def test_gate_report_and_terminal_metadata_are_published(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     result = GateResult("shot", [])
-    with run_artifacts.invocation(tmp_path, "plan") as layout:
+    with run_owner_boundary.invocation(tmp_path, "plan") as layout:
         report = write_report(tmp_path, result, outcome="clean")
         layout.terminal_metadata.update(
             {"outcome": "clean", "blocking_count": 0, "plan_gate_report": "reports/plan_gate.json"}
         )
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
     assert report == layout.reports / "plan_gate.json"
     assert status["state"] == "passed"
-    assert status["outcome"] == "clean"
-    assert status["blocking_count"] == 0
+    assert status["summary_digest"] is not None
+    assert summary["outcome"] == "clean"
+    assert summary["blocking_count"] == 0
 
 
 def test_declared_unit_plans_are_forward_outputs(tmp_path: Path) -> None:

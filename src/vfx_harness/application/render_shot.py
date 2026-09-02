@@ -37,7 +37,7 @@ from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot, load_shot
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration import authority_selection, layer_publication
+from vfx_harness.orchestration import authority_selection, layer_publication, run_owner_boundary
 from vfx_harness.orchestration.authority_selection_heads import (
     AuthoritySelectionHeadError,
     read_authority_selection_heads,
@@ -721,7 +721,7 @@ def main() -> None:
                     help="render even if layers are missing or unaccepted (preview only)")
     args = ap.parse_args()
     shot = load_shot(args.folder)
-    with run_artifacts.invocation(shot.folder, "render", shot_id=shot.id,
+    with run_owner_boundary.invocation(shot.folder, "render", shot_id=shot.id,
                                   parameters={"upto": args.upto, "scale": args.scale}):
         try:
             render_mp4(shot, args.upto, scale=args.scale, blender=args.blender,

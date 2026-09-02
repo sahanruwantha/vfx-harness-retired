@@ -19,7 +19,7 @@ from vfx_harness.domain.run_interruption_records import INTERRUPTION_RECEIPT_LOC
 from vfx_harness.domain.run_status import INTERRUPTION_RECEIPT_EVALUATION_LOCATOR
 from vfx_harness.evaluation import run_interruption as evaluator
 from vfx_harness.observability.run_owner_fence import acquire_run_owner_fence
-from vfx_harness.orchestration import run_interruption_terminalizer as terminalizer
+from vfx_harness.orchestration import run_terminalizer as terminalizer
 
 
 def _sha(payload: bytes) -> str:

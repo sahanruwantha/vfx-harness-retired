@@ -27,6 +27,7 @@ from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.provenance import check as provenance_check
+from vfx_harness.orchestration import run_owner_boundary
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     resolve_selected_authority,
@@ -268,7 +269,7 @@ def main() -> None:
     args = ap.parse_args()
     request = _prepare_build_request(args.folder, args.layer, force=args.force)
     shot = request.shot
-    with builder_execution_fence(shot.folder) as fence_lease, run_artifacts.invocation(
+    with builder_execution_fence(shot.folder) as fence_lease, run_owner_boundary.invocation(
         shot.folder,
         "build",
         shot_id=shot.id,

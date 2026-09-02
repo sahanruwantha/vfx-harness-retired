@@ -16,14 +16,13 @@ import json
 import mimetypes
 import os
 import re
-import sys
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from vfx_harness.domain.environment_results import EnvironmentResult
+from vfx_harness.domain.run_status import RUN_STATUS_SCHEMA, RunStatusV2
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import (
     StopCause,
@@ -40,10 +39,18 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
 )
 from vfx_harness.observability import unclassified_authority
+from vfx_harness.observability.run_owner_fence import RunOwnerFenceError, read_run_owner_claim
+from vfx_harness.observability.run_owner_manifest import (
+    RUN_DISPATCH_SCHEMA,
+    RUN_MANIFEST_LAYOUT,
+    RUN_MANIFEST_SCHEMA,
+    RunOwnerManifestError,
+    parse_run_owner_manifest,
+)
 from vfx_harness.observability.runid import RUN_ID
 
 ENV = "VFXH_RUN_DIR"
-SCHEMA = "vfx-harness.run/v1"
+SCHEMA = RUN_MANIFEST_SCHEMA
 LATEST_SCHEMA = "vfx-harness.latest-run/v1"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _RESERVED_STATUS_FIELDS = {"schema", "run_id", "state", "updated_at", "exit_code", "detail"}
@@ -186,29 +193,6 @@ class RunLayout:
     def relative(self, path: str | Path) -> str:
         return Path(path).resolve().relative_to(self.shot).as_posix()
 
-    def set_status(
-        self,
-        state: str,
-        *,
-        exit_code: int | None = None,
-        detail: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> None:
-        rec: dict[str, Any] = {
-            "schema": SCHEMA,
-            "run_id": self.run_id,
-            "state": state,
-            "updated_at": _now(),
-        }
-        if exit_code is not None:
-            rec["exit_code"] = int(exit_code)
-        if detail:
-            rec["detail"] = str(detail)[:1000]
-        if metadata:
-            rec.update({key: value for key, value in metadata.items() if key not in _RESERVED_STATUS_FIELDS})
-        _atomic_json(self.status, rec)
-        _write_latest(self, state=state)
-
     def write_inventory(self) -> Path:
         """Publish a compact file catalog so readers never have to infer artifact roles."""
         rows = []
@@ -341,24 +325,48 @@ class RunLayout:
                 f"found={observed_digest}"
             )
 
+    def read_prepared_stop(self) -> StopEnvelope:
+        """Read the stop envelope a stage prepared and verify every cited evidence byte.
+
+        A stage inherited inside a driver run publishes only this typed envelope; the
+        root owner consumes it here before selecting the terminal status itself.
+        """
+
+        envelope = self.read_stop_envelope()
+        for evidence in envelope.evidence_refs:
+            self._verify_stop_evidence(evidence)
+        return envelope
+
     def read_terminal_stop(self) -> StopEnvelope:
-        """Resolve terminal authority and every cited evidence byte fail closed."""
+        """Resolve terminal failure authority and every cited evidence byte fail closed."""
+
         try:
             status = json.loads(self.status.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"no readable terminal status at {self.status}") from exc
-        if not isinstance(status, dict) or status.get("schema") != SCHEMA:
-            raise ValueError("terminal status has an unsupported run schema")
+        if not isinstance(status, dict) or status.get("schema") != RUN_STATUS_SCHEMA:
+            raise ValueError("terminal status has an unsupported run-status schema")
         if status.get("run_id") != self.run_id:
             raise ValueError("terminal status names another run")
-        if status.get("state") not in {"failed", "interrupted"}:
-            raise ValueError(f"run status is not terminally unaccepted: {status.get('state')!r}")
-        if status.get("stop_envelope") != "reports/stop-envelope.json":
-            raise ValueError("terminal status does not select a stop envelope")
+        state = status.get("state")
+        if state == "interrupted":
+            raise ValueError(
+                "an interrupted run selects no stop envelope; read it through the interruption reader"
+            )
+        if state != "failed":
+            raise ValueError(f"run status is not terminally unaccepted: {state!r}")
         digest = status.get("stop_envelope_digest")
         if not isinstance(digest, str):
             raise ValueError("terminal status has no stop-envelope digest")
         envelope = self.read_stop_envelope(expected_digest=digest)
+        owner_digest = status.get("owner_claim_digest")
+        if not isinstance(owner_digest, str):
+            raise ValueError("terminal status retains no owner claim digest")
+        try:
+            owner = read_run_owner_claim(self.root, run_id=self.run_id, expected_digest=owner_digest)
+        except RunOwnerFenceError as exc:
+            raise ValueError(f"terminal status owner claim cannot be source-verified: {exc}") from exc
+        RunStatusV2.from_dict(status, selected_record=envelope, owner=owner, where="terminal status")
         for evidence in envelope.evidence_refs:
             self._verify_stop_evidence(evidence)
         return envelope
@@ -368,10 +376,20 @@ def create(
     shot_folder: str | Path,
     run_id: str,
     *,
+    command: str = "plan",
+    dispatch_kind: str = "direct",
     shot_id: str | None = None,
-    argv: list[str] | None = None,
+    arguments: list[str] | None = None,
     parameters: dict[str, Any] | None = None,
 ) -> RunLayout:
+    """Create one prepared v2 run: its directories, closed manifest, and inventory.
+
+    The manifest's typed dispatch discriminant is the only source of the run's public
+    command and owner kind; it is validated through the same strict parser the owner
+    claim reader uses.  A prepared run has no owner claim and no status until the root
+    owner boundary acquires its fence and publishes ``running`` (HIR-0172).
+    """
+
     shot = Path(shot_folder).expanduser().resolve()
     rid = _validate_run_id(run_id)
     layout = RunLayout(shot=shot, run_id=rid, root=shot / "runs" / rid)
@@ -393,53 +411,72 @@ def create(
         "shot_id": shot_id or shot.name,
         "started_at": _now(),
         "invocation": {
-            "argv": list(argv if argv is not None else sys.argv),
-            "parameters": parameters or {},
+            "dispatch": {
+                "schema": RUN_DISPATCH_SCHEMA,
+                "kind": dispatch_kind,
+                "command": command,
+            },
+            "argv": [f"vfx {command}", *(arguments if arguments else [str(shot)])],
+            "parameters": dict(parameters or {}),
         },
-        "layout": {
-            "status": "status.json",
-            "artifact_index": "artifacts.json",
-            "logs": "logs/",
-            "reports": "reports/",
-            "evidence": "evidence/",
-            "checkpoints": "checkpoints/",
-            "scratch": "scratch/",
-            "deliverables": "deliverables/",
-        },
+        "layout": dict(RUN_MANIFEST_LAYOUT),
         "authority": {
             "authored_inputs": "../../brief.md and ../../refs/",
             "published_plan": "../../plans/current.json when present",
             "plan_authoring_workspace": "scratch/plan-workspace/ for global plan invocations",
-            "selected_plan_consumers": (
-                "../../plans/current.json; pointer-less archived fixtures only use compatibility reads"
-            ),
+            "selected_plan_consumers": "../../plans/current.json",
             "accepted_build": "../../build/ and ../../shot.json",
             "generated_output": "this directory",
         },
         "reader_entrypoint": "manifest.json",
     }
+    payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        parse_run_owner_manifest(payload, run_id=rid)
+    except RunOwnerManifestError as exc:
+        raise ValueError(f"run manifest is not a valid {SCHEMA} owner manifest: {exc}") from exc
     _atomic_json(layout.manifest, manifest)
-    layout.set_status("running")
     layout.write_inventory()
     return layout
+
+
+_STAGE_OWNER_COMMANDS = {
+    "plan": "plan",
+    "plan-layer": "plan",
+    "plan-lab": "plan",
+    "direct-stage": "plan",
+    "build": "build",
+    "layer-report": "build",
+    "blender-session": "build",
+    "script-checkpoint": "build",
+    "metrics-feedback": "build",
+    "accept": "accept",
+    "acceptance": "accept",
+    "render": "render",
+}
 
 
 def ensure(
     shot_folder: str | Path, run_id: str | None = None, *, shot_id: str | None = None, command: str = "direct-stage"
 ) -> RunLayout:
-    """Return the inherited run or create a strict structured run for a direct stage."""
+    """Return the inherited run, or create a prepared run for a stage outside a boundary.
+
+    ``command`` is the stage's closed name; it maps to the public owner command the
+    manifest dispatch records.  An unknown stage name fails closed.
+    """
+
     current = active(shot_folder)
     if current:
         return current
+    owner_command = _STAGE_OWNER_COMMANDS.get(command)
+    if owner_command is None:
+        raise ValueError(
+            f"stage {command!r} has no public owner command; expected one of "
+            f"{sorted(_STAGE_OWNER_COMMANDS)}"
+        )
     if run_id is None:
         run_id = RUN_ID
-    return create(
-        shot_folder,
-        run_id,
-        shot_id=shot_id,
-        argv=list(sys.argv),
-        parameters={"command": command, "direct": True},
-    )
+    return create(shot_folder, run_id, command=owner_command, shot_id=shot_id)
 
 
 def _unclassified_authoritative_state(layout: RunLayout, command: str) -> dict[str, Any]:
@@ -625,7 +662,7 @@ def missing_boundary_stop(
     )
 
 
-def _publish_exception_stop(
+def publish_exception_stop(
     layout: RunLayout,
     command: str,
     exc: BaseException,
@@ -648,10 +685,11 @@ def _publish_exception_stop(
     return candidate
 
 
-def _terminal_record(exc: BaseException) -> tuple[str, int, str, str]:
+def terminal_record(exc: BaseException) -> tuple[str, int, str, str]:
     """Classify a failed invocation without reducing distinct stops to exit code 1."""
     if isinstance(exc, KeyboardInterrupt):
-        return "interrupted", 130, "interrupted", "interrupted by operator"
+        # A cancellation with no recorded signal intent is not an operator interruption.
+        return "failed", 130, "cancelled_without_intent", "cancelled without a recorded signal intent"
 
     code = exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) else 1
     cause = str(getattr(exc, "terminal_cause", "") or "")
@@ -679,94 +717,6 @@ def _terminal_record(exc: BaseException) -> tuple[str, int, str, str]:
             "plan_budget_exhausted": "plan repair budget exhausted",
         }.get(cause, exc.__class__.__name__)
     return "failed", int(code), cause, detail
-
-
-@contextmanager
-def invocation(
-    shot_folder: str | Path, command: str, *, shot_id: str | None = None, parameters: dict[str, Any] | None = None
-):
-    """Give a direct CLI stage a terminal run record; inherited driver runs stay open."""
-    inherited = active(shot_folder)
-    layout = inherited or create(
-        shot_folder,
-        os.environ.get("VFXH_RUN_ID") or _direct_run_id(),
-        shot_id=shot_id,
-        parameters={"command": command, "direct": True, **(parameters or {})},
-    )
-    try:
-        yield layout
-    except BaseException as exc:
-        state, code, terminal_cause, detail = _terminal_record(exc)
-        try:
-            envelope = _publish_exception_stop(
-                layout,
-                command,
-                exc,
-                code=code,
-                terminal_cause=terminal_cause,
-            )
-        except Exception as publish_exc:
-            state = "failed"
-            code = 1
-            detail = f"stop-envelope publication failed: {publish_exc}"
-            metadata = {
-                key: value
-                for key, value in {
-                    **layout.terminal_metadata,
-                    "terminal_cause": "stop_envelope_publication_failure",
-                    "stop_envelope_state": "unavailable",
-                }.items()
-                if key not in _RESERVED_STATUS_FIELDS
-            }
-        else:
-            metadata = {
-                key: value
-                for key, value in {
-                    **layout.terminal_metadata,
-                    **getattr(exc, "run_metadata", {}),
-                    # Retained as diagnostic compatibility only. Dispatch authority is
-                    # the strict envelope and its stop_class, never this legacy field.
-                    "terminal_cause": terminal_cause,
-                    "stop_envelope": "reports/stop-envelope.json",
-                    "stop_envelope_digest": envelope.digest,
-                    "stop_class": envelope.stop_class,
-                    "stop_stage": envelope.stage,
-                    "cause_fingerprint": envelope.cause_fingerprint,
-                }.items()
-                if key not in _RESERVED_STATUS_FIELDS
-            }
-        layout.set_status(state, exit_code=code, detail=detail, metadata=metadata)
-        if inherited is None:
-            layout.write_summary(
-                {
-                    "schema": "vfx-harness.run-summary/v1",
-                    "run_id": layout.run_id,
-                    "command": command,
-                    "state": state,
-                    "exit_code": code,
-                    "detail": detail[:1000],
-                    **metadata,
-                }
-            )
-        layout.write_inventory()
-        raise
-    else:
-        if inherited is None:
-            metadata = {
-                key: value for key, value in layout.terminal_metadata.items() if key not in _RESERVED_STATUS_FIELDS
-            }
-            layout.set_status("passed", exit_code=0, metadata=metadata)
-            layout.write_summary(
-                {
-                    "schema": "vfx-harness.run-summary/v1",
-                    "run_id": layout.run_id,
-                    "command": command,
-                    "state": "passed",
-                    "exit_code": 0,
-                    **metadata,
-                }
-            )
-            layout.write_inventory()
 
 
 def _direct_run_id() -> str:

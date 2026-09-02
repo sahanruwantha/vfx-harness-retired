@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from vfx_harness.domain.authority_head_records import canonical_json_bytes
+from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.run_artifacts import RunLayout
 from vfx_harness.orchestration import (
@@ -459,13 +460,16 @@ def promote_candidate(
         raise PlanPublicationError(f"source planning run does not exist: {source_run_id}")
     try:
         source_status = json.loads(source_layout.status.read_text(encoding="utf-8"))
+        source_summary = json.loads((source_layout.reports / "summary.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise PlanPublicationError("source planning run has no readable terminal status") from exc
-    if source_status.get("state") != "passed" or source_status.get("outcome") not in {
-        "clean",
-        "clean_with_assumptions",
-        "clean_with_deferred",
-    }:
+        raise PlanPublicationError("source planning run has no readable terminal status and summary") from exc
+    if (
+        not isinstance(source_status, dict)
+        or source_status.get("state") != "passed"
+        or not isinstance(source_summary, dict)
+        or source_status.get("summary_digest") != canonical_digest(source_summary)
+        or source_summary.get("outcome") not in {"clean", "clean_with_assumptions", "clean_with_deferred"}
+    ):
         raise PlanPublicationError("only a terminal gate-clean planning run can be promoted")
 
     source = prepare_staging(source_layout)

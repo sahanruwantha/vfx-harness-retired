@@ -25,12 +25,11 @@ typed stop envelope; a missing child envelope fails closed as a harness defect.
 from __future__ import annotations
 
 import argparse
-import atexit
-import json
 import os
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from vfx_harness.application.inspect_run import collect
@@ -38,11 +37,12 @@ from vfx_harness.application.preflight import environment_result, environment_st
 from vfx_harness.application.preflight import probe as preflight_probe
 from vfx_harness.application.preflight import report as preflight_report
 from vfx_harness.domain.brief import load_shot
+from vfx_harness.domain.run_status import RUN_SUMMARY_SCHEMA
 from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.runid import RUN_ID
-from vfx_harness.orchestration import authority_selection, layer_publication
+from vfx_harness.orchestration import authority_selection, layer_publication, run_owner_boundary, run_terminalizer
 from vfx_harness.orchestration.selected_layer_chain import (
     selected_layer_chain,
 )
@@ -96,92 +96,79 @@ def _selected_run_layers(shot):
     )
 
 
-def _publish_summary(layout: run_artifacts.RunLayout) -> None:
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds")
+
+
+def _publish_summary(layout: run_artifacts.RunLayout, *, state: str, exit_code: int) -> dict:
+    """Publish the run summary the terminal status selects; the digest binds these bytes."""
+
     try:
-        layout.write_summary(collect(layout.shot, run_id=layout.run_id))
+        collected = collect(layout.shot, run_id=layout.run_id)
     except Exception as exc:
-        log(f"! run summary could not be published: {str(exc)[:160]}", 1)
+        log(f"! run summary could not be collected: {str(exc)[:160]}", 1)
+        collected = {"collection_error": str(exc)[:1000]}
+    summary = {
+        **collected,
+        "schema": RUN_SUMMARY_SCHEMA,
+        "run_id": layout.run_id,
+        "command": "run",
+        "state": state,
+        "exit_code": exit_code,
+    }
+    layout.write_summary(summary)
+    return summary
 
 
-def _stop(layout: run_artifacts.RunLayout, code: int, envelope: StopEnvelope) -> None:
+def _stop(
+    layout: run_artifacts.RunLayout,
+    lease: run_owner_boundary.RunOwnerFenceLease,
+    code: int,
+    envelope: StopEnvelope,
+) -> None:
     layout.write_stop_envelope(envelope)
     detail = f"{envelope.stop_class}: {envelope.found} {envelope.next_action}"
-    layout.set_status(
-        "failed",
-        exit_code=code,
-        detail=detail,
-        metadata={
+    summary = _publish_summary(layout, state="failed", exit_code=code)
+    summary.update(
+        {
+            "detail": detail[:1000],
             "terminal_cause": envelope.stop_class,
             "stop_envelope": "reports/stop-envelope.json",
             "stop_envelope_digest": envelope.digest,
             "stop_class": envelope.stop_class,
             "stop_stage": envelope.stage,
             "cause_fingerprint": envelope.cause_fingerprint,
-        },
+        }
     )
-    _publish_summary(layout)
+    layout.write_summary(summary)
+    run_terminalizer.publish_failed_status(
+        layout.root,
+        lease=lease,
+        envelope=envelope,
+        exit_code=code,
+        updated_at=_now(),
+        detail=detail[:1000],
+    )
     layout.write_inventory()
     raise SystemExit(code)
 
 
 def _stop_after_stage(
     layout: run_artifacts.RunLayout,
+    lease: run_owner_boundary.RunOwnerFenceLease,
     code: int,
     boundary: str,
 ) -> None:
-    """Consume only the child-selected envelope; never dispatch from its exit code."""
+    """Consume only the child-prepared envelope; never dispatch from its exit code."""
     try:
-        envelope = layout.read_terminal_stop()
+        envelope = layout.read_prepared_stop()
     except ValueError:
         envelope = run_artifacts.missing_boundary_stop(
             layout,
             boundary,
             exit_code=code,
         )
-    _stop(layout, code, envelope)
-
-
-def _mark_interrupted(layout: run_artifacts.RunLayout) -> None:
-    """Seal an otherwise-unclassified driver exit before the atexit boundary closes."""
-    try:
-        current = json.loads(layout.status.read_text(encoding="utf-8"))
-        if current.get("state") != "running":
-            return
-    except (OSError, json.JSONDecodeError):
-        pass
-    try:
-        envelope = run_artifacts.missing_boundary_stop(
-            layout,
-            "run-driver-interruption",
-            exit_code=130,
-        )
-        layout.write_stop_envelope(envelope)
-    except Exception as exc:
-        layout.set_status(
-            "failed",
-            exit_code=1,
-            detail=f"stop-envelope publication failed during driver interruption: {exc}",
-            metadata={
-                "terminal_cause": "stop_envelope_publication_failure",
-                "stop_envelope_state": "unavailable",
-            },
-        )
-    else:
-        layout.set_status(
-            "interrupted",
-            exit_code=130,
-            detail="driver exited without a terminal result",
-            metadata={
-                "terminal_cause": "interrupted",
-                "stop_envelope": "reports/stop-envelope.json",
-                "stop_envelope_digest": envelope.digest,
-                "stop_class": envelope.stop_class,
-                "stop_stage": envelope.stage,
-                "cause_fingerprint": envelope.cause_fingerprint,
-            },
-        )
-    _publish_summary(layout)
-    layout.write_inventory()
+    _stop(layout, lease, code, envelope)
 
 
 def _run(args: list[str], *, dry: bool, tee: Path | None = None) -> int:
@@ -240,7 +227,10 @@ def main() -> None:
     layout = run_artifacts.create(
         shot.folder,
         RUN_ID,
+        command="run",
+        dispatch_kind="driver",
         shot_id=shot.id,
+        arguments=[a.folder],
         parameters={
             "from_layer": a.start,
             "upto_layer": a.upto,
@@ -252,11 +242,32 @@ def main() -> None:
         },
     )
 
+    with (
+        run_owner_boundary.owned_root_run(layout, command="run", owner_kind="driver") as lease,
+        run_owner_boundary.signal_intent_scope(),
+    ):
+        try:
+            _drive(a, shot, layout, lease)
+        except run_owner_boundary.RunCancellation as cancellation:
+            raise run_owner_boundary.terminalize_cancellation(
+                shot.folder,
+                layout,
+                lease,
+                cancellation,
+            ) from None
+
+
+def _drive(
+    a: argparse.Namespace,
+    shot,
+    layout: run_artifacts.RunLayout,
+    lease: run_owner_boundary.RunOwnerFenceLease,
+) -> None:
     preflight_raw = preflight_probe(a.blender)
     preflight = environment_result(preflight_raw)
     if not preflight.ok:
         log(preflight_report(preflight_raw))
-        _stop(layout, 1, environment_stop(layout, preflight))
+        _stop(layout, lease, 1, environment_stop(layout, preflight))
     a.blender = str(preflight_raw["blender"]["resolved"])
 
     selected_authority, chain, layers = _selected_run_layers(shot)
@@ -271,7 +282,6 @@ def main() -> None:
             f"(have: {', '.join(layers)})"
         )
 
-    atexit.register(_mark_interrupted, layout)
     verified_passed = _receipt_backed_passed_layers(
         shot,
         layers,
@@ -310,12 +320,12 @@ def main() -> None:
                    "--layer", lid, "--blender", a.blender], dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ layer {lid} planning exited {rc}; build was not started")
-            _stop_after_stage(layout, rc, f"layer-{lid}-planning")
+            _stop_after_stage(layout, lease, rc, f"layer-{lid}-planning")
         rc = _run([py, "-m", "vfx_harness.evaluation.cli", "plan", str(shot.folder)],
                   dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ layer {lid} plan did not clear the deterministic gate")
-            _stop_after_stage(layout, rc, f"layer-{lid}-plan-gate")
+            _stop_after_stage(layout, lease, rc, f"layer-{lid}-plan-gate")
         rc = _run([py, "-m", "vfx_harness.agents.builder", str(shot.folder),
                    "--layer", lid, "--rounds", str(a.rounds), "--blender", a.blender],
                   dry=a.dry_run, tee=console)
@@ -325,7 +335,7 @@ def main() -> None:
             log(f"✗ layer {lid} exited {rc}: {_MEANING.get(rc, 'unknown')}")
             log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
                 f"Fix, then resume with --from {lid}")
-            _stop_after_stage(layout, rc, f"layer-{lid}-builder")
+            _stop_after_stage(layout, lease, rc, f"layer-{lid}-builder")
 
         if a.dry_run:
             status = "pending"
@@ -361,14 +371,14 @@ def main() -> None:
                     f"See {layout.reports}/layers/layer-{lid}.json, then resume with "
                     f"--from {lid}"
                 )
-                _stop_after_stage(layout, 9, f"layer-{lid}-finalization-publication")
+                _stop_after_stage(layout, lease, 9, f"layer-{lid}-finalization-publication")
             status = publication.ledger_status
         if not _can_advance(status, dry_run=a.dry_run):
             log(f"✗ layer {lid} finished cleanly but its verdict is '{status}' — not "
                 f"building on it")
             log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
                 f"See {layout.reports}/layers/layer-{lid}.json, then resume with --from {lid}")
-            _stop_after_stage(layout, 9, f"layer-{lid}-ledger-verdict")
+            _stop_after_stage(layout, lease, 9, f"layer-{lid}-ledger-verdict")
         if a.dry_run:
             log(f"↷ layer {lid} would run (ledger remains '{status}')")
             continue
@@ -380,7 +390,7 @@ def main() -> None:
                    "--blender", a.blender], dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ acceptance exited {rc}: {_MEANING.get(rc, 'unknown')}")
-            _stop_after_stage(layout, rc, "acceptance")
+            _stop_after_stage(layout, lease, rc, "acceptance")
 
     if not a.skip_render:
         log("════ RENDER ════")
@@ -389,7 +399,7 @@ def main() -> None:
                   dry=a.dry_run, tee=console)
         if rc:
             log(f"✗ render exited {rc}: {_MEANING.get(rc, 'unknown')}")
-            _stop_after_stage(layout, rc, "render")
+            _stop_after_stage(layout, lease, rc, "render")
 
     # Legacy queue rows are deliberately inert: they do not bind an immutable unit
     # completion receipt, canonical script digest, or selected authority.  Never invoke
@@ -402,10 +412,15 @@ def main() -> None:
 
     log(f"run {RUN_ID} finished in {(time.monotonic() - t0) / 60:.0f} min")
     terminal_state = "dry-run" if a.dry_run else "passed"
-    layout.set_status(terminal_state, exit_code=0)
-    _publish_summary(layout)
+    summary = _publish_summary(layout, state=terminal_state, exit_code=0)
+    run_terminalizer.publish_passed_status(
+        layout.root,
+        lease=lease,
+        summary=summary,
+        updated_at=_now(),
+        state=terminal_state,
+    )
     layout.write_inventory()
-    atexit.unregister(_mark_interrupted)
     log(f"  manifest:          {layout.manifest}")
     log(f"  artifact index:    {layout.inventory}")
     log(f"  per-layer reports: {layout.reports / 'layers'}/*.json")

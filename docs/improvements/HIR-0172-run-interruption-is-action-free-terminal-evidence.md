@@ -93,9 +93,10 @@ for the layer-finalization artifact/replay/evaluation/outcome chain and every ca
 strict accepted-build authority. Other sanctioned writers are not all migrated to their actual
 inner lock and sink. The foundation now implements the strict ledger derivation boundary, the
 fence-held capture into a run-owned archive, the independent source-verifying evaluator, and the
-exactly-once terminal commit path with its source-verifying interrupted reader; public signal
-integration, owner-loss reconciliation, capability-bound issuance, and authored/refobs capture
-remain unimplemented.
+exactly-once terminal commit path with its source-verifying interrupted reader, and the
+root-owner boundary that mints every public run as the v2 generation and terminalizes recorded
+SIGINT/SIGTERM intent; owner-loss reconciliation, capability-bound issuance, authored/refobs
+capture, and the process-level signal and fork matrices remain unimplemented.
 The two selected record locators are already closed to
 `reports/interruption-receipt.json` and
 `reports/interruption-receipt-evaluation.json`; alternate nearby files have no authority.
@@ -313,6 +314,28 @@ archive no longer verifies has interruption authority unavailable even though it
 selected. A death before status selection leaves the run running with its prepared records and
 the terminalizer refuses to mint a second semantic receipt. The lease is checked live before
 the receipt and before the status are published, and nothing here mutates shot authority.
+
+#### Root-owner boundary and the v2 run generation
+
+The v1 run generation is replaced rather than kept beside v2. `run_artifacts.create` now
+writes only the closed `vfx-harness.run/v2` manifest whose typed dispatch discriminant is the
+sole source of the public command and owner kind, validated through the same strict parser the
+owner claim reader uses; a prepared run has no status until it is owned. The direct-command
+boundary creates the run, acquires the exclusive run-owner fence, publishes the v2 `running`
+status that selects the claim, and installs SIGINT/SIGTERM handlers on the main thread that
+record the first intent and request cancellation by raising; later deliveries are counted and
+otherwise ignored so they converge on one receipt, and the handlers are restored on exit. On
+success the boundary publishes the run summary and selects it as `passed`; on any other
+exception it publishes the typed stop envelope (or, when that publication itself fails, a
+harness-defect envelope about the failure) and selects it as `failed`; on a recorded intent it
+terminalizes the interruption and exits with the receipt's code. A cancellation with no
+recorded intent is a failure with exit 130, never an interruption. A stage inherited inside a
+driver run publishes only its typed stop envelope; the driver consumes that prepared envelope
+and selects every terminal status itself, and the whole-shot driver owns its run the same way
+with the `driver` dispatch. `status.json` carries only the selected record locators and digests;
+terminal diagnostics such as `terminal_cause` and `stop_class` live in `reports/summary.json`,
+which the passed status binds by digest and promotion reads for the plan outcome. Prior-generation
+runs fail closed in every reader.
 
 #### Fork-safe descriptor ownership and kernel-proven consumer directories
 
@@ -655,6 +678,10 @@ recovery controller or an authority-state transaction.
 | The process dies after the evaluation publishes but before status selection | The run stays running with receipt and evaluation prepared; a repeat terminalization refuses a second receipt |
 | An archived object changes after an interrupted status commits | The reader refuses with the closure no longer verifying; the status file alone grants nothing |
 | The run has no status, a v1 running status, or the owner asks to terminalize `owner_lost` | Each refuses before any record is minted |
+| A direct public invocation completes, fails, or receives SIGINT/SIGTERM in its body | The run is the v2 generation with an owner claim; `passed` selects the summary, `failed` selects the typed stop envelope and reads back through the claim, and a recorded intent yields an `interrupted` status with exit 130 or 143, a satisfied receipt, and a restored default handler |
+| A second signal arrives while the first intent drains | One receipt, one terminal status, and the delivery is only counted |
+| `KeyboardInterrupt` is raised with no recorded intent | The run fails with exit 130 and `cancelled_without_intent`; no receipt is minted |
+| A stage fails inside a driver run | The stage publishes only its typed stop envelope; the root run's running status is untouched until the driver selects the terminal status |
 
 The key regression is a real subprocess test, not a raised exception inside the context manager:
 enter the public direct invocation, publish kickoff, block in an external-session-shaped AnyIO

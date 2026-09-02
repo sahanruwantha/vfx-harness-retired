@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ import anyio
 import pytest
 
 from tests.materialization_support import attest_exact_materialization_view
+from tests.run_owner_support import owned_run, pass_run
 from vfx_harness.agents.guardrails import selected_plan_read_guard
 from vfx_harness.agents.plan_guardrails import (
     format_staged_relative_reads,
@@ -992,15 +994,15 @@ def test_candidate_promotion_is_new_run_owned_and_model_free(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     (tmp_path / "brief.md").write_text("# brief\n", encoding="utf-8")
     (tmp_path / "refs").mkdir()
-    source_layout = run_artifacts.create(tmp_path, "source-plan")
+    stack = ExitStack()
+    source_layout, source_lease = stack.enter_context(owned_run(tmp_path, "source-plan"))
     source = prepare_staging(source_layout)
     _write_plan(source)
     nested = source / "plans" / "01_camera" / "00_blockout.md"
     nested.parent.mkdir(parents=True)
     nested.write_text("# immutable blockout\n" + "step\n" * 40, encoding="utf-8")
-    source_layout.set_status(
-        "passed", exit_code=0, metadata={"outcome": "clean_with_assumptions"}
-    )
+    pass_run(source_layout, source_lease, extra={"outcome": "clean_with_assumptions"})
+    stack.close()
 
     class CleanGate:
         def __init__(self) -> None:

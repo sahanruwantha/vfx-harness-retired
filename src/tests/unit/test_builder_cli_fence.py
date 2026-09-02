@@ -108,7 +108,7 @@ def test_cli_owns_one_fence_before_run_root_and_blender_start(
             else pytest.fail("CLI passed the wrong live fence lease")
         ),
     )
-    monkeypatch.setattr(builder_cli.run_artifacts, "invocation", invocation)
+    monkeypatch.setattr(builder_cli.run_owner_boundary, "invocation", invocation)
     monkeypatch.setattr(
         builder_cli,
         "ensure_construction_read_namespace",

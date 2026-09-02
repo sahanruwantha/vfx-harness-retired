@@ -88,6 +88,15 @@ live in the linked Harness Improvement Records.
   transaction-receipt producer/consumer, commit reconciliation, automatic dispatch,
   safe resume producer, or proven local-implementation retry producer
   ([HIR-0164](docs/improvements/HIR-0164-closed-stop-envelopes-precede-recovery-dispatch.md)).
+- Every public run is now the `vfx-harness.run/v2` generation and the v1 writers are gone: the
+  manifest carries a typed dispatch discriminant, the root owner acquires its claim and fence
+  before publishing a `vfx-harness.run-status/v2` running status, SIGINT and SIGTERM record
+  intent and terminalize an `interrupted` run with exit 130 or 143, passed runs select their
+  summary and failed runs their typed stop envelope by digest, and terminal diagnostics such
+  as `terminal_cause` move from `status.json` to `reports/summary.json`. Stages inside a driver
+  publish only their typed stop, which the driver consumes before selecting the terminal status.
+  Prior-generation runs fail closed in every reader
+  ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - Interrupted runs now commit exactly once through the terminalizer: the root owner, holding
   its live fence, captures the authority observation, publishes the receipt, lets the
   independent evaluator reopen the archive, and then publishes the evaluation, an interruption

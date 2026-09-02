@@ -335,6 +335,10 @@ For the latest run, read:
    An interrupted v2 run selects `reports/interruption-receipt.json` and its satisfied
    `reports/interruption-receipt-evaluation.json` by exact digest; that status authorizes no
    transaction, and its reader re-evaluates the run-owned archive before trusting it (HIR-0172).
+   Every run is the `vfx-harness.run/v2` generation: `status.json` is `run-status/v2` with only the
+   selected record locators and digests, `reports/summary.json` carries `terminal_cause` and the
+   plan `outcome`, and Ctrl-C or SIGTERM on a public command ends the run as `interrupted` with
+   exit 130 or 143 and a source-verified receipt rather than a generic failure.
 4. `runs/<run-id>/reports/summary.json` — decisions, findings, cost, and trajectory.
 5. `runs/<run-id>/artifacts.json` — exact catalog for locating supporting detail.
 

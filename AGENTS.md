@@ -43,7 +43,10 @@ operation.
   downstream work past it. `--force` is a bounded debugging experiment, never a deliverable.
 - Reading order after any invocation: `runs/latest.json`, then the selected run's
   `manifest.json`, `status.json`, `reports/summary.json`, `artifacts.json`. Fail closed on an
-  unsupported manifest schema. For an unaccepted terminal run, `status.json` selects
+  unsupported manifest schema. Every run is the `vfx-harness.run/v2` generation owned by a claim
+  and fence; `status.json` is `vfx-harness.run-status/v2` and holds only the selected record
+  locators and digests, terminal diagnostics such as `terminal_cause` live in
+  `reports/summary.json`, and prior-generation runs fail closed (HIR-0172). For an unaccepted terminal run, `status.json` selects
   `reports/stop-envelope.json` by exact digest; that closed envelope is machine dispatch
   authority. An interrupted v2 run selects `reports/interruption-receipt.json` and its
   satisfied evaluation by digest and authorizes no transaction. `status.json` `detail` and the exit-code digit are operator diagnostics only
@@ -138,7 +141,11 @@ operation.
   sources and transcripts captured under the shared shot-authority fence, and the independent
   evaluator derives `satisfied | failed` only by reopening that archive through the one domain
   source classification, never the live shot tree. A run without a readable receipt has no
-  evaluation. Only the terminalizer, holding the live root-owner fence, selects `interrupted`:
+  evaluation. The direct-command boundary and the whole-shot driver own every public run: they
+  acquire the run-owner fence before publishing `running`, record the first SIGINT/SIGTERM as
+  intent and cancel by raising, and select exactly one terminal status; a stage inherited inside
+  a driver publishes only its typed stop envelope, and a cancellation with no recorded intent is
+  a failure, never an interruption. Only the terminalizer, holding the live root-owner fence, selects `interrupted`:
   it captures, publishes the receipt, lets the evaluator reopen the archive, then publishes the
   evaluation, summary, inventory, terminal status, and latest projection exactly once, replacing
   the exact `running` bytes it observed; an unsatisfied evaluation leaves the run running with

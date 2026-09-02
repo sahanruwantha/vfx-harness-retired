@@ -325,9 +325,12 @@ HIR-0172 therefore has a strict prerequisite sequence, not a set of parallel bes
    fixture). The exactly-once terminal commit path now exists too: the root owner, holding its
    live fence, captures, publishes the receipt, lets the evaluator reopen the archive, then
    publishes evaluation, summary, inventory, terminal `interrupted` status, and the latest
-   projection, and the authoritative reader re-evaluates the archive; authored/refobs capture,
-   capability-bound issuance, public signal integration, owner-loss reconciliation, and the
-   process-level signal and fork matrices remain open.
+   projection, and the authoritative reader re-evaluates the archive. The root-owner boundary
+   now mints every public run as the v2 generation (the v1 manifest and status writers are
+   deleted, not kept beside v2), publishes the claim-selecting running status, records
+   SIGINT/SIGTERM intent, and terminalizes passed, failed, or interrupted; authored/refobs
+   capture, capability-bound issuance, owner-loss reconciliation, and the process-level signal
+   and fork matrices remain open.
 
 Until that sequence is complete, the HIR-0172 foundation is non-publishable by design. Byte hashes
 over a caller-enumerated list are insufficient, public CLI signal handling remains unintegrated,

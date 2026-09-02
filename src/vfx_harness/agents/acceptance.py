@@ -28,7 +28,7 @@ from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.infrastructure.config import load_environment
 from vfx_harness.observability import run_artifacts, transcript
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration import layer_publication, plan_due, shot_ledger_v2_derivation
+from vfx_harness.orchestration import layer_publication, plan_due, run_owner_boundary, shot_ledger_v2_derivation
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
     SelectedAuthorityResolutionError,
@@ -759,7 +759,7 @@ def main() -> None:
                          "does not identify an exact revision-checked unit transaction")
     args = ap.parse_args()
     shot = load_shot(args.folder)
-    with run_artifacts.invocation(shot.folder, "accept", shot_id=shot.id,
+    with run_owner_boundary.invocation(shot.folder, "accept", shot_id=shot.id,
                                   parameters={"moment": args.moment}):
         try:
             anyio.run(_run, args.folder, args.moment, args.blender, args.force,

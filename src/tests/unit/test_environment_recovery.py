@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.run_owner_support import fail_run, owned_run
 from vfx_harness.application import environment_recovery, preflight
 from vfx_harness.application.inspect_run import collect
 from vfx_harness.cli import _COMMANDS
@@ -94,18 +95,10 @@ def _source_stop(
     run_id: str = "failed-preflight",
 ) -> tuple[str, str]:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    layout = run_artifacts.create(shot, run_id)
-    result = preflight.environment_result(_failed_raw())
-    envelope = preflight.environment_stop(layout, result)
-    layout.write_stop_envelope(envelope)
-    layout.set_status(
-        "failed",
-        exit_code=1,
-        metadata={
-            "stop_envelope": "reports/stop-envelope.json",
-            "stop_envelope_digest": envelope.digest,
-        },
-    )
+    with owned_run(shot, run_id, command="run", dispatch_kind="driver") as (layout, lease):
+        result = preflight.environment_result(_failed_raw())
+        envelope = preflight.environment_stop(layout, result)
+        fail_run(layout, lease, envelope, exit_code=1)
     action = envelope.actions[0]
     key = action_idempotency_key(
         action,

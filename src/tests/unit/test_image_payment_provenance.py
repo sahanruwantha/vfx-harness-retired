@@ -55,7 +55,7 @@ def _payment_fixture(root: Path) -> tuple[dict, Path]:
     render_root = root / "runs" / run_id / "evidence" / "renders"
     render_root.mkdir(parents=True)
     (root / "runs" / run_id / "manifest.json").write_text(
-        json.dumps({"schema": "vfx-harness.run/v1", "run_id": run_id}),
+        json.dumps({"schema": "vfx-harness.run/v2", "run_id": run_id}),
         encoding="utf-8",
     )
     candidate = render_root / "unit_candidate_f0040.png"

@@ -19,7 +19,7 @@ from vfx_harness.agents.resilience import AgentSessionFailure
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
-from vfx_harness.orchestration import plan_authority
+from vfx_harness.orchestration import plan_authority, run_owner_boundary
 from vfx_harness.orchestration.layer_plans import (
     global_plan_path,
 )
@@ -339,9 +339,14 @@ def main() -> None:
         ap.error("--promote-run is a dedicated model-free transaction")
 
     shot = planner_package().load_shot(args.folder)
-    command = "plan-layer" if args.layer else ("plan-promote" if args.promote_run else "plan")
+    mode = "plan-layer" if args.layer else ("plan-promote" if args.promote_run else "plan")
     loop_result: PlanLoopResult | None = None
-    with run_artifacts.invocation(shot.folder, command, shot_id=shot.id) as layout:
+    with run_owner_boundary.invocation(
+        shot.folder,
+        "plan",
+        shot_id=shot.id,
+        parameters={"mode": mode},
+    ) as layout:
         if args.promote_run:
 
             bundle, gate_result, workspace = promote_candidate(

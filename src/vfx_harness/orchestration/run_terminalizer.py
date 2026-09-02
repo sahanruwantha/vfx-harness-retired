@@ -1,4 +1,4 @@
-"""Exactly-once terminal commit of an owned run interruption (HIR-0172).
+"""Exactly-once terminal commit of an owned run (HIR-0172).
 
 The root owner, still holding its exclusive run-owner fence, captures the authority
 observation under the shared shot-authority fence, publishes the receipt and its
@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,9 +32,12 @@ from vfx_harness.domain.run_owner_claims import RUN_OWNER_CLAIM_LOCATOR, RunOwne
 from vfx_harness.domain.run_record_refs import RunRecordRef
 from vfx_harness.domain.run_status import (
     INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
+    RUN_SUMMARY_LOCATOR,
+    STOP_ENVELOPE_LOCATOR,
     InterruptionReceiptEvaluation,
     RunStatusV2,
 )
+from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.evaluation import run_interruption as interruption_evaluation
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.run_interruption_archive import (
@@ -150,6 +153,82 @@ def publish_running_status(
         run_artifacts.RunLayout(shot=run.parent.parent, run_id=claim.run_id, root=run),
         state="running",
     )
+    return status
+
+
+def _commit_terminal_status(
+    run_root: Path,
+    *,
+    lease: RunOwnerFenceLease,
+    status: RunStatusV2,
+    running_bytes: bytes,
+) -> str:
+    """Replace the exact observed running bytes with one terminal status and project it."""
+
+    _require_owner_lease(lease, run_root)
+    payload = record_bytes(status)
+    _replace_status(run_root, payload, expected_current=running_bytes)
+    run_artifacts.write_latest_projection(
+        run_artifacts.RunLayout(shot=run_root.parent.parent, run_id=status.run_id, root=run_root),
+        state=status.state,
+    )
+    return _sha256(payload)
+
+
+def publish_passed_status(
+    run_root: str | Path,
+    *,
+    lease: RunOwnerFenceLease,
+    summary: Mapping[str, Any],
+    updated_at: str,
+    state: str = "passed",
+    detail: str | None = None,
+) -> RunStatusV2:
+    """Select the exact run summary as ``passed`` or ``dry-run`` terminal authority."""
+
+    run = Path(run_root).expanduser().absolute()
+    claim = _require_owner_lease(lease, run)
+    _running, running_bytes = _read_running_status(run, claim)
+    status = RunStatusV2.mint(
+        run_id=claim.run_id,
+        state=state,
+        updated_at=updated_at,
+        record_locator=RUN_SUMMARY_LOCATOR,
+        selected_record=summary,
+        detail=detail,
+        owner=claim,
+        owner_locator=RUN_OWNER_CLAIM_LOCATOR,
+    )
+    _commit_terminal_status(run, lease=lease, status=status, running_bytes=running_bytes)
+    return status
+
+
+def publish_failed_status(
+    run_root: str | Path,
+    *,
+    lease: RunOwnerFenceLease,
+    envelope: StopEnvelope,
+    exit_code: int,
+    updated_at: str,
+    detail: str | None = None,
+) -> RunStatusV2:
+    """Select one typed stop envelope as ``failed`` terminal authority."""
+
+    run = Path(run_root).expanduser().absolute()
+    claim = _require_owner_lease(lease, run)
+    _running, running_bytes = _read_running_status(run, claim)
+    status = RunStatusV2.mint(
+        run_id=claim.run_id,
+        state="failed",
+        updated_at=updated_at,
+        record_locator=STOP_ENVELOPE_LOCATOR,
+        selected_record=envelope,
+        exit_code=exit_code,
+        detail=detail,
+        owner=claim,
+        owner_locator=RUN_OWNER_CLAIM_LOCATOR,
+    )
+    _commit_terminal_status(run, lease=lease, status=status, running_bytes=running_bytes)
     return status
 
 
@@ -316,11 +395,8 @@ def terminalize_interruption(
         interruption_evaluation_locator=INTERRUPTION_RECEIPT_EVALUATION_LOCATOR,
         interruption_evaluation=evaluation,
     )
-    _require_owner_lease(lease, run)
-    payload = record_bytes(status)
-    _replace_status(run, payload, expected_current=running_bytes)
+    status_sha256 = _commit_terminal_status(run, lease=lease, status=status, running_bytes=running_bytes)
     _terminal_write_boundary("after_status_selection")
-    run_artifacts.write_latest_projection(layout, state="interrupted")
     _terminal_write_boundary("after_latest_projection")
     try:
         verified = interruption_evaluation.read_interrupted_run(shot, claim.run_id, verified_at=clock())
@@ -332,7 +408,7 @@ def terminalize_interruption(
         receipt=receipt,
         evaluation=evaluation,
         status=status,
-        status_sha256=_sha256(payload),
+        status_sha256=status_sha256,
     )
 
 
@@ -342,6 +418,8 @@ __all__ = [
     "RUN_STATUS_LOCATOR",
     "RunTerminalizationConflict",
     "TerminalizedInterruption",
+    "publish_failed_status",
+    "publish_passed_status",
     "publish_running_status",
     "terminalize_interruption",
 ]

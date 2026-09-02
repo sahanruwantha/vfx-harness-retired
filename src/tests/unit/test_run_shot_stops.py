@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.run_owner_support import fail_run, owned_run
 from vfx_harness.application import run_shot
 from vfx_harness.application.inspect_run import collect
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
@@ -24,6 +25,7 @@ from vfx_harness.domain.stop_transactions import (
     StopAction,
 )
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration import run_owner_boundary
 
 
 def test_passed_layer_skip_requires_current_terminal_publication(
@@ -187,26 +189,19 @@ def _child_stop(layout: run_artifacts.RunLayout) -> StopEnvelope:
 
 def test_driver_preserves_child_selected_stop_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    layout = run_artifacts.create(tmp_path, "driver-child-stop")
-    envelope = _child_stop(layout)
-    layout.write_stop_envelope(envelope)
-    layout.set_status(
-        "failed",
-        exit_code=9,
-        metadata={
-            "stop_envelope": "reports/stop-envelope.json",
-            "stop_envelope_digest": envelope.digest,
-        },
-    )
-    monkeypatch.setattr(run_shot, "_publish_summary", lambda _layout: None)
+    with owned_run(tmp_path, "driver-child-stop", command="run", dispatch_kind="driver") as (layout, lease):
+        envelope = _child_stop(layout)
+        layout.write_stop_envelope(envelope)
 
-    with pytest.raises(SystemExit) as raised:
-        run_shot._stop_after_stage(layout, 9, "acceptance")
+        with pytest.raises(SystemExit) as raised:
+            run_shot._stop_after_stage(layout, lease, 9, "acceptance")
 
     assert raised.value.code == 9
     status = json.loads(layout.status.read_text(encoding="utf-8"))
-    assert status["stop_class"] == "human_decision_required"
+    assert status["state"] == "failed"
     assert status["stop_envelope_digest"] == envelope.digest
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
+    assert summary["stop_class"] == "human_decision_required"
     assert layout.read_terminal_stop() == envelope
     digest = collect(tmp_path, run_id=layout.run_id)
     assert digest["run"]["stop"]["stop_class"] == "human_decision_required"
@@ -220,17 +215,9 @@ def test_inspect_run_marks_a_stop_with_tampered_evidence_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    layout = run_artifacts.create(tmp_path, "inspect-tampered-stop")
-    envelope = _child_stop(layout)
-    layout.write_stop_envelope(envelope)
-    layout.set_status(
-        "failed",
-        exit_code=9,
-        metadata={
-            "stop_envelope": "reports/stop-envelope.json",
-            "stop_envelope_digest": envelope.digest,
-        },
-    )
+    with owned_run(tmp_path, "inspect-tampered-stop", command="run", dispatch_kind="driver") as (layout, lease):
+        envelope = _child_stop(layout)
+        fail_run(layout, lease, envelope, exit_code=9)
     evidence_path = layout.shot / envelope.evidence_refs[0].locator
     evidence_path.write_text('{"schema":"vfx-harness.acceptance-question/v1"}\n')
 
@@ -244,11 +231,11 @@ def test_driver_does_not_infer_recovery_from_bare_child_exit_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    layout = run_artifacts.create(tmp_path, "driver-missing-stop")
-    monkeypatch.setattr(run_shot, "_publish_summary", lambda _layout: None)
-
-    with pytest.raises(SystemExit) as raised:
-        run_shot._stop_after_stage(layout, 3, "layer-1-plan-gate")
+    with (
+        owned_run(tmp_path, "driver-missing-stop", command="run", dispatch_kind="driver") as (layout, lease),
+        pytest.raises(SystemExit) as raised,
+    ):
+        run_shot._stop_after_stage(layout, lease, 3, "layer-1-plan-gate")
 
     assert raised.value.code == 3
     envelope = layout.read_terminal_stop()
@@ -257,23 +244,26 @@ def test_driver_does_not_infer_recovery_from_bare_child_exit_code(
     assert [action.transaction_id for action in envelope.actions] == ["route_engineering"]
 
 
-def test_driver_interruption_publishes_a_fail_closed_stop(
+def test_driver_terminalizes_a_recorded_signal_intent_without_a_stop_envelope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    layout = run_artifacts.create(tmp_path, "driver-interrupted")
-    monkeypatch.setattr(run_shot, "_publish_summary", lambda _layout: None)
+    with owned_run(tmp_path, "driver-interrupted", command="run", dispatch_kind="driver") as (layout, lease):
+        interrupted = run_owner_boundary.terminalize_cancellation(
+            tmp_path,
+            layout,
+            lease,
+            run_owner_boundary.RunCancellation("operator_interrupt", 2),
+        )
 
-    run_shot._mark_interrupted(layout)
-
+    assert interrupted.code == 130
     status = json.loads(layout.status.read_text(encoding="utf-8"))
-    assert status["state"] == "interrupted"
-    assert status["exit_code"] == 130
-    envelope = layout.read_terminal_stop()
-    assert envelope.stop_class == "harness_defect"
-    assert envelope.cause.invariant_id == "terminal_boundary_requires_typed_stop"
-    assert envelope.actions[0].transaction_id == "route_engineering"
+    assert (status["state"], status["exit_code"]) == ("interrupted", 130)
+    assert status["stop_envelope"] is None
+    assert not layout.stop_envelope.exists()
+    with pytest.raises(ValueError, match="selects no stop envelope"):
+        layout.read_terminal_stop()
 
 
 def test_run_allocates_layout_then_stops_on_strict_preflight_before_any_stage(
@@ -317,7 +307,6 @@ def test_run_allocates_layout_then_stops_on_strict_preflight_before_any_stage(
             },
         },
     )
-    monkeypatch.setattr(run_shot, "_publish_summary", lambda _layout: None)
     monkeypatch.setattr(
         run_shot,
         "_run",

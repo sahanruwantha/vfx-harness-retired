@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from vfx_harness.domain.run_ids import require_run_id
@@ -41,6 +42,7 @@ _MANIFEST_LAYOUT = {
     "owner_claim": RUN_OWNER_CLAIM_LOCATOR,
     "owner_fence": RUN_OWNER_FENCE_LOCATOR,
 }
+RUN_MANIFEST_LAYOUT = MappingProxyType(dict(_MANIFEST_LAYOUT))
 _AUTHORITY_FIELDS = frozenset(
     {
         "authored_inputs",

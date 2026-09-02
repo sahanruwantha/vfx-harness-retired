@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from tests.run_owner_support import fail_run, owned_run
 from vfx_harness.agents.planner import PlanGateFailure, PlanLoopResult
 from vfx_harness.agents.resilience import AgentSessionFailure
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
@@ -22,6 +24,7 @@ from vfx_harness.domain.stop_transactions import (
     action_idempotency_key,
 )
 from vfx_harness.observability import run_artifacts, transcript
+from vfx_harness.orchestration import run_owner_boundary
 from vfx_harness.orchestration.jit_materialization.view_pointer import (
     canonical_view_hash,
 )
@@ -241,7 +244,8 @@ def _terminal_stop_fixture(
     shot = tmp_path / "terminal-stop-evidence"
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
-    layout = run_artifacts.create(shot, "terminal-stop-001")
+    stack = ExitStack()
+    layout, lease = stack.enter_context(owned_run(shot, "terminal-stop-001"))
     evidence_path = layout.reports / "test-harness-defect.json"
     document = {
         "schema": "vfx-harness.test-harness-defect/v1",
@@ -264,15 +268,8 @@ def _terminal_stop_fixture(
             envelope,
             evidence_refs=(evidence, *additional_evidence),
         )
-    layout.write_stop_envelope(envelope)
-    layout.set_status(
-        "failed",
-        exit_code=9,
-        metadata={
-            "stop_envelope": "reports/stop-envelope.json",
-            "stop_envelope_digest": envelope.digest,
-        },
-    )
+    fail_run(layout, lease, envelope, exit_code=9)
+    stack.close()
     return layout, envelope, evidence_path
 
 
@@ -281,22 +278,28 @@ def test_structured_run_has_one_machine_readable_entrypoint(tmp_path: Path, monk
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
 
-    layout = run_artifacts.create(
+    with owned_run(
         shot,
         "20260821T120000Z-a1b2c3",
+        command="run",
+        dispatch_kind="driver",
         shot_id="shot-a",
-        argv=["vfx", "run", "shot-a"],
         parameters={"rounds": 2},
-    )
-
-    manifest = json.loads(layout.manifest.read_text(encoding="utf-8"))
-    latest = json.loads((shot / "runs" / "latest.json").read_text(encoding="utf-8"))
-    assert manifest["schema"] == "vfx-harness.run/v1"
-    assert manifest["reader_entrypoint"] == "manifest.json"
-    assert manifest["layout"]["evidence"] == "evidence/"
-    assert latest["run_id"] == layout.run_id
-    assert run_artifacts.active(shot) == layout
-    assert run_artifacts.latest(shot) == layout
+    ) as (layout, _lease):
+        manifest = json.loads(layout.manifest.read_text(encoding="utf-8"))
+        latest = json.loads((shot / "runs" / "latest.json").read_text(encoding="utf-8"))
+        assert manifest["schema"] == "vfx-harness.run/v2"
+        assert manifest["invocation"]["dispatch"] == {
+            "schema": "vfx-harness.run-dispatch/v1",
+            "kind": "driver",
+            "command": "run",
+        }
+        assert manifest["reader_entrypoint"] == "manifest.json"
+        assert manifest["layout"]["evidence"] == "evidence/"
+        assert manifest["layout"]["owner_claim"] == "owner/claim.json"
+        assert latest["run_id"] == layout.run_id
+        assert run_artifacts.active(shot) == layout
+        assert run_artifacts.latest(shot) == layout
 
 
 def test_inventory_classifies_outputs_without_scanning_the_shot_root(
@@ -357,7 +360,7 @@ def test_direct_cli_invocation_publishes_terminal_status_and_summary(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     monkeypatch.setenv("VFXH_RUN_ID", "direct-001")
 
-    with run_artifacts.invocation(shot, "plan", shot_id="direct-command") as layout:
+    with run_owner_boundary.invocation(shot, "plan", shot_id="direct-command") as layout:
         (layout.logs / "command.log").write_text("ok\n", encoding="utf-8")
 
     assert json.loads(layout.status.read_text(encoding="utf-8"))["state"] == "passed"
@@ -378,12 +381,14 @@ def test_typed_stop_is_published_and_read_back_before_direct_exit(
 
     with (
         pytest.raises(run_artifacts.TypedStop),
-        run_artifacts.invocation(shot, "build", shot_id="typed-stop") as layout,
+        run_owner_boundary.invocation(shot, "build", shot_id="typed-stop") as layout,
     ):
         raise run_artifacts.TypedStop(9, envelope)
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
-    assert status["stop_class"] == "harness_defect"
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
+    assert summary["stop_class"] == "harness_defect"
+    assert status["state"] == "failed"
     assert status["stop_envelope"] == "reports/stop-envelope.json"
     assert status["stop_envelope_digest"] == envelope.digest
     assert layout.read_stop_envelope(expected_digest=envelope.digest) == envelope
@@ -460,7 +465,7 @@ def test_untyped_terminal_boundary_fails_closed_as_harness_defect(
 
     with (
         pytest.raises(RuntimeError, match="raw failure"),
-        run_artifacts.invocation(shot, "materialize", shot_id="untyped-stop") as layout,
+        run_owner_boundary.invocation(shot, "plan", shot_id="untyped-stop") as layout,
     ):
         raise RuntimeError("raw failure text is not dispatch authority")
 
@@ -470,7 +475,8 @@ def test_untyped_terminal_boundary_fails_closed_as_harness_defect(
     assert envelope.stop_class == "harness_defect"
     assert envelope.cause.invariant_id == "terminal_boundary_requires_typed_stop"
     assert [action.transaction_id for action in envelope.actions] == ["route_engineering"]
-    assert status["terminal_cause"] == "process_error"
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
+    assert summary["terminal_cause"] == "process_error"
 
 
 def test_unclassified_boundary_identity_is_restart_stable_until_authority_changes(
@@ -516,8 +522,8 @@ def test_unclassified_boundary_identity_is_restart_stable_until_authority_change
     first_layout = run_artifacts.create(
         shot,
         "untyped-restart-001",
+        command="build",
         parameters={
-            "command": "build",
             "run_id": "attempt-a",
             "started_at": "2026-08-30T01:02:03+00:00",
             "candidate": "/tmp/run-a/candidate.json",
@@ -568,8 +574,8 @@ def test_unclassified_boundary_identity_is_restart_stable_until_authority_change
     second_layout = run_artifacts.create(
         shot,
         "untyped-restart-002",
+        command="build",
         parameters={
-            "command": "build",
             "run_id": "attempt-b",
             "started_at": "2099-01-01T00:00:00+00:00",
             "candidate": "/var/tmp/run-b/materialized.json",
@@ -639,7 +645,8 @@ def test_unclassified_boundary_identity_is_restart_stable_until_authority_change
     changed_layout = run_artifacts.create(
         shot,
         "untyped-restart-003",
-        parameters={"command": "build", "candidate": "/tmp/irrelevant.json"},
+        command="build",
+        parameters={"candidate": "/tmp/irrelevant.json"},
     )
     changed = run_artifacts._unclassified_stop_envelope(
         changed_layout,
@@ -672,13 +679,15 @@ def test_inherited_stage_publishes_typed_stop_without_waiting_for_driver(
     layout = run_artifacts.create(shot, "inherited-001")
     envelope = _typed_harness_stop(layout.run_id)
 
-    with pytest.raises(run_artifacts.TypedStop), run_artifacts.invocation(shot, "accept", shot_id="inherited-stop"):
+    with (
+        pytest.raises(run_artifacts.TypedStop),
+        run_owner_boundary.invocation(shot, "accept", shot_id="inherited-stop"),
+    ):
         raise run_artifacts.TypedStop(9, envelope)
 
-    status = json.loads(layout.status.read_text(encoding="utf-8"))
-    assert status["state"] == "failed"
-    assert layout.read_stop_envelope(expected_digest=status["stop_envelope_digest"]) == envelope
-    # An inherited stage does not claim ownership of the whole-run summary.
+    # An inherited stage publishes only its typed stop; the root owner selects status.
+    assert layout.read_stop_envelope(expected_digest=envelope.digest) == envelope
+    assert not layout.status.exists()
     assert not (layout.reports / "summary.json").exists()
 
 
@@ -690,14 +699,18 @@ def test_typed_stop_with_wrong_run_identity_is_not_publishable(tmp_path: Path, m
 
     with (
         pytest.raises(run_artifacts.TypedStop),
-        run_artifacts.invocation(shot, "accept", shot_id="wrong-run-stop") as layout,
+        run_owner_boundary.invocation(shot, "accept", shot_id="wrong-run-stop") as layout,
     ):
         raise run_artifacts.TypedStop(9, _typed_harness_stop("wrong-run-001"))
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
-    assert status["terminal_cause"] == "stop_envelope_publication_failure"
-    assert status["stop_envelope_state"] == "unavailable"
-    assert not layout.stop_envelope.exists()
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
+    assert (status["state"], status["exit_code"]) == ("failed", 1)
+    assert summary["terminal_cause"] == "stop_envelope_publication_failure"
+    # The publication failure itself is selected as a harness defect, never the foreign envelope.
+    selected = layout.read_terminal_stop()
+    assert selected.stop_class == "harness_defect"
+    assert selected.identity.run_id == layout.run_id
 
 
 def test_dirty_plan_exit_publishes_failed_status_and_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -712,7 +725,7 @@ def test_dirty_plan_exit_publishes_failed_status_and_summary(tmp_path: Path, mon
 
     with (
         pytest.raises(PlanGateFailure, match="2 blocking"),
-        run_artifacts.invocation(shot, "plan", shot_id="dirty-plan") as layout,
+        run_owner_boundary.invocation(shot, "plan", shot_id="dirty-plan") as layout,
     ):
         raise PlanGateFailure(result)
 
@@ -723,23 +736,25 @@ def test_dirty_plan_exit_publishes_failed_status_and_summary(tmp_path: Path, mon
     assert "2 blocking" in status["detail"]
     assert summary["state"] == "failed"
     assert summary["exit_code"] == 3
-    assert status["terminal_cause"] == "plan_budget_exhausted"
+    assert summary["terminal_cause"] == "plan_budget_exhausted"
 
 
-def test_operator_interrupt_has_explicit_terminal_cause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cancellation_without_recorded_intent_is_a_failure_not_an_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     shot = tmp_path / "interrupted"
     shot.mkdir()
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     monkeypatch.setenv("VFXH_RUN_ID", "direct-interrupted")
 
-    with pytest.raises(KeyboardInterrupt), run_artifacts.invocation(shot, "plan") as layout:
+    with pytest.raises(KeyboardInterrupt), run_owner_boundary.invocation(shot, "plan") as layout:
         raise KeyboardInterrupt
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
-    assert status["state"] == "interrupted"
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
+    assert status["state"] == "failed"
     assert status["exit_code"] == 130
-    assert status["terminal_cause"] == "interrupted"
-    assert status["detail"] == "interrupted by operator"
+    assert summary["terminal_cause"] == "cancelled_without_intent"
     envelope = layout.read_terminal_stop()
     assert envelope.stop_class == "harness_defect"
     assert envelope.actions[0].transaction_id == "route_engineering"
@@ -753,11 +768,12 @@ def test_model_turn_exhaustion_is_not_reported_as_generic_failure(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     monkeypatch.setenv("VFXH_RUN_ID", "direct-turns")
 
-    with pytest.raises(AgentSessionFailure), run_artifacts.invocation(shot, "plan") as layout:
+    with pytest.raises(AgentSessionFailure), run_owner_boundary.invocation(shot, "plan") as layout:
         raise AgentSessionFailure("draft exhausted its model turn budget", "max_turns_exhausted")
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
-    assert status["terminal_cause"] == "max_turns_exhausted"
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
+    assert summary["terminal_cause"] == "max_turns_exhausted"
     assert "turn budget" in status["detail"]
 
 
@@ -770,7 +786,7 @@ def test_integer_systemexit_detail_is_the_meaning_not_the_digit(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     monkeypatch.setenv("VFXH_RUN_ID", "direct-incomplete")
 
-    with pytest.raises(SystemExit) as raised, run_artifacts.invocation(shot, "build") as layout:
+    with pytest.raises(SystemExit) as raised, run_owner_boundary.invocation(shot, "build") as layout:
         raise SystemExit(7)
 
     assert raised.value.code == 7
@@ -786,7 +802,7 @@ def test_requested_exit_keeps_the_exception_detail(tmp_path: Path, monkeypatch: 
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     monkeypatch.setenv("VFXH_RUN_ID", "direct-unpassed")
 
-    with pytest.raises(run_artifacts.RequestedExit), run_artifacts.invocation(shot, "build") as layout:
+    with pytest.raises(run_artifacts.RequestedExit), run_owner_boundary.invocation(shot, "build") as layout:
         raise run_artifacts.RequestedExit(7, "INCOMPLETE CHAIN — unit cam_spine failed")
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
@@ -800,7 +816,7 @@ def test_requested_exit_keeps_typed_terminal_cause(tmp_path: Path, monkeypatch: 
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     monkeypatch.setenv("VFXH_RUN_ID", "direct-model-failure")
 
-    with pytest.raises(run_artifacts.RequestedExit), run_artifacts.invocation(shot, "build") as layout:
+    with pytest.raises(run_artifacts.RequestedExit), run_owner_boundary.invocation(shot, "build") as layout:
         raise run_artifacts.RequestedExit(
             3,
             "BUILD TRUNCATED — provider returned HTTP 429",
@@ -808,8 +824,9 @@ def test_requested_exit_keeps_typed_terminal_cause(tmp_path: Path, monkeypatch: 
         )
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
+    summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
     assert status["exit_code"] == 3
-    assert status["terminal_cause"] == "model_session_failure"
+    assert summary["terminal_cause"] == "model_session_failure"
 
 
 def test_reader_refuses_shot_root_legacy_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -12,7 +12,7 @@ DOMAIN_STATUS = PACKAGE / "domain" / "run_status.py"
 DOMAIN_INTERRUPTION = PACKAGE / "domain" / "run_interruption_records.py"
 DOMAIN_OWNER_LOSS = PACKAGE / "domain" / "run_owner_loss.py"
 EVALUATOR = "evaluation/run_interruption.py"
-TERMINALIZER = "orchestration/run_interruption_terminalizer.py"
+TERMINALIZER = "orchestration/run_terminalizer.py"
 FUTURE_OWNER_LOSS_CAPTURE = "observability/run_owner_loss_capture.py"
 
 
