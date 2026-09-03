@@ -620,6 +620,13 @@ def stage_candidate_view(
     )
 
 
+
+def _candidate_layer_id(candidate: Path) -> str:
+    """The layer this materialization candidate publishes."""
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    return str((payload.get("layer") or {}).get("id") or "")
+
+
 def finalize_materialization_candidate(
     shot_folder: str | Path,
     materialization_path: str | Path,
@@ -653,6 +660,9 @@ def finalize_materialization_candidate(
             selected_authority=selected_authority,
         )
         result = plan_gate.run(Path(consumer_view), require_scene_checks=False)
+        # The same ownership scope the finalize tool attests against, so a session cannot
+        # attest CLEAN and then have publication refuse on another layer's finding.
+        result = plan_gate.scoped_to_layer(result, _candidate_layer_id(candidate))
         if result.clean:
             if materialization_candidate_revision(candidate) != candidate_revision:
                 raise MaterializationSelectionConflict("materialization candidate changed while its terminal gate ran")

@@ -392,6 +392,26 @@ class GateResult:
         }
 
 
+
+def scoped_to_layer(result: GateResult, layer_id: str) -> GateResult:
+    """The findings one layer's transaction is answerable for.
+
+    Plan-wide findings and this layer's own findings stay; a finding another layer owns
+    belongs to that layer's transaction.  Gating a layer's materialization on a finding it
+    has no scope to repair produces no progress and spends the session's turns against a
+    constraint it cannot satisfy (HIR-0189).
+    """
+    return GateResult(
+        result.shot,
+        [
+            finding
+            for finding in result.findings
+            if finding.layer is None or str(finding.layer) == str(layer_id)
+        ],
+        dict(result.stats),
+    )
+
+
 def write_report(folder: Path, result: GateResult, *, outcome: str) -> Path:
     """Persist final gate authority in the active structured run."""
     layout = run_artifacts.active(folder)

@@ -578,7 +578,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   immediately after publication. Concrete evidence design — contract kinds, moments, thresholds,
   calibration, research, reference fingerprints — belongs to the owning layer's materialization,
   which fails closed until every owned requirement resolves (ADR-0005, ADR-0006). Materialization
-  validation reports every collectable finding in one write, each addressed by an RFC 6901 JSON
+  A layer's materialization — its finalize tool and its terminal publication gate alike —
+  decides on `plan_gate.scoped_to_layer(result, layer)`: its own findings plus every
+  plan-wide one. A finding another layer owns blocks that layer's transaction, never a
+  session with no scope to repair it (HIR-0189).
+    validation reports every collectable finding in one write, each addressed by an RFC 6901 JSON
   pointer; field repair is `patch_materialization` on the candidate file. Required scene-contract
   role selectors must close against the binding unit's `mutates.roles`/`dresses` in that write —
   a mutation-empty observer cannot look locally clean and then die on terminal-gate

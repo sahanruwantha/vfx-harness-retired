@@ -27,5 +27,6 @@ from vfx_harness.evaluation.plan_gate.types import _global_executable_checks_app
 from vfx_harness.evaluation.plan_gate.types import _materialized_view as _materialized_view
 from vfx_harness.evaluation.plan_gate.types import _planned_outputs as _planned_outputs
 from vfx_harness.evaluation.plan_gate.types import _resolve as _resolve
+from vfx_harness.evaluation.plan_gate.types import scoped_to_layer as scoped_to_layer
 from vfx_harness.evaluation.plan_gate.types import write_report as write_report
 from vfx_harness.evaluation.plan_gate.unit_deps import _check_unit_dependencies as _check_unit_dependencies

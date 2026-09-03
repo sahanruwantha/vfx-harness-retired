@@ -614,9 +614,14 @@ def register_materialize_tools(**closed):
                 layer_id=str(materialization_layer_id),
                 gate_result=result,
             )
-            if not result.clean:
-                body = plan_gate.report(result)
-                repair = plan_gate.feedback(result)
+            # Scoped: a finding another layer owns belongs to that layer's own
+            # transaction. This session cannot repair layer 1's camera authority, and
+            # blocking on it burns turns against a constraint it has no scope to satisfy
+            # (rematerialization 20260903T211552Z-8ad44d) (HIR-0189).
+            owned = plan_gate.scoped_to_layer(result, str(materialization_layer_id))
+            if not owned.clean:
+                body = plan_gate.report(owned)
+                repair = plan_gate.feedback(owned)
                 return _text(
                     body + (f"\n\nREPAIR BRIEF\n{repair}" if repair else ""),
                     is_error=True,

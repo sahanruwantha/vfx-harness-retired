@@ -19,6 +19,13 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A layer's materialization is no longer gated on another layer's finding
+  ([HIR-0189](docs/improvements/HIR-0189-materialization-gates-scope-by-owner.md)). A
+  layer-2 rematerialization staged every unit and closed every requirement binding, then
+  could not finalize because layer 1's camera owed a framing row it had no scope to author;
+  it retried five times before the run was stopped. Both the finalize tool and the terminal
+  publication gate now decide on the findings that layer owns plus every plan-wide one.
+
 - `lifecycle: "window"` scene contracts are expressible again
   ([HIR-0188](docs/improvements/HIR-0188-lifecycle-keys-have-one-vocabulary.md)). The
   lifecycle domain requires `valid_through` for a window row while the scene-contract row
