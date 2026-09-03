@@ -1865,7 +1865,13 @@ def _scene_warnings() -> list:
 
 
 def h_render(a: dict) -> dict:
+    import checks
+
     sc = bpy.context.scene
+    if sc.camera is None:
+        # Blender's own "Cannot render, no camera" is a bare RuntimeError with a
+        # traceback; a pre-camera unit needs the rule, not the stack (HIR-0174 follow-up).
+        raise ValueError("scene has no active camera to render through. " + checks.NO_CAMERA_RULE)
     image_settings = sc.render.image_settings
     original = {
         "engine": sc.render.engine,

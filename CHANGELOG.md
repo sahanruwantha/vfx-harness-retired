@@ -7,6 +7,12 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Absolute pixel statistics (`render_region_stat`, `control_render_response`) bound by
+  a required image claim count as image debts for the signal and subject bootstrap
+  gates, so a camera-only unit cannot carry them;
+  `bpy.data.worlds.new` classifies as volume work in the payload classifier; the
+  projection and render instruments teach the camera-provider rule when no camera exists
+  ([HIR-0176](docs/improvements/HIR-0176-camera-only-units-cannot-carry-image-rows.md)).
 - The materialization kickoff compiles the closed judgment-property vocabulary and the
   layer's legal choice from its sparse row (a camera-providing layer owns only
   `camera_framing`), so the materializer no longer pays a rejection turn to learn it

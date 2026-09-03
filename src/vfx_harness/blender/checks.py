@@ -51,6 +51,16 @@ format_object_ambiguous = _roles.format_object_ambiguous
 pick_objects = _roles.pick_objects
 
 
+NO_CAMERA_RULE = (
+    "Camera-relative evidence (projection checks, render_frame, compare_frame, "
+    "render_pass) is due at the camera-providing unit (typed provides: ['camera']); a "
+    "control or geometry producer that precedes it proves fixed world state with scene "
+    "evidence (inspect_scene world locations, object_count, check_scene kinds that need "
+    "no camera) and owes no render or projection (HIR-0090, HIR-0094). Do not create a "
+    "camera outside your declared mutation scope to satisfy this instrument."
+)
+
+
 def camera_clip_matrix(scene, depsgraph):
     """projection @ view for the scene camera, matching the render's resolution, sensor
     fit, pixel aspect and shift — the same matrix for every projected metric, per
@@ -60,7 +70,7 @@ def camera_clip_matrix(scene, depsgraph):
 
     cam = scene.camera
     if cam is None:
-        raise ValueError("scene has no active camera to project through")
+        raise ValueError("scene has no active camera to project through. " + NO_CAMERA_RULE)
     ev = cam.evaluated_get(depsgraph)
     corners = ev.data.view_frame(scene=scene)
     xs = [c.x for c in corners]

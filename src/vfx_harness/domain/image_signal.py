@@ -19,6 +19,7 @@ from vfx_harness.domain.atomicity import (
     instrument_family_for_row,
     write_clusters,
 )
+from vfx_harness.domain.evidence_kinds import PIXEL_STATISTIC_KINDS
 from vfx_harness.domain.image_debts import image_contract_debt_cards
 from vfx_harness.domain.work_units import WorkUnit
 
@@ -128,9 +129,19 @@ def _family_dependency_gaps(
     by_id = {unit.id: unit for unit in unit_rows}
     providers = _family_provider_ids(unit_rows, contract_rows, families)
     gaps: list[ImageSignalDependencyGap] = []
+    rows_by_id = {
+        str(row.get("id")): row for row in contract_rows if isinstance(row, Mapping) and row.get("id")
+    }
     for unit in unit_rows:
-        debts = image_contract_debt_cards(unit)
-        if not debts:
+        debt_ids = tuple(
+            dict.fromkeys(
+                (
+                    *(debt.id for debt in image_contract_debt_cards(unit)),
+                    *functional_image_debt_ids(unit, rows_by_id),
+                )
+            )
+        )
+        if not debt_ids:
             continue
         closure: set[str] = set()
         frontier = [unit.id]
@@ -147,11 +158,34 @@ def _family_dependency_gaps(
         gaps.append(
             ImageSignalDependencyGap(
                 unit_id=unit.id,
-                contract_ids=tuple(dict.fromkeys(debt.id for debt in debts)),
+                contract_ids=debt_ids,
                 available_provider_ids=tuple(sorted(providers - closure)),
             )
         )
     return tuple(gaps)
+
+
+def functional_image_debt_ids(unit: Any, rows_by_id: Mapping[str, Mapping[str, Any]]) -> tuple[str, ...]:
+    """Scene-contract ids of absolute pixel statistics a required image claim binds.
+
+    A ``render_region_stat`` or ``control_render_response`` row measures the plate: on a
+    camera-only replay prefix it can only read a black plate, and a camera unit paid such
+    rows by painting the World grey (run 20260903T002758Z-1b6807, HIR-0176). They are
+    image debts for the signal and subject bootstrap exactly like ``image_contract``
+    bindings. ``frame_delta`` stays out: it is relative between two frames and its
+    payments are refuted by the pre-unit adversary rule (HIR-0048).
+    """
+    ids: list[str] = []
+    for claim in getattr(getattr(unit, "evaluation", None), "claims", ()) or ():
+        if not getattr(claim, "required", False) or getattr(claim, "asserts", None) != "image":
+            continue
+        for binding in getattr(claim, "evidence", ()) or ():
+            if getattr(binding, "kind", None) != "scene_contract":
+                continue
+            row = rows_by_id.get(str(getattr(binding, "id", "")))
+            if row is not None and str(row.get("kind") or "") in PIXEL_STATISTIC_KINDS:
+                ids.append(str(binding.id))
+    return tuple(dict.fromkeys(ids))
 
 
 def image_signal_provider_ids(

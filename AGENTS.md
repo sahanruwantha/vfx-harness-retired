@@ -593,7 +593,10 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   family in the same replay prefix. A shading-only root on a camera-only scene
   cannot pay beauty; the materialization and plan gates fail
   `image-subject-bootstrap` and name same-layer carriers outside the dependency
-  closure (HIR-0160). Scene contracts may measure other frames; bind
+  closure (HIR-0160). Absolute pixel statistics (`render_region_stat`, `control_render_response`) bound by a
+  required image claim are the same debts: a
+  camera-only prefix cannot carry them, and a camera unit that creates a World to tint a
+  plate is mixed volume work refused before mutation (HIR-0176). Scene contracts may measure other frames; bind
   those ids through `composition_context.contract_ids` without adding the extra
   frames to the judge lists. Claim-closure counts those ids as bound producers.
   A dependency root has no sealed outcomes to directory-Read (HIR-0029).

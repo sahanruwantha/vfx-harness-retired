@@ -156,3 +156,12 @@ def test_temporal_kinds_still_excurse_but_cannot_reframe_siblings() -> None:
     probe = _probe_source()
     schedule = probe.index("kind=='keyframe_schedule'")
     assert "frame_set(int(sample['frame']))" in probe[schedule:]
+
+
+def test_no_camera_instruments_teach_the_camera_provider_rule() -> None:
+    """A pre-camera producer must learn where camera-relative evidence is due, not a stack."""
+    from vfx_harness.blender import checks
+
+    assert "camera-providing unit" in checks.NO_CAMERA_RULE
+    assert "owes no render or projection" in checks.NO_CAMERA_RULE
+    assert "NO_CAMERA_RULE" in inspect.getsource(checks.camera_clip_matrix)

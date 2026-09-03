@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 
+from vfx_harness.domain.evidence_kinds import FUNCTIONAL_KINDS as _FUNCTIONAL_KINDS
 from vfx_harness.domain.evidence_kinds import PROJECTED_ORIGIN_KINDS as PROJECTED_ORIGIN_KINDS
 
 OBJECT_KINDS = {
@@ -86,7 +87,7 @@ FRAME_SCOPED_KINDS = {
     "control_render_response",
     "render_region_stat",
 }
-FUNCTIONAL_KINDS = {"control_render_response", "frame_delta", "render_region_stat"}
+FUNCTIONAL_KINDS = set(_FUNCTIONAL_KINDS)
 SUPPORTED_KINDS = (
     OBJECT_KINDS | MATERIAL_KINDS | NODE_KINDS | STATE_KINDS | TEMPORAL_KINDS | FUNCTIONAL_KINDS
 )

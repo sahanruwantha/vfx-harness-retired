@@ -526,3 +526,18 @@ def test_bvfx_role_rejects_comma_membership(worker) -> None:
         worker._bvfx_role(Host(), "cam.blockout_fg,cam.blockout_depth_tiers")
     tagged = worker._bvfx_role(Host(), "cam.blockout_fg")
     assert tagged["bvfx_role"] == "cam.blockout_fg"
+
+
+def test_render_handler_refuses_a_camera_less_scene_with_the_provider_rule(worker) -> None:
+    import types
+
+    from vfx_harness.blender import checks as checks_module
+
+    sys.modules["checks"] = checks_module
+    try:
+        worker.bpy.context = types.SimpleNamespace(scene=types.SimpleNamespace(camera=None))
+        with pytest.raises(ValueError, match="camera-providing unit") as exc:
+            worker.h_render({"frame": 1})
+        assert "scene has no active camera to render through" in str(exc.value)
+    finally:
+        sys.modules.pop("checks", None)

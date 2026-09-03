@@ -415,6 +415,10 @@ def _script_call_family(path: str) -> str | None:
         return "light"
     if path == "bpy.data.cameras.new":
         return "camera"
+    if path == "bpy.data.worlds.new":
+        # The World graph is the volume/atmosphere family (its node rows classify the
+        # same way); a camera unit that creates a World to tint a plate is mixed work.
+        return "volume"
     return None
 
 
