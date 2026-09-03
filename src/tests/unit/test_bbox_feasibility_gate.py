@@ -42,6 +42,10 @@ def test_streak_fences_mutation_then_feasibility_verdict_decides() -> None:
 
 
 def test_a_feasible_verdict_is_not_downgraded_by_narrower_supplied_bounds() -> None:
+    """Run fa5dbb read INFEASIBLE inside bounds it had narrowed to a tower after a feasible
+    verdict under harness bounds, and later passed with a multi-part mass (HIR-0183,
+    HIR-0184): the measurement clears the streak, a feasible record survives a narrower
+    supplied-bounds infeasibility, and no infeasible verdict forces the abstention."""
     state: dict = {}
     for _ in range(BBOX_FEASIBILITY_STREAK):
         record_bbox_failures(state, [_failed("corner-f113")])
@@ -51,20 +55,24 @@ def test_a_feasible_verdict_is_not_downgraded_by_narrower_supplied_bounds() -> N
         state, row_ids=["corner-f113"], feasible=False, binding=["corner-f113"], bounds_source="supplied"
     )
     assert state["bbox_feasibility"]["feasible"] is True
+    assert state["bbox_feasibility"]["bounds_source"] == "camera"
     assert bbox_feasibility_block(state) is None
 
-    # An infeasible verdict inside supplied bounds never licenses abstention on its own.
-    fresh: dict = {}
-    for _ in range(BBOX_FEASIBILITY_STREAK):
-        record_bbox_failures(fresh, [_failed("corner-f113")])
-    record_bbox_feasibility(
-        fresh, row_ids=["corner-f113"], feasible=False, binding=["corner-f113"], bounds_source="supplied"
-    )
-    block = bbox_feasibility_block(fresh)
-    assert block is not None and "within the bounds you supplied" in block
-    assert "cannot_express_in_scope" not in block
-    record_bbox_feasibility(
-        fresh, row_ids=["corner-f113"], feasible=False, binding=["corner-f113"], bounds_source="hosts"
-    )
-    block = bbox_feasibility_block(fresh)
-    assert block is not None and "cannot_express_in_scope" in block
+    # An infeasible verdict, under supplied or harness bounds, is advisory: it clears the
+    # streak and is recorded, but never becomes a refusal that forces cannot_express_in_scope.
+    for bounds_source in ("supplied", "hosts"):
+        fresh: dict = {}
+        for _ in range(BBOX_FEASIBILITY_STREAK):
+            record_bbox_failures(fresh, [_failed("corner-f113")])
+        assert bbox_feasibility_block(fresh) is not None
+        record_bbox_feasibility(
+            fresh, row_ids=["corner-f113"], feasible=False, binding=["corner-f113"], bounds_source=bounds_source
+        )
+        assert fresh["bbox_failure_streaks"] == {}
+        assert fresh["bbox_feasibility"] == {
+            "row_ids": ["corner-f113"],
+            "feasible": False,
+            "binding": ["corner-f113"],
+            "bounds_source": bounds_source,
+        }
+        assert bbox_feasibility_block(fresh) is None

@@ -61,6 +61,11 @@ control unit could therefore schedule a Light property nobody creates.
 - `src/tests/unit/test_data_block_carriers.py`: property families and row paths; the
   observed shape (mesh producer plus control scheduler) is a gap naming the light family;
   an earlier light layer satisfies it; an unregistered `data.*` path is named.
+- `src/tests/unit/test_finalizer_empty_journal_abstention.py`: a live
+  `cannot_express_in_scope` with no accepted call writes the harness-authored no-op
+  candidate naming the contract ids and never opens a model finalizer session; an empty
+  journal without the abstention, or accepted calls with it, still distil through the
+  finalizer.
 
 ## Release and rollback
 
