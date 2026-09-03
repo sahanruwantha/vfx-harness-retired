@@ -333,30 +333,6 @@ def _proxy_bounds_from_objects(objects, depsgraph) -> dict:
     }
 
 
-def _proxy_bounds_from_camera(scene, frames, matrices_ready) -> dict:
-    """Coarse bounds from the sealed camera: the region in front of it at every bound frame."""
-    from mathutils import Vector
-
-    lo = [float("inf")] * 3
-    hi = [float("-inf")] * 3
-    for frame in frames:
-        scene.frame_set(int(frame))
-        cam = scene.camera
-        origin = cam.matrix_world.translation
-        forward = (cam.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
-        for distance in (1.0, 60.0):
-            point = origin + forward * distance
-            for axis in range(3):
-                lo[axis] = min(lo[axis], point[axis] - 30.0)
-                hi[axis] = max(hi[axis], point[axis] + 30.0)
-    return {
-        "centre_lo": [round(v, 3) for v in lo],
-        "centre_hi": [round(v, 3) for v in hi],
-        "size_lo": [0.2, 0.2, 0.2],
-        "size_hi": [40.0, 40.0, 40.0],
-    }
-
-
 def check_bbox_feasibility(
     rows: list[dict],
     roles: list[str],
@@ -384,10 +360,10 @@ def check_bbox_feasibility(
         matrices[frame] = camera_clip_matrix(sc, dg)
         if derived_bounds is None and seed_objects:
             derived_bounds = _proxy_bounds_from_objects(seed_objects, dg)
+    starts: list[list[float]] = []
     if derived_bounds is None:
-        # Run 20260903T100335Z-fa5dbb asked before any host existed; the sealed camera
-        # already bounds the observable region, so no builder-invented box is needed.
-        derived_bounds = _proxy_bounds_from_camera(sc, frames, matrices)
+        derived_bounds = _feasibility.proxy_bounds_from_frustums(sc, frames)
+        starts = _feasibility.frustum_seed_boxes(sc, frames)
 
     def project(centre, size, frame):
         matrix = matrices[int(frame)]
@@ -400,12 +376,15 @@ def check_bbox_feasibility(
         derived_bounds,
         seed=int(seed),
         evaluations=int(evaluations or _feasibility.DEFAULT_EVALUATIONS),
+        starts=starts,
     )
     issues = []
     if not result["feasible"]:
         issues.append(
-            "no axis-aligned proxy box inside the bounds satisfies every row under the sealed "
-            f"camera; binding row(s): {', '.join(result['binding']) or '(none)'}"
+            "no single axis-aligned proxy box inside the bounds satisfies every row under the "
+            f"sealed camera; binding row(s): {', '.join(result['binding']) or '(none)'}. A "
+            "multi-part subject whose union projections satisfy them may still exist; measure "
+            "it with contract_result before abstaining"
         )
     return {
         "ok": result["feasible"],

@@ -105,6 +105,37 @@ def _deferred_subject_forecast_note(evidence: list[dict], contract_rows: list[di
     return "".join(sections)
 
 
+def downstream_framing_note(groups: Mapping[str, Mapping]) -> str:
+    """Read-back for a camera unit: can any proxy box pay its deferred rows under this path?"""
+    if not groups:
+        return ""
+    lines = ["\nDOWNSTREAM FRAMING — proxy feasibility of the camera-authored deferred rows under the current path:"]
+    infeasible = False
+    for layer_id in sorted(groups):
+        group = groups[layer_id]
+        rows = ", ".join(str(item) for item in group.get("row_ids") or [])
+        if group.get("feasible"):
+            box = group.get("box") or {}
+            lines.append(
+                f"  layer {layer_id} ({rows}): FEASIBLE — a proxy at centre "
+                f"{[round(float(v), 2) for v in box.get('centre', [])]} size "
+                f"{[round(float(v), 2) for v in box.get('size', [])]} satisfies every row"
+            )
+        else:
+            infeasible = True
+            lines.append(
+                f"  layer {layer_id} ({rows}): INFEASIBLE for a single box — binding rows "
+                f"{', '.join(str(item) for item in group.get('binding') or [])}"
+            )
+    if infeasible:
+        lines.append(
+            "  No single rigid box can pay those rows under this camera path; the later layer "
+            "would need a multi-part subject, and it cannot move the camera. Change the path "
+            "(dolly, zoom, aim) and re-check before sealing."
+        )
+    return "\n".join(lines)
+
+
 def _bound_static_frames(rows: list[dict], active_ids: set[str] | None, fallback_frame: int) -> list[int]:
     """Frames whose static contracts must be produced for the active evidence boundary."""
     if active_ids is None:

@@ -72,3 +72,35 @@ def test_contradictory_bands_are_proved_infeasible_with_the_binding_rows() -> No
     assert result["objective"] > 0.05
     assert set(result["binding"]) & {"far-tall", "near-short"}
     assert result["evaluations"] <= 1500
+
+
+def test_seeded_starts_find_a_small_subject_inside_a_wide_search_space() -> None:
+    """HIR-0184: frustum seeds refine a subject that random restarts over a huge volume miss."""
+    from vfx_harness.blender.bbox_feasibility import solve_box_feasibility
+
+    def project(centre, size, frame):
+        # A pinhole at the origin looking down +y: apparent height = size_z / distance.
+        distance = max(float(centre[1]), 1e-6)
+        height = min(float(size[2]) / distance, 1.0)
+        width = min(float(size[0]) / distance, 1.0)
+        return {
+            "height": height,
+            "width": width,
+            "bbox": (0.5 - width / 2, 0.5 - height / 2, 0.5 + width / 2, 0.5 + height / 2),
+        }
+
+    rows = [
+        {"id": "far", "kind": "bbox_height", "frame": 1, "op": "band", "lo": 0.19, "hi": 0.21},
+    ]
+    bounds = {
+        "centre_lo": [-300.0, 0.1, -300.0],
+        "centre_hi": [300.0, 300.0, 300.0],
+        "size_lo": [0.05, 0.05, 0.05],
+        "size_hi": [600.0, 600.0, 600.0],
+    }
+    blind = solve_box_feasibility(rows, project, bounds, seed=3, evaluations=300)
+    seeded = solve_box_feasibility(
+        rows, project, bounds, seed=3, evaluations=300, starts=[[0.0, 10.0, 0.0, 1.0, 1.0, 1.0]]
+    )
+    assert seeded["feasible"] is True, seeded
+    assert seeded["objective"] <= blind["objective"]

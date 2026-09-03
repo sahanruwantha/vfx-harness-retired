@@ -31,7 +31,6 @@ from vfx_harness.domain.json_pointer import format_finding
 from vfx_harness.domain.work_units import (
     CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
     DEFERRED_CONTRACT_CONTEXT_RULE,
-    DEFERRED_SUBJECT_ACTIVATION_RULE,
     GEOMETRY_VIS_CYCLE_RULE,
     GEOMETRY_VIS_DEPENDENCY_RULE,
     LOOK_CAPABILITIES,
@@ -40,9 +39,7 @@ from vfx_harness.domain.work_units import (
     UNIT_JUDGE_CLAIM_COVERAGE_RULE,
     VIS_REPAIR_OWNER_RULE,
     allowed_unit_provides,
-    compile_deferred_subject_activation,
     deferred_claim_binding_gaps,
-    deferred_subject_activation_gaps,
     geometry_vis_dependency_cycles,
     geometry_vis_dependency_gaps,
     plan_selector_declared,
@@ -69,6 +66,9 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     _document,
     _matches_reserved,
     _rows,
+)
+from vfx_harness.orchestration.jit_materialization.validate_framing import (
+    framing_findings,
 )
 from vfx_harness.orchestration.jit_materialization.validate_requirements import (
     complete_validated_layer,
@@ -366,14 +366,16 @@ def validate_materialization(
                 "may publish here",
             )
 
-    activation_card = compile_deferred_subject_activation(global_layers, layer_id)
-    for gap in deferred_subject_activation_gaps(activation_card, scene_rows):
-        note(
-            json_ptr("scene_contracts", gap.index, "activates_at"),
-            f"scene contract {gap.contract_id} activates_at={gap.found!r}; compiled "
-            f"earliest relevant dependency-complete subject carrier is {gap.expected!r}. "
-            + DEFERRED_SUBJECT_ACTIVATION_RULE,
-        )
+    for pointer, message in framing_findings(
+        global_layers,
+        global_row,
+        layer_row,
+        layer_id,
+        scene_rows,
+        layer_units=tuple(layer.stages) if layer is not None else (),
+        base_layers=base_layers,
+    ):
+        note(pointer, message)
     for index, row in enumerate(image_rows):
         if str(row.get("owner_layer") or "") != layer_id:
             note(

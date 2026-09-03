@@ -55,8 +55,10 @@ number of mutations without the harness demanding a measurement.
    state, and reports the satisfying box or the infeasible binding rows with the legal
    next action (`cannot_express_in_scope` naming the camera provider).
 4. `blender/tools/bbox_feasibility_gate`: after six consecutive mutations that leave the
-   same bbox row failing, `run_bpy` is refused until the instrument has run for that row;
-   an infeasible verdict refuses further mutation and names the abstention.
+   same bbox row failing, `run_bpy` is refused until the instrument has run for that row.
+   The measurement clears the streak; an infeasible verdict names the two legal paths (a
+   multi-part subject measured with `contract_result`, or `cannot_express_in_scope` when
+   no construction can) and does not itself force the abstention (HIR-0184).
 
 5. Before any host carries the roles, bounds derive from the sealed camera (the region in
    front of it at every bound frame), so a pre-geometry call answers directly
@@ -83,8 +85,8 @@ number of mutations without the harness demanding a measurement.
   consistent band set yields a satisfying box deterministically; contradictory bands are
   proved infeasible with binding rows within the evaluation budget.
 - `src/tests/unit/test_bbox_feasibility_gate.py`: the streak fences mutation after six
-  failures, an infeasible verdict names the abstention, a feasible verdict reopens
-  mutation, and non-bbox rows never count.
+  failures, a verdict of either kind clears the streak and reopens mutation, and non-bbox
+  rows never count.
 - `src/tests/integration/test_real_blender_bbox_feasibility.py`: a real moving camera
   proves a consistent set feasible and a contradictory set infeasible.
 
@@ -94,8 +96,9 @@ Unreleased. Rolling back restores the unbounded rebuild search.
 
 ## Remaining limitations
 
-- The proxy is axis-aligned; a subject that must rotate to satisfy a band can read
-  infeasible while a rotated mass would pass, so the builder may widen bounds or rotate
-  and re-measure before abstaining.
-- The materialization gate does not yet run the solve for deferred rows against an
-  accepted camera layer; that would move the verdict before builder spend.
+- The proxy is one axis-aligned box; a rotated or multi-part subject can satisfy bands the
+  proxy cannot (run `20260903T100335Z-fa5dbb`'s building_mass read infeasible twice and
+  passed with a four-part mass), so infeasible is advisory and feasible is the sufficient
+  verdict.
+- HIR-0184 moves the verdict to the camera layer: the camera unit proves its deferred rows
+  jointly feasible before sealing, from frustum-derived bounds.

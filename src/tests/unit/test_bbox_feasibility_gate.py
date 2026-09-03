@@ -24,9 +24,13 @@ def test_streak_fences_mutation_then_feasibility_verdict_decides() -> None:
     assert block is not None and "corner-f113" in block
     assert "check_scene(kind='bbox_feasibility', roles=['exterior.mass'])" in block
 
+    # An infeasible single-box verdict is a measurement, not a proof that no subject can:
+    # run fa5dbb's building_mass read infeasible twice and passed with a multi-part mass.
+    # The verdict clears the streak and reopens mutation (HIR-0184).
     record_bbox_feasibility(state, row_ids=["corner-f113", "far-f1"], feasible=False, binding=["corner-f113"])
-    block = bbox_feasibility_block(state)
-    assert block is not None and "cannot_express_in_scope" in block and "corner-f113" in block
+    assert bbox_feasibility_block(state) is None
+    assert "corner-f113" not in state["bbox_failure_streaks"]
+    assert state["bbox_feasibility"]["feasible"] is False
 
     record_bbox_feasibility(state, row_ids=["corner-f113"], feasible=True, binding=[])
     assert bbox_feasibility_block(state) is None

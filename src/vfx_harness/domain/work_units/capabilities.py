@@ -232,6 +232,11 @@ def compile_deferred_subject_activation(
                 "id": layer_id,
                 "title": row.get("title"),
                 "reserved_roles": reserved,
+                "judges": [
+                    {"frame": int(item["frame"]), "ref": str(item.get("ref") or "")}
+                    for item in row.get("judge") or []
+                    if isinstance(item, Mapping) and isinstance(item.get("frame"), int)
+                ],
                 "allowed_provides": sorted(allowed_unit_provides(row)),
                 "replay_prefix_layers": sorted(
                     dependency_closure(layer_id) | {layer_id},
@@ -243,8 +248,29 @@ def compile_deferred_subject_activation(
         (row["id"] for row in successors if "geometry" in row["allowed_provides"]),
         None,
     )
+    owner_frames = {
+        int(item["frame"])
+        for item in (owner_row.get("judge") if owner_row is not None else []) or []
+        if isinstance(item, Mapping) and isinstance(item.get("frame"), int)
+    }
+    framing_obligations = [
+        {
+            "frame": judge["frame"],
+            "ref": judge["ref"],
+            "layer_id": successor["id"],
+            "reserved_roles": list(successor["reserved_roles"]),
+        }
+        for successor in successors
+        if successor["reserved_roles"]
+        for judge in successor["judges"]
+        if judge["frame"] in owner_frames
+    ]
     return {
         "owner_layer": owner,
+        # Every later subject this camera layer must frame at a shared judge frame; the
+        # camera authors a persistent bbox_* row for each and proves them jointly feasible
+        # before it freezes (HIR-0184).
+        "framing_obligations": framing_obligations,
         "owner_provides_camera": bool(owner_row is not None and "camera" in allowed_unit_provides(owner_row)),
         "successors": successors,
         "earliest_geometry_layer": earliest,

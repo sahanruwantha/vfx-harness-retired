@@ -34,6 +34,17 @@ live in the linked Harness Improvement Records.
   prior-generation work-unit state through the authority-state transaction instead of
   failing closed in the planner
   ([HIR-0182](docs/improvements/HIR-0182-digest-generations-migrate-through-the-transaction.md)).
+- A `keyframe_schedule` or `object_property` row on a light or camera data-block property is
+  refused at materialization and the plan gate unless a unit in the binding unit's dependency
+  closure or an earlier layer writes that carrier family
+  ([HIR-0185](docs/improvements/HIR-0185-data-block-rows-need-a-carrier-producer.md)).
+- A camera-providing layer that owns projected composition must author a persistent framing
+  row for every later subject at each shared judge frame, and its builder sees after every mutation whether a proxy box can
+  pay those rows under the current path, and `bbox_feasibility` derives bounds and seeded
+  starts from the camera frustums when no subject exists yet; an infeasible single-box
+  verdict is advisory everywhere (it clears the mutation streak and names the legal paths)
+  because a multi-part subject can satisfy bands one box cannot
+  ([HIR-0184](docs/improvements/HIR-0184-camera-layers-prove-downstream-framing-before-sealing.md)).
 - A decision a layer's materialization makes on its own deferred requirement stays in that
   layer's capsule, so a later layer's publication no longer supersedes an unchanged earlier
   layer's terminal receipt, and `vfx run` builds a reopened lower layer before the newly

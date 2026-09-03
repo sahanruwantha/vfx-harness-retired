@@ -16,6 +16,7 @@ from tests.unit.test_plan_records import (
     _add_deferred_layer,
     _base_selection,
     _candidate,
+    _deferred_owner,
     _jit_payload,
     _write,
     publish_current,
@@ -166,3 +167,84 @@ def test_stage_call_lists_the_composition_obligation_for_a_form_layer(tmp_path: 
     open_findings = [row for row in staged.remaining_findings if "composition-coverage" in row]
     assert open_findings, staged.remaining_findings
     assert "judge frame(s) [239, 240]" in open_findings[0]
+
+
+def test_camera_layer_candidate_reports_uncovered_downstream_subjects(tmp_path: Path) -> None:
+    """HIR-0184: the terminal validator names the later subject the camera never framed."""
+    from vfx_harness.domain.work_units.subject_framing import DOWNSTREAM_SUBJECT_COVERAGE_RULE
+    from vfx_harness.orchestration.jit_materialization import inspect_materialization
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["reserved_roles"].append("camera.*")
+    layers["layers"][1]["jit"]["provides"] = {"camera": ["camera.*"]}
+    layers["layers"].append(
+        {
+            "id": "3",
+            "script": "build/03_future.py",
+            "title": "Future subject",
+            "primary_judge": 239,
+            "judge": [{"frame": 239, "ref": "refs/a.png"}],
+            "owns": ["future_axis"],
+            "reads": "a later subject",
+            "evidence_domains": ["scene"],
+            "execution": "jit_deferred",
+            "stages": [],
+            "jit": {
+                "depends_on_layers": ["2"],
+                "required_outcomes": [],
+                "provides": {},
+                "reserved_roles": ["future.*"],
+                "owned_requirements": ["R-future"],
+            },
+        }
+    )
+    _write(tmp_path / "layers.json", layers)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    future = json.loads(json.dumps(requirements["requirements"][0]))
+    future["id"] = "R-future"
+    future["statement"] = "A later subject fills the frame."
+    future["resolution"] = _deferred_owner("3", "scene")
+    requirements["requirements"].append(future)
+    _write(tmp_path / "requirements.json", requirements)
+    layout = run_artifacts.create(tmp_path, "downstream-coverage")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "downstream-coverage.json"
+    seed_materialization_candidate(
+        bundle.root,
+        target,
+        layer_id="2",
+        bundle_hash=bundle.content_hash,
+        base_selection=_base_selection(tmp_path),
+    )
+    unit = json.loads(json.dumps(full["layer"]["stages"][0]))
+    unit["provides"] = ["camera"]
+    covering = [
+        _bbox("polish-f239", 239, ["polish.hero"], owner="2", activates_at="3"),
+        _bbox("polish-f240", 240, ["polish.hero"], owner="2", activates_at="3"),
+    ]
+    unit["evaluation"]["composition_context"] = {
+        "frames": [239, 240],
+        "contract_ids": ["polish-f239", "polish-f240"],
+    }
+    stage_materialization_unit(
+        target,
+        unit=unit,
+        scene_contracts=[*full["scene_contracts"], *covering],
+        requirement_bindings=full["requirement_bindings"],
+    )
+    findings, _materialized = inspect_materialization(bundle.root, target, expected_bundle_hash=bundle.content_hash)
+    downstream = [finding for finding in findings if "downstream subject coverage" in finding]
+    assert len(downstream) == 1, findings
+    assert "judge f239 is shared with layer 3 (future.*)" in downstream[0]
+    assert "refs/a.png" in downstream[0]
+    assert DOWNSTREAM_SUBJECT_COVERAGE_RULE in downstream[0]
+
+    covered = json.loads(target.read_text(encoding="utf-8"))
+    covered["scene_contracts"].append(_bbox("future-f239", 239, ["future.subject"], owner="2", activates_at="3"))
+    covered["layer"]["stages"][0]["evaluation"]["composition_context"]["contract_ids"].append("future-f239")
+    _write(target, covered)
+    findings, _materialized = inspect_materialization(bundle.root, target, expected_bundle_hash=bundle.content_hash)
+    assert not [finding for finding in findings if "downstream subject coverage" in finding], findings

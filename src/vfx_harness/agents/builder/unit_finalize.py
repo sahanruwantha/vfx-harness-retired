@@ -166,6 +166,26 @@ async def _persist_journal_and_finalize_script(
         "selected_authority": selected_authority,
         "attempt_guard": attempt_guard,
     }
+    if not info.get("calls") and comparison_state.get("cannot_express"):
+        # Run 20260903T100335Z-fa5dbb: after a live cannot_express_in_scope with no
+        # accepted call, the finalizer session spent 25 turns reading run metadata to
+        # conclude there was nothing to distill. The typed finding is the outcome; the
+        # candidate is a harness-authored no-op that records why (HIR-0077, HIR-0185).
+        payload = comparison_state["cannot_express"]
+        candidate_path = shot.folder / candidate_script_rel
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text(
+            f"# unit {m.id}: no accepted run_bpy call; live cannot_express_in_scope recorded for "
+            + ", ".join(str(item) for item in payload.get("contract_ids") or [])
+            + "\n# The typed finding, not this script, is the unit outcome.\n",
+            encoding="utf-8",
+        )
+        log(
+            "finalizer skipped: live cannot_express_in_scope with an empty journal publishes "
+            "the typed finding without a model session",
+            1,
+        )
+        return probe_ctx
     with costlog.scoped(role="finalizer", phase="finalize_script", model=script_model()):
         fin = await _run_script_agent(
             shot,

@@ -478,11 +478,25 @@ def _upstream_interfaces_block(
 def _deferred_subject_activation_block(global_layers: list, owner_layer_id: str) -> str:
 
     card = compile_deferred_subject_activation(global_layers, owner_layer_id)
+    obligations = card.get("framing_obligations") or []
+    obligation_text = (
+        "Framing obligations this camera layer must author now (one persistent bbox_* row per "
+        "line, target measured from the named still, bound through composition_context): "
+        + "; ".join(
+            f"f{row['frame']} layer {row['layer_id']} {', '.join(row['reserved_roles'])} ← {row['ref']}"
+            for row in obligations
+        )
+        + ". The camera unit proves them jointly feasible before it freezes; a row it cannot "
+        "author is a vocabulary-gap escalation, not an omission.\n"
+        if obligations
+        else ""
+    )
     return (
         "Deferred subject-composition activation compiled from the selected DAG "
         "(do not ask_supervisor for layer occupancy):\n"
         f"{json.dumps(card, indent=1)}\n"
         f"{DEFERRED_SUBJECT_ACTIVATION_RULE}.\n"
+        + obligation_text
     )
 
 

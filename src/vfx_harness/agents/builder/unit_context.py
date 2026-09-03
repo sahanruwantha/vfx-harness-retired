@@ -26,6 +26,7 @@ from vfx_harness.agents.unit_scope import compile_unit_scope_for_shot
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.image_debts import image_contract_debt_cards
 from vfx_harness.domain.work_units import WorkUnit
+from vfx_harness.domain.work_units.capabilities import DEFERRED_SUBJECT_BBOX_KINDS
 from vfx_harness.evidence.scene_checks import (
     deferred_subject_composition_forecast_ids_for_unit,
     load_rows,
@@ -162,9 +163,24 @@ def compile_unit_build_context(
         active_unit,
         selected_authority=selected_authority,
     )
+    downstream_framing_ids: list[str] = []
+    camera_provider = active_unit is not None and "camera" in (getattr(active_unit, "provides", ()) or ())
+    if camera_provider and layer is not None:
+        context = getattr(active_unit.evaluation, "composition_context", None)
+        bound_context = {str(item) for item in (getattr(context, "contract_ids", ()) or ())}
+        downstream_framing_ids = sorted(
+            str(row.get("id"))
+            for row in load_rows(shot.folder, selected_authority)
+            if str(row.get("id")) in bound_context
+            and str(row.get("kind") or "") in DEFERRED_SUBJECT_BBOX_KINDS
+            and str(row.get("owner_layer") or "") == str(layer_id)
+            and str(row.get("activates_at") or "") != str(layer_id)
+        )
     phase = {
         "mode": "live",
         "round": 1,
+        "camera_provider": camera_provider,
+        "downstream_framing_ids": downstream_framing_ids,
         "frame": int(milestone.frame),
         "look_actions": bool(feedback_groups),
         "look_unsettled": look_unsettled_for(

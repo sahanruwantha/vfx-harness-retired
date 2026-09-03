@@ -208,6 +208,8 @@ def _camera_payload(*, judgment_property: str = "camera_framing") -> dict:
             property_kind="object_count",
             contract_id="camera-rig-count",
             provides=["camera"],
+            # HIR-0184: the camera layer frames the hall it shares judge frame 1 with.
+            composition_contract_ids=["hall-frame-f1"],
         )
     ]
     return {
@@ -221,7 +223,23 @@ def _camera_payload(*, judgment_property: str = "camera_framing") -> dict:
                 layer_id="1",
                 axis="camera_alignment",
                 role="camera.rig",
-            )
+            ),
+            {
+                "id": "hall-frame-f1",
+                "kind": "bbox_height",
+                "owner_layer": "1",
+                "fault_owner": "1",
+                "activates_at": "2",
+                "lifecycle": "persistent",
+                "axis": "camera_alignment",
+                # The reserved hall.* namespace itself: the form unit's hall.mass pays it,
+                # and the ledger republication test that renames hall.mass leaves layer 1 intact.
+                "roles": ["hall.*"],
+                "frame": 1,
+                "op": "band",
+                "lo": 0.3,
+                "hi": 0.6,
+            },
         ],
         "image_contracts": [],
         "requirement_bindings": [

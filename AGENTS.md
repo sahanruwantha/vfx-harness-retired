@@ -327,11 +327,19 @@ effect.
   `check_scene(kind='bbox_feasibility', roles=…)`, which searches every axis-aligned proxy box
   under the real camera and returns the satisfying box or the binding rows. After six
   consecutive mutations that leave the same bbox row failing, `run_bpy` is refused until it
-  runs, and an infeasible verdict under harness-derived bounds fails closed into
-  `cannot_express_in_scope` naming the camera provider; an infeasible verdict under
-  builder-narrowed bounds proves nothing and never downgrades an earlier feasible one.
-  Framing and bbox checks on a shared role return the union the contract measures
-  (HIR-0183).
+  runs; the measurement clears the streak, and an infeasible verdict proves only that no
+  single rigid box can — it names a multi-part subject measured with `contract_result` or
+  `cannot_express_in_scope` as the legal paths and never forces the abstention. A feasible
+  verdict is never downgraded by a later infeasible one under builder-narrowed bounds, and
+  framing and bbox checks on a shared role return the union the contract measures (HIR-0183,
+  HIR-0184).
+- A camera-providing layer that owns projected composition authors, at every judge frame it
+  shares with a later layer, a persistent `bbox_*` row over that layer's reserved namespace (target from that frame's still,
+  bound through `composition_context`); the kickoff compiles those framing obligations from the
+  sparse DAG, the materialization validator and plan gate refuse a missing one, and after every
+  mutation the camera unit reads a proxy-feasibility verdict per later layer computed from its
+  frustums; an infeasible read-back asks for a path change before sealing, because a later
+  geometry layer cannot move the camera (HIR-0184).
 - Form builders inspect off-axis geometry with the typed `inspect_view` instrument, never by
   moving the shot camera. It resolves a semantic role namespace, offers bounded orbit/elevation/
   through-camera Workbench views and optional transactional soloing, then restores camera,
@@ -909,6 +917,12 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
 - Every metric kind declares the evidence domain it can certify (scene, temporal,
   projected_composition, image); a claim binds only evidence that can certify its domain. Counts
   prove existence — never timing, ordering, or appearance (HIR-0014).
+- A `keyframe_schedule` or `object_property` row on a registered `data.*` path (light:
+  `data.energy`, `data.size`; camera: `data.lens`, `data.angle`, `data.clip_*`, `data.sensor_*`,
+  `data.ortho_scale`) binds only on a unit whose dependency closure or an earlier materialized
+  layer writes that carrier family; the materialization validator and plan gate refuse the row
+  otherwise, naming the family and the producers outside the closure, and an unregistered
+  `data.*` path is a finding (HIR-0185).
 - `keyframe_schedule` and `object_property` rows on `data.*` paths judge every selected host
   that owns a data-block: a host with none (a rig's Empty pivot) is typed out and named in the
   note, a data-block that lacks the attribute is a failing measurement, and a selection with no

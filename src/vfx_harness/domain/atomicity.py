@@ -96,8 +96,8 @@ HELPER_INSTRUMENT_FAMILY: dict[str, str] = {
     "bvfx_control": "control",
 }
 
-_LIGHT_PROPERTIES = frozenset({"data.energy", "data.size"})
-_CAMERA_PROPERTY_PREFIXES = (
+LIGHT_PROPERTIES = frozenset({"data.energy", "data.size"})
+CAMERA_PROPERTY_PREFIXES = (
     "data.lens",
     "data.angle",
     "data.clip_start",
@@ -205,9 +205,9 @@ def instrument_family_for_row(row: Mapping[str, Any]) -> str | None:
         return "shading"
     if kind == "object_property":
         prop = str(row.get("property") or "")
-        if prop in _LIGHT_PROPERTIES:
+        if prop in LIGHT_PROPERTIES:
             return "light"
-        if any(prop == prefix or prop.startswith(f"{prefix}.") for prefix in _CAMERA_PROPERTY_PREFIXES):
+        if any(prop == prefix or prop.startswith(f"{prefix}.") for prefix in CAMERA_PROPERTY_PREFIXES):
             return "camera"
         if prop.startswith("data."):
             return "control"

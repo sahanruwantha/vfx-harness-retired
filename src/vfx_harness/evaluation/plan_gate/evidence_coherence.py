@@ -56,10 +56,15 @@ import fnmatch
 import json
 from pathlib import Path
 
-from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
+from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps, write_clusters
 from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
 from vfx_harness.domain.construction_routes import construction_route_gaps
 from vfx_harness.domain.contracts import load_document
+from vfx_harness.domain.data_block_carriers import (
+    DATA_BLOCK_CARRIER_RULE,
+    data_block_carrier_gaps,
+    describe_gap,
+)
 from vfx_harness.domain.dressing import DRESSING_CLOSURE_FIX, SAME_LAYER_DRESS_RULE, same_layer_dress_gaps
 from vfx_harness.domain.image_debts import (
     IMAGE_PROPERTY_VOCABULARY_RULE,
@@ -88,7 +93,12 @@ from vfx_harness.domain.work_units import (
     read_document,
     vis_roles_unrepairable_by,
 )
-from vfx_harness.domain.work_units.subject_framing import uncovered_subject_framing_frames
+from vfx_harness.domain.work_units.subject_framing import (
+    DOWNSTREAM_SUBJECT_COVERAGE_RULE,
+    successor_judge_rows,
+    uncovered_downstream_subjects,
+    uncovered_subject_framing_frames,
+)
 from vfx_harness.evaluation.plan_gate.types import (
     Finding,
     _global_authority_layers,
@@ -168,6 +178,7 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
     earlier_camera_available = False
     earlier_image_signal_available = False
     earlier_image_subject_available = False
+    earlier_write_families: set[str] = set()
     for layer in layers:
         if not isinstance(layer, dict):
             continue
@@ -416,6 +427,36 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         f"layer {lid} judge f{frame}",
                         "camera/composition owner has no executable subject framing",
                         SUBJECT_COMPOSITION_RULE,
+                    )
+                )
+        for gap in data_block_carrier_gaps(typed_stages, scene_rows, earlier_families=earlier_write_families):
+            out.append(
+                Finding(
+                    "data-block-carrier",
+                    True,
+                    f"layer {lid} unit {gap.unit_id} contract {gap.contract_id}",
+                    describe_gap(gap),
+                    DATA_BLOCK_CARRIER_RULE,
+                )
+            )
+        # This layer's families become "earlier" for every layer after it.
+        earlier_write_families.update(
+            cluster.instrument_family
+            for unit in typed_stages
+            for cluster in write_clusters(
+                unit, tuple(row for row in scene_rows if isinstance(row, dict)), units=typed_stages
+            )
+        )
+        if camera_units and owns_composition:
+            for gap in uncovered_downstream_subjects(lid, judges, successor_judge_rows(layers, lid), scene_rows):
+                out.append(
+                    Finding(
+                        "composition-coverage",
+                        True,
+                        f"layer {lid} judge f{gap.frame} subject layer {gap.layer_id}",
+                        "camera layer authors no persistent bbox_* row for "
+                        f"{', '.join(gap.reserved_roles)} at a shared judge frame",
+                        DOWNSTREAM_SUBJECT_COVERAGE_RULE,
                     )
                 )
         for uid, unit in stages.items():

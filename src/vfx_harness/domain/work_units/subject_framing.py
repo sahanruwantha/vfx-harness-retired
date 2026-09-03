@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import fnmatch
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
+from vfx_harness.domain.semantic_roles import match_semantic
 from vfx_harness.domain.work_units.capabilities import DEFERRED_SUBJECT_BBOX_KINDS
 
 SUBJECT_FRAMING_COVERAGE_RULE = (
@@ -171,3 +173,79 @@ def uncovered_subject_framing_frames(
         if not covered:
             uncovered.append(int(frame))
     return tuple(uncovered)
+
+
+DOWNSTREAM_SUBJECT_COVERAGE_RULE = (
+    "a camera-providing layer authors, at every judge frame it shares with a later layer, a "
+    "persistent bbox_* row over that layer's reserved subject namespace (owner_layer and "
+    "fault_owner this camera layer, activates_at that layer) with its target measured from "
+    "the reference still of that frame, and binds the ids through composition_context; the "
+    "camera unit then proves every downstream namespace jointly feasible under its sealed "
+    "path before it freezes"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DownstreamSubjectGap:
+    frame: int
+    layer_id: str
+    reserved_roles: tuple[str, ...]
+    ref: str
+
+
+def successor_judge_rows(layers: Iterable[Mapping], camera_layer_id: str) -> list[dict]:
+    """Later sparse layers with their judge frames, reference stills, and reserved roles."""
+    out: list[dict] = []
+    by_id = {str(row.get("id")): row for row in layers if isinstance(row, Mapping) and row.get("id")}
+    camera = by_id.get(str(camera_layer_id))
+    if camera is None:
+        return out
+    for layer_id, row in by_id.items():
+        if layer_id == str(camera_layer_id):
+            continue
+        jit = row.get("jit") if isinstance(row.get("jit"), Mapping) else {}
+        depends = {str(item) for item in (jit.get("depends_on_layers") or row.get("depends_on_layers") or [])}
+        reserved = tuple(str(item) for item in (jit.get("reserved_roles") or row.get("reserved_roles") or []))
+        if str(camera_layer_id) not in depends or not reserved:
+            continue
+        judges = [
+            {"frame": int(item["frame"]), "ref": str(item.get("ref") or "")}
+            for item in row.get("judge") or []
+            if isinstance(item, Mapping) and isinstance(item.get("frame"), int)
+        ]
+        out.append({"id": layer_id, "reserved_roles": reserved, "judges": judges})
+    return out
+
+
+def uncovered_downstream_subjects(
+    camera_layer_id: str,
+    camera_judges: Iterable[int],
+    successors: Iterable[Mapping],
+    scene_rows: Iterable,
+) -> tuple[DownstreamSubjectGap, ...]:
+    """Shared judge frames where a later layer's reserved subject has no camera-authored bbox row."""
+    rows = [row for row in scene_rows if isinstance(row, Mapping)]
+    camera_frames = {int(frame) for frame in camera_judges}
+    gaps: list[DownstreamSubjectGap] = []
+    for successor in successors:
+        reserved = tuple(str(item) for item in successor.get("reserved_roles") or [])
+        if not reserved:
+            continue
+        for judge in successor.get("judges") or []:
+            frame = int(judge["frame"])
+            if frame not in camera_frames:
+                continue
+            covered = any(
+                str(row.get("owner_layer") or "") == str(camera_layer_id)
+                and str(row.get("activates_at") or "") == str(successor.get("id"))
+                and row.get("frame") == frame
+                and str(row.get("kind") or "") in DEFERRED_SUBJECT_BBOX_KINDS
+                and any(match_semantic(str(role), reserved) for role in row.get("roles") or [])
+                for row in rows
+            )
+            if not covered:
+                gaps.append(
+                    DownstreamSubjectGap(frame, str(successor.get("id")), reserved, str(judge.get("ref") or ""))
+                )
+    return tuple(gaps)
+

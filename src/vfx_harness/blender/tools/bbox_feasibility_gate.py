@@ -3,7 +3,12 @@
 HIR-0082 closes a density search after a measured sweep; this module closes a bbox search
 the same way. After ``BBOX_FEASIBILITY_STREAK`` consecutive mutations leave one ``bbox_*``
 row failing, ``run_bpy`` is refused until ``check_scene(kind='bbox_feasibility')`` has run
-for that row; an infeasible verdict fails closed into ``cannot_express_in_scope``.
+for that row. The proxy is one axis-aligned box, so an infeasible verdict proves only that
+no single rigid box can satisfy the rows: run 20260903T100335Z-fa5dbb's building_mass read
+infeasible twice and then passed with a multi-part mass whose union projections satisfy the
+same rows. The verdict therefore reopens mutation and names the two legal paths — a
+multi-part subject measured with ``contract_result``, or ``cannot_express_in_scope`` when
+no construction can — instead of forcing an abstention (HIR-0184).
 """
 
 from __future__ import annotations
@@ -48,9 +53,12 @@ def record_bbox_feasibility(
     Run 20260903T100335Z-fa5dbb found a satisfying box under wide bounds, then narrowed
     its own bounds to a tower and read INFEASIBLE; that later verdict must not license
     abstention, so a feasible record for the same rows is never downgraded by a
-    supplied-bounds infeasibility.
+    supplied-bounds infeasibility. Either way the measurement clears the mutation streak.
     """
     ids = sorted(str(item) for item in row_ids)
+    streaks = comparison_state.get(STREAK_KEY) or {}
+    for row_id in ids:
+        streaks.pop(row_id, None)
     previous = comparison_state.get(RESULT_KEY) or {}
     if (
         previous.get("feasible")
@@ -87,21 +95,5 @@ def bbox_feasibility_block(comparison_state: Mapping) -> str | None:
             "it searches every axis-aligned proxy box under the sealed camera and returns the "
             "satisfying box or proves none exists. Guessing again is not measurement."
         )
-    if not result.get("feasible", True):
-        binding = ", ".join(result.get("binding") or sorted(covered))
-        if result.get("bounds_source") == "supplied":
-            return (
-                "BLOCKED: check_scene(kind='bbox_feasibility') found no proxy box for "
-                + binding
-                + " within the bounds you supplied. That is not proof against the sealed "
-                "camera: re-run it without bounds= (harness-derived bounds) or widen them to "
-                "the region the hosts may legally occupy before mutating again."
-            )
-        return (
-            "BLOCKED: check_scene(kind='bbox_feasibility') proved that no proxy box satisfies "
-            + binding
-            + " under the sealed camera. Further mutation cannot satisfy them; call "
-            "cannot_express_in_scope naming those contract ids and the camera provider from "
-            "your fault_owner_options."
-        )
+
     return None

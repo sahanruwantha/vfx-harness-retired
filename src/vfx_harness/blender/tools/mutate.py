@@ -27,11 +27,50 @@ from vfx_harness.blender.tools.reports import (
     _scene_completion_state,
     _scope_offenders,
     _unpaid_image_debt_note,
+    downstream_framing_note,
     followup_after_scene_contracts_pass,
 )
 from vfx_harness.evidence.scene_checks import functional_evidence, layer_evidence, load_rows
 from vfx_harness.observability.log import log
 from vfx_harness.observability.runlog import bump
+
+
+async def _downstream_framing_probe(session, comparison_state: dict, contract_rows: list[dict]) -> str:
+    """A camera unit sees after every mutation whether its deferred rows stay payable.
+
+    Run 20260903T081518Z-9a32ab sealed a camera path under which no mass could satisfy the
+    frame-1 height cap and frame-113 height floor the reference demands; the geometry
+    layer discovered that by 46 rebuilds. The proxy solver answers it here, per later layer,
+    with no scene object and no camera move (HIR-0184).
+    """
+    if not comparison_state.get("camera_provider"):
+        return ""
+    wanted = {str(item) for item in comparison_state.get("downstream_framing_ids") or []}
+    if not wanted:
+        return ""
+    groups: dict[str, list[dict]] = {}
+    for row in contract_rows:
+        if str(row.get("id")) in wanted:
+            groups.setdefault(str(row.get("activates_at") or ""), []).append(row)
+    results: dict[str, dict] = {}
+    for layer_id, rows in sorted(groups.items()):
+        roles = sorted({str(role) for row in rows for role in row.get("roles") or []})
+        payload = {
+            "rows": [
+                {key: row[key] for key in ("id", "kind", "frame", "op", "lo", "hi", "value", "tol") if key in row}
+                for row in rows
+            ],
+            "roles": roles,
+        }
+        result = await anyio.to_thread.run_sync(lambda p=payload: session.check(kind="bbox_feasibility", **p))
+        results[layer_id] = {
+            "row_ids": [str(row.get("id")) for row in rows],
+            "feasible": bool(result.get("feasible")),
+            "binding": [str(item) for item in result.get("binding") or []],
+            "box": result.get("best") or result.get("box") or {},
+        }
+    comparison_state["downstream_framing"] = results
+    return downstream_framing_note(results)
 
 
 def register_mutate(
@@ -323,6 +362,9 @@ def register_mutate(
                         else:
                             contract_note += " Live mutation remains open until the builder hands its scoped work off."
                 contract_note += _deferred_subject_forecast_note(diagnostic_evidence, contract_rows)
+                contract_note += await _downstream_framing_probe(
+                    session, comparison_state, contract_rows
+                )
             except Exception as exc:
                 contract_note = (
                     f"\n⚠ automatic scene-contract probe unavailable: {type(exc).__name__}: {str(exc)[:100]}"
