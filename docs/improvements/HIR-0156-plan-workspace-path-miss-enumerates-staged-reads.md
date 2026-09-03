@@ -91,3 +91,8 @@ source video" kickoff sentence.
 The card lists files; it does not attach stills or register video tools. A clip
 packaged beside `brief.md` rather than under `refs/` remains invisible to global
 planning by design. Turn and spend caps are unchanged.
+
+Follow-up (2026-09-03): a strict-read session (JIT unit planning, HIR-0091) is denied with
+its declared read surface only (`brief.md`, `refs/` stills, and exact read exceptions); the
+rglob of the shot had offered a unit planner the superseded unit scripts of a
+rematerialized layer as "staged" reads (run `20260903T002758Z-1b6807`).

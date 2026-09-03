@@ -7,6 +7,10 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- A strict-read planning session's path denial enumerates only its declared read
+  surface (`brief.md`, `refs/` stills, exact exceptions) instead of the shot's file
+  tree, so a unit planner is no longer offered superseded unit scripts
+  ([HIR-0156](docs/improvements/HIR-0156-plan-workspace-path-miss-enumerates-staged-reads.md)).
 - Materialization turn budgets scale with the layer's owned requirements (24 plus two
   per requirement, capped at 96), and `patch_materialization` pointers may address a
   list row by its stable id (`id=<row id>`) instead of a guessed index

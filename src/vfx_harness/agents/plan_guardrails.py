@@ -306,6 +306,20 @@ def planner_path_scope(
     root = Path(shot_folder).resolve()
     read_exceptions = {Path(path).expanduser().resolve() for path in readable_files}
     read_root_exceptions = {Path(path).expanduser().resolve() for path in readable_roots}
+    legal_reads: tuple[str, ...] | None = None
+    if strict_reads:
+        surface: list[str] = ["brief.md"]
+        refs_dir = root / "refs"
+        if refs_dir.is_dir():
+            surface.extend(
+                sorted(f"refs/{path.name}" for path in refs_dir.iterdir() if path.is_file())
+            )
+        for path in sorted(read_exceptions | read_root_exceptions):
+            try:
+                surface.append(path.relative_to(root).as_posix())
+            except ValueError:
+                surface.append(str(path))
+        legal_reads = tuple(dict.fromkeys(surface))
     write_exceptions = (
         None
         if writable_files is None
@@ -340,7 +354,7 @@ def planner_path_scope(
             pattern = str(args.get("pattern") or "")
             pattern_path = Path(pattern).expanduser()
             if pattern_path.is_absolute() or ".." in pattern_path.parts:
-                return _path_denial(tool, pattern, root)
+                return _path_denial(tool, pattern, root, legal_reads)
 
         inside = target == root or root in target.parents
         read_only = tool in {"Read", "Grep", "LSP", "Glob"}
@@ -372,19 +386,28 @@ def planner_path_scope(
             )
             if declared_read:
                 return {}
-            return _path_denial(tool, str(target), root)
+            return _path_denial(tool, str(target), root, legal_reads)
         if inside and not (write_tool and (authored or bundle_member or exact_write_denied)):
             return {}
         if read_only and target in read_exceptions:
             return {}
-        return _path_denial(tool, str(target), root)
+        return _path_denial(tool, str(target), root, legal_reads)
 
     return HookMatcher(matcher=None, hooks=[_check])
 
 
-def _path_denial(tool: str, target: str, root: Path) -> dict:
+def _path_denial(tool: str, target: str, root: Path, legal_reads: tuple[str, ...] | None = None) -> dict:
+    """Deny one path and enumerate the reads that ARE legal.
+
+    A strict-read session (JIT unit planning, HIR-0091) has no raw shot surface; listing
+    the shot's files by rglob offered a unit planner the superseded unit scripts of a
+    rematerialized layer as "staged" reads (run 20260903T002758Z-1b6807). Under strict
+    reads the card enumerates only the declared read surface.
+    """
     log(f"! planner path denied: {tool} on {target}", 1)
-    staged = format_staged_relative_reads(root)
+    staged = (
+        ", ".join(legal_reads) if legal_reads else "(none)"
+    ) if legal_reads is not None else format_staged_relative_reads(root)
     return {"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",

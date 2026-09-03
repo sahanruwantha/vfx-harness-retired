@@ -1830,3 +1830,30 @@ def test_global_tool_routing_excludes_preproduction_capabilities() -> None:
         "mcp__plan__ask_supervisor",
         "mcp__plan__run_gate",
     ]
+
+
+def test_strict_read_denial_enumerates_only_the_declared_surface(tmp_path: Path) -> None:
+    """A unit-planning session must not be offered the shot tree, least of all
+    superseded unit scripts of a rematerialized layer (HIR-0156 follow-up)."""
+    (tmp_path / "refs").mkdir()
+    (tmp_path / "build" / "units" / "01").mkdir(parents=True)
+    (tmp_path / "brief.md").write_text("# brief\n", encoding="utf-8")
+    (tmp_path / "refs" / "frame_0s.jpg").write_bytes(b"ref")
+    (tmp_path / "build" / "units" / "01" / "camera_path.py").write_text("# retired\n", encoding="utf-8")
+    snapshot = tmp_path / "runs" / "r1" / "checkpoints" / "plans" / "snapshots" / "global.round1.md"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("# snapshot\n", encoding="utf-8")
+    hook = planner_path_scope(tmp_path, readable_files=(snapshot,), strict_reads=True).hooks[0]
+    denied = anyio.run(
+        hook,
+        {"tool_name": "Read", "tool_input": {"file_path": "/elsewhere/refs/frame_0s.jpg"}},
+        None,
+        None,
+    )
+    reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert (
+        "Staged relative files: brief.md, refs/frame_0s.jpg, "
+        "runs/r1/checkpoints/plans/snapshots/global.round1.md."
+    ) in reason
+    assert "build/units/01/camera_path.py" not in reason
