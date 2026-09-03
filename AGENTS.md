@@ -479,6 +479,13 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   validation gap, or authority/provenance failure. Mixed causes name every contributing boundary.
 - Fix the earliest owning cause. Do not use downstream guards, silent retries, broader tolerances,
   extra mutation authority, prompt reminders, or special cases to conceal an upstream failure.
+- The root cause is the earliest decision or reasoning step that made the failure reachable,
+  not the code where it surfaced. That step may be a design choice in an ADR, an assumption in
+  an HIR, a plan or contract decision, an ownership boundary, or an agent reasoning step the
+  harness allowed. Trace the chain back to that step and fix it there. When the originating
+  step is a recorded decision, the fix supersedes that decision and migrates; adding code
+  around its consequences is a patch. Fixing only the downstream code leaves the same decision
+  free to produce the next variant of the failure elsewhere.
 - Treat a reasoning failure first as a possible instrumentation problem: missing measurement,
   unavailable legal choices, incomplete bounded context, or absent mutation read-back. Ask the
   model to reason differently only when the remaining defect is genuinely judgmental.

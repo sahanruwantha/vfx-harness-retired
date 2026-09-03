@@ -15,6 +15,10 @@ the symptom or specialize a fix to the scene that exposed it.
   instrument, tool policy, validation, or authority/provenance. Name all contributing boundaries.
 - Fix the earliest owning cause. Reject downstream guards, retries, tolerance changes, broadened
   permissions, prompt reminders, and fixture-specific branches that only hide recurrence.
+- The root cause is the earliest decision or reasoning step that made the failure reachable —
+  an ADR/HIR assumption, plan/contract decision, ownership boundary, or an agent reasoning step
+  the harness allowed — not the code where it surfaced. Fix at that step; supersede a recorded
+  decision and migrate rather than coding around its consequences.
 - Investigate reasoning failures as missing measurements, choices, bounded context, or read-back
   before changing prompts. Mechanical failures require mechanical enforcement.
 - Record how the system made the failure representable; identify mechanisms, not blame.
