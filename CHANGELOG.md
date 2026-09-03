@@ -7,6 +7,10 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- Materialization turn budgets scale with the layer's owned requirements (24 plus two
+  per requirement, capped at 96), and `patch_materialization` pointers may address a
+  list row by its stable id (`id=<row id>`) instead of a guessed index
+  ([HIR-0177](docs/improvements/HIR-0177-materialization-budget-and-id-addressed-patches.md)).
 - Absolute pixel statistics (`render_region_stat`, `control_render_response`) bound by
   a required image claim count as image debts for the signal and subject bootstrap
   gates, so a camera-only unit cannot carry them;

@@ -32,16 +32,43 @@ def format_finding(pointer: str, message: str) -> str:
     return f"{pointer}: {message}" if pointer else message
 
 
+ID_TOKEN_PREFIX = "id="
+
+
 def _list_index(token: str, current: list[Any], *, allow_append: bool) -> int:
-    """Parse one RFC 6901 array token and teach the exact legal locations."""
+    """Parse one RFC 6901 array token and teach the exact legal locations.
+
+    Besides a decimal index and the append token ``-``, a list token may name a row by
+    its stable id (``id=<row id>``): a materializer patching a contract it just staged
+    should not have to guess where the harness placed it (run 20260903T002758Z-1b6807
+    spent three turns on out-of-range indices; HIR-0177).
+    """
     if token == "-":
         if allow_append:
             return len(current)
         raise ValueError("JSON pointer '-' is not a get location")
+    if token.startswith(ID_TOKEN_PREFIX):
+        wanted = token[len(ID_TOKEN_PREFIX):]
+        matches = [
+            index
+            for index, row in enumerate(current)
+            if isinstance(row, dict) and str(row.get("id") or "") == wanted
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise ValueError(
+                f"JSON pointer id token {token!r} matches no row. "
+                + _list_location_card(current, allow_append=allow_append)
+            )
+        raise ValueError(
+            f"JSON pointer id token {token!r} is ambiguous (rows {matches}); address one "
+            "by index. " + _list_location_card(current, allow_append=allow_append)
+        )
     if not token.isascii() or not token.isdecimal():
         raise ValueError(
-            f"JSON pointer list index must be a non-negative integer; got {token!r}. "
-            + _list_location_card(current, allow_append=allow_append)
+            f"JSON pointer list index must be a non-negative integer or id=<row id>; got "
+            f"{token!r}. " + _list_location_card(current, allow_append=allow_append)
         )
     index = int(token)
     if index >= len(current):
@@ -66,7 +93,8 @@ def _list_location_card(current: list[Any], *, allow_append: bool) -> str:
     ]
     identities = f"; indexed ids are [{', '.join(identified)}]" if identified else ""
     append = "; use '-' as the final token to append" if allow_append else ""
-    return f"list length is {length}; {locations}{identities}{append}"
+    by_id = "; a list token may also be id=<row id>" if identified else ""
+    return f"list length is {length}; {locations}{identities}{append}{by_id}"
 
 
 def _step(current: Any, token: str) -> Any:

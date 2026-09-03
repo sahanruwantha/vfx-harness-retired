@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions, query
 
 from vfx_harness.agents.plan_guardrails import planner_hooks
 from vfx_harness.agents.plan_tools import build_plan_tools
+from vfx_harness.agents.planner.budget import materialization_turn_budget
 from vfx_harness.agents.planner.kickoff import (
     _materialization_kickoff,
     _with_target_feedback,
@@ -49,6 +51,16 @@ from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 from vfx_harness.orchestration.unit_state_lock import unit_state_lock
 
 
+def _owned_requirement_count(layers_path: Path, layer_id: str) -> int:
+    """Owned requirements of one sparse layer row; the budget input, never the design."""
+
+    document = json.loads(Path(layers_path).read_text(encoding="utf-8"))
+    for row in document.get("layers") or []:
+        if isinstance(row, dict) and str(row.get("id")) == layer_id:
+            return len((row.get("jit") or {}).get("owned_requirements") or [])
+    return 0
+
+
 async def _materialize_deferred_layer(
     shot,
     layer,
@@ -74,6 +86,8 @@ async def _materialize_deferred_layer(
     if selected_authority.plan is None:
         raise ValueError("cannot materialize without selected global plan authority")
     bundle = selected_authority.plan.bundle
+    owned_requirements = _owned_requirement_count(bundle.root / "layers.json", str(layer.id))
+    max_turns = materialization_turn_budget(max_turns, owned_requirements)
     layout = run_artifacts.ensure(shot.folder, command="plan-layer")
     identity_segment = layer_identity_segment(str(layer.id))
     target = layout.scratch / f"jit-{identity_segment}.json"

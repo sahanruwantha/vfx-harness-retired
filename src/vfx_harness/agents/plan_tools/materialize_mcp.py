@@ -620,6 +620,8 @@ def register_materialize_tools(**closed):
         "Atomically set one or several RFC 6901 JSON Pointers on the candidate "
         "materialization file, then re-validate once. Group independent findings in "
         "`patches`; use `pointer` + `value` for one repair. Every value is JSON-encoded. "
+        "A list token may be the row's stable id (`/scene_contracts/id=<row id>/hi`) "
+        "instead of a guessed index; `-` appends. "
         "Cannot replace the document root. Returns VALIDATION PASSED or all remaining "
         "findings; if any pointer is invalid, no patch is written.",
         {

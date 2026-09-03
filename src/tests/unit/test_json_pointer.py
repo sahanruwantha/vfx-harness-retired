@@ -76,3 +76,17 @@ def test_format_finding_prefixes_the_pointer() -> None:
         format_finding("/scene_contracts/2/owner_layer", 'owner_layer must be "1"')
         == '/scene_contracts/2/owner_layer: owner_layer must be "1"'
     )
+
+
+def test_list_tokens_may_name_a_row_by_id() -> None:
+    document = {"rows": [{"id": "a", "v": 1}, {"id": "b", "v": 2}, {"v": 3}]}
+    assert get(document, "/rows/id=b/v") == 2
+    set_at(document, "/rows/id=a/v", 10)
+    assert document["rows"][0]["v"] == 10
+    with pytest.raises(ValueError, match="matches no row") as exc:
+        get(document, "/rows/id=zzz/v")
+    assert "indexed ids are [0:a, 1:b]" in str(exc.value)
+    assert "id=<row id>" in str(exc.value)
+    document["rows"].append({"id": "a", "v": 99})
+    with pytest.raises(ValueError, match="ambiguous"):
+        get(document, "/rows/id=a/v")

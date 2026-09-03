@@ -99,9 +99,11 @@ The same plan had also authored judge frame 0 for `refs/frame_0s.jpg` for the se
 - `src/tests/unit/test_builder_stop_boundary.py`: the fixture's `plan_hash` is a capsule
   digest distinct from the file hash; a replaced capsule is refused.
 - `src/tests/unit/test_judge_frame_convention.py`.
-- Live: rematerializing layer 1 of the same shot after this change must refuse the
-  contradictory rows at staging, and the next falsification (if any) must publish the
-  typed `authority_defect` envelope.
+- Live: the layer-1 rematerialization of the same shot (run `20260902T201152Z-e20545`'s
+  successor, 2026-09-03) authored consistent speed windows under the new gate and its
+  replacement passed; the projection relocation let the terminal gate clean the same
+  session that had failed on `hypothesis-falsifications` before. No further falsification
+  has exercised the capsule-bound stop live yet.
 
 ## Release and rollback
 

@@ -344,7 +344,8 @@ effect.
   the line, the escaping expression, its capability chain, and the legal replay forms
   (HIR-0174).
 - A JSON-pointer list miss reports the live length, valid indices, stable row ids when
-  present, and `-` as the final-token append action. Negative indices never mutate from
+  present, `-` as the final-token append action, and that a list token may be
+  `id=<row id>` (HIR-0177). Negative indices never mutate from
   the end; candidate repair does not make the materializer guess list occupancy (HIR-0105).
 - A plan-workspace path miss names the requested path and the staged relative files in
   that cwd, and forbids prefixing another filesystem root. Draft, verify, and repair
@@ -429,7 +430,9 @@ mechanism when it improves control, observability, or agent capability.
 - Resume only when checkpoint, journal, authority generation, and active-unit identity still
   match. A resumable SDK session does not by itself prove a valid harness resume.
 - Choose model, effort, turn, token, and cost budgets for the role and measured uncertainty; do
-  not maximize every setting indiscriminately. Parallelize independent evidence production while
+  not maximize every setting indiscriminately. A materialization session's turn budget is the
+  larger of the requested cap and 24 plus two turns per owned requirement, capped at 96; an
+  exhausted session still publishes nothing (HIR-0177). Parallelize independent evidence production while
   authoritative scene mutation and publication remain serialized.
 - Before adding an SDK workaround, verify the installed SDK does not already provide the needed
   primitive. Pin and test every SDK behavior the harness depends on, and fail closed when an

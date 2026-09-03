@@ -207,8 +207,12 @@ degraded finalizer prompt had to be reconstructed from the run log.
   dependency-complete producer's card names the row as a required payment.
 - Before the mechanism: the three unit-planning sessions of run 004470 each reported the
   self-referential finding; both layer-1 journals were refused; `cam-lens-schedule` read
-  2.0 on the rig. The next real run on the same shot re-validates all three at the live
-  boundary.
+  2.0 on the rig.
+- Live, run `20260902T190446Z-88aeb3` and run `20260903T002758Z-1b6807` on the same shot:
+  every unit-planning `gate_preview` returned CLEAN on the session's own draft; every
+  unit journal published under `checkpoints/journals/` and each finalizer read it in one
+  call (5 turns, $0.05 to $0.12, against 19 turns and $0.38 before); the camera rig unit
+  built with `bvfx_camera_rig` and its `data.lens` rows passed with the pivot typed out.
 
 ## Release and rollback
 
