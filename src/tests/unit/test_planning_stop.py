@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,11 @@ from vfx_harness.agents.planner.planning_stop import (
 from vfx_harness.agents.planner.types import PlanGateFailure, PlanLoopResult
 from vfx_harness.domain.stop_amendment_transactions import amendment_after_source
 from vfx_harness.domain.stop_envelopes import StopEnvelope
+from vfx_harness.domain.stop_transaction_state import (
+    SelectedAuthorityAssertionV2,
+    SelectedAuthorityBundle,
+    SelectedAuthorityView,
+)
 from vfx_harness.domain.stop_transactions import (
     EngineeringRouteCommitted,
     PublishValidatedAmendmentTarget,
@@ -387,6 +393,95 @@ def test_a_layer_amendment_lands_in_the_jit_head_and_a_global_one_in_a_bundle() 
     assert amendment_after_source("layer_view") == "jit"
 
 
+def _selected_authority(view_seed: str = "jit-view"):
+    """A selected bundle plus its effective just-in-time view."""
+    return SelectedAuthorityAssertionV2(
+        selection="selected",
+        bundle=SelectedAuthorityBundle(
+            digest=hashlib.sha256(b"bundle").hexdigest(),
+            outcome="clean",
+            semantic_manifest_digest=hashlib.sha256(b"bundle-manifest").hexdigest(),
+        ),
+        effective_view=SelectedAuthorityView(
+            source="jit",
+            digest=hashlib.sha256(view_seed.encode()).hexdigest(),
+            semantic_manifest_digest=hashlib.sha256(b"view-manifest").hexdigest(),
+        ),
+    )
+
+
+def _with_selected_authority(monkeypatch: pytest.MonkeyPatch, assertion) -> None:
+    """Make the snapshot and the resolver agree on one selected authority."""
+    import vfx_harness.agents.planner.planning_stop as module
+
+    snapshot = {
+        "schema": "vfx-harness.plan-authority-before/v1",
+        "selection": "verified",
+        "bundle_digest": assertion.bundle.digest,
+    }
+    monkeypatch.setattr(
+        module,
+        "_authority_before",
+        lambda _layout: (snapshot, assertion.digest, assertion.bundle.digest),
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_selected_authority",
+        lambda _shot: SimpleNamespace(
+            assertion=assertion,
+            pointer_observation=SimpleNamespace(
+                digest=hashlib.sha256(b"pointer").hexdigest(),
+                plan_pointer_sha256=hashlib.sha256(b"plan-pointer").hexdigest(),
+                jit_pointer_sha256=hashlib.sha256(b"jit-pointer").hexdigest(),
+            ),
+        ),
+    )
+
+
+def test_a_layer_view_stop_binds_the_exact_view_its_amendment_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run 20260903T185105Z-75eddf: the identity named no view and the envelope refused.
+
+    ``_validate_action_identity`` requires a layer-view amendment's identity to name the
+    exact bundle and effective view the target binds.  This exercises the real builder
+    against the real domain validators, which the earlier mocked tests did not.
+    """
+    layout, result = _rejected_candidate(tmp_path, monkeypatch, run_id="layer-view-stop-1")
+    assertion = _selected_authority()
+    _with_selected_authority(monkeypatch, assertion)
+
+    envelope = publish_layer_plan_gate_stop(layout, result, layer_id="2")
+
+    assert envelope.stage == "plan_gate"
+    assert envelope.identity.layer_id == "2"
+    assert envelope.identity.bundle_digest == assertion.bundle.digest
+    assert envelope.identity.view_digest == assertion.effective_view.digest
+    action = envelope.actions[0]
+    assert action.transaction_id == "publish_validated_amendment"
+    assert action.target.scope == "layer_view"
+    assert action.target.layer_id == "2"
+    assert action.target.owner_authority_id == "layer-plan-authority"
+    assert action.postcondition.required_after_source == "jit"
+
+
+def test_a_global_stop_names_no_view_even_with_one_selected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared builder must not leak the layer identity into a global amendment."""
+    layout, result = _rejected_candidate(tmp_path, monkeypatch, run_id="global-view-stop-1")
+    _with_selected_authority(monkeypatch, _selected_authority())
+
+    envelope = publish_global_plan_gate_stop(layout, result)
+
+    assert envelope.identity.view_digest is None
+    assert envelope.identity.layer_id is None
+    assert envelope.actions[0].target.scope == "global_plan"
+    assert envelope.actions[0].postcondition.required_after_source == "bundle"
+
+
 def test_a_layer_view_rejection_without_selected_authority_stays_global(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -394,8 +489,10 @@ def test_a_layer_view_rejection_without_selected_authority_stays_global(
     """There is no layer view to amend until authority is selected."""
     layout, result = _rejected_candidate(tmp_path, monkeypatch, run_id="layer-plan-stop-1")
 
-    with pytest.raises(ValueError, match="layer-view amendment requires selected"):
-        publish_layer_plan_gate_stop(layout, result, layer_id="2")
+    envelope = publish_layer_plan_gate_stop(layout, result, layer_id="2")
+
+    assert envelope.stop_class == "harness_defect"
+    assert envelope.actions[0].target.__class__.__name__ == "RouteEngineeringTarget"
 
 
 def test_the_global_scope_keeps_its_own_amendment_contract(
@@ -412,3 +509,29 @@ def test_the_global_scope_keeps_its_own_amendment_contract(
     assert action.target.layer_id is None
     assert action.postcondition.required_after_source == "bundle"
     assert envelope.identity.layer_id is None
+
+
+def test_an_uncompilable_stop_routes_to_engineering_instead_of_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The boundary must never hand the driver an untyped traceback (HIR-0187).
+
+    Runs 20260903T180933Z-ea3e7a and 20260903T185105Z-75eddf each died with a raw
+    ValueError from envelope construction.  A boundary that cannot compile typed
+    authority is an authority defect with evidence, which this module already routes.
+    """
+    layout, result = _rejected_candidate(tmp_path, monkeypatch, run_id="uncompilable-1")
+    assertion = _selected_authority()
+    _with_selected_authority(monkeypatch, assertion)
+    import vfx_harness.agents.planner.planning_stop as module
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError("injected: amendment target does not match selected stop authority")
+
+    monkeypatch.setattr(module, "PublishValidatedAmendmentTarget", refuse)
+
+    envelope = publish_layer_plan_gate_stop(layout, result, layer_id="2")
+
+    assert envelope.stop_class == "harness_defect"
+    assert envelope.actions[0].target.__class__.__name__ == "RouteEngineeringTarget"

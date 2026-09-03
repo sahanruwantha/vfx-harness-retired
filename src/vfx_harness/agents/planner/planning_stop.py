@@ -406,6 +406,7 @@ def _harness_defect(
     authority_before: dict[str, Any],
     authoritative_before_digest: str,
     selected_bundle_digest: str | None,
+    detail: str | None = None,
 ) -> StopEnvelope:
     issue_ids = tuple(f"plan-gate-evidence:{issue}" for issue in sorted(set(issues)))
     normalized = {
@@ -460,6 +461,9 @@ def _harness_defect(
             "gate_report_record": report_record,
             "gate_report": report,
             "authoritative_before": authority_before,
+            # Uncited diagnostic: the typed issue code names the failure class, this
+            # carries the exact reason so the route is actionable.
+            **({"detail": detail} if detail else {}),
         },
     )
     cause = StopCause(
@@ -715,67 +719,92 @@ def _publish_plan_gate_stop(
         )
         for record in causal_findings
     )
-    target = PublishValidatedAmendmentTarget(
-        scope=scope,
-        base_authority=resolved_authority.assertion,
-        layer_id=layer_id,
-        findings=findings,
-        owner_authority_id=owner_authority_id,
-        gate_policy_id=_GATE_POLICY,
-        gate_schema=_GATE_SCHEMA,
-        validation_scope="structural_authority",
-    )
-    action = StopAction(
-        target=target,
-        postcondition=SelectedAuthorityAmendmentCommitted(
-            scope=target.scope,
-            base_authority_digest=target.base_authority.digest,
+    try:
+        target = PublishValidatedAmendmentTarget(
+            scope=scope,
+            base_authority=resolved_authority.assertion,
             layer_id=layer_id,
-            finding_ids=tuple(record["finding_id"] for record in causal_findings),
+            findings=findings,
+            owner_authority_id=owner_authority_id,
             gate_policy_id=_GATE_POLICY,
             gate_schema=_GATE_SCHEMA,
             validation_scope="structural_authority",
-            owner_authority_id=target.owner_authority_id,
-            required_after_source=amendment_after_source(scope),
-        ),
-    )
-    authority_after = resolve_selected_authority(layout.shot)
-    if authority_after != resolved_authority:
-        raise RuntimeError(
-            "selected authority changed while its global plan stop was compiled"
         )
-    return StopEnvelope(
-        stage="plan_gate",
-        stop_class="authority_defect",
-        identity=StopIdentity(
-            run_id=layout.run_id,
-            bundle_digest=selected_bundle_digest,
-            view_digest=None,
-            layer_id=layer_id,
-            unit_id=None,
-            unit_plan_digest=None,
-            unit_digest=None,
-            candidate_digest=candidate_record["sha256"],
-            checkpoint_digest=None,
-            settings_digest=None,
-            debt_state_digest=None,
-        ),
-        cause=StopCause(
-            invariant_id="structural_plan_gate_blocked",
-            finding_ids=finding_ids,
-            owner_scope_ids=(owner_authority_id,),
-            normalized_facts_digest=canonical_digest(normalized),
-        ),
-        attempt_evidence_digest=attempt_digest,
-        classification_evidence_digest=classification_digest,
-        artifact_state_digest=artifact_state_digest,
-        authoritative_before_digest=before_digest,
-        actions=(action,),
-        evidence_refs=(evidence,),
-        budget_key=owner_authority_id,
-        expected=(
-            f"The {subject} must pass every deterministic structural authority check."
-        ),
-        found=f"The exact candidate has {len(blocking)} blocking structural finding(s).",
-        next_action="Publish a new validated authority amendment; this stop does not authorize apply-replan.",
-    )
+        action = StopAction(
+            target=target,
+            postcondition=SelectedAuthorityAmendmentCommitted(
+                scope=target.scope,
+                base_authority_digest=target.base_authority.digest,
+                layer_id=layer_id,
+                finding_ids=tuple(record["finding_id"] for record in causal_findings),
+                gate_policy_id=_GATE_POLICY,
+                gate_schema=_GATE_SCHEMA,
+                validation_scope="structural_authority",
+                owner_authority_id=target.owner_authority_id,
+                required_after_source=amendment_after_source(scope),
+            ),
+        )
+        # A layer-view amendment binds the effective view it amends; the envelope validator
+        # requires the identity to name that exact view, and the global scope names none.
+        effective_view = resolved_authority.assertion.effective_view
+        identity_view_digest = (
+            effective_view.digest
+            if scope == "layer_view" and effective_view is not None
+            else None
+        )
+        authority_after = resolve_selected_authority(layout.shot)
+        if authority_after != resolved_authority:
+            raise RuntimeError(
+                "selected authority changed while its global plan stop was compiled"
+            )
+        return StopEnvelope(
+            stage="plan_gate",
+            stop_class="authority_defect",
+            identity=StopIdentity(
+                run_id=layout.run_id,
+                bundle_digest=selected_bundle_digest,
+                view_digest=identity_view_digest,
+                layer_id=layer_id,
+                unit_id=None,
+                unit_plan_digest=None,
+                unit_digest=None,
+                candidate_digest=candidate_record["sha256"],
+                checkpoint_digest=None,
+                settings_digest=None,
+                debt_state_digest=None,
+            ),
+            cause=StopCause(
+                invariant_id="structural_plan_gate_blocked",
+                finding_ids=finding_ids,
+                owner_scope_ids=(owner_authority_id,),
+                normalized_facts_digest=canonical_digest(normalized),
+            ),
+            attempt_evidence_digest=attempt_digest,
+            classification_evidence_digest=classification_digest,
+            artifact_state_digest=artifact_state_digest,
+            authoritative_before_digest=before_digest,
+            actions=(action,),
+            evidence_refs=(evidence,),
+            budget_key=owner_authority_id,
+            expected=(
+                f"The {subject} must pass every deterministic structural authority check."
+            ),
+            found=f"The exact candidate has {len(blocking)} blocking structural finding(s).",
+            next_action="Publish a new validated authority amendment; this stop does not authorize apply-replan.",
+        )
+    except ValueError as exc:
+        # A boundary that cannot compile typed authority is itself an authority
+        # defect with evidence, not an untyped traceback for the driver to surface
+        # (runs 20260903T180933Z-ea3e7a and …185105Z-75eddf) (HIR-0187).
+        return _harness_defect(
+            layout,
+            result,
+            issues=("stop_envelope_rejected",),
+            detail=str(exc),
+            candidate_record=candidate_record,
+            report_record=report_record,
+            report=report,
+            authority_before=authority_before,
+            authoritative_before_digest=before_digest,
+            selected_bundle_digest=selected_bundle_digest,
+        )

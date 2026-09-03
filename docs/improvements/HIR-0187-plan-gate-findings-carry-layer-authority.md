@@ -155,8 +155,26 @@ without one. The driver now decides scope on that precondition rather than disco
 it as an exception — with no selected authority the repair is global, whoever owns the
 finding.
 
-The regression escaped the first landing because the driver tests stubbed
-`publish_layer_plan_gate_stop`, mocking the construction that was wrong.
-`test_planning_stop.py` now exercises the real builder for both scopes and asserts the
-domain accepts each, and `test_run_shot_plan_gate_stop.py` covers the missing-authority
-scope decision.
+A third precondition followed in run `20260903T185105Z-75eddf`:
+
+```
+ValueError: amendment target does not match selected stop authority
+```
+
+`_validate_action_identity` requires a layer-view amendment's identity to name the exact
+bundle *and effective view* its target binds; the identity named no view. The builder now
+composes that view digest from the same authority the target binds.
+
+Three preconditions discovered one run at a time is itself the lesson. Two mechanisms
+close it:
+
+- `test_planning_stop.py` exercises the **real** builder against the **real** domain
+  validators for both scopes, with a selected bundle and effective view — the earlier
+  driver tests stubbed `publish_layer_plan_gate_stop` and so mocked the construction that
+  was wrong. Reverting the view binding makes that test fail with the exact `ValueError`
+  from the run.
+- A boundary that cannot compile typed authority now routes to the existing
+  `_harness_defect` path with a `stop_envelope_rejected` issue and the exact reason in its
+  audit, instead of raising. A stop-publication boundary handing the driver an untyped
+  traceback is the very failure shape this record removes; it must not be able to do that
+  even when its own construction is wrong.
