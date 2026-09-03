@@ -15,7 +15,9 @@ live in the linked Harness Improvement Records.
   per requirement, capped at 96), and `patch_materialization` pointers may address a
   list row by its stable id (`id=<row id>`) instead of a guessed index. The staging
   schema offers only the claim authorities an authored claim can carry, and a mutated
-  role without a required claim is refused at the stage call rather than at finalize
+  role without a required claim, a cross-row contract contradiction, or a camera unit
+  whose judge frames lack rendered-subject framing is refused at the stage call rather
+  than at finalize
   ([HIR-0177](docs/improvements/HIR-0177-materialization-budget-and-id-addressed-patches.md)).
 - An `object_count` upper bound over a literal namespace whose dotted descendants
   sibling rows require is refused at materialization and the plan gate with the

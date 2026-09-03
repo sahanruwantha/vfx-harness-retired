@@ -52,14 +52,12 @@ Exit codes: 0 clean · 3 at least one blocking finding
 
 from __future__ import annotations
 
-import fnmatch
 from pathlib import Path
 
 from vfx_harness.domain.work_units import read_document
 from vfx_harness.evaluation.plan_gate.types import (
     Finding,
 )
-from vfx_harness.evidence.scene_checks import BBOX_KINDS
 
 
 def _check_unit_dependencies(folder: Path) -> list[Finding]:
@@ -108,63 +106,3 @@ def _check_unit_dependencies(folder: Path) -> list[Finding]:
                 )
             )
     return findings
-
-
-def _camera_only_host_roles(stages: dict[str, dict]) -> frozenset[str]:
-    """Roles mutated by a camera provider that does not also provide geometry."""
-    roles: set[str] = set()
-    for unit in stages.values():
-        provides = {str(item) for item in (unit.get("provides") or [])}
-        if "camera" not in provides or "geometry" in provides:
-            continue
-        mutates = unit.get("mutates") or {}
-        roles.update(str(item) for item in mutates.get("roles") or [])
-        roles.update(str(item) for item in mutates.get("controls") or [])
-    return frozenset(roles)
-
-
-def _role_matches_any(role: str, selectors: frozenset[str]) -> bool:
-    return any(
-        fnmatch.fnmatchcase(role, selector) or fnmatch.fnmatchcase(selector, role)
-        for selector in selectors
-    )
-
-
-def _is_subject_framing_row(row: dict, camera_only_roles: frozenset[str]) -> bool:
-    """True when a row can certify subject composition (HIR-0127).
-
-    `projected_origin` of a camera-only host is alignment, not framing. `bbox_*` of a
-    rendered subject is framing. A bbox whose every role is a camera-only host is not.
-    """
-
-    if str(row.get("kind") or "") not in BBOX_KINDS:
-        return False
-    roles = [str(item) for item in row.get("roles") or [] if str(item)]
-    if not roles or not camera_only_roles:
-        return True
-    return not all(_role_matches_any(role, camera_only_roles) for role in roles)
-
-
-def _deferred_subject_framing_covers(
-    scene_rows: list,
-    layer_id: str,
-    frame: int,
-    camera_only_roles: frozenset[str],
-) -> bool:
-    for row in scene_rows:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("owner_layer") or "") != layer_id:
-            continue
-        try:
-            owner = int(row.get("owner_layer"))
-            active = int(row.get("activates_at") or owner)
-        except (TypeError, ValueError):
-            continue
-        if active <= owner:
-            continue
-        if row.get("frame") != frame:
-            continue
-        if _is_subject_framing_row(row, camera_only_roles):
-            return True
-    return False

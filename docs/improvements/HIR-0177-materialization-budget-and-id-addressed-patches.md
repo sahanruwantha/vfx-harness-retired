@@ -76,6 +76,16 @@ Two further teaching-by-rejection rounds recurred across the same lineage:
    `claim_closure` reports it as before, and `_validate_local_staged_units` refuses the
    stage call with the uncovered roles, the unit's required-claim subject roles, and
    `MUTATION_CLAIM_COVERAGE_RULE`.
+5. `_validate_local_staged_units` also runs `validate_row_set` over the candidate's
+   contracts, so a cross-row contradiction (HIR-0030, HIR-0175, HIR-0178) staged in one
+   call is refused at that call instead of at finalize (layer-1 rematerialization take 4
+   paid one finalize round for a derivative floor inside a lower cap).
+6. `domain/work_units/subject_framing.uncovered_subject_framing_frames` is the one
+   subject-framing coverage predicate. The plan gate reports its result as
+   `composition-coverage`, and the staging transaction refuses the camera unit's stage
+   call on a composition-owning layer while any judge frame lacks a `bbox_*` row of a
+   rendered subject, naming the frames and the deferred-row shape (layer-1
+   rematerializations `8509f9` and `290f3c` each paid a terminal-gate round for it).
 
 ## Rejected patch-level alternatives
 
@@ -94,8 +104,14 @@ Two further teaching-by-rejection rounds recurred across the same lineage:
   (run `6316b4` kickoff: 66 turns; four units and 21 requirements staged in 18 minutes).
 - `src/tests/unit/test_materialization_kickoff_blocks.py::test_staging_schema_offers_only_payable_authorities`.
 - `src/tests/unit/test_staging_claim_coverage.py`: the predicate matches closure
-  semantics, and the stage call refuses an uncovered mutated role without writing the
-  candidate while the covered unit stages.
+  semantics, the stage call refuses an uncovered mutated role without writing the
+  candidate while the covered unit stages, and a cross-row contradiction staged in one
+  call is refused at that call.
+- `src/tests/unit/test_subject_framing_coverage.py`: the predicate matches the gate
+  (camera-only bbox and projected_origin are not framing; claim, context, and persistent
+  deferred rows cover), and the camera unit's stage call refuses uncovered judge frames
+  without writing the candidate while deferred rows bound through
+  `composition_context` stage.
 
 ## Release and rollback
 

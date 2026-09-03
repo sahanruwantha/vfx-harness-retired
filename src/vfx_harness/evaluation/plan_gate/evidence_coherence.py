@@ -88,15 +88,11 @@ from vfx_harness.domain.work_units import (
     read_document,
     vis_roles_unrepairable_by,
 )
+from vfx_harness.domain.work_units.subject_framing import uncovered_subject_framing_frames
 from vfx_harness.evaluation.plan_gate.types import (
     Finding,
     _global_authority_layers,
     _global_executable_checks_apply,
-)
-from vfx_harness.evaluation.plan_gate.unit_deps import (
-    _camera_only_host_roles,
-    _deferred_subject_framing_covers,
-    _is_subject_framing_row,
 )
 from vfx_harness.evidence.checks import METRICS
 from vfx_harness.evidence.scene_checks import (
@@ -411,85 +407,17 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                 )
             return False
 
-        camera_only_roles = _camera_only_host_roles(stages)
         if owns_composition:
-            for frame in judges:
-                covered = False
-                for unit in stages.values():
-                    evaluation = unit.get("evaluation") or {}
-                    # A required claim bound straight to a subject bbox at this judge
-                    # frame IS executable projected context. projected_origin of a
-                    # camera-only host is alignment, not framing (HIR-0127).
-                    if any(
-                        isinstance(claim, dict)
-                        and claim.get("required")
-                        and frame in (claim.get("moments") or [])
-                        and any(
-                            isinstance(binding, dict)
-                            and binding.get("kind") == "scene_contract"
-                            and scene_by_id.get(str(binding.get("id")), {}).get("frame")
-                            == frame
-                            and _is_subject_framing_row(
-                                scene_by_id.get(str(binding.get("id")), {}),
-                                camera_only_roles,
-                            )
-                            for binding in claim.get("evidence") or []
-                        )
-                        for claim in evaluation.get("claims") or []
-                    ):
-                        covered = True
-                        break
-                    context = evaluation.get("composition_context") or {}
-                    if frame not in (context.get("frames") or []):
-                        continue
-                    contract_ids = {str(value) for value in context.get("contract_ids") or []}
-                    if any(
-                        cid in scene_by_id
-                        and scene_by_id[cid].get("frame") == frame
-                        and _is_subject_framing_row(scene_by_id[cid], camera_only_roles)
-                        for cid in contract_ids
-                    ):
-                        covered = True
-                        break
-                    source_id = str(context.get("source_unit") or "")
-                    source = stages.get(source_id)
-                    if source and source_id in {str(value) for value in unit.get("depends_on") or []}:
-                        source_contracts = {
-                            str(binding.get("id"))
-                            for claim in (source.get("evaluation") or {}).get("claims") or []
-                            if isinstance(claim, dict)
-                            for binding in claim.get("evidence") or []
-                            if isinstance(binding, dict) and binding.get("kind") == "scene_contract"
-                        }
-                        source_frames = {
-                            row.get("frame")
-                            for row in (source.get("evaluation") or {}).get("judge") or []
-                            if isinstance(row, dict)
-                        }
-                        if frame in source_frames and any(
-                            str(row.get("id")) in source_contracts
-                            and row.get("frame") == frame
-                            and str(row.get("activates_at") or "") == lid
-                            and _is_subject_framing_row(row, camera_only_roles)
-                            for row in scene_rows
-                            if isinstance(row, dict)
-                        ):
-                            covered = True
-                            break
-                if not covered and _deferred_subject_framing_covers(
-                    scene_rows, lid, frame, camera_only_roles
-                ):
-                    covered = True
-                if not covered:
-                    out.append(
-                        Finding(
-                            "composition-coverage",
-                            True,
-                            f"layer {lid} judge f{frame}",
-                            "camera/composition owner has no executable subject framing",
-                            SUBJECT_COMPOSITION_RULE,
-                        )
+            for frame in uncovered_subject_framing_frames(lid, judges, stages, scene_rows):
+                out.append(
+                    Finding(
+                        "composition-coverage",
+                        True,
+                        f"layer {lid} judge f{frame}",
+                        "camera/composition owner has no executable subject framing",
+                        SUBJECT_COMPOSITION_RULE,
                     )
+                )
         for uid, unit in stages.items():
             evaluation = unit.get("evaluation") or {}
             bound_ids = {

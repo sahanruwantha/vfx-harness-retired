@@ -28,10 +28,4 @@ from vfx_harness.evaluation.plan_gate.types import _materialized_view as _materi
 from vfx_harness.evaluation.plan_gate.types import _planned_outputs as _planned_outputs
 from vfx_harness.evaluation.plan_gate.types import _resolve as _resolve
 from vfx_harness.evaluation.plan_gate.types import write_report as write_report
-from vfx_harness.evaluation.plan_gate.unit_deps import _camera_only_host_roles as _camera_only_host_roles
 from vfx_harness.evaluation.plan_gate.unit_deps import _check_unit_dependencies as _check_unit_dependencies
-from vfx_harness.evaluation.plan_gate.unit_deps import (
-    _deferred_subject_framing_covers as _deferred_subject_framing_covers,
-)
-from vfx_harness.evaluation.plan_gate.unit_deps import _is_subject_framing_row as _is_subject_framing_row
-from vfx_harness.evaluation.plan_gate.unit_deps import _role_matches_any as _role_matches_any

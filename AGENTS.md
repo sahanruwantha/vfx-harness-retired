@@ -351,7 +351,11 @@ effect.
   (`executable_required`, `advisory`); `qualified_qualitative_required` is minted by the
   harness for judgment debt, never staged. A staged unit whose mutated role has no
   required claim covering it is refused at the stage call by the same predicate claim
-  closure applies, naming the roles and the unit's judged subject roles (HIR-0177).
+  closure applies, naming the roles and the unit's judged subject roles, the cross-row
+  contract contradictions run over the candidate at every stage and patch call, and a
+  composition-owning layer's camera unit cannot stage while a judge frame lacks a `bbox_*`
+  row of a rendered subject — the plan gate's `composition-coverage` predicate is the same
+  function (HIR-0177).
 - A plan-workspace path miss names the requested path and the staged relative files in
   that cwd, and forbids prefixing another filesystem root. Draft, verify, and repair
   kickoffs compile the same relative-read card (HIR-0156).

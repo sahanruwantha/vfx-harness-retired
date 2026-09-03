@@ -84,3 +84,53 @@ def test_stage_call_refuses_an_uncovered_mutation_role(tmp_path: Path) -> None:
         requirement_bindings=full["requirement_bindings"],
     )
     assert target.read_bytes() != before
+
+
+def _derivative(id: str, op: str, frames: list[int], **bound) -> dict:
+    return {
+        "id": id,
+        "kind": "curve_derivative_max",
+        "roles": ["polish.hero"],
+        "property": "location",
+        "op": op,
+        "frames": frames,
+        "owner_layer": "2",
+        "fault_owner": "2",
+        "activates_at": "2",
+        "lifecycle": "layer",
+        "axis": "polish",
+        **bound,
+    }
+
+
+def test_stage_call_refuses_a_cross_row_contradiction(tmp_path: Path) -> None:
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "stage-row-set")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "stage-row-set.json"
+    seed_materialization_candidate(
+        bundle.root,
+        target,
+        layer_id="2",
+        bundle_hash=bundle.content_hash,
+        base_selection=_base_selection(tmp_path),
+    )
+    before = target.read_bytes()
+    contradictory = [
+        *full["scene_contracts"],
+        _derivative("cap", "max", [1, 213], hi=0.06),
+        _derivative("floor", "min", [113, 175], lo=0.12),
+    ]
+    with pytest.raises(ValueError) as refused:
+        stage_materialization_unit(
+            target,
+            unit=full["layer"]["stages"][0],
+            scene_contracts=contradictory,
+            requirement_bindings=full["requirement_bindings"],
+        )
+    message = str(refused.value)
+    assert message.startswith("cross-row contradiction refused before candidate write")
+    assert "floor: lo 0.12 over frames 113..175 can never satisfy cap: hi 0.06" in message
+    assert target.read_bytes() == before
