@@ -137,3 +137,32 @@ def test_camera_unit_stage_call_refuses_uncovered_judge_frames(tmp_path: Path) -
         requirement_bindings=full["requirement_bindings"],
     )
     assert target.read_bytes() != before
+
+
+def test_stage_call_lists_the_composition_obligation_for_a_form_layer(tmp_path: Path) -> None:
+    """A composition-owning geometry layer sees uncovered judge frames before finalize."""
+    from vfx_harness.orchestration.jit_materialization import MaterializationInspection
+
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "form-layer-composition")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    full = json.loads(_jit_payload(tmp_path, bundle.content_hash).read_text(encoding="utf-8"))
+    target = tmp_path / "form-layer-composition.json"
+    seed_materialization_candidate(
+        bundle.root,
+        target,
+        layer_id="2",
+        bundle_hash=bundle.content_hash,
+        base_selection=_base_selection(tmp_path),
+    )
+    staged = stage_materialization_unit(
+        target,
+        unit=full["layer"]["stages"][0],
+        scene_contracts=full["scene_contracts"],
+        requirement_bindings=full["requirement_bindings"],
+        inspection=MaterializationInspection(global_root=bundle.root, expected_bundle_hash=bundle.content_hash),
+    )
+    open_findings = [row for row in staged.remaining_findings if "composition-coverage" in row]
+    assert open_findings, staged.remaining_findings
+    assert "judge frame(s) [239, 240]" in open_findings[0]

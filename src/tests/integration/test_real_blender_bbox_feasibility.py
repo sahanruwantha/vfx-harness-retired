@@ -74,5 +74,41 @@ def test_worker_proves_feasible_and_infeasible_band_sets(tmp_path: Path) -> None
             assert contradictory["ok"] is False and contradictory["feasible"] is False, contradictory
             assert contradictory["binding"]
             assert "no axis-aligned proxy box" in contradictory["issues"][0]
+            assert consistent["bounds_source"] == "hosts"
+
+            # Union framing for a shared role measures the contract's own quantity.
+            session.run(
+                "import bpy\n"
+                "bpy.ops.mesh.primitive_cube_add(size=1.0, location=(3.0, 0.0, 0.5))\n"
+                "wing = bpy.context.active_object\n"
+                "wing.name = 'wing'\n"
+                "wing['bvfx_role'] = 'exterior.mass.wing'\n"
+                "RESULT = 1\n",
+                journal=False,
+            )
+            union = session.check(kind="framing", role="exterior.mass", frame=1)
+            assert union["hosts"] == ["mass", "wing"], union
+            solo = session.check(kind="framing", object="mass", frame=1)
+            assert union["frames"][0]["width"] > solo["frames"][0]["width"], (union, solo)
+            crop = session.check(kind="bbox", role="exterior.mass", frame=1)
+            assert crop["hosts"] == ["mass", "wing"] and crop["ok"] is True
+
+            # Before any host exists, bounds derive from the sealed camera.
+            session.run(
+                "import bpy\n"
+                "for name in ('mass', 'wing'):\n"
+                "    bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)\n"
+                "RESULT = 1\n",
+                journal=False,
+            )
+            hostless = session.check(
+                kind="bbox_feasibility",
+                rows=[_row("far-height", "bbox_height", 1, "band", lo=0.05, hi=0.35)],
+                roles=["exterior.mass"],
+                seed=1,
+                evaluations=800,
+            )
+            assert hostless["bounds_source"] == "camera" and hostless["seed_objects"] == []
+            assert hostless["feasible"] is True, hostless
         finally:
             session.close()

@@ -327,8 +327,11 @@ effect.
   `check_scene(kind='bbox_feasibility', roles=…)`, which searches every axis-aligned proxy box
   under the real camera and returns the satisfying box or the binding rows. After six
   consecutive mutations that leave the same bbox row failing, `run_bpy` is refused until it
-  runs, and an infeasible verdict fails closed into `cannot_express_in_scope` naming the
-  camera provider (HIR-0183).
+  runs, and an infeasible verdict under harness-derived bounds fails closed into
+  `cannot_express_in_scope` naming the camera provider; an infeasible verdict under
+  builder-narrowed bounds proves nothing and never downgrades an earlier feasible one.
+  Framing and bbox checks on a shared role return the union the contract measures
+  (HIR-0183).
 - Form builders inspect off-axis geometry with the typed `inspect_view` instrument, never by
   moving the shot camera. It resolves a semantic role namespace, offers bounded orbit/elevation/
   through-camera Workbench views and optional transactional soloing, then restores camera,

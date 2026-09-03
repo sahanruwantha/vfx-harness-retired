@@ -400,6 +400,13 @@ def staged_write_findings(
     return refused, remaining
 
 
+def WorkUnit_parsed_units(payload: dict[str, Any]) -> list[WorkUnit]:
+    return [
+        WorkUnit.parse(row, f"staged unit[{index}]")
+        for index, row in enumerate(_rows(payload.get("layer") or {}, "stages", "candidate.layer"))
+    ]
+
+
 def _stage_materialization_payload(
     payload: dict[str, Any],
     *,
@@ -476,6 +483,26 @@ def _stage_materialization_payload(
     _validate_local_staged_units(payload, allowed_provides=allowed_provides, shot_folder=shot_folder)
     if inspection is None:
         return ()
+    layer_row = payload.get("layer") or {}
+    composition_open: list[str] = []
+    if "projected_composition" in (layer_row.get("evidence_domains") or []) and not any(
+        "camera" in staged.provides for staged in WorkUnit_parsed_units(payload)
+    ):
+        judges = [
+            int(row["frame"])
+            for row in layer_row.get("judge") or []
+            if isinstance(row, dict) and isinstance(row.get("frame"), int)
+        ]
+        stage_rows = {str(row.get("id")): row for row in stages if isinstance(row, dict) and row.get("id")}
+        uncovered = uncovered_subject_framing_frames(
+            str(layer_row.get("id") or ""), judges, stage_rows, payload["scene_contracts"]
+        )
+        if uncovered:
+            composition_open.append(
+                "/scene_contracts: composition-coverage: judge frame(s) "
+                f"{list(uncovered)} have no bbox_* row of a rendered subject; finalize refuses this "
+                "— bind such rows on the unit that creates the subject at those frames"
+            )
     refused, remaining = staged_write_findings(
         before,
         inspection.findings(payload),
@@ -493,7 +520,7 @@ def _stage_materialization_payload(
             + ". "
             + STAGED_WRITE_FINDING_RULE
         )
-    return tuple(remaining)
+    return (*remaining, *composition_open)
 
 
 def stage_materialization_unit(

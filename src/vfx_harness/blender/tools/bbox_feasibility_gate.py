@@ -41,11 +41,29 @@ def record_bbox_feasibility(
     row_ids: Iterable[str],
     feasible: bool,
     binding: Iterable[str],
+    bounds_source: str = "hosts",
 ) -> None:
+    """Keep the strongest verdict: feasibility inside any bounds proves feasibility.
+
+    Run 20260903T100335Z-fa5dbb found a satisfying box under wide bounds, then narrowed
+    its own bounds to a tower and read INFEASIBLE; that later verdict must not license
+    abstention, so a feasible record for the same rows is never downgraded by a
+    supplied-bounds infeasibility.
+    """
+    ids = sorted(str(item) for item in row_ids)
+    previous = comparison_state.get(RESULT_KEY) or {}
+    if (
+        previous.get("feasible")
+        and set(ids) <= set(previous.get("row_ids") or [])
+        and not feasible
+        and bounds_source == "supplied"
+    ):
+        return
     comparison_state[RESULT_KEY] = {
-        "row_ids": sorted(str(item) for item in row_ids),
+        "row_ids": ids,
         "feasible": bool(feasible),
         "binding": sorted(str(item) for item in binding),
+        "bounds_source": str(bounds_source),
     }
 
 
@@ -70,9 +88,18 @@ def bbox_feasibility_block(comparison_state: Mapping) -> str | None:
             "satisfying box or proves none exists. Guessing again is not measurement."
         )
     if not result.get("feasible", True):
+        binding = ", ".join(result.get("binding") or sorted(covered))
+        if result.get("bounds_source") == "supplied":
+            return (
+                "BLOCKED: check_scene(kind='bbox_feasibility') found no proxy box for "
+                + binding
+                + " within the bounds you supplied. That is not proof against the sealed "
+                "camera: re-run it without bounds= (harness-derived bounds) or widen them to "
+                "the region the hosts may legally occupy before mutating again."
+            )
         return (
             "BLOCKED: check_scene(kind='bbox_feasibility') proved that no proxy box satisfies "
-            + ", ".join(result.get("binding") or sorted(covered))
+            + binding
             + " under the sealed camera. Further mutation cannot satisfy them; call "
             "cannot_express_in_scope naming those contract ids and the camera provider from "
             "your fault_owner_options."

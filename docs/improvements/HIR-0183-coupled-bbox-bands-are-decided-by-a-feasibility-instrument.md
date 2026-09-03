@@ -58,6 +58,19 @@ number of mutations without the harness demanding a measurement.
    same bbox row failing, `run_bpy` is refused until the instrument has run for that row;
    an infeasible verdict refuses further mutation and names the abstention.
 
+5. Before any host carries the roles, bounds derive from the sealed camera (the region in
+   front of it at every bound frame), so a pre-geometry call answers directly
+   (run `fa5dbb`); `bounds_source` names `hosts`, `camera`, or `supplied`.
+6. A feasible verdict is never downgraded by a later infeasible verdict under
+   builder-supplied narrower bounds, and such a verdict is reported as "within the bounds
+   you supplied" rather than licensing abstention (run `fa5dbb` narrowed its bounds to a
+   tower after a feasible wide-bounds answer).
+7. `check_scene` `framing` and `bbox` on a role shared by several rendered hosts return
+   the frustum-clipped union — the quantity the `bbox_*` contract measures — with the host
+   list, instead of refusing the shared role.
+8. A composition-owning layer without a camera unit sees its uncovered judge frames in the
+   stage-call open-findings list, so the rows are authored before finalize.
+
 ## Rejected patch-level alternatives
 
 - Prompting the builder to "try fewer configurations" (a judgment ask for a mechanical

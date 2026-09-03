@@ -205,6 +205,7 @@ def register_contracts(
                 row_ids=[str(row.get("id")) for row in rows],
                 feasible=bool(r.get("feasible")),
                 binding=r.get("binding") or [],
+                bounds_source=str(r.get("bounds_source") or "hosts"),
             )
             return _text(_check_report(kind, r))
         try:

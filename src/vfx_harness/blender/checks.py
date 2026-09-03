@@ -44,6 +44,11 @@ _feasibility = importlib.util.module_from_spec(_feasibility_spec)
 _feasibility_spec.loader.exec_module(_feasibility)
 solve_box_feasibility = _feasibility.solve_box_feasibility
 
+_SELF_TEST_PATH = os.path.join(_HERE, "checks_self_test.py")
+_self_test_spec = importlib.util.spec_from_file_location("bvfx_checks_self_test", _SELF_TEST_PATH)
+_self_test = importlib.util.module_from_spec(_self_test_spec)
+_self_test_spec.loader.exec_module(_self_test)
+
 frustum_union_ndc = _geom.frustum_union_ndc
 project_clip_point = _geom.project_clip_point
 BOX_EDGES = _geom.BOX_EDGES
@@ -328,6 +333,30 @@ def _proxy_bounds_from_objects(objects, depsgraph) -> dict:
     }
 
 
+def _proxy_bounds_from_camera(scene, frames, matrices_ready) -> dict:
+    """Coarse bounds from the sealed camera: the region in front of it at every bound frame."""
+    from mathutils import Vector
+
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    for frame in frames:
+        scene.frame_set(int(frame))
+        cam = scene.camera
+        origin = cam.matrix_world.translation
+        forward = (cam.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+        for distance in (1.0, 60.0):
+            point = origin + forward * distance
+            for axis in range(3):
+                lo[axis] = min(lo[axis], point[axis] - 30.0)
+                hi[axis] = max(hi[axis], point[axis] + 30.0)
+    return {
+        "centre_lo": [round(v, 3) for v in lo],
+        "centre_hi": [round(v, 3) for v in hi],
+        "size_lo": [0.2, 0.2, 0.2],
+        "size_hi": [40.0, 40.0, 40.0],
+    }
+
+
 def check_bbox_feasibility(
     rows: list[dict],
     roles: list[str],
@@ -348,6 +377,7 @@ def check_bbox_feasibility(
     matrices = {}
     seed_objects = _objects_for_roles(roles)
     derived_bounds = bounds
+    bounds_source = "supplied" if bounds is not None else ("hosts" if seed_objects else "camera")
     for frame in frames:
         sc.frame_set(frame)
         dg = bpy.context.evaluated_depsgraph_get()
@@ -355,11 +385,9 @@ def check_bbox_feasibility(
         if derived_bounds is None and seed_objects:
             derived_bounds = _proxy_bounds_from_objects(seed_objects, dg)
     if derived_bounds is None:
-        raise ValueError(
-            "bbox_feasibility needs bounds={centre_lo, centre_hi, size_lo, size_hi} when no host "
-            f"carries roles {list(roles)}; present roles: "
-            + (", ".join(sorted({row['role'] for row in object_inventory() if row['role']})) or "(none)")
-        )
+        # Run 20260903T100335Z-fa5dbb asked before any host existed; the sealed camera
+        # already bounds the observable region, so no builder-invented box is needed.
+        derived_bounds = _proxy_bounds_from_camera(sc, frames, matrices)
 
     def project(centre, size, frame):
         matrix = matrices[int(frame)]
@@ -386,9 +414,46 @@ def check_bbox_feasibility(
         "frames": frames,
         "roles": list(roles),
         "bounds": derived_bounds,
+        "bounds_source": bounds_source,
         "seed_objects": [obj.name for obj in seed_objects],
         "issues": issues,
     }
+
+
+def check_framing_union(names: list[str], frames: list[int], *, role: str) -> dict:
+    """Frustum-clipped union bound box of every host sharing ``role`` (HIR-0147 semantics).
+
+    A ``bbox_*`` contract on a shared selector measures exactly this union, so the builder
+    reads the contract's own quantity instead of one host at a time.
+    """
+    import bpy
+    from mathutils import Vector
+
+    sc = bpy.context.scene
+    _camera()
+    objects = [_obj(name) for name in names]
+    per = []
+    issues = []
+    for f in frames:
+        sc.frame_set(int(f))
+        dg = bpy.context.evaluated_depsgraph_get()
+        mvp = camera_clip_matrix(sc, dg)
+        clip = []
+        edges = []
+        for obj in objects:
+            ev = obj.evaluated_get(dg)
+            offset = len(clip)
+            clip.extend(tuple(mvp @ (ev.matrix_world @ Vector(c)).to_4d()) for c in ev.bound_box)
+            edges.extend((a + offset, b + offset) for a, b in BOX_EDGES)
+        rec = frustum_union_ndc(clip, edges)
+        if rec is None:
+            rec = {"bbox": None, "width": 0.0, "height": 0.0, "centre": None, "on_screen": 0.0}
+            issues.append(f"f{f}: no host of {role!r} intersects the camera frustum")
+        else:
+            rec["on_screen"] = round(rec.pop("points_inside") / max(rec.pop("points_total"), 1), 3)
+        rec["frame"] = int(f)
+        per.append(rec)
+    return {"ok": not issues, "object": role, "hosts": list(names), "role": role, "frames": per, "issues": issues}
 
 
 def check_projection(points: list[list[float]], frame: int) -> dict:
@@ -658,6 +723,8 @@ _OBJECT_CHECK_KINDS = frozenset(
     {"visibility", "framing", "motion", "mesh", "scale", "bbox", "subject_bbox"}
 )
 _VISUAL_CHECK_KINDS = frozenset({"visibility", "framing", "bbox", "subject_bbox"})
+# Projected kinds whose contract quantity is the union over every host sharing a role.
+_UNION_CHECK_KINDS = frozenset({"framing", "bbox", "subject_bbox"})
 _NON_VISUAL_OBJECT_TYPES = frozenset(
     {"CAMERA", "LIGHT", "EMPTY", "ARMATURE", "LATTICE", "SPEAKER", "LIGHT_PROBE"}
 )
@@ -692,6 +759,27 @@ def dispatch(kind: str, args: dict) -> dict:
     if k in _OBJECT_CHECK_KINDS:
         role = str(args.get("role") or "").strip() or None
         name = str(args.get("object") or "").strip() or None
+        if k in _UNION_CHECK_KINDS and role and not name:
+            hits = _roles.pick_objects(object_inventory(), role=role)
+            visual = [hit for hit in hits if not visual_subject_error(k, hit["name"], hit["type"])]
+            if len(visual) > 1:
+                names = [hit["name"] for hit in visual]
+                frames = args.get("frames") or [int(args["frame"])]
+                union = check_framing_union(names, [int(f) for f in frames], role=role)
+                if k in ("bbox", "subject_bbox"):
+                    fr = union["frames"][0]
+                    return {
+                        "object": role,
+                        "hosts": names,
+                        "frame": int(frames[0]),
+                        "bbox": fr.get("bbox"),
+                        "width": fr.get("width"),
+                        "height": fr.get("height"),
+                        "centre": fr.get("centre"),
+                        "on_screen": fr.get("on_screen"),
+                        "ok": bool(fr.get("bbox")),
+                    }
+                return union
         resolved = resolve_object(role=role, name=name)
         subject_error = visual_subject_error(k, resolved.name, resolved.type)
         if subject_error:
@@ -731,112 +819,5 @@ def dispatch(kind: str, args: dict) -> dict:
 
 
 def self_test() -> dict:
-    """Build one known-bad object per check and assert the issue list is non-empty.
-
-    This is the Phase 1 gate. A check that is silent on its fixture is not shipped.
-    """
-    import bmesh
-    import bpy
-
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    sc = bpy.context.scene
-    cam_d = bpy.data.cameras.new("Cam")
-    cam = bpy.data.objects.new("Camera", cam_d)
-    sc.collection.objects.link(cam)
-    sc.camera = cam
-    cam.location = (0.0, -6.0, 1.5)
-    cam.rotation_euler = (1.4, 0.0, 0.0)
-
-    results = {}
-
-    # --- mesh: n-gon + loose vert + a third face on one edge (non-manifold) ---
-    bm = bmesh.new()
-    bmesh.ops.create_circle(bm, cap_ends=True, segments=5, radius=1.0)  # pentagon = n-gon
-    bm.verts.ensure_lookup_table()
-    bm.edges.ensure_lookup_table()
-    bm.verts.new((8.0, 8.0, 8.0))  # loose vert
-    edge = bm.edges[0]
-    spur = bm.verts.new((0.0, 0.0, 2.0))
-    bm.faces.new((edge.verts[0], edge.verts[1], spur))  # 3rd face on edge
-    bm.verts.ensure_lookup_table()
-    bm.faces.ensure_lookup_table()
-    me = bpy.data.meshes.new("BadMesh")
-    obj = bpy.data.objects.new("BadMesh", me)
-    sc.collection.objects.link(obj)
-    bm.to_mesh(me)
-    bm.free()
-    r = check_mesh("BadMesh")
-    results["mesh"] = {"fired": bool(r["issues"]), "issues": r["issues"], "counts": r["counts"]}
-
-    # --- scale ---
-    obj.scale = (4.0, 4.0, 4.0)
-    r = check_scale("BadMesh")
-    results["scale"] = {"fired": bool(r["issues"]), "issues": r["issues"]}
-
-    # --- framing: park it far off-axis ---
-    obj.location = (40.0, 0.0, 0.0)
-    bpy.context.view_layer.update()
-    r = check_framing("BadMesh", [1])
-    results["framing"] = {"fired": bool(r["issues"]), "issues": r["issues"]}
-
-    # --- visibility: wall between camera and a hero at the origin ---
-    obj.location = (0.0, 0.0, 1.0)
-    obj.scale = (1.0, 1.0, 1.0)
-    wall_me = bpy.data.meshes.new("Wall")
-    wall = bpy.data.objects.new("Wall", wall_me)
-    sc.collection.objects.link(wall)
-    bm = bmesh.new()
-    bmesh.ops.create_cube(bm, size=4.0)
-    bm.to_mesh(wall_me)
-    bm.free()
-    wall.location = (0.0, -3.0, 1.0)
-    bpy.context.view_layer.update()
-    r = check_visibility("BadMesh", 1)
-    results["visibility"] = {
-        "fired": r["visible_fraction"] < 0.5,
-        "visible_fraction": r["visible_fraction"],
-        "issues": r["issues"],
-    }
-
-    # --- motion: A → B → A in three frames ---
-    obj.location = (0.0, 0.0, 1.0)
-    obj.keyframe_insert("location", frame=1)
-    obj.location = (4.0, 0.0, 1.0)
-    obj.keyframe_insert("location", frame=2)
-    obj.location = (0.0, 0.0, 1.0)
-    obj.keyframe_insert("location", frame=3)
-    r = check_motion("BadMesh", [1, 2, 3])
-    results["motion"] = {
-        "fired": (not r.get("unbroken", True)) or r["max_accel"] > 1.0,
-        "unbroken": r.get("unbroken"),
-        "max_speed": r.get("max_speed"),
-        "max_accel": r.get("max_accel"),
-        "issues": r.get("issues"),
-    }
-
-    # --- rig contract: a rig-parented camera with a pitch key on the CHILD must fire ---
-    rig = bpy.data.objects.new("BadRig", None)
-    rig["bvfx_role"] = "cam_rig"
-    sc.collection.objects.link(rig)
-    bad_cam_data = bpy.data.cameras.new("BadRigCam")
-    bad_cam = bpy.data.objects.new("BadRigCam", bad_cam_data)
-    sc.collection.objects.link(bad_cam)
-    bad_cam.parent = rig
-    bad_cam.rotation_euler = (1.5, 0.0, 0.0)
-    bad_cam.keyframe_insert("rotation_euler", index=0, frame=1)
-    r = check_rig_contract()
-    results["rig_contract"] = {"fired": bool(r["issues"]), "issues": r["issues"]}
-
-    # --- passes: a render that completes; NaN fixture is engine-dependent so we
-    # only require the check to return a structured result, and a synthetic
-    # negative-count path is asserted in the harness. ---
-    r = check_passes(1, scale=0.1)
-    results["passes"] = {
-        "fired": True,  # structural: ran and returned `ok`
-        "ok": r.get("ok"),
-        "issues": r.get("issues", []),
-    }
-
-    failed = [k for k, v in results.items() if k != "passes" and not v.get("fired")]
-    results["gate"] = {"ok": not failed, "silent": failed}
-    return results
+    """Phase 1 gate: every check fires on its own known-bad fixture (checks_self_test.py)."""
+    return _self_test.run_self_test(sys.modules[__name__])

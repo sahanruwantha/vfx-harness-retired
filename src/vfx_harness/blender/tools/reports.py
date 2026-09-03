@@ -162,6 +162,11 @@ def _check_report(kind: str, r: dict) -> str:
             "the active contract's authoritative PASS/FAIL."
         )
     elif kind == "framing":
+        if r.get("hosts"):
+            lines.append(
+                f"  union over {len(r['hosts'])} hosts sharing role {r.get('role')!r} "
+                f"({', '.join(r['hosts'])}) — the contract's own quantity"
+            )
         lines.append("  coordinates: [x0,y0,x1,y1], origin TOP-LEFT (x right, y down)")
         for fr in r.get("frames", []):
             lines.append(
@@ -215,13 +220,21 @@ def _check_report(kind: str, r: dict) -> str:
                 "  a rigid mass whose world bound box matches this proxy satisfies every row; "
                 "place and size your geometry there, then re-read the contracts."
             )
+        elif r.get("bounds_source") == "supplied":
+            lines.append(
+                "  no proxy box satisfies the binding row(s) "
+                + ", ".join(r.get("binding") or [])
+                + " WITHIN THE BOUNDS YOU SUPPLIED. That is not proof against the sealed camera: "
+                "omit bounds= for harness-derived bounds, or widen them to the region the hosts "
+                "may legally occupy, before concluding anything."
+            )
         else:
             lines.append(
                 "  no proxy box satisfies the binding row(s) "
                 + ", ".join(r.get("binding") or [])
-                + " under the sealed camera: further mutation cannot pay them. Call "
-                "cannot_express_in_scope naming those contract ids and the camera provider "
-                "from fault_owner_options; widen bounds= only if the hosts may legally move that far."
+                + f" under the sealed camera (bounds derived from {r.get('bounds_source')}): "
+                "further mutation cannot pay them. Call cannot_express_in_scope naming those "
+                "contract ids and the camera provider from fault_owner_options."
             )
     elif kind == "mesh":
         c = r.get("counts", {})
