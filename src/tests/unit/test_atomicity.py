@@ -75,6 +75,7 @@ from vfx_harness.orchestration.unit_state import (
     replan_effects,
     unit_digest,
 )
+from vfx_harness.orchestration.unit_state_identity import DIGEST_SCHEMA
 
 
 def _claim(uid: str, *, roles: list[str], contract_id: str, repair_owner: str | None = None) -> dict:
@@ -1506,7 +1507,7 @@ def test_builder_card_includes_authored_interfaces_digest_and_predecessors() -> 
         unit_generation_digest=unit_digest(blade),
     )
     durable_state = {
-        "digest_schema": 4,
+        "digest_schema": DIGEST_SCHEMA,
         "layer": "3",
         "plan_hash": receipt.claim.plan_hash,
         "units": {
@@ -1579,7 +1580,7 @@ def test_builder_card_exposes_only_exact_consumed_interfaces() -> None:
         unit_generation_digest=unit_digest(blade),
     )
     durable_state = {
-        "digest_schema": 4,
+        "digest_schema": DIGEST_SCHEMA,
         "layer": "3",
         "plan_hash": receipt.claim.plan_hash,
         "units": {

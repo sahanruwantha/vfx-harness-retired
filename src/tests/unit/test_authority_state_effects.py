@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from copy import deepcopy
 
+import pytest
+
 from tests.unit.test_authority_capsules import (
     _debt,
     _global_documents,
@@ -220,3 +222,66 @@ def test_changed_unit_reopens_only_its_same_layer_downstream_closure() -> None:
     assert row.effect.invalidated_unit_ids == ("camera_unit",)
     assert row.after_state["units"]["camera_unit"]["status"] == "pending"
     assert row.after_state["plan_hash"] == after.layer("1").capsule_digest
+
+
+def test_prior_digest_generation_state_migrates_as_incomparable() -> None:
+    """Run 20260903T065816Z-a9bbfc: generation-4 state after the HIR-0181 capsule change."""
+    from vfx_harness.orchestration.authority_state_effects import AuthorityStateEffectsError
+
+    _global, _camera_view, capsules = _camera_capsules()
+    state = _pending_state(capsules, "1", "camera_unit")
+    state["digest_schema"] = 4
+    state["plan_hash"] = _digest("stale-generation-4-layer")
+    state["units"]["camera_unit"].update({"status": "passed", "unit_hash": _digest("stale-unit")})
+    binding = _binding(capsules, "1", "camera_unit", _token(1))
+    projection = compile_authority_state_effects(
+        before_capsules=capsules,
+        after_capsules=capsules,
+        states={"1": state},
+        prior_bindings={"1": binding},
+        predecessor_head_revision=1,
+        before_selection_token=_token(1),
+        at="2026-09-03T00:00:00Z",
+    )
+    (row,) = projection.layers
+    assert row.effect.effect_kind == "incomparable"
+    assert row.effect.preserved_units == ()
+    assert row.effect.preserved_finalization_receipt_digest is None
+    assert row.effect.invalidated_unit_ids == ("camera_unit",)
+    assert row.after_state["digest_schema"] == DIGEST_SCHEMA
+    assert row.after_state["plan_hash"] == capsules.layer("1").capsule_digest
+    assert row.after_state["units"]["camera_unit"]["status"] == "pending"
+    retired = row.after_state["superseded"][-1]
+    assert retired["id"] == "camera_unit" and retired["status"] == "superseded"
+    assert retired["superseded_reason"] == (
+        "digest generation 4 migrated to 5 during atomic authority-state transition"
+    )
+
+    current = _pending_state(capsules, "1", "camera_unit")
+    with pytest.raises(AuthorityStateEffectsError, match="digest generations are mixed"):
+        compile_authority_state_effects(
+            before_capsules=capsules,
+            after_capsules=capsules,
+            states={
+                "1": current,
+                "2": {**_pending_state(capsules, "1", "camera_unit"), "layer": "2", "digest_schema": 4},
+            },
+            prior_bindings={"1": binding},
+            predecessor_head_revision=1,
+            before_selection_token=_token(1),
+            at="2026-09-03T00:00:00Z",
+        )
+
+
+def test_prior_generation_state_names_the_migration_command() -> None:
+    from vfx_harness.orchestration.unit_state_identity import DIGEST_GENERATION_RULE
+    from vfx_harness.orchestration.unit_state_queries import validate_current
+
+    _global, _view, capsules = _camera_capsules()
+    unit = _unit_from_capsule(capsules, "1", "camera_unit")
+    state = _pending_state(capsules, "1", "camera_unit")
+    state["digest_schema"] = 4
+    with pytest.raises(ValueError) as refused:
+        validate_current(state, "1", (unit,))
+    assert "digest generation 4; the current generation is 5" in str(refused.value)
+    assert DIGEST_GENERATION_RULE in str(refused.value)

@@ -20,7 +20,17 @@ from vfx_harness.orchestration.unit_completion_authorizations import (
 
 # Bump whenever WorkUnit gains or loses a field always present in unit_digest.
 # Schema 4 added MutationScope.dresses (ADR-0007).
-DIGEST_SCHEMA = 4
+# 5: a layer capsule attributes a deferred requirement's decision to its owner layer
+# (HIR-0181); every stored layer digest of generation 4 is incomparable and migrates
+# through the authority-state transaction (HIR-0182).
+DIGEST_SCHEMA = 5
+PRIOR_DIGEST_SCHEMAS = frozenset({4})
+DIGEST_GENERATION_RULE = (
+    "durable work-unit state binds digests of a prior generation; run "
+    "`vfx migrate-digest-schema <shot>` — it republishes the selected view through the "
+    "authority-state transaction, supersedes every prior-generation unit and terminal "
+    "receipt with a typed reason, and never edits state by hand"
+)
 
 
 def unit_digest(unit: WorkUnit) -> str:

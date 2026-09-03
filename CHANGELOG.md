@@ -19,6 +19,11 @@ live in the linked Harness Improvement Records.
   whose judge frames lack rendered-subject framing is refused at the stage call rather
   than at finalize
   ([HIR-0177](docs/improvements/HIR-0177-materialization-budget-and-id-addressed-patches.md)).
+- `DIGEST_SCHEMA` moves to 5 for the HIR-0181 capsule change, golden tests pin the layer
+  capsule digest to the schema, and `vfx migrate-digest-schema <shot>` migrates
+  prior-generation work-unit state through the authority-state transaction instead of
+  failing closed in the planner
+  ([HIR-0182](docs/improvements/HIR-0182-digest-generations-migrate-through-the-transaction.md)).
 - A decision a layer's materialization makes on its own deferred requirement stays in that
   layer's capsule, so a later layer's publication no longer supersedes an unchanged earlier
   layer's terminal receipt, and `vfx run` builds a reopened lower layer before the newly

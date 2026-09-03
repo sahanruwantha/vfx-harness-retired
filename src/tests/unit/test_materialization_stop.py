@@ -62,6 +62,7 @@ from vfx_harness.orchestration.jit_materialization.view_pointer import (
 )
 from vfx_harness.orchestration.layer_outcome_paths import layer_outcome_path
 from vfx_harness.orchestration.plan_authority import PlanBundle
+from vfx_harness.orchestration.unit_state_identity import DIGEST_SCHEMA
 
 BUNDLE_DIGEST = "b" * 64
 
@@ -792,7 +793,7 @@ def test_durable_unit_status_requiring_checkpoint_fails_closed_without_one(
         json.dumps(
             {
                 "schema": 1,
-                "digest_schema": 4,
+                "digest_schema": DIGEST_SCHEMA,
                 "layer": "1",
                 "plan_hash": "a" * 64,
                 "revision": 2,
@@ -816,7 +817,7 @@ def test_hypothesis_falsified_unit_requires_its_typed_finding() -> None:
         json.dumps(
             {
                 "schema": 1,
-                "digest_schema": 4,
+                "digest_schema": DIGEST_SCHEMA,
                 "layer": "1",
                 "plan_hash": "a" * 64,
                 "revision": 2,
@@ -1604,7 +1605,7 @@ def test_durable_authority_identity_ignores_audit_clocks_and_run_ids(
             json.dumps(
                 {
                     "schema": 1,
-                    "digest_schema": 4,
+                    "digest_schema": DIGEST_SCHEMA,
                     "layer": "1",
                     "plan_hash": "c" * 64,
                     "revision": 3,

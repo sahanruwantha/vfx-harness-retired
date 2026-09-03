@@ -276,7 +276,11 @@ Leave code cleaner at the point of change; do not create cleanup debt for a late
   shot.
 - Strict migration, no silent compatibility: obsolete schemas and artifacts are migrated or
   rejected, never interpreted heuristically. Compatibility windows declare a deterministic
-  expiry and fail closed after it (ADR-0004).
+  expiry and fail closed after it (ADR-0004). A change to what a unit or layer capsule
+  contains is a digest generation change: bump `DIGEST_SCHEMA` with the golden digest tests,
+  and migrate prior-generation durable state only through `vfx migrate-digest-schema <shot>`,
+  which republishes the selected view and supersedes those units and terminal receipts with
+  a typed reason (HIR-0182).
 
 ## Decision quality: smarter agents through instruments, not guesses
 

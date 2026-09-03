@@ -537,3 +537,23 @@ def test_a_decision_on_a_never_deferred_requirement_stays_shot_wide() -> None:
         old = next(row for row in baseline.layers if row.layer_id == layer_id).capsule_digest
         new = next(row for row in compiled.layers if row.layer_id == layer_id).capsule_digest
         assert old != new, layer_id
+
+
+def test_layer_capsule_content_changes_demand_a_digest_schema_bump() -> None:
+    """A layer capsule digest is durable authority (plan_hash, head bindings, receipts).
+
+    HIR-0181 changed what a capsule contains without bumping DIGEST_SCHEMA, and every
+    stored digest went stale with no migration path (run 20260903T065816Z-a9bbfc). If
+    this test fails because capsule content changed, bump DIGEST_SCHEMA in
+    orchestration/unit_state_identity.py and update BOTH constants here together.
+    """
+    from vfx_harness.orchestration.unit_state_identity import DIGEST_SCHEMA
+
+    documents = _global_documents()
+    view = deepcopy(documents)
+    _materialize_camera(view, _debt())
+    compiled = compile_authority_capsules(documents, view)
+    assert DIGEST_SCHEMA == 5
+    assert next(row for row in compiled.layers if row.layer_id == "1").capsule_digest == (
+        "0ee322d71335f26a3603943484a0ca33d80d27c54b00ba3c06b1907f6a39621f"
+    )

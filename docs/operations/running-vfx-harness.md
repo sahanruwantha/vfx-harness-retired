@@ -112,6 +112,11 @@ boundary before any other plan, build, or evaluation command:
 .venv/bin/vfx recover-authority-state shots/<shot-id>
 ```
 
+When a run stops with "work-unit state is digest generation N; the current generation is M", run
+`.venv/bin/vfx migrate-digest-schema <shot>`: it republishes the selected view through the
+authority-state transaction, archives every prior-generation unit and terminal receipt with a
+typed reason, and rebuilds them on the next `vfx run` (HIR-0182).
+
 The command selects no alternative and performs no planning, Blender, render, critic, or model
 work. It verifies the pending intent and every live member against their exact before/after
 identities, rolls forward only the already staged successor, independently evaluates the

@@ -21,6 +21,7 @@ from vfx_harness.orchestration.unit_completion_authorizations import (
     AuthorizedUnitCompletionSet,
 )
 from vfx_harness.orchestration.unit_state_identity import (
+    DIGEST_GENERATION_RULE,
     DIGEST_SCHEMA,
     authorized_passed_unit_ids,
     unit_digest,
@@ -83,9 +84,11 @@ def validate_current(value: dict, layer_id: str, units: tuple[WorkUnit, ...]) ->
             "validated authority replacement or amendment"
         )
     if int(value.get("digest_schema", 1)) != DIGEST_SCHEMA:
-        # Digests from another schema are not comparable. Replan closure recomputes
-        # both sides under the current schema before deciding what can be preserved.
-        return
+        raise ValueError(
+            f"work-unit state for layer {layer_id} is digest generation "
+            f"{value.get('digest_schema')}; the current generation is {DIGEST_SCHEMA}. "
+            + DIGEST_GENERATION_RULE
+        )
     changed = sorted(uid for uid in expected if actual.get(uid) != expected[uid])
     if changed:
         raise ValueError(

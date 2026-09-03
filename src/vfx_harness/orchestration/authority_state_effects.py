@@ -31,16 +31,19 @@ from vfx_harness.domain.layer_finalizations import (
     LayerFinalizationReceipt,
 )
 from vfx_harness.domain.work_units import WorkUnit
-from vfx_harness.orchestration import layer_finalization_lifecycle
+from vfx_harness.orchestration.authority_state_successor_state import (
+    AuthorityStateEffectsError,
+    _after_state,
+    _migration_reason,
+    _new_state,
+    _prior_generation_layers,
+    _state_revision,
+)
 from vfx_harness.orchestration.unit_state_identity import (
     DIGEST_SCHEMA,
     downstream,
     unit_digest,
 )
-
-
-class AuthorityStateEffectsError(ValueError):
-    """Current state cannot be moved mechanically to the proposed capsules."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,15 +175,6 @@ def _unit_order(layer: LayerAuthorityCapsule | None) -> tuple[str, ...]:
 
 def _predecessor_ids(layer: LayerAuthorityCapsule | None) -> tuple[str, ...]:
     return () if layer is None else tuple(key for key, _digest in layer.predecessor_layer_digests)
-
-
-def _state_revision(value: Mapping[str, Any], layer_id: str) -> int:
-    revision = value.get("revision")
-    if not isinstance(revision, int) or isinstance(revision, bool) or revision <= 0:
-        raise AuthorityStateEffectsError(
-            f"work-unit state for layer {layer_id!r} has no positive revision"
-        )
-    return revision
 
 
 def _require_state_shape(
@@ -449,145 +443,6 @@ def _active_finalization_claim_id(state: Mapping[str, Any]) -> str | None:
         raise AuthorityStateEffectsError(str(exc)) from exc
 
 
-def _new_state(
-    layer_id: str,
-    layer_digest: str,
-    units: tuple[WorkUnit, ...],
-    at: str,
-) -> dict[str, Any]:
-    return {
-        "schema": 1,
-        "digest_schema": DIGEST_SCHEMA,
-        "layer": layer_id,
-        "plan_hash": layer_digest,
-        "revision": 1,
-        "units": {
-            unit.id: {
-                "status": "pending",
-                "unit_hash": unit_digest(unit),
-                "updated": at,
-                "history": [],
-            }
-            for unit in units
-        },
-        "superseded": [],
-        "replans": [],
-        "attempt_lineage": {},
-        "updated": at,
-    }
-
-
-def _retire_slot(
-    slot: Mapping[str, Any],
-    unit_id: str,
-    *,
-    layer_digest: str,
-    at: str,
-) -> dict[str, Any]:
-    retired = copy.deepcopy(dict(slot))
-    reason = f"authority-state transition invalidated {unit_id}"
-    unit_attempts.archive_active_attempt(
-        retired,
-        disposition="revoked",
-        reason=reason,
-        evidence=["authority-state-transition"],
-        at=at,
-    )
-    unit_completion_receipts.archive_completion_receipt(
-        retired,
-        disposition="superseded",
-        reason=reason,
-        evidence=["authority-state-transition"],
-        at=at,
-    )
-    retired.update(
-        {
-            "id": unit_id,
-            "status": "superseded",
-            "superseded_at": at,
-            "superseded_by_plan": layer_digest,
-        }
-    )
-    return retired
-
-
-def _after_state(
-    *,
-    layer_id: str,
-    state: Mapping[str, Any] | None,
-    after_layer: LayerAuthorityCapsule,
-    after_units: tuple[WorkUnit, ...],
-    preserved_ids: set[str],
-    preserve_finalization: bool,
-    at: str,
-) -> dict[str, Any]:
-    if state is None:
-        return _new_state(layer_id, after_layer.capsule_digest, after_units, at)
-    value = copy.deepcopy(dict(state))
-    before_serialized = copy.deepcopy(value)
-    reason = "authority selection changed during atomic authority-state transition"
-    for slot in value["units"].values():
-        unit_attempts.revoke_active_attempt(
-            slot,
-            reason=reason,
-            evidence=["authority-state-transition"],
-            at=at,
-            next_status="retryable",
-        )
-    finalization_slot = value.get("layer_finalization")
-    if (
-        isinstance(finalization_slot, Mapping)
-        and finalization_slot.get("active_claim") is not None
-    ) or not preserve_finalization:
-        layer_finalization_lifecycle.archive_layer_finalization(
-            value,
-            disposition="superseded",
-            reason=reason,
-            evidence=["authority-state-transition"],
-            at=at,
-        )
-    old_slots = value["units"]
-    retiring = set(old_slots) - preserved_ids
-    superseded = list(value.get("superseded") or [])
-    superseded.extend(
-        _retire_slot(
-            old_slots[unit_id],
-            unit_id,
-            layer_digest=after_layer.capsule_digest,
-            at=at,
-        )
-        for unit_id in sorted(retiring)
-    )
-    next_slots: dict[str, dict[str, Any]] = {}
-    for unit in after_units:
-        if unit.id in preserved_ids:
-            slot = copy.deepcopy(old_slots[unit.id])
-            slot["unit_hash"] = unit_digest(unit)
-        else:
-            slot = {
-                "status": "pending",
-                "unit_hash": unit_digest(unit),
-                "updated": at,
-                "history": [
-                    {
-                        "at": at,
-                        "from": "superseded" if unit.id in old_slots else None,
-                        "to": "pending",
-                        "reason": "atomic authority-state transition",
-                    }
-                ],
-            }
-        next_slots[unit.id] = slot
-    value["digest_schema"] = DIGEST_SCHEMA
-    value["plan_hash"] = after_layer.capsule_digest
-    value["units"] = next_slots
-    value["superseded"] = superseded
-    if value != before_serialized:
-        value["revision"] = _state_revision(state, layer_id) + 1
-        value["updated"] = at
-    return value
-
-
 def compile_authority_state_effects(
     *,
     before_capsules: AuthorityCapsuleSet | None,
@@ -600,6 +455,10 @@ def compile_authority_state_effects(
 ) -> AuthorityStateEffectsProjection:
     """Derive the complete immediate-predecessor state movement."""
 
+    prior_generation = _prior_generation_layers(states)
+    comparable_states = {
+        layer_id: state for layer_id, state in states.items() if layer_id not in prior_generation
+    }
     if predecessor_head_revision <= 0:
         if states or prior_bindings:
             raise AuthorityStateEffectsError(
@@ -609,7 +468,7 @@ def compile_authority_state_effects(
     else:
         effective_before = _effective_before_bindings(
             capsules=before_capsules,
-            states=states,
+            states=comparable_states,
             prior_bindings=prior_bindings,
             head_revision=predecessor_head_revision,
             selection_token=before_selection_token,
@@ -692,6 +551,59 @@ def compile_authority_state_effects(
                         at,
                     ),
                     None,
+                    bindings,
+                    _predecessor_ids(after_layer),
+                    after_layer.capsule_digest,
+                    None,
+                    effect,
+                )
+            )
+            projected_finalizations[layer_id] = None
+            continue
+        if layer_id in prior_generation:
+            prior_binding = prior_bindings.get(layer_id)
+            if prior_binding is None:
+                raise AuthorityStateEffectsError(
+                    f"prior-generation state for layer {layer_id!r} has no coordinator binding to migrate"
+                )
+            # A digest generation older than DIGEST_SCHEMA binds nothing comparable:
+            # its receipts name capsule digests no current reader can recompute. The
+            # layer migrates as `incomparable`: every unit and terminal receipt is
+            # archived with the migration reason and fresh pending state binds the
+            # current generation (HIR-0182).
+            before_ids = tuple(sorted(state["units"]))
+            invalidated = tuple(sorted(set(before_ids) | set(after_order)))
+            effect = AuthorityStateLayerEffect.mint(
+                layer_id=layer_id,
+                effect_kind="incomparable",
+                invalidation_seed_unit_ids=before_ids,
+                invalidated_unit_ids=invalidated,
+                invalidated_downstream_layer_ids=descendants.get(layer_id, ()),
+                revoked_unit_attempt_claim_ids=active_claims,
+                revoked_layer_finalization_claim_id=active_finalization,
+            )
+            bindings = tuple(
+                AuthorityUnitBinding.mint(
+                    unit_id=unit_id,
+                    unit_generation_digest=after_units[layer_id][unit_id].capsule_digest,
+                )
+                for unit_id in after_order
+            )
+            projected.append(
+                ProjectedLayerAuthorityState(
+                    layer_id,
+                    copy.deepcopy(dict(state)),
+                    _after_state(
+                        layer_id=layer_id,
+                        state=state,
+                        after_layer=after_layer,
+                        after_units=parsed_after_units,
+                        preserved_ids=set(),
+                        preserve_finalization=False,
+                        at=at,
+                        reason=_migration_reason(state),
+                    ),
+                    prior_binding,
                     bindings,
                     _predecessor_ids(after_layer),
                     after_layer.capsule_digest,

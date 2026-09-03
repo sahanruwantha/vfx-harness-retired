@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -292,6 +293,84 @@ def prepare_materialization_publication_locked(
     )
 
 
+def prepare_selected_view_republication_locked(
+    shot_folder: str | Path,
+    *,
+    heads: AuthoritySelectionHeads,
+    selected_before: ResolvedSelectedAuthority,
+    producer_payload: bytes,
+    producer_schema: str,
+    producer_digest: str,
+    prepared_at: str | None = None,
+) -> PreparedMaterializationPublication:
+    """Prepare a transition that reselects the current JIT view under the next revision.
+
+    The documents, view hash, and artifact hashes are the selected ones; only the
+    pointer revision advances, so the transition's semantic effect is whatever the
+    effects compiler derives from durable state alone (HIR-0182 digest migration).
+    """
+
+    shot = Path(shot_folder).expanduser().absolute()
+    require_matching_authority_selection_token(selected_before.selection_token, heads.token)
+    if heads.jit is None:
+        raise ValueError("selected-view republication requires a selected JIT view")
+    documents = {
+        name: json.loads(Path(selected_before.artifact_paths[name]).read_text(encoding="utf-8"))
+        for name in OVERLAY_ARTIFACTS
+    }
+    captured = capture_selected_authority_capsules(shot, selected_before)
+    captured.require_sources_unchanged()
+    successor = _pointer(
+        shot,
+        heads=heads,
+        bundle_hash=heads.jit.bundle_hash,
+        view_hash=heads.jit.view_hash,
+        artifact_hashes=heads.jit.hashes,
+        documents=documents,
+        revision=heads.token.jit_revision + 1,
+    )
+    pointer_payload = canonical_json_bytes(successor.as_dict())
+    prepared = prepare_authority_state_transition_locked(
+        shot,
+        heads=heads,
+        selected_before=selected_before,
+        after_capsules=captured.capsule_set,
+        after_plan_pointer_bytes=heads.plan_pointer_bytes,
+        after_plan_revision=heads.token.plan_revision,
+        after_jit_pointer_bytes=pointer_payload,
+        after_jit_revision=successor.revision,
+        producer_payload=producer_payload,
+        producer_schema=producer_schema,
+        producer_digest=producer_digest,
+        prepared_at=prepared_at,
+    )
+    predecessor_ref = prepared.intent.proposal.predecessor_head_ref
+    if predecessor_ref is None:
+        raise ValueError("selected-view republication cannot be a genesis transition")
+    return PreparedMaterializationPublication(
+        pointer=successor,
+        pointer_payload=pointer_payload,
+        capsule_set=captured.capsule_set,
+        transition=prepared,
+        authority_state_head_ref=predecessor_ref,
+        before_state_hashes=MappingProxyType(
+            {
+                member.layer_id: member.before.sha256
+                for member in prepared.intent.state_members
+                if member.before is not None
+            }
+        ),
+        after_state_hashes=MappingProxyType(
+            {
+                member.layer_id: member.after.sha256
+                for member in prepared.intent.state_members
+                if member.after is not None
+            }
+        ),
+        after_state_payloads=prepared.after_state_payloads,
+    )
+
+
 def prepare_materialization_publication(
     shot_folder: str | Path,
     *,
@@ -327,4 +406,5 @@ __all__ = [
     "PreparedMaterializationPublication",
     "prepare_materialization_publication",
     "prepare_materialization_publication_locked",
+    "prepare_selected_view_republication_locked",
 ]

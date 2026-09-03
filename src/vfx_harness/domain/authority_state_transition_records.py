@@ -262,9 +262,11 @@ def _validate_member_effect(
         same_generation = before.binding.layer_generation_digest == after.binding.layer_generation_digest
         if effect.effect_kind == "unchanged" and not same_generation:
             raise AuthorityStateRecordError(f"unchanged layer {member.layer_id!r} changed generation digest")
-        if effect.effect_kind in {"changed", "incomparable"} and same_generation:
+        # An incomparable layer crosses digest generations: equal digest strings are
+        # coincidence, not identity, so only a comparable `changed` layer must differ.
+        if effect.effect_kind == "changed" and same_generation:
             raise AuthorityStateRecordError(
-                f"{effect.effect_kind} layer {member.layer_id!r} retained its generation digest"
+                f"changed layer {member.layer_id!r} retained its generation digest"
             )
 
 
