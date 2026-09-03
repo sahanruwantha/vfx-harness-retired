@@ -17,6 +17,16 @@ live in the linked Harness Improvement Records.
   repairs the global plan first, under the same run ID, so one command takes a new shot from
   brief and references to the production chain (HIR-0186).
 
+### Fixed
+
+- `lifecycle: "window"` scene contracts are expressible again
+  ([HIR-0188](docs/improvements/HIR-0188-lifecycle-keys-have-one-vocabulary.md)). The
+  lifecycle domain requires `valid_through` for a window row while the scene-contract row
+  vocabulary accepted only `expires_at`, a name nothing validated, so no contract could
+  satisfy both and a rematerialization session burned four turns oscillating between the
+  two refusals. Row-key vocabularies now derive the lifecycle key names from the domain
+  that validates them, and the dead key is removed.
+
 ### Changed
 
 - A per-layer plan-gate rejection is now typed transaction authority instead of an

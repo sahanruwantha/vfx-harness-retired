@@ -12,6 +12,14 @@ from pathlib import Path
 
 SCHEMA = 2
 LIFECYCLES = {"layer", "window", "persistent"}
+# The keys `validate_lifecycle` reads.  Row-key vocabularies derive this rather than
+# restating it: a `window` row was unrepresentable for as long as the scene-contract
+# allowlist named a key nothing validated (`expires_at`) instead of the one this module
+# requires (`valid_through`), so the lifecycle validator demanded a key the row
+# validator refused and no contract could satisfy both (HIR-0188).
+LIFECYCLE_ROW_KEYS = frozenset({
+    "owner_layer", "fault_owner", "activates_at", "lifecycle", "valid_through",
+})
 
 
 def load_document(path: str | Path, key: str) -> list[dict]:

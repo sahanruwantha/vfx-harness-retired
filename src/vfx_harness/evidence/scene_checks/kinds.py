@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 
+from vfx_harness.domain.contracts import LIFECYCLE_ROW_KEYS
 from vfx_harness.domain.evidence_kinds import FUNCTIONAL_KINDS as _FUNCTIONAL_KINDS
 from vfx_harness.domain.evidence_kinds import PROJECTED_ORIGIN_KINDS as PROJECTED_ORIGIN_KINDS
 
@@ -55,9 +56,8 @@ KEYFRAME_SCHEDULE_PATH_MISS_OVER_HI = 1.0
 # silently ignores. Run 20260823T154920Z shipped `at_frame: 36`, nothing read it,
 # `row.get("frame", 1)` defaulted to 1, and a sealed frame-1 reading was reported as a
 # frame-36 retraction failure for a whole build. Unknown keys now fail closed.
-KNOWN_ROW_KEYS = frozenset({
+KNOWN_ROW_KEYS = LIFECYCLE_ROW_KEYS | frozenset({
     "id", "kind", "axis", "op", "lo", "hi", "value", "unit",
-    "owner_layer", "fault_owner", "activates_at", "lifecycle", "expires_at",
     "decision_id", "frame", "frames", "frame_step", "region", "component", "samples",
     "motion_epsilon", "property", "tol", "uniform_tol", "direction", "domain",
     "graph", "socket", "socket_index", "socket_direction", "from_socket", "to_socket",

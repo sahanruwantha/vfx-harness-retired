@@ -963,6 +963,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
 - Absence fails closed: a required contract never evaluated blocks sealing; unknown keys are
   rejected naming the accepted set; silence is never consent (HIR-0014). An empty obstacle
   selection is not path clearance — the 1e9 sentinel never PASSes (HIR-0024).
+  A contract lifecycle is `layer`, `window`, or `persistent`; a `window` row carries the
+  `valid_through` end its domain validates, and every row-key vocabulary derives the
+  lifecycle key names from that domain rather than restating them — a vocabulary naming a
+  key no validator reads makes a declared lifecycle unsatisfiable and loops the
+  materializer between two refusals (HIR-0188).
   Threshold operators have one enumerated field shape: `eq` uses numeric `value`
   and optional numeric `tol` (there is no `eq` field), `min` uses `lo`, `max`
   uses `hi`, and `band` uses both `lo` and `hi`; validation names the exact field
