@@ -640,10 +640,14 @@ def _gate_layer_authority(
     # The rejected artifact is the selected layer view itself, not the report about it.
     candidate = None if selected is None else selected.artifact_paths.get("layers.json")
     result = PlanLoopResult(candidate, outcome, len(blocking))
-    if owned_by_this_layer:
+    envelope = (
         publish_layer_plan_gate_stop(layout, result, layer_id=str(lid))
-    else:
-        publish_global_plan_gate_stop(layout, result)
+        if owned_by_this_layer
+        else publish_global_plan_gate_stop(layout, result)
+    )
+    # The boundary prepares the stop in the run layout; _stop_after_stage consumes only
+    # a prepared envelope, so a compiled-but-unwritten stop reads as no stop at all.
+    layout.write_stop_envelope(envelope)
     _stop_after_stage(layout, lease, 3, f"layer-{lid}-plan-gate", controller)
 
 

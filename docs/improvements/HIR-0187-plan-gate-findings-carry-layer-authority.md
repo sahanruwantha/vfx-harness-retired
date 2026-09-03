@@ -178,3 +178,14 @@ close it:
   audit, instead of raising. A stop-publication boundary handing the driver an untyped
   traceback is the very failure shape this record removes; it must not be able to do that
   even when its own construction is wrong.
+
+Finally, run `20260903T193713Z-e51397` produced the typed envelope and still reported
+`returned without typed stop authority`: the boundary compiled the stop and returned it,
+but never wrote it. `_stop_after_stage` consumes only a *prepared* envelope, so a
+compiled-but-unwritten stop reads as no stop at all and the run fell back to the very
+unclassified route this record removes. The driver now prepares the envelope in the run
+layout before consuming it, and a test asserts that.
+
+The end-to-end round trip is verified against the failing shot's real authority:
+compile, `write_stop_envelope`, `read_prepared_stop`, digests equal, yielding
+`authority_defect` -> `publish_validated_amendment` -> `layer_view` layer 2.
