@@ -19,6 +19,11 @@ live in the linked Harness Improvement Records.
   whose judge frames lack rendered-subject framing is refused at the stage call rather
   than at finalize
   ([HIR-0177](docs/improvements/HIR-0177-materialization-budget-and-id-addressed-patches.md)).
+- `check_scene(kind='bbox_feasibility')` searches every axis-aligned proxy box under the
+  sealed camera for one that satisfies a unit's bound `bbox_*` rows and, after six
+  mutations that leave the same row failing, `run_bpy` is refused until it runs; an
+  infeasible verdict fails closed into the typed abstention
+  ([HIR-0183](docs/improvements/HIR-0183-coupled-bbox-bands-are-decided-by-a-feasibility-instrument.md)).
 - `DIGEST_SCHEMA` moves to 5 for the HIR-0181 capsule change, golden tests pin the layer
   capsule digest to the schema, and `vfx migrate-digest-schema <shot>` migrates
   prior-generation work-unit state through the authority-state transaction instead of

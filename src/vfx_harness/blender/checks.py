@@ -38,6 +38,12 @@ except ImportError:
         sys.modules["bvfx_roles"] = _roles
         _rspec.loader.exec_module(_roles)
 
+_FEASIBILITY_PATH = os.path.join(_HERE, "bbox_feasibility.py")
+_feasibility_spec = importlib.util.spec_from_file_location("bvfx_bbox_feasibility", _FEASIBILITY_PATH)
+_feasibility = importlib.util.module_from_spec(_feasibility_spec)
+_feasibility_spec.loader.exec_module(_feasibility)
+solve_box_feasibility = _feasibility.solve_box_feasibility
+
 frustum_union_ndc = _geom.frustum_union_ndc
 project_clip_point = _geom.project_clip_point
 BOX_EDGES = _geom.BOX_EDGES
@@ -271,6 +277,118 @@ def check_framing(name: str, frames: list[int]) -> dict:
         rec["frame"] = int(f)
         per.append(rec)
     return {"ok": not issues, "object": name, "frames": per, "issues": issues}
+
+
+def _box_corners(centre, size):
+    """Eight corners in Blender ``bound_box`` order so BOX_EDGES applies."""
+    cx, cy, cz = centre
+    hx, hy, hz = (float(v) / 2.0 for v in size)
+    return (
+        (cx - hx, cy - hy, cz - hz),
+        (cx - hx, cy - hy, cz + hz),
+        (cx - hx, cy + hy, cz + hz),
+        (cx - hx, cy + hy, cz - hz),
+        (cx + hx, cy - hy, cz - hz),
+        (cx + hx, cy - hy, cz + hz),
+        (cx + hx, cy + hy, cz + hz),
+        (cx + hx, cy + hy, cz - hz),
+    )
+
+
+def _objects_for_roles(roles):
+    import bpy
+
+    inventory = object_inventory()
+    names: set[str] = set()
+    for role in roles:
+        names.update(hit["name"] for hit in _roles.pick_objects(inventory, role=str(role)))
+    return [bpy.data.objects[name] for name in sorted(names) if name in bpy.data.objects]
+
+
+def _proxy_bounds_from_objects(objects, depsgraph) -> dict:
+    from mathutils import Vector
+
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    for obj in objects:
+        ev = obj.evaluated_get(depsgraph)
+        for corner in ev.bound_box:
+            world = ev.matrix_world @ Vector(corner)
+            for axis in range(3):
+                lo[axis] = min(lo[axis], world[axis])
+                hi[axis] = max(hi[axis], world[axis])
+    extent = [max(h - l, 1.0) for l, h in zip(lo, hi, strict=True)]
+    centre = [(l + h) / 2 for l, h in zip(lo, hi, strict=True)]
+    reach = max(max(extent) * 2.0, 5.0)
+    return {
+        "centre_lo": [c - reach for c in centre],
+        "centre_hi": [c + reach for c in centre],
+        "size_lo": [max(e * 0.1, 0.05) for e in extent],
+        "size_hi": [e * 5.0 for e in extent],
+    }
+
+
+def check_bbox_feasibility(
+    rows: list[dict],
+    roles: list[str],
+    bounds: dict | None = None,
+    seed: int = 0,
+    evaluations: int | None = None,
+) -> dict:
+    """Decide whether any axis-aligned proxy box satisfies every bbox row under the sealed camera.
+
+    Camera matrices are evaluated once per bound frame; the proxy never enters the scene.
+    """
+    import bpy
+    from mathutils import Vector
+
+    sc = bpy.context.scene
+    _camera()
+    frames = sorted({int(row["frame"]) for row in rows})
+    matrices = {}
+    seed_objects = _objects_for_roles(roles)
+    derived_bounds = bounds
+    for frame in frames:
+        sc.frame_set(frame)
+        dg = bpy.context.evaluated_depsgraph_get()
+        matrices[frame] = camera_clip_matrix(sc, dg)
+        if derived_bounds is None and seed_objects:
+            derived_bounds = _proxy_bounds_from_objects(seed_objects, dg)
+    if derived_bounds is None:
+        raise ValueError(
+            "bbox_feasibility needs bounds={centre_lo, centre_hi, size_lo, size_hi} when no host "
+            f"carries roles {list(roles)}; present roles: "
+            + (", ".join(sorted({row['role'] for row in object_inventory() if row['role']})) or "(none)")
+        )
+
+    def project(centre, size, frame):
+        matrix = matrices[int(frame)]
+        clip = [tuple(matrix @ Vector((*corner, 1.0))) for corner in _box_corners(centre, size)]
+        return frustum_union_ndc(clip, BOX_EDGES)
+
+    result = solve_box_feasibility(
+        rows,
+        project,
+        derived_bounds,
+        seed=int(seed),
+        evaluations=int(evaluations or _feasibility.DEFAULT_EVALUATIONS),
+    )
+    issues = []
+    if not result["feasible"]:
+        issues.append(
+            "no axis-aligned proxy box inside the bounds satisfies every row under the sealed "
+            f"camera; binding row(s): {', '.join(result['binding']) or '(none)'}"
+        )
+    return {
+        "ok": result["feasible"],
+        **result,
+        "camera": sc.camera.name,
+        "frames": frames,
+        "roles": list(roles),
+        "bounds": derived_bounds,
+        "seed_objects": [obj.name for obj in seed_objects],
+        "issues": issues,
+    }
 
 
 def check_projection(points: list[list[float]], frame: int) -> dict:
@@ -586,6 +704,14 @@ def dispatch(kind: str, args: dict) -> dict:
         return check_framing(args["object"], [int(f) for f in frames])
     if k == "projection":
         return check_projection(args["points"], int(args["frame"]))
+    if k == "bbox_feasibility":
+        return check_bbox_feasibility(
+            list(args["rows"]),
+            list(args["roles"]),
+            args.get("bounds"),
+            int(args.get("seed") or 0),
+            args.get("evaluations"),
+        )
     if k == "motion":
         frames = args.get("frames") or []
         if len(frames) < 2:

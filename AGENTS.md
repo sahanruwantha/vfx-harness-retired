@@ -323,6 +323,12 @@ effect.
   coordinate query (HIR-0136).
 - Measure, don't estimate: if a decision depends on a quantity, expose an instrument that
   measures it; a judgment call where a measurement is possible is a patch.
+- Coupled multi-frame `bbox_*` bands over a sealed camera are decided by
+  `check_scene(kind='bbox_feasibility', roles=…)`, which searches every axis-aligned proxy box
+  under the real camera and returns the satisfying box or the binding rows. After six
+  consecutive mutations that leave the same bbox row failing, `run_bpy` is refused until it
+  runs, and an infeasible verdict fails closed into `cannot_express_in_scope` naming the
+  camera provider (HIR-0183).
 - Form builders inspect off-axis geometry with the typed `inspect_view` instrument, never by
   moving the shot camera. It resolves a semantic role namespace, offers bounded orbit/elevation/
   through-camera Workbench views and optional transactional soloing, then restores camera,

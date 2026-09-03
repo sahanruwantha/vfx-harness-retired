@@ -197,6 +197,32 @@ def _check_report(kind: str, r: dict) -> str:
             f"max |jerk| {r.get('max_jerk')} u/f^3 · "
             f"{'one unbroken move' if r.get('unbroken') else 'BROKEN move'}{holds}"
         )
+    elif kind == "bbox_feasibility":
+        box = r.get("box") or {}
+        verdict = "FEASIBLE ✅" if r.get("feasible") else "INFEASIBLE ✗"
+        lines[0] = f"check bbox_feasibility: {verdict} under camera {r.get('camera')} over frames {r.get('frames')}"
+        lines.append(
+            f"  best proxy box: centre {box.get('centre')} · size {box.get('size')} · "
+            f"largest residual {r.get('objective')} · {r.get('evaluations')} evaluations (seed {r.get('seed')})"
+        )
+        for row in r.get("rows", []):
+            lines.append(
+                f"  {row.get('id')} f{row.get('frame')} {row.get('kind')} → {row.get('value')} "
+                f"(window {row.get('lo')}..{row.get('hi')}) residual {row.get('residual')}"
+            )
+        if r.get("feasible"):
+            lines.append(
+                "  a rigid mass whose world bound box matches this proxy satisfies every row; "
+                "place and size your geometry there, then re-read the contracts."
+            )
+        else:
+            lines.append(
+                "  no proxy box satisfies the binding row(s) "
+                + ", ".join(r.get("binding") or [])
+                + " under the sealed camera: further mutation cannot pay them. Call "
+                "cannot_express_in_scope naming those contract ids and the camera provider "
+                "from fault_owner_options; widen bounds= only if the hosts may legally move that far."
+            )
     elif kind == "mesh":
         c = r.get("counts", {})
         lines.append(
@@ -437,6 +463,7 @@ def _check_args_error(kind: str, args: dict) -> str | None:
         "passes": ("frame",),
         "bbox": ("frame",),
         "projection": ("frame", "points"),
+        "bbox_feasibility": ("roles",),
     }
     missing = [name for name in requirements[kind] if args.get(name) is None]
     if kind == "framing" and args.get("frame") is None and not args.get("frames"):
@@ -458,6 +485,13 @@ def _check_args_error(kind: str, args: dict) -> str | None:
             for point in points
         ):
             return "check_scene(kind='projection') points must each be exactly [x, y, z] numbers in world space"
+    elif kind == "bbox_feasibility":
+        roles = args.get("roles")
+        malformed = not isinstance(roles, list) or not roles or any(
+            not isinstance(role, str) or not role.strip() for role in roles
+        )
+        if malformed:
+            return "check_scene(kind='bbox_feasibility') requires roles as a non-empty list of semantic selectors"
     elif kind != "passes":
         selector = _object_or_role_error(args, f"check_scene(kind={kind!r})")
         if selector:

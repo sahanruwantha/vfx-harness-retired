@@ -13,10 +13,17 @@ import anyio
 from claude_agent_sdk import tool
 
 from vfx_harness.blender.session import BlenderError
+from vfx_harness.blender.tools.bbox_feasibility_gate import record_bbox_feasibility
 from vfx_harness.blender.tools.payment import _text
 from vfx_harness.blender.tools.reports import _check_args_error, _check_report
+from vfx_harness.domain.semantic_roles import match_semantic
 from vfx_harness.evidence.checks import layer_evidence as image_layer_evidence
-from vfx_harness.evidence.scene_checks import irreversible_deferred_subject_forecast_failures, layer_evidence, load_rows
+from vfx_harness.evidence.scene_checks import (
+    BBOX_KINDS,
+    irreversible_deferred_subject_forecast_failures,
+    layer_evidence,
+    load_rows,
+)
 from vfx_harness.orchestration.ledger import load_layers
 
 
@@ -50,14 +57,19 @@ def register_contracts(
         "unbroken, 'mesh' counts non-manifold edges, loose verts, n-gons, poles and "
         "disconnected islands, 'scale' checks dimensions and that scale is applied, "
         "'passes' checks the render buffer for NaN/Inf/negative pixels, 'bbox' returns the "
-        "oracle crop box to hand to render_pass. Address subjects with role= (bvfx_role); "
+        "oracle crop box to hand to render_pass, 'bbox_feasibility' searches every "
+        "axis-aligned proxy box under the sealed camera for one that satisfies all bbox_* "
+        "rows bound to roles= at their frames and returns that box or proves none exists "
+        "(an infeasible verdict licenses cannot_express_in_scope naming the camera "
+        "provider). Address subjects with role= (bvfx_role); "
         "a shared role that matches several hosts is not a miss — pass object= with one "
         "of the named hosts. object= is the display-name fallback. A miss names present "
         "roles and names. "
         "Required arguments: visibility=role-or-object+frame; "
         "framing=role-or-object+(frame or frames); projection=frame+points; "
         "motion=role-or-object+2+ frames; "
-        "mesh/scale=role-or-object; passes=frame; bbox=role-or-object+frame. For "
+        "mesh/scale=role-or-object; passes=frame; bbox=role-or-object+frame; "
+        "bbox_feasibility=roles (optional contract_ids, bounds, seed). For "
         "intentional open shells, mesh accepts allow_boundary=true and still rejects "
         "branch/wire edges.",
         {
@@ -74,8 +86,27 @@ def register_contracts(
                         "scale",
                         "passes",
                         "bbox",
+                        "bbox_feasibility",
                     ],
                 },
+                "roles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "bbox_feasibility only: exact semantic selectors whose bound bbox_* rows to decide",
+                },
+                "contract_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "bbox_feasibility only: restrict to these bound row ids",
+                },
+                "bounds": {
+                    "type": "object",
+                    "description": (
+                        "bbox_feasibility only: {centre_lo, centre_hi, size_lo, size_hi} world-space "
+                        "triples; derived from the hosts carrying roles when omitted"
+                    ),
+                },
+                "seed": {"type": "integer", "description": "bbox_feasibility only: deterministic search seed"},
                 "role": {
                     "type": "string",
                     "description": (
@@ -121,6 +152,61 @@ def register_contracts(
         if args_error:
             return _text(args_error, is_error=True)
         payload = {k: v for k, v in args.items() if k != "kind" and v is not None}
+        if kind == "bbox_feasibility":
+            if not shot_dir or not layer_id:
+                return _text("check_scene(kind='bbox_feasibility') needs an active shot layer", is_error=True)
+            bound_ids = set(comparison_state.get("active_evidence_ids") or []) | set(
+                comparison_state.get("diagnostic_evidence_ids") or []
+            )
+            requested_roles = [str(role) for role in args.get("roles") or []]
+            wanted_ids = {str(item) for item in args.get("contract_ids") or []}
+            candidates = [
+                row
+                for row in load_rows(shot_dir, selected_authority)
+                if str(row.get("kind") or "") in BBOX_KINDS and str(row.get("id")) in bound_ids
+            ]
+            rows = [
+                row
+                for row in candidates
+                if (not wanted_ids or str(row.get("id")) in wanted_ids)
+                and any(
+                    match_semantic(str(role), requested_roles) or match_semantic(requested, [str(role)])
+                    for role in row.get("roles") or []
+                    for requested in requested_roles
+                )
+            ]
+            if not rows:
+                present = "; ".join(
+                    f"{row.get('id')} roles={list(row.get('roles') or [])} f{row.get('frame')}" for row in candidates
+                ) or "(none)"
+                return _text(
+                    f"check_scene(kind='bbox_feasibility') found no bound bbox_* row for roles "
+                    f"{requested_roles}; bound bbox rows on this unit: {present}",
+                    is_error=True,
+                )
+            payload = {
+                "rows": [
+                    {
+                        key: row[key]
+                        for key in ("id", "kind", "frame", "op", "lo", "hi", "value", "tol")
+                        if key in row
+                    }
+                    for row in rows
+                ],
+                "roles": requested_roles,
+                **{key: args[key] for key in ("bounds", "seed", "evaluations") if args.get(key) is not None},
+            }
+            try:
+                r = await _call("check", kind=kind, **payload)
+            except BlenderError as e:
+                return _text(str(e), is_error=True)
+            record_bbox_feasibility(
+                comparison_state,
+                row_ids=[str(row.get("id")) for row in rows],
+                feasible=bool(r.get("feasible")),
+                binding=r.get("binding") or [],
+            )
+            return _text(_check_report(kind, r))
         try:
             r = await _call("check", kind=kind, **payload)
         except BlenderError as e:

@@ -12,6 +12,7 @@ from claude_agent_sdk import tool
 
 from vfx_harness.blender.black_frame_report import authored_density_values, same_density
 from vfx_harness.blender.session import BlenderError
+from vfx_harness.blender.tools.bbox_feasibility_gate import bbox_feasibility_block, record_bbox_failures
 from vfx_harness.blender.tools.guards import (
     _pending_black_frame_probe,
     _run_bpy_instrument_hint,
@@ -77,6 +78,9 @@ def register_mutate(
         stop = _black_search_stop()
         if stop:
             return _text(stop, is_error=True)
+        feasibility_block = bbox_feasibility_block(comparison_state)
+        if feasibility_block:
+            return _text(feasibility_block, is_error=True)
         required_probe = _pending_black_frame_probe(comparison_state)
         if isinstance(required_probe, dict):
             role = str(required_probe.get("role") or "")
@@ -267,6 +271,7 @@ def register_mutate(
                 authoritative = state["authoritative"]
                 passed = [row for row in authoritative if row.get("pass")]
                 failed = state["failures"]
+                record_bbox_failures(comparison_state, failed)
                 if authoritative:
 
                     bump("automatic_scene_contract_probe")
