@@ -294,7 +294,10 @@ class RunController:
     ) -> tuple[HypothesisFalsification | None, tuple[str, ...]]:
         """The exact evidence locators the rematerialization must cite."""
 
-        if envelope.stage == "materialization":
+        if envelope.stage in {"materialization", "plan_gate"}:
+            # Neither stage cites a hypothesis falsification: the deterministic gate's own
+            # blocking findings are the evidence, and ownership was already settled when
+            # the stop chose its scope.  Only a builder stop carries a finding to check.
             return None, tuple(item.locator for item in envelope.evidence_refs)
         audit_path = self.layout.reports / f"{BUILDER_STOP_AUDIT_REPORT}.json"
         try:

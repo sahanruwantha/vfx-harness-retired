@@ -131,8 +131,13 @@ def amendment_envelope(
     view_seed: str = "before",
     fingerprint_seed: str = "facts",
     attempt_seed: str = "attempt",
+    stage: str = "builder",
 ) -> StopEnvelope:
-    """A builder authority-defect stop shaped like the one run fa5dbb published."""
+    """An authority-defect stop shaped like the one run fa5dbb published.
+
+    ``stage="plan_gate"`` writes no builder audit: the deterministic gate's own blocking
+    findings are the evidence, and there is no hypothesis falsification to cite.
+    """
 
     base = authority(view_seed)
     document = {
@@ -149,20 +154,21 @@ def amendment_envelope(
         record_schema=EVIDENCE_SCHEMA,
         record_digest=canonical_digest(document),
     )
-    layout.write_report(
-        "builder-authority-stop-audit",
-        {
-            "schema": AUDIT_SCHEMA,
-            "run_id": layout.run_id,
-            "evidence_ref": evidence.as_dict(),
-            "audit_locators": {
-                "source_finding": {
-                    "artifact": layout.relative(finding_path),
-                    "artifact_sha256": hashlib.sha256(finding_path.read_bytes()).hexdigest(),
-                }
+    if stage == "builder":
+        layout.write_report(
+            "builder-authority-stop-audit",
+            {
+                "schema": AUDIT_SCHEMA,
+                "run_id": layout.run_id,
+                "evidence_ref": evidence.as_dict(),
+                "audit_locators": {
+                    "source_finding": {
+                        "artifact": layout.relative(finding_path),
+                        "artifact_sha256": hashlib.sha256(finding_path.read_bytes()).hexdigest(),
+                    }
+                },
             },
-        },
-    )
+        )
     finding = EvidenceRecordAssertion(
         record_kind="finding",
         record_id="hf-semantic-test",
@@ -193,7 +199,7 @@ def amendment_envelope(
         ),
     )
     return StopEnvelope(
-        stage="builder",
+        stage=stage,
         stop_class="authority_defect",
         identity=StopIdentity(
             run_id=layout.run_id,
@@ -550,3 +556,32 @@ def test_non_dispatchable_actions_stay_terminal(tmp_path: Path, monkeypatch: pyt
         assert isinstance(result, run_controller.DispatchRefusal)
         assert result.reason == "not_dispatchable"
         assert harness.commands == []
+
+
+def test_a_plan_gate_stop_dispatches_without_a_builder_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run 20260903T202224Z-6a67eb refused the gate's own typed stop (HIR-0187).
+
+    ``_finding_evidence`` fell through to the builder audit for every stage but
+    materialization, so a plan-gate stop — which cites the gate's blocking findings and
+    no hypothesis falsification — was refused ``evidence_unavailable``.
+    """
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    with owned_run(tmp_path, "gate-controller-run", command="run", dispatch_kind="driver") as (
+        layout,
+        _lease,
+    ):
+        harness = Harness(tmp_path, monkeypatch, layout)
+        finding = write_finding(tmp_path)
+        envelope = amendment_envelope(layout, finding_path=finding, stage="plan_gate")
+        layout.write_stop_envelope(envelope)
+        assert not (layout.reports / "builder-authority-stop-audit.json").exists()
+
+        result = harness.controller().dispatch(envelope)
+
+        assert isinstance(result, run_controller.Dispatched), result
+        assert result.layer_id == LAYER
+        [command] = harness.commands
+        assert "--rematerialize" in command
+        assert command[command.index("--layer") + 1] == LAYER
