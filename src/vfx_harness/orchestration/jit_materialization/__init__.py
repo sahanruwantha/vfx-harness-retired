@@ -67,6 +67,12 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     read_materialization_finalization as read_materialization_finalization,
 )
 from vfx_harness.orchestration.jit_materialization.staging import (
+    MaterializationInspection as MaterializationInspection,
+)
+from vfx_harness.orchestration.jit_materialization.staging import (
+    StagedMaterializationUnit as StagedMaterializationUnit,
+)
+from vfx_harness.orchestration.jit_materialization.staging import (
     _stage_materialization_payload as _stage_materialization_payload,
 )
 from vfx_harness.orchestration.jit_materialization.staging import (
@@ -87,6 +93,9 @@ from vfx_harness.orchestration.jit_materialization.staging import (
 )
 from vfx_harness.orchestration.jit_materialization.staging import (
     stage_materialization_unit as stage_materialization_unit,
+)
+from vfx_harness.orchestration.jit_materialization.staging import (
+    staged_write_findings as staged_write_findings,
 )
 from vfx_harness.orchestration.jit_materialization.staging import (
     unstage_materialization_unit as unstage_materialization_unit,

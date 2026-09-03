@@ -261,7 +261,14 @@ def test_stage_and_unstage_tools_guard_candidate_write_with_exact_selection(
         encoding="utf-8",
     )
     selected = SimpleNamespace(selection_token=object())
-    authority = SimpleNamespace(selected=selected)
+    authority = SimpleNamespace(
+        selected=selected,
+        bundle_root=tmp_path,
+        bundle_hash="a" * 64,
+        base_layers=tmp_path / "layers.json",
+        base_scene_checks=tmp_path / "scene_checks.json",
+        base_requirements=tmp_path / "requirements.json",
+    )
     entered_guard = False
 
     @contextmanager
@@ -271,10 +278,11 @@ def test_stage_and_unstage_tools_guard_candidate_write_with_exact_selection(
         entered_guard = True
         yield
 
-    def stage_stub(*_args, candidate_write_guard=None, **_kwargs):
+    def stage_stub(*_args, candidate_write_guard=None, inspection=None, **_kwargs):
         assert candidate_write_guard is not None
+        assert inspection is not None and inspection.global_root == tmp_path
         with candidate_write_guard():
-            return candidate
+            return SimpleNamespace(path=candidate, remaining_findings=())
 
     def unstage_stub(*_args, candidate_write_guard=None, **_kwargs):
         assert candidate_write_guard is not None

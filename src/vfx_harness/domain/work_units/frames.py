@@ -29,7 +29,7 @@ UNIT_JUDGE_CLAIM_COVERAGE_RULE = (
 LOOK_REQUIRES_IMAGE_DOMAIN_RULE = (
     "a unit that declares look_capabilities must cover every evaluation.judge "
     "frame with a required claim that asserts image and binds image-domain "
-    "evidence (image_contract, qualification, or human_decision). Scene counts "
+    "evidence (image_contract or a harness-minted qualification). Scene counts "
     "cannot certify appearance. That hole is a contract_gap, not a 5.0 "
     "executable seal and not a critic look vote."
 )

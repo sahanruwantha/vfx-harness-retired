@@ -38,6 +38,7 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     require_matching_authority_selection_token,
 )
 from vfx_harness.orchestration.jit_materialization import (
+    MaterializationInspection,
     apply_materialization_patches,
     finalize_materialization_candidate,
     inspect_materialization,
@@ -351,7 +352,7 @@ def register_materialize_tools(**closed):
                     candidate,
                     overlay_root=overlay_root,
                 )
-                await anyio.to_thread.run_sync(
+                staged = await anyio.to_thread.run_sync(
                     lambda: stage_materialization_unit(
                         candidate,
                         unit=compiled_unit,
@@ -365,18 +366,35 @@ def register_materialize_tools(**closed):
                             shot_folder,
                             authority.selected,
                         ),
+                        inspection=MaterializationInspection(
+                            global_root=authority.bundle_root,
+                            expected_bundle_hash=authority.bundle_hash,
+                            base_layers_path=authority.base_layers,
+                            base_scene_checks_path=authority.base_scene_checks,
+                            resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
+                            base_requirements_path=authority.base_requirements,
+                        ),
                     )
                 )
                 materialization_revision_token = materialization_candidate_revision(candidate)
                 payload = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             return _text(f"unit staging refused: {exc}", is_error=True)
+        remaining = list(staged.remaining_findings)
+        open_findings = (
+            "\nOpen layer-level findings finalize will still refuse "
+            f"({len(remaining)}; resolve them with the units that own them):\n- "
+            + "\n- ".join(remaining[:12])
+            if remaining
+            else ""
+        )
         return _text(
             f"STAGED unit {compiled_unit.get('id', '<missing>')}: "
             f"candidate now has {len(payload['layer']['stages'])} unit(s), "
             f"{len(payload['scene_contracts'])} contract(s), and "
             f"{len(payload['requirement_bindings'])} requirement binding(s). "
             "Stage the next independent unit, or call finalize_materialization."
+            + open_findings
         )
 
     @tool(

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -303,6 +305,101 @@ def _validate_local_staged_units(
             )
 
 
+@dataclass(frozen=True, slots=True)
+class MaterializationInspection:
+    """Selected-authority inputs that let a stage call run the terminal collectable validator."""
+
+    global_root: Path
+    expected_bundle_hash: str
+    base_layers_path: Path | None = None
+    base_scene_checks_path: Path | None = None
+    resolutions_path: Path | None = None
+    base_requirements_path: Path | None = None
+
+    def findings(self, payload: dict[str, Any]) -> list[str]:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            suffix=".json",
+            prefix="stage-inspection-",
+            delete=False,
+        ) as handle:
+            handle.write(json.dumps(payload, indent=1) + "\n")
+            proposed_path = Path(handle.name)
+        try:
+            import vfx_harness.orchestration.jit_materialization as package  # noqa: PLC0415
+
+            findings, _materialized = package.inspect_materialization(
+                self.global_root,
+                proposed_path,
+                expected_bundle_hash=self.expected_bundle_hash,
+                base_layers_path=self.base_layers_path,
+                base_scene_checks_path=self.base_scene_checks_path,
+                resolutions_path=self.resolutions_path,
+                base_requirements_path=self.base_requirements_path,
+            )
+        finally:
+            proposed_path.unlink(missing_ok=True)
+        return findings
+
+
+@dataclass(frozen=True, slots=True)
+class StagedMaterializationUnit:
+    path: Path
+    remaining_findings: tuple[str, ...]
+
+
+STAGED_WRITE_FINDING_RULE = (
+    "a stage call may not introduce a collectable finding addressed inside its own write: "
+    "the staged unit, the scene contracts, and the requirement bindings it supplies must "
+    "already satisfy every rule finalize_materialization applies to them; layer-level "
+    "findings that need other units are reported with the staged result and settle at "
+    "finalize"
+)
+
+
+def _finding_pointer(finding: str) -> str:
+    pointer, separator, _message = finding.partition(": ")
+    return pointer if separator and pointer.startswith("/") else ""
+
+
+def _names_supplied_id(finding: str, supplied_ids: frozenset[str]) -> bool:
+    return any(re.search(rf"(?<![\w.-]){re.escape(item)}(?![\w.-])", finding) for item in supplied_ids)
+
+
+def staged_write_findings(
+    before: list[str],
+    after: list[str],
+    *,
+    unit_index: int,
+    contract_indices: range,
+    binding_indices: range,
+    supplied_ids: frozenset[str],
+) -> tuple[list[str], list[str]]:
+    """Split the findings a stage call introduced into (refused, remaining).
+
+    A finding is refused when it is addressed under the staged unit or one of the rows
+    the call supplied, or when it names a supplied contract or requirement id; every
+    other new or pre-existing finding is layer-level and settles at finalize.
+    """
+    introduced = [finding for finding in after if finding not in set(before)]
+    own_prefixes = (
+        f"/layer/stages/{unit_index}",
+        *(f"/scene_contracts/{index}" for index in contract_indices),
+        *(f"/requirement_bindings/{index}" for index in binding_indices),
+    )
+    refused: list[str] = []
+    remaining: list[str] = []
+    for finding in after:
+        pointer = _finding_pointer(finding)
+        addressed = any(pointer == prefix or pointer.startswith(prefix + "/") for prefix in own_prefixes)
+        if finding in introduced and (addressed or _names_supplied_id(finding, supplied_ids)):
+            refused.append(finding)
+        else:
+            remaining.append(finding)
+    return refused, remaining
+
+
 def _stage_materialization_payload(
     payload: dict[str, Any],
     *,
@@ -312,7 +409,8 @@ def _stage_materialization_payload(
     layer_updates: dict[str, Any] | None,
     allowed_provides: frozenset[str] | None,
     shot_folder: str | Path | None,
-) -> None:
+    inspection: MaterializationInspection | None = None,
+) -> tuple[str, ...]:
     """Apply one stage operation and validate it before the transaction writes."""
 
     if payload.get("schema") != MATERIALIZATION_SCHEMA:
@@ -366,10 +464,36 @@ def _stage_materialization_payload(
         ):
             raise ValueError("layer_updates.dressable must be a list of non-empty strings")
         payload["layer"]["dressable"] = dressable
+    before = inspection.findings(payload) if inspection is not None else []
+    unit_index = len(stages)
+    contract_indices = range(len(payload["scene_contracts"]), len(payload["scene_contracts"]) + len(contracts))
+    binding_indices = range(
+        len(payload["requirement_bindings"]), len(payload["requirement_bindings"]) + len(bindings)
+    )
     stages.append(unit)
     payload["scene_contracts"].extend(contracts)
     payload["requirement_bindings"].extend(bindings)
     _validate_local_staged_units(payload, allowed_provides=allowed_provides, shot_folder=shot_folder)
+    if inspection is None:
+        return ()
+    refused, remaining = staged_write_findings(
+        before,
+        inspection.findings(payload),
+        unit_index=unit_index,
+        contract_indices=contract_indices,
+        binding_indices=binding_indices,
+        supplied_ids=frozenset((*incoming_contracts, *incoming_requirements)),
+    )
+    if refused:
+        # Run 20260903T053305Z-83f8e1: five units staged clean and finalize returned seven
+        # findings decidable per unit; the session unstaged every unit to repair them.
+        raise ValueError(
+            "staged write refused before candidate write: "
+            + "; ".join(refused)
+            + ". "
+            + STAGED_WRITE_FINDING_RULE
+        )
+    return tuple(remaining)
 
 
 def stage_materialization_unit(
@@ -383,12 +507,19 @@ def stage_materialization_unit(
     expected_revision: str | None = None,
     shot_folder: str | Path | None = None,
     candidate_write_guard: Callable[[], AbstractContextManager[None]] | None = None,
-) -> Path:
-    """Append one bounded unit through the serialized candidate transaction."""
+    inspection: MaterializationInspection | None = None,
+) -> StagedMaterializationUnit:
+    """Append one bounded unit through the serialized candidate transaction.
+
+    With ``inspection`` the transaction also runs the terminal collectable validator on
+    the proposed candidate and refuses findings addressed inside this write (HIR-0180).
+    """
     path = Path(materialization_path)
-    _mutate_materialization_candidate(
-        path,
-        lambda payload: _stage_materialization_payload(
+    remaining: tuple[str, ...] = ()
+
+    def mutate(payload: dict[str, Any]) -> None:
+        nonlocal remaining
+        remaining = _stage_materialization_payload(
             payload,
             unit=unit,
             scene_contracts=scene_contracts,
@@ -396,11 +527,16 @@ def stage_materialization_unit(
             layer_updates=layer_updates,
             allowed_provides=allowed_provides,
             shot_folder=shot_folder,
-        ),
+            inspection=inspection,
+        )
+
+    _mutate_materialization_candidate(
+        path,
+        mutate,
         expected_revision=expected_revision,
         candidate_write_guard=candidate_write_guard,
     )
-    return path
+    return StagedMaterializationUnit(path=path, remaining_findings=remaining)
 
 
 def _unstage_materialization_payload(

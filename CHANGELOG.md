@@ -19,6 +19,10 @@ live in the linked Harness Improvement Records.
   whose judge frames lack rendered-subject framing is refused at the stage call rather
   than at finalize
   ([HIR-0177](docs/improvements/HIR-0177-materialization-budget-and-id-addressed-patches.md)).
+- Every `stage_materialization_unit` call runs the terminal collectable validator on the
+  proposed candidate and refuses the findings it introduces inside its own write, listing
+  the open layer-level findings with the staged result
+  ([HIR-0180](docs/improvements/HIR-0180-stage-calls-refuse-findings-inside-their-own-write.md)).
 - `Ledger.begin` moves the previous attempt's terminal projection (receipt digest and
   script hashes) into history, so re-finalizing a layer that had passed before a
   rematerialization no longer crashes on the finalization claim's scope check
