@@ -14,6 +14,10 @@ from typing import Any, ClassVar
 AUTHORITY_SOURCE_IDENTITY_SCHEMA = "vfx-harness.interruption-authority-source-identity/v1"
 SOURCE_KINDS = frozenset(
     {
+        "brief",
+        "reference_still",
+        "refobs_registration",
+        "refobs_crop",
         "plan_pointer",
         "plan_bundle_manifest",
         "plan_bundle_member",
@@ -70,6 +74,9 @@ _FIXED_RECORD_SCHEMAS = {
     # coordinator head record; its content-addressed object copy is the closure's head.
     "durable_state_pointer": "vfx-harness.authority-state-head/v1",
     "durable_state_pending": "vfx-harness.authority-state-pending/v1",
+    # A selected construction witness binds its typed registration record (HIR-0172
+    # step 4); the crop bytes beside it are opaque.
+    "refobs_registration": "vfx-harness.refobs/v1",
 }
 _TYPED_SOURCE_KINDS = frozenset(
     {
@@ -79,6 +86,9 @@ _TYPED_SOURCE_KINDS = frozenset(
 )
 _OPAQUE_ONLY_SOURCE_KINDS = frozenset(
     {
+        "brief",
+        "reference_still",
+        "refobs_crop",
         "plan_amendments",
         "plan_resolutions",
         "judgment_debts",

@@ -39,6 +39,9 @@ def _plan_pointer() -> dict:
 
 
 _OPAQUE_LOCATORS = {
+    "brief": "brief.md",
+    "reference_still": "refs/frame_0s.jpg",
+    "refobs_crop": "state/refobs/refobs-hero.png",
     "plan_amendments": "plan_amendments.jsonl",
     "plan_resolutions": "state/plan-resolutions.jsonl",
     "judgment_debts": "state/judgment-debts.jsonl",

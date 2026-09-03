@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from vfx_harness.domain import construction
 from vfx_harness.domain.authority_head_records import (
     AuthorityHeadRecordError,
     parse_jit_view_pointer,
@@ -33,10 +34,13 @@ from vfx_harness.domain.authority_state_transition_records import (
     AuthorityStateTransitionIntent,
     AuthorityStateTransitionProposal,
 )
+from vfx_harness.domain.brief import REFERENCE_STILL_SUFFIXES
 from vfx_harness.domain.run_authority_source_closure import (
     AcceptedStateSourceClosure,
+    AuthoredInputsSourceClosure,
     DurableStateSourceClosure,
     InterruptionAuthoritySourceClosure,
+    RefobsWitnessSource,
     SelectedPlanSourceClosure,
 )
 from vfx_harness.domain.run_authority_source_identity import AuthoritySourceIdentity
@@ -158,6 +162,70 @@ class _Capturer:
             self.shot_root / locator,
             f"authority source {locator}",
         ).payload
+
+    # -- authored inputs family ----------------------------------------------------
+
+    def authored_inputs(self, selected_plan: SelectedPlanSourceClosure) -> AuthoredInputsSourceClosure:
+        """Exact brief, admissible reference stills, and every selected refobs witness.
+
+        Admissible stills are the regular files directly under ``refs/`` with an image
+        suffix, the same rule the shot loader applies; a symlink or non-regular entry is a
+        hostile namespace and refuses capture. Witness tokens come only from the units of
+        the captured effective view, so an unselected crop cannot enter by proximity.
+        """
+
+        brief = self.source("brief", "brief.md")
+        references: list[AuthoritySourceIdentity] = []
+        refs_root = self.shot_root / "refs"
+        if refs_root.is_symlink():
+            raise RunInterruptionCaptureError("refs/ is a symlink; capture refuses aliases")
+        if refs_root.is_dir():
+            for entry in sorted(refs_root.iterdir(), key=lambda item: item.name):
+                if entry.is_symlink():
+                    raise RunInterruptionCaptureError(
+                        f"refs/{entry.name} is a symlink; capture refuses aliases"
+                    )
+                if entry.suffix.lower() not in REFERENCE_STILL_SUFFIXES:
+                    continue
+                if not entry.is_file():
+                    raise RunInterruptionCaptureError(
+                        f"refs/{entry.name} is not a regular file; the refs/ namespace is hostile"
+                    )
+                identity = self.source("reference_still", f"refs/{entry.name}")
+                if identity is not None:
+                    references.append(identity)
+        witnesses: list[RefobsWitnessSource] = []
+        for token in self._selected_witness_tokens(selected_plan):
+            registration = self.source("refobs_registration", f"state/refobs/{token}.json")
+            crop = self.source("refobs_crop", f"state/refobs/{token}.png")
+            if registration is None or crop is None:
+                raise RunInterruptionCaptureError(
+                    f"selected construction witness {token} has no complete registry pair "
+                    "under state/refobs/"
+                )
+            witnesses.append(RefobsWitnessSource(token, registration, crop))
+        return AuthoredInputsSourceClosure.mint(brief=brief, references=references, refobs=witnesses)
+
+    def _selected_witness_tokens(self, selected_plan: SelectedPlanSourceClosure) -> tuple[str, ...]:
+        """Every refobs-* witness a unit of the captured effective view binds."""
+
+        layers_member = next(
+            (
+                member
+                for member in selected_plan.effective_view_members
+                if member.locator.endswith("/layers.json")
+            ),
+            None,
+        )
+        if layers_member is None or layers_member.source_state == "raw_invalid":
+            return ()
+        document, _reason = decode_strict_json_object(self.payload(layers_member.locator))
+        if document is None:
+            return ()
+        try:
+            return construction.selected_witness_tokens(document)
+        except ValueError as exc:
+            raise RunInterruptionCaptureError(str(exc)) from exc
 
     # -- selected plan family ------------------------------------------------------
 
@@ -369,7 +437,13 @@ def capture_run_authority(
         selected_plan = capturer.selected_plan()
         accepted_state = capturer.accepted_state()
         durable_state = capturer.durable_state()
-        closure = InterruptionAuthoritySourceClosure(selected_plan, accepted_state, durable_state)
+        authored_inputs = capturer.authored_inputs(selected_plan)
+        closure = InterruptionAuthoritySourceClosure(
+            selected_plan,
+            accepted_state,
+            durable_state,
+            authored_inputs,
+        )
     except (AuthorityHeadRecordError, AuthorityStateRecordError, ValueError) as exc:
         if isinstance(exc, RunInterruptionCaptureError):
             raise

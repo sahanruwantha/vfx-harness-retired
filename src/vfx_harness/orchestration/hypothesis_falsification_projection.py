@@ -13,7 +13,11 @@ from vfx_harness.orchestration.authority_selection_transaction import (
 )
 from vfx_harness.orchestration.unit_state_lock import STATE_DIR
 
-PROJECTION_DIR = Path(STATE_DIR) / "hypothesis-falsifications"
+# The projection is derived review output, not live work-unit state: it lives beside the
+# strict `state/work-units/` namespace, whose enumerator refuses every unrecognised
+# member (HIR-0171). Placing it inside that namespace failed the terminal materialization
+# gate of every rematerialization that followed a real falsification (HIR-0175).
+PROJECTION_DIR = Path(STATE_DIR).parent / "hypothesis-falsifications"
 
 
 class FalsificationProjectionPending(OSError):

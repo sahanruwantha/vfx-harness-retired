@@ -26,7 +26,7 @@ _REF_ORDER = [
     "M3_reveal",
     "M4_end",
 ]
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+REFERENCE_STILL_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 @dataclass
@@ -70,7 +70,7 @@ class Shot:
 def _ordered_refs(refs_dir: Path) -> list[Path]:
     if not refs_dir.is_dir():
         return []
-    images = [p for p in refs_dir.iterdir() if p.suffix.lower() in _IMAGE_EXTS]
+    images = [p for p in refs_dir.iterdir() if p.suffix.lower() in REFERENCE_STILL_SUFFIXES]
     rank = {name: i for i, name in enumerate(_REF_ORDER)}
     # known refs first, in canonical order; any extras after, alphabetically.
     return sorted(images, key=lambda p: (rank.get(p.stem, len(_REF_ORDER)), p.name))

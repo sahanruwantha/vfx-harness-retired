@@ -69,6 +69,7 @@ def iter_authority_sources(
         *durable.records,
         *durable.members,
         durable.pending,
+        *closure.authored_inputs.sources(),
     ]
     return tuple(row for row in rows if row is not None)
 

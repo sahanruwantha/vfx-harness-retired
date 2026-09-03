@@ -142,7 +142,10 @@ operation.
   An interruption receipt binds a run-owned content-addressed archive of the exact authority
   sources and transcripts captured under the shared shot-authority fence, and the independent
   evaluator derives `satisfied | failed` only by reopening that archive through the one domain
-  source classification, never the live shot tree. A run without a readable receipt has no
+  source classification, never the live shot tree. That archive binds authored inputs too: the
+  exact `brief.md`, every admissible `refs/` still, and the registration plus crop of every
+  `refobs-*` witness a selected unit names; a symlinked or non-regular reference entry and a
+  missing witness pair refuse capture. A run without a readable receipt has no
   evaluation. The direct-command boundary and the whole-shot driver own every public run: they
   acquire the run-owner fence before publishing `running`, record the first SIGINT/SIGTERM as
   a typed `RecordedSignalIntent` that only the signal handler mints (the terminalizer accepts no

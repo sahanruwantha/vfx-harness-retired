@@ -9,12 +9,16 @@ from vfx_harness.domain.prior_running_status import (
 )
 from vfx_harness.domain.run_authority_source_closure import (
     ACCEPTED_STATE_SOURCE_CLOSURE_SCHEMA,
+    AUTHORED_INPUTS_SOURCE_CLOSURE_SCHEMA,
     DURABLE_STATE_SOURCE_CLOSURE_SCHEMA,
     INTERRUPTION_AUTHORITY_SOURCE_CLOSURE_SCHEMA,
+    REFOBS_WITNESS_SOURCE_SCHEMA,
     SELECTED_PLAN_SOURCE_CLOSURE_SCHEMA,
     AcceptedStateSourceClosure,
+    AuthoredInputsSourceClosure,
     DurableStateSourceClosure,
     InterruptionAuthoritySourceClosure,
+    RefobsWitnessSource,
     SelectedPlanSourceClosure,
 )
 from vfx_harness.domain.run_authority_source_identity import (
@@ -89,6 +93,7 @@ from vfx_harness.domain.run_status import (
 
 __all__ = [
     "ACCEPTED_STATE_SOURCE_CLOSURE_SCHEMA",
+    "AUTHORED_INPUTS_SOURCE_CLOSURE_SCHEMA",
     "AUTHORITY_SOURCE_IDENTITY_SCHEMA",
     "DURABLE_STATE_SOURCE_CLOSURE_SCHEMA",
     "FAMILY_STATES",
@@ -110,6 +115,7 @@ __all__ = [
     "INTERRUPTION_TRANSCRIPT_FRONTIER_SCHEMA",
     "INVALID_REASONS",
     "PRIOR_RUNNING_STATUS_EVIDENCE_SCHEMA",
+    "REFOBS_WITNESS_SOURCE_SCHEMA",
     "RUNNING_STATUS_SNAPSHOT_DIRECTORY",
     "RUNNING_STATUS_SOURCE_LOCATOR",
     "RUN_AUTHORITY_SNAPSHOT_SCHEMA",
@@ -133,6 +139,7 @@ __all__ = [
     "TRANSCRIPT_FRONTIER_STATES",
     "AcceptedStateSourceClosure",
     "ArchivedSourceObject",
+    "AuthoredInputsSourceClosure",
     "AuthoritySourceIdentity",
     "DurableStateSourceClosure",
     "InterruptionArchiveManifest",
@@ -141,6 +148,7 @@ __all__ = [
     "InterruptionReceiptEvaluation",
     "InterruptionTranscriptFrontier",
     "PriorRunningStatusEvidence",
+    "RefobsWitnessSource",
     "RunAuthoritySnapshot",
     "RunInterruptionReceipt",
     "RunOwnerClaim",

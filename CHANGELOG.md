@@ -7,6 +7,14 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- The derived hypothesis-falsification projection moves from `state/work-units/` to
+  `state/hypothesis-falsifications/`; the strict work-unit namespace enumerator refused
+  it as an unknown member, failing every rematerialization that followed a real
+  falsification ([HIR-0175](docs/improvements/HIR-0175-typed-abstention-reaches-a-typed-stop.md)).
+- Interruption receipts bind authored inputs: the exact `brief.md`, every admissible
+  `refs/` still, and the registration and crop of every selected `refobs-*` witness,
+  captured into the run-owned archive and verified with the other source families
+  ([HIR-0172](docs/improvements/HIR-0172-run-interruption-is-action-free-terminal-evidence.md)).
 - Two `curve_derivative_max` rows on the same roles and property that contradict each
   other (a floor inside a lower cap's window) are refused at staging, materialization,
   and the plan gate; the falsification stop compiler compares the finding's layer

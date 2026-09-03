@@ -139,7 +139,7 @@ def _replace_current_finding(
     )
     artifact = (
         root
-        / STATE_DIR
+        / "state"
         / "hypothesis-falsifications"
         / f"{variant['record_id']}.json"
     )
@@ -389,7 +389,7 @@ def test_exact_current_falsification_compiles_one_amendment_action(
     assert source_finding["payload"] == finding
     assert source_finding["artifact_sha256"] == _sha256(
         tmp_path
-        / "state/work-units/hypothesis-falsifications"
+        / "state/hypothesis-falsifications"
         / f"{finding['record_id']}.json"
     )
     assert audit["audit_locators"]["evidence"] == [
@@ -418,7 +418,7 @@ def test_stop_compiler_reconciles_missing_falsification_projection_from_state(
     shot, layout, finding, _unit_record = _fixture(tmp_path, monkeypatch)
     projection = (
         tmp_path
-        / STATE_DIR
+        / "state"
         / "hypothesis-falsifications"
         / f"{finding['record_id']}.json"
     )

@@ -45,6 +45,11 @@ The same plan had also authored judge frame 0 for `refs/frame_0s.jpg` for the se
    falsification had run through that boundary since the change.
 3. The global kickoff stated the frame count and fps without the 1-based convention, and
    the judge-frame rejection named only "positive integer".
+4. The derived falsification projection lived at `state/work-units/hypothesis-falsifications/`,
+   inside the strict live work-unit namespace whose enumerator refuses every unrecognised
+   member (HIR-0171). The first rematerialization after the finding failed its terminal
+   gate with `unknown or unsafe work-unit state member: hypothesis-falsifications` and
+   burned its session retrying finalize.
 
 ## Decision criteria
 
@@ -66,6 +71,10 @@ The same plan had also authored judge frame 0 for `refs/frame_0s.jpg` for the se
    `authority_capsule_resolution.selected_layer_capsule_digest(shot, layer, selected)`;
    the fixture pins that `plan_hash` is not the file hash and a replaced capsule still
    refuses.
+4. The projection directory is `state/hypothesis-falsifications/`, beside the strict
+   namespace; durable state remains the sole authority and the projection is
+   regenerable through `reconcile_falsification_projection`. A shot carrying the old
+   directory moves it once; nothing reads the old location.
 3. The global planner kickoff states `Frames are 1-based: frame 1 is t=0.0s and
    frame(t) = round(t*fps)+1, so every judge frame lies in 1..N`, and `JudgePoint.parse`
    teaches the same convention with the found value.

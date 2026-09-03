@@ -20,6 +20,7 @@ from vfx_harness.domain.run_lifecycle import (
     RUN_OWNER_LOSS_RECONCILER_MANIFEST_SCHEMA,
     AcceptedStateSourceClosure,
     ArchivedSourceObject,
+    AuthoredInputsSourceClosure,
     AuthoritySourceIdentity,
     DurableStateSourceClosure,
     InterruptionArchiveManifest,
@@ -94,6 +95,7 @@ def _authority_value(*, accepted: str = "accepted-a") -> InterruptionAuthoritySo
         SelectedPlanSourceClosure.absent(),
         AcceptedStateSourceClosure.mint_present(ledger=ledger),
         DurableStateSourceClosure.absent(),
+        AuthoredInputsSourceClosure.absent(),
     )
 
 

@@ -11,6 +11,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from vfx_harness.domain.run_authored_inputs_closure import (
+    AUTHORED_INPUTS_SOURCE_CLOSURE_SCHEMA,
+    REFOBS_WITNESS_SOURCE_SCHEMA,
+    AuthoredInputsSourceClosure,
+    RefobsWitnessSource,
+)
 from vfx_harness.domain.run_authority_source_identity import (
     AUTHORITY_SOURCE_IDENTITY_SCHEMA,
     AuthoritySourceIdentity,
@@ -46,7 +52,7 @@ from vfx_harness.domain.run_authority_source_identity import (
 SELECTED_PLAN_SOURCE_CLOSURE_SCHEMA = "vfx-harness.interruption-selected-plan-source-closure/v1"
 ACCEPTED_STATE_SOURCE_CLOSURE_SCHEMA = "vfx-harness.interruption-accepted-state-source-closure/v1"
 DURABLE_STATE_SOURCE_CLOSURE_SCHEMA = "vfx-harness.interruption-durable-state-source-closure/v1"
-INTERRUPTION_AUTHORITY_SOURCE_CLOSURE_SCHEMA = "vfx-harness.interruption-authority-source-closure/v1"
+INTERRUPTION_AUTHORITY_SOURCE_CLOSURE_SCHEMA = "vfx-harness.interruption-authority-source-closure/v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -787,6 +793,7 @@ class InterruptionAuthoritySourceClosure:
     selected_plan: SelectedPlanSourceClosure
     accepted_state: AcceptedStateSourceClosure
     durable_state: DurableStateSourceClosure
+    authored_inputs: AuthoredInputsSourceClosure
 
     def __post_init__(self) -> None:
         if not isinstance(self.selected_plan, SelectedPlanSourceClosure):
@@ -795,6 +802,8 @@ class InterruptionAuthoritySourceClosure:
             raise ValueError("InterruptionAuthoritySourceClosure.accepted_state must be typed")
         if not isinstance(self.durable_state, DurableStateSourceClosure):
             raise ValueError("InterruptionAuthoritySourceClosure.durable_state must be typed")
+        if not isinstance(self.authored_inputs, AuthoredInputsSourceClosure):
+            raise ValueError("InterruptionAuthoritySourceClosure.authored_inputs must be typed")
 
     def _payload(self) -> dict[str, Any]:
         return {
@@ -802,6 +811,7 @@ class InterruptionAuthoritySourceClosure:
             "selected_plan": self.selected_plan.as_dict(),
             "accepted_state": self.accepted_state.as_dict(),
             "durable_state": self.durable_state.as_dict(),
+            "authored_inputs": self.authored_inputs.as_dict(),
         }
 
     @property
@@ -826,6 +836,7 @@ class InterruptionAuthoritySourceClosure:
                     "selected_plan",
                     "accepted_state",
                     "durable_state",
+                    "authored_inputs",
                     "closure_digest",
                 }
             ),
@@ -834,6 +845,9 @@ class InterruptionAuthoritySourceClosure:
             selected_plan=SelectedPlanSourceClosure.from_dict(row["selected_plan"], f"{where}.selected_plan"),
             accepted_state=AcceptedStateSourceClosure.from_dict(row["accepted_state"], f"{where}.accepted_state"),
             durable_state=DurableStateSourceClosure.from_dict(row["durable_state"], f"{where}.durable_state"),
+            authored_inputs=AuthoredInputsSourceClosure.from_dict(
+                row["authored_inputs"], f"{where}.authored_inputs"
+            ),
         )
         observed = _digest(row["closure_digest"], f"{where}.closure_digest")
         if observed != candidate.digest:
@@ -843,13 +857,17 @@ class InterruptionAuthoritySourceClosure:
 
 __all__ = [
     "ACCEPTED_STATE_SOURCE_CLOSURE_SCHEMA",
+    "AUTHORED_INPUTS_SOURCE_CLOSURE_SCHEMA",
     "AUTHORITY_SOURCE_IDENTITY_SCHEMA",
     "DURABLE_STATE_SOURCE_CLOSURE_SCHEMA",
     "INTERRUPTION_AUTHORITY_SOURCE_CLOSURE_SCHEMA",
+    "REFOBS_WITNESS_SOURCE_SCHEMA",
     "SELECTED_PLAN_SOURCE_CLOSURE_SCHEMA",
     "AcceptedStateSourceClosure",
+    "AuthoredInputsSourceClosure",
     "AuthoritySourceIdentity",
     "DurableStateSourceClosure",
     "InterruptionAuthoritySourceClosure",
+    "RefobsWitnessSource",
     "SelectedPlanSourceClosure",
 ]

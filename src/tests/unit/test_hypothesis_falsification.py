@@ -108,7 +108,7 @@ def test_hypothesis_falsification_is_distinct_hash_pinned_state(tmp_path: Path) 
     assert record["identities"]["bundle_hash"] == "b" * 64
     artifact = (
         tmp_path
-        / "state/work-units/hypothesis-falsifications"
+        / "state/hypothesis-falsifications"
         / f"{record['record_id']}.json"
     )
     parsed = load_hypothesis_falsification(artifact)
@@ -465,7 +465,7 @@ def test_falsification_records_earlier_layer_camera_without_local_affected(
     assert state["units"]["facade"]["status"] == "hypothesis_falsified"
     parsed = load_hypothesis_falsification(
         tmp_path
-        / "state/work-units/hypothesis-falsifications"
+        / "state/hypothesis-falsifications"
         / f"{finding['record_id']}.json"
     )
     assert parsed.fault_owner_units == ("camera_path",)
@@ -638,7 +638,7 @@ def test_terminal_failing_falsification_contract_routes_to_typed_record(
     assert record["observations"][0]["value"] == 2.61
     artifact = (
         tmp_path
-        / "state/work-units/hypothesis-falsifications"
+        / "state/hypothesis-falsifications"
         / f"{record['record_id']}.json"
     )
     parsed = load_hypothesis_falsification(artifact)
@@ -674,7 +674,7 @@ def test_terminal_failure_without_declared_path_stays_ordinary(
     state = load(tmp_path, "1")
     assert state["units"]["camera_iris_bootstrap"]["status"] == "building"
     assert (
-        not (tmp_path / "state/work-units/hypothesis-falsifications").exists()
+        not (tmp_path / "state/hypothesis-falsifications").exists()
     )
 
 

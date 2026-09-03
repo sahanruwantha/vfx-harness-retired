@@ -9,6 +9,7 @@ import pytest
 
 from vfx_harness.domain.run_authority_source_closure import (
     AcceptedStateSourceClosure,
+    AuthoredInputsSourceClosure,
     DurableStateSourceClosure,
     InterruptionAuthoritySourceClosure,
     SelectedPlanSourceClosure,
@@ -188,7 +189,7 @@ def _valid_closure(*, ledger_label: str = "ledger-a") -> InterruptionAuthoritySo
             "vfx-harness.authority-state-pending/v1",
         ),
     )
-    return InterruptionAuthoritySourceClosure(selected, accepted, durable)
+    return InterruptionAuthoritySourceClosure(selected, accepted, durable, AuthoredInputsSourceClosure.absent())
 
 
 def test_heterogeneous_source_closure_round_trips_and_sorts_members() -> None:
@@ -238,6 +239,7 @@ def test_all_absent_is_explicit_typed_authority_not_an_empty_projection() -> Non
         SelectedPlanSourceClosure.absent(),
         AcceptedStateSourceClosure.absent(),
         DurableStateSourceClosure.absent(),
+        AuthoredInputsSourceClosure.absent(),
     )
 
     assert InterruptionAuthoritySourceClosure.from_dict(closure.as_dict()) == closure
@@ -323,6 +325,7 @@ def test_auxiliary_authority_is_explicit_even_without_selected_heads() -> None:
             pending=pending,
             records=pending_records,
         ),
+        AuthoredInputsSourceClosure.absent(),
     )
 
     assert closure.selected_plan.state == "absent"
@@ -339,6 +342,7 @@ def test_auxiliary_authority_is_explicit_even_without_selected_heads() -> None:
             SelectedPlanSourceClosure.absent(),
             AcceptedStateSourceClosure.absent(),
             DurableStateSourceClosure.absent(),
+            AuthoredInputsSourceClosure.absent(),
         ).digest
     )
 
@@ -357,6 +361,7 @@ def test_every_mutable_auxiliary_authority_source_changes_closure_identity() -> 
             ),
             closure.accepted_state,
             closure.durable_state,
+            AuthoredInputsSourceClosure.absent(),
         ),
         InterruptionAuthoritySourceClosure(
             replace(
@@ -369,6 +374,7 @@ def test_every_mutable_auxiliary_authority_source_changes_closure_identity() -> 
             ),
             closure.accepted_state,
             closure.durable_state,
+            AuthoredInputsSourceClosure.absent(),
         ),
         InterruptionAuthoritySourceClosure(
             closure.selected_plan,
@@ -381,6 +387,7 @@ def test_every_mutable_auxiliary_authority_source_changes_closure_identity() -> 
                 ),
             ),
             closure.durable_state,
+            AuthoredInputsSourceClosure.absent(),
         ),
         InterruptionAuthoritySourceClosure(
             closure.selected_plan,
@@ -393,6 +400,7 @@ def test_every_mutable_auxiliary_authority_source_changes_closure_identity() -> 
                 ),
             ),
             closure.durable_state,
+            AuthoredInputsSourceClosure.absent(),
         ),
         InterruptionAuthoritySourceClosure(
             closure.selected_plan,
@@ -406,6 +414,7 @@ def test_every_mutable_auxiliary_authority_source_changes_closure_identity() -> 
                     label="changed pending",
                 ),
             ),
+            AuthoredInputsSourceClosure.absent(),
         ),
     )
 

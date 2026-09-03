@@ -9,6 +9,7 @@ audit only and never satisfies a gate.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -139,3 +140,27 @@ def parse_construction(value: Any, where: str) -> ConstructionSpec:
                 "matching ^[A-Za-z0-9][A-Za-z0-9._-]*$"
             )
     return ConstructionSpec(route=route, witnesses=witnesses, reason=reason)
+
+
+def selected_witness_tokens(layers_document: Mapping[str, Any]) -> tuple[str, ...]:
+    """Every ``refobs-*`` witness a unit of one layers document binds, sorted.
+
+    Interruption capture selects witnesses from the captured effective view alone
+    (HIR-0172 step 4); a token that is not a ``refobs-*`` id is refused, never skipped.
+    """
+
+    tokens: set[str] = set()
+    for layer in layers_document.get("layers") or []:
+        if not isinstance(layer, Mapping):
+            continue
+        for unit in layer.get("stages") or []:
+            construction = unit.get("construction") if isinstance(unit, Mapping) else None
+            if not isinstance(construction, Mapping):
+                continue
+            for token in construction.get("witnesses") or []:
+                if not isinstance(token, str) or not token.startswith("refobs-"):
+                    raise ValueError(
+                        f"selected unit names a non-refobs construction witness: {token!r}"
+                    )
+                tokens.add(token)
+    return tuple(sorted(tokens))

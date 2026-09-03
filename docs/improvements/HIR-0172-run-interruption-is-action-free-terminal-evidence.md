@@ -458,6 +458,17 @@ carries it, `terminalize_interruption` accepts only that record and refuses any 
 The reconciler's owner-loss issuance was already capability-bound through the acquired fence.
 Canonical reference locators for optional checkpoint/journal/candidate context remain open.
 
+Step 4 (authored and construction inputs) landed on 2026-09-03: the source closure gained the
+`authored_inputs` family (`vfx-harness.interruption-authored-inputs-source-closure/v1`, closure
+schema v2) binding the exact `brief.md` bytes, every admissible `refs/` still (direct regular
+files with a reference-still suffix; a symlink or non-regular entry refuses capture), and the
+registration record plus crop bytes of every `refobs-*` witness a unit of the captured
+effective view names. Witness tokens derive from the archived `layers.json` alone
+(`domain.construction.selected_witness_tokens`); a missing registry pair refuses capture and an
+unselected crop cannot enter. `iter_authority_sources` enumerates the family, so archive
+verification and before/after equality cover authored inputs
+(`src/tests/unit/test_authored_inputs_capture.py`).
+
 Run `20260902T185214Z-2d588f` (2026-09-03) proved the reconciler on a real dead owner: the
 driver's `main` handled only cancellation, a strict-migration `ValueError` from an unreadable
 selected view escaped, and the run stayed `running`; `vfx reconcile` selected `interrupted`

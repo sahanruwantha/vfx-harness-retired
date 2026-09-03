@@ -2266,7 +2266,7 @@ def test_falsification_state_write_failure_leaves_no_authoritative_record(
     assert slot["active_attempt"] == building.as_dict()
     assert slot["checkpoint"]["candidate_hash"] == "candidate"
     assert not list(
-        (tmp_path / "state/work-units/hypothesis-falsifications").glob("hf-*.json")
+        (tmp_path / "state/hypothesis-falsifications").glob("hf-*.json")
     )
 
 
