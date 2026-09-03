@@ -86,6 +86,14 @@ Two further teaching-by-rejection rounds recurred across the same lineage:
    call on a composition-owning layer while any judge frame lacks a `bbox_*` row of a
    rendered subject, naming the frames and the deferred-row shape (layer-1
    rematerializations `8509f9` and `290f3c` each paid a terminal-gate round for it).
+7. `agents/planner/budget.plan_verify_turn_budget(requested, layers)` returns the larger
+   of the configured verify cap and `6 + 2 × drafted layers`, capped at 24 and by the
+   run's `--max-turns`. `generate_plan_two_pass` counts the layers the draft's
+   `ownership_mapping.json` declares (an unreadable mapping counts zero and is the
+   gate's finding, not the budget's) and logs the budget before the audit. The six-turn
+   cap audited three layers and exhausted before the last layers of the six-layer
+   hansa_silk_road and caesar_curia drafts (OBS-55); exhaustion still hands the on-disk
+   candidate to the deterministic gate.
 
 ## Rejected patch-level alternatives
 
@@ -107,6 +115,10 @@ Two further teaching-by-rejection rounds recurred across the same lineage:
   semantics, the stage call refuses an uncovered mutated role without writing the
   candidate while the covered unit stages, and a cross-row contradiction staged in one
   call is refused at that call.
+- `src/tests/unit/test_planner_outcomes.py::test_two_pass_verify_budget_scales_with_drafted_layers`:
+  floor, scaling, requested cap, ceiling, rejection of a non-positive request, and the
+  two-pass verify call receiving the mapping-derived budget (six layers → 18 turns,
+  unreadable mapping → the configured floor).
 - `src/tests/unit/test_subject_framing_coverage.py`: the predicate matches the gate
   (camera-only bbox and projected_origin are not framing; claim, context, and persistent
   deferred rows cover), and the camera unit's stage call refuses uncovered judge frames

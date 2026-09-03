@@ -222,6 +222,61 @@ def test_materialization_kickoff_lists_only_selected_bundle_decisions(tmp_path: 
     assert "A2" not in kickoff
 
 
+def test_two_pass_verify_budget_scales_with_drafted_layers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fixed six-turn verify cap audited three layers and exhausted before the last
+    layers of six-layer drafts (OBS-55). The budget follows the ownership mapping."""
+    from vfx_harness.agents.planner import budget
+
+    assert budget.plan_verify_turn_budget(6, 0) == 6
+    assert budget.plan_verify_turn_budget(6, 3) == 12
+    assert budget.plan_verify_turn_budget(6, 6) == 18
+    assert budget.plan_verify_turn_budget(20, 3) == 20
+    assert budget.plan_verify_turn_budget(6, 40) == budget.PLAN_VERIFY_TURN_CEILING
+    with pytest.raises(ValueError):
+        budget.plan_verify_turn_budget(0, 3)
+
+    draft = tmp_path / "plans" / "global.draft.md"
+    draft.parent.mkdir()
+    draft.write_text("# exact draft\n", encoding="utf-8")
+    (tmp_path / "ownership_mapping.json").write_text(
+        json.dumps({"layers": [{"id": index} for index in range(6)]}), encoding="utf-8"
+    )
+    shot = SimpleNamespace(folder=tmp_path)
+    seen: list[int] = []
+
+    async def capturing_generate(*args, **kwargs):
+        if kwargs.get("verify_draft"):
+            seen.append(kwargs["max_turns"])
+        return draft
+
+    monkeypatch.setattr(planner, "load_shot", lambda folder: shot)
+    monkeypatch.setattr(planner, "generate_plan", capturing_generate)
+    monkeypatch.setattr(
+        planner.Settings,
+        "from_environment",
+        lambda **kwargs: SimpleNamespace(planner_model="model", plan_verify_max_turns=6),
+    )
+    monkeypatch.setattr(
+        run_artifacts,
+        "ensure",
+        lambda *args, **kwargs: SimpleNamespace(scratch=tmp_path / "scratch"),
+    )
+
+    async def invoke():
+        return await planner.generate_plan_two_pass(
+            tmp_path, verify_only=True, workspace=tmp_path, max_turns=100
+        )
+
+    anyio.run(invoke)
+    assert seen == [18]
+
+    (tmp_path / "ownership_mapping.json").write_text("not json", encoding="utf-8")
+    anyio.run(invoke)
+    assert seen == [18, 6]
+
+
 def test_two_pass_verify_exhaustion_falls_back_to_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

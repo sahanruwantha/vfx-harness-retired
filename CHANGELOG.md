@@ -7,6 +7,9 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- The global plan's verify pass is budgeted from the layers the draft's ownership
+  mapping declares (6 plus two turns per layer, capped at 24) instead of a fixed six
+  turns that exhausted before the last layers of a six-layer draft (HIR-0177).
 - A strict-read planning session's path denial enumerates only its declared read
   surface (`brief.md`, `refs/` stills, exact exceptions) instead of the shot's file
   tree, so a unit planner is no longer offered superseded unit scripts

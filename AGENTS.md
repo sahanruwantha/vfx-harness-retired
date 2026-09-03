@@ -460,7 +460,9 @@ mechanism when it improves control, observability, or agent capability.
 - Choose model, effort, turn, token, and cost budgets for the role and measured uncertainty; do
   not maximize every setting indiscriminately. A materialization session's turn budget is the
   larger of the requested cap and 24 plus two turns per owned requirement, capped at 96; an
-  exhausted session still publishes nothing (HIR-0177). Parallelize independent evidence production while
+  exhausted session still publishes nothing. The global verify pass runs under the larger of
+  the configured verify cap and 6 plus two turns per layer the draft's ownership mapping
+  declares, capped at 24 (HIR-0177). Parallelize independent evidence production while
   authoritative scene mutation and publication remain serialized.
 - Before adding an SDK workaround, verify the installed SDK does not already provide the needed
   primitive. Pin and test every SDK behavior the harness depends on, and fail closed when an

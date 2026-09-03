@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from pathlib import Path
 
 import anyio
 
+from vfx_harness.agents.planner.budget import plan_verify_turn_budget
 from vfx_harness.agents.planner.generate import generate_layer_plan
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.planner.planning_stop import publish_global_plan_gate_stop
@@ -75,10 +77,14 @@ async def generate_plan_two_pass(
     verify_candidate.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(draft_path, verify_candidate)
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
+    drafted_layers = drafted_layer_count(workspace)
     verify_turns = min(
         max_turns,
-        getattr(configured_settings, "plan_verify_max_turns", 6),
+        plan_verify_turn_budget(
+            getattr(configured_settings, "plan_verify_max_turns", 6), drafted_layers
+        ),
     )
+    log(f"verify budget: {verify_turns} turns for {drafted_layers} drafted layer(s)")
     try:
         final = await planner_package().generate_plan(
             folder,
@@ -105,6 +111,21 @@ async def generate_plan_two_pass(
         final = verify_candidate
     log(f"two-pass complete → {final.name} (draft kept: {draft_path.name})")
     return final
+
+
+def drafted_layer_count(workspace: Path) -> int:
+    """Layers the draft's ownership mapping declares; an unreadable mapping counts zero.
+
+    The count only sizes the verify budget. Whether the mapping is publishable is the
+    deterministic gate's question, asked of the same file with enumerated errors."""
+
+    mapping_path = Path(workspace) / "ownership_mapping.json"
+    try:
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    layers = mapping.get("layers") if isinstance(mapping, dict) else None
+    return len(layers) if isinstance(layers, list) else 0
 
 
 async def generate_plan_until_clean(
