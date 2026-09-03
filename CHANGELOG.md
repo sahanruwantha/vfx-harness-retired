@@ -13,6 +13,9 @@ live in the linked Harness Improvement Records.
   recorded as a controller ledger row under the run, and the run continues from the
   replaced layer. Identity convergence and dispatch, per-layer, and USD caps bound the
   loop; `--single-pass` keeps the single-pass form.
+- `vfx run <shot>` on a shot with no selected plan authority drafts, verifies, gates, and
+  repairs the global plan first, under the same run ID, so one command takes a new shot from
+  brief and references to the production chain (HIR-0186).
 
 ### Changed
 

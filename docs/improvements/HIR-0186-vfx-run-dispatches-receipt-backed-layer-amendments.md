@@ -99,6 +99,13 @@ re-author the same defect at model prices.
 6. Shared primitives moved to `orchestration/immutable_records` (canonical bytes,
    immutable publish, exact read-back, evidence refs, key locks); the environment recovery
    store imports them instead of carrying its own copies.
+7. `run_shot._needs_global_plan` reads the selected authority; when the plan pointer is
+   absent (malformed authority still fails closed), `vfx run` runs the global plan loop
+   (`python -m vfx_harness.agents.planner <shot> --until-clean`) as a child stage under the
+   same run id before resolving layers, and a non-zero exit is consumed through the same
+   typed-stop boundary as every other stage. A selected bundle is never redrafted by the
+   driver; global republication stays reviewed (ADR-0010). A dry run without a plan explains
+   instead of drafting.
 
 ## Rejected patch-level alternatives
 
@@ -124,6 +131,10 @@ re-author the same defect at model prices.
   records a refusal in the summary and selects the consumed envelope, selects the failed
   adapter's own stop, replans and rebuilds the replaced layer inside one run to a passed
   terminal status, and `--single-pass` builds no controller.
+- `src/tests/unit/test_run_shot_global_plan.py`: an absent plan pointer runs the global
+  plan loop before the first layer and the run passes; a selected plan is never redrafted; a
+  failed global plan is a typed stop with the planner's exit code before any layer; a dry run
+  without a plan explains instead of drafting.
 - Existing driver, environment recovery, and receipt store suites pass unchanged.
 
 ## Release and rollback

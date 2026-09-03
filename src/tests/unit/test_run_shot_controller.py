@@ -108,6 +108,7 @@ def test_driver_replans_and_rebuilds_after_a_dispatch(tmp_path: Path, monkeypatc
     shot = SimpleNamespace(folder=tmp_path, id="controller-loop-shot")
     monkeypatch.setattr(run_shot, "load_shot", lambda _folder: shot)
     monkeypatch.setattr(run_shot, "preflight_probe", lambda _blender: _ok_preflight())
+    monkeypatch.setattr(run_shot, "_needs_global_plan", lambda _shot: False)
     chain = [SimpleNamespace(id="1", title="Camera"), SimpleNamespace(id="2", title="Form")]
     monkeypatch.setattr(
         run_shot,
@@ -183,6 +184,7 @@ def test_single_pass_flag_disables_the_controller(tmp_path: Path, monkeypatch: p
     shot = SimpleNamespace(folder=tmp_path, id="single-pass-shot")
     monkeypatch.setattr(run_shot, "load_shot", lambda _folder: shot)
     monkeypatch.setattr(run_shot, "preflight_probe", lambda _blender: _ok_preflight())
+    monkeypatch.setattr(run_shot, "_needs_global_plan", lambda _shot: False)
     chain = [SimpleNamespace(id="1", title="Camera")]
     monkeypatch.setattr(
         run_shot,

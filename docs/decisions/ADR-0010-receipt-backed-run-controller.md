@@ -127,6 +127,9 @@ any transaction.
   external repair, so an in-run dispatch has nothing to dispatch. Step 2 has no
   `retry_exact_unit` producer yet. Step 3 (owner-loss reconciliation before a successor run)
   and step 5 (checkpointed resume) remain non-dispatchable until their receipts exist.
+- `vfx run` also drafts the first global plan when no plan authority is selected
+  (HIR-0186 mechanism 7). That is a first plan, not the global republication this ADR keeps
+  reviewed: an existing bundle is never redrafted by the driver.
 - The crash fixture, convergence fixture, and cap fixture named below exist for step 4
   (`src/tests/unit/test_run_controller.py`); steps 1 to 3 and 5 still owe theirs.
 

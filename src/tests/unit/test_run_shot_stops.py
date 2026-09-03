@@ -384,6 +384,7 @@ def test_driver_builds_a_reopened_lower_layer_before_the_new_layer(
     shot = SimpleNamespace(folder=tmp_path, id="reopened-prior-shot")
     monkeypatch.setattr(run_shot, "load_shot", lambda _folder: shot)
     monkeypatch.setattr(run_shot, "preflight_probe", _ok_preflight)
+    monkeypatch.setattr(run_shot, "_needs_global_plan", lambda _shot: False)
     chain = [SimpleNamespace(id="1", title="Camera"), SimpleNamespace(id="2", title="Form")]
     monkeypatch.setattr(
         run_shot,

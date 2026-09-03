@@ -41,8 +41,11 @@ operation.
   binary when the packaged launcher is unusable (HIR-0173). Strict preflight also proves the kernel-owned plan-consumer
   directory primitive (`plan_consumer_directory`), so an unsupported host fails before spend
   rather than at its first consumer view (HIR-0172).
-- The normal operation is `vfx run`. It stops on the first unaccepted boundary; do not force
-  downstream work past it. `--force` is a bounded debugging experiment, never a deliverable.
+- The normal operation is `vfx run`. A shot with no selected plan authority first drafts,
+  verifies, gates, and repairs its global plan as a child stage of the same run; an existing
+  bundle is never redrafted by the driver (HIR-0186). It stops on the first unaccepted boundary
+  it cannot dispatch; do not force downstream work past it. `--force` is a bounded debugging
+  experiment, never a deliverable.
 - Reading order after any invocation: `runs/latest.json`, then the selected run's
   `manifest.json`, `status.json`, `reports/summary.json`, `artifacts.json`. Fail closed on an
   unsupported manifest schema. Every run is the `vfx-harness.run/v2` generation owned by a claim

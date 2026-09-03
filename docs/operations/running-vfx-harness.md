@@ -243,8 +243,12 @@ The normal operation is the whole driver:
 .venv/bin/vfx run shots/<shot-id> --rounds 2
 ```
 
-It performs just-in-time layer materialization, claim-owned unit planning, the deterministic
-plan gate, bounded layer building, cumulative acceptance, and final rendering under one run ID.
+When the shot has no selected plan authority yet, it first runs the global plan loop
+(`vfx plan <shot> --until-clean`) as a child stage under the same run ID and stops with the
+planner's typed envelope if the gate never clears; a shot that already has a bundle is never
+redrafted here. It then performs just-in-time layer materialization, claim-owned unit planning,
+the deterministic plan gate, bounded layer building, cumulative acceptance, and final rendering
+under that one run ID.
 Legacy distillation queue rows are inert: recipe publication remains disabled until it has an
 immutable unit-completion receipt, a staged bounded diff, and post-spend authority revalidation.
 It stops on the

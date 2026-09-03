@@ -164,6 +164,12 @@ def _build_layer_and_verify(
     return status
 
 
+def _needs_global_plan(shot) -> bool:
+    """True only for the absent-pointer state; malformed selected authority fails closed."""
+
+    return authority_selection.resolve_selected_authority(shot.folder).plan is None
+
+
 def _selected_run_layers(shot):
     """Resolve one authority snapshot and retain its selected-DAG order."""
 
@@ -417,6 +423,30 @@ def _drive(
         _stop(layout, lease, 1, environment_stop(layout, preflight))
     a.blender = str(preflight_raw["blender"]["resolved"])
 
+    py = sys.executable
+    console = layout.logs / "console.log"
+    if _needs_global_plan(shot):
+        # A shot with brief.md and refs/ but no selected plan bundle is the first-run case,
+        # not a replan: draft, verify, gate, and repair the global plan as a child stage
+        # under this run id, then continue into the layers it publishes. Global
+        # republication over an existing bundle stays a reviewed operator transaction
+        # (ADR-0010).
+        if a.dry_run:
+            raise SystemExit(
+                "no selected plan authority; a real run drafts the global plan first "
+                "(vfx plan <shot> --until-clean)"
+            )
+        log("════ GLOBAL PLAN · no selected authority; drafting ════")
+        rc = _run(
+            [py, "-m", "vfx_harness.agents.planner", str(shot.folder), "--until-clean",
+             "--blender", a.blender],
+            dry=a.dry_run,
+            tee=console,
+        )
+        if rc:
+            log(f"✗ global plan exited {rc}; no layer was started")
+            _stop_after_stage(layout, lease, rc, "global-plan")
+
     selected_authority, chain, layers = _selected_run_layers(shot)
     ids = [
         str(layer.id)
@@ -435,8 +465,6 @@ def _drive(
         selected_authority,
     )
     done = [i for i in ids if i in verified_passed]
-    py = sys.executable
-    console = layout.logs / "console.log"
     log(f"run {RUN_ID} · shot '{shot.id}' · layers {ids[0]}–{ids[-1]} "
         f"({len(done)} already passed) · rounds {a.rounds}")
     if done:
