@@ -291,6 +291,7 @@ def register_mutate(
                             f"  {row.get('id', '?')}: {row.get('metric')}="
                             f"{row.get('value')} target {row.get('target')} — "
                             f"{row.get('definition', 'see scene_checks contract')}"
+                            + (f"\n    note: {row['note']}" if row.get("note") else "")
                             for row in failed[:6]
                         )
                     elif state["may_seal"]:

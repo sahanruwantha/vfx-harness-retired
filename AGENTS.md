@@ -619,7 +619,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   `curve_derivative_max.hi` is refused at materialization, authoring, and the
   plan gate — interpolation cannot invent a third option (HIR-0030). Two `curve_derivative_max`
   rows on the same roles and property whose floor window lies inside a lower cap window are
-  refused at the same boundaries — no curve satisfies both (HIR-0175). A falsification stop
+  refused at the same boundaries — no curve satisfies both (HIR-0175). An `object_count` upper
+  bound over a literal namespace whose dotted descendants sibling rows require (same layer, or
+  every layer for a `persistent` row) is refused there too, naming the matcher rule, the requiring
+  rows, and the leaf-role or raised-bound fix; the object_count read-back names every matched
+  descendant and carries the selector beside the matched roles (HIR-0178). A falsification stop
   compares the finding's selected layer capsule digest, never a whole-file hash (HIR-0175).
   A required claim that binds `visible_fraction` is repaired by a unit that
   `provides: ["camera"]` or mutates/dresses every `roles` selector on that row;

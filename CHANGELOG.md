@@ -17,6 +17,11 @@ live in the linked Harness Improvement Records.
   schema offers only the claim authorities an authored claim can carry, and a mutated
   role without a required claim is refused at the stage call rather than at finalize
   ([HIR-0177](docs/improvements/HIR-0177-materialization-budget-and-id-addressed-patches.md)).
+- An `object_count` upper bound over a literal namespace whose dotted descendants
+  sibling rows require is refused at materialization and the plan gate with the
+  matcher rule and the leaf-role or raised-bound fix, and the object_count read-back
+  names every matched descendant beside the authored selector
+  ([HIR-0178](docs/improvements/HIR-0178-namespace-counts-cannot-exclude-required-descendants.md)).
 - Absolute pixel statistics (`render_region_stat`, `control_render_response`) bound by
   a required image claim count as image debts for the signal and subject bootstrap
   gates, so a camera-only unit cannot carry them;

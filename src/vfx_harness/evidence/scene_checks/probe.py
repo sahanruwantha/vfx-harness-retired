@@ -227,6 +227,14 @@ for row in _rows:
         if kind=='object_count':
             value=len(objects)
             if not objects and (row.get('roles') or row.get('control_roles')): note=_missobj(row)
+            else:
+                literal=[r for r in _p(row,'roles') if not any(c in r for c in '*?[')]
+                below=[o for o in objects if o.get('bvfx_role') not in literal
+                       and any(str(o.get('bvfx_role','')).startswith(r+'.') for r in literal)]
+                if below:
+                    note=('literal selector(s) '+repr(literal)+' also match dotted descendants '
+                          '(HIR-0147): '+', '.join(o.name+'('+str(o.get('bvfx_role'))+')' for o in below)
+                          +'; count a leaf role to count one host')
         elif kind.startswith('bbox_'):
             if not objects: raise ValueError(_missobj(row))
             rec,empty=_projected(objects,_row_dg)
@@ -505,7 +513,8 @@ for row in _rows:
     except Exception as exc: value=None; error=str(exc)[:400]
     _out.append({{'id':row['id'],'value':value,'objects':[o.name for o in objects],
       'roles':[str(o.get('bvfx_role','')) for o in objects],'materials':[m.name for m in materials],
-      'controls':[str(o.get('bvfx_control','')) for o in objects],
+      'controls':[str(o.get('bvfx_control')) for o in objects if o.get('bvfx_control')],
+      'selector_roles':list(_p(row,'roles')),'selector_control_roles':list(_p(row,'control_roles')),
       'material_roles':[str(m.get('bvfx_role','')) for m in materials],
       'nodes':[n.name for g,n in matched],'error':error,'note':note,'segments':segments,
       'role_fractions':role_fractions}})
@@ -576,7 +585,9 @@ def _evidence(rows: list[dict], raw: list[dict]) -> list[dict]:
                 "lifecycle": str(row.get("lifecycle") or ""),
                 "objects": list(reading.get("objects") or []),
                 "roles": list(reading.get("roles") or []),
+                "selector_roles": list(reading.get("selector_roles") or []),
                 "controls": list(reading.get("controls") or []),
+                "selector_control_roles": list(reading.get("selector_control_roles") or []),
                 "materials": list(reading.get("materials") or []),
                 "material_roles": list(reading.get("material_roles") or []),
                 "nodes": list(reading.get("nodes") or []),

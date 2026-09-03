@@ -131,6 +131,18 @@ from vfx_harness.evidence.scene_checks.probe import (
 from vfx_harness.evidence.scene_checks.probe import (
     _evidence as _evidence,
 )
+from vfx_harness.evidence.scene_checks.row_sets import (
+    derivative_bound_contradictions as derivative_bound_contradictions,
+)
+from vfx_harness.evidence.scene_checks.row_sets import (
+    namespace_count_contradictions as namespace_count_contradictions,
+)
+from vfx_harness.evidence.scene_checks.row_sets import (
+    schedule_smoothness_contradictions as schedule_smoothness_contradictions,
+)
+from vfx_harness.evidence.scene_checks.row_sets import (
+    validate_row_set as validate_row_set,
+)
 from vfx_harness.evidence.scene_checks.validate import (
     _argmax_span as _argmax_span,
 )
@@ -162,9 +174,6 @@ from vfx_harness.evidence.scene_checks.validate import (
     data_block_carriers as data_block_carriers,
 )
 from vfx_harness.evidence.scene_checks.validate import (
-    derivative_bound_contradictions as derivative_bound_contradictions,
-)
-from vfx_harness.evidence.scene_checks.validate import (
     keyframe_schedule_matching_frames as keyframe_schedule_matching_frames,
 )
 from vfx_harness.evidence.scene_checks.validate import (
@@ -183,13 +192,7 @@ from vfx_harness.evidence.scene_checks.validate import (
     schedule_derivative_floor as schedule_derivative_floor,
 )
 from vfx_harness.evidence.scene_checks.validate import (
-    schedule_smoothness_contradictions as schedule_smoothness_contradictions,
-)
-from vfx_harness.evidence.scene_checks.validate import (
     validate_row as validate_row,
-)
-from vfx_harness.evidence.scene_checks.validate import (
-    validate_row_set as validate_row_set,
 )
 from vfx_harness.evidence.scene_checks.validate import (
     visible_fraction_min as visible_fraction_min,
