@@ -7,6 +7,10 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- The materialization kickoff compiles the closed judgment-property vocabulary and the
+  layer's legal choice from its sparse row (a camera-providing layer owns only
+  `camera_framing`), so the materializer no longer pays a rejection turn to learn it
+  ([HIR-0175](docs/improvements/HIR-0175-typed-abstention-reaches-a-typed-stop.md)).
 - The derived hypothesis-falsification projection moves from `state/work-units/` to
   `state/hypothesis-falsifications/`; the strict work-unit namespace enumerator refused
   it as an unknown member, failing every rematerialization that followed a real

@@ -75,6 +75,10 @@ The same plan had also authored judge frame 0 for `refs/frame_0s.jpg` for the se
    namespace; durable state remains the sole authority and the projection is
    regenerable through `reconcile_falsification_projection`. A shot carrying the old
    directory moves it once; nothing reads the old location.
+5. The materialization kickoff compiles `Judgment property authority` from the sparse
+   layer row: the closed vocabulary and, for a camera-providing layer, that only
+   `camera_framing` is legal; every layer-1 materialization had paid one or two
+   rejection turns to learn that rule.
 3. The global planner kickoff states `Frames are 1-based: frame 1 is t=0.0s and
    frame(t) = round(t*fps)+1, so every judge frame lies in 1..N`, and `JudgePoint.parse`
    teaches the same convention with the found value.

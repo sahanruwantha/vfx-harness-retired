@@ -74,8 +74,10 @@ operation.
   operator repairs the environment, invoke it with the exact source run and idempotency key; its
   independent evaluator proves the commit. Identical typed stops from separate runs converge on
   semantic evidence identity, and an explicit retry reconciles exactly one already-written direct
-  receipt orphan before probing again (HIR-0166). There is no automatic controller. The
-  other six transaction kinds remain non-dispatchable, and no current producer proves
+  receipt orphan before probing again (HIR-0166). There is no automatic controller yet: ADR-0010
+  (proposed) replaces this rule with `vfx run` dispatching only receipt-backed transactions,
+  landing one transaction kind at a time after `room_1046_opening` closes. Until each kind lands,
+  the other six transaction kinds remain non-dispatchable, and no current producer proves
   `local_implementation_miss`; never infer local retry authority from a generic builder failure
   or progress from a repeated finding (HIR-0164, HIR-0166).
 - Do not resume a truncated builder merely because a ledger row names a checkpoint and journal.

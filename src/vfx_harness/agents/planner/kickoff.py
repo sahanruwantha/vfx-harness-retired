@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vfx_harness.agents.plan_guardrails import target_validation_feedback
+from vfx_harness.domain.judgment_debt_models import JUDGMENT_DEBT_PROPERTIES
 from vfx_harness.domain.plan_records import load_active_structured_decisions, roles_match_reserved
 from vfx_harness.domain.work_units import (
     CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
@@ -388,6 +389,34 @@ def _sealed_outcomes_block(
     )
 
 
+def _judgment_property_authority_block(global_row: dict) -> str:
+    """Compile the closed judgment-property vocabulary and this layer's legal choice.
+
+    Every layer-1 materialization of room_1046_opening first bound its camera-layer
+    judgment debt as ``subject_appearance`` or ``reference_identity`` and paid one or
+    two turns for the rejection that names the rule; a camera-providing layer can own
+    only ``camera_framing`` judgment, and the rule is derivable from the sparse row.
+    """
+
+    raw_provides = (global_row.get("jit") or {}).get("provides") or {}
+    camera_owner = isinstance(raw_provides, dict) and "camera" in raw_provides
+    properties = sorted(JUDGMENT_DEBT_PROPERTIES)
+    if camera_owner:
+        rule = (
+            "This layer provides camera, so every requirement_bindings decision.judgment."
+            "property must be 'camera_framing' with a camera-providing fault_owner unit; "
+            "'subject_appearance' and 'reference_identity' belong to the form or look "
+            "layer that owns the subject and are refused here."
+        )
+    else:
+        rule = (
+            "This layer does not provide camera: 'camera_framing' belongs to the camera "
+            "owner; choose 'subject_appearance' or 'reference_identity' whose subject "
+            "selectors the fault_owner unit mutates or dresses."
+        )
+    return f"Judgment property authority (closed vocabulary {properties}): {rule}\n"
+
+
 def _owned_requirements_block(bundle_root: Path, global_row: dict) -> str:
     owned = {str(value) for value in ((global_row.get("jit") or {}).get("owned_requirements") or [])}
     if not owned:
@@ -509,6 +538,7 @@ def _materialization_kickoff(
         f"{upstream_interfaces}"
         f"{_frame_authority_block(global_row)}"
         f"{_unit_capability_authority_block(global_row)}"
+        f"{_judgment_property_authority_block(global_row)}"
         f"{_deferred_subject_activation_block(rows.get('layers') or [], str(layer.id))}"
         f"{_CONSTRUCTION_ROUTE_BLOCK}"
         f"{_TWO_SIDED_CONTRACT_BINDING}"
