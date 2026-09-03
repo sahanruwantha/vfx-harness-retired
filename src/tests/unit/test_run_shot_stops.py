@@ -410,6 +410,13 @@ def test_driver_builds_a_reopened_lower_layer_before_the_new_layer(
 
     monkeypatch.setattr(run_shot, "_run", fake_run)
     monkeypatch.setattr(run_shot, "_receipt_backed_passed_layers", fake_passed)
+    # This test drives sequencing, not the gate: the deterministic gate has its own
+    # coverage in test_run_shot_plan_gate_stop.py.
+    monkeypatch.setattr(
+        run_shot,
+        "_gate_selected_authority",
+        lambda _layout, _shot: (None, run_shot.GateResult("shot", [], {})),
+    )
     monkeypatch.setattr(
         run_shot,
         "layer_publication",

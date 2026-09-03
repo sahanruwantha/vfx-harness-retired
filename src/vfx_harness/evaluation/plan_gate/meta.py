@@ -584,15 +584,15 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
         domains = layer.get("evidence_domains")
         lid = str(layer.get("id") or "")
         if not isinstance(domains, list) or not domains:
-            findings.append(Finding(
-                "requirement-closure", True, f"layer {layer.get('id', '?')}",
+            findings.append(Finding.in_layer(
+                "requirement-closure", True, layer.get('id', '?'), "",
                 "evidence_domains is missing",
                 "declare the typed evidence domains this layer requires; composition "
                 "coverage must not be inferred from axis-name keywords",
             ))
         elif unknown_domains := sorted(set(map(str, domains)) - EVIDENCE_DOMAINS):
-            findings.append(Finding(
-                "requirement-closure", True, f"layer {layer.get('id', '?')}",
+            findings.append(Finding.in_layer(
+                "requirement-closure", True, layer.get('id', '?'), "",
                 "unknown evidence domains: " + ", ".join(unknown_domains),
             ))
         elif lid:
@@ -601,8 +601,8 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
                     domains, f"layer {lid}.evidence_domains"
                 )
             except ValueError as exc:
-                findings.append(Finding(
-                    "requirement-closure", True, f"layer {lid}", str(exc),
+                findings.append(Finding.in_layer(
+                    "requirement-closure", True, lid, "", str(exc),
                 ))
     for requirement in requirements:
         if requirement.resolution_kind != "deferred_owner":

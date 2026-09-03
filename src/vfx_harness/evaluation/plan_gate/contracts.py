@@ -194,10 +194,10 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
             capability_closure[lid] = provided | inherited
             if "camera" not in capability_closure[lid]:
                 out.append(
-                    Finding(
+                    Finding.in_layer(
                         "global-capability",
                         True,
-                        f"layer {lid}",
+                        lid, "",
                         "judge visibility is due before a camera capability is available",
                         "move the camera-owning layer before this layer, declare "
                         "`jit.provides: {\"camera\": [\"<reserved role>\"]}` there, "
@@ -252,10 +252,10 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
         lid = lay.get("id", "?")
         if not lay.get("owns"):
             out.append(
-                Finding(
+                Finding.in_layer(
                     "contracts",
                     True,
-                    f"layer {lid}",
+                    lid, "",
                     "owns no critic axis; legacy unscoped judging is not supported",
                     "assign at least one visible, independently answerable axis",
                 )
@@ -264,10 +264,10 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
             owned.add(ax)
             if ax not in axis_keys:
                 out.append(
-                    Finding(
+                    Finding.in_layer(
                         "contracts",
                         True,
-                        f"layer {lid}",
+                        lid, "",
                         f"owns axis '{ax}', which critic_axes.json does not define",
                         "the critic can never score this axis, so the layer cannot be judged "
                         "on the thing it is responsible for — add the axis or fix the name",
@@ -278,10 +278,10 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
             ref = j.get("ref")
             if ref and not (folder / ref).is_file():
                 out.append(
-                    Finding(
+                    Finding.in_layer(
                         "contracts",
                         True,
-                        f"layer {lid} judge f{j.get('frame')}",
+                        lid, f"judge f{j.get('frame')}",
                         f"reference '{ref}' does not exist",
                         "the layer would be judged against a missing plate",
                     )
@@ -384,10 +384,10 @@ def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tup
                     for r in scene_rows
                     if isinstance(r, dict)
                 ):
-                    out.append(Finding(
+                    out.append(Finding.in_layer(
                         "composition-coverage",
                         False,
-                        f"layer {lid} judge f{frame}",
+                        lid, f'judge f{frame}',
                         "no occlusion-true visibility contract at this judge frame",
                         "add a visible_fraction row for the judged roles at this "
                         "layer's next materialization",

@@ -221,10 +221,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             scene_rows, typed_stages, lid
         ):
             out.append(
-                Finding(
+                Finding.in_layer(
                     "deferred-composition-payer",
                     True,
-                    f"layer {lid} deferred contract {gap.contract_id}",
+                    lid, f'deferred contract {gap.contract_id}',
                     f"roles {', '.join(gap.roles)} have overlapping geometry producers "
                     f"{', '.join(gap.producer_ids) or '(none)'} but no unit dependency "
                     "closure contains the complete subject",
@@ -239,10 +239,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         for cycle in vis_cycles:
             edge_text = ", ".join(f"{source}->{target}" for source, target in cycle.edges)
             out.append(
-                Finding(
+                Finding.in_layer(
                     "geometry-vis-cycle",
                     True,
-                    f"layer {lid} units {', '.join(cycle.unit_ids)}",
+                    lid, f"units {', '.join(cycle.unit_ids)}",
                     f"mutually protect contracts {', '.join(cycle.contract_ids)} on "
                     f"roles {', '.join(cycle.roles)} through producer edges {edge_text}",
                     GEOMETRY_VIS_CYCLE_RULE,
@@ -252,10 +252,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             if any((gap.unit_id, producer) in cyclic_edges for producer in gap.producer_ids):
                 continue
             out.append(
-                Finding(
+                Finding.in_layer(
                     "geometry-vis-dependency",
                     True,
-                    f"layer {lid} unit {gap.unit_id}",
+                    lid, f'unit {gap.unit_id}',
                     f"provides geometry and therefore protects visible_fraction "
                     f"{gap.contract_id}, but typed repair owner(s) / role producer(s) "
                     f"{', '.join(gap.producer_ids)} are outside its dependency closure "
@@ -276,10 +276,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     "the camera owner consumes no compatible typed interface"
                 )
             out.append(
-                Finding(
+                Finding.in_layer(
                     "point-projection-interface",
                     True,
-                    f"layer {lid} unit {gap.unit_id}",
+                    lid, f'unit {gap.unit_id}',
                     what,
                     PROJECTED_ORIGIN_REPAIR_RULE,
                 )
@@ -301,10 +301,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     + "."
                 )
             out.append(
-                Finding(
+                Finding.in_layer(
                     "unit-atomicity",
                     True,
-                    f"layer {lid} unit {gap.unit_id}",
+                    lid, f'unit {gap.unit_id}',
                     gap.detail + extra,
                     "split the unit, consume a typed assembly interface, bind dressing, "
                     "or reassign evidence. " + ATOMICITY_RULE,
@@ -312,10 +312,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             )
         for gap in construction_route_gaps(typed_stages, scene_rows):
             out.append(
-                Finding(
+                Finding.in_layer(
                     "construction-route",
                     True,
-                    f"layer {lid} unit {gap.unit_id}",
+                    lid, f'unit {gap.unit_id}',
                     gap.detail,
                     CONSTRUCTION_ROUTE_RULE,
                 )
@@ -334,10 +334,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                 else " No same-layer unit currently derives a signal family."
             )
             out.append(
-                Finding(
+                Finding.in_layer(
                     "image-signal-bootstrap",
                     True,
-                    f"layer {lid} unit {gap.unit_id}",
+                    lid, f'unit {gap.unit_id}',
                     "required image-contract debt is due before optical signal is "
                     f"available: {', '.join(gap.contract_ids)}."
                     + available,
@@ -362,10 +362,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                 else " No same-layer unit currently derives a mesh, volume, or compositor family."
             )
             out.append(
-                Finding(
+                Finding.in_layer(
                     "image-subject-bootstrap",
                     True,
-                    f"layer {lid} unit {gap.unit_id}",
+                    lid, f'unit {gap.unit_id}',
                     "required image-contract debt is due before a rendered carrier is "
                     f"available: {', '.join(gap.contract_ids)}."
                     + available,
@@ -378,10 +378,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         payable_properties = sorted(payable_image_property_kinds(METRICS))
         for gap in image_property_vocabulary_gaps(typed_stages, METRICS):
             out.append(
-                Finding(
+                Finding.in_layer(
                     "image-property-vocabulary",
                     True,
-                    f"layer {lid} unit {gap.unit_id} claim {gap.claim_id}",
+                    lid, f'unit {gap.unit_id} claim {gap.claim_id}',
                     f"required image-contract debt {', '.join(gap.contract_ids)} uses "
                     f"unpayable property {gap.property!r}",
                     f"accepted image properties: {payable_properties}. "
@@ -421,20 +421,20 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         if owns_composition:
             for frame in uncovered_subject_framing_frames(lid, judges, stages, scene_rows):
                 out.append(
-                    Finding(
+                    Finding.in_layer(
                         "composition-coverage",
                         True,
-                        f"layer {lid} judge f{frame}",
+                        lid, f'judge f{frame}',
                         "camera/composition owner has no executable subject framing",
                         SUBJECT_COMPOSITION_RULE,
                     )
                 )
         for gap in data_block_carrier_gaps(typed_stages, scene_rows, earlier_families=earlier_write_families):
             out.append(
-                Finding(
+                Finding.in_layer(
                     "data-block-carrier",
                     True,
-                    f"layer {lid} unit {gap.unit_id} contract {gap.contract_id}",
+                    lid, f'unit {gap.unit_id} contract {gap.contract_id}',
                     describe_gap(gap),
                     DATA_BLOCK_CARRIER_RULE,
                 )
@@ -450,10 +450,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         if camera_units and owns_composition:
             for gap in uncovered_downstream_subjects(lid, judges, successor_judge_rows(layers, lid), scene_rows):
                 out.append(
-                    Finding(
+                    Finding.in_layer(
                         "composition-coverage",
                         True,
-                        f"layer {lid} judge f{gap.frame} subject layer {gap.layer_id}",
+                        lid, f'judge f{gap.frame} subject layer {gap.layer_id}',
                         "camera layer authors no persistent bbox_* row for "
                         f"{', '.join(gap.reserved_roles)} at a shared judge frame",
                         DOWNSTREAM_SUBJECT_COVERAGE_RULE,
@@ -484,10 +484,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     }
                 )
                 out.append(
-                    Finding(
+                    Finding.in_layer(
                         "composition-bootstrap",
                         True,
-                        f"layer {lid} unit {uid}",
+                        lid, f'unit {uid}',
                         "camera-dependent evidence is due before any declared camera is "
                         f"available: {', '.join(kinds)} ({', '.join(camera_required_ids)})",
                         "provide the camera in this unit or depend on a unit that declares "
@@ -504,10 +504,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
         }
         for gap in same_layer_dress_gaps(typed_stages):
             out.append(
-                Finding(
+                Finding.in_layer(
                     "same-layer-dress",
                     True,
-                    f"layer {lid} unit {gap.unit_id}",
+                    lid, f'unit {gap.unit_id}',
                     "dresses same-layer mutation roles "
                     + ", ".join(gap.selectors)
                     + f" produced by {', '.join(gap.producer_ids)}",
@@ -540,10 +540,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             )
             if undeclared_dresses:
                 out.append(
-                    Finding(
+                    Finding.in_layer(
                         "dressing-closure",
                         True,
-                        f"layer {lid} unit {uid}",
+                        lid, f'unit {uid}',
                         "dresses selectors no other layer declares dressable: "
                         + ", ".join(undeclared_dresses),
                         DRESSING_CLOSURE_FIX,
@@ -560,10 +560,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         check = image_by_id.get(evidence_id)
                         if check and check.get("stage") == "post_grade" and lid != str(layers[-1].get("id")):
                             out.append(
-                                Finding(
+                                Finding.in_layer(
                                     "unit-evidence-due",
                                     True,
-                                    f"layer {lid} unit {uid} claim {claim.get('id', '?')}",
+                                    lid, f"unit {uid} claim {claim.get('id', '?')}",
                                     f"required image contract {evidence_id} is post_grade and "
                                     "cannot execute at this unit boundary",
                                     "either author and prove an any/pre_grade contract for this "
@@ -580,11 +580,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                     if owner_layer and activates_at and activates_at != owner_layer:
 
                         out.append(
-                            Finding(
+                            Finding.in_layer(
                                 "unit-evidence-due",
                                 True,
-                                f"layer {lid} unit {uid} claim "
-                                f"{claim.get('id', '?')} contract {evidence_id}",
+                                lid, f"unit {uid} claim {claim.get('id', '?')} contract {evidence_id}",
                                 f"directly binds a deferred scene contract owned by "
                                 f"layer {owner_layer} and active at layer {activates_at}",
                                 DEFERRED_CONTRACT_CONTEXT_RULE,
@@ -596,11 +595,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         owner = stages.get(owner_id) or unit
                         if "camera" not in (owner.get("provides") or []):
                             out.append(
-                                Finding(
+                                Finding.in_layer(
                                     "point-projection-owner",
                                     True,
-                                    f"layer {lid} unit {uid} claim "
-                                    f"{claim.get('id', '?')} contract {evidence_id}",
+                                    lid, f"unit {uid} claim {claim.get('id', '?')} contract {evidence_id}",
                                     f"point-projection metric {contract.get('kind')} is "
                                     f"repaired by {owner_id}, which does not provide camera",
                                     PROJECTED_ORIGIN_REPAIR_RULE,
@@ -639,11 +637,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                             and not dresses_measured_role
                         ):
                             out.append(
-                                Finding(
+                                Finding.in_layer(
                                     "surface-evidence-owner",
                                     True,
-                                    f"layer {lid} unit {uid} claim "
-                                    f"{claim.get('id', '?')} contract {evidence_id}",
+                                    lid, f"unit {uid} claim {claim.get('id', '?')} contract {evidence_id}",
                                     f"surface metric {contract.get('kind')} targets "
                                     f"mutated role(s) {roles}, but repair owner {owner_id} "
                                     "does not provide geometry or dress those surfaces",
@@ -688,11 +685,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         )
                         if unrepaired:
                             out.append(
-                                Finding(
+                                Finding.in_layer(
                                     "vis-repair-owner",
                                     True,
-                                    f"layer {lid} unit {uid} claim {claim.get('id', '?')} "
-                                    f"contract {evidence_id}",
+                                    lid, f"unit {uid} claim {claim.get('id', '?')} contract {evidence_id}",
                                     "visible_fraction roles are not repairable by "
                                     f"{owner_id}: " + ", ".join(unrepaired),
                                     "bind vis on a unit that provides camera or mutates/"
@@ -736,10 +732,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         ))
                     if undeclared_roles:
                         out.append(
-                            Finding(
+                            Finding.in_layer(
                                 "role-selector-closure",
                                 True,
-                                f"layer {lid} unit {uid} contract {evidence_id}",
+                                lid, f'unit {uid} contract {evidence_id}',
                                 "selects roles outside mutation authority: "
                                 + ", ".join(undeclared_roles),
                                 "use role selectors inside mutates.roles, or use typed "
@@ -776,10 +772,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                             "must share the same typed ids"
                         )
                         out.append(
-                            Finding(
+                            Finding.in_layer(
                                 "control-selector-closure",
                                 True,
-                                f"layer {lid} unit {uid} contract {evidence_id}",
+                                lid, f'unit {uid} contract {evidence_id}',
                                 "selects undeclared semantic controls: " + ", ".join(undeclared),
                                 repair,
                             )
@@ -795,10 +791,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                 }
                 if not bound & temporal_ids:
                     out.append(
-                        Finding(
+                        Finding.in_layer(
                             "temporal-coverage",
                             True,
-                            f"layer {lid} unit {uid}",
+                            lid, f'unit {uid}',
                             "declares temporal_evidence='motion' but binds no temporal executable contract",
                             "bind onset_order, radial_distance_trend, transform_return_delta, or frame_delta evidence",
                         )
@@ -807,10 +803,10 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             mapping = mutates.get("control_roles")
             if controls and not mapping:
                 out.append(
-                    Finding(
+                    Finding.in_layer(
                         "ownership",
                         False,
-                        f"layer {lid} unit {uid}",
+                        lid, f'unit {uid}',
                         f"declares {len(controls)} mutable control(s) without control_roles mapping",
                         "map each control to the semantic roles it governs so scope coherence is checkable",
                     )

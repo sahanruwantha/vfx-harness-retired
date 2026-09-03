@@ -1,4 +1,4 @@
-"""Typed terminal authority for a rejected global planning candidate.
+"""Typed terminal authority for a rejected plan candidate — global, or one layer view.
 
 The deterministic plan gate owns this classification.  Exit codes, loop outcomes,
 and model-session prose are diagnostics only: a plan repair becomes legal solely
@@ -58,6 +58,8 @@ _REPORT_FIELDS = {
     "findings",
 }
 _FINDING_FIELDS = {"check", "severity", "where", "what"}
+# `layer` is the typed owner of a single layer's finding; a plan-wide finding omits it.
+_FINDING_OPTIONAL_FIELDS = {"fix", "layer"}
 
 
 def _sha256(data: bytes) -> str:
@@ -251,7 +253,9 @@ def _parse_gate_report(
         return value, (), tuple(sorted({*issues, "gate_report_findings_invalid"}))
     parsed: list[dict[str, Any]] = []
     for row in raw_findings:
-        if not isinstance(row, dict) or not (_FINDING_FIELDS <= set(row) <= _FINDING_FIELDS | {"fix"}):
+        if not isinstance(row, dict) or not (
+            _FINDING_FIELDS <= set(row) <= _FINDING_FIELDS | _FINDING_OPTIONAL_FIELDS
+        ):
             issues.append("gate_report_finding_shape_invalid")
             continue
         if row.get("severity") not in {"blocking", "warning"}:
@@ -262,6 +266,9 @@ def _parse_gate_report(
             continue
         if "fix" in row and not _text(row["fix"]):
             issues.append("gate_report_finding_fix_invalid")
+            continue
+        if "layer" in row and not _text(row["layer"]):
+            issues.append("gate_report_finding_layer_invalid")
             continue
         parsed.append(dict(row))
 
@@ -513,6 +520,50 @@ def _harness_defect(
 
 def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> StopEnvelope:
     """Compile and persist the only legal stop for one rejected global gate result."""
+    return _publish_plan_gate_stop(
+        layout,
+        result,
+        scope="global_plan",
+        layer_id=None,
+        owner_authority_id="global-plan-authority",
+        subject="global candidate",
+    )
+
+
+def publish_layer_plan_gate_stop(
+    layout: RunLayout,
+    result: PlanLoopResult,
+    *,
+    layer_id: str,
+) -> StopEnvelope:
+    """The stop for a selected layer view the deterministic gate rejects (HIR-0187).
+
+    The run driver gates the selected authority before it builds a layer.  When that
+    gate blocks on findings the layer's own materialization owns, the rejection is a
+    typed transaction — rematerialize this layer view — not an unclassified boundary
+    defect.  The controller dispatches it under its existing caps, cause-fingerprint
+    convergence, and ledger; a blocking finding that is plan-wide instead resolves to
+    the global scope, which the controller refuses as a reviewed operator transaction.
+    """
+    return _publish_plan_gate_stop(
+        layout,
+        result,
+        scope="layer_view",
+        layer_id=str(layer_id),
+        owner_authority_id="layer-plan-authority",
+        subject=f"selected layer {layer_id} view",
+    )
+
+
+def _publish_plan_gate_stop(
+    layout: RunLayout,
+    result: PlanLoopResult,
+    *,
+    scope: str,
+    layer_id: str | None,
+    owner_authority_id: str,
+    subject: str,
+) -> StopEnvelope:
     candidate_record, candidate_bytes, candidate_issue = _candidate_record(layout, result.path)
     report_record, report_bytes, report_issue = _report_record(layout)
     authority_before, before_digest, selected_bundle_digest = _authority_before(layout)
@@ -664,11 +715,11 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
         for record in causal_findings
     )
     target = PublishValidatedAmendmentTarget(
-        scope="global_plan",
+        scope=scope,
         base_authority=resolved_authority.assertion,
-        layer_id=None,
+        layer_id=layer_id,
         findings=findings,
-        owner_authority_id="global-plan-authority",
+        owner_authority_id=owner_authority_id,
         gate_policy_id=_GATE_POLICY,
         gate_schema=_GATE_SCHEMA,
         validation_scope="structural_authority",
@@ -678,7 +729,7 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
         postcondition=SelectedAuthorityAmendmentCommitted(
             scope=target.scope,
             base_authority_digest=target.base_authority.digest,
-            layer_id=None,
+            layer_id=layer_id,
             finding_ids=tuple(record["finding_id"] for record in causal_findings),
             gate_policy_id=_GATE_POLICY,
             gate_schema=_GATE_SCHEMA,
@@ -699,7 +750,7 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
             run_id=layout.run_id,
             bundle_digest=selected_bundle_digest,
             view_digest=None,
-            layer_id=None,
+            layer_id=layer_id,
             unit_id=None,
             unit_plan_digest=None,
             unit_digest=None,
@@ -711,7 +762,7 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
         cause=StopCause(
             invariant_id="structural_plan_gate_blocked",
             finding_ids=finding_ids,
-            owner_scope_ids=("global-plan-authority",),
+            owner_scope_ids=(owner_authority_id,),
             normalized_facts_digest=canonical_digest(normalized),
         ),
         attempt_evidence_digest=attempt_digest,
@@ -720,8 +771,10 @@ def publish_global_plan_gate_stop(layout: RunLayout, result: PlanLoopResult) -> 
         authoritative_before_digest=before_digest,
         actions=(action,),
         evidence_refs=(evidence,),
-        budget_key="global-plan-authority",
-        expected="The global candidate must pass every deterministic structural authority check.",
+        budget_key=owner_authority_id,
+        expected=(
+            f"The {subject} must pass every deterministic structural authority check."
+        ),
         found=f"The exact candidate has {len(blocking)} blocking structural finding(s).",
         next_action="Publish a new validated authority amendment; this stop does not authorize apply-replan.",
     )

@@ -32,6 +32,11 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vfx_harness.agents.planner.planning_stop import (
+    publish_global_plan_gate_stop,
+    publish_layer_plan_gate_stop,
+)
+from vfx_harness.agents.planner.types import PlanLoopResult
 from vfx_harness.application import run_controller
 from vfx_harness.application.inspect_run import collect
 from vfx_harness.application.preflight import environment_result, environment_stop
@@ -41,11 +46,21 @@ from vfx_harness.application.run_controller import ControllerCaps, Dispatched, R
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.domain.run_status import RUN_SUMMARY_SCHEMA
 from vfx_harness.domain.stop_envelopes import StopEnvelope
+from vfx_harness.evaluation.plan_gate.run import run as run_plan_gate
+from vfx_harness.evaluation.plan_gate.types import Finding, GateResult
 from vfx_harness.infrastructure.config import Settings
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.runid import RUN_ID
-from vfx_harness.orchestration import authority_selection, layer_publication, run_owner_boundary, run_terminalizer
+from vfx_harness.orchestration import (
+    authority_selection,
+    layer_publication,
+    plan_authority,
+    run_owner_boundary,
+    run_terminalizer,
+)
+from vfx_harness.orchestration.plan_authority import prepare_consumer_view
+from vfx_harness.orchestration.plan_bundle_integrity import PlanPublicationError
 from vfx_harness.orchestration.selected_layer_chain import (
     selected_layer_chain,
 )
@@ -530,11 +545,8 @@ def _drive_layers(a, shot, layout, lease, ids, done, layers, py, console, t0, co
         if rc:
             log(f"✗ layer {lid} planning exited {rc}; build was not started")
             _stop_after_stage(layout, lease, rc, f"layer-{lid}-planning")
-        rc = _run([py, "-m", "vfx_harness.evaluation.cli", "plan", str(shot.folder)],
-                  dry=a.dry_run, tee=console)
-        if rc:
-            log(f"✗ layer {lid} plan did not clear the deterministic gate")
-            _stop_after_stage(layout, lease, rc, f"layer-{lid}-plan-gate")
+        if not a.dry_run:
+            _gate_layer_authority(layout, lease, shot, lid, controller)
         # A just-in-time publication is an authority-state transition: it may supersede
         # the terminal receipt of a lower layer whose capsule it changed (HIR-0171). Run
         # 20260903T053305Z-83f8e1 chained straight into the builder, which refused the
@@ -548,6 +560,84 @@ def _drive_layers(a, shot, layout, lease, ids, done, layers, py, console, t0, co
             log(f"↷ layer {lid} would run (ledger remains '{status}')")
             continue
         log(f"✓ layer {lid} passed ({(time.monotonic() - t0) / 60:.0f} min elapsed)")
+
+
+
+
+def _gate_selected_authority(layout: run_artifacts.RunLayout, shot):
+    """Gate exactly what the deterministic evaluation boundary has always gated.
+
+    Authority resolution has three outcomes and each keeps its meaning here: no pointer
+    gates the shot folder itself, resolvable authority gates its consumer view, and a
+    pointer that cannot be resolved is a blocking authority finding rather than an
+    exception the driver would surface untyped.
+    """
+    if not (shot.folder / plan_authority.POINTER).exists():
+        return None, run_plan_gate(shot.folder)
+    try:
+        selected = authority_selection.resolve_selected_authority(shot.folder)
+        return selected, run_plan_gate(
+            prepare_consumer_view(layout, selected_authority=selected)
+        )
+    except (PlanPublicationError, authority_selection.SelectedAuthorityResolutionError) as exc:
+        return None, GateResult(
+            shot.folder.name,
+            [
+                Finding(
+                    "authority",
+                    True,
+                    plan_authority.POINTER.as_posix(),
+                    str(exc),
+                    "publish a fresh complete plan bundle; do not copy legacy files "
+                    "over the pointer",
+                )
+            ],
+        )
+
+
+def _gate_layer_authority(
+    layout: run_artifacts.RunLayout,
+    lease: run_owner_boundary.RunOwnerFenceLease,
+    shot,
+    lid: str,
+    controller: RunController | None,
+) -> None:
+    """Gate the selected authority for this layer and stop with typed authority.
+
+    The gate is the most deterministic instrument the harness owns: free, and precise
+    enough to name the unit, the contract, and the legal repair.  Reading only its exit
+    code threw that away, so a machine-decidable rejection reached the run as an
+    unclassified boundary defect with no transaction anyone could dispatch (HIR-0187).
+
+    Scope follows ownership.  A finding another layer owns belongs to that layer's own
+    transaction and must not block this one — the rule ``GateResult.clean_for`` already
+    states.  When every remaining blocker is this layer's, the rejection is a layer-view
+    amendment the controller dispatches; a plan-wide blocker resolves to the global
+    scope, which stays a reviewed operator transaction.
+    """
+    selected, gated = _gate_selected_authority(layout, shot)
+    blocking = [
+        finding
+        for finding in gated.blocking
+        if finding.layer is None or str(finding.layer) == str(lid)
+    ]
+    if not blocking:
+        return
+    log(f"✗ layer {lid} plan did not clear the deterministic gate")
+    for finding in blocking:
+        log(str(finding), 1)
+    owned_by_this_layer = all(str(f.layer) == str(lid) for f in blocking)
+    scoped = GateResult(gated.shot, blocking, dict(gated.stats))
+    outcome = scoped.publishable_outcome
+    layout.write_report("plan_gate", scoped.to_dict(outcome=outcome))
+    # The rejected artifact is the selected layer view itself, not the report about it.
+    candidate = None if selected is None else selected.artifact_paths.get("layers.json")
+    result = PlanLoopResult(candidate, outcome, len(blocking))
+    if owned_by_this_layer:
+        publish_layer_plan_gate_stop(layout, result, layer_id=str(lid))
+    else:
+        publish_global_plan_gate_stop(layout, result)
+    _stop_after_stage(layout, lease, 3, f"layer-{lid}-plan-gate", controller)
 
 
 def _finish_run(a, shot, layout, lease, py, console, t0: float) -> None:

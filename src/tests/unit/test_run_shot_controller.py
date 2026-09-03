@@ -151,6 +151,13 @@ def test_driver_replans_and_rebuilds_after_a_dispatch(tmp_path: Path, monkeypatc
         return passed & set(layers)
 
     monkeypatch.setattr(run_shot, "_run", fake_run)
+    # Sequencing test: the deterministic gate has its own coverage in
+    # test_run_shot_plan_gate_stop.py.
+    monkeypatch.setattr(
+        run_shot,
+        "_gate_selected_authority",
+        lambda _layout, _shot: (None, run_shot.GateResult("shot", [], {})),
+    )
     monkeypatch.setattr(run_shot, "_receipt_backed_passed_layers", fake_passed)
     monkeypatch.setattr(
         run_shot,

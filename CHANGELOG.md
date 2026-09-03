@@ -19,6 +19,18 @@ live in the linked Harness Improvement Records.
 
 ### Changed
 
+- A per-layer plan-gate rejection is now typed transaction authority instead of an
+  unclassified boundary defect
+  ([HIR-0187](docs/improvements/HIR-0187-plan-gate-findings-carry-layer-authority.md)).
+  `vfx run` gates the selected authority in process before building a layer and scopes the
+  verdict by ownership: another layer's finding no longer blocks this one, every blocker the
+  gated layer owns becomes one `publish_validated_amendment` on that layer view which the
+  controller dispatches, and a plan-wide blocker stays a reviewed global amendment. Gate
+  findings about a layer now carry it in their typed `layer` field — 33 of the 34 layer-owned
+  constructions previously wrote the owner only into their message, so `clean_for` could not
+  read it and each was silently promoted to a plan-wide block. An architecture test keeps the
+  attribution from regressing.
+
 - The global plan's verify pass is budgeted from the layers the draft's ownership
   mapping declares (6 plus two turns per layer, capped at 24) instead of a fixed six
   turns that exhausted before the last layers of a six-layer draft (HIR-0177).

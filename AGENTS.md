@@ -63,7 +63,8 @@ operation.
 - Shot-root legacy directories (`logs/`, `renders/`, `.artifacts/`, `.snapshots/`, `.versions/`)
   are unsupported: no evidence authority, no write destination (ADR-0002).
 - Diagnosis routes by cause: preflight/config failure → fix the environment, not VFX logic;
-  plan-gate failure → repair plan/contracts and rerun the gate; builder evidence failure → the
+  plan-gate failure → repair plan/contracts and rerun the gate; a per-layer gate rejection is
+  typed transaction authority, not a boundary defect (HIR-0187); builder evidence failure → the
   owning layer report and its cited evidence; `hypothesis_falsified` → stop, review the typed
   finding; the controller publishes a same-layer amendment itself, and an out-of-layer or
   hard-constraint finding waits for reviewed authority through its owning plan/materialization
@@ -88,7 +89,17 @@ operation.
   prefix and continues. It refuses, and the envelope stays terminal, when the finding names an
   out-of-layer fault owner or a hard constraint, when the cause fingerprint was already dispatched
   in this shot, when a dispatch, per-layer, or USD cap is spent, or when the transaction kind has
-  no adapter; `--single-pass` restores the single pass for debugging (HIR-0186). The other five
+  no adapter; `--single-pass` restores the single pass for debugging (HIR-0186). Before it builds a
+  layer the driver gates the selected authority in process and scopes that verdict by
+  ownership: a finding another layer owns belongs to that layer's transaction and does not
+  block this one, every blocker the gated layer owns becomes one `publish_validated_amendment`
+  on that layer view which the controller dispatches, and any plan-wide blocker resolves to the
+  global scope the controller refuses as a reviewed operator transaction. A gate finding about
+  one layer carries that layer in its typed `layer` field, never only in its message: ownership
+  written in prose is ownership `clean_for` cannot read, which silently promotes one layer's
+  finding to a plan-wide block owned by nobody. Construct those findings with
+  `Finding.in_layer` so the rendered text and the typed owner come from one value; an
+  architecture test enforces it (HIR-0187). The other five
   transaction kinds remain non-dispatchable, global amendments stay reviewed operator
   transactions, and no current producer proves `local_implementation_miss`; never infer local
   retry authority from a generic builder failure or progress from a repeated finding (HIR-0164,

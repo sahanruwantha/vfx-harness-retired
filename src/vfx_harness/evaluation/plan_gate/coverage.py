@@ -257,10 +257,10 @@ def _check_coverage(folder: Path) -> tuple[list[Finding], dict]:
         if runnable.get(lid, 0) == 0 and scene_runnable.get(lid, 0) == 0:
             n = sum(1 for c in specs if str(c.get("activates_at") or "") == lid)
             out.append(
-                Finding(
+                Finding.in_layer(
                     "coverage",
                     True,
-                    f"layer {lid}",
+                    lid, "",
                     f"has {n} image check(s), 0 scene contract(s), and NONE runnable at its own stage",
                     "a layer whose only checks need the final grade is judged on prose until "
                     "layer 7 exists. State what changes WHEN THIS LAYER RUNS: a pre_grade "

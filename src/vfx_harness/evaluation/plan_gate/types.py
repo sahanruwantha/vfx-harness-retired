@@ -291,6 +291,28 @@ class Finding:
     # 'layer 2 has no ready unit' — a finding the layer-2 rematerialization owns).
     layer: str | None = None
 
+    @classmethod
+    def in_layer(
+        cls,
+        check: str,
+        blocking: bool,
+        layer: object,
+        where: str,
+        what: str,
+        fix: str = "",
+    ) -> Finding:
+        """A finding about one layer's authority, with ownership carried by the type.
+
+        ``where`` is the part after the layer id, so the rendered prose and the typed
+        owner are composed from the same value and cannot disagree.  Producers must not
+        interpolate a layer id into ``where`` themselves: ownership carried only in
+        prose is ownership :meth:`GateResult.clean_for` cannot read, which silently
+        promotes a single layer's finding to a plan-wide block (HIR-0187).
+        """
+        lid = str(layer)
+        head = f"layer {lid}"
+        return cls(check, blocking, f"{head} {where}" if where else head, what, fix, layer=lid)
+
     def __str__(self) -> str:
         head = "✗" if self.blocking else "·"
         line = f"{head} [{self.check}] {self.where}: {self.what}"
@@ -360,6 +382,10 @@ class GateResult:
                     "where": finding.where,
                     "what": finding.what,
                     **({"fix": finding.fix} if finding.fix else {}),
+                    # Ownership travels with the row: a consumer that re-reads this
+                    # report must be able to tell whose transaction owns the finding
+                    # without parsing it back out of `where` (HIR-0187).
+                    **({"layer": finding.layer} if finding.layer else {}),
                 }
                 for finding in self.findings
             ],
