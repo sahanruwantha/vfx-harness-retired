@@ -136,11 +136,12 @@ paired with an informal controller.
 
 The typed action, target, state-assertion, postcondition, evaluation, idempotency, and
 fail-closed loop-detection scaffolding is implemented. HIR-0166 adds a durable receipt store,
-commit reconciliation, and explicit public execution for `recover_environment` only. A recovery
-controller is not implemented. There is no controller journal, automatic dispatch, safe
-resume-record producer, or producer that can yet prove `local_implementation_miss`. The other
-six transaction types remain non-dispatchable even when an envelope names one; their typed action
-is a closed proposal rather than evidence that a transaction ran.
+commit reconciliation, and explicit public execution for `recover_environment`. HIR-0186 adds
+the run controller for `publish_validated_amendment` on a layer view, with a per-dispatch ledger
+row under the run. There is still no safe resume-record producer or producer that can prove
+`local_implementation_miss`; the other five transaction types remain non-dispatchable even when
+an envelope names one, and their typed action is a closed proposal rather than evidence that a
+transaction ran.
 
 HIR-0163 supplies the separate non-stop `EvidenceNotDue` classifier value. Runtime carries
 that successful continuation through debt state and ordinary scheduling; no run summary or

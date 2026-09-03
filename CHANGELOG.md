@@ -5,6 +5,15 @@ live in the linked Harness Improvement Records.
 
 ## Unreleased
 
+### Added
+
+- `vfx run` is now a receipt-backed controller (ADR-0010, HIR-0186): a builder stop that
+  names a same-layer `publish_validated_amendment` is dispatched as that layer's
+  rematerialization, proven through an immutable commit and independent evaluation,
+  recorded as a controller ledger row under the run, and the run continues from the
+  replaced layer. Identity convergence and dispatch, per-layer, and USD caps bound the
+  loop; `--single-pass` keeps the single-pass form.
+
 ### Changed
 
 - The global plan's verify pass is budgeted from the layers the draft's ownership

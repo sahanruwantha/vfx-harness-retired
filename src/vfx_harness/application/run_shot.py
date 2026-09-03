@@ -32,13 +32,16 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vfx_harness.application import run_controller
 from vfx_harness.application.inspect_run import collect
 from vfx_harness.application.preflight import environment_result, environment_stop
 from vfx_harness.application.preflight import probe as preflight_probe
 from vfx_harness.application.preflight import report as preflight_report
+from vfx_harness.application.run_controller import ControllerCaps, Dispatched, RunController
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.domain.run_status import RUN_SUMMARY_SCHEMA
 from vfx_harness.domain.stop_envelopes import StopEnvelope
+from vfx_harness.infrastructure.config import Settings
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.observability.runid import RUN_ID
@@ -55,6 +58,14 @@ _MEANING = {
     7: "INCOMPLETE CHAIN", 8: "plan is STALE against brief.md — re-plan",
     9: "layer ran cleanly but has no passing terminal publication",
 }
+
+
+class _ContinueRun(Exception):
+    """The controller dispatched a receipt-backed transaction; re-derive the prefix and go on."""
+
+    def __init__(self, dispatched: Dispatched) -> None:
+        super().__init__(dispatched.resume_layer)
+        self.dispatched = dispatched
 
 
 def _can_advance(status: str, *, dry_run: bool) -> bool:
@@ -97,7 +108,9 @@ def _reopened_lower_layers(shot, lid: str) -> list[str]:
     return [layer_id for layer_id in lower if layer_id not in passed]
 
 
-def _build_layer_and_verify(a, shot, layout, lease, lid: str, py: str, console, t0: float) -> str:
+def _build_layer_and_verify(
+    a, shot, layout, lease, lid: str, py: str, console, t0: float, controller=None
+) -> str:
     """Run one builder and require its current terminal publication; return the ledger status."""
 
     rc = _run([py, "-m", "vfx_harness.agents.builder", str(shot.folder),
@@ -109,7 +122,7 @@ def _build_layer_and_verify(a, shot, layout, lease, lid: str, py: str, console, 
         log(f"✗ layer {lid} exited {rc}: {_MEANING.get(rc, 'unknown')}")
         log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
             f"Fix, then resume with --from {lid}")
-        _stop_after_stage(layout, lease, rc, f"layer-{lid}-builder")
+        _stop_after_stage(layout, lease, rc, f"layer-{lid}-builder", controller)
     if a.dry_run:
         return "pending"
     # The child process finishing is not publication authority. Re-resolve the
@@ -140,14 +153,14 @@ def _build_layer_and_verify(a, shot, layout, lease, lid: str, py: str, console, 
             f"See {layout.reports}/layers/layer-{lid}.json, then resume with "
             f"--from {lid}"
         )
-        _stop_after_stage(layout, lease, 9, f"layer-{lid}-finalization-publication")
+        _stop_after_stage(layout, lease, 9, f"layer-{lid}-finalization-publication", controller)
     status = publication.ledger_status
     if not _can_advance(status, dry_run=a.dry_run):
         log(f"✗ layer {lid} finished cleanly but its verdict is '{status}' — not "
             f"building on it")
         log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
             f"See {layout.reports}/layers/layer-{lid}.json, then resume with --from {lid}")
-        _stop_after_stage(layout, lease, 9, f"layer-{lid}-ledger-verdict")
+        _stop_after_stage(layout, lease, 9, f"layer-{lid}-ledger-verdict", controller)
     return status
 
 
@@ -175,6 +188,10 @@ def _publish_summary(layout: run_artifacts.RunLayout, *, state: str, exit_code: 
     except Exception as exc:
         log(f"! run summary could not be collected: {str(exc)[:160]}", 1)
         collected = {"collection_error": str(exc)[:1000]}
+    try:
+        dispatches = run_controller.ledger_rows(layout)
+    except ValueError as exc:
+        dispatches = [{"ledger_error": str(exc)[:500]}]
     summary = {
         **collected,
         "schema": RUN_SUMMARY_SCHEMA,
@@ -182,6 +199,10 @@ def _publish_summary(layout: run_artifacts.RunLayout, *, state: str, exit_code: 
         "command": "run",
         "state": state,
         "exit_code": exit_code,
+        "controller": {
+            "dispatches": dispatches,
+            "refusal": layout.terminal_metadata.get("controller_refusal"),
+        },
     }
     layout.write_summary(summary)
     return summary
@@ -225,8 +246,14 @@ def _stop_after_stage(
     lease: run_owner_boundary.RunOwnerFenceLease,
     code: int,
     boundary: str,
+    controller: RunController | None = None,
 ) -> None:
-    """Consume only the child-prepared envelope; never dispatch from its exit code."""
+    """Consume only the child-prepared envelope; dispatch it or select it, never guess.
+
+    The controller reads the one typed action the envelope names. A receipt-backed
+    dispatch raises ``_ContinueRun`` so the driver re-derives the prefix; every refusal
+    leaves the envelope terminal exactly as the single-pass driver did (ADR-0010).
+    """
     try:
         envelope = layout.read_prepared_stop()
     except ValueError:
@@ -235,6 +262,33 @@ def _stop_after_stage(
             boundary,
             exit_code=code,
         )
+    else:
+        if controller is not None:
+            result = controller.dispatch(envelope)
+            if isinstance(result, Dispatched):
+                log(
+                    f"↻ controller dispatched {result.transaction_id} for layer "
+                    f"{result.layer_id} (receipt {result.receipt_digest[:16]}, "
+                    f"ledger {result.ledger_report})"
+                )
+                raise _ContinueRun(result)
+            log(f"✗ controller refused dispatch ({result.reason}): {result.detail}")
+            layout.terminal_metadata["controller_refusal"] = {
+                "reason": result.reason,
+                "detail": result.detail[:1000],
+                "boundary": boundary,
+            }
+            if result.reason == "adapter_failed":
+                # The consumed envelope is archived; the failed adapter stage prepared
+                # its own typed stop, which is now the run's terminal authority.
+                try:
+                    envelope = layout.read_prepared_stop()
+                except ValueError:
+                    envelope = run_artifacts.missing_boundary_stop(
+                        layout,
+                        f"controller-{boundary}",
+                        exit_code=code,
+                    )
     _stop(layout, lease, code, envelope)
 
 
@@ -287,6 +341,9 @@ def main() -> None:
     ap.add_argument("--skip-accept", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the plan and the layers that would run, execute nothing")
+    ap.add_argument("--single-pass", action="store_true",
+                    help="stop at the first unaccepted boundary instead of dispatching the "
+                         "receipt-backed transaction its stop envelope names (debugging)")
     a = ap.parse_args()
 
     shot = load_shot(a.folder)
@@ -306,6 +363,7 @@ def main() -> None:
             "skip_accept": a.skip_accept,
             "skip_render": a.skip_render,
             "dry_run": a.dry_run,
+            "single_pass": a.single_pass,
         },
     )
 
@@ -388,7 +446,41 @@ def _drive(
             f"manifest → {layout.manifest.relative_to(shot.folder)} · "
             f"digest: vfx inspect {shot.folder}", 1)
 
+    controller = None
+    if not (a.dry_run or a.single_pass):
+        controller = RunController(
+            shot,
+            layout,
+            ControllerCaps.from_settings(Settings.from_environment()),
+            run_stage=lambda command: _run(command, dry=a.dry_run, tee=console),
+            blender=a.blender,
+            python=py,
+        )
+
     t0 = time.monotonic()
+    while True:
+        try:
+            _drive_layers(a, shot, layout, lease, ids, done, layers, py, console, t0, controller)
+        except _ContinueRun as resumed:
+            log(
+                f"↺ re-deriving the receipt-backed prefix after the controller replaced "
+                f"layer {resumed.dispatched.resume_layer}"
+            )
+            selected_authority, chain, layers = _selected_run_layers(shot)
+            ids = [
+                str(layer.id)
+                for layer in chain
+                if a.start <= int(layer.id) <= (a.upto or 10**6)
+            ]
+            verified_passed = _receipt_backed_passed_layers(shot, layers, selected_authority)
+            done = [i for i in ids if i in verified_passed]
+            continue
+        break
+
+    _finish_run(a, shot, layout, lease, py, console, t0)
+
+
+def _drive_layers(a, shot, layout, lease, ids, done, layers, py, console, t0, controller) -> None:
     for lid in ids:
         # The initial summary is not skip authority.  Reverify the receipt and
         # its causal source closure at the actual dispatch boundary.
@@ -422,13 +514,15 @@ def _drive(
         for reopened in _reopened_lower_layers(shot, lid) if not a.dry_run else ():
             log(f"↺ layer {reopened} lost its current terminal publication when layer "
                 f"{lid} was materialized; building layer {reopened} before layer {lid}")
-            _build_layer_and_verify(a, shot, layout, lease, reopened, py, console, t0)
-        status = _build_layer_and_verify(a, shot, layout, lease, lid, py, console, t0)
+            _build_layer_and_verify(a, shot, layout, lease, reopened, py, console, t0, controller)
+        status = _build_layer_and_verify(a, shot, layout, lease, lid, py, console, t0, controller)
         if a.dry_run:
             log(f"↷ layer {lid} would run (ledger remains '{status}')")
             continue
         log(f"✓ layer {lid} passed ({(time.monotonic() - t0) / 60:.0f} min elapsed)")
 
+
+def _finish_run(a, shot, layout, lease, py, console, t0: float) -> None:
     if not a.skip_accept:
         log("════ ACCEPTANCE ════")
         rc = _run([py, "-m", "vfx_harness.agents.acceptance", str(shot.folder),

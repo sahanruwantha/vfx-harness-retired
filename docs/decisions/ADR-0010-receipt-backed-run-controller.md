@@ -1,7 +1,7 @@
 ---
 id: ADR-0010
 title: vfx run dispatches receipt-backed transactions until a shot closes
-status: proposed
+status: accepted
 date: 2026-09-03
 supersedes: null
 ---
@@ -115,6 +115,21 @@ any transaction.
   single-pass form by habit; `vfx run` is the normal operation and the single pass is a
   flag (`--single-pass`) for debugging.
 
+## Delivery status
+
+- Step 4 landed first (HIR-0186): `vfx run` dispatches `publish_validated_amendment` for a
+  layer view through `application/run_controller`, with a receipt chain, an immutable
+  rematerialization commit, an independent evaluation, identity convergence, dispatch /
+  per-layer / USD caps, a per-dispatch ledger row under `reports/controller-dispatch-NN.json`,
+  and the `--single-pass` flag for the single-pass form. The room layer-2 falsification that
+  motivated this ADR is the dispatch it performs.
+- Step 1 (`recover_environment`) stays an operator adapter: it evaluates a terminal run after
+  external repair, so an in-run dispatch has nothing to dispatch. Step 2 has no
+  `retry_exact_unit` producer yet. Step 3 (owner-loss reconciliation before a successor run)
+  and step 5 (checkpointed resume) remain non-dispatchable until their receipts exist.
+- The crash fixture, convergence fixture, and cap fixture named below exist for step 4
+  (`src/tests/unit/test_run_controller.py`); steps 1 to 3 and 5 still owe theirs.
+
 ## Validation and review trigger
 
 Accept this ADR when step 1 and step 2 land with: a controller ledger row per dispatch, a
@@ -126,5 +141,6 @@ budget. Steps 3 to 5 each add their own fixtures.
 Review or reverse this ADR if a dispatched transaction is ever found to have committed
 without a verifiable receipt, if convergence fails to stop a repeated finding within one
 extra dispatch, or if any adapter gains a second implementation inside the controller.
-Implementation starts after `artifacts/room_1046_opening` closes on the current single-pass
-operation, so the loop is validated against real stops rather than designed blind.
+Implementation started from the real layer-2 stop of `artifacts/room_1046_opening` (run
+`20260903T100335Z-fa5dbb`) rather than being designed blind; that stop is the first dispatch
+the controller performs.

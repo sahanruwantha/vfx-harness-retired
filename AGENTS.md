@@ -62,7 +62,9 @@ operation.
 - Diagnosis routes by cause: preflight/config failure → fix the environment, not VFX logic;
   plan-gate failure → repair plan/contracts and rerun the gate; builder evidence failure → the
   owning layer report and its cited evidence; `hypothesis_falsified` → stop, review the typed
-  finding, and publish amended authority through its owning plan/materialization boundary;
+  finding; the controller publishes a same-layer amendment itself, and an out-of-layer or
+  hard-constraint finding waits for reviewed authority through its owning plan/materialization
+  boundary;
   canonical replay failure → the deterministic script/checkpoint mechanism; acceptance failure
   → the declared fault-owning layer; interruption → last checkpoint, journal, and final
   transcript events. The authority publisher, not a follow-up state command, atomically derives
@@ -74,12 +76,20 @@ operation.
   operator repairs the environment, invoke it with the exact source run and idempotency key; its
   independent evaluator proves the commit. Identical typed stops from separate runs converge on
   semantic evidence identity, and an explicit retry reconciles exactly one already-written direct
-  receipt orphan before probing again (HIR-0166). There is no automatic controller yet: ADR-0010
-  (proposed) replaces this rule with `vfx run` dispatching only receipt-backed transactions,
-  landing one transaction kind at a time after `room_1046_opening` closes. Until each kind lands,
-  the other six transaction kinds remain non-dispatchable, and no current producer proves
-  `local_implementation_miss`; never infer local retry authority from a generic builder failure
-  or progress from a repeated finding (HIR-0164, HIR-0166).
+  receipt orphan before probing again (HIR-0166). `vfx run` is a controller that dispatches only
+  receipt-backed transactions (ADR-0010): at a builder boundary it reads the child's typed stop
+  and, for a `publish_validated_amendment` on a layer view, runs the same rematerialization stage
+  an operator would, proves the commit from selected authority through an immutable
+  `vfx-harness.rematerialization-commit/v1`, an independent evaluation, and a per-dispatch ledger
+  row under the run (`reports/controller-dispatch-NN.json`), then re-derives the receipt-backed
+  prefix and continues. It refuses, and the envelope stays terminal, when the finding names an
+  out-of-layer fault owner or a hard constraint, when the cause fingerprint was already dispatched
+  in this shot, when a dispatch, per-layer, or USD cap is spent, or when the transaction kind has
+  no adapter; `--single-pass` restores the single pass for debugging (HIR-0186). The other five
+  transaction kinds remain non-dispatchable, global amendments stay reviewed operator
+  transactions, and no current producer proves `local_implementation_miss`; never infer local
+  retry authority from a generic builder failure or progress from a repeated finding (HIR-0164,
+  HIR-0166).
 - Do not resume a truncated builder merely because a ledger row names a checkpoint and journal.
   Safe resume requires a phase-specific immutable receipt binding the selected bundle/view,
   exact unit and plan digests, candidate, checkpoint, durable journal/WAL, model session, phase,

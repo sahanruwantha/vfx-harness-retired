@@ -141,9 +141,9 @@ or automatic recovery.
 
 ## Remaining limitations
 
-There is still no controller, controller journal, `--until-accepted` loop, or automatic polling.
-`recover_environment` requires explicit operator invocation and is the only receipt-backed
-transaction. Retry, amendment, revision-checked replan, engineering route, checkpointed resume,
-and human decision remain non-dispatchable until each has its own producer, commit protocol,
-independent evaluator, and crash fixtures. A safe receipt store is necessary infrastructure; it
-does not make an action safe by itself.
+`recover_environment` requires explicit operator invocation after external repair. HIR-0186
+adds the `vfx run` controller for layer-view `publish_validated_amendment`, with its own commit
+record, evaluator, ledger rows, and crash fixtures on this receipt store. Retry, revision-checked
+replan, engineering route, checkpointed resume, and human decision remain non-dispatchable until
+each has its own producer, commit protocol, independent evaluator, and crash fixtures. A safe
+receipt store is necessary infrastructure; it does not make an action safe by itself.

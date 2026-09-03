@@ -254,11 +254,17 @@ bare nonzero child exit is a `harness_defect`, not evidence for retry, replan, o
 envelope publication or read-back fails, status records that the envelope is unavailable and
 no action is authorized.
 
-This is a stop boundary, not an automatic recovery loop. There is no public
-`--until-accepted` controller or controller journal. The envelope's one typed action names the
-only legal route. `recover_environment` is the sole key-consuming receipt-backed adapter and
-requires explicit operator invocation after external repair; retry, amendment, replan,
-engineering route, resume, and human-decision actions remain non-dispatchable. An operator may
+At a builder boundary the driver is also the controller (ADR-0010, HIR-0186): when the
+child's envelope names `publish_validated_amendment` for a layer view, `vfx run` rematerializes
+that layer itself through the same `vfx plan --layer N --rematerialize` stage, proves the commit
+from selected authority, writes `reports/controller-dispatch-NN.json`, and continues from the
+replaced layer. The run summary lists every dispatch under `controller.dispatches`, and a refusal
+(`controller.refusal`: out-of-layer owner, hard constraint, repeated finding, spent cap, no
+adapter) leaves the envelope terminal exactly as before. Caps: `VFXH_RUN_MAX_DISPATCHES` (6),
+`VFXH_RUN_MAX_REPLANS_PER_LAYER` (2), optional `VFXH_RUN_MAX_USD`. Pass `--single-pass` to stop at
+the first unaccepted boundary instead. `recover_environment` still requires explicit operator
+invocation after external repair; retry, revision-checked replan, engineering route, resume, and
+human-decision actions remain non-dispatchable. An operator may
 use another existing reviewed command only when its independent authority and preconditions
 apply; otherwise the stop remains terminal and is routed to its named human or engineering
 owner.
@@ -373,7 +379,7 @@ Use the status-selected stop envelope before deciding what to change:
 
 ```text
 local_implementation_miss -> retry_exact_unit only when the exact typed retry target exists
-authority_defect          -> stop for its named authority owner; reviewed replacement publication moves state atomically
+authority_defect          -> same-layer amendment: the controller rematerializes and continues; out-of-layer or hard-constraint: reviewed replacement publication
 harness_defect            -> route the exact defect packet and evidence to engineering
 infrastructure_failure    -> external recovery; session resume only with a future fully sealed resume target and receipt
 human_decision_required   -> escalate the exact typed question; automation does not answer it

@@ -2,55 +2,25 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
-import json
-import os
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
 
 from vfx_harness.domain.environment_recovery import EnvironmentRecoveryCommit
 from vfx_harness.domain.environment_results import EnvironmentResult
 from vfx_harness.domain.stop_transaction_state import StopEvidenceRef
 from vfx_harness.domain.stop_transactions import PostconditionEvaluation
 from vfx_harness.observability.run_artifacts import shot_state_dir
+from vfx_harness.orchestration import immutable_records
 
 ROOT = Path("recovery") / "environment"
 RESULTS = ROOT / "results"
 EVALUATIONS = ROOT / "evaluations"
 LOCKS = ROOT / "locks"
 
-def _canonical_bytes(value: dict[str, Any]) -> bytes:
-    try:
-        return (
-            json.dumps(
-                value,
-                allow_nan=False,
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
-        ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ValueError("environment recovery state must be finite canonical JSON") from exc
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
 
 def _require_key(value: str) -> str:
-    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
-        raise ValueError("environment recovery idempotency key must be a lowercase SHA-256 digest")
-    return value
-
+    return immutable_records.require_key(value, where="environment recovery idempotency key")
 
 def _paths(shot_folder: str | Path) -> tuple[Path, Path]:
     requested_shot = Path(shot_folder)
@@ -92,72 +62,9 @@ def _state_root(shot_folder: str | Path) -> tuple[Path, Path]:
         if not directory.is_dir():
             raise ValueError(f"environment recovery state path {directory} must be a directory")
         if not existed:
-            _fsync_directory(directory.parent)
-        _fsync_directory(directory)
+            immutable_records.fsync_directory(directory.parent)
+        immutable_records.fsync_directory(directory)
     return shot, root
-
-
-def _read_json(path: Path, where: str) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"{where} must be an immutable regular file")
-    try:
-        value = json.loads(path.read_bytes(), object_pairs_hook=_reject_duplicate_keys)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{where} is malformed JSON") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"{where} must contain an object")
-    return value
-
-
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError(f"environment recovery state contains duplicate JSON key {key!r}")
-        value[key] = item
-    return value
-
-
-def _publish_immutable(path: Path, raw: bytes) -> None:
-    if path.exists():
-        if path.is_symlink() or not path.is_file() or path.read_bytes() != raw:
-            raise ValueError(f"immutable environment recovery record {path} conflicts with existing bytes")
-        return
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            if path.is_symlink() or not path.is_file() or path.read_bytes() != raw:
-                raise ValueError(
-                    f"immutable environment recovery record {path} conflicts with existing bytes"
-                ) from None
-    finally:
-        temporary.unlink(missing_ok=True)
-        _fsync_directory(path.parent)
-
-
-def _ref(
-    shot: Path,
-    path: Path,
-    *,
-    kind: str,
-    schema: str,
-    digest: str,
-) -> StopEvidenceRef:
-    raw = path.read_bytes()
-    return StopEvidenceRef(
-        kind=kind,
-        locator=path.resolve().relative_to(shot).as_posix(),
-        sha256=hashlib.sha256(raw).hexdigest(),
-        record_schema=schema,
-        record_digest=digest,
-    )
 
 
 @contextmanager
@@ -166,17 +73,8 @@ def environment_recovery_lock(shot_folder: str | Path, idempotency_key: str):
 
     _require_key(idempotency_key)
     _shot, root = _state_root(shot_folder)
-    lock_path = root / "locks" / f"{idempotency_key}.lock"
-    if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
-        raise ValueError(f"environment recovery lock {lock_path} must be a regular file")
-    with lock_path.open("a+b") as handle:
-        handle.flush()
-        os.fsync(handle.fileno())
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with immutable_records.key_lock(root / "locks" / f"{idempotency_key}.lock"):
+        yield
 
 
 def publish_environment_result(
@@ -186,16 +84,16 @@ def publish_environment_result(
     if not isinstance(result, EnvironmentResult):
         raise ValueError("environment recovery result must be an EnvironmentResult")
     shot, root = _state_root(shot_folder)
-    raw = _canonical_bytes(result.as_dict())
+    raw = immutable_records.canonical_bytes(result.as_dict())
     path = root / "results" / f"{result.digest}.json"
-    _publish_immutable(path, raw)
+    immutable_records.publish_immutable(path, raw)
     observed = EnvironmentResult.from_dict(
-        _read_json(path, "environment recovery result"),
+        immutable_records.read_json(path, "environment recovery result"),
         "environment recovery result",
     )
     if observed != result or path.read_bytes() != raw:
         raise ValueError("published environment recovery result failed exact read-back")
-    return _ref(
+    return immutable_records.evidence_ref(
         shot,
         path,
         kind="environment_result",
@@ -221,12 +119,12 @@ def read_environment_result(
     if evidence.locator != expected_locator:
         raise ValueError("environment result evidence locator is not its content-addressed state path")
     path = expected
-    value = _read_json(path, "environment recovery result")
+    value = immutable_records.read_json(path, "environment recovery result")
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != evidence.sha256:
         raise ValueError("environment result evidence SHA-256 mismatch")
     result = EnvironmentResult.from_dict(value, "environment recovery result")
-    if result.digest != evidence.record_digest or raw != _canonical_bytes(result.as_dict()):
+    if result.digest != evidence.record_digest or raw != immutable_records.canonical_bytes(result.as_dict()):
         raise ValueError("environment result evidence identity or canonical bytes mismatch")
     return result
 
@@ -246,12 +144,12 @@ def read_environment_commit(
     if not path.exists():
         return None
     commit = EnvironmentRecoveryCommit.from_dict(
-        _read_json(path, "environment recovery commit"),
+        immutable_records.read_json(path, "environment recovery commit"),
         "environment recovery commit",
     )
     if commit.idempotency_key != idempotency_key:
         raise ValueError("environment recovery commit belongs to another idempotency key")
-    if path.read_bytes() != _canonical_bytes(commit.as_dict()):
+    if path.read_bytes() != immutable_records.canonical_bytes(commit.as_dict()):
         raise ValueError("environment recovery commit bytes are not canonical")
     path.resolve().relative_to(shot)
     return commit
@@ -265,8 +163,8 @@ def publish_environment_commit(
         raise ValueError("environment recovery commit must be typed")
     shot, root = _state_root(shot_folder)
     path = root / f"{commit.idempotency_key}.json"
-    raw = _canonical_bytes(commit.as_dict())
-    _publish_immutable(path, raw)
+    raw = immutable_records.canonical_bytes(commit.as_dict())
+    immutable_records.publish_immutable(path, raw)
     observed = read_environment_commit(shot, commit.idempotency_key)
     if observed != commit or path.read_bytes() != raw:
         raise ValueError("published environment recovery commit failed exact read-back")
@@ -286,7 +184,7 @@ def environment_commit_evidence_ref(
     if observed != commit:
         raise ValueError("environment recovery commit evidence requires the exact stored commit")
     path = root / f"{commit.idempotency_key}.json"
-    return _ref(
+    return immutable_records.evidence_ref(
         shot,
         path,
         kind="authority_record",
@@ -305,12 +203,12 @@ def read_postcondition_evaluation(
     if not path.exists():
         return None
     evaluation = PostconditionEvaluation.from_dict(
-        _read_json(path, "environment postcondition evaluation"),
+        immutable_records.read_json(path, "environment postcondition evaluation"),
         "environment postcondition evaluation",
     )
     if evaluation.idempotency_key != idempotency_key:
         raise ValueError("postcondition evaluation belongs to another idempotency key")
-    if path.read_bytes() != _canonical_bytes(evaluation.as_dict()):
+    if path.read_bytes() != immutable_records.canonical_bytes(evaluation.as_dict()):
         raise ValueError("postcondition evaluation bytes are not canonical")
     return evaluation
 
@@ -323,12 +221,12 @@ def publish_postcondition_evaluation(
         raise ValueError("environment postcondition evaluation must be typed")
     shot, root = _state_root(shot_folder)
     path = root / "evaluations" / f"{evaluation.idempotency_key}.json"
-    raw = _canonical_bytes(evaluation.as_dict())
-    _publish_immutable(path, raw)
+    raw = immutable_records.canonical_bytes(evaluation.as_dict())
+    immutable_records.publish_immutable(path, raw)
     observed = read_postcondition_evaluation(shot, evaluation.idempotency_key)
     if observed != evaluation or path.read_bytes() != raw:
         raise ValueError("published environment postcondition evaluation failed exact read-back")
-    return _ref(
+    return immutable_records.evidence_ref(
         shot,
         path,
         kind="authority_record",

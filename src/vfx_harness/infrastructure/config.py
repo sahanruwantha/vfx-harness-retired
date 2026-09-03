@@ -108,6 +108,19 @@ def _text(name: str, default: str) -> str:
     return value
 
 
+def _optional_float(name: str, *, minimum: float = 0.0) -> float | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = float(value.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if parsed <= minimum:
+        raise ValueError(f"{name} must be > {minimum}")
+    return parsed
+
+
 def _int(name: str, default: int, *, minimum: int = 1) -> int:
     value = os.environ.get(name)
     if value is None:
@@ -152,6 +165,12 @@ class Settings:
     # ResultMessage, so this is deliberately an event-idle deadline rather than a
     # total response deadline.
     model_event_idle_seconds: int = 360
+    # Caps for the receipt-backed run controller (ADR-0010). Dispatch stops on identity
+    # first; these bound spend when identity alone would not.  ``run_max_usd`` is the
+    # run's model spend ceiling read from its cost log; ``None`` leaves only the count caps.
+    run_max_dispatches: int = 6
+    run_max_replans_per_layer: int = 2
+    run_max_usd: float | None = None
 
     @classmethod
     def from_environment(cls, *, load_dotenv_file: bool = True) -> Settings:
@@ -175,4 +194,7 @@ class Settings:
             plan_max_turns=_int("VFXH_PLAN_MAX_TURNS", 12),
             plan_verify_max_turns=_int("VFXH_PLAN_VERIFY_MAX_TURNS", 6),
             model_event_idle_seconds=_int("VFXH_MODEL_EVENT_IDLE_SECONDS", 360),
+            run_max_dispatches=_int("VFXH_RUN_MAX_DISPATCHES", 6),
+            run_max_replans_per_layer=_int("VFXH_RUN_MAX_REPLANS_PER_LAYER", 2),
+            run_max_usd=_optional_float("VFXH_RUN_MAX_USD"),
         )
