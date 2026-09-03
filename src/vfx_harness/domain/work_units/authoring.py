@@ -57,6 +57,7 @@ def work_unit_authoring_schema(
     layer_id: str | None = None,
     allowed_provides: Iterable[str] | None = None,
     clustered_mutation_roles: bool = False,
+    stageable_authorities: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Closed JSON schema exposed by the materialization unit-ticket tool.
 
@@ -142,7 +143,21 @@ def work_unit_authoring_schema(
             "moments": {"type": "array", "items": positive_int, "minItems": 1, "uniqueItems": True},
             "kind": {"type": "string", "enum": sorted(CLAIM_KINDS)},
             "required": {"type": "boolean"},
-            "authority": {"type": "string", "enum": sorted(CLAIM_AUTHORITIES)},
+            "authority": {
+                "type": "string",
+                "enum": sorted(
+                    CLAIM_AUTHORITIES
+                    if stageable_authorities is None
+                    else {str(value) for value in stageable_authorities} & CLAIM_AUTHORITIES
+                ),
+                "description": (
+                    "qualified_qualitative_required is harness-minted judgment authority: the "
+                    "composed judgment unit binds it for approved_start / planner_start judgment "
+                    "debt, and no qualification suite registers a rubric artifact an authored "
+                    "claim could cite. Appearance judged at build time is executable_required "
+                    "with asserts image, or a judgment debt on the owning requirement."
+                ),
+            },
             "repair_owner": text,
             "asserts": {"type": "string", "enum": sorted(CLAIM_DOMAINS)},
             "evidence": {"type": "array", "items": evidence, "minItems": 1},

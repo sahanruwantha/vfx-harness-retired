@@ -347,6 +347,11 @@ effect.
   present, `-` as the final-token append action, and that a list token may be
   `id=<row id>` (HIR-0177). Negative indices never mutate from
   the end; candidate repair does not make the materializer guess list occupancy (HIR-0105).
+- The staging schema offers only claim authorities an authored claim can carry
+  (`executable_required`, `advisory`); `qualified_qualitative_required` is minted by the
+  harness for judgment debt, never staged. A staged unit whose mutated role has no
+  required claim covering it is refused at the stage call by the same predicate claim
+  closure applies, naming the roles and the unit's judged subject roles (HIR-0177).
 - A plan-workspace path miss names the requested path and the staged relative files in
   that cwd, and forbids prefixing another filesystem root. Draft, verify, and repair
   kickoffs compile the same relative-read card (HIR-0156).

@@ -414,7 +414,13 @@ def _judgment_property_authority_block(global_row: dict) -> str:
             "owner; choose 'subject_appearance' or 'reference_identity' whose subject "
             "selectors the fault_owner unit mutates or dresses."
         )
-    return f"Judgment property authority (closed vocabulary {properties}): {rule}\n"
+    return (
+        f"Judgment property authority (closed vocabulary {properties}): {rule}\n"
+        "Claim authority at staging: executable_required or advisory. "
+        "qualified_qualitative_required is minted by the harness for approved_start / "
+        "planner_start judgment debt, never authored on a unit; appearance judged at "
+        "build time is executable_required with asserts image.\n"
+    )
 
 
 def _owned_requirements_block(bundle_root: Path, global_row: dict) -> str:

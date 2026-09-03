@@ -28,6 +28,7 @@ from vfx_harness.domain.work_units import (
     point_projection_interface_gaps,
     validate_unit_script_path,
 )
+from vfx_harness.domain.work_units.graph import MUTATION_CLAIM_COVERAGE_RULE, uncovered_mutation_roles
 from vfx_harness.evidence.checks import METRICS
 from vfx_harness.evidence.scene_checks import (
     PROJECTED_ORIGIN_KINDS,
@@ -158,6 +159,17 @@ def _validate_local_staged_units(
     layer_id = str((payload.get("layer") or {}).get("id") or "")
     for unit_index, unit in enumerate(parsed_units):
         validate_unit_script_path(layer_id, unit, f"staged unit[{unit_index}]")
+        uncovered = uncovered_mutation_roles(unit)
+        if uncovered:
+            judged = sorted(
+                {role for claim in unit.evaluation.claims if claim.required for role in claim.subject_roles}
+            )
+            raise ValueError(
+                "required-claim coverage refused before candidate write: "
+                f"unit {unit.id} mutates {list(uncovered)} without a required claim; "
+                f"required claim subject_roles on this unit: {judged}. "
+                + MUTATION_CLAIM_COVERAGE_RULE
+            )
     image_property_gaps = image_property_vocabulary_gaps(parsed_units, METRICS)
     if image_property_gaps:
         detail = "; ".join(

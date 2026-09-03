@@ -20,6 +20,7 @@ from vfx_harness.domain.judgment_debts import (
     RENDERED_CARRIER_FAMILIES,
 )
 from vfx_harness.domain.work_units import compile_clustered_mutation_roles, work_unit_authoring_schema
+from vfx_harness.domain.work_units.parsing import STAGEABLE_CLAIM_AUTHORITIES
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.evidence.checks import METRICS
 from vfx_harness.orchestration.authority_selection import (
@@ -193,6 +194,11 @@ def register_materialize_tools(**closed):
                     layer_id=materialization_layer_id,
                     allowed_provides=materialization_allowed_provides,
                     clustered_mutation_roles=True,
+                    # Authored claims cannot cite a qualification artifact: only the harness
+                    # mints qualified judgment (provisional judgment debt). Three layer-2
+                    # sessions of run 1b6807's lineage each paid a rejection to learn that;
+                    # enumerate legality instead (HIR-0177).
+                    stageable_authorities=STAGEABLE_CLAIM_AUTHORITIES,
                 ),
                 "scene_contracts": {"type": "array", "items": {"type": "object"}},
                 "requirement_bindings": {

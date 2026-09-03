@@ -24,6 +24,10 @@ CLAIM_AUTHORITIES = {
 # unit into raster rounds it cannot pay (HIR-0174). The human domain is judgment debt
 # on the owning requirement (approved_start / planner_start, HIR-0124, HIR-0163).
 RETIRED_CLAIM_AUTHORITIES = {"human_required"}
+# Authorities an authored (staged) claim may carry. qualified_qualitative_required is
+# minted only by the harness for judgment debt; no qualification suite registers a
+# rubric artifact an authored claim could cite (HIR-0177).
+STAGEABLE_CLAIM_AUTHORITIES = frozenset({"executable_required", "advisory"})
 RETIRED_EVIDENCE_KINDS = {"human_decision"}
 CLAIM_KINDS = {"atomic", "interaction"}
 EVIDENCE_KINDS = {

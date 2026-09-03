@@ -8,7 +8,6 @@ permission to edit the scene and not evidence that the critic is wrong.
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import re
@@ -25,6 +24,7 @@ from vfx_harness.domain.authority_head_records import (
 from vfx_harness.domain.contracts import load_document
 from vfx_harness.domain.image_debts import metric_matches_property, normalize_evidence_id
 from vfx_harness.domain.work_units import EXTRA_FRAME_BINDING_RULE
+from vfx_harness.domain.work_units.graph import uncovered_mutation_roles
 from vfx_harness.evidence.checks import valid_runtime_image_payment_rows
 from vfx_harness.observability import run_artifacts
 
@@ -384,23 +384,13 @@ def validate_claim_closure(
                     required.add(cid)
         for unit in getattr(layer, "stages", ()):
             unit_frames = {int(point.frame) for point in unit.evaluation.judges}
-            required_claims = [claim for claim in unit.evaluation.claims if claim.required]
-            subject_roles = {
-                role
-                for claim in required_claims
-                for role in claim.subject_roles
-            }
-            for mutation_role in unit.mutates.roles:
-                if not any(
-                    fnmatch.fnmatchcase(role, mutation_role) or fnmatch.fnmatchcase(mutation_role, role)
-                    for role in subject_roles
-                ):
-                    findings.append(
-                        ClosureFinding(
-                            f"layer {layer_id} unit {unit.id}",
-                            f"mutation role {mutation_role!r} has no required claim",
-                        )
+            for mutation_role in uncovered_mutation_roles(unit):
+                findings.append(
+                    ClosureFinding(
+                        f"layer {layer_id} unit {unit.id}",
+                        f"mutation role {mutation_role!r} has no required claim",
                     )
+                )
             for claim in unit.evaluation.claims:
                 where = f"layer {layer_id} unit {unit.id} claim {claim.id}"
                 if claim.axis not in layer_axes:

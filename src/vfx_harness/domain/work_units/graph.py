@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -10,6 +11,36 @@ from vfx_harness.domain.publish_interfaces import derived_interface_key
 
 if TYPE_CHECKING:
     from vfx_harness.domain.work_units.unit import WorkUnit
+
+
+MUTATION_CLAIM_COVERAGE_RULE = (
+    "every mutated role needs a required claim on the same unit whose subject_roles "
+    "cover it, or must be dropped from mutates; a role a sibling unit judges is not "
+    "covered here"
+)
+
+
+def uncovered_mutation_roles(unit: WorkUnit) -> tuple[str, ...]:
+    """Mutated roles that no required claim of ``unit`` judges.
+
+    Claim closure has always refused these at the terminal gate; the staging tool
+    applies the same predicate before a unit enters scratch so the session learns the
+    rule at the stage call rather than after a finalize round (HIR-0177).
+    """
+    subject_roles = {
+        role
+        for claim in unit.evaluation.claims
+        if claim.required
+        for role in claim.subject_roles
+    }
+    return tuple(
+        mutation_role
+        for mutation_role in unit.mutates.roles
+        if not any(
+            fnmatch.fnmatchcase(role, mutation_role) or fnmatch.fnmatchcase(mutation_role, role)
+            for role in subject_roles
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
