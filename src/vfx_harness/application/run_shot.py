@@ -84,6 +84,73 @@ def _receipt_backed_passed_layers(shot, layers, selected_authority) -> set[str]:
     return completed
 
 
+def _reopened_lower_layers(shot, lid: str) -> list[str]:
+    """Selected-DAG layers before ``lid`` that no longer hold a current terminal publication."""
+
+    selected_authority, chain, _layers = _selected_run_layers(shot)
+    lower = {
+        str(layer.id): layer
+        for layer in chain
+        if int(layer.id) < int(lid)
+    }
+    passed = _receipt_backed_passed_layers(shot, lower, selected_authority)
+    return [layer_id for layer_id in lower if layer_id not in passed]
+
+
+def _build_layer_and_verify(a, shot, layout, lease, lid: str, py: str, console, t0: float) -> str:
+    """Run one builder and require its current terminal publication; return the ledger status."""
+
+    rc = _run([py, "-m", "vfx_harness.agents.builder", str(shot.folder),
+               "--layer", lid, "--rounds", str(a.rounds), "--blender", a.blender],
+              dry=a.dry_run, tee=console)
+    if rc:
+        # Stop. Building layer N+1 on a layer N that never passed is the failure this
+        # whole chain of guards exists to prevent; carrying on would just bury it.
+        log(f"✗ layer {lid} exited {rc}: {_MEANING.get(rc, 'unknown')}")
+        log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
+            f"Fix, then resume with --from {lid}")
+        _stop_after_stage(layout, lease, rc, f"layer-{lid}-builder")
+    if a.dry_run:
+        return "pending"
+    # The child process finishing is not publication authority. Re-resolve the
+    # selected view it may have materialized, then require the terminal receipt,
+    # sealed outcome, ledger projection, and exact composed source to agree.
+    completed_authority, _completed_chain, completed_layers = _selected_run_layers(shot)
+    completed_layer = completed_layers.get(lid)
+    publication_error = None
+    publication = None
+    if completed_layer is None:
+        publication_error = f"selected layer DAG no longer contains completed layer {lid}"
+    else:
+        try:
+            publication = layer_publication.require_current_layer_publication(
+                shot.folder,
+                completed_layer,
+                completed_authority,
+            )
+        except layer_publication.LayerPublicationConflict as exc:
+            publication_error = str(exc)
+    if publication_error is not None or publication is None:
+        log(
+            f"✗ layer {lid} process finished but no current terminal "
+            f"publication exists: {publication_error}"
+        )
+        log(
+            f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
+            f"See {layout.reports}/layers/layer-{lid}.json, then resume with "
+            f"--from {lid}"
+        )
+        _stop_after_stage(layout, lease, 9, f"layer-{lid}-finalization-publication")
+    status = publication.ledger_status
+    if not _can_advance(status, dry_run=a.dry_run):
+        log(f"✗ layer {lid} finished cleanly but its verdict is '{status}' — not "
+            f"building on it")
+        log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
+            f"See {layout.reports}/layers/layer-{lid}.json, then resume with --from {lid}")
+        _stop_after_stage(layout, lease, 9, f"layer-{lid}-ledger-verdict")
+    return status
+
+
 def _selected_run_layers(shot):
     """Resolve one authority snapshot and retain its selected-DAG order."""
 
@@ -348,59 +415,15 @@ def _drive(
         if rc:
             log(f"✗ layer {lid} plan did not clear the deterministic gate")
             _stop_after_stage(layout, lease, rc, f"layer-{lid}-plan-gate")
-        rc = _run([py, "-m", "vfx_harness.agents.builder", str(shot.folder),
-                   "--layer", lid, "--rounds", str(a.rounds), "--blender", a.blender],
-                  dry=a.dry_run, tee=console)
-        if rc:
-            # Stop. Building layer N+1 on a layer N that never passed is the failure this
-            # whole chain of guards exists to prevent; carrying on would just bury it.
-            log(f"✗ layer {lid} exited {rc}: {_MEANING.get(rc, 'unknown')}")
-            log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
-                f"Fix, then resume with --from {lid}")
-            _stop_after_stage(layout, lease, rc, f"layer-{lid}-builder")
-
-        if a.dry_run:
-            status = "pending"
-        else:
-            # The child process finishing is not publication authority. Re-resolve the
-            # selected view it may have materialized, then require the terminal receipt,
-            # sealed outcome, ledger projection, and exact composed source to agree.
-            completed_authority, _completed_chain, completed_layers = (
-                _selected_run_layers(shot)
-            )
-            completed_layer = completed_layers.get(lid)
-            publication_error = None
-            if completed_layer is None:
-                publication_error = (
-                    f"selected layer DAG no longer contains completed layer {lid}"
-                )
-            else:
-                try:
-                    publication = layer_publication.require_current_layer_publication(
-                        shot.folder,
-                        completed_layer,
-                        completed_authority,
-                    )
-                except layer_publication.LayerPublicationConflict as exc:
-                    publication_error = str(exc)
-            if publication_error is not None:
-                log(
-                    f"✗ layer {lid} process finished but no current terminal "
-                    f"publication exists: {publication_error}"
-                )
-                log(
-                    f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
-                    f"See {layout.reports}/layers/layer-{lid}.json, then resume with "
-                    f"--from {lid}"
-                )
-                _stop_after_stage(layout, lease, 9, f"layer-{lid}-finalization-publication")
-            status = publication.ledger_status
-        if not _can_advance(status, dry_run=a.dry_run):
-            log(f"✗ layer {lid} finished cleanly but its verdict is '{status}' — not "
-                f"building on it")
-            log(f"   stopping after {(time.monotonic() - t0) / 60:.0f} min. "
-                f"See {layout.reports}/layers/layer-{lid}.json, then resume with --from {lid}")
-            _stop_after_stage(layout, lease, 9, f"layer-{lid}-ledger-verdict")
+        # A just-in-time publication is an authority-state transition: it may supersede
+        # the terminal receipt of a lower layer whose capsule it changed (HIR-0171). Run
+        # 20260903T053305Z-83f8e1 chained straight into the builder, which refused the
+        # new layer as UNACCEPTED PRIOR; the earliest reopened layer is built first.
+        for reopened in _reopened_lower_layers(shot, lid) if not a.dry_run else ():
+            log(f"↺ layer {reopened} lost its current terminal publication when layer "
+                f"{lid} was materialized; building layer {reopened} before layer {lid}")
+            _build_layer_and_verify(a, shot, layout, lease, reopened, py, console, t0)
+        status = _build_layer_and_verify(a, shot, layout, lease, lid, py, console, t0)
         if a.dry_run:
             log(f"↷ layer {lid} would run (ledger remains '{status}')")
             continue

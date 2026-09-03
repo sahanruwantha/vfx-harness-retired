@@ -863,7 +863,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   versioned transaction: freeze accepted state, validate the amendment, compute the complete
   invalidation closure, preserve unaffected checkpoints, mark replaced outcomes `superseded` and
   terminally unsatisfied dependants `blocked`, publish atomically, resume at the earliest legal
-  unit. Builders and repairs never rewrite plans or broaden their own scope.
+  unit. Builders and repairs never rewrite plans or broaden their own scope. A decision a
+  layer's materialization makes on a requirement the bundle deferred to it belongs to that
+  layer's capsule alone (only a decision on a never-deferred requirement is shot-wide), and
+  `vfx run` re-derives the receipt-backed prefix after every just-in-time publication and
+  builds a reopened lower layer before the newly materialized one (HIR-0181).
 - Reopen a fixed or interrupted unit only through the audited `vfx units retry` transition, with
   reason and evidence. A reopened unit whose executable rows already pass may mutate until the
   first in-session verdict — the convergence guard cannot treat a failed qualitative claim as

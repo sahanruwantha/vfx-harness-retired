@@ -355,3 +355,76 @@ def test_driver_terminalizes_an_unhandled_exception_as_failed_exactly_once(
         # A second unhandled exception after terminal selection changes nothing.
         run_shot._terminalize_unhandled(layout, lease, RuntimeError("later"))
         assert layout.status.read_bytes() == first
+
+
+def _ok_preflight(_blender):
+    return {
+        "ok": True,
+        "auth": {"ok": True, "using": "api", "problems": [], "notes": [], "present": [], "decoys": []},
+        "configuration": {"ok": True, "problems": []},
+        "blender": {"ok": True, "requested": "blender", "resolved": "/usr/bin/blender", "problems": []},
+        "blender_confinement": {
+            "ok": True,
+            "bwrap": "/usr/bin/bwrap",
+            "libseccomp": "libseccomp.so.2",
+            "worker_blender": "5.2.1 LTS",
+            "problems": [],
+        },
+        "builder_execution_fence": {"ok": True, "mechanism": "sysv-sem-undo+descriptor-flock", "problems": []},
+        "plan_consumer_directory": {"ok": True, "mechanism": "fanotify-target-fid+openat2", "problems": []},
+    }
+
+
+def test_driver_builds_a_reopened_lower_layer_before_the_new_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run 20260903T053305Z-83f8e1: layer 2's publication superseded layer 1's receipt."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    shot = SimpleNamespace(folder=tmp_path, id="reopened-prior-shot")
+    monkeypatch.setattr(run_shot, "load_shot", lambda _folder: shot)
+    monkeypatch.setattr(run_shot, "preflight_probe", _ok_preflight)
+    chain = [SimpleNamespace(id="1", title="Camera"), SimpleNamespace(id="2", title="Form")]
+    monkeypatch.setattr(
+        run_shot,
+        "_selected_run_layers",
+        lambda _shot: ("authority", chain, {layer.id: layer for layer in chain}),
+    )
+    commands: list[list[str]] = []
+    state = {"layer_2_planned": False, "layer_1_rebuilt": False}
+
+    def fake_run(command, *, dry=False, tee=None):
+        commands.append([str(item) for item in command])
+        text = " ".join(str(item) for item in command)
+        if "vfx_harness.agents.planner" in text and "--layer 2" in text:
+            state["layer_2_planned"] = True
+        if "vfx_harness.agents.builder" in text and "--layer 1" in text:
+            state["layer_1_rebuilt"] = True
+        return 0
+
+    def fake_passed(_shot, layers, _authority):
+        if state["layer_2_planned"] and not state["layer_1_rebuilt"]:
+            return set()
+        return {"1"} & set(layers)
+
+    monkeypatch.setattr(run_shot, "_run", fake_run)
+    monkeypatch.setattr(run_shot, "_receipt_backed_passed_layers", fake_passed)
+    monkeypatch.setattr(
+        run_shot,
+        "layer_publication",
+        SimpleNamespace(
+            require_current_layer_publication=lambda *_args: SimpleNamespace(ledger_status="passed"),
+            LayerPublicationConflict=run_shot.layer_publication.LayerPublicationConflict,
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["vfx run", str(tmp_path), "--from", "2", "--skip-accept", "--skip-render"])
+
+    try:
+        run_shot.main()
+    except SystemExit as raised:
+        assert raised.code in (0, None), raised.code
+
+    builders = [command for command in commands if "vfx_harness.agents.builder" in command]
+    assert [command[command.index("--layer") + 1] for command in builders] == ["1", "2"]
+    planners = [command for command in commands if "vfx_harness.agents.planner" in command]
+    assert [command[command.index("--layer") + 1] for command in planners] == ["2"]

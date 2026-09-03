@@ -338,8 +338,20 @@ def _bindings(unit: Mapping[str, Any], where: str) -> tuple[dict[str, Any], ...]
     return tuple(out)
 
 
+def _deferred_owner(global_row: Mapping[str, Any], requirement_id: str, layer_ids: frozenset[str]) -> str | None:
+    """The layer the global bundle deferred this requirement to, if it deferred it at all."""
+    resolution = _map(global_row.get("resolution"), f"global requirement {requirement_id!r}.resolution")
+    if _text(resolution.get("kind"), f"global requirement {requirement_id!r}.resolution.kind") != "deferred_owner":
+        return None
+    owner = _text(resolution.get("owner_layer"), f"global requirement {requirement_id!r}.owner_layer")
+    if owner not in layer_ids:
+        raise AuthorityCapsuleError(f"global requirement {requirement_id!r} names unknown owner {owner!r}")
+    return owner
+
+
 def _requirement_owners(
     requirements: Mapping[str, Mapping[str, Any]],
+    global_requirements: Mapping[str, Mapping[str, Any]],
     definitions: Sequence[JudgmentDebtDefinition],
     contract_owners: Mapping[str, tuple[str, str]],
     claim_owners: Mapping[tuple[str, str], frozenset[str]],
@@ -402,8 +414,17 @@ def _requirement_owners(
             debt_owners = debt_by_requirement.get(requirement_id, set())
             if len(debt_owners) > 1:
                 raise AuthorityCapsuleError(f"requirement {requirement_id!r} has ambiguous debt owners")
-            # Ownerless current-schema decisions are genuinely shot-wide.
-            out[requirement_id] = frozenset(debt_owners) if debt_owners else layer_ids
+            if debt_owners:
+                out[requirement_id] = frozenset(debt_owners)
+                continue
+            # A decision a layer's materialization makes on a requirement the global
+            # bundle deferred to it belongs to that layer. Run 20260903T053305Z-83f8e1
+            # bound R51 as a pure human decision on layer 2 and, projected shot-wide, it
+            # changed layer 1's capsule and superseded a terminal receipt earned minutes
+            # earlier. Only a decision on a requirement the bundle never deferred is
+            # genuinely shot-wide.
+            deferred_owner = _deferred_owner(global_requirements[requirement_id], requirement_id, layer_ids)
+            out[requirement_id] = frozenset({deferred_owner}) if deferred_owner else layer_ids
         else:
             raise AuthorityCapsuleError(
                 f"requirement {requirement_id!r} kind {kind!r} has no capsule projection"
@@ -678,7 +699,7 @@ def compile_authority_capsules(
                 claim_owner_sets.setdefault((binding["kind"], binding["id"]), set()).add(layer_id)
     claim_owners = {key: frozenset(value) for key, value in claim_owner_sets.items()}
     requirement_owners = _requirement_owners(
-        requirements, definitions, contract_owners, claim_owners, layer_ids
+        requirements, global_requirements, definitions, contract_owners, claim_owners, layer_ids
     )
     definitions_by_owner = {layer_id: [] for layer_id in order}
     activations_by_payer = {layer_id: [] for layer_id in order}

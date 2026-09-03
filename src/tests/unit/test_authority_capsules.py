@@ -459,3 +459,81 @@ def test_unsupported_schema_and_ambiguous_ownership_fail_closed() -> None:
     ]
     with pytest.raises(AuthorityCapsuleError, match="ambiguous across contract catalogs"):
         compile_authority_capsules(global_documents, ambiguous)
+
+
+def _pure_decision(requirement: dict, *, domain: str = "human") -> None:
+    requirement["resolution"] = {
+        "kind": "decision",
+        "ids": [],
+        "decision": requirement["statement"],
+        "decision_strength": "approved_start",
+        "evidence_domains": [domain],
+        "domain_bindings": [
+            {
+                "domain": domain,
+                "kind": "provisional_decision",
+                "statement": requirement["statement"],
+                "decision_strength": "approved_start",
+            }
+        ],
+    }
+
+
+def test_a_layers_own_decision_never_changes_an_earlier_layers_capsule() -> None:
+    """Run 20260903T053305Z-83f8e1: layer 2's human decision on R51 superseded layer 1."""
+    documents = _global_documents()
+    before_form = deepcopy(documents)
+    _materialize(
+        before_form,
+        layer_id="1",
+        unit_id="camera_unit",
+        axis="camera",
+        role="camera.rig",
+        contract_id="camera-count",
+        requirement_id="R-camera",
+    )
+    baseline = compile_authority_capsules(documents, before_form)
+    camera_before = next(row for row in baseline.layers if row.layer_id == "1").capsule_digest
+
+    with_form = deepcopy(before_form)
+    _materialize(
+        with_form,
+        layer_id="2",
+        unit_id="hall_unit",
+        axis="form",
+        role="hall.mass",
+        contract_id="hall-count",
+        requirement_id="R-form",
+    )
+    form_requirement = next(row for row in with_form["requirements.json"]["requirements"] if row["id"] == "R-form")
+    _pure_decision(form_requirement)
+    compiled = compile_authority_capsules(documents, with_form)
+    camera_after = next(row for row in compiled.layers if row.layer_id == "1").capsule_digest
+    assert camera_after == camera_before
+    assert next(row for row in compiled.layers if row.layer_id == "2").capsule_digest != camera_after
+
+
+def test_a_decision_on_a_never_deferred_requirement_stays_shot_wide() -> None:
+    documents = _global_documents()
+    shot_wide = documents["requirements.json"]["requirements"][2]
+    _pure_decision(shot_wide, domain="human")
+    before = deepcopy(documents)
+    _materialize(
+        before,
+        layer_id="1",
+        unit_id="camera_unit",
+        axis="camera",
+        role="camera.rig",
+        contract_id="camera-count",
+        requirement_id="R-camera",
+    )
+    baseline = compile_authority_capsules(documents, before)
+    changed_global = deepcopy(documents)
+    changed_global["requirements.json"]["requirements"][2]["resolution"]["decision_strength"] = "planner_start"
+    changed_effective = deepcopy(before)
+    changed_effective["requirements.json"]["requirements"][2]["resolution"]["decision_strength"] = "planner_start"
+    compiled = compile_authority_capsules(changed_global, changed_effective)
+    for layer_id in ("1", "2", "3"):
+        old = next(row for row in baseline.layers if row.layer_id == layer_id).capsule_digest
+        new = next(row for row in compiled.layers if row.layer_id == layer_id).capsule_digest
+        assert old != new, layer_id

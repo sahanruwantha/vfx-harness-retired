@@ -19,6 +19,11 @@ live in the linked Harness Improvement Records.
   whose judge frames lack rendered-subject framing is refused at the stage call rather
   than at finalize
   ([HIR-0177](docs/improvements/HIR-0177-materialization-budget-and-id-addressed-patches.md)).
+- A decision a layer's materialization makes on its own deferred requirement stays in that
+  layer's capsule, so a later layer's publication no longer supersedes an unchanged earlier
+  layer's terminal receipt, and `vfx run` builds a reopened lower layer before the newly
+  materialized one instead of stopping on the builder's unaccepted-prior refusal
+  ([HIR-0181](docs/improvements/HIR-0181-a-layers-decision-stays-in-its-own-capsule.md)).
 - Every `stage_materialization_unit` call runs the terminal collectable validator on the
   proposed candidate and refuses the findings it introduces inside its own write, listing
   the open layer-level findings with the staged result
