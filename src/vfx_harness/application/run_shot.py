@@ -626,7 +626,14 @@ def _gate_layer_authority(
     log(f"✗ layer {lid} plan did not clear the deterministic gate")
     for finding in blocking:
         log(str(finding), 1)
-    owned_by_this_layer = all(str(f.layer) == str(lid) for f in blocking)
+    # A layer-view amendment amends the selected view; with no selected authority there
+    # is no view to amend, so the repair is global whoever owns the finding.
+    amendable = (
+        selected is not None
+        and selected.assertion.selection == "selected"
+        and selected.assertion.effective_view is not None
+    )
+    owned_by_this_layer = amendable and all(str(f.layer) == str(lid) for f in blocking)
     scoped = GateResult(gated.shot, blocking, dict(gated.stats))
     outcome = scoped.publishable_outcome
     layout.write_report("plan_gate", scoped.to_dict(outcome=outcome))

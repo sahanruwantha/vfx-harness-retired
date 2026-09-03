@@ -22,6 +22,17 @@ from vfx_harness.domain.stop_transaction_state import (
 )
 
 AUTHORITY_SCOPES = frozenset({"global_plan", "layer_view"})
+
+
+def amendment_after_source(scope: str) -> str:
+    """Where a validated amendment of this scope must land.
+
+    A global amendment publishes a new bundle; a layer view publishes into the
+    just-in-time head.  Producers call this rather than restating the pairing, so a
+    stop envelope cannot be built that its own validator will reject (HIR-0187).
+    """
+    return "bundle" if scope == "global_plan" else "jit"
+
 _AMENDMENT_GATE_SCHEMA = "vfx-harness.plan-gate/v1"
 _AMENDMENT_VALIDATION_SCOPE = "structural_authority"
 
@@ -155,7 +166,7 @@ class SelectedAuthorityAmendmentCommitted(_StrictRecord):
                 "SelectedAuthorityAmendmentCommitted.validation_scope must be "
                 f"{_AMENDMENT_VALIDATION_SCOPE!r}"
             )
-        expected_after_source = "bundle" if self.scope == "global_plan" else "jit"
+        expected_after_source = amendment_after_source(self.scope)
         if self.required_after_source != expected_after_source:
             raise ValueError(
                 "SelectedAuthorityAmendmentCommitted.required_after_source must be "

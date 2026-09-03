@@ -13,6 +13,7 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from vfx_harness.domain.stop_amendment_transactions import amendment_after_source
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
 from vfx_harness.domain.stop_envelopes import StopCause, StopEnvelope, StopIdentity
 from vfx_harness.domain.stop_transaction_state import (
@@ -735,7 +736,7 @@ def _publish_plan_gate_stop(
             gate_schema=_GATE_SCHEMA,
             validation_scope="structural_authority",
             owner_authority_id=target.owner_authority_id,
-            required_after_source="bundle",
+            required_after_source=amendment_after_source(scope),
         ),
     )
     authority_after = resolve_selected_authority(layout.shot)

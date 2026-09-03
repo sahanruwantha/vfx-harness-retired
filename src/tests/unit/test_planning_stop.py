@@ -8,8 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from vfx_harness.agents.planner.planning_stop import publish_global_plan_gate_stop
+from vfx_harness.agents.planner.planning_stop import (
+    publish_global_plan_gate_stop,
+    publish_layer_plan_gate_stop,
+)
 from vfx_harness.agents.planner.types import PlanGateFailure, PlanLoopResult
+from vfx_harness.domain.stop_amendment_transactions import amendment_after_source
 from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.domain.stop_transactions import (
     EngineeringRouteCommitted,
@@ -369,3 +373,42 @@ def test_plan_gate_failure_carries_the_compiled_envelope_to_run_publication(
     assert raised.value.stop_envelope is envelope
     assert raised.value.terminal_cause == "authority_defect"
     assert "1 blocking structural finding" in str(raised.value)
+
+
+def test_a_layer_amendment_lands_in_the_jit_head_and_a_global_one_in_a_bundle() -> None:
+    """Run 20260903T180933Z-ea3e7a: the builder restated this pairing and got it wrong.
+
+    The scope was parameterized but the postcondition still declared the global
+    ``required_after_source``, so the domain refused the envelope at construction and
+    the driver died with an untyped traceback.  Producers now ask the domain, so a stop
+    cannot be built that its own validator rejects.
+    """
+    assert amendment_after_source("global_plan") == "bundle"
+    assert amendment_after_source("layer_view") == "jit"
+
+
+def test_a_layer_view_rejection_without_selected_authority_stays_global(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """There is no layer view to amend until authority is selected."""
+    layout, result = _rejected_candidate(tmp_path, monkeypatch, run_id="layer-plan-stop-1")
+
+    with pytest.raises(ValueError, match="layer-view amendment requires selected"):
+        publish_layer_plan_gate_stop(layout, result, layer_id="2")
+
+
+def test_the_global_scope_keeps_its_own_amendment_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared builder must not leak the layer contract back into global stops."""
+    layout, result = _rejected_candidate(tmp_path, monkeypatch, run_id="global-plan-stop-1")
+
+    envelope = publish_global_plan_gate_stop(layout, result)
+
+    action = envelope.actions[0]
+    assert action.target.scope == "global_plan"
+    assert action.target.layer_id is None
+    assert action.postcondition.required_after_source == "bundle"
+    assert envelope.identity.layer_id is None

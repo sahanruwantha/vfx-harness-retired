@@ -33,6 +33,9 @@ def _plan_wide(check: str = "authority") -> Finding:
     return Finding(check, True, "plans/current.json", "authority is stale", "republish")
 
 
+_MISSING = object()
+
+
 class _Recorder:
     """Captures which scope the boundary published, instead of writing a real stop."""
 
@@ -61,11 +64,26 @@ def boundary(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     return recorder
 
 
-def _drive(monkeypatch: pytest.MonkeyPatch, gate: GateResult, layer: str = "2"):
+def _selected():
+    """Selected authority a layer-view amendment can actually amend."""
+    return SimpleNamespace(
+        assertion=SimpleNamespace(selection="selected", effective_view=object()),
+        artifact_paths={},
+    )
+
+
+def _drive(
+    monkeypatch: pytest.MonkeyPatch,
+    gate: GateResult,
+    layer: str = "2",
+    selected=_MISSING,
+):
+    if selected is _MISSING:
+        selected = _selected()
     layout = SimpleNamespace(write_report=lambda *_a, **_k: None)
     shot = SimpleNamespace(folder=SimpleNamespace(name="shot"), id="shot")
     monkeypatch.setattr(
-        run_shot, "_gate_selected_authority", lambda _layout, _shot: (None, gate)
+        run_shot, "_gate_selected_authority", lambda _layout, _shot: (selected, gate)
     )
     run_shot._gate_layer_authority(layout, object(), shot, layer, None)
 
@@ -107,3 +125,11 @@ def test_the_layer_scope_survives_a_mix_of_owners(monkeypatch, boundary) -> None
     """Layer 1's finding is filtered out; only layer 2's remain, so layer 2 is the owner."""
     _drive(monkeypatch, _gate(_owned("1", "composition-coverage"), _owned("2")))
     assert (boundary.scope, boundary.layer_id) == ("layer_view", "2")
+
+
+def test_without_selected_authority_there_is_no_layer_view_to_amend(
+    monkeypatch, boundary
+) -> None:
+    """The domain refuses a layer amendment with no selected view; the scope says so."""
+    _drive(monkeypatch, _gate(_owned("2")), selected=None)
+    assert boundary.scope == "global_plan"

@@ -29,7 +29,9 @@ live in the linked Harness Improvement Records.
   findings about a layer now carry it in their typed `layer` field — 33 of the 34 layer-owned
   constructions previously wrote the owner only into their message, so `clean_for` could not
   read it and each was silently promoted to a plan-wide block. An architecture test keeps the
-  attribution from regressing.
+  attribution from regressing. Where an amendment must land is now decided by one
+  domain helper both the validator and the stop builder call, so a stop envelope that
+  its own validator would reject cannot be constructed.
 
 - The global plan's verify pass is budgeted from the layers the draft's ownership
   mapping declares (6 plus two turns per layer, capped at 24) instead of a fixed six

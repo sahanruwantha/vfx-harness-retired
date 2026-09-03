@@ -125,3 +125,38 @@ throwing its answer away.
   clean, layer-owned (the exact shape of the observed run), another layer's finding not
   blocking, plan-wide, mixed escalation, and mixed owners resolving to the layer scope.
 - Message equivalence: identical gate output and exit code before and after migration.
+
+## Follow-up: the builder restated a rule the validator owned
+
+The first landing (`2002bc4`) was re-run against the failing shot and got the scoping
+right — layer 1's `composition-coverage` was correctly filtered out and only layer 2's
+two blockers remained — then died constructing the envelope:
+
+```
+run 20260903T180933Z-ea3e7a  exit 1
+ValueError: SelectedAuthorityAmendmentCommitted.required_after_source must be 'jit'
+            for scope 'layer_view'
+```
+
+Parameterizing the builder by scope left `required_after_source="bundle"` hardcoded,
+which is correct only for the global scope. The domain refused the pairing, correctly,
+but at construction time — so the boundary raised instead of publishing, and the driver
+surfaced an untyped traceback: the same failure shape this record exists to remove.
+
+The cause is not the wrong literal. It is that **the producer restated a rule the
+validator owned**, so the two could disagree. `amendment_after_source(scope)` is now the
+single source of truth in `domain/stop_amendment_transactions.py`; the validator and the
+builder both call it, and a stop that its own validator would reject can no longer be
+built.
+
+A second domain precondition surfaced with it: a `layer_view` amendment requires
+selected authority with an effective view, because there is no layer view to amend
+without one. The driver now decides scope on that precondition rather than discovering
+it as an exception — with no selected authority the repair is global, whoever owns the
+finding.
+
+The regression escaped the first landing because the driver tests stubbed
+`publish_layer_plan_gate_stop`, mocking the construction that was wrong.
+`test_planning_stop.py` now exercises the real builder for both scopes and asserts the
+domain accepts each, and `test_run_shot_plan_gate_stop.py` covers the missing-authority
+scope decision.
