@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -68,7 +67,9 @@ def test_clean_gate_cannot_attest_after_semantic_authority_aba(
             decisions.write_bytes(decision_bytes)
         assert bundle_a2.content_hash == bundle_a1.content_hash
         assert resolve_current(tmp_path).content_hash == bundle_a1.content_hash
-        return SimpleNamespace(clean=True)
+        # A real GateResult: production always returns one, and the gate's verdict is
+        # scoped to the materializing layer before it is read (HIR-0189).
+        return plan_gate.GateResult(tmp_path.name, [], {})
 
     monkeypatch.setattr(plan_gate, "run", gate_then_aba)
 
