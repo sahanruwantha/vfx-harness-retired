@@ -2885,6 +2885,53 @@ def test_active_claim_cannot_publish_terminal_layer_ledger_status(tmp_path) -> N
     assert "finalization_receipt_digest" not in stored["milestones"][layer.id]
 
 
+def test_new_finalization_attempt_starts_from_a_bare_in_progress_row(tmp_path) -> None:
+    """Run 20260903T040612Z-0b3fe5: layer 1 re-finalized after a rematerialization.
+
+    The ledger row still projected run 1b6807's passed receipt, and the fresh claim's scope
+    check refused to publish an in-progress row that carried a receipt digest.
+    """
+    layer = _layer()
+    _pass_layer_units(tmp_path, layer)
+    claim = _claim(tmp_path, layer)
+    guard = _claim_guard(tmp_path, layer, claim)
+    shot = Shot(
+        folder=tmp_path,
+        frontmatter={"id": "refinalize-fixture", "frames": 1, "fps": 24},
+        body="fixture",
+    )
+    milestone = layer.as_milestone({})
+    stale = {
+        "status": "passed",
+        "script": layer.script,
+        "script_sha256": "a" * 64,
+        "script_sha": "a" * 16,
+        "layer_finalization_claim": "lfc-" + "b" * 64,
+        "finalization_receipt_digest": "c" * 64,
+        "run_id": "20260903T002758Z-1b6807",
+        "attempt": 1,
+        "best": {"round": 0, "mean": 5.0, "render": None},
+    }
+    ledger = AuthorityBoundLedger(shot, guard.selected_authority, execution_guard=guard)
+    ledger._slot(milestone).update(stale)
+    ledger._slot(milestone)["layer_finalization_claim"] = claim.claim_id
+    ledger.begin(milestone)
+
+    stored = json.loads((tmp_path / "shot.json").read_text(encoding="utf-8"))
+    row = stored["milestones"][layer.id]
+    assert row["status"] == "in_progress"
+    assert row["attempt"] == 2
+    assert row["layer_finalization_claim"] == claim.claim_id
+    for field in ("finalization_receipt_digest", "script_sha256", "script_sha"):
+        assert field not in row, field
+    previous = row["history"][0]
+    assert previous["attempt"] == 1
+    assert previous["run_id"] == "20260903T002758Z-1b6807"
+    assert previous["finalization_receipt_digest"] == "c" * 64
+    assert previous["script_sha256"] == "a" * 64
+    # The claim that earned the previous attempt is durable in the work-unit claim history.
+
+
 def test_terminal_layer_ledger_projection_requires_exact_receipt(tmp_path) -> None:
     layer, _claim_guard_value, _replay, _stored, receipt = _finalize(tmp_path)
     selected = SimpleNamespace(selection_token=ABSENT_SELECTION_TOKEN)

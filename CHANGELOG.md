@@ -19,6 +19,10 @@ live in the linked Harness Improvement Records.
   whose judge frames lack rendered-subject framing is refused at the stage call rather
   than at finalize
   ([HIR-0177](docs/improvements/HIR-0177-materialization-budget-and-id-addressed-patches.md)).
+- `Ledger.begin` moves the previous attempt's terminal projection (receipt digest and
+  script hashes) into history, so re-finalizing a layer that had passed before a
+  rematerialization no longer crashes on the finalization claim's scope check
+  ([HIR-0179](docs/improvements/HIR-0179-new-attempts-start-from-a-bare-ledger-row.md)).
 - An `object_count` upper bound over a literal namespace whose dotted descendants
   sibling rows require is refused at materialization and the plan gate with the
   matcher rule and the leaf-role or raised-bound fix, and the object_count read-back

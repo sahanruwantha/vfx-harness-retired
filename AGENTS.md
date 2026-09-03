@@ -110,6 +110,9 @@ operation.
   external evaluation, every group receipt, and every replay-input/dependency,
   reference/render/auxiliary, script, predecessor, and sealed outcome source; embedded receipt
   content never self-certifies current publication (HIR-0170).
+  A new ledger attempt starts from a bare in-progress row: `Ledger.begin` moves the previous
+  attempt's receipt digest and script hashes into its history entry, so re-finalizing
+  a passed layer after rematerialization cannot trip the claim scope check (HIR-0179).
   A failed-artifact warm start is likewise legal only when the ledger pins that artifact to the
   exact current `WorkUnit` digest; same-id superseded and legacy unpinned scripts replay from clean
   priors instead (HIR-0059).

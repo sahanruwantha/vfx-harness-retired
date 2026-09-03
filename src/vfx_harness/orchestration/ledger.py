@@ -531,6 +531,10 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+# Ledger fields that only a terminal finalization receipt may project onto a layer row.
+TERMINAL_PROJECTION_FIELDS = ("finalization_receipt_digest", "script_sha256", "script_sha")
+
+
 class Ledger:
     """Read/modify/write `shot.json` for one shot."""
 
@@ -591,9 +595,18 @@ class Ledger:
                 "rounds": list(slot.get("rounds") or []),
                 "best": slot.get("best"),
                 "script_sha": slot.get("script_sha"),
+                "script_sha256": slot.get("script_sha256"),
                 "unit_hash": slot.get("unit_hash"),
                 "artifact_unit_hash": slot.get("artifact_unit_hash"),
+                "finalization_receipt_digest": slot.get("finalization_receipt_digest"),
             })
+        # A terminal projection belongs to the attempt that earned it. Run
+        # 20260903T040612Z-0b3fe5 re-finalized layer 1 after a rematerialization: the row
+        # still named run 1b6807's receipt digest and script hash, and the finalization
+        # claim's scope check rightly refused to publish an in-progress row that carried
+        # a receipt. The previous attempt keeps them in history; the new one starts bare.
+        for terminal_field in TERMINAL_PROJECTION_FIELDS:
+            slot.pop(terminal_field, None)
         # ``rounds`` is current-attempt state.  Historical rounds have their own durable
         # records above; retaining them here made attempt 5's report look like seven new
         # rounds and contaminated convergence analysis with unrelated runs.
