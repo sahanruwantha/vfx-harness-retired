@@ -1218,7 +1218,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   (HIR-0080). Structured termination preserves the cause: provider/zero-work failures are
   `model_session_failure`, turn exhaustion is `max_turns_exhausted`, and the configured
   model-dollar ceiling is `model_budget_exhausted`; exit 3 is not sufficient diagnosis.
-  Every model response stream also has a positive configurable event-idle deadline. If no
+  Every model response stream also has a positive configurable event-idle deadline,
+  applied by the one shared stream helper every stream iterates rather than by any single
+  consumer, and the live phase writes `runs/<id>/logs/phase-heartbeat.json` with that deadline
+  and its last event so a reader computes the remaining budget instead of inferring liveness
+  from console or transcript mtime (HIR-0200). If no
   SDK event arrives before it, the phase fails closed as `model_session_idle_timeout`,
   journals the deadline, message count, and last event type, and publishes no candidate.
   Turn and spend caps do not bound a stream that never emits a terminal result; an operator

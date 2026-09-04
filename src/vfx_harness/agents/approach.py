@@ -23,6 +23,7 @@ from pathlib import Path
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
 
+from vfx_harness.agents.model_stream import with_idle_deadline
 from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.infrastructure.config import DEFAULT_EXECUTION_MODEL, Settings
 from vfx_harness.infrastructure.sandbox import sandbox_hooks
@@ -108,7 +109,10 @@ async def review(shot, layer, render_rel: str, verdict: dict, script_rel: str,
         + "\nIs the TECHNIQUE wrong, or only the values?")
     text = ""
     try:
-        async for m in query(prompt=prompt, options=_options(shot.folder)):
+        async for m in with_idle_deadline(
+            query(prompt=prompt, options=_options(shot.folder)),
+            label="approach review",
+        ):
             if verbose:
                 log_message(m)
             elif isinstance(m, ResultMessage):

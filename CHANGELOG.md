@@ -32,6 +32,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- Every model stream now carries the event-idle deadline, and a run says how much of it is
+  spent ([HIR-0200](docs/improvements/HIR-0200-every-model-stream-has-a-visible-deadline.md)).
+  Only the builder's drain loop enforced the deadline, so a hung planner or materialization
+  session would have waited forever, and three sessions watching three shots each invented a
+  liveness heuristic from file mtimes, two of which gave wrong answers. Streams now iterate one
+  helper that fails closed with the typed cause, and each phase writes a heartbeat carrying its
+  deadline, last event and event count.
+
 - A model session's turn budget is now measured by the harness that sets it
   ([HIR-0199](docs/improvements/HIR-0199-the-harness-counts-the-turns-it-budgets.md)). The
   budget was handed to the SDK as `max_turns` and reported at completion as the provider's

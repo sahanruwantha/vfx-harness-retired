@@ -41,7 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from vfx_harness.infrastructure.config import Settings
-from vfx_harness.observability import run_artifacts, session_turns
+from vfx_harness.observability import phase_heartbeat, run_artifacts, session_turns
 
 # One binding per process. Each stage is its own process (see run_shot), so a module-level
 # destination is the honest shape here — there is never more than one agent transcript in
@@ -98,6 +98,14 @@ def bind(shot_folder: str | Path, stage: str, label: str | None = None,
     _STATE.clear()
     _STATE.update({"path": path, "stage": stage, "label": label, "run_id": rid,
                    "seq": 0, "t0": time.monotonic(), "warned": False})
+    # A long assistant turn writes no transcript event, so liveness cannot be read from this
+    # file; the heartbeat carries the deadline's remaining budget instead (HIR-0200).
+    phase_heartbeat.begin(
+        layout.logs / phase_heartbeat.NAME,
+        stage=str(stage),
+        label=None if label is None else str(label),
+        deadline_seconds=Settings.from_environment(load_dotenv_file=False).model_event_idle_seconds,
+    )
     # Appended, never truncated: a resumed or retried layer is part of the same story,
     # and silently dropping the first attempt is how "it worked the first time" becomes
     # unfalsifiable.
@@ -109,6 +117,7 @@ def bind(shot_folder: str | Path, stage: str, label: str | None = None,
 def unbind() -> None:
     if _STATE:
         _emit("close", at=_now())
+    phase_heartbeat.end()
     _STATE.clear()
 
 
@@ -198,6 +207,7 @@ def message(m) -> None:
     if not _STATE:
         return
     name = type(m).__name__
+    phase_heartbeat.event(name)
 
     content = getattr(m, "content", None)
     # A UserMessage's content is a LIST of blocks when it carries tool results and a bare

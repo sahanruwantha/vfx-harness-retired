@@ -31,6 +31,7 @@ from vfx_harness.agents.builder.execution_guard import (
 )
 from vfx_harness.agents.builder.models import PASS_MEAN, PASS_MIN, BuildTruncated, critic_model
 from vfx_harness.agents.builder.pkg import builder_package
+from vfx_harness.agents.model_stream import with_idle_deadline
 from vfx_harness.application.preflight import model_phase_failure
 from vfx_harness.blender.session import BlenderError, BlenderSession
 from vfx_harness.domain.brief import Shot
@@ -178,14 +179,17 @@ async def _critique(
                         f"query {review_mode} critic for {execution_guard.label} "
                         f"at frame {m.frame}"
                     )
-                async for message in query(
-                    prompt=_one_user_message(blocks),
-                    options=_critic_options(
-                        shot,
-                        axes,
-                        allow_na=scope is None,
-                        focus_frames=sorted(focus_references),
+                async for message in with_idle_deadline(
+                    query(
+                        prompt=_one_user_message(blocks),
+                        options=_critic_options(
+                            shot,
+                            axes,
+                            allow_na=scope is None,
+                            focus_frames=sorted(focus_references),
+                        ),
                     ),
+                    label="critic",
                 ):
                     _structured_or_text(message, acc)
                     # The critic loop does NOT call log_message, which is where costlog was

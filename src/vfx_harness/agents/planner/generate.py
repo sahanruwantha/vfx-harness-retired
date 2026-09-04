@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from claude_agent_sdk import query
 
 from vfx_harness.agents.builder.critic_focus import _image_block, _one_user_message
+from vfx_harness.agents.model_stream import with_idle_deadline
 from vfx_harness.agents.plan_guardrails import planner_hooks
 from vfx_harness.agents.plan_tools import build_plan_tools
 from vfx_harness.agents.planner.kickoff import (
@@ -233,7 +234,10 @@ async def generate_plan(
 
     async def _attempt() -> str:
         said: list[str] = []
-        async for message in query(prompt=_one_user_message(blocks), options=options):
+        async for message in with_idle_deadline(
+            query(prompt=_one_user_message(blocks), options=options),
+            label=f"plan {mode}",
+        ):
             log_message(message)
             for blk in getattr(message, "content", None) or []:
                 text = getattr(blk, "text", None)
@@ -528,7 +532,10 @@ async def _generate_layer_plan(
     )
     async def _attempt() -> str:
         said: list[str] = []
-        async for message in query(prompt=_one_user_message(blocks), options=options):
+        async for message in with_idle_deadline(
+            query(prompt=_one_user_message(blocks), options=options),
+            label="unit plan",
+        ):
             log_message(message)
             for blk in getattr(message, "content", None) or []:
                 if text := getattr(blk, "text", None):

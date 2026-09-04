@@ -7,6 +7,7 @@ from pathlib import Path
 
 from claude_agent_sdk import query
 
+from vfx_harness.agents.model_stream import with_idle_deadline
 from vfx_harness.agents.plan_guardrails import planner_hooks
 from vfx_harness.agents.plan_tools import build_plan_tools
 from vfx_harness.agents.planner import rematerialization_evidence
@@ -295,7 +296,10 @@ global authority, create unit state, write prose, or write another file."""
 
     async def _attempt() -> str:
         said: list[str] = []
-        async for message in query(prompt=kickoff, options=options):
+        async for message in with_idle_deadline(
+            query(prompt=kickoff, options=options),
+            label="materialization",
+        ):
             log_message(message)
             for block in getattr(message, "content", None) or []:
                 if value := getattr(block, "text", None):
