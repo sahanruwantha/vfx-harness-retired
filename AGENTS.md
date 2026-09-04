@@ -411,7 +411,10 @@ effect.
 - Abstention is always legal: every decision point accepts "insufficient evidence", fails closed,
   and escalates. A forced pick among unsupported options is a harness defect.
 - Rejections teach: tool failures and validation rejections name the violated contract, expected
-  versus found, and the legal next actions. A selector miss reports both sides — what was
+  versus found, and the legal next actions. Where two modules each hold half the state, the one
+  that resolved the value writes the sentence: a missing-credential rejection names the dotenv
+  file this process actually resolved (or that none was, and `VFXH_ENV_FILE` is the way to point
+  at one), because resolution follows the imported code, not the working directory (HIR-0198). A selector miss reports both sides — what was
   requested and what actually exists (HIR-0018). An artifact execution-policy rejection names
   the line, the escaping expression, its capability chain, and the legal replay forms
   (HIR-0174).
@@ -518,7 +521,9 @@ mechanism when it improves control, observability, or agent capability.
   larger of the requested cap and 24 plus two turns per owned requirement, capped at 96; an
   exhausted session still publishes nothing. The global verify pass runs under the larger of
   the configured verify cap and 6 plus two turns per layer the draft's ownership mapping
-  declares, capped at 24 (HIR-0177). Parallelize independent evidence production while
+  declares, capped at 24 (HIR-0177). That ceiling is the only one: the draft's own
+  `--max-turns` never clamps it, and the log line states the derivation so a clamp cannot
+  read as the computation (HIR-0198). Parallelize independent evidence production while
   authoritative scene mutation and publication remain serialized.
 - Before adding an SDK workaround, verify the installed SDK does not already provide the needed
   primitive. Pin and test every SDK behavior the harness depends on, and fail closed when an

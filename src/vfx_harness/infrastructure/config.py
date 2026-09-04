@@ -48,6 +48,27 @@ def environment_file(path: str | Path | None = None) -> Path | None:
     return candidate if checkout and candidate.is_file() else None
 
 
+def dotenv_resolution_note() -> str:
+    """Say which dotenv file this process resolved, and how to point it elsewhere.
+
+    A credential set in a checkout's ``.env`` is invisible to a process whose code is
+    imported from another checkout (a pinned worktree), because resolution follows the
+    code, not the working directory. Telling an operator to "correct the named credential
+    variables" then sends them to edit a file that is already correct (HIR-0198).
+    """
+    explicit = os.environ.get(ENV_FILE_VARIABLE)
+    if explicit:
+        return f"{ENV_FILE_VARIABLE}={explicit} is the dotenv file this process reads."
+    candidate = PROJECT_ROOT / ".env"
+    if (PROJECT_ROOT / "pyproject.toml").is_file() and candidate.is_file():
+        return f"This process reads {candidate}; the variables must be set there."
+    return (
+        f"No dotenv file was resolved: this process imports its code from {PROJECT_ROOT}, "
+        f"which has no readable .env, so set {ENV_FILE_VARIABLE} to the file that holds "
+        "the credentials (for example the primary checkout's .env)."
+    )
+
+
 def credential_preference() -> str:
     """Which Claude credential the harness should hand the Agent SDK."""
     value = os.environ.get(CREDENTIAL_VARIABLE)

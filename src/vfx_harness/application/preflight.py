@@ -58,7 +58,12 @@ from vfx_harness.domain.stop_transactions import (
     RecoverEnvironmentTarget,
     StopAction,
 )
-from vfx_harness.infrastructure.config import Settings, credential_preference, load_environment
+from vfx_harness.infrastructure.config import (
+    Settings,
+    credential_preference,
+    dotenv_resolution_note,
+    load_environment,
+)
 from vfx_harness.observability.log import log
 from vfx_harness.orchestration.builder_execution_fence import (
     BuilderExecutionFenceActive,
@@ -147,7 +152,8 @@ def auth() -> dict:
             "no credential in the environment: neither ANTHROPIC_API_KEY nor "
             "CLAUDE_CODE_OAUTH_TOKEN is set."
             + (" A `claude` CLI is installed, so an interactive login may still work, "
-               "but nothing here can confirm it." if logged_in else ""))
+               "but nothing here can confirm it." if logged_in else "")
+            + " " + dotenv_resolution_note())
 
     return {"ok": not problems, "using": using, "problems": problems, "notes": notes,
             "present": sorted(present), "decoys": sorted(decoys)}
@@ -593,7 +599,11 @@ def environment_result(value: dict) -> EnvironmentResult:
             next_action=(
                 "No environment recovery is required."
                 if auth_passed
-                else "Correct the named credential variables, then run strict preflight again."
+                else (
+                    "Set the named credential variables in the dotenv file this process "
+                    "actually resolves, or point VFXH_ENV_FILE at the one that holds them, "
+                    "then run strict preflight again."
+                )
             ),
         ),
         EnvironmentCheck(

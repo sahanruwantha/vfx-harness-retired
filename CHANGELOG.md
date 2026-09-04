@@ -32,6 +32,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- The global verify pass gets the budget its rule states
+  ([HIR-0198](docs/improvements/HIR-0198-the-verify-budget-has-one-ceiling.md)). The draft
+  pass's `max_turns` was clamping the per-layer verify budget, so a six-layer shot ran verify
+  on 12 turns instead of 18 and the scaling was inert for every shot with four or more
+  layers. The budget now has one ceiling and its log line states its derivation. A
+  missing-credential rejection also names the dotenv file the process resolved, instead of
+  sending an operator to edit variables that were already correct in another checkout.
+
 - `bbox_*` and `visible_fraction` measure the rendered subject
   ([HIR-0196](docs/improvements/HIR-0196-rendered-subject-metrics-respect-render-visibility.md)).
   Both counted objects hidden from render, so a builder that hid the four objects it had created

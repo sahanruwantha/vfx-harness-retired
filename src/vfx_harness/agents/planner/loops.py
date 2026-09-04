@@ -9,7 +9,12 @@ from pathlib import Path
 
 import anyio
 
-from vfx_harness.agents.planner.budget import plan_verify_turn_budget
+from vfx_harness.agents.planner.budget import (
+    PLAN_VERIFY_TURN_CEILING,
+    PLAN_VERIFY_TURN_FLOOR,
+    PLAN_VERIFY_TURNS_PER_LAYER,
+    plan_verify_turn_budget,
+)
 from vfx_harness.agents.planner.generate import generate_layer_plan
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.planner.planning_stop import publish_global_plan_gate_stop
@@ -78,13 +83,17 @@ async def generate_plan_two_pass(
     shutil.copy2(draft_path, verify_candidate)
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
     drafted_layers = drafted_layer_count(workspace)
-    verify_turns = min(
-        max_turns,
-        plan_verify_turn_budget(
-            getattr(configured_settings, "plan_verify_max_turns", 6), drafted_layers
-        ),
+    # The verify budget is whatever its own rule computes; the draft's cap is a different
+    # quantity and must not become a second, undeclared ceiling. Clamping the two together
+    # made the per-layer scaling inert for every shot with four or more layers, silently,
+    # because the development shots had three (HIR-0198).
+    configured_verify = getattr(configured_settings, "plan_verify_max_turns", 6)
+    verify_turns = plan_verify_turn_budget(configured_verify, drafted_layers)
+    log(
+        f"verify budget: {verify_turns} turns = max({configured_verify} configured, "
+        f"{PLAN_VERIFY_TURN_FLOOR} + {PLAN_VERIFY_TURNS_PER_LAYER}×{drafted_layers} drafted "
+        f"layer(s)), ceiling {PLAN_VERIFY_TURN_CEILING}"
     )
-    log(f"verify budget: {verify_turns} turns for {drafted_layers} drafted layer(s)")
     try:
         final = await planner_package().generate_plan(
             folder,
