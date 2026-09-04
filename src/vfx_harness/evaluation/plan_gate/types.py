@@ -278,6 +278,24 @@ def _planned_outputs(folder: Path) -> set[str]:
     return out
 
 
+
+def gate_report_signature(rows) -> str:
+    """The stable identity of a gate report's findings.
+
+    Producers and readers of a published report must compute this the same way, so it
+    lives once.  Each excerpt is stripped: a fixed-width slice of a finding's text can end
+    mid-word, and a signature with surrounding whitespace fails the published-report
+    validator that recomputes it — which routed a whole run to the engineering sink over a
+    space at index 59 (HIR-0193).
+    """
+    return "|".join(
+        sorted(
+            f"{row['check']}:{row['where']}:{str(row['what'])[:60].strip()}"
+            for row in rows
+        )
+    )
+
+
 @dataclass
 class Finding:
     check: str
@@ -358,7 +376,9 @@ class GateResult:
         """Stable identity of WHAT is wrong, for detecting a loop that stopped converging.
         Two rounds with the same signature means the repair pass changed nothing that
         matters, and continuing just pays for the same answer again."""
-        return "|".join(sorted(f"{f.check}:{f.where}:{f.what[:60]}" for f in self.findings))
+        return gate_report_signature(
+            {"check": f.check, "where": f.where, "what": f.what} for f in self.findings
+        )
 
     def to_dict(self, *, outcome: str | None = None) -> dict:
         """The reusable authority record; terminal readers need not rerun the gate."""

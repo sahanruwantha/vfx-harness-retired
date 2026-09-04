@@ -338,6 +338,10 @@ effect.
   originator in its dependency closure. Declaring `provides` does not create the host, and
   two unordered declarers leave replay order to authored position, which breaks the
   accepted chain at the first cold replay (HIR-0192).
+  A published gate report's signature is computed by one shared function its validator
+  also calls, with each finding excerpt stripped: a fixed-width slice of prose can end in
+  whitespace, and a report that fails its own validator turns a dispatchable rejection into
+  an engineering route (HIR-0193).
 - `inspect_scene(render/lights)` exposes the world/compositor identity, EEVEE volumetric and
   view-layer pass state, and light shape/distance settings; do not smuggle those reads through an
   idempotent `run_bpy` assignment (HIR-0055). Every `inspect_scene` call re-evaluates

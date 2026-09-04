@@ -27,6 +27,7 @@ from vfx_harness.domain.stop_transactions import (
     SelectedAuthorityAmendmentCommitted,
     StopAction,
 )
+from vfx_harness.evaluation.plan_gate.types import gate_report_signature
 from vfx_harness.orchestration import plan_authority
 from vfx_harness.orchestration.authority_selection import (
     ResolvedSelectedAuthority,
@@ -281,7 +282,7 @@ def _parse_gate_report(
         issues.append("gate_report_blocking_count_mismatch")
     if value.get("warning_count") != len(warnings):
         issues.append("gate_report_warning_count_mismatch")
-    expected_signature = "|".join(sorted(f"{row['check']}:{row['where']}:{row['what'][:60]}" for row in parsed))
+    expected_signature = gate_report_signature(parsed)
     if value.get("signature") != expected_signature:
         issues.append("gate_report_signature_mismatch")
     if value.get("outcome") != result.outcome:

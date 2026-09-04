@@ -26,6 +26,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A gate report's signature is computed once, by code its validator shares
+  ([HIR-0193](docs/improvements/HIR-0193-one-gate-report-signature.md)). The signature is a
+  60-character slice of each finding's text; a finding whose text had a space at index 59
+  produced a signature ending in whitespace, which the published-report validator rejects, so
+  a run that had correctly diagnosed itself routed to the engineering sink instead of
+  dispatching its own repair. Excerpts are stripped, and the producer and reader no longer
+  keep separate copies of the rule.
+
 - A capability is originated once per layer
   ([HIR-0192](docs/improvements/HIR-0192-a-capability-is-originated-once.md)). Layer 1 of a
   shot declared two units with `provides: ["camera"]` and no edge between them; the one that
