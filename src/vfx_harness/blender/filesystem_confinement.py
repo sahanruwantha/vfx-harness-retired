@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,6 +23,43 @@ from vfx_harness.infrastructure.trusted_files import (
 
 FILESYSTEM_SANDBOX = "bwrap"
 HARNESS_RUNTIME_ROOT = Path(__file__).parent.parent
+# GPU device nodes the worker must see to render on hardware. ``--dev /dev`` mounts a
+# minimal devtmpfs with none of them, so a confined Blender silently falls back to
+# llvmpipe software OpenGL: a 1080p volumetric EEVEE frame that takes 0.9 s on the host
+# GPU took 21 s inside the sandbox (HIR-0194). Nodes are bound read-write only when they
+# exist; a host without a GPU keeps the same confinement and reports software rendering.
+GPU_DEVICE_NODES = (
+    Path("/dev/dri"),
+    Path("/dev/nvidiactl"),
+    Path("/dev/nvidia-uvm"),
+    Path("/dev/nvidia-uvm-tools"),
+    Path("/dev/nvidia-modeset"),
+    Path("/dev/nvidia-caps"),
+)
+_GPU_DEVICE_INDEX = re.compile(r"^nvidia[0-9]+$")
+
+
+def host_gpu_device_nodes() -> tuple[Path, ...]:
+    """Every GPU device node present on the host, in a stable order."""
+
+    present = [node for node in GPU_DEVICE_NODES if node.exists()]
+    dev = Path("/dev")
+    if dev.is_dir():
+        present.extend(
+            sorted(child for child in dev.iterdir() if _GPU_DEVICE_INDEX.match(child.name))
+        )
+    return tuple(present)
+
+
+def gpu_device_binds() -> tuple[str, ...]:
+    """``--dev-bind`` arguments for every present GPU device node."""
+
+    argv: list[str] = []
+    for node in host_gpu_device_nodes():
+        argv.extend(("--dev-bind", str(node), str(node)))
+    return tuple(argv)
+
+
 SYSTEM_RUNTIME_ROOTS = (
     Path("/etc"),
     Path("/opt"),
@@ -246,7 +284,7 @@ def confined_worker_argv(
         for link in (Path("/bin"), Path("/lib"), Path("/lib64"), Path("/sbin")):
             if link.is_symlink():
                 argv.extend(("--symlink", os.readlink(link), str(link)))
-        argv.extend(("--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"))
+        argv.extend(("--dev", "/dev", *gpu_device_binds(), "--proc", "/proc", "--tmpfs", "/tmp"))
 
         destinations = (HARNESS_RUNTIME_ROOT, authority, *readable, *writable)
         created: set[Path] = set()
@@ -325,6 +363,7 @@ def confined_worker_argv(
                 "/",
                 "--dev",
                 "/dev",
+                *gpu_device_binds(),
                 "--proc",
                 "/proc",
                 "--tmpfs",

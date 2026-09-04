@@ -40,7 +40,11 @@ operation.
   confinement's diagnostic, never discovered at worker boot. Point `BLENDER_BIN` at the real
   binary when the packaged launcher is unusable (HIR-0173). Strict preflight also proves the kernel-owned plan-consumer
   directory primitive (`plan_consumer_directory`), so an unsupported host fails before spend
-  rather than at its first consumer view (HIR-0172).
+  rather than at its first consumer view (HIR-0172). The worker confinement dev-binds every GPU
+  device node the host exposes (`/dev/dri`, `/dev/nvidia*`), the worker's ping reports the GPU
+  platform Blender initialized, and strict preflight fails closed when the host has a GPU but
+  the confined worker reports software OpenGL: a sandbox that hides the GPU renders every
+  plate on llvmpipe, twenty times slower, and looks like a slow agent (HIR-0194).
 - The normal operation is `vfx run`. A shot with no selected plan authority first drafts,
   verifies, gates, and repairs its global plan as a child stage of the same run; an existing
   bundle is never redrafted by the driver (HIR-0186). It stops on the first unaccepted boundary

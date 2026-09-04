@@ -39,6 +39,7 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 
+from vfx_harness.blender import filesystem_confinement
 from vfx_harness.blender import resolution as blender_resolution
 from vfx_harness.blender.session import BlenderError, BlenderSession
 from vfx_harness.domain.environment_results import (
@@ -194,6 +195,8 @@ def _probe_blender_confinement(resolved_blender: str | None) -> dict:
     if libseccomp is None:
         problems.append("libseccomp is unavailable.")
     worker_blender = None
+    worker_gpu = None
+    host_gpu: list[str] = []
     if not problems:
         temporary_root: Path | None = None
         host_canary: Path | None = None
@@ -221,9 +224,19 @@ def _probe_blender_confinement(resolved_blender: str | None) -> dict:
             sibling_input.write_text("sibling", encoding="utf-8")
             worker_output = session.artifacts / "capability-probe.txt"
             session.start()
-            worker_blender = str(session.ping().get("blender") or "").strip() or None
+            ping = session.ping()
+            worker_blender = str(ping.get("blender") or "").strip() or None
             if worker_blender is None:
                 problems.append("confined Blender worker returned no version identity.")
+            worker_gpu = ping.get("gpu") if isinstance(ping.get("gpu"), dict) else None
+            host_gpu = [str(node) for node in filesystem_confinement.host_gpu_device_nodes()]
+            if host_gpu and (worker_gpu or {}).get("device_type") in (None, "SOFTWARE"):
+                seen = (worker_gpu or {}).get("renderer") or (worker_gpu or {}).get("error")
+                problems.append(
+                    "confined Blender worker renders on software OpenGL "
+                    f"({seen or 'no gpu report'}) although the host exposes GPU device nodes "
+                    f"{', '.join(host_gpu)}; the confinement must dev-bind those nodes (HIR-0194)."
+                )
             capability = session.run(
                 "import os\n"
                 "from pathlib import Path\n"
@@ -286,6 +299,8 @@ def _probe_blender_confinement(resolved_blender: str | None) -> dict:
         "bwrap": bwrap,
         "libseccomp": libseccomp,
         "worker_blender": worker_blender,
+        "worker_gpu": worker_gpu,
+        "host_gpu_device_nodes": host_gpu,
         "problems": problems,
     }
 
@@ -494,10 +509,12 @@ def environment_result(value: dict) -> EnvironmentResult:
         else "; ".join(str(problem) for problem in blender_safe["problems"])
     )
     confinement_safe = {
-        "schema": "vfx-harness.blender-confinement-observation/v1",
+        "schema": "vfx-harness.blender-confinement-observation/v2",
         "bwrap": confinement.get("bwrap"),
         "libseccomp": confinement.get("libseccomp"),
         "worker_blender": confinement.get("worker_blender"),
+        "worker_gpu": confinement.get("worker_gpu"),
+        "host_gpu_device_nodes": list(confinement.get("host_gpu_device_nodes") or []),
         "problems": list(confinement.get("problems") or []),
     }
     confinement_passed = bool(confinement.get("ok"))
@@ -616,7 +633,7 @@ def environment_result(value: dict) -> EnvironmentResult:
         checks=checks,
         probe_spec=EnvironmentProbeSpec(
             probe_id="preflight",
-            probe_revision=5,
+            probe_revision=6,
             check_ids=tuple(sorted(check.check_id for check in checks)),
         ),
     )

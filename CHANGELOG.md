@@ -34,6 +34,14 @@ live in the linked Harness Improvement Records.
   `exterior.facade.window`. A builder spent a session measuring the contradiction and abstained,
   blocking three more units.
 
+- The confined Blender worker renders on the host GPU again
+  ([HIR-0194](docs/improvements/HIR-0194-confined-worker-renders-on-the-host-gpu.md)). The
+  sandbox's minimal `/dev` hid every GPU device node, so Blender fell back to llvmpipe
+  software OpenGL for every render (a 1080p volumetric EEVEE frame took 21 s instead of
+  0.9 s). The confinement now dev-binds the present GPU nodes, the worker ping reports the
+  GPU platform, and strict preflight fails closed when the host has a GPU but the worker
+  reports software rendering.
+
 - A gate report's signature is computed once, by code its validator shares
   ([HIR-0193](docs/improvements/HIR-0193-one-gate-report-signature.md)). The signature is a
   60-character slice of each finding's text; a finding whose text had a space at index 59

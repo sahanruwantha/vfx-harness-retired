@@ -62,6 +62,11 @@ reconciled by key without a second probe. An identical stop in another run conve
 semantic transaction despite its different evidence locator. A terminal recovery receipt does
 not exempt the next production run from strict preflight.
 
+Strict preflight also reports the GPU the confined worker renders with
+(`blender_confinement.worker_gpu`). On a host with GPU device nodes the worker must not report
+`SOFTWARE`; if it does, the confinement is not binding `/dev/dri` and `/dev/nvidia*`, and every
+EEVEE plate runs on llvmpipe (HIR-0194). A host without a GPU passes with software rendering.
+
 ## 2. Create and gate the global plan
 
 ```bash

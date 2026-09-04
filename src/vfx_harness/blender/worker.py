@@ -960,8 +960,32 @@ _HELPERS = {
 
 # ---- handlers ---------------------------------------------------------------
 
+def _gpu_platform() -> dict:
+    """The renderer this worker will draw with, read from Blender's own GPU module.
+
+    ``device_type`` is ``SOFTWARE`` when the confinement hid every GPU device node and
+    Blender fell back to llvmpipe; preflight fails closed on that when the host has a
+    GPU (HIR-0194). The context is created once here and reused by every render.
+    """
+    try:
+        import gpu  # embedded Blender module, unavailable outside the worker
+    except ImportError as exc:
+        return {"error": f"gpu module unavailable: {exc}"}
+    try:
+        init = getattr(gpu, "init", None)
+        if init is not None:
+            init()
+        return {
+            "renderer": gpu.platform.renderer_get(),
+            "backend": gpu.platform.backend_type_get(),
+            "device_type": gpu.platform.device_type_get(),
+        }
+    except Exception as exc:  # the probe reports; preflight decides
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def h_ping(a: dict) -> dict:
-    return {"blender": bpy.app.version_string, "eevee": _eevee_engine()}
+    return {"blender": bpy.app.version_string, "eevee": _eevee_engine(), "gpu": _gpu_platform()}
 
 
 # Blender 4.x attribute -> the 5.x way. Surfaced inline so a wrong guess costs one
