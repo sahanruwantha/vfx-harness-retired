@@ -463,6 +463,20 @@ def _aggregate_critic_panel(panel: list[dict]) -> dict:
     return out
 
 
+def _decided(verdict: dict, how: str = "critic") -> dict:
+    """Stamp how this verdict was decided, at the one place it is produced.
+
+    Every branch that ends the judgement early sets its own value -- checks,
+    no_optical_signal, actionable_panel_dissent -- and the ordinary passing critic
+    verdict set nothing. One consumer defaulted it to "critic" and the layer evaluation
+    receipt required it, so the first composed critic row that ever PASSED reached mint
+    with an empty field and killed the layer (HIR-0211).
+    """
+    if not str(verdict.get("decided_by") or "").strip():
+        verdict["decided_by"] = how
+    return verdict
+
+
 async def _judge(
     shot: Shot,
     m: Milestone,
@@ -626,7 +640,7 @@ async def _judge(
             first["focus_error"] = str(exc)[:200]
             log(f"! focus panel review unavailable: {str(exc)[:120]} — retaining the full-frame verdict", 1)
     if not _needs_critic_panel(first):
-        return first
+        return _decided(first)
     log(
         f"borderline verdict (mean {first['mean']}, "
         f"{len(first.get('scored_axes', []))} axis/axes) — seeking a second opinion",
@@ -672,4 +686,4 @@ async def _judge(
         f"{panel_result} (median {out['mean']})",
         1,
     )
-    return out
+    return _decided(out)

@@ -194,8 +194,10 @@ def test_early_geometry_producer_gets_nonpayable_deferred_bbox_forecast() -> Non
     )
     assert mass_card["deferred_subject_forecasts"] == [{
         **deferred,
-        "diagnostic_only": True,
-        "acceptance_evidence": False,
+        # A floor on a growing union is repairable by later geometry, so this row has no
+        # side it can cross irrecoverably and IS unconditionally diagnostic (HIR-0212).
+        "status": "diagnostic_only",
+        "irreversible_bound": None,
         # Who shares the union and who still adds to it after this unit (HIR-0197).
         "union_producers": ["building_mass", "building_roof"],
         "pending_producers": ["building_roof"],
@@ -205,7 +207,10 @@ def test_early_geometry_producer_gets_nonpayable_deferred_bbox_forecast() -> Non
     }
     assert mass_card["deferred_subject_payments"] == []
     formatted = format_unit_scope_card(mass_card)
-    assert "complete-subject payer alone can satisfy" in formatted
+    # The heading no longer claims only the payer can satisfy these rows: that sentence
+    # was the persuasive half of the defect a builder reasoned from (HIR-0212).
+    assert "alone can satisfy" not in formatted
+    assert "CONDITIONAL" in formatted
     assert "building-bbox-f176" in formatted.split("deferred subject forecasts")[1]
 
     roof_card = compile_scope_with_predecessors(

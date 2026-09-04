@@ -30,6 +30,9 @@ from vfx_harness.evidence.scene_checks.deferred_subject import (
     deferred_subject_composition_payment_gaps as deferred_subject_composition_payment_gaps,
 )
 from vfx_harness.evidence.scene_checks.deferred_subject import (
+    deferred_subject_irreversible_bound as deferred_subject_irreversible_bound,
+)
+from vfx_harness.evidence.scene_checks.deferred_subject import (
     deferred_subject_sharing_for_unit as deferred_subject_sharing_for_unit,
 )
 from vfx_harness.evidence.scene_checks.deferred_subject import (

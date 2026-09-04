@@ -32,6 +32,20 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A deferred forecast row on the unit card states the condition it turns on
+  ([HIR-0212](docs/improvements/HIR-0212-a-forecast-row-states-its-condition-not-a-verdict.md)).
+  The card asserted `diagnostic_only: True` at kickoff, where the rule makes that conditional on
+  a live measurement, three lines below the sharing data added to warn about the same bound. A
+  builder quoted the card, reasoned correctly from it, and the evaluator failed the unit on those
+  rows a minute later. The card now carries the irreversible bound and the pending producers and
+  derives no status.
+
+- A passing critic verdict records how it was decided
+  ([HIR-0211](docs/improvements/HIR-0211-a-passing-critic-verdict-says-how-it-decided.md)). Every
+  early-exit branch labelled itself and the ordinary passing critic verdict labelled nothing; one
+  consumer defaulted it while the layer evaluation receipt required it, so the first composed
+  critic row that ever passed reached mint with an empty field.
+
 - The fourth consumer of the autonomy flag is converted, and the rest are inventoried
   ([HIR-0210](docs/improvements/HIR-0210-the-fourth-consumer-and-the-inventory-that-finds-the-fifth.md)).
   `LayerReplayPointObservation.mint` still demanded autonomy of a bound id and refused every

@@ -493,6 +493,35 @@ def deferred_subject_union_slack(
     return slack
 
 
+def deferred_subject_irreversible_bound(
+    contract_row: Mapping[str, object],
+) -> dict[str, object] | None:
+    """The side and bound a union can never come back from, without a measurement.
+
+    ``deferred_subject_union_slack`` answers the same question once a reading exists.
+    The compiled unit card is built before any mutation, so it has no reading and must
+    state the CONDITION instead of a verdict (HIR-0212).
+    """
+    kind = str(contract_row.get("kind") or "")
+    op = str(contract_row.get("op") or "band")
+    lower = upper = None
+    if op == "band":
+        lower, upper = float(contract_row["lo"]), float(contract_row["hi"])
+    elif op == "min":
+        lower = float(contract_row["lo"])
+    elif op == "max":
+        upper = float(contract_row["hi"])
+    elif op == "eq":
+        target = float(contract_row["value"])
+        tolerance = float(contract_row.get("tol") or 0)
+        lower, upper = target - tolerance, target + tolerance
+    if kind in INCREASING_UNION_KINDS and upper is not None:
+        return {"kind": kind, "side": "grows", "bound": upper, "crosses_when": "above"}
+    if kind in DECREASING_UNION_KINDS and lower is not None:
+        return {"kind": kind, "side": "falls", "bound": lower, "crosses_when": "below"}
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class DeferredSubjectCompositionPaymentGap:
     contract_id: str

@@ -24,6 +24,7 @@ from vfx_harness.domain.work_units import WorkUnit, bound_claim_contract_ids
 from vfx_harness.evidence.scene_checks import (
     deferred_subject_composition_forecast_ids_for_unit,
     deferred_subject_composition_ids_for_unit,
+    deferred_subject_irreversible_bound,
     deferred_subject_sharing_for_unit,
     load_rows,
 )
@@ -365,13 +366,19 @@ def compile_scope_with_predecessors(
     # Who shares each deferred union and who still has to add geometry to it: the
     # slack this unit leaves on a row's irreversible side is all they get (HIR-0197).
     sharing = deferred_subject_sharing_for_unit(contracts, units, unit, layer_id)
+    # A forecast row's status is CONDITIONAL on a live measurement: it is diagnostic
+    # while the union stays inside its irreversible bound and becomes required the
+    # moment it crosses. The card is compiled before any mutation, so it has no reading
+    # and must state the condition. Asserting `diagnostic_only: True` here -- three
+    # lines below the sharing data that exists to warn about exactly this -- told a
+    # builder the rows were not its business, and the evaluator then failed the unit on
+    # them sixty seconds later (HIR-0212).
     card["deferred_subject_forecasts"] = [
         {
             **_contract_row(contract_by_id[contract_id]),
-            "diagnostic_only": True,
-            "acceptance_evidence": False,
             "union_producers": list((sharing.get(contract_id) or {}).get("producers") or []),
             "pending_producers": list((sharing.get(contract_id) or {}).get("pending") or []),
+            **_forecast_status(contract_by_id[contract_id]),
         }
         for contract_id in forecast_ids
     ]
@@ -473,6 +480,25 @@ def compile_unit_scope_for_shot(
     )
 
 
+def _forecast_status(contract_row: Mapping[str, Any]) -> dict[str, Any]:
+    """A forecast row's status, derived from whether it has a side it cannot return from.
+
+    A bound on the growing side of a growing union -- or the falling side of a falling
+    one -- can be crossed and never recovered, so the row is diagnostic only WHILE the
+    measured union stays inside it. A row with no such side (a floor on a growing kind,
+    say) can always be repaired by later geometry, so it is genuinely diagnostic for this
+    unit and saying so is not an overstatement (HIR-0212).
+    """
+    bound = deferred_subject_irreversible_bound(contract_row)
+    if bound is None:
+        return {"status": "diagnostic_only", "irreversible_bound": None}
+    return {
+        "status": "conditional",
+        "diagnostic_while_inside_bound": True,
+        "irreversible_bound": bound,
+    }
+
+
 def _format_bound_contract(row: Mapping[str, Any]) -> str:
     # These rows are already the exact active-unit closure. Preserve every evaluator
     # selector/bound in kickoff so graph, socket, data_path, and node-role details do not
@@ -563,8 +589,12 @@ def format_unit_scope_card(card: Mapping[str, Any]) -> str:
         "deferred subject rows this unit pays or protects (camera-owned, evaluated at "
         "their declared frames, REQUIRED BEFORE FREEZE — this unit is the "
         f"dependency-complete producer, not a bystander):\n{payments}\n"
-        "deferred subject forecasts (diagnostic only; the complete-subject payer "
-        f"alone can satisfy these rows):\n{forecasts}\n"
+        "deferred subject forecasts — CONDITIONAL, not diagnostic-only. Each row is "
+        "diagnostic WHILE the measured union stays inside `irreversible_bound`, and "
+        "becomes REQUIRED BEFORE FREEZE for THIS unit the moment it crosses, because a "
+        "later producer can only push it further. `pending_producers` still add geometry "
+        "to the same union and share whatever room you leave. Read the slack after every "
+        f"mutation; do not treat these as another unit's business:\n{forecasts}\n"
         f"owed image-contract debts (propose_checks, exact id/frame/property/axis):\n"
         f"{debts}\n"
         f"typed publish interfaces (role/control/contract-id exports only):\n"

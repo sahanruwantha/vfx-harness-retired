@@ -352,6 +352,16 @@ effect.
 
 - Query, don't recall: agents act on authoritative state read through tools, never on memory of
   the scene, the plan, or a prior run.
+- A compiled surface states only what it can know when it is compiled. Where a rule is
+  conditional on a measurement the unit has not taken, the card carries the condition and
+  the bound, never a verdict: asserting `diagnostic_only` at kickoff told a builder that
+  rows the evaluator would fail it on were another unit's business, three lines below the
+  sharing data that existed to warn about that exact bound (HIR-0212).
+- Every evidence a layer binds must be visible in the medium that layer is judged in. A
+  layer judged in Workbench solid with materials suppressed can bind silhouette, extent,
+  occlusion and framing — not colour, pattern, or surface. A target can be correctly owned,
+  correctly measured, and still unjudgeable there; checkable and judgeable are different
+  properties and a contract must survive both.
 - Semantic roles use one matcher everywhere. A literal dotted selector names its exact tag
   and every dotted descendant (`building` includes `building.mass.tower`); wildcard selectors
   retain fnmatch behavior, and prefixes without a dot do not match. Aggregate rendered-subject
