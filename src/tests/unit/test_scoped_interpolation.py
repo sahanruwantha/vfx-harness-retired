@@ -88,4 +88,6 @@ def test_the_schedule_guard_names_a_legal_form_and_no_volumetric_advice() -> Non
         "a camera unit with no lights was told to run a light-coverage pass"
     )
     assert "density branch" not in block and "beauty remains black" not in block
-    assert re.search(r"re-key that schedule legally", block)
+    assert re.search(r"re-key the protected schedule in this same payload", block), (
+        "the action that actually unblocks the payload must come first"
+    )

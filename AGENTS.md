@@ -980,7 +980,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
 - `blocked` and `superseded` are lifecycle states, not scene or builder failures, and never
   permission to compensate later.
 - When the evidence vocabulary cannot express a requirement, record a typed vocabulary-gap
-  escalation and close the requirement with an explicit decision referencing it. Padding —
+  escalation and close the requirement with an explicit `approved_start`/`planner_start`
+  decision referencing it. A recorded gap is what makes that decision legal for any declared
+  domain, structural included: it enumerates the kinds tried and why each cannot certify.
+  A requirement carrying a gap may not then be closed by contract bindings, and a decision on
+  a structural requirement without one is refused naming the escalation path (HIR-0202). Padding —
   vacuous bounds, self-certifying properties, invented evidence — is forbidden and rejected at
   validation (HIR-0017).
 

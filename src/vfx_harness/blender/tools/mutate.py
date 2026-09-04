@@ -164,13 +164,15 @@ def register_mutate(
                     + ". This payload would disable or override protected animated path(s) "
                     + ", ".join(protected)
                     + " without keying a legal schedule. Legal next actions, in order: "
-                    "scope the call to the curves you meant — bvfx_interp(host, mode=..., "
-                    f"exclude_paths={protected!r}) or data_paths=['rotation_euler'] — so the "
-                    "protected schedule is untouched; or re-key that schedule legally in the "
-                    "same transaction, keeping every sample the contract measures; or, if "
-                    "neither expresses the edit you measured, call cannot_express_in_scope "
-                    "naming the schedule conflict. Do not use authored state as a diagnostic, "
-                    "and do not mute or override a passing schedule to observe it.",
+                    "re-key the protected schedule in this same payload — keyframe_insert on "
+                    f"{protected[0] if protected else 'the protected path'} at every frame the "
+                    "contract samples — and then interpolate, which is the same-transaction "
+                    "rekeying this guard asks for; or scope the call so the schedule is not "
+                    f"touched, bvfx_interp(host, mode=..., exclude_paths={protected!r}) or "
+                    "data_paths=['rotation_euler']; or, if neither expresses the edit you "
+                    "measured, call cannot_express_in_scope naming the schedule conflict. Do "
+                    "not use authored state as a diagnostic, and do not mute or override a "
+                    "passing schedule to observe it.",
                     is_error=True,
                 )
         renderer_error = _scoped_renderer_write_error(str(args.get("script") or ""), mutation_roles)

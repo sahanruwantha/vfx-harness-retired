@@ -32,6 +32,15 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- The vocabulary-gap escalation path now terminates in a pass instead of padding
+  ([HIR-0202](docs/improvements/HIR-0202-a-recorded-vocabulary-gap-closes-a-requirement.md)).
+  A materializer that proved no registry metric can express a requirement was told to close it
+  with a decision, which the domain validator then refused for structural domains, so two
+  requirements on two layers were closed by contracts that cannot bear on them. A recorded gap
+  now lets the decision pay any declared domain, a gap plus contract bindings is refused, and
+  the false "every declared domain already has contract evidence" finding — emitted for
+  bindings with no contract ids at all — states the true reason.
+
 - A motion edit on a host that also carries an optics schedule is expressible again
   ([HIR-0203](docs/improvements/HIR-0203-interpolation-scopes-to-the-curves-a-unit-meant.md)).
   `bvfx_interp` walked the whole host closure with no way to restrict it, so re-interpolating
