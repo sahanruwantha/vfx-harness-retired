@@ -115,8 +115,16 @@ removes the fields and the phrase.
 
 ## Remaining limitations
 
-The slack is measured on the union as built so far; it does not predict how much a pending
-producer will need, because that geometry does not exist yet. If a partial producer freezes
+Slack tells a producer how much room is left, not whether the band is satisfiable at all.
+In the room shot `exterior_massing` froze at 0.3481 and `exterior_facade` at 0.349, both
+legitimately inside `[0.15, 0.35]`; if the full exterior subject simply does not fit under
+0.35 at frame 1, every producer will now report shrinking slack and the last one still
+abstains, correctly. The mechanism makes that visible earlier and to the right unit; it
+does not make an unsatisfiable band satisfiable, and it does not by itself close that shot:
+both room layer caps are spent, so validating it end to end needs a reviewed operator
+rematerialization or a fresh shot. The slack is measured on the union as built so far; it
+does not predict how much a pending producer will need, because that geometry does not
+exist yet. If a partial producer freezes
 with the band spent anyway, the payer's abstention now names the sharers, and the layer-2
 rematerialization that follows sees the finding (HIR-0191); the band itself is still layer
 1's authority. Whether the ground island in the room shot actually extended the union is a
