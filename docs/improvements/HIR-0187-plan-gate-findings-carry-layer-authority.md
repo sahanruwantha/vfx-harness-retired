@@ -189,3 +189,34 @@ layout before consuming it, and a test asserts that.
 The end-to-end round trip is verified against the failing shot's real authority:
 compile, `write_stop_envelope`, `read_prepared_stop`, digests equal, yielding
 `authority_defect` -> `publish_validated_amendment` -> `layer_view` layer 2.
+
+## Rejected patch-level alternatives
+
+- *Parse the owning layer back out of the `where` string.* That is exactly the coupling
+  that failed: prose and type would still be two sources, and a producer could still
+  disagree with its reader.
+- *Have the driver keep shelling out and parse the gate's stdout.* An exit code widened
+  to scraped text is not typed authority; the controller needs a stop envelope with cited
+  evidence, which only the boundary can compile.
+- *Add a `plan_gate` adapter to the controller instead of a stop.* The controller already
+  had the adapter — `publish_validated_amendment` was legal from the `plan_gate` stage
+  before this change. Only the envelope was missing.
+
+## Release and rollback
+
+Gate messages are byte-identical (proven by diff on the failing shot), so no consumer of
+the rendered report changes. The persisted report gains an optional `layer` on findings
+about one layer; the stop-report parser accepts and validates it. Rollback is reverting
+the commits; no durable state is migrated.
+
+## Remaining limitations
+
+- A controller transaction whose *adapter* fails leaves that exact stop permanently
+  refused, by design — a failed receipt-backed transaction is never silently retried. The
+  only recovery is changing the authority so the idempotency key changes. There is no
+  typed operator command to reconcile a dead controller key; if that recurs it deserves
+  its own record.
+- Probing `RunController.dispatch` against a live shot writes durable transaction
+  receipts for the real stop's key. During this work such a probe poisoned
+  `room_1046_opening`'s chain for one key and left its receipts citing a run directory
+  that was later removed. Probes belong on fixtures, or stubbed above the controller.

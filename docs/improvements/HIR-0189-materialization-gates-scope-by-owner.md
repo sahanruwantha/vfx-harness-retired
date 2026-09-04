@@ -73,3 +73,26 @@ session is never shown a finding it cannot act on.
   on a plan-wide blocker; stats survive for the report.
 - The injected failure: the unscoped result blocks on `composition-coverage`, which is
   what stopped the observed session.
+
+## Rejected patch-level alternatives
+
+- *Let the finalize tool ignore findings it cannot fix and publish anyway.* That drops a
+  real defect rather than routing it; the finding must still block its own owner.
+- *Scope only the finalize tool.* The session would attest CLEAN and publication would
+  refuse on the same finding — a worse failure, because the session believes it succeeded.
+- *Repair layer 1 from layer 2's session.* Layer 2 has no mutation or authoring authority
+  over a sealed camera; granting it any would break the ownership model the whole
+  fault-routing design rests on.
+
+## Release and rollback
+
+Behavioural change to two gates only. A materialization that previously refused because
+of another layer's finding now proceeds; nothing else changes shape and no state is
+migrated. Rollback is reverting the commit.
+
+## Remaining limitations
+
+- Scoping alone does not guarantee the owning layer's session ever runs. That gap is
+  real and is closed separately by [[HIR-0190]]: a passed layer whose authority the gate
+  rejects is no longer skip authority, and a finding owned outside the run's range stops
+  the run instead of being silently filtered out.

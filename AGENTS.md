@@ -582,6 +582,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   decides on `plan_gate.scoped_to_layer(result, layer)`: its own findings plus every
   plan-wide one. A finding another layer owns blocks that layer's transaction, never a
   session with no scope to repair it (HIR-0189).
+  Ownership must also stay reachable: a build receipt is not skip authority, so `vfx run`
+  skips a passed layer only while that layer's own authority still clears the gate, and it
+  refuses to start when a blocking finding is owned by a layer outside the run's range,
+  naming the layer to include rather than building on authority the gate rejects
+  (HIR-0190).
     validation reports every collectable finding in one write, each addressed by an RFC 6901 JSON
   pointer; field repair is `patch_materialization` on the candidate file. Required scene-contract
   role selectors must close against the binding unit's `mutates.roles`/`dresses` in that write —

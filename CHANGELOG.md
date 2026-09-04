@@ -19,6 +19,15 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- No blocking gate finding is left without a dispatcher
+  ([HIR-0190](docs/improvements/HIR-0190-no-finding-is-left-without-a-dispatcher.md)).
+  Scoping each gate to the layer that owns its findings kept the wrong session from being
+  blocked, but a finding owned by an already-passed layer, or by a layer outside the run's
+  range, was then filtered out of every gate and dispatched by nobody — so `vfx run --from 2`
+  built layer 2 on a camera the gate rejects. A passed layer is skipped only while its own
+  authority still clears the gate, and a run refuses to start when a blocking finding is owned
+  by a layer it never visits, naming the layer to include.
+
 - A layer's materialization is no longer gated on another layer's finding
   ([HIR-0189](docs/improvements/HIR-0189-materialization-gates-scope-by-owner.md)). A
   layer-2 rematerialization staged every unit and closed every requirement binding, then

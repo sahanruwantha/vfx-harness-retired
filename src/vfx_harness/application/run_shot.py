@@ -46,6 +46,7 @@ from vfx_harness.application.run_controller import ControllerCaps, Dispatched, R
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.domain.run_status import RUN_SUMMARY_SCHEMA
 from vfx_harness.domain.stop_envelopes import StopEnvelope
+from vfx_harness.evaluation import plan_gate
 from vfx_harness.evaluation.plan_gate.run import run as run_plan_gate
 from vfx_harness.evaluation.plan_gate.types import Finding, GateResult
 from vfx_harness.infrastructure.config import Settings
@@ -524,6 +525,7 @@ def _drive(
 
 
 def _drive_layers(a, shot, layout, lease, ids, done, layers, py, console, t0, controller) -> None:
+    _stop_on_unreachable_owner(layout, lease, shot, ids, controller)
     for lid in ids:
         # The initial summary is not skip authority.  Reverify the receipt and
         # its causal source closure at the actual dispatch boundary.
@@ -532,10 +534,18 @@ def _drive_layers(a, shot, layout, lease, ids, done, layers, py, console, t0, co
                 _selected_run_layers(shot)
             )
             dispatch_layer = dispatch_layers.get(lid)
-            if dispatch_layer is not None and lid in _receipt_backed_passed_layers(
-                shot,
-                {lid: dispatch_layer},
-                dispatch_authority,
+            if (
+                dispatch_layer is not None
+                and lid in _receipt_backed_passed_layers(
+                    shot,
+                    {lid: dispatch_layer},
+                    dispatch_authority,
+                )
+                # A build receipt says the layer's work passed; it does not say the
+                # layer's authority still clears the current gate. A passed layer whose
+                # own authority the gate rejects is not skip authority — its amendment
+                # is dispatched here, or nothing ever dispatches it (HIR-0190).
+                and _layer_authority_is_clean(layout, shot, lid)
             ):
                 continue
         log(f"════ LAYER {lid} — {layers[lid].title} ════")
@@ -562,6 +572,54 @@ def _drive_layers(a, shot, layout, lease, ids, done, layers, py, console, t0, co
         log(f"✓ layer {lid} passed ({(time.monotonic() - t0) / 60:.0f} min elapsed)")
 
 
+
+
+
+def _layer_authority_is_clean(layout: run_artifacts.RunLayout, shot, lid: str) -> bool:
+    """Whether the selected authority this layer owns clears the current gate."""
+    _selected, gated = _gate_selected_authority(layout, shot)
+    return plan_gate.scoped_to_layer(gated, str(lid)).clean
+
+
+def _stop_on_unreachable_owner(
+    layout: run_artifacts.RunLayout,
+    lease: run_owner_boundary.RunOwnerFenceLease,
+    shot,
+    ids: list[str],
+    controller: RunController | None,
+) -> None:
+    """Refuse to build on authority only a layer outside this run could repair.
+
+    Ownership scoping keeps one layer's finding from blocking another's session
+    (HIR-0189).  A finding owned by a layer this run never visits would then be
+    filtered out of every gate it does run and dispatched by nobody, so the run would
+    build on authority the gate rejects.  Name it instead of proceeding (HIR-0190).
+    """
+    in_range = {str(item) for item in ids}
+    _selected, gated = _gate_selected_authority(layout, shot)
+    unreachable = sorted(
+        {
+            str(finding.layer)
+            for finding in gated.blocking
+            if finding.layer is not None and str(finding.layer) not in in_range
+        }
+    )
+    if not unreachable:
+        return
+    owners = ", ".join(unreachable)
+    log(
+        f"✗ layer(s) {owners} own blocking authority this run never visits; "
+        f"widen the range to include {unreachable[0]} so its amendment can be dispatched"
+    )
+    for finding in gated.blocking:
+        if finding.layer is not None and str(finding.layer) not in in_range:
+            log(str(finding), 1)
+    scoped = GateResult(gated.shot, list(gated.blocking), dict(gated.stats))
+    outcome = scoped.publishable_outcome
+    layout.write_report("plan_gate", scoped.to_dict(outcome=outcome))
+    result = PlanLoopResult(None, outcome, len(scoped.blocking))
+    layout.write_stop_envelope(publish_global_plan_gate_stop(layout, result))
+    _stop_after_stage(layout, lease, 3, f"layer-{unreachable[0]}-plan-gate", controller)
 
 
 def _gate_selected_authority(layout: run_artifacts.RunLayout, shot):

@@ -83,3 +83,25 @@ migration is clean.
 - A new lifecycle value must extend this test before it can be declared.
 
 Reverting the derivation fails three of the eight.
+
+## Rejected patch-level alternatives
+
+- *Add `valid_through` to `KNOWN_ROW_KEYS` and leave `expires_at`.* Two names for one
+  concept, one of them read by nothing, is what caused this. The vocabulary would still
+  be free to drift from the validator.
+- *Drop `window` from `LIFECYCLES`.* The value is used: `bounds()` computes a closed
+  interval from it and judgment debt declares the same three lifecycles. Removing a
+  working concept to avoid fixing a key name is a narrowing, not a fix.
+- *Teach the materializer to avoid `window`.* Prompt wording for a mechanical defect; the
+  option would remain offered and unsatisfiable.
+
+## Release and rollback
+
+No shot on disk used `expires_at` or `valid_through`, so removing the dead key migrates
+nothing. Rollback is reverting the commit.
+
+## Remaining limitations
+
+- Other row vocabularies are not yet derived this way; only the lifecycle keys have a
+  single source. A vocabulary/validator disagreement elsewhere would look the same, and
+  the contract test added here covers only the lifecycle family.
