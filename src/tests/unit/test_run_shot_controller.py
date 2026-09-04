@@ -120,7 +120,8 @@ def test_driver_replans_and_rebuilds_after_a_dispatch(tmp_path: Path, monkeypatc
     layouts: list[run_artifacts.RunLayout] = []
 
     class FakeController:
-        def __init__(self, shot_, layout, caps, *, run_stage, blender, python=None):
+        def __init__(self, shot_, layout, caps, *, run_stage, blender, python=None, layer_range=None):
+            assert layer_range == (2, None)
             layouts.append(layout)
             self.layout = layout
             self.rows: list[dict] = []

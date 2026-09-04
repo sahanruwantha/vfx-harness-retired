@@ -272,6 +272,62 @@ def _current_unit(
     return layer, matches[0]
 
 
+def _amendment_layer(
+    finding: HypothesisFalsification,
+    layers: Mapping[str, Any],
+) -> str:
+    """The layer whose selected view the amendment must replace.
+
+    A finding with no fault owners is the stopped layer's own defect. Fault owners are,
+    by construction, units outside the stopped layer (``record_hypothesis_falsification``
+    keeps same-layer seeds in ``affected``): the sealed earlier-layer producer whose
+    outcome pins the measured floor, usually the camera. The amendment then lands on that
+    owner's view, because the stopped layer has no authority to change it and a
+    replacement of the stopped layer alone re-authors the same finding (HIR-0191). Owners
+    must resolve to exactly one earlier layer; an ambiguous or unknown id fails closed.
+    """
+    owners = tuple(finding.fault_owner_units)
+    if not owners:
+        return finding.layer
+    homes: dict[str, list[str]] = {owner: [] for owner in owners}
+    for layer_id, layer in layers.items():
+        for candidate in getattr(layer, "stages", ()) or ():
+            if candidate.id in homes:
+                homes[candidate.id].append(str(layer_id))
+    unresolved = sorted(owner for owner, found in homes.items() if not found)
+    if unresolved:
+        raise ValueError(
+            "hypothesis falsification names fault owners outside the selected DAG: "
+            + ", ".join(unresolved)
+        )
+    ambiguous = sorted(owner for owner, found in homes.items() if len(found) != 1)
+    if ambiguous:
+        raise ValueError(
+            "hypothesis falsification names fault owners whose unit id exists in several "
+            "layers: " + ", ".join(ambiguous)
+        )
+    owner_layers = sorted({found[0] for found in homes.values()})
+    if len(owner_layers) != 1:
+        raise ValueError(
+            "hypothesis falsification names fault owners in several layers "
+            f"({', '.join(owner_layers)}); one amendment can replace only one layer view"
+        )
+    owner_layer = owner_layers[0]
+    if owner_layer == finding.layer:
+        raise ValueError(
+            f"hypothesis falsification names same-layer units as fault owners: {', '.join(owners)}"
+        )
+    try:
+        earlier = int(owner_layer) < int(finding.layer)
+    except ValueError as exc:
+        raise ValueError("layer ids must be integers to order an owner amendment") from exc
+    if not earlier:
+        raise ValueError(
+            f"fault owner layer {owner_layer} is not upstream of stopped layer {finding.layer}"
+        )
+    return owner_layer
+
+
 def compile_hypothesis_falsification_stop(
     shot: Shot,
     layout: RunLayout,
@@ -342,6 +398,10 @@ def compile_hypothesis_falsification_stop(
         )
 
     layer, current_unit = _current_unit(shot, finding, selected_authority)
+    amendment_layer_id = _amendment_layer(
+        finding,
+        ledger_runtime.load_layers(shot, selected_authority=selected_authority),
+    )
     current_unit_digest = unit_state.unit_digest(current_unit)
     if current_unit_digest != finding.unit_hash:
         raise ValueError(
@@ -519,6 +579,7 @@ def compile_hypothesis_falsification_stop(
                 "view_digest": view_digest,
                 "layers_digest": finding.plan_hash,
                 "layer_id": finding.layer,
+                "amendment_layer_id": amendment_layer_id,
                 "unit_id": finding.unit,
                 "unit_digest": finding.unit_hash,
                 "unit_plan_digest": finding.unit_plan_hash,
@@ -605,7 +666,7 @@ def compile_hypothesis_falsification_stop(
             target=PublishValidatedAmendmentTarget(
                 scope="layer_view",
                 base_authority=selected_authority.assertion,
-                layer_id=finding.layer,
+                layer_id=amendment_layer_id,
                 findings=(finding_assertion,),
                 owner_authority_id=_OWNER_AUTHORITY_ID,
                 gate_policy_id=_AMENDMENT_GATE_POLICY_ID,
@@ -615,7 +676,7 @@ def compile_hypothesis_falsification_stop(
             postcondition=SelectedAuthorityAmendmentCommitted(
                 scope="layer_view",
                 base_authority_digest=selected_authority.assertion.digest,
-                layer_id=finding.layer,
+                layer_id=amendment_layer_id,
                 finding_ids=(finding_identity_id,),
                 gate_policy_id=_AMENDMENT_GATE_POLICY_ID,
                 gate_schema=_AMENDMENT_GATE_SCHEMA,
@@ -646,6 +707,11 @@ def compile_hypothesis_falsification_stop(
     owner_scope_ids = (
         f"{finding.layer}:{finding.unit}",
         *(f"fault:{owner}" for owner in finding.fault_owner_units),
+        *(
+            (f"fault-layer:{amendment_layer_id}",)
+            if amendment_layer_id != finding.layer
+            else ()
+        ),
     )
     candidate = StopEnvelope(
         stage=stage,
@@ -654,11 +720,14 @@ def compile_hypothesis_falsification_stop(
             if requires_human_decision
             else "authority_defect"
         ),
+        # The identity names the layer whose view the amendment replaces (the domain
+        # binds target and identity to one layer); the stopped unit stays in the
+        # identity's unit fields and the cause's owner scope.
         identity=StopIdentity(
             run_id=layout.run_id,
             bundle_digest=finding.bundle_hash,
             view_digest=view_digest,
-            layer_id=finding.layer,
+            layer_id=amendment_layer_id,
             unit_id=finding.unit,
             unit_plan_digest=finding.unit_plan_hash,
             unit_digest=finding.unit_hash,
@@ -701,8 +770,16 @@ def compile_hypothesis_falsification_stop(
             "Obtain the named human decision before changing the hard constraint."
             if requires_human_decision
             else (
-                "Publish a validated amendment that consumes this exact finding. Only after "
-                "the selected bundle or view changes may a revision-checked replan become legal."
+                f"Publish a validated amendment of layer {amendment_layer_id}'s view that "
+                "consumes this exact finding"
+                + (
+                    f" (the fault owners {', '.join(finding.fault_owner_units)} are sealed "
+                    f"there; layer {finding.layer} cannot change them)"
+                    if amendment_layer_id != finding.layer
+                    else ""
+                )
+                + ". Only after the selected bundle or view changes may a revision-checked "
+                "replan become legal."
             )
         ),
     )

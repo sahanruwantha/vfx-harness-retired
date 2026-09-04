@@ -9,6 +9,7 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 
 from vfx_harness.agents.plan_guardrails import planner_hooks
 from vfx_harness.agents.plan_tools import build_plan_tools
+from vfx_harness.agents.planner import rematerialization_evidence
 from vfx_harness.agents.planner.budget import materialization_turn_budget
 from vfx_harness.agents.planner.kickoff import (
     _materialization_kickoff,
@@ -374,7 +375,7 @@ async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str]
     changed and downstream-invalidated units retire in that same commit.
     """
 
-    _owner, trigger, _evidence, discard_accepted = authority
+    _owner, trigger, evidence, discard_accepted = authority
     layer_id = str(layer.id)
     base_authority = resolve_selected_authority(shot.folder)
     if base_authority.plan is None:
@@ -429,13 +430,19 @@ async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str]
             f"designing replacement against unpublished overlay {overlay.name}; live pointer stays until publication",
             1,
         )
+    # The materializer designs against what the discarded view could not satisfy, not
+    # only against the operator's sentence about it: a replacement camera that never saw
+    # the geometry finding re-authors the same defect (HIR-0191).
+    evidence_block = rematerialization_evidence.replacement_evidence_block(
+        shot.folder, tuple(evidence)
+    )
     await planner_package()._materialize_deferred_layer(
         shot,
         deferred,
         model=model,
         blender=blender,
         max_turns=max_turns,
-        replacing=trigger,
+        replacing=f"{trigger}\n\n{evidence_block}" if evidence_block else trigger,
         overlay_root=overlay,
         selected_authority=base_authority,
     )

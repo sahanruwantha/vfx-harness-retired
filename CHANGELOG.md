@@ -7,6 +7,13 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- A builder finding whose fault owners are sealed in one earlier layer now amends that
+  owner's layer view instead of the stopped layer's, and `vfx run` dispatches it: the
+  rematerialization is invoked with every open finding naming the owner as evidence, the
+  kickoff renders those findings, and the stopped layer's units are preserved or superseded
+  by the authority-state transaction (HIR-0191). Owners spanning layers, an owner outside
+  the run's `--from` range, and hard constraints still stop the run naming what to include.
+
 - `vfx run` is now a receipt-backed controller (ADR-0010, HIR-0186): a builder stop that
   names a same-layer `publish_validated_amendment` is dispatched as that layer's
   rematerialization, proven through an immutable commit and independent evaluation,

@@ -132,6 +132,7 @@ def amendment_envelope(
     fingerprint_seed: str = "facts",
     attempt_seed: str = "attempt",
     stage: str = "builder",
+    layer_id: str = LAYER,
 ) -> StopEnvelope:
     """An authority-defect stop shaped like the one run fa5dbb published.
 
@@ -177,7 +178,7 @@ def amendment_envelope(
     target = PublishValidatedAmendmentTarget(
         scope="layer_view",
         base_authority=base,
-        layer_id=LAYER,
+        layer_id=layer_id,
         findings=(finding,),
         owner_authority_id=OWNER,
         gate_policy_id=GATE_POLICY,
@@ -189,7 +190,7 @@ def amendment_envelope(
         postcondition=SelectedAuthorityAmendmentCommitted(
             scope="layer_view",
             base_authority_digest=base.digest,
-            layer_id=LAYER,
+            layer_id=layer_id,
             finding_ids=("hf-semantic-test",),
             owner_authority_id=OWNER,
             gate_policy_id=GATE_POLICY,
@@ -205,7 +206,7 @@ def amendment_envelope(
             run_id=layout.run_id,
             bundle_digest=base.bundle.digest,
             view_digest=base.effective_view.digest,
-            layer_id=LAYER,
+            layer_id=layer_id,
             unit_id=UNIT,
             unit_plan_digest=_digest("unit-plan"),
             unit_digest=_digest("unit"),
@@ -257,9 +258,10 @@ class Harness:
             run_controller.ledger,
             "load_layers",
             lambda _shot, selected_authority=None: {
+                "1": SimpleNamespace(stages=[SimpleNamespace(id="camera_rig")]),
                 LAYER: SimpleNamespace(
                     stages=[SimpleNamespace(id=UNIT), SimpleNamespace(id="ground_island")]
-                )
+                ),
             },
         )
 
@@ -281,6 +283,7 @@ class Harness:
             run_stage=self.run_stage,
             blender="blender",
             python="python",
+            layer_range=caps.get("layer_range"),
         )
 
 
@@ -585,3 +588,67 @@ def test_a_plan_gate_stop_dispatches_without_a_builder_audit(
         [command] = harness.commands
         assert "--rematerialize" in command
         assert command[command.index("--layer") + 1] == LAYER
+
+
+def test_owner_layer_finding_dispatches_the_owner_layer_with_every_open_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Room run 21c1b4: layer 2's building_shell proved layer 1's sealed camera cannot frame
+    it. The stop targets layer 1's view; the controller rematerializes layer 1 with every
+    open finding that names it as evidence (HIR-0191)."""
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    with owned_run(tmp_path, "controller-owner-layer", command="run", dispatch_kind="driver") as (layout, _lease):
+        harness = Harness(tmp_path, monkeypatch, layout)
+        primary = write_finding(tmp_path, name="hf-shell", fault_owner_units=("camera_rig",))
+        sibling = write_finding(tmp_path, name="hf-facade", fault_owner_units=("camera_rig",))
+        write_finding(tmp_path, name="hf-own-layer")  # no owner: not part of the camera batch
+        envelope = amendment_envelope(layout, finding_path=primary, layer_id="1")
+        layout.write_stop_envelope(envelope)
+
+        result = harness.controller().dispatch(envelope)
+
+        assert isinstance(result, run_controller.Dispatched), result
+        assert result.layer_id == "1" and result.resume_layer == "1"
+        [command] = harness.commands
+        assert command[command.index("--layer") + 1] == "1"
+        cited = [command[i + 1] for i, item in enumerate(command) if item == "--evidence"]
+        assert cited == [layout.relative(primary), layout.relative(sibling)]
+
+
+def test_owner_layer_outside_the_run_range_is_refused_naming_the_layer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    with owned_run(tmp_path, "controller-owner-range", command="run", dispatch_kind="driver") as (layout, _lease):
+        harness = Harness(tmp_path, monkeypatch, layout)
+        finding = write_finding(tmp_path, fault_owner_units=("camera_rig",))
+        envelope = amendment_envelope(layout, finding_path=finding, layer_id="1")
+        layout.write_stop_envelope(envelope)
+
+        result = harness.controller(layer_range=(2, None)).dispatch(envelope)
+
+        assert isinstance(result, run_controller.DispatchRefusal)
+        assert result.reason == "out_of_range_owner" and "layer 1" in result.detail
+        assert harness.commands == []
+        assert layout.stop_envelope.exists()
+
+        # The same stop inside the range dispatches.
+        result = harness.controller(layer_range=(1, None)).dispatch(envelope)
+        assert isinstance(result, run_controller.Dispatched)
+
+
+def test_owner_layer_target_is_refused_when_the_owners_are_not_its_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    with owned_run(tmp_path, "controller-owner-mismatch", command="run", dispatch_kind="driver") as (layout, _lease):
+        harness = Harness(tmp_path, monkeypatch, layout)
+        finding = write_finding(tmp_path, fault_owner_units=("sky_dome",))
+        envelope = amendment_envelope(layout, finding_path=finding, layer_id="1")
+        layout.write_stop_envelope(envelope)
+
+        result = harness.controller().dispatch(envelope)
+
+        assert isinstance(result, run_controller.DispatchRefusal)
+        assert result.reason == "out_of_layer_owner" and "sky_dome" in result.detail
+        assert harness.commands == []

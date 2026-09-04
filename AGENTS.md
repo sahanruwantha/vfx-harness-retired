@@ -66,9 +66,10 @@ operation.
   plan-gate failure → repair plan/contracts and rerun the gate; a per-layer gate rejection is
   typed transaction authority, not a boundary defect (HIR-0187); builder evidence failure → the
   owning layer report and its cited evidence; `hypothesis_falsified` → stop, review the typed
-  finding; the controller publishes a same-layer amendment itself, and an out-of-layer or
-  hard-constraint finding waits for reviewed authority through its owning plan/materialization
-  boundary;
+  finding; the controller publishes the amendment itself when the finding's fault owners
+  are sealed in one earlier layer of the run's range (the stop names that owner's view and
+  cites every open finding naming it), and a multi-owner, out-of-range, or hard-constraint
+  finding waits for reviewed authority through its owning plan/materialization boundary;
   canonical replay failure → the deterministic script/checkpoint mechanism; acceptance failure
   → the declared fault-owning layer; interruption → last checkpoint, journal, and final
   transcript events. The authority publisher, not a follow-up state command, atomically derives
@@ -86,10 +87,17 @@ operation.
   an operator would, proves the commit from selected authority through an immutable
   `vfx-harness.rematerialization-commit/v1`, an independent evaluation, and a per-dispatch ledger
   row under the run (`reports/controller-dispatch-NN.json`), then re-derives the receipt-backed
-  prefix and continues. It refuses, and the envelope stays terminal, when the finding names an
-  out-of-layer fault owner or a hard constraint, when the cause fingerprint was already dispatched
-  in this shot, when a dispatch, per-layer, or USD cap is spent, or when the transaction kind has
-  no adapter; `--single-pass` restores the single pass for debugging (HIR-0186). Before it builds a
+  prefix and continues. A builder finding whose `fault_owner_units` are sealed in one earlier
+  layer compiles its amendment on that owner's layer view (never the stopped layer, which
+  cannot change them), the controller dispatches it with every open finding naming that owner
+  as `--evidence`, the rematerialization kickoff renders those findings, and preservation or
+  supersession of the stopped layer's units is decided by the authority-state transaction, not
+  by asking the stopped layer (HIR-0191). It refuses, and the envelope stays terminal, when the
+  fault owners span layers or are not the target's units, when the owner lies outside the run's
+  layer range (named for the operator to include), when the finding changes a hard constraint,
+  when the cause fingerprint was already dispatched in this shot, when a dispatch, per-layer, or
+  USD cap is spent, or when the transaction kind has no adapter; `--single-pass` restores the
+  single pass for debugging (HIR-0186). Before it builds a
   layer the driver gates the selected authority in process and scopes that verdict by
   ownership: a finding another layer owns belongs to that layer's transaction and does not
   block this one, every blocker the gated layer owns becomes one `publish_validated_amendment`
@@ -911,9 +919,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   effect, and plan/JIT publication commits that effect with pointer selection (HIR-0040,
   HIR-0171). A typed falsification cannot reopen unchanged authority: `vfx units replan` is
   retired, and no public finding-consumption adapter exists. When a finding names out-of-layer
-  `fault_owner_units`, the reviewed replacement authority must actually change the exact owning
+  `fault_owner_units`, the replacement authority must actually change the exact owning
   capsules before publication may invalidate their closure; an unchanged owner cannot authorize
-  repeated work it has no scope to repair (HIR-0049, HIR-0154, HIR-0171).
+  repeated work it has no scope to repair (HIR-0049, HIR-0154, HIR-0171). The typed stop
+  therefore targets the owner's layer view, and the controller dispatches that rematerialization
+  (HIR-0191).
 - When passing requires a decision, dependency, ownership, scope, contract, or sealed-outcome
   change outside the active unit, record `hypothesis_falsified` and stop. Replanning is a
   versioned transaction: freeze accepted state, validate the amendment, compute the complete

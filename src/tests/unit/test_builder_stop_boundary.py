@@ -153,6 +153,9 @@ def _replace_current_finding(
 def _fixture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    fault_owner_units: tuple[str, ...] = (),
+    extra_layers: dict[str, SimpleNamespace] | None = None,
 ) -> tuple[SimpleNamespace, run_artifacts.RunLayout, dict, object]:
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     unit = _unit("proxy")
@@ -232,6 +235,7 @@ def _fixture(
             "controls": ["camera_spine"],
         },
         evidence=["evidence/failed-contract.json"],
+        affected_seed_ids={unit.id, *fault_owner_units},
         attempt=build_claim,
         selection_token=state_token,
     )
@@ -273,7 +277,7 @@ def _fixture(
     monkeypatch.setattr(
         builder_stops.ledger_runtime,
         "load_layers",
-        lambda _shot, *, selected_authority=None: {"1": layer},
+        lambda _shot, *, selected_authority=None: {"1": layer, **(extra_layers or {})},
     )
     monkeypatch.setattr(
         builder_stops.layer_plans,
@@ -1528,4 +1532,84 @@ def test_falsification_of_a_superseded_layer_capsule_is_refused(
         lambda _folder, _layer_id, _selected: hashlib.sha256(b"replacement capsule").hexdigest(),
     )
     with pytest.raises(ValueError, match="superseded selected layer capsule"):
+        builder_stops.compile_hypothesis_falsification_stop(shot, layout, finding)
+
+
+def _stopped_layer_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fault_owner_units: tuple[str, ...],
+    owner_layers: dict[str, tuple[str, ...]],
+):
+    """A layer-1 stop whose fault owners live in the earlier layers ``owner_layers``.
+
+    The fixture's stopped layer is "1"; owners are placed in lower ids ("0", "-1") so
+    they are upstream of it, which is the only ordering the stop compiler accepts.
+    """
+    extra = {
+        layer_id: SimpleNamespace(id=layer_id, stages=tuple(_unit(name) for name in names))
+        for layer_id, names in owner_layers.items()
+    }
+    return _fixture(tmp_path, monkeypatch, fault_owner_units=fault_owner_units, extra_layers=extra)
+
+
+def test_out_of_layer_fault_owner_targets_the_owner_layer_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Room run 20260903T234629Z-21c1b4: layer 2's building_shell named layer 1's sealed
+    camera_rig; a layer-2 amendment cannot change it, so the stop names the owner's view
+    (HIR-0191)."""
+    shot, layout, finding, _unit_record = _stopped_layer_fixture(
+        tmp_path, monkeypatch, fault_owner_units=("camera_rig",), owner_layers={"0": ("camera_rig",)}
+    )
+    assert finding["fault_owner_units"] == ["camera_rig"]
+
+    envelope = builder_stops.compile_hypothesis_falsification_stop(shot, layout, finding)
+
+    action = envelope.actions[0]
+    assert action.transaction_id == "publish_validated_amendment"
+    assert action.target.layer_id == "0"
+    assert action.postcondition.layer_id == "0"
+    assert envelope.identity.layer_id == "0"
+    assert envelope.identity.unit_id == finding["unit"]
+    assert "fault-layer:0" in envelope.cause.owner_scope_ids
+    assert "fault:camera_rig" in envelope.cause.owner_scope_ids
+    assert "layer 0" in envelope.next_action and "camera_rig" in envelope.next_action
+    evidence = json.loads((tmp_path / envelope.evidence_refs[0].locator).read_text())
+    assert evidence["authority"]["layer_id"] == "1"
+    assert evidence["authority"]["amendment_layer_id"] == "0"
+
+
+def test_fault_owners_spanning_layers_or_unknown_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot, layout, finding, _unit_record = _stopped_layer_fixture(
+        tmp_path / "spanning",
+        monkeypatch,
+        fault_owner_units=("camera_rig", "sky_dome"),
+        owner_layers={"0": ("camera_rig",), "-1": ("sky_dome",)},
+    )
+    with pytest.raises(ValueError, match="several layers"):
+        builder_stops.compile_hypothesis_falsification_stop(shot, layout, finding)
+
+    shot, layout, finding, _unit_record = _stopped_layer_fixture(
+        tmp_path / "unknown", monkeypatch, fault_owner_units=("ghost",), owner_layers={"0": ("camera_rig",)}
+    )
+    with pytest.raises(ValueError, match="outside the selected DAG"):
+        builder_stops.compile_hypothesis_falsification_stop(shot, layout, finding)
+
+    shot, layout, finding, _unit_record = _stopped_layer_fixture(
+        tmp_path / "ambiguous",
+        monkeypatch,
+        fault_owner_units=("camera_rig",),
+        owner_layers={"0": ("camera_rig",), "-1": ("camera_rig",)},
+    )
+    with pytest.raises(ValueError, match="several layers"):
+        builder_stops.compile_hypothesis_falsification_stop(shot, layout, finding)
+
+    shot, layout, finding, _unit_record = _stopped_layer_fixture(
+        tmp_path / "downstream", monkeypatch, fault_owner_units=("camera_rig",), owner_layers={"5": ("camera_rig",)}
+    )
+    with pytest.raises(ValueError, match="not upstream"):
         builder_stops.compile_hypothesis_falsification_stop(shot, layout, finding)

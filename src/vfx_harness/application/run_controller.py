@@ -70,6 +70,7 @@ REFUSAL_REASONS = frozenset(
     {
         "not_dispatchable",
         "out_of_layer_owner",
+        "out_of_range_owner",
         "hard_constraint",
         "repeated_finding",
         "budget_exhausted",
@@ -77,6 +78,7 @@ REFUSAL_REASONS = frozenset(
         "adapter_failed",
     }
 )
+FALSIFICATIONS_DIR = Path("state") / "hypothesis-falsifications"
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +181,7 @@ class RunController:
         run_stage: Callable[[list[str]], int],
         blender: str,
         python: str | None = None,
+        layer_range: tuple[int, int | None] | None = None,
     ) -> None:
         self.shot = shot
         self.layout = layout
@@ -186,6 +189,10 @@ class RunController:
         self._run_stage = run_stage
         self.blender = blender
         self.python = python or sys.executable
+        # The run's requested layer range. An owner amendment outside it supersedes
+        # accepted units the operator did not ask to touch, so it is refused naming the
+        # layer to include, exactly as the gate boundary does (HIR-0190, HIR-0191).
+        self.layer_range = layer_range
         self.rows: list[dict[str, Any]] = ledger_rows(layout)
 
     # -- decision ---------------------------------------------------------------------
@@ -222,6 +229,11 @@ class RunController:
             refusal = self._ownership_refusal(finding, layer_id)
             if refusal is not None:
                 return refusal
+            if finding.layer != layer_id:
+                try:
+                    evidence = self._owner_layer_evidence(finding, layer_id, evidence)
+                except ValueError as exc:
+                    return DispatchRefusal("evidence_unavailable", str(exc))
         key = action_idempotency_key(
             action,
             authoritative_before_digest=envelope.authoritative_before_digest,
@@ -330,11 +342,14 @@ class RunController:
         finding: HypothesisFalsification,
         layer_id: str,
     ) -> DispatchRefusal | None:
-        if finding.layer != layer_id:
-            return DispatchRefusal(
-                "out_of_layer_owner",
-                f"finding names layer {finding.layer} but the amendment targets layer {layer_id}",
-            )
+        """The amendment may land only on the layer that owns every fault the finding names.
+
+        A finding without fault owners amends its own layer. A finding whose fault owners
+        are sealed in one earlier layer amends that owner's view: the stopped layer cannot
+        change them, and replacing the stopped layer alone re-authors the same finding.
+        Owners spanning layers, owners the target does not contain, or an owner outside the
+        run's requested range are refused with the layer to include (HIR-0154, HIR-0191).
+        """
         if finding.changes_hard_constraint:
             return DispatchRefusal(
                 "hard_constraint",
@@ -346,14 +361,83 @@ class RunController:
         if layer is None:
             return DispatchRefusal("out_of_layer_owner", f"selected DAG has no layer {layer_id}")
         stage_ids = {unit.id for unit in layer.stages}
-        outside = sorted(set(finding.fault_owner_units) - stage_ids)
+        owners = set(finding.fault_owner_units)
+        if finding.layer == layer_id:
+            if owners:
+                return DispatchRefusal(
+                    "out_of_layer_owner",
+                    f"fault owners {', '.join(sorted(owners))} lie outside layer {layer_id}; the "
+                    "amendment must land on their owning layer (HIR-0154)",
+                )
+            return None
+        if not owners:
+            return DispatchRefusal(
+                "out_of_layer_owner",
+                f"finding names layer {finding.layer} but the amendment targets layer {layer_id} "
+                "without naming a fault owner there",
+            )
+        outside = sorted(owners - stage_ids)
         if outside:
             return DispatchRefusal(
                 "out_of_layer_owner",
-                f"fault owners {', '.join(outside)} lie outside layer {layer_id}; the reviewed "
-                "replacement must change their owning capsules (HIR-0154)",
+                f"fault owners {', '.join(outside)} are not units of layer {layer_id}",
             )
+        try:
+            earlier = int(layer_id) < int(finding.layer)
+        except ValueError:
+            earlier = False
+        if not earlier:
+            return DispatchRefusal(
+                "out_of_layer_owner",
+                f"owner layer {layer_id} is not upstream of the stopped layer {finding.layer}",
+            )
+        if self.layer_range is not None:
+            start, upto = self.layer_range
+            if int(layer_id) < int(start) or (upto is not None and int(layer_id) > int(upto)):
+                return DispatchRefusal(
+                    "out_of_range_owner",
+                    f"the fault owners are sealed in layer {layer_id}, outside this run's layer "
+                    f"range {start}..{upto if upto is not None else 'end'}; rerun with a range "
+                    f"that includes layer {layer_id} to let the controller replace its view",
+                )
         return None
+
+    def _owner_layer_evidence(
+        self,
+        finding: HypothesisFalsification,
+        owner_layer_id: str,
+        evidence: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Every open finding on this bundle whose fault owners the owner layer holds.
+
+        One replacement of the owner's view answers all of them; dispatching them one at
+        a time would rematerialize the same layer once per finding.
+        """
+
+        shot_root = Path(self.shot.folder).resolve()
+        selected = authority_selection.resolve_selected_authority(self.shot.folder)
+        layers = ledger.load_layers(self.shot, selected_authority=selected)
+        stage_ids = {unit.id for unit in layers[owner_layer_id].stages}
+        locators = list(evidence)
+        directory = shot_root / FALSIFICATIONS_DIR
+        for path in sorted(directory.glob("hf-*.json")) if directory.is_dir() else ():
+            locator = path.relative_to(shot_root).as_posix()
+            if locator in locators:
+                continue
+            try:
+                other = load_hypothesis_falsification(path)
+            except ValueError:
+                continue
+            owners = set(other.fault_owner_units)
+            if (
+                other.bundle_hash != finding.bundle_hash
+                or not owners
+                or not owners <= stage_ids
+                or other.layer == owner_layer_id
+            ):
+                continue
+            locators.append(locator)
+        return tuple(locators)
 
     # -- transaction -----------------------------------------------------------------
 

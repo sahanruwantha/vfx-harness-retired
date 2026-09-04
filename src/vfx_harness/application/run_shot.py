@@ -499,6 +499,7 @@ def _drive(
             run_stage=lambda command: _run(command, dry=a.dry_run, tee=console),
             blender=a.blender,
             python=py,
+            layer_range=(a.start, a.upto),
         )
 
     t0 = time.monotonic()

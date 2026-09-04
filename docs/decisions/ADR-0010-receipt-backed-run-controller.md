@@ -130,6 +130,10 @@ any transaction.
 - `vfx run` also drafts the first global plan when no plan authority is selected
   (HIR-0186 mechanism 7). That is a first plan, not the global republication this ADR keeps
   reviewed: an existing bundle is never redrafted by the driver.
+- Step 4's second half (HIR-0191): a finding whose fault owners are sealed in one earlier
+  layer is dispatched as that owner layer's rematerialization within the run's range, with
+  every open finding naming the owner as evidence; multi-owner and out-of-range findings
+  still stop for the operator.
 - The crash fixture, convergence fixture, and cap fixture named below exist for step 4
   (`src/tests/unit/test_run_controller.py`); steps 1 to 3 and 5 still owe theirs.
 
