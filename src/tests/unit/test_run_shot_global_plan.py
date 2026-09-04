@@ -57,6 +57,13 @@ def _driver(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, plan_selected: b
     monkeypatch.setattr(run_shot, "_needs_global_plan", lambda _shot: not state["plan_selected"])
     monkeypatch.setattr(run_shot, "_selected_run_layers", selected_layers)
     monkeypatch.setattr(run_shot, "_run", fake_run)
+    # Sequencing test: the deterministic gate has its own coverage in
+    # test_run_shot_plan_gate_stop.py and test_run_shot_orphaned_owner.py.
+    monkeypatch.setattr(
+        run_shot,
+        "_gate_selected_authority",
+        lambda _layout, _shot: (None, run_shot.GateResult("shot", [], {})),
+    )
     monkeypatch.setattr(run_shot, "_receipt_backed_passed_layers", lambda *_args: {"1"})
     monkeypatch.setattr(sys, "argv", ["vfx run", str(tmp_path), "--skip-accept", "--skip-render", "--single-pass"])
     return state, commands

@@ -206,6 +206,13 @@ def test_single_pass_flag_disables_the_controller(tmp_path: Path, monkeypatch: p
 
     monkeypatch.setattr(run_shot, "RunController", ForbiddenController)
     monkeypatch.setattr(run_shot, "_run", lambda command, *, dry=False, tee=None: 0)
+    # Sequencing test: the deterministic gate has its own coverage in
+    # test_run_shot_plan_gate_stop.py and test_run_shot_orphaned_owner.py.
+    monkeypatch.setattr(
+        run_shot,
+        "_gate_selected_authority",
+        lambda _layout, _shot: (None, run_shot.GateResult("shot", [], {})),
+    )
     monkeypatch.setattr(run_shot, "_receipt_backed_passed_layers", lambda *_args: {"1"})
     monkeypatch.setattr(sys, "argv", ["vfx run", str(tmp_path), "--single-pass", "--skip-accept", "--skip-render"])
 
