@@ -32,6 +32,22 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- The fourth consumer of the autonomy flag is converted, and the rest are inventoried
+  ([HIR-0210](docs/improvements/HIR-0210-the-fourth-consumer-and-the-inventory-that-finds-the-fifth.md)).
+  `LayerReplayPointObservation.mint` still demanded autonomy of a bound id and refused every
+  builder-paid image row, killing a layer immediately after the unit HIR-0205 unblocked had
+  published cleanly; the same function also excluded failing image rows from its failure set, so a
+  failed image contract could read as passed. HIR-0205's audit had truncated its search at sixty
+  lines and treated the visible subset as complete. The record-of-record path now decides through
+  the shared predicates only, and an architecture test pins the twenty-two remaining raw reads.
+
+- Sessions are told the exact deferred MCP tool names instead of guessing them
+  ([HIR-0209](docs/improvements/HIR-0209-a-session-is-told-its-exact-tool-names.md)). The
+  qualified `mcp__<server>__<tool>` names are built by the harness and passed as
+  `allowed_tools` in the same construction, and were never stated, so sessions queried the bare
+  form, received "No matching deferred tools found", and re-queried with the prefix — two calls
+  on every session type, not just builders. The one options constructor now states them.
+
 - A sealed record now re-serializes to the exact bytes it was written in
   ([HIR-0208](docs/improvements/HIR-0208-an-additive-field-is-written-only-when-it-differs.md)).
   HIR-0207 made two additive fields optional on read, which fixed parsing and not the digest:

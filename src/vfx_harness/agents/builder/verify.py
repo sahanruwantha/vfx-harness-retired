@@ -30,6 +30,7 @@ from vfx_harness.agents.builder.prior import (
 from vfx_harness.agents.builder.revalidate import _scope_added_object_errors
 from vfx_harness.agents.builder.verdicts import _judge_unit_or_layer, _layer_motion_frames, _stash_motion_strip
 from vfx_harness.blender.session import BlenderError, BlenderSession
+from vfx_harness.domain import evidence_authority
 from vfx_harness.domain.brief import Shot
 from vfx_harness.observability.log import (
     log,
@@ -399,7 +400,7 @@ async def _verify_script(
                     verdict["evidence_failures"] = [
                         row
                         for row in sealed_point.evidence
-                        if row.get("authoritative") is True
+                        if evidence_authority.is_recorded_evidence(row)
                         and row.get("pass") is False
                     ]
                     verdict["missing_evidence"] = list(
@@ -537,10 +538,12 @@ async def _verify_script(
             else list(sealed_point.evidence)
         )
         v["evidence"] = sealed_evidence
+        # A failing bound row is a failure whether or not it may veto unbound: filtering
+        # on autonomy dropped every builder-paid image contract (HIR-0210).
         v["evidence_failures"] = [
             row
             for row in sealed_evidence
-            if row.get("authoritative") is True and row.get("pass") is False
+            if evidence_authority.is_recorded_evidence(row) and row.get("pass") is False
         ]
         v["missing_evidence"] = (
             list(v.get("missing_evidence") or [])

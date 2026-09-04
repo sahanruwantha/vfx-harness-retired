@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from vfx_harness.domain import evidence_authority
 from vfx_harness.domain.judgment_debt_observation import (
     JudgmentObservationRequest,
     JudgmentPaymentAttemptFailure,
@@ -306,7 +307,7 @@ def _canonical_row(
     failures = [
         row
         for row in point.evidence
-        if row["authoritative"] is True and row["pass"] is False
+        if evidence_authority.is_recorded_evidence(row) and row["pass"] is False
     ]
     if verdict.get("evidence_failures") != failures:
         raise ValueError(f"{where}.verdict.evidence_failures is not derived")

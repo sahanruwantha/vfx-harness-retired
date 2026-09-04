@@ -1082,7 +1082,13 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   the shared `domain/evidence_authority` predicates rather than reading the autonomy flag,
   because a required `image_contract` id can only be discharged by a builder payment and
   demanding autonomy of it makes the claim unpublishable in every shot. What satisfies a
-  binding live must satisfy it durably (HIR-0205).
+  binding live must satisfy it durably (HIR-0205). That rule binds the whole
+  record-of-record path — replay point observations, evaluation and finalization receipts,
+  and the builder's own `evidence_failures` producers — in both directions: a failing bound
+  row is a failure whether or not it may veto unbound, and filtering it out lets a failed
+  image contract read as passed. Reading the raw flag stays legal only where the row is
+  genuinely unbound, and an architecture test inventories every remaining raw read so the
+  next one is deliberate (HIR-0210).
 - A critic panel estimates score noise; bare pass votes do not refute a qualified actionable
   observation because passing scorecards carry no blocking proposition. A nominal passing
   majority with uncontradicted actionable dissent remains `REVISE` and preserves that exact

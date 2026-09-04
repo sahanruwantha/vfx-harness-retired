@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from vfx_harness.domain import evidence_authority
 from vfx_harness.domain.layer_evaluation_receipts import (
     LayerEvaluationReceipt,
     canonical_layer_evaluation_receipt_bytes,
@@ -64,7 +65,9 @@ def _authoritative_point_evidence(point) -> list[dict[str, Any]]:
     return [
         {key: row.get(key) for key in _OUTCOME_AUTHORITATIVE_FIELDS}
         for row in point.evidence
-        if row.get("authoritative") is True
+        # The sealed outcome keeps every typed measurement it was sealed on, not only
+        # the rows that could have vetoed unbound (HIR-0210).
+        if evidence_authority.is_recorded_evidence(row)
     ]
 
 
