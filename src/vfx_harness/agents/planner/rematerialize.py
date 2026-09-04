@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from claude_agent_sdk import ClaudeAgentOptions, query
+from claude_agent_sdk import query
 
 from vfx_harness.agents.plan_guardrails import planner_hooks
 from vfx_harness.agents.plan_tools import build_plan_tools
@@ -19,6 +19,7 @@ from vfx_harness.agents.planner.materialization_stop import publish_materializat
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.planner.types import MATERIALIZATION_DENIED_TOOLS, _phase_tools
 from vfx_harness.agents.resilience import AgentSessionFailure, result_signal, run_session
+from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.infrastructure.config import DEFAULT_EXECUTION_MODEL
 from vfx_harness.knowledge.recipes import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
@@ -268,7 +269,7 @@ global authority, create unit state, write prose, or write another file."""
         "finalize_materialization",
         "patch_materialization",
     )
-    options = ClaudeAgentOptions(
+    options = sdk_options(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),

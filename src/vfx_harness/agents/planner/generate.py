@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from claude_agent_sdk import ClaudeAgentOptions, query
+from claude_agent_sdk import query
 
 from vfx_harness.agents.builder.critic_focus import _image_block, _one_user_message
 from vfx_harness.agents.plan_guardrails import planner_hooks
@@ -33,6 +33,7 @@ from vfx_harness.agents.prompts import (
     verifier_user_prompt,
 )
 from vfx_harness.agents.resilience import result_signal, run_session
+from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.agents.unit_scope import compile_scope_with_predecessors
 from vfx_harness.domain.contracts import load_document
 from vfx_harness.domain.work_units import ready_units
@@ -170,7 +171,7 @@ async def generate_plan(
     # Every global role authors the same transaction and therefore needs the same patch and
     # validation verbs. Repair additionally loses delegation so a bounded mechanical patch
     # cannot escape into an agent that lacks its exact context or tools.
-    options = ClaudeAgentOptions(
+    options = sdk_options(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),
@@ -501,7 +502,7 @@ async def _generate_layer_plan(
         "gate_preview",
         "publish_unit_plan",
     )
-    options = ClaudeAgentOptions(
+    options = sdk_options(
         model=model,
         system_prompt=system,
         cwd=str(shot.folder),

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock, query
 
+from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.infrastructure.config import DEFAULT_EXECUTION_MODEL, Settings
 from vfx_harness.infrastructure.sandbox import sandbox_hooks
 from vfx_harness.knowledge.recipes import RECIPES_DIR, recipe_index, search_recipes
@@ -62,7 +63,7 @@ DO: the concrete replacement (or the single value, if KEEP). Name recipes to pul
 
 
 def _options(shot_folder: Path) -> ClaudeAgentOptions:
-    return ClaudeAgentOptions(
+    return sdk_options(
         model=reviewer_model(),
         system_prompt=REVIEWER_SYSTEM + "\n\n" + recipe_index(),
         cwd=str(shot_folder),

@@ -15,6 +15,7 @@ from vfx_harness.agents.build_prompts import (
 )
 from vfx_harness.agents.builder.critic_focus import CRITIC_EFFORT
 from vfx_harness.agents.builder.models import AXES_SYSTEM, builder_model, critic_model
+from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.domain.brief import Shot
 from vfx_harness.infrastructure.sandbox import sandbox_hooks
 from vfx_harness.observability.log import (
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 
 
 def _axes_options(shot: Shot) -> ClaudeAgentOptions:
-    return ClaudeAgentOptions(
+    return sdk_options(
         model=builder_model(),
         system_prompt=AXES_SYSTEM,
         cwd=str(shot.folder),
@@ -173,7 +174,7 @@ def _critic_options(
     # has nothing to fetch and cannot score a frame it never saw. This deleted three
     # layers of machinery that existed only to police the old tool loop: the sandbox
     # redirect for critic reads, the request/result id pairing, and the blind-critic guard.
-    return ClaudeAgentOptions(
+    return sdk_options(
         model=critic_model(),
         system_prompt=CRITIC_SYSTEM,
         cwd=str(shot.folder),

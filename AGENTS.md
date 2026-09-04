@@ -523,7 +523,10 @@ mechanism when it improves control, observability, or agent capability.
   the configured verify cap and 6 plus two turns per layer the draft's ownership mapping
   declares, capped at 24 (HIR-0177). That ceiling is the only one: the draft's own
   `--max-turns` never clamps it, and the log line states the derivation so a clamp cannot
-  read as the computation (HIR-0198). Parallelize independent evidence production while
+  read as the computation (HIR-0198). A turn budget is declared once, at the single SDK-options
+  constructor, and the harness counts the assistant turns it observes: completion reports
+  `turns=<observed>/<budget>` and prints the provider's own counter separately as
+  `cli_num_turns`, which is a different quantity and never the budget's measure (HIR-0199). Parallelize independent evidence production while
   authoritative scene mutation and publication remain serialized.
 - Before adding an SDK workaround, verify the installed SDK does not already provide the needed
   primitive. Pin and test every SDK behavior the harness depends on, and fail closed when an

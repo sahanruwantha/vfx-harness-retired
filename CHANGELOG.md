@@ -32,6 +32,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A model session's turn budget is now measured by the harness that sets it
+  ([HIR-0199](docs/improvements/HIR-0199-the-harness-counts-the-turns-it-budgets.md)). The
+  budget was handed to the SDK as `max_turns` and reported at completion as the provider's
+  `num_turns`, a different counter that read 14 against a cap of 12 while terminating
+  successfully, so no operator could tell whether a budget bound anything. Completion now
+  reports observed turns over the declared budget, prints the provider counter separately,
+  and every SDK options construction goes through one constructor that declares the budget.
+
 - The global verify pass gets the budget its rule states
   ([HIR-0198](docs/improvements/HIR-0198-the-verify-budget-has-one-ceiling.md)). The draft
   pass's `max_turns` was clamping the per-layer verify budget, so a six-layer shot ran verify

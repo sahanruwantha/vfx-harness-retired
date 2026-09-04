@@ -36,6 +36,7 @@ from vfx_harness.agents.builder.models import (
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import _run_artifact_script
 from vfx_harness.agents.guardrails import builder_hooks
+from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.application.preflight import model_phase_failure
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.blender.tools import CANNOT_EXPRESS_DESCRIPTION, CANNOT_EXPRESS_SCHEMA, record_cannot_express
@@ -382,7 +383,7 @@ def _script_options(
         recipe_server, recipe_names = build_recipe_tools()
         mcp_servers["recipes"] = recipe_server
         probe_tools = [*probe_tools, *recipe_names]
-    return ClaudeAgentOptions(
+    return sdk_options(
         model=script_model(),
         system_prompt=_SCRIPT_SYSTEM,
         cwd=str(shot.folder),

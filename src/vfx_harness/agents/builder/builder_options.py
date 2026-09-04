@@ -12,6 +12,7 @@ from vfx_harness.agents.builder.models import (
     builder_model,
 )
 from vfx_harness.agents.guardrails import builder_hooks
+from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.domain.brief import Shot
 from vfx_harness.knowledge.recipes import RECIPES_DIR, recipe_index
 from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
@@ -29,7 +30,7 @@ def _builder_options(
     selected_authority: ResolvedSelectedAuthority | None = None,
     attempt_guard=None,
 ) -> ClaudeAgentOptions:
-    return ClaudeAgentOptions(
+    return sdk_options(
         model=builder_model(),
         system_prompt=builder_system(
             axes,
