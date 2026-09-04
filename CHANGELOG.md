@@ -32,6 +32,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A sealed record now re-serializes to the exact bytes it was written in
+  ([HIR-0208](docs/improvements/HIR-0208-an-additive-field-is-written-only-when-it-differs.md)).
+  HIR-0207 made two additive fields optional on read, which fixed parsing and not the digest:
+  `observation_digest` is computed over the record's own serialization, and emitting the new keys
+  unconditionally meant every receipt sealed before them parsed and then failed verification.
+  Additive fields are now written only when they differ from the default a reader derives, so a
+  record that predates one is byte-identical across the change.
+
 - A judgment debt now owes an observation only at the judge points it owns
   ([HIR-0206](docs/improvements/HIR-0206-a-debt-owes-an-observation-where-it-owns-the-point.md)).
   The payment compiler declines to produce an observation where the debt is not due, as HIR-0163

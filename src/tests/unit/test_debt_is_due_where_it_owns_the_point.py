@@ -101,11 +101,11 @@ def test_a_receipt_sealed_before_this_field_still_reads(  # HIR-0207
     the only reading consistent with the receipt having minted at all.
     """
     payload = _plan(debt_points=((1, REF),)).as_dict()
-    del payload["debt_points"]
+    payload.pop("debt_points")
     assert LayerReplayEvaluationGroupPlan.from_dict(payload, "plan").debt_points == POINTS
 
     debtless = _plan(debt_points=(), debt_id=None).as_dict()
-    del debtless["debt_points"]
+    assert "debt_points" not in debtless, "a debtless group's derived default is empty"
     assert LayerReplayEvaluationGroupPlan.from_dict(debtless, "plan").debt_points == ()
 
     # A four-key claim row is the shape every receipt sealed before HIR-0204 carries.
@@ -127,6 +127,48 @@ def test_a_receipt_sealed_before_this_field_still_reads(  # HIR-0207
         LayerReplayEvaluationGroupPlan.from_dict(
             {k: v for k, v in payload.items() if k != "judge_points"}, "plan"
         )
+
+
+def test_a_stored_payload_that_omitted_a_field_round_trips_byte_identically() -> None:
+    """The digest is computed over as_dict, so a re-derived enrichment breaks it.
+
+    Parsing a sealed receipt was not enough: LayerReplayObservation verifies
+    observation_digest against the payload it re-serializes, and emitting the new keys
+    unconditionally meant an old digest could never match a new payload (HIR-0208).
+    """
+    sealed = _plan(debt_points=POINTS).as_dict()
+    assert "debt_points" not in sealed, "a debt owning every judge point is the derived default"
+
+    reread = LayerReplayEvaluationGroupPlan.from_dict(sealed, "plan")
+    assert reread.debt_points == POINTS
+    assert reread.as_dict() == sealed
+
+    claim = {
+        "claim_id": "composed-look",
+        "authority": "qualified_qualitative_required",
+        "judge_frames": [1, 121, 301],
+        "evidence_ids": [],
+    }
+    parsed = LayerReplayClaimRequirement.from_dict(claim, "claims[0]")
+    assert parsed.as_dict() == claim, "an unframed claim serializes back to the four-key shape"
+
+
+def test_a_field_that_differs_from_the_derived_default_is_written() -> None:
+    """Omission is not suppression: a real schedule still reaches the bytes."""
+    partial = _plan(debt_points=((1, REF),)).as_dict()
+    assert partial["debt_points"] == [[1, REF]]
+    assert LayerReplayEvaluationGroupPlan.from_dict(partial, "plan").debt_points == ((1, REF),)
+
+    framed = LayerReplayClaimRequirement(
+        claim_id="c",
+        authority="executable_required",
+        judge_frames=(113, 176),
+        evidence_ids=("row-113", "row-176"),
+        evidence_frames=(("row-113", (113,)), ("row-176", (176,))),
+    )
+    payload = framed.as_dict()
+    assert payload["evidence_frames"] == [["row-113", [113]], ["row-176", [176]]]
+    assert LayerReplayClaimRequirement.from_dict(payload, "claims[0]") == framed
 
 
 def test_a_point_the_debt_does_not_own_mints_without_an_observation() -> None:

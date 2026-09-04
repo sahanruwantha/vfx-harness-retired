@@ -172,15 +172,20 @@ class LayerReplayClaimRequirement:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        row: dict[str, Any] = {
             "claim_id": self.claim_id,
             "authority": self.authority,
             "judge_frames": list(self.judge_frames),
             "evidence_ids": list(self.evidence_ids),
-            "evidence_frames": [
-                [evidence_id, list(frames)] for evidence_id, frames in self.evidence_frames
-            ],
         }
+        # An additive field is written only when it differs from the default a reader
+        # derives for it. A record read from stored bytes must serialize back to exactly
+        # those bytes, or the digest that made it evidence no longer verifies (HIR-0208).
+        if self.evidence_frames:
+            row["evidence_frames"] = [
+                [evidence_id, list(frames)] for evidence_id, frames in self.evidence_frames
+            ]
+        return row
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,7 +404,9 @@ class LayerReplayEvaluationGroupPlan:
                     raise ValueError(f"{where}.debt_points[{index}] must be [frame, ref]")
                 parsed_debt_points.append((point[0], point[1]))
         else:
-            parsed_debt_points = list(parsed_points) if value["debt_id"] is not None else []
+            parsed_debt_points = (
+                list(parsed_points) if value["debt_id"] is not None else []
+            )
         return cls(
             group_index=value["group_index"],
             planned_group_count=value["planned_group_count"],
@@ -432,7 +439,7 @@ class LayerReplayEvaluationGroupPlan:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "group_index": self.group_index,
             "planned_group_count": self.planned_group_count,
             "requirement_ids": list(self.requirement_ids),
@@ -441,13 +448,20 @@ class LayerReplayEvaluationGroupPlan:
             "activation_digest": self.activation_digest,
             "payment_generation_digest": self.payment_generation_digest,
             "judge_points": [[frame, ref] for frame, ref in self.judge_points],
-            "debt_points": [[frame, ref] for frame, ref in self.debt_points],
             "axes": list(self.axes),
             "claims": [row.as_dict() for row in self.claims],
             "evidence_kind": self.evidence_kind,
             "render_mode": self.render_mode,
             "render_scale": self.render_scale,
         }
+        # Written only when the debt's points differ from what a reader derives from a
+        # plan that omits them: every judge point with a debt, none without (HIR-0208).
+        if self.debt_points != self._derived_debt_points():
+            payload["debt_points"] = [[frame, ref] for frame, ref in self.debt_points]
+        return payload
+
+    def _derived_debt_points(self) -> tuple[tuple[int, str], ...]:
+        return tuple(self.judge_points) if self.debt_id is not None else ()
 
 
 @dataclass(frozen=True, slots=True)

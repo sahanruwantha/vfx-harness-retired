@@ -329,8 +329,12 @@ Leave code cleaner at the point of change; do not create cleanup debt for a late
   been written at all — otherwise the record is rejected and a migration is owed. Required
   keys stay strictly required and the refusal names them. Every widening is pinned by a
   test that parses the previous key set, because a widening round-trips itself perfectly
-  and breaks only the generation before it. Never claim sealed work is resumable without
-  parsing a real sealed artifact with the new reader (HIR-0207). A change to what a unit or layer capsule
+  and breaks only the generation before it (HIR-0207). Parsing is necessary and not
+  sufficient: where a record digests its own serialization, it must round-trip
+  byte-identically, so an additive field is written only when it differs from the default
+  the reader derives for it — otherwise a sealed record still parses and stops verifying.
+  Never claim sealed work is resumable without re-verifying a real sealed artifact's own
+  stored digest under the new reader; parsing it is not that check (HIR-0208). A change to what a unit or layer capsule
   contains is a digest generation change: bump `DIGEST_SCHEMA` with the golden digest tests,
   and migrate prior-generation durable state only through `vfx migrate-digest-schema <shot>`,
   which republishes the selected view and supersedes those units and terminal receipts with
