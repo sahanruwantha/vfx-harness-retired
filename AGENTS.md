@@ -355,6 +355,9 @@ effect.
   producer must not force a read-only mutation probe or Blender-version guess (HIR-0061).
 - Framing, bbox, and visibility checks measure rendered subjects, not Light/Camera/Empty-style
   control hosts; use per-light render isolation for illumination contribution (HIR-0055).
+  Those metrics measure the rendered subject: an object hidden from render contributes no
+  bbox and is never counted as seen, so a hidden subject reads `visible_fraction` 0.0 and a
+  builder's hide/unhide ablation actually moves the number (HIR-0196).
 - Camera alignment to an Empty/control host uses `projected_origin_x/y`; its repair owner
   provides camera. The control producer proves fixed world state with scene evidence, and
   the camera successor depends on it and owns projection. Bbox and `visible_fraction` are

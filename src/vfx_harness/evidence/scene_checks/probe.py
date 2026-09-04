@@ -67,9 +67,14 @@ def _projected(objects,dg):
     # an object whose to_mesh() failed reused the PREVIOUS object's vertices.
     _V=__import__('mathutils').Vector
     _mvp=_checks.camera_clip_matrix(_scene,dg)
-    clip=[]; edges=[]; base=0; empty=0
+    clip=[]; edges=[]; base=0; empty=0; hidden=[]
     for obj in objects:
         ev=obj.evaluated_get(dg); mesh=None; points=[]; pairs=[]
+        # A bbox_* row measures the RENDERED subject, so an object hidden from render
+        # contributes nothing. Counting it made the metric unable to answer the ablation
+        # a builder performs to find its own contribution (HIR-0196).
+        if not _checks.renders_in_frame(ev):
+            hidden.append(obj.name); continue
         if ev.type=='MESH':
             try:
                 mesh=ev.to_mesh()
@@ -85,7 +90,7 @@ def _projected(objects,dg):
         clip.extend(tuple(_mvp@p.to_4d()) for p in points)
         edges.extend((base+a,base+b) for a,b in pairs)
         base+=len(points)
-    return _checks.frustum_union_ndc(clip,edges),empty
+    return _checks.frustum_union_ndc(clip,edges),empty,tuple(hidden)
 def _property(target,path):
     value=target
     for token in str(path).split('.'):
@@ -237,11 +242,13 @@ for row in _rows:
                           +'; count a leaf role to count one host')
         elif kind.startswith('bbox_'):
             if not objects: raise ValueError(_missobj(row))
-            rec,empty=_projected(objects,_row_dg)
+            rec,empty,hidden=_projected(objects,_row_dg)
             if rec is None:
+                _hid=(' '+str(len(hidden))+' hidden from render: '+', '.join(hidden)
+                      if hidden else '')
                 raise ValueError(
                     f'none of {{len(objects)}} selected object(s) intersects the camera frustum '
-                    f'at frame {{_FRAME}} ({{empty}} contributed no points)')
+                    f'at frame {{_FRAME}} ({{empty}} contributed no points){{_hid}}')
             x0,y0,x1,y1=rec['bbox']
             value={{'bbox_width':x1-x0,'bbox_height':y1-y0,'bbox_center_x':(x0+x1)/2,'bbox_center_y':(y0+y1)/2,'bbox_top_y':y0,'bbox_bottom_y':y1}}[kind]
         elif kind in ('projected_origin_x','projected_origin_y'):

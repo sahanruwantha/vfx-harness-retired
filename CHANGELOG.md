@@ -26,6 +26,13 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- `bbox_*` and `visible_fraction` measure the rendered subject
+  ([HIR-0196](docs/improvements/HIR-0196-rendered-subject-metrics-respect-render-visibility.md)).
+  Both counted objects hidden from render, so a builder that hid the four objects it had created
+  read the identical `bbox_height` back and concluded its geometry was not responsible — the
+  instrument could not answer the ablation. A subject hidden from render could also satisfy a
+  required `visible_fraction`, which the per-role AND rule exists to prevent.
+
 - A sibling `object_count` now counts as evidence of descendant population
   ([HIR-0195](docs/improvements/HIR-0195-a-sibling-count-is-evidence-of-population.md)). The
   cross-row contradiction check skipped every sibling whose kind was `object_count` — the rows

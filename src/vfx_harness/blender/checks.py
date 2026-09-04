@@ -152,6 +152,20 @@ def _camera():
     return cam
 
 
+
+def renders_in_frame(evaluated) -> bool:
+    """Whether an evaluated object contributes to the rendered frame.
+
+    ``bbox_*`` and ``visible_fraction`` measure rendered subjects (HIR-0019). An object
+    hidden from render is not one, and counting it made both metrics unable to respond to
+    the very toggle a builder uses to ablate its own contribution: run
+    20260904T105849Z-0c9a45's `exterior_ground` hid all four objects it had created, read
+    the identical bbox_height back, and concluded its geometry was not responsible
+    (HIR-0196).
+    """
+    return not bool(getattr(evaluated, "hide_render", False))
+
+
 def surface_visible_fraction(scene, depsgraph, camera, objects) -> dict:
     """Canonical occlusion-true surface visibility sampler.
 
@@ -167,6 +181,11 @@ def surface_visible_fraction(scene, depsgraph, camera, objects) -> dict:
     for obj in objects:
         evaluated = obj.evaluated_get(depsgraph)
         if evaluated.type != "MESH":
+            continue
+        if not renders_in_frame(evaluated):
+            # A hidden subject is sampled but never seen, so it reads 0.0 — a failing
+            # measurement, not an instrument error (HIR-0019, HIR-0196).
+            sampled += len(evaluated.data.vertices) or 1
             continue
         world = evaluated.matrix_world
         points = []
