@@ -706,6 +706,9 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   bound over a literal namespace whose dotted descendants sibling rows require (same layer, or
   every layer for a `persistent` row) is refused there too, naming the matcher rule, the requiring
   rows, and the leaf-role or raised-bound fix; the object_count read-back names every matched
+  A sibling `object_count` is not exempt from that scan and contributes the host count it
+  demands, so `eq 1` over a namespace cannot survive beside `min 12` over its descendant
+  (HIR-0195).
   descendant and carries the selector beside the matched roles (HIR-0178). A falsification stop
   compares the finding's selected layer capsule digest, never a whole-file hash (HIR-0175).
   A required claim that binds `visible_fraction` is repaired by a unit that

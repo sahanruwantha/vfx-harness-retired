@@ -125,10 +125,33 @@ def _count_upper_bound(row: dict) -> float | None:
     return None
 
 
-def _minimum_distinct_hosts(roles: set[str]) -> int:
-    """Hosts carry one role token, so roles with no descendant among ``roles`` each need a host."""
+def _count_lower_bound(row: dict) -> int:
+    """The smallest host count an object_count row demands; 1 when it only names a role.
+
+    A sibling ``object_count min 12`` over a descendant namespace demands twelve hosts,
+    not one. Reading it as a single host is what let ``eq 1`` over the parent survive
+    beside it (HIR-0195).
+    """
+    op = str(row.get("op") or "")
+    try:
+        if op == "eq":
+            return max(1, int(float(row.get("value")) - float(row.get("tol") or 0.0)))
+        if op in ("min", "band"):
+            return max(1, int(float(row.get("lo"))))
+    except (TypeError, ValueError):
+        return 1
+    return 1
+
+
+def _minimum_distinct_hosts(demands: dict[str, int]) -> int:
+    """Hosts carry one role token, so each role with no descendant needs its own hosts.
+
+    ``demands`` maps a descendant role to the number of hosts sibling rows require under
+    it; a role that has a descendant of its own is counted through that descendant.
+    """
+    roles = set(demands)
     return sum(
-        1
+        demands[role]
         for role in roles
         if not any(other != role and match_semantic(other, [role]) for other in roles)
     )
@@ -160,8 +183,12 @@ def namespace_count_contradictions(rows: list[dict]) -> list[dict]:
         persistent = str(row.get("lifecycle") or "") == "persistent"
         owner = str(row.get("owner_layer") or "")
         descendants: dict[str, list[str]] = {}
+        demands: dict[str, int] = {}
         for other in typed:
-            if other is row or other.get("kind") == "object_count":
+            # A sibling object_count is not excluded: a row demanding `min 12` under a
+            # descendant namespace is the most direct statement that this bound cannot
+            # hold, and skipping it hid exactly that pair (HIR-0195).
+            if other is row:
                 continue
             if not persistent and str(other.get("owner_layer") or "") != owner:
                 continue
@@ -170,9 +197,15 @@ def namespace_count_contradictions(rows: list[dict]) -> list[dict]:
                 if token in selectors or not match_semantic(token, selectors):
                     continue
                 descendants.setdefault(token, []).append(str(other.get("id")))
+                required = (
+                    _count_lower_bound(other)
+                    if other.get("kind") == "object_count"
+                    else 1
+                )
+                demands[token] = max(demands.get(token, 1), required)
         if not descendants:
             continue
-        minimum = _minimum_distinct_hosts(set(descendants))
+        minimum = _minimum_distinct_hosts(demands)
         if minimum <= upper:
             continue
         bound = (

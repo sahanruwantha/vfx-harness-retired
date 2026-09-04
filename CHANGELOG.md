@@ -26,6 +26,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A sibling `object_count` now counts as evidence of descendant population
+  ([HIR-0195](docs/improvements/HIR-0195-a-sibling-count-is-evidence-of-population.md)). The
+  cross-row contradiction check skipped every sibling whose kind was `object_count` — the rows
+  that most directly state how many hosts a namespace must hold — and counted each descendant
+  namespace as one host, so `eq 1` over `exterior.facade` survived beside `min 12` over
+  `exterior.facade.window`. A builder spent a session measuring the contradiction and abstained,
+  blocking three more units.
+
 - A gate report's signature is computed once, by code its validator shares
   ([HIR-0193](docs/improvements/HIR-0193-one-gate-report-signature.md)). The signature is a
   60-character slice of each finding's text; a finding whose text had a space at index 59
