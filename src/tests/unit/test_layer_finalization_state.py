@@ -594,6 +594,7 @@ def _publish_replay(
         planned_group_count=planned_group_count,
         requirement_ids=(),
         debt_id=None,
+        debt_points=(),
         definition_digest=None,
         activation_digest=None,
         payment_generation_digest=None,

@@ -399,6 +399,7 @@ def _publish_group(
         planned_group_count=2,
         requirement_ids=(),
         debt_id=None,
+        debt_points=(),
         definition_digest=None,
         activation_digest=None,
         payment_generation_digest=None,

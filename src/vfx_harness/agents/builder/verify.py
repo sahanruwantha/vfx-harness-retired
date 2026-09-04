@@ -411,7 +411,9 @@ async def _verify_script(
                     verdict["auxiliary_captures"] = list(
                         layer_replay_receipt.observation.auxiliary_captures
                     )
-                ledger.record_round(m, kind="canonical", index=0, render=render_rel, verdict=verdict)
+                ledger.record_round(
+                    m, kind="canonical", index=0, render=render_rel, verdict=verdict, frame=int(frame)
+                )
                 wrapped = [((frame, ref), verdict)]
                 if out_verdicts is not None:
                     out_verdicts.extend(wrapped)
@@ -566,7 +568,7 @@ async def _verify_script(
             scale=render_scale,
             selected_authority=selected_authority,
         )
-        ledger.record_round(m, kind="canonical", index=i, render=render_rel, verdict=v)
+        ledger.record_round(m, kind="canonical", index=i, render=render_rel, verdict=v, frame=int(frame))
         verdicts.append(((frame, ref), v))
     if out_verdicts is not None:
         out_verdicts.extend(verdicts)  # the run report needs the per-frame results

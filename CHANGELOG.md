@@ -32,6 +32,24 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A judgment debt now owes an observation only at the judge points it owns
+  ([HIR-0206](docs/improvements/HIR-0206-a-debt-owes-an-observation-where-it-owns-the-point.md)).
+  The payment compiler declines to produce an observation where the debt is not due, as HIR-0163
+  requires, while the evaluation receipt demanded one at every qualitative row from the
+  layer-level `debt_id`. A layer whose debt owned one of three judge frames died with
+  "judgment_observation has unsupported shape", discarding the critic's only qualitative reading
+  into a defect audit. The group plan now carries the debt's own points from one source of truth,
+  a stray observation outside them is refused, and the ledger round records the frame it judged
+  and whether it carried an observation.
+
+- A widened durable record still reads the generation sealed before it
+  ([HIR-0207](docs/improvements/HIR-0207-a-widened-record-still-reads-the-generation-before-it.md)).
+  HIR-0204 added a required key to the layer replay claim, orphaning every receipt sealed before
+  it: two shots refused to resume at the gate with two passed layers and eight sealed units
+  between them. Additive record fields are now required on write and optional on read, with the
+  historical default derived where absence has exactly one meaning, and pinned by tests that parse
+  the previous key set.
+
 - A required image contract can now be paid, so a look-owning unit can publish an outcome
   ([HIR-0205](docs/improvements/HIR-0205-a-bound-requirement-does-not-ask-for-autonomy.md)).
   One boolean answered two questions: `authoritative` says a row may veto with nobody having

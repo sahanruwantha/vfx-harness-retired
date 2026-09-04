@@ -410,6 +410,16 @@ async def finalize_composed_layer(
                 judge_points=tuple(
                     (int(frame), str(ref)) for frame, ref in composition_layer.judges
                 ),
+                # One source of truth with JudgmentDebtPayment._points: the debt's own
+                # moments, not the group's judge list (HIR-0206).
+                debt_points=(
+                    ()
+                    if decision is None
+                    else tuple(
+                        (int(frame), str(ref))
+                        for frame, ref in (decision.get("judge_points") or ())
+                    )
+                ),
                 axes=tuple(str(key) for key, _description in axes),
                 claims=claim_rows,
                 evidence_kind="render" if raster_required else "executable_only",

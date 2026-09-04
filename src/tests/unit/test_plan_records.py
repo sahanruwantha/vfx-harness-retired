@@ -1082,6 +1082,7 @@ def _passed_layer_one_outcome(root: Path) -> None:
         planned_group_count=1,
         requirement_ids=(),
         debt_id=None,
+        debt_points=(),
         definition_digest=None,
         activation_digest=None,
         payment_generation_digest=None,

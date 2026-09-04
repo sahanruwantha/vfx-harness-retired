@@ -228,13 +228,19 @@ def _judgment_observation(
     replay_receipt: LayerReplayReceipt,
     point,
 ) -> None:
+    expected = {"request", "candidate_capture", "reused_attempt"}
     raw = verdict.get("judgment_observation")
-    if not isinstance(raw, Mapping) or set(raw) != {
-        "request",
-        "candidate_capture",
-        "reused_attempt",
-    }:
-        raise ValueError(f"{where}.judgment_observation has unsupported shape")
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"{where}.judgment_observation is required at f{point.frame}, which this "
+            f"group's judgment debt owns, but the verdict carries "
+            f"{'nothing' if raw is None else type(raw).__name__}"
+        )
+    if set(raw) != expected:
+        raise ValueError(
+            f"{where}.judgment_observation must carry exactly {sorted(expected)}; "
+            f"it carries {sorted(raw)}"
+        )
     request = JudgmentObservationRequest.from_dict(
         raw["request"],
         f"{where}.judgment_observation.request",
@@ -359,12 +365,20 @@ def _canonical_row(
             )
         ):
             raise ValueError(f"{where}.verdict qualitative scorecard is invalid")
-        if plan.debt_id is not None:
+        owes_observation = (point.frame, point.ref) in plan.debt_points
+        if owes_observation:
             _judgment_observation(
                 verdict,
                 where,
                 replay_receipt=replay_receipt,
                 point=point,
+            )
+        elif verdict.get("judgment_observation") is not None:
+            # The payment compiler produces an observation only at a point the debt
+            # owns, so one here means the two sides disagree about what was paid.
+            raise ValueError(
+                f"{where}.judgment_observation was produced at f{point.frame}, which "
+                f"this group's judgment debt does not own"
             )
     return {"frame": point.frame, "ref": point.ref, "verdict": verdict}
 

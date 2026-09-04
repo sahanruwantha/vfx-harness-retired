@@ -618,14 +618,22 @@ class Ledger:
         self.save()
 
     def record_round(self, m: Milestone, *, kind: str, index: int,
-                     render: str, verdict: dict) -> None:
+                     render: str, verdict: dict, frame: int | None = None) -> None:
         """Append one critic round (kind='iter' during the loop, 'canonical' for the
-        deterministic re-run of the build script)."""
+        deterministic re-run of the build script).
+
+        ``frame`` and ``judgment_observed`` are stored because this row is where an
+        operator looks to ask which point a round judged and which one carried a
+        judgment observation. Both were derivable only positionally, which is why a
+        composed-finalization defect took three sessions to attribute (HIR-0206).
+        """
         slot = self._slot(m)
         slot.setdefault("rounds", []).append({
             "round": index,
             "kind": kind,
             "render": render,
+            "frame": int(frame) if frame is not None else verdict.get("frame"),
+            "judgment_observed": verdict.get("judgment_observation") is not None,
             "scores": verdict.get("scores", {}),
             "mean": verdict.get("mean"),
             "pass": verdict.get("pass", False),

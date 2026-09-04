@@ -26,6 +26,7 @@ def _plan(claims) -> LayerReplayEvaluationGroupPlan:
         planned_group_count=1,
         requirement_ids=(),
         debt_id=None,
+        debt_points=(),
         definition_digest=None,
         activation_digest=None,
         payment_generation_digest=None,

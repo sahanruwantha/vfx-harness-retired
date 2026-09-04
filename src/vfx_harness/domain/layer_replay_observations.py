@@ -31,10 +31,17 @@ LAYER_REPLAY_CLAIM_AUTHORITIES = frozenset(
 )
 LAYER_REPLAY_DETERMINISTIC_STATUSES = frozenset({"passed", "failed", "missing"})
 
-_CLAIM_FIELDS = frozenset(
-    {"claim_id", "authority", "judge_frames", "evidence_ids", "evidence_frames"}
+_CLAIM_REQUIRED_FIELDS = frozenset(
+    {"claim_id", "authority", "judge_frames", "evidence_ids"}
 )
-_PLAN_FIELDS = frozenset(
+#: ``evidence_frames`` and ``debt_points`` are written by every current producer. A
+#: receipt sealed before they existed omits them, and absence is not an ambiguous value
+#: to interpret: it is exactly the state a new record carries when nothing declares a
+#: schedule, and it is the faithful reading of what that receipt actually proved. Every
+#: writer emits them; the reader accepts their absence and derives the historical
+#: default (HIR-0207).
+_CLAIM_FIELDS = _CLAIM_REQUIRED_FIELDS | {"evidence_frames"}
+_PLAN_REQUIRED_FIELDS = frozenset(
     {
         "group_index",
         "planned_group_count",
@@ -51,6 +58,7 @@ _PLAN_FIELDS = frozenset(
         "render_scale",
     }
 )
+_PLAN_FIELDS = _PLAN_REQUIRED_FIELDS | {"debt_points"}
 _POINT_FIELDS = frozenset(
     {
         "frame",
@@ -135,8 +143,14 @@ class LayerReplayClaimRequirement:
 
     @classmethod
     def from_dict(cls, value: object, where: str) -> LayerReplayClaimRequirement:
-        if not isinstance(value, Mapping) or set(value) != _CLAIM_FIELDS:
-            raise ValueError(f"{where} has unsupported layer replay claim shape")
+        if not isinstance(value, Mapping) or not (
+            _CLAIM_REQUIRED_FIELDS <= set(value) <= _CLAIM_FIELDS
+        ):
+            raise ValueError(
+                f"{where} has unsupported layer replay claim shape: it carries "
+                f"{sorted(value) if isinstance(value, Mapping) else type(value).__name__}, "
+                f"and {sorted(_CLAIM_REQUIRED_FIELDS)} are required"
+            )
         return cls(
             claim_id=value["claim_id"],
             authority=value["authority"],
@@ -149,9 +163,11 @@ class LayerReplayClaimRequirement:
                 f"{where}.evidence_ids",
                 allow_empty=value["authority"] == "qualified_qualitative_required",
             ),
+            # An absent schedule is an unframed one: every bound row was due at every
+            # frame its claim judged, which is what a pre-HIR-0204 receipt recorded.
             evidence_frames=tuple(
                 (str(row[0]), replay_values.positive_frames(row[1], f"{where}.evidence_frames"))
-                for row in value["evidence_frames"]
+                for row in (value.get("evidence_frames") or ())
             ),
         )
 
@@ -179,6 +195,11 @@ class LayerReplayEvaluationGroupPlan:
     activation_digest: str | None
     payment_generation_digest: str | None
     judge_points: tuple[tuple[int, str], ...]
+    #: The judge points this group's judgment debt actually owns. A debt is due at a
+    #: subset of the group's judge points, and the payment compiler declines to produce
+    #: an observation anywhere else; demanding one at every point from the layer-level
+    #: ``debt_id`` made a legal group unmintable (HIR-0206).
+    debt_points: tuple[tuple[int, str], ...]
     axes: tuple[str, ...]
     claims: tuple[LayerReplayClaimRequirement, ...]
     evidence_kind: str
@@ -255,6 +276,33 @@ class LayerReplayEvaluationGroupPlan:
             )
         if len(normalized_points) != len(set(normalized_points)):
             raise ValueError("layer replay judge_points contains duplicates")
+        if not isinstance(self.debt_points, tuple):
+            raise ValueError("layer replay debt_points must be a tuple")
+        debt_points = tuple(
+            (point[0], point[1])
+            for point in self.debt_points
+            if isinstance(point, tuple) and len(point) == 2
+        )
+        if len(debt_points) != len(self.debt_points):
+            raise ValueError("layer replay debt_points[] must each be (frame, ref)")
+        if len(debt_points) != len(set(debt_points)):
+            raise ValueError("layer replay debt_points contains duplicates")
+        if self.debt_id is None:
+            if debt_points:
+                raise ValueError(
+                    "layer replay debt_points require a judgment debt on this group"
+                )
+        else:
+            if not debt_points:
+                raise ValueError(
+                    "a layer replay judgment debt must own at least one judge point"
+                )
+            outside = sorted(set(debt_points) - set(normalized_points))
+            if outside:
+                raise ValueError(
+                    "layer replay debt_points must be judge points of this group; "
+                    f"{outside} are not among {sorted(normalized_points)}"
+                )
         if not isinstance(self.claims, tuple) or not self.claims:
             raise ValueError("layer replay group must bind at least one required claim")
         if any(not isinstance(row, LayerReplayClaimRequirement) for row in self.claims):
@@ -321,8 +369,14 @@ class LayerReplayEvaluationGroupPlan:
 
     @classmethod
     def from_dict(cls, value: object, where: str) -> LayerReplayEvaluationGroupPlan:
-        if not isinstance(value, Mapping) or set(value) != _PLAN_FIELDS:
-            raise ValueError(f"{where} has unsupported layer replay group-plan shape")
+        if not isinstance(value, Mapping) or not (
+            _PLAN_REQUIRED_FIELDS <= set(value) <= _PLAN_FIELDS
+        ):
+            raise ValueError(
+                f"{where} has unsupported layer replay group-plan shape: it carries "
+                f"{sorted(value) if isinstance(value, Mapping) else type(value).__name__}, "
+                f"and {sorted(_PLAN_REQUIRED_FIELDS)} are required"
+            )
         points = value["judge_points"]
         claims = value["claims"]
         if not isinstance(points, list) or not isinstance(claims, list):
@@ -332,6 +386,20 @@ class LayerReplayEvaluationGroupPlan:
             if not isinstance(point, list) or len(point) != 2:
                 raise ValueError(f"{where}.judge_points[{index}] must be [frame, ref]")
             parsed_points.append((point[0], point[1]))
+        # An absent debt schedule on a stored plan is not a guess: such a receipt minted
+        # under a reader that demanded an observation at every judge point, so a debt
+        # there owned all of them and a debtless group owned none.
+        if "debt_points" in value:
+            debt_points = value["debt_points"]
+            if not isinstance(debt_points, list):
+                raise ValueError(f"{where}.debt_points must be a list")
+            parsed_debt_points: list[tuple[int, str]] = []
+            for index, point in enumerate(debt_points):
+                if not isinstance(point, list) or len(point) != 2:
+                    raise ValueError(f"{where}.debt_points[{index}] must be [frame, ref]")
+                parsed_debt_points.append((point[0], point[1]))
+        else:
+            parsed_debt_points = list(parsed_points) if value["debt_id"] is not None else []
         return cls(
             group_index=value["group_index"],
             planned_group_count=value["planned_group_count"],
@@ -345,6 +413,7 @@ class LayerReplayEvaluationGroupPlan:
             activation_digest=value["activation_digest"],
             payment_generation_digest=value["payment_generation_digest"],
             judge_points=tuple(parsed_points),
+            debt_points=tuple(parsed_debt_points),
             axes=replay_values.strings(
                 value["axes"],
                 f"{where}.axes",
@@ -372,6 +441,7 @@ class LayerReplayEvaluationGroupPlan:
             "activation_digest": self.activation_digest,
             "payment_generation_digest": self.payment_generation_digest,
             "judge_points": [[frame, ref] for frame, ref in self.judge_points],
+            "debt_points": [[frame, ref] for frame, ref in self.debt_points],
             "axes": list(self.axes),
             "claims": [row.as_dict() for row in self.claims],
             "evidence_kind": self.evidence_kind,

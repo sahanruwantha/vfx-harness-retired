@@ -284,6 +284,7 @@ def make_layer_finalization_receipt(
         planned_group_count=1,
         requirement_ids=(),
         debt_id=None,
+        debt_points=(),
         definition_digest=None,
         activation_digest=None,
         payment_generation_digest=None,

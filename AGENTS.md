@@ -146,6 +146,11 @@ operation.
   external evaluation, every group receipt, and every replay-input/dependency,
   reference/render/auxiliary, script, predecessor, and sealed outcome source; embedded receipt
   content never self-certifies current publication (HIR-0170).
+  A judgment debt owes an observation only at the judge points it owns: the group plan
+  carries those points from the same value the payment compiler uses, the receipt demands
+  an observation there and refuses one anywhere else, and a debt owning no judge point is
+  refused. Demanding one at every point from the layer-level `debt_id` killed a legal
+  group whose debt was due at one frame of three (HIR-0206).
   A replay claim requirement carries each bound row's declared frames, so an evidence id is
   due at the frame its contract declares and only falls back to every frame the claim judges
   when the row is unframed. A claim's judge list is not its bindings' schedule: taking the
@@ -317,7 +322,15 @@ Leave code cleaner at the point of change; do not create cleanup debt for a late
   shot.
 - Strict migration, no silent compatibility: obsolete schemas and artifacts are migrated or
   rejected, never interpreted heuristically. Compatibility windows declare a deterministic
-  expiry and fail closed after it (ADR-0004). A change to what a unit or layer capsule
+  expiry and fail closed after it (ADR-0004). Typed durable records are a second
+  durability surface that `DIGEST_SCHEMA` does not cover: an additive field on one is
+  required on write and optional on read, and absence is read as a derived historical
+  default only where that default is the single reading consistent with the record having
+  been written at all — otherwise the record is rejected and a migration is owed. Required
+  keys stay strictly required and the refusal names them. Every widening is pinned by a
+  test that parses the previous key set, because a widening round-trips itself perfectly
+  and breaks only the generation before it. Never claim sealed work is resumable without
+  parsing a real sealed artifact with the new reader (HIR-0207). A change to what a unit or layer capsule
   contains is a digest generation change: bump `DIGEST_SCHEMA` with the golden digest tests,
   and migrate prior-generation durable state only through `vfx migrate-digest-schema <shot>`,
   which republishes the selected view and supersedes those units and terminal receipts with

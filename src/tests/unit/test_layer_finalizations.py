@@ -199,6 +199,7 @@ def _replay(
         planned_group_count=1,
         requirement_ids=(),
         debt_id=None,
+        debt_points=(),
         definition_digest=None,
         activation_digest=None,
         payment_generation_digest=None,
@@ -273,6 +274,9 @@ def _qualitative_replay(
         planned_group_count=1,
         requirement_ids=(decision["id"],),
         debt_id=decision["debt_id"],
+        debt_points=tuple(
+            (int(f), str(r)) for f, r in (decision.get("judge_points") or ())
+        ),
         definition_digest=decision["definition_digest"],
         activation_digest=decision["activation_digest"],
         payment_generation_digest=_digest("payment generation"),
