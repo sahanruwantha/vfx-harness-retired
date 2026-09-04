@@ -763,7 +763,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   the same irreversible-union function used by verdicts. A blocker is labelled
   `REQUIRED BEFORE FREEZE` immediately and names repair or
   `cannot_express_in_scope`; only repairable-side misses may be described as
-  diagnostic-only (HIR-0153).
+  diagnostic-only (HIR-0153). Every deferred-row forecast and payment names the geometry
+  producers that share its union in dependency order and the ones still pending after the
+  active unit, and every forecast read-back states the measured slack left on the row's
+  irreversible side: a partial producer that consumes the band leaves the pending producers
+  nothing, and the payer discovers that only at the last unit (HIR-0197).
   More generally, any scene contract whose `activates_at` differs from its
   `owner_layer` is inactive at the authoring unit: it may bind through
   `composition_context.contract_ids`, never through that unit's claim evidence

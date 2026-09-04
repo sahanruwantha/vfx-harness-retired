@@ -361,7 +361,11 @@ def register_mutate(
                             contract_note += unpaid_note
                         else:
                             contract_note += " Live mutation remains open until the builder hands its scoped work off."
-                contract_note += _deferred_subject_forecast_note(diagnostic_evidence, contract_rows)
+                contract_note += _deferred_subject_forecast_note(
+                    diagnostic_evidence,
+                    contract_rows,
+                    comparison_state.get("deferred_subject_sharing") or {},
+                )
                 contract_note += await _downstream_framing_probe(
                     session, comparison_state, contract_rows
                 )

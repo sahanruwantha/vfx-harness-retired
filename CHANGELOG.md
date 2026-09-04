@@ -7,6 +7,12 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Deferred-subject rows now tell each producer who shares their projected union and how
+  much room is left on the irreversible side: the unit card lists the union's producers in
+  dependency order and the ones still pending, and the forecast read-back states the
+  measured slack before a partial producer freezes (HIR-0197). Room layer 2 froze its
+  facade at 0.349 of a 0.35 height ceiling and the last producer could only grow the union.
+
 - A builder finding whose fault owners are sealed in one earlier layer now amends that
   owner's layer view instead of the stopped layer's, and `vfx run` dispatches it: the
   rematerialization is invoked with every open finding naming the owner as evidence, the

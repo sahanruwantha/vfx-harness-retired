@@ -196,6 +196,9 @@ def test_early_geometry_producer_gets_nonpayable_deferred_bbox_forecast() -> Non
         **deferred,
         "diagnostic_only": True,
         "acceptance_evidence": False,
+        # Who shares the union and who still adds to it after this unit (HIR-0197).
+        "union_producers": ["building_mass", "building_roof"],
+        "pending_producers": ["building_roof"],
     }]
     assert "building-bbox-f176" not in {
         row["id"] for row in mass_card["contracts"]
@@ -219,6 +222,8 @@ def test_early_geometry_producer_gets_nonpayable_deferred_bbox_forecast() -> Non
         **deferred,
         "required_before_freeze": True,
         "acceptance_evidence": True,
+        "union_producers": ["building_mass", "building_roof"],
+        "pending_producers": [],
     }]
     roof_formatted = format_unit_scope_card(roof_card)
     payments_section = roof_formatted.split("deferred subject rows this unit pays")[1]

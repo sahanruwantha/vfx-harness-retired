@@ -24,6 +24,7 @@ from vfx_harness.domain.work_units import WorkUnit, bound_claim_contract_ids
 from vfx_harness.evidence.scene_checks import (
     deferred_subject_composition_forecast_ids_for_unit,
     deferred_subject_composition_ids_for_unit,
+    deferred_subject_sharing_for_unit,
     load_rows,
 )
 from vfx_harness.orchestration.unit_completion_authorizations import (
@@ -361,11 +362,16 @@ def compile_scope_with_predecessors(
     forecast_ids = deferred_subject_composition_forecast_ids_for_unit(
         contracts, units, unit, layer_id
     )
+    # Who shares each deferred union and who still has to add geometry to it: the
+    # slack this unit leaves on a row's irreversible side is all they get (HIR-0197).
+    sharing = deferred_subject_sharing_for_unit(contracts, units, unit, layer_id)
     card["deferred_subject_forecasts"] = [
         {
             **_contract_row(contract_by_id[contract_id]),
             "diagnostic_only": True,
             "acceptance_evidence": False,
+            "union_producers": list((sharing.get(contract_id) or {}).get("producers") or []),
+            "pending_producers": list((sharing.get(contract_id) or {}).get("pending") or []),
         }
         for contract_id in forecast_ids
     ]
@@ -381,6 +387,8 @@ def compile_scope_with_predecessors(
             **_contract_row(contract_by_id[contract_id]),
             "required_before_freeze": True,
             "acceptance_evidence": True,
+            "union_producers": list((sharing.get(contract_id) or {}).get("producers") or []),
+            "pending_producers": list((sharing.get(contract_id) or {}).get("pending") or []),
         }
         for contract_id in payment_ids
         if contract_id in contract_by_id

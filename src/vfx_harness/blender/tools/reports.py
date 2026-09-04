@@ -19,7 +19,11 @@ from vfx_harness.blender.tools.payment import _text
 from vfx_harness.domain.image_debts import classify_cannot_express, debts_from_dicts, normalize_evidence_id
 from vfx_harness.domain.work_units import read_document
 from vfx_harness.evidence import checks as image_checks
-from vfx_harness.evidence.scene_checks import FUNCTIONAL_KINDS, irreversible_deferred_subject_forecast_failures
+from vfx_harness.evidence.scene_checks import (
+    FUNCTIONAL_KINDS,
+    deferred_subject_union_slack,
+    irreversible_deferred_subject_forecast_failures,
+)
 
 SERVER_NAME = "blender"
 
@@ -68,7 +72,31 @@ def _scene_completion_state(evidence: list[dict], layer_id: str, required_ids: s
     }
 
 
-def _deferred_subject_forecast_note(evidence: list[dict], contract_rows: list[dict] | None = None) -> str:
+def _slack_phrase(row: Mapping, slack: Mapping[str, Mapping], sharing: Mapping[str, Mapping]) -> str:
+    """The measured room left on a row's irreversible side, and who still needs it."""
+    cid = str(row.get("id"))
+    entry = slack.get(cid)
+    pending = list((sharing.get(cid) or {}).get("pending") or [])
+    if entry is None:
+        return ""
+    verb = "grow" if entry["side"] == "grows" else "fall"
+    text = (
+        f"; union can only {verb}: {entry['slack']:+.4f} left before {entry['kind']} "
+        f"{'exceeds' if entry['side'] == 'grows' else 'drops below'} {entry['bound']}"
+    )
+    if pending:
+        text += (
+            f" — {', '.join(pending)} still add geometry to this union and share that "
+            "room; leave less than they need and the payer cannot satisfy the row"
+        )
+    return text
+
+
+def _deferred_subject_forecast_note(
+    evidence: list[dict],
+    contract_rows: list[dict] | None = None,
+    sharing: Mapping[str, Mapping] | None = None,
+) -> str:
     """Teach partial producers which forecasts diagnose and which block freeze."""
     if not evidence:
         return ""
@@ -76,6 +104,8 @@ def _deferred_subject_forecast_note(evidence: list[dict], contract_rows: list[di
     blockers = list(irreversible_deferred_subject_forecast_failures(contract_rows or [], evidence))
     blocker_ids = {str(row.get("id")) for row in blockers}
     diagnostics = [row for row in evidence if str(row.get("id")) not in blocker_ids]
+    slack = deferred_subject_union_slack(contract_rows or [], evidence)
+    sharing = sharing or {}
 
     sections: list[str] = []
     if blockers:
@@ -99,6 +129,7 @@ def _deferred_subject_forecast_note(evidence: list[dict], contract_rows: list[di
                 f"  {row.get('id', '?')}: {row.get('metric')}={row.get('value')} "
                 f"target {row.get('target')} "
                 f"({'within target' if row.get('pass') else 'outside target'})"
+                + _slack_phrase(row, slack, sharing)
                 for row in diagnostics[:6]
             )
         )

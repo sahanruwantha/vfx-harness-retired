@@ -29,6 +29,7 @@ from vfx_harness.domain.work_units import WorkUnit
 from vfx_harness.domain.work_units.capabilities import DEFERRED_SUBJECT_BBOX_KINDS
 from vfx_harness.evidence.scene_checks import (
     deferred_subject_composition_forecast_ids_for_unit,
+    deferred_subject_sharing_for_unit,
     load_rows,
 )
 from vfx_harness.observability.log import log
@@ -104,6 +105,7 @@ def compile_unit_build_context(
     )
     active_evidence_ids = _unit_scene_evidence_ids(active_unit)
     diagnostic_evidence_ids: set[str] = set()
+    deferred_subject_sharing: dict[str, dict[str, list[str]]] = {}
     if active_evidence_ids is not None and layer is not None:
         try:
             extra_vis = _geometry_protected_vis_ids(
@@ -139,15 +141,22 @@ def compile_unit_build_context(
             KeyError,
             json.JSONDecodeError,
         ):
+            deferred_rows = load_rows(shot.folder, selected_authority)
             diagnostic_evidence_ids = set(
                 deferred_subject_composition_forecast_ids_for_unit(
-                    load_rows(shot.folder, selected_authority),
+                    deferred_rows,
                     tuple(
                         layer_units or getattr(layer, "stages", ()) or ()
                     ),
                     active_unit,
                     layer_id,
                 )
+            )
+            deferred_subject_sharing = deferred_subject_sharing_for_unit(
+                deferred_rows,
+                tuple(layer_units or getattr(layer, "stages", ()) or ()),
+                active_unit,
+                layer_id,
             )
     active_image_evidence_ids = {
         binding.id
@@ -189,6 +198,7 @@ def compile_unit_build_context(
         ),
         "active_evidence_ids": active_evidence_ids,
         "diagnostic_evidence_ids": diagnostic_evidence_ids,
+        "deferred_subject_sharing": deferred_subject_sharing,
         "active_image_evidence_ids": active_image_evidence_ids,
         "image_evidence_required": image_evidence_required_for(
             active_image_evidence_ids,

@@ -303,6 +303,160 @@ def irreversible_deferred_subject_forecast_failures(
     return tuple(out)
 
 
+INCREASING_UNION_KINDS = frozenset({"bbox_width", "bbox_height", "bbox_bottom_y"})
+DECREASING_UNION_KINDS = frozenset({"bbox_top_y"})
+
+
+def _dependency_closure(unit, by_id: Mapping[str, object]) -> set[str]:
+    closure = {str(getattr(unit, "id", ""))}
+    frontier = list(getattr(unit, "depends_on", ()) or ())
+    while frontier:
+        current_id = str(frontier.pop())
+        if current_id in closure:
+            continue
+        closure.add(current_id)
+        dependency = by_id.get(current_id)
+        if dependency is not None:
+            frontier.extend(getattr(dependency, "depends_on", ()) or ())
+    return closure
+
+
+def deferred_subject_union_producers(
+    rows: Sequence[Mapping[str, object]],
+    units,
+    layer_id: str | int,
+    frame: int | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Every geometry unit whose mutation overlaps each deferred row, in dependency order.
+
+    The projected union of a deferred subject row is the union of *all* of these
+    producers' geometry. Room run 20260904T105849Z-0c9a45: ``exterior_facade`` froze at
+    height 0.349 of a 0.35 ceiling over ``exterior.*`` and the last producer,
+    ``exterior_ground``, could only grow that union; nothing had told either unit who
+    else shared the band (HIR-0197). Order is the stable topological order over
+    ``depends_on`` with authored position as the tie-break (HIR-0119).
+    """
+    unit_rows = tuple(units or ())
+    by_id = {str(getattr(item, "id", "")): item for item in unit_rows}
+    ordered: list[str] = []
+    remaining = [str(getattr(item, "id", "")) for item in unit_rows]
+    while remaining:
+        progressed = False
+        for candidate in list(remaining):
+            deps = {
+                str(dep) for dep in (getattr(by_id[candidate], "depends_on", ()) or ())
+            } & set(by_id)
+            if deps <= set(ordered):
+                ordered.append(candidate)
+                remaining.remove(candidate)
+                progressed = True
+                break
+        if not progressed:
+            ordered.extend(remaining)
+            break
+    by_contract = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    producers: dict[str, tuple[str, ...]] = {}
+    for contract_id in deferred_subject_composition_activation_ids(rows, layer_id, frame):
+        row = by_contract[contract_id]
+        roles = tuple(str(role) for role in (row.get("roles") or ()) if str(role))
+        if not roles:
+            continue
+        producers[contract_id] = tuple(
+            unit_id
+            for unit_id in ordered
+            if "geometry" in tuple(getattr(by_id[unit_id], "provides", ()) or ())
+            and any(
+                _selector_overlap(role, mutation)
+                for role in roles
+                for mutation in (
+                    *(getattr(getattr(by_id[unit_id], "mutates", None), "roles", ()) or ()),
+                    *(getattr(getattr(by_id[unit_id], "mutates", None), "dresses", ()) or ()),
+                )
+            )
+        )
+    return producers
+
+
+def deferred_subject_sharing_for_unit(
+    rows: Sequence[Mapping[str, object]],
+    units,
+    unit,
+    layer_id: str | int,
+    frame: int | None = None,
+) -> dict[str, dict[str, list[str]]]:
+    """Per deferred row this unit touches: who shares the union and who still comes.
+
+    ``pending`` producers are the sharers outside this unit's dependency closure: their
+    geometry is not in the scene yet and can only extend the union on its irreversible
+    sides, so whatever slack this unit leaves them is all they will ever get.
+    """
+    if unit is None:
+        return {}
+    unit_rows = tuple(units or ())
+    by_id = {str(getattr(item, "id", "")): item for item in unit_rows}
+    closure = _dependency_closure(unit, by_id)
+    unit_id = str(getattr(unit, "id", ""))
+    sharing: dict[str, dict[str, list[str]]] = {}
+    for contract_id, producers in deferred_subject_union_producers(rows, unit_rows, layer_id, frame).items():
+        if unit_id not in producers:
+            continue
+        sharing[contract_id] = {
+            "producers": list(producers),
+            "pending": [producer for producer in producers if producer not in closure],
+        }
+    return sharing
+
+
+def deferred_subject_union_slack(
+    contract_rows: Sequence[Mapping[str, object]],
+    evidence_rows: Sequence[Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Remaining room on each evidence row's irreversible side, measured, per row id.
+
+    Width, height, and bottom can only grow as later producers add geometry; top can
+    only fall. ``slack`` is how far the current union still is from the bound on that
+    side (negative once the bound is already crossed); it is the budget every pending
+    producer must share.
+    """
+    by_id = {
+        str(row.get("id")): row
+        for row in contract_rows
+        if isinstance(row, Mapping) and row.get("id")
+    }
+    slack: dict[str, dict[str, object]] = {}
+    for evidence in evidence_rows:
+        if not isinstance(evidence, Mapping):
+            continue
+        cid = str(evidence.get("id") or "")
+        source = by_id.get(cid)
+        value = evidence.get("value")
+        if source is None or not isinstance(value, (int, float)):
+            continue
+        kind = str(source.get("kind") or "")
+        op = str(source.get("op") or "band")
+        lower: float | None = None
+        upper: float | None = None
+        if op == "band":
+            lower, upper = float(source["lo"]), float(source["hi"])
+        elif op == "min":
+            lower = float(source["lo"])
+        elif op == "max":
+            upper = float(source["hi"])
+        elif op == "eq":
+            target = float(source["value"])
+            tolerance = float(source.get("tol") or 0)
+            lower, upper = target - tolerance, target + tolerance
+        if kind in INCREASING_UNION_KINDS and upper is not None:
+            slack[cid] = {"kind": kind, "side": "grows", "bound": upper, "slack": upper - float(value)}
+        elif kind in DECREASING_UNION_KINDS and lower is not None:
+            slack[cid] = {"kind": kind, "side": "falls", "bound": lower, "slack": float(value) - lower}
+    return slack
+
+
 @dataclass(frozen=True, slots=True)
 class DeferredSubjectCompositionPaymentGap:
     contract_id: str
