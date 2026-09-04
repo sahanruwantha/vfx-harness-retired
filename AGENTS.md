@@ -1056,6 +1056,16 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   `executable_required`, `qualified_qualitative_required`, or `advisory` authority;
   `human_required` / `human_decision` are retired because no runtime producer pays them — the
   human domain is judgment debt on the owning requirement (HIR-0174).
+- Autonomy and satisfaction are two questions with two answers. A row that nothing bound
+  needs autonomous authority to block, which a builder-authored image check never has —
+  it would be marking its own homework (HIR-0060). A consumer closing over a unit's
+  required claim bindings asks only whether that exact id was produced and passed; the
+  binding, not the row, supplies the authority to require it. Every such consumer — the
+  unit-outcome receipt, critic reconciliation, and the sealed revalidation record — calls
+  the shared `domain/evidence_authority` predicates rather than reading the autonomy flag,
+  because a required `image_contract` id can only be discharged by a builder payment and
+  demanding autonomy of it makes the claim unpublishable in every shot. What satisfies a
+  binding live must satisfy it durably (HIR-0205).
 - A critic panel estimates score noise; bare pass votes do not refute a qualified actionable
   observation because passing scorecards carry no blocking proposition. A nominal passing
   majority with uncontradicted actionable dissent remains `REVISE` and preserves that exact

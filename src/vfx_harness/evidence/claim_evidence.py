@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from vfx_harness.domain import evidence_authority
 from vfx_harness.domain.authority_head_records import (
     decode_canonical_json_object,
     parse_plan_consumer_view,
@@ -125,6 +126,7 @@ def reconcile_observation(
 
     facts = {str(row.get("id")): dict(row) for row in evidence if row.get("id")}
     cited = list(observation.check_ids)
+    bound: set[str] = set()
     if observation.claim_id and claim_bindings is not None:
         if observation.claim_id not in claim_bindings:
             return {
@@ -134,6 +136,7 @@ def reconcile_observation(
                 "check_ids": cited,
             }
         allowed = set(claim_bindings.get(observation.claim_id, ()))
+        bound = allowed
         outside = sorted(set(cited) - allowed)
         if outside:
             return {
@@ -164,11 +167,19 @@ def reconcile_observation(
             "reason": "cites unknown evidence: " + ", ".join(missing),
             "check_ids": cited,
         }
-    failed = [
-        cid
-        for cid in cited
-        if cid in facts and facts[cid].get("authoritative") and not facts[cid].get("pass")
-    ]
+    # A cited id inside the claim's own binding closure is already authorized by that
+    # binding, so autonomy is not the question; asking it here let a critic's word
+    # override a passing builder-paid image measurement (HIR-0205).  Autonomy is still
+    # required of a row nothing bound.
+    def _decides(cid: str) -> bool:
+        row = facts.get(cid)
+        if row is None:
+            return False
+        if cid in bound:
+            return evidence_authority.is_recorded_evidence(row)
+        return evidence_authority.blocks_without_a_binding(row)
+
+    failed = [cid for cid in cited if _decides(cid) and not facts[cid].get("pass")]
     if failed:
         return {
             "state": "actionable",
@@ -176,11 +187,7 @@ def reconcile_observation(
             "reason": "supported by failed authoritative evidence",
             "check_ids": failed,
         }
-    passing = [
-        cid
-        for cid in cited
-        if cid in facts and facts[cid].get("authoritative") and facts[cid].get("pass")
-    ]
+    passing = [cid for cid in cited if _decides(cid) and facts[cid].get("pass")]
     if passing:
         return {
             "state": "contradicted",

@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 
+from vfx_harness.domain import evidence_authority
 from vfx_harness.domain.layer_outcome_projections import CANONICAL_EVIDENCE_KINDS
 from vfx_harness.domain.layer_outcomes import OUTCOME_SCHEMA
 from vfx_harness.domain.stop_envelope_primitives import canonical_digest
@@ -461,7 +462,10 @@ def _authoritative_projection(verdict: Mapping) -> list[dict]:
             )
         }
         for row in evidence
-        if row.get("authoritative") is True
+        # The sealed record keeps every typed measurement a claim can bind, pass or
+        # fail. Filtering on autonomy dropped the bound image rows a look unit is
+        # judged on, so the record omitted the evidence it was sealed for (HIR-0205).
+        if evidence_authority.is_recorded_evidence(row)
     ]
 
 

@@ -523,7 +523,7 @@ def test_evaluator_receipt_refuses_same_id_from_wrong_evidence_family(tmp_path) 
     ledger_slot["rounds"][0]["evidence"][0]["source"] = "image_contract"
     _persist_evaluation_ledger(tmp_path, "1", ledger_slot)
 
-    with pytest.raises(ValueError, match="passing required evidence"):
+    with pytest.raises(ValueError, match="bound as scene_contract but was produced as image_contract evidence"):
         unit_evaluation_receipts.prepare_unit_evaluation_receipt(
             tmp_path,
             "1",

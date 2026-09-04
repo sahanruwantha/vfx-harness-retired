@@ -32,6 +32,18 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A required image contract can now be paid, so a look-owning unit can publish an outcome
+  ([HIR-0205](docs/improvements/HIR-0205-a-bound-requirement-does-not-ask-for-autonomy.md)).
+  One boolean answered two questions: `authoritative` says a row may veto with nobody having
+  bound it, which a builder-authored image check deliberately may not, and three consumers
+  read it to ask whether a bound required id had been produced and passed. Since only a builder
+  payment can discharge a materialization-minted `image_contract` id, no unit with a required
+  image claim could seal in any shot. hansa's `hero_facade` produced three passing image rows
+  and was told the evaluator had produced none. Bound satisfaction and unbound veto are now two
+  named predicates in one leaf module, shared by the unit-outcome receipt, critic
+  reconciliation, and the sealed revalidation record; the refusal separates produced-but-failing
+  from never-produced. Unit and layer capsules are unchanged, so sealed units stay resumable.
+
 - Layer replay now demands each evidence row at the frame its contract declares
   ([HIR-0204](docs/improvements/HIR-0204-evidence-is-due-at-the-frame-its-contract-declares.md)).
   A claim's judge list was treated as its bindings' schedule, so eight frame-pinned contracts

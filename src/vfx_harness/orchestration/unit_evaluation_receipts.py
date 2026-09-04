@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain import evidence_authority
 from vfx_harness.domain.authority_head_records import (
     AuthorityHeadRecordError,
     canonical_json_bytes,
@@ -47,14 +48,6 @@ from vfx_harness.orchestration.unit_replay_inputs import (
 from vfx_harness.orchestration.unit_state_storage import now
 
 _RECEIPT_DIRECTORY = Path("checkpoints/unit-evaluations")
-_EVIDENCE_FAMILY_BY_SOURCE = {
-    "interface_contract": "scene_contract",
-    "scene_contract": "scene_contract",
-    "image_contract": "image_contract",
-    "semantic_diff": "semantic_diff",
-    "qualification": "qualification",
-    "human_decision": "human_decision",
-}
 
 
 class UnitEvaluationConflict(ValueError):
@@ -243,6 +236,8 @@ def _passing_evidence(
     rows: Sequence[Mapping[str, Any]],
 ) -> tuple[tuple[str, str], ...]:
     observed: set[tuple[str, str]] = set()
+    produced: set[str] = set()
+    families_by_id: dict[str, set[str]] = {}
     for row in rows:
         verdict = row.get("verdict")
         if not isinstance(verdict, Mapping) or verdict.get("pass") is not True:
@@ -255,16 +250,15 @@ def _passing_evidence(
                 "unit evaluation canonical verdict is missing its evidence rows"
             )
         for item in evidence:
-            if (
-                not isinstance(item, Mapping)
-                or not item.get("id")
-                or item.get("pass") is not True
-                or item.get("authoritative") is not True
-            ):
-                continue
-            family = _EVIDENCE_FAMILY_BY_SOURCE.get(str(item.get("source") or ""))
-            if family is not None:
+            if isinstance(item, Mapping) and item.get("id"):
+                produced.add(str(item["id"]))
+            # Boundness comes from the required claim below, so autonomy is not the
+            # question here; reading it excluded every builder-paid image row and made
+            # a required image contract unpublishable (HIR-0205).
+            if evidence_authority.settles_bound_requirement(item):
+                family = str(evidence_authority.evidence_family(item))
                 observed.add((family, str(item["id"])))
+                families_by_id.setdefault(str(item["id"]), set()).add(family)
     required = {
         (binding.kind, binding.id)
         for claim in unit.evaluation.claims
@@ -273,8 +267,28 @@ def _passing_evidence(
     }
     missing = sorted(required - observed)
     if missing:
+        relabelled = [
+            f"{eid} is bound as {kind} but was produced as "
+            + ", ".join(sorted(families_by_id[eid]))
+            + " evidence"
+            for kind, eid in missing
+            if families_by_id.get(eid)
+        ]
+        failing = [
+            f"{kind}:{eid}" for kind, eid in missing if eid in produced and eid not in families_by_id
+        ]
+        absent = [f"{kind}:{eid}" for kind, eid in missing if eid not in produced]
+        detail = []
+        if relabelled:
+            detail.append("; ".join(relabelled))
+        if failing:
+            detail.append("produced by the canonical evaluator but not passing: " + ", ".join(failing))
+        if absent:
+            detail.append("never produced by the canonical evaluator: " + ", ".join(absent))
         raise UnitEvaluationConflict(
-            f"canonical evaluator did not produce passing required evidence: {missing}"
+            f"unit {unit.id} cannot publish an outcome: its required claim bindings are "
+            "unsatisfied; " + "; ".join(detail) + ". Repair the unit until every required "
+            "binding is produced and passing, or amend the claim that binds it."
         )
     return tuple(sorted({*required, ("replay", f"{layer_id}.{unit.id}")}))
 

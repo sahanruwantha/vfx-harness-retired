@@ -1867,7 +1867,7 @@ def test_public_materialization_boundary_raises_the_compiled_typed_stop(
         "_with_target_feedback",
         lambda *_args, **_kwargs: object(),
     )
-    monkeypatch.setattr(rematerialize, "ClaudeAgentOptions", lambda **_kwargs: object())
+    monkeypatch.setattr(rematerialize, "sdk_options", lambda **_kwargs: object())
 
     async def fail_session(*_args, **_kwargs) -> None:
         raise AgentSessionFailure("opaque session failure", "session_stalled")
