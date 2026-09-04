@@ -44,6 +44,9 @@ from vfx_harness.evidence.scene_checks.deferred_subject import (
 from vfx_harness.evidence.scene_checks.deferred_subject import (
     load_rows as load_rows,
 )
+from vfx_harness.evidence.scene_checks.deferred_subject import (
+    scene_contract_declared_frames as scene_contract_declared_frames,
+)
 from vfx_harness.evidence.scene_checks.functional import (
     _control_script as _control_script,
 )

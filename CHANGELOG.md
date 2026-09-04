@@ -32,6 +32,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- Layer replay now demands each evidence row at the frame its contract declares
+  ([HIR-0204](docs/improvements/HIR-0204-evidence-is-due-at-the-frame-its-contract-declares.md)).
+  A claim's judge list was treated as its bindings' schedule, so eight frame-pinned contracts
+  were each demanded at the two frames where they cannot exist; the evaluation reported
+  `missing` evidence with nothing failed and no layer could finalize. Replay claim requirements
+  now carry per-id declared frames read from the selected scene contracts, and an unframed row
+  keeps the every-judged-frame fallback.
+
 - The vocabulary-gap escalation path now terminates in a pass instead of padding
   ([HIR-0202](docs/improvements/HIR-0202-a-recorded-vocabulary-gap-closes-a-requirement.md)).
   A materializer that proved no registry metric can express a requirement was told to close it

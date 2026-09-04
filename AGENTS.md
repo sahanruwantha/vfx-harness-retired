@@ -146,6 +146,11 @@ operation.
   external evaluation, every group receipt, and every replay-input/dependency,
   reference/render/auxiliary, script, predecessor, and sealed outcome source; embedded receipt
   content never self-certifies current publication (HIR-0170).
+  A replay claim requirement carries each bound row's declared frames, so an evidence id is
+  due at the frame its contract declares and only falls back to every frame the claim judges
+  when the row is unframed. A claim's judge list is not its bindings' schedule: taking the
+  union demands each frame-pinned row at frames where it cannot exist, and the layer stalls
+  on `missing` evidence with nothing failed (HIR-0204).
   A new ledger attempt starts from a bare in-progress row: `Ledger.begin` moves the previous
   attempt's receipt digest and script hashes into its history entry, so re-finalizing
   a passed layer after rematerialization cannot trip the claim scope check (HIR-0179).

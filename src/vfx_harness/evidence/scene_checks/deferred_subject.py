@@ -50,6 +50,42 @@ def load_rows(
     )
 
 
+def scene_contract_declared_frames(
+    shot_folder,
+    *,
+    selected_authority=None,
+) -> dict[str, tuple[int, ...]]:
+    """Frames each selected scene contract declares, by contract id.
+
+    A row with ``frame`` or ``frames`` is due only there; a row with neither is unframed and
+    falls back to the active judge. Composition needs this to require a bound row at the
+    frame it measures rather than at every moment of the claim that binds it (HIR-0204).
+    """
+    declared: dict[str, tuple[int, ...]] = {}
+    try:
+        rows = load_rows(shot_folder, selected_authority)
+    except (OSError, ValueError):
+        # No selected scene-contract artifact means no scene contracts, hence no declared
+        # frames. A malformed one is the artifact reader's failure, not this map's.
+        return declared
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        contract_id = str(row.get("id") or "")
+        if not contract_id:
+            continue
+        frames: list[int] = []
+        value = row.get("frame")
+        if isinstance(value, int) and not isinstance(value, bool):
+            frames.append(int(value))
+        for item in row.get("frames") or ():
+            if isinstance(item, int) and not isinstance(item, bool):
+                frames.append(int(item))
+        if frames:
+            declared[contract_id] = tuple(sorted(dict.fromkeys(frames)))
+    return declared
+
+
 def deferred_subject_composition_ids(
     rows: Sequence[Mapping[str, object]],
     layer_id: str | int,

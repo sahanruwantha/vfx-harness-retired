@@ -32,7 +32,7 @@ LAYER_REPLAY_CLAIM_AUTHORITIES = frozenset(
 LAYER_REPLAY_DETERMINISTIC_STATUSES = frozenset({"passed", "failed", "missing"})
 
 _CLAIM_FIELDS = frozenset(
-    {"claim_id", "authority", "judge_frames", "evidence_ids"}
+    {"claim_id", "authority", "judge_frames", "evidence_ids", "evidence_frames"}
 )
 _PLAN_FIELDS = frozenset(
     {
@@ -74,6 +74,13 @@ class LayerReplayClaimRequirement:
     authority: str
     judge_frames: tuple[int, ...]
     evidence_ids: tuple[str, ...]
+    # Frames each evidence id declares, as ``(id, (frame, ...))`` pairs. An id absent from
+    # this map, or mapped to no frames, is unframed and due at every judge frame. Without it
+    # the group required every id of a claim at every moment of that claim, so a claim
+    # judged at 113/151/176 binding rows pinned to 113 and 176 was unsatisfiable at
+    # composition: room run 20260904T154222Z-bc1735 refused a layer whose evidence all
+    # passed, with failed=[] and "missing" at all three points (HIR-0204).
+    evidence_frames: tuple[tuple[str, tuple[int, ...]], ...] = ()
 
     def __post_init__(self) -> None:
         _text(self.claim_id, "layer replay claim_id")
@@ -91,6 +98,19 @@ class LayerReplayClaimRequirement:
             "layer replay claim evidence_ids",
             allow_empty=self.authority == "qualified_qualitative_required",
         )
+        seen: set[str] = set()
+        for evidence_id, frames in self.evidence_frames:
+            if evidence_id not in self.evidence_ids:
+                raise ValueError(
+                    "layer replay claim evidence_frames names an id outside evidence_ids: "
+                    f"{evidence_id}"
+                )
+            if evidence_id in seen:
+                raise ValueError(
+                    f"layer replay claim evidence_frames repeats id {evidence_id}"
+                )
+            seen.add(evidence_id)
+            replay_values.positive_frames(frames, "layer replay claim evidence_frames")
 
     @classmethod
     def mint(
@@ -100,12 +120,17 @@ class LayerReplayClaimRequirement:
         authority: object,
         judge_frames: Iterable[int],
         evidence_ids: Iterable[str],
+        evidence_frames: Iterable[tuple[str, Iterable[int]]] = (),
     ) -> LayerReplayClaimRequirement:
         return cls(
             claim_id=str(claim_id),
             authority=str(authority),
             judge_frames=tuple(judge_frames),
             evidence_ids=tuple(evidence_ids),
+            evidence_frames=tuple(
+                (str(evidence_id), tuple(int(frame) for frame in frames))
+                for evidence_id, frames in evidence_frames
+            ),
         )
 
     @classmethod
@@ -124,6 +149,10 @@ class LayerReplayClaimRequirement:
                 f"{where}.evidence_ids",
                 allow_empty=value["authority"] == "qualified_qualitative_required",
             ),
+            evidence_frames=tuple(
+                (str(row[0]), replay_values.positive_frames(row[1], f"{where}.evidence_frames"))
+                for row in value["evidence_frames"]
+            ),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -132,6 +161,9 @@ class LayerReplayClaimRequirement:
             "authority": self.authority,
             "judge_frames": list(self.judge_frames),
             "evidence_ids": list(self.evidence_ids),
+            "evidence_frames": [
+                [evidence_id, list(frames)] for evidence_id, frames in self.evidence_frames
+            ],
         }
 
 
@@ -270,15 +302,22 @@ class LayerReplayEvaluationGroupPlan:
             raise ValueError("rendered layer replay group requires scale in (0, 1]")
 
     def executable_evidence_ids(self, frame: int) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                evidence_id
-                for claim in self.claims
-                if claim.authority == "executable_required"
-                and int(frame) in claim.judge_frames
-                for evidence_id in claim.evidence_ids
-            )
-        )
+        """Executable ids due at ``frame``: unframed rows always, framed rows at their frame.
+
+        A bound static row is scheduled at its declared frame, falling back to the active
+        judge only when unframed. Requiring every id of a claim at every moment of that claim
+        demanded frame-pinned rows where they cannot exist (HIR-0204).
+        """
+        due: list[str] = []
+        for claim in self.claims:
+            if claim.authority != "executable_required" or int(frame) not in claim.judge_frames:
+                continue
+            declared = dict(claim.evidence_frames)
+            for evidence_id in claim.evidence_ids:
+                frames = declared.get(evidence_id) or ()
+                if not frames or int(frame) in frames:
+                    due.append(evidence_id)
+        return tuple(dict.fromkeys(due))
 
     @classmethod
     def from_dict(cls, value: object, where: str) -> LayerReplayEvaluationGroupPlan:

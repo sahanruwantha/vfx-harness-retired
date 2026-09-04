@@ -22,6 +22,7 @@ from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.layer_finalizations import (
     LayerFinalizationPredecessorInput,
 )
+from vfx_harness.evidence.scene_checks import scene_contract_declared_frames
 from vfx_harness.orchestration import layer_publication
 from vfx_harness.orchestration.layer_evaluation_receipts import (
     LayerEvaluationReceiptConflict,
@@ -332,6 +333,11 @@ async def finalize_composed_layer(
                 composition_unit,
                 selected_authority=selected_authority,
             )
+            # Each bound row is required at the frames it declares, not at every moment of
+            # the claim that binds it (HIR-0204).
+            declared_frames = scene_contract_declared_frames(
+                shot.folder, selected_authority=selected_authority
+            )
             claim_rows = tuple(
                 runtime.LayerReplayClaimRequirement(
                     claim_id=str(claim.id),
@@ -345,6 +351,11 @@ async def finalize_composed_layer(
                         )
                     ),
                     evidence_ids=tuple(str(row.id) for row in claim.evidence),
+                    evidence_frames=tuple(
+                        (str(row.id), declared_frames.get(str(row.id), ()))
+                        for row in claim.evidence
+                        if declared_frames.get(str(row.id))
+                    ),
                 )
                 for claim in (
                     getattr(
