@@ -10,8 +10,6 @@ import pytest
 from vfx_harness.application import preflight
 from vfx_harness.blender import filesystem_confinement
 
-pytestmark = pytest.mark.integration
-
 
 def test_confined_worker_reports_the_host_gpu_not_software_gl() -> None:
     resolved, problems = preflight._resolve_blender(preflight.os.environ.get("BLENDER_BIN") or "blender")
