@@ -32,6 +32,13 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A refused stage call now reports every unit-local gate at once and says that nothing was
+  staged ([HIR-0201](docs/improvements/HIR-0201-pre-write-staging-gates-report-together.md)).
+  Each gate returned on its first finding, so one camera unit took nine stage calls and eight
+  refusals to place, while the collectable validator in the same session returned seven
+  findings in one call; three of those turns were spent probing whether a refused stage had
+  left anything behind.
+
 - Every model stream now carries the event-idle deadline, and a run says how much of it is
   spent ([HIR-0200](docs/improvements/HIR-0200-every-model-stream-has-a-visible-deadline.md)).
   Only the builder's drain loop enforced the deadline, so a hung planner or materialization

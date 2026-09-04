@@ -118,7 +118,8 @@ def test_camera_unit_stage_call_refuses_uncovered_judge_frames(tmp_path: Path) -
             requirement_bindings=full["requirement_bindings"],
         )
     message = str(refused.value)
-    assert message.startswith("subject-framing coverage refused before candidate write")
+    assert message.startswith("staging refused before candidate write")
+    assert "subject-framing coverage:" in message
     assert "judge frame(s) [239, 240]" in message
     assert SUBJECT_FRAMING_COVERAGE_RULE in message
     assert target.read_bytes() == before

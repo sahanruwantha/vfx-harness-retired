@@ -123,13 +123,28 @@ def seed_materialization_candidate(
     return target
 
 
+COLLECTED_STAGING_RULE = (
+    "Every unit-local gate ran on this candidate, so the list above is complete: fix all of "
+    "it in one edit and re-issue the stage call. A gate that returned alone made a "
+    "materializer meet five rules in five turns of a bounded budget (HIR-0201)."
+)
+
+
 def _validate_local_staged_units(
     payload: dict[str, Any],
     *,
     allowed_provides: frozenset[str] | None = None,
     shot_folder: str | Path | None = None,
 ) -> None:
-    """Enforce unit-local publication predicates on an in-memory candidate."""
+    """Enforce unit-local publication predicates on an in-memory candidate.
+
+    Every semantic gate runs and their findings are raised together. Returning on the first
+    violation made a materializer discover its contract rules one turn at a time — five
+    distinct gates over five stage calls for one camera unit, with the most expensive
+    authoring requirement surfacing last (room run 20260904T143607Z-565c1e, HIR-0201).
+    Structural preconditions that later gates read (schema, parse, id uniqueness) still fail
+    fast, because a finding derived from an unparsed candidate is noise.
+    """
 
     if payload.get("schema") != MATERIALIZATION_SCHEMA:
         raise ValueError("candidate has unsupported materialization schema")
@@ -141,6 +156,19 @@ def _validate_local_staged_units(
     bindings = _rows(payload, "requirement_bindings", "candidate")
     parsed_units = [WorkUnit.parse(row, f"staged unit[{index}]") for index, row in enumerate(stages)]
 
+    unit_ids = [unit.id for unit in parsed_units]
+    if len(unit_ids) != len(set(unit_ids)):
+        raise ValueError("staged unit ids must be unique before candidate write")
+    contract_ids = [str(row.get("id") or "") for row in contracts]
+    if any(not identifier for identifier in contract_ids) or len(contract_ids) != len(set(contract_ids)):
+        raise ValueError("staged scene contract ids must be non-empty and unique before candidate write")
+    requirement_ids = [str(row.get("requirement_id") or "") for row in bindings]
+    if any(not identifier for identifier in requirement_ids) or len(requirement_ids) != len(set(requirement_ids)):
+        raise ValueError("staged requirement ids must be non-empty and unique before candidate write")
+
+    findings: list[str] = []
+    layer_id = str((payload.get("layer") or {}).get("id") or "")
+
     deferred_gaps = deferred_claim_binding_gaps(parsed_units, contracts)
     if deferred_gaps:
         detail = "; ".join(
@@ -148,31 +176,30 @@ def _validate_local_staged_units(
             f"(owner_layer={gap.owner_layer}, activates_at={gap.activates_at})"
             for gap in deferred_gaps
         )
-        raise ValueError(
-            "deferred contract claim binding refused before candidate write: "
-            + detail
-            + ". "
-            + DEFERRED_CONTRACT_CONTEXT_RULE
+        findings.append(
+            "deferred contract claim binding: " + detail + ". " + DEFERRED_CONTRACT_CONTEXT_RULE
         )
     if allowed_provides is not None:
         for unit in parsed_units:
             disallowed = sorted(set(unit.provides) - allowed_provides)
             if disallowed:
-                raise ValueError(
-                    "global capability boundary refused before candidate write: "
+                findings.append(
+                    "global capability boundary: "
                     f"unit {unit.id} declares {disallowed}; allowed here: "
                     f"{sorted(allowed_provides)}. " + CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE
                 )
-    layer_id = str((payload.get("layer") or {}).get("id") or "")
     for unit_index, unit in enumerate(parsed_units):
-        validate_unit_script_path(layer_id, unit, f"staged unit[{unit_index}]")
+        try:
+            validate_unit_script_path(layer_id, unit, f"staged unit[{unit_index}]")
+        except ValueError as exc:
+            findings.append(str(exc))
         uncovered = uncovered_mutation_roles(unit)
         if uncovered:
             judged = sorted(
                 {role for claim in unit.evaluation.claims if claim.required for role in claim.subject_roles}
             )
-            raise ValueError(
-                "required-claim coverage refused before candidate write: "
+            findings.append(
+                "required-claim coverage: "
                 f"unit {unit.id} mutates {list(uncovered)} without a required claim; "
                 f"required claim subject_roles on this unit: {judged}. "
                 + MUTATION_CLAIM_COVERAGE_RULE
@@ -183,31 +210,17 @@ def _validate_local_staged_units(
             f"unit {gap.unit_id} claim {gap.claim_id} property {gap.property!r} for {list(gap.contract_ids)}"
             for gap in image_property_gaps
         )
-        raise ValueError(
-            "image property vocabulary refused before candidate write: "
-            + detail
-            + ". "
-            + IMAGE_PROPERTY_VOCABULARY_RULE
+        findings.append(
+            "image property vocabulary: " + detail + ". " + IMAGE_PROPERTY_VOCABULARY_RULE
         )
-    unit_ids = [unit.id for unit in parsed_units]
-    if len(unit_ids) != len(set(unit_ids)):
-        raise ValueError("staged unit ids must be unique before candidate write")
-    contract_ids = [str(row.get("id") or "") for row in contracts]
-    if any(not identifier for identifier in contract_ids) or len(contract_ids) != len(set(contract_ids)):
-        raise ValueError("staged scene contract ids must be non-empty and unique before candidate write")
     for row in contracts:
         if error := validate_row(row):
-            raise ValueError(f"scene contract {row.get('id', '<missing>')}: {error}")
+            findings.append(f"scene contract {row.get('id', '<missing>')}: {error}")
     if contradictions := validate_row_set(contracts):
         # Run 20260903T031317Z (layer-1 rematerialization take 4) staged a derivative floor
         # and a cap that no curve satisfies in one call and learned it at finalize; the
         # cross-row rules read only the candidate's own contracts, so they run here too.
-        raise ValueError(
-            "cross-row contradiction refused before candidate write: " + "; ".join(contradictions)
-        )
-    requirement_ids = [str(row.get("requirement_id") or "") for row in bindings]
-    if any(not identifier for identifier in requirement_ids) or len(requirement_ids) != len(set(requirement_ids)):
-        raise ValueError("staged requirement ids must be non-empty and unique before candidate write")
+        findings.append("cross-row contradiction: " + "; ".join(contradictions))
     units_by_id = {item.id: item for item in parsed_units}
     contracts_by_id = {str(row.get("id")): row for row in contracts}
     for staged_unit in parsed_units:
@@ -224,14 +237,12 @@ def _validate_local_staged_units(
                     and owner is not None
                     and "camera" not in owner.provides
                 ):
-                    raise ValueError(
-                        "point-projection ownership refused before candidate write: "
+                    findings.append(
+                        "point-projection ownership: "
                         f"unit {staged_unit.id} claim {claim.id} names repair_owner "
                         f"{owner.id}, which does not provide camera. " + PROJECTED_ORIGIN_REPAIR_RULE
                     )
-    interface_gaps = point_projection_interface_gaps(parsed_units, contracts)
-    if interface_gaps:
-        gap = interface_gaps[0]
+    for gap in point_projection_interface_gaps(parsed_units, contracts):
         if gap.reason == "owner_mutation":
             detail = f"camera owner mutates observed selector {gap.selector!r}"
         else:
@@ -239,16 +250,13 @@ def _validate_local_staged_units(
                 f"selector {gap.selector!r} is produced by {list(gap.producer_ids)} "
                 "without a compatible consumed interface"
             )
-        raise ValueError(
-            "point-projection interface refused before candidate write: "
+        findings.append(
+            "point-projection interface: "
             f"unit {gap.unit_id} contract {gap.contract_id}: {detail}. " + PROJECTED_ORIGIN_REPAIR_RULE
         )
-
-    dress_gaps = same_layer_dress_gaps(parsed_units)
-    if dress_gaps:
-        gap = dress_gaps[0]
-        raise ValueError(
-            "same-layer dressing refused before candidate write: "
+    for gap in same_layer_dress_gaps(parsed_units):
+        findings.append(
+            "same-layer dressing: "
             f"unit {gap.unit_id} dresses {list(gap.selectors)} mutated on this "
             f"layer by {list(gap.producer_ids)}. " + SAME_LAYER_DRESS_RULE
         )
@@ -260,26 +268,26 @@ def _validate_local_staged_units(
     )
     if gaps:
         detail = "; ".join(f"unit {gap.unit_id} {gap.code}: {gap.detail}" for gap in gaps)
-        raise ValueError("unit atomicity refused before candidate write: " + detail)
-    route_gaps = construction_route_gaps(parsed_units, contracts)
-    if route_gaps:
-        gap = route_gaps[0]
-        raise ValueError(
-            "construction route refused before candidate write: "
+        findings.append("unit atomicity: " + detail)
+    for gap in construction_route_gaps(parsed_units, contracts):
+        findings.append(
+            "construction route: "
             f"unit {gap.unit_id} {gap.code}: {gap.detail}. " + CONSTRUCTION_ROUTE_RULE
         )
     for unit in parsed_units:
         if unit.construction.route != "generate":
             continue
         if shot_folder is None:
-            raise ValueError(
+            findings.append(
                 f"generate unit {unit.id} names witnesses "
                 f"{list(unit.construction.witnesses)} without a refobs registry. " + UNREGISTERED_WITNESS_RULE
             )
+            continue
         missing = missing_witness_ids(shot_folder, unit.construction.witnesses)
         if missing:
-            raise ValueError(
-                f"generate unit {unit.id} names unregistered witnesses {list(missing)}. " + UNREGISTERED_WITNESS_RULE
+            findings.append(
+                f"generate unit {unit.id} names unregistered witnesses {list(missing)}. "
+                + UNREGISTERED_WITNESS_RULE
             )
     layer_row = payload.get("layer") or {}
     if any("camera" in unit.provides for unit in parsed_units) and "projected_composition" in (
@@ -295,14 +303,23 @@ def _validate_local_staged_units(
         if uncovered:
             # Layer-1 rematerializations 20260903T023810Z-8509f9 and 20260903T035326Z-290f3c
             # both learned this at the terminal gate after staging the camera unit.
-            raise ValueError(
-                "subject-framing coverage refused before candidate write: judge frame(s) "
+            findings.append(
+                "subject-framing coverage: judge frame(s) "
                 f"{list(uncovered)} have no bbox_* row of a rendered subject bound on this "
                 "camera layer. Stage the camera unit with those rows in scene_contracts and "
                 "their ids in composition_context (use the deferred subject-composition "
                 "activation card compiled in your kickoff for activates_at). "
                 + SUBJECT_FRAMING_COVERAGE_RULE
             )
+
+    if findings:
+        raise ValueError(
+            f"staging refused before candidate write; {len(findings)} unit-local finding(s), "
+            "nothing was staged and the candidate is unchanged:\n"
+            + "\n".join(f"  {index}. {finding}" for index, finding in enumerate(findings, 1))
+            + "\n"
+            + COLLECTED_STAGING_RULE
+        )
 
 
 @dataclass(frozen=True, slots=True)

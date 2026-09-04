@@ -430,7 +430,11 @@ effect.
   contract contradictions run over the candidate at every stage and patch call, and a
   composition-owning layer's camera unit cannot stage while a judge frame lacks a `bbox_*`
   row of a rendered subject — the plan gate's `composition-coverage` predicate is the same
-  function (HIR-0177). More generally, every stage call runs the terminal collectable
+  function (HIR-0177). Every unit-local pre-write gate runs on the proposed candidate and their
+  findings are refused together, numbered, with the statement that nothing was staged and the
+  candidate is unchanged: a gate that returned alone made a materializer meet five rules in
+  five turns of a bounded budget, and made it probe with `unstage` to learn that a refused
+  stage commits nothing (HIR-0201). More generally, every stage call runs the terminal collectable
   validator on the proposed candidate inside the write transaction and refuses any finding it
   introduces that is addressed under the staged unit, a supplied row, or a supplied id;
   layer-level findings are listed with the STAGED result and settle at finalize (HIR-0180).
