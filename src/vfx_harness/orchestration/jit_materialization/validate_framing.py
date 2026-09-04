@@ -12,6 +12,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from vfx_harness.domain.atomicity import write_clusters
+from vfx_harness.domain.capability_origin import (
+    CAPABILITY_ORIGIN_RULE,
+    capability_origin_gaps,
+)
+from vfx_harness.domain.capability_origin import describe_gap as describe_origin_gap
 from vfx_harness.domain.data_block_carriers import (
     DATA_BLOCK_CARRIER_RULE,
     data_block_carrier_gaps,
@@ -56,6 +61,14 @@ def framing_findings(
                 (
                     json_ptr("scene_contracts", row_index.get(gap.contract_id, 0)),
                     f"data-block carrier: {describe_gap(gap)}. " + DATA_BLOCK_CARRIER_RULE,
+                )
+            )
+        for origin_gap in capability_origin_gaps(layer_units):
+            findings.append(
+                (
+                    json_ptr("layer", "stages"),
+                    f"capability origin: {describe_origin_gap(origin_gap)}. "
+                    + CAPABILITY_ORIGIN_RULE,
                 )
             )
     activation_card = compile_deferred_subject_activation(global_layers, layer_id)

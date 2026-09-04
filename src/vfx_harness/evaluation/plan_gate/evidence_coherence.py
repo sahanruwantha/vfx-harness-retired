@@ -57,6 +57,11 @@ import json
 from pathlib import Path
 
 from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps, write_clusters
+from vfx_harness.domain.capability_origin import (
+    CAPABILITY_ORIGIN_RULE,
+    capability_origin_gaps,
+)
+from vfx_harness.domain.capability_origin import describe_gap as describe_origin_gap
 from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
 from vfx_harness.domain.construction_routes import construction_route_gaps
 from vfx_harness.domain.contracts import load_document
@@ -429,6 +434,17 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
                         SUBJECT_COMPOSITION_RULE,
                     )
                 )
+        for origin_gap in capability_origin_gaps(typed_stages):
+            out.append(
+                Finding.in_layer(
+                    "capability-origin",
+                    True,
+                    lid,
+                    f"units {', '.join(origin_gap.unordered_ids)}",
+                    describe_origin_gap(origin_gap),
+                    CAPABILITY_ORIGIN_RULE,
+                )
+            )
         for gap in data_block_carrier_gaps(typed_stages, scene_rows, earlier_families=earlier_write_families):
             out.append(
                 Finding.in_layer(

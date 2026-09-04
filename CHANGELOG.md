@@ -26,6 +26,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A capability is originated once per layer
+  ([HIR-0192](docs/improvements/HIR-0192-a-capability-is-originated-once.md)). Layer 1 of a
+  shot declared two units with `provides: ["camera"]` and no edge between them; the one that
+  only set the focal length replayed before the one that creates the camera, and the accepted
+  chain broke mid-layer with `AttributeError: 'NoneType' object has no attribute 'data'` after
+  $5.91 of build. Every declarer of a capability must now reach the unit that originates it,
+  checked at materialization and the plan gate.
+
 - No blocking gate finding is left without a dispatcher
   ([HIR-0190](docs/improvements/HIR-0190-no-finding-is-left-without-a-dispatcher.md)).
   Scoping each gate to the layer that owns its findings kept the wrong session from being

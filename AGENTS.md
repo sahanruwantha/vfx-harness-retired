@@ -333,6 +333,11 @@ effect.
   fails closed and enumerates legal `object=` choices (HIR-0147).
 - Camera availability comes only from typed `provides: ["camera"]` authority; role names,
   including `camera.target`, never imply a capability (HIR-0098).
+  A capability is originated once per layer: exactly one declarer may reach no other
+  declarer of it, and every other unit declaring the same capability must contain that
+  originator in its dependency closure. Declaring `provides` does not create the host, and
+  two unordered declarers leave replay order to authored position, which breaks the
+  accepted chain at the first cold replay (HIR-0192).
 - `inspect_scene(render/lights)` exposes the world/compositor identity, EEVEE volumetric and
   view-layer pass state, and light shape/distance settings; do not smuggle those reads through an
   idempotent `run_bpy` assignment (HIR-0055). Every `inspect_scene` call re-evaluates
