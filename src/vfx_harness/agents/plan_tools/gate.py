@@ -140,8 +140,11 @@ def register_gate_tools(**closed):
         )
         return _text(
             f"Recorded {gap_id} for {args['requirement_id']}. Close the requirement with an "
-            f"explicit decision resolution ({gap_id} is durable audit state; the "
-            "decision carries the authored statement + decision_strength), not a contract."
+            f"explicit approved_start or planner_start decision resolution ({gap_id} is "
+            "durable audit state; the decision carries the authored statement + "
+            "decision_strength), not a contract. The recorded gap is what makes that "
+            "decision legal for this requirement whatever its declared domains, and binding "
+            "same-domain contracts instead is the padding the gap says cannot measure it."
             + statement_rule
             + " The gap is durable state: the harness "
             "grows the vocabulary against it, and a later generation re-binds the "

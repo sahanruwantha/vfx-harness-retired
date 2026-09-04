@@ -781,16 +781,33 @@ def _bvfx_fcurves(target) -> "list[bpy.types.FCurve]":
             for cb in strip.channelbags for fc in cb.fcurves]
 
 
-def _bvfx_interp(target, mode="LINEAR", const=("hide_render", "hide_viewport")) -> "int":
-    """Force interpolation on everything keyed on `target` and its data-block; visibility
-    goes CONSTANT so a swap is a hard cut, never a half-hidden in-between frame. A string
-    resolves first as an object name and then as an exact semantic role.
+def _bvfx_interp(
+    target,
+    mode="LINEAR",
+    const=("hide_render", "hide_viewport"),
+    data_paths=None,
+    exclude_paths=(),
+) -> "int":
+    """Force interpolation on curves keyed on `target` and its data-block; visibility goes
+    CONSTANT so a swap is a hard cut, never a half-hidden in-between frame. A string resolves
+    first as an object name and then as an exact semantic role.
+
+    ``data_paths`` restricts the walk to curves whose ``data_path`` matches one of the given
+    prefixes, and ``exclude_paths`` removes matching curves. Without them the walk covers the
+    whole host closure (HIR-0074), which on a camera carrying both a motion schedule and an
+    optics schedule means re-interpolating rotation necessarily re-interpolates ``data.lens``
+    too: room run 20260904T143607Z-565c1e was blocked from a contract-motivated rotation edit
+    because the only available call form also touched a passing protected lens schedule, and
+    the unit had no legal way to express the edit it had measured (HIR-0203).
 
     Returns the number of curves touched — 0 means you keyed something other than what you
-    think you did, which is the failure this exists to make visible. Bezier overshoot on a
-    fast ramp is what makes a delta layer non-idempotent, and can drive a one-frame value
-    negative between keys that are both positive.
+    think you did, or scoped the call to paths this host does not carry, which is the failure
+    this exists to make visible. Bezier overshoot on a fast ramp is what makes a delta layer
+    non-idempotent, and can drive a one-frame value negative between keys that are both
+    positive.
     """
+    wanted = None if data_paths is None else tuple(str(item) for item in data_paths)
+    unwanted = tuple(str(item) for item in (exclude_paths or ()))
     if isinstance(target, str):
         named = bpy.data.objects.get(target)
         targets = [named] if named is not None else [
@@ -811,7 +828,12 @@ def _bvfx_interp(target, mode="LINEAR", const=("hide_render", "hide_viewport")) 
     n = 0
     for item in expanded:
         for fc in _bvfx_fcurves(item):
-            m = "CONSTANT" if any(c in fc.data_path for c in const) else mode
+            path = str(fc.data_path)
+            if wanted is not None and not any(path.startswith(prefix) for prefix in wanted):
+                continue
+            if any(path.startswith(prefix) for prefix in unwanted):
+                continue
+            m = "CONSTANT" if any(c in path for c in const) else mode
             for kp in fc.keyframe_points:
                 kp.interpolation = m
                 if m == "BEZIER":

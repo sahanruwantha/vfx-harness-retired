@@ -1602,7 +1602,7 @@ def test_camera_global_layer_refuses_geometry_proxy_before_candidate_write(
 
     with pytest.raises(
         ValueError,
-        match=r"global capability boundary refused.*provides:\[\"geometry\"\].*composition_context",
+        match=r"global capability boundary:.*provides:\[\"geometry\"\].*composition_context",
     ):
         stage_materialization_unit(
             target,
@@ -1700,7 +1700,7 @@ def test_future_active_contract_is_context_not_claim_evidence(tmp_path: Path) ->
 
     with pytest.raises(
         ValueError,
-        match=r"deferred contract claim binding refused.*future-subject-bbox.*composition_context",
+        match=r"deferred contract claim binding:.*future-subject-bbox.*composition_context",
     ):
         stage_materialization_unit(
             direct_target,
@@ -1867,7 +1867,7 @@ def test_unit_staging_refuses_unpayable_image_property_before_write(
     )
     before = target.read_bytes()
 
-    with pytest.raises(ValueError, match="image property vocabulary refused"):
+    with pytest.raises(ValueError, match="image property vocabulary:"):
         stage_materialization_unit(
             target,
             unit=unit,
@@ -1939,7 +1939,7 @@ def test_unit_staging_refuses_same_layer_dressing_before_write(tmp_path: Path) -
     }
     before = target.read_bytes()
 
-    with pytest.raises(ValueError, match="same-layer dressing refused"):
+    with pytest.raises(ValueError, match="same-layer dressing:"):
         stage_materialization_unit(
             target,
             unit=shade,
@@ -1982,7 +1982,7 @@ def test_unit_staging_refuses_generate_on_non_mesh_family_before_write(tmp_path:
     unit["construction"] = {"route": "generate", "witnesses": ["refobs-abc123"]}
     before = target.read_bytes()
 
-    with pytest.raises(ValueError, match="construction route refused"):
+    with pytest.raises(ValueError, match="construction route:"):
         stage_materialization_unit(
             target,
             unit=unit,
@@ -2496,7 +2496,7 @@ def test_patch_cannot_insert_or_pad_a_staged_unit(
         requirement_bindings=full["requirement_bindings"],
     )
     before = target.read_bytes()
-    with pytest.raises(ValueError, match=r"atomicity refused before candidate write.*padding"):
+    with pytest.raises(ValueError, match=r"unit atomicity:.*padding"):
         apply_materialization_patches(
             bundle.root,
             target,
@@ -2573,7 +2573,7 @@ def test_materialization_refuses_mixed_unit_before_it_enters_staged_scratch(
     ]
     before = target.read_bytes()
 
-    with pytest.raises(ValueError, match=r"atomicity refused before candidate write.*mixed_clusters"):
+    with pytest.raises(ValueError, match=r"unit atomicity:.*mixed_clusters"):
         stage_materialization_unit(
             target,
             unit=unit,
@@ -2981,7 +2981,7 @@ def test_control_producer_cannot_own_camera_projection_repair(tmp_path: Path) ->
         base_selection=_base_selection(tmp_path),
     )
     before = staged.read_bytes()
-    with pytest.raises(ValueError, match="point-projection ownership refused before candidate write"):
+    with pytest.raises(ValueError, match="point-projection ownership:"):
         stage_materialization_unit(
             staged,
             unit=unit,
@@ -3158,7 +3158,7 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
     camera_without_interface = json.loads(json.dumps(camera))
     camera_without_interface.pop("consumes")
     before = staged.read_bytes()
-    with pytest.raises(ValueError, match="point-projection interface refused before candidate write"):
+    with pytest.raises(ValueError, match="point-projection interface:"):
         stage_materialization_unit(
             staged,
             unit=camera_without_interface,

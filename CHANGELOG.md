@@ -32,6 +32,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A motion edit on a host that also carries an optics schedule is expressible again
+  ([HIR-0203](docs/improvements/HIR-0203-interpolation-scopes-to-the-curves-a-unit-meant.md)).
+  `bvfx_interp` walked the whole host closure with no way to restrict it, so re-interpolating
+  a camera's rotation necessarily re-interpolated its passing protected lens schedule and the
+  guard refused a contract-motivated edit that had no other legal form; the run then stalled
+  and failed. Interpolation now takes `data_paths`/`exclude_paths`, and the guard names those
+  forms instead of volumetric density advice aimed at a unit with no lights.
+
 - A refused stage call now reports every unit-local gate at once and says that nothing was
   staged ([HIR-0201](docs/improvements/HIR-0201-pre-write-staging-gates-report-together.md)).
   Each gate returned on its first finding, so one camera unit took nine stage calls and eight

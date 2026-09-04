@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,34 @@ def note_required_claim_metric_domains(*, note, unit, unit_index, claim, all_con
             "cross-domain observations in composition_context or split the "
             "proposition into separately typed claims",
         )
+
+
+def recorded_vocabulary_gap_ids(root) -> dict[str, tuple[str, ...]]:
+    """Vocabulary-gap ids this shot recorded, by requirement id.
+
+    ``escalate_vocabulary_gap`` appends one JSON row per gap; a malformed or missing file
+    means no gap, never a crash in a validator.
+    """
+    path = Path(root) / "state" / "plan-escalations" / "vocabulary-gaps.jsonl"
+    gaps: dict[str, list[str]] = {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or row.get("schema") != "vfx-harness.vocabulary-gap/v1":
+            continue
+        requirement_id = str(row.get("requirement_id") or "")
+        gap_id = str(row.get("id") or "")
+        if requirement_id and gap_id:
+            gaps.setdefault(requirement_id, []).append(gap_id)
+    return {key: tuple(value) for key, value in gaps.items()}
 
 
 def validate_requirement_closure(
@@ -267,6 +296,12 @@ def validate_requirement_closure(
         )
     contract_domains.update(dict.fromkeys(image_debt_ids, "image"))
     qualitative_domains = {"image", "human"}
+    # A recorded vocabulary gap is the harness's own evidence that no registry metric can
+    # express a statement; without it in view this validator refused the decision path its
+    # own escalate_vocabulary_gap tool had just prescribed, and the only shape that passed
+    # bound twelve bbox_height rows to a text-absence proposition (caesar run
+    # 20260904T143311Z-c0f282 R20, HIR-0202).
+    vocabulary_gap_ids = recorded_vocabulary_gap_ids(root)
     judgment_debt_definitions: list[JudgmentDebtDefinition] = []
     judgment_definition_by_requirement: dict[str, JudgmentDebtDefinition] = {}
     known_debt_ids = {definition.debt_id for definition in existing_definitions}
@@ -310,12 +345,40 @@ def validate_requirement_closure(
                 f"found {str(decision.get('statement') or '').strip()!r}. Materialization "
                 "may classify the debt strength but cannot rewrite the proposition",
             )
+        gap_ids = vocabulary_gap_ids.get(requirement_id, ())
         decision_domains = {domain for domain in declared if domain in qualitative_domains and not by_domain[domain]}
+        if gap_ids:
+            # The gap enumerates the kinds tried and why each cannot certify, which is a
+            # stronger statement of inexpressibility than a bare decision: it lets the
+            # decision pay every domain the requirement still owes, structural included.
+            decision_domains |= {domain for domain in declared if not by_domain[domain]}
         if decision and not decision_domains:
+            unpaid_qualitative = [domain for domain in declared if domain in qualitative_domains]
+            if unpaid_qualitative:
+                note(
+                    json_ptr("requirement_bindings"),
+                    f"requirement {requirement_id} carries a decision but every declared "
+                    f"qualitative domain {unpaid_qualitative} already has contract evidence; "
+                    "remove the padding decision",
+                )
+            else:
+                note(
+                    json_ptr("requirement_bindings"),
+                    f"requirement {requirement_id} declares only structural domains "
+                    f"{list(declared)}, which a decision cannot pay: bind a same-domain "
+                    "registry contract that measures the statement, or, when no registry "
+                    "metric can express it, call escalate_vocabulary_gap for this "
+                    "requirement first — a recorded gap makes the decision legal here",
+                )
+        if gap_ids and not decision:
             note(
                 json_ptr("requirement_bindings"),
-                f"requirement {requirement_id} carries a decision but every declared domain "
-                "already has contract evidence; remove the padding decision",
+                f"requirement {requirement_id} has recorded vocabulary gap(s) "
+                f"{list(gap_ids)} asserting that no registry metric can express its "
+                f"statement, so it cannot then be closed by contract bindings "
+                f"{list(contract_ids) or '(none)'}: bind an approved_start or planner_start "
+                "decision carrying the authored statement, or retract the gap if those "
+                "metrics do measure the proposition",
             )
         if decision and str(decision.get("decision_strength") or "") not in {
             "approved_start",

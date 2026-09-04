@@ -1282,7 +1282,10 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   consume the next attempt (HIR-0031). Canonical repair binds that tool on the candidate
   server — it is not a blender MCP ToolSearch (HIR-0043). A `keyframe_schedule` path
   miss names requested aliases vs present fcurve paths and stays in repair; it is
-  not INAPPLICABLE and not `cannot_express_in_scope` by default (HIR-0050). Once active
+  not INAPPLICABLE and not `cannot_express_in_scope` by default (HIR-0050). `bvfx_interp` scopes to the curves a unit meant through `data_paths`/`exclude_paths`;
+  the unscoped call still walks the whole host closure (HIR-0074), so on a host carrying both
+  motion and optics schedules the scoped form is the one that expresses a motion-only edit,
+  and the protection guard names it rather than advice from another domain (HIR-0203). Once active
   exact schedule rows pass, diagnostics may not mute their curves or override their paths
   without legal same-transaction rekeying; direct `keyframe_point.co` edits are the same
   protected mutation, including curves returned by `bvfx_fcurves`. Use a transactional observation; if normalized
