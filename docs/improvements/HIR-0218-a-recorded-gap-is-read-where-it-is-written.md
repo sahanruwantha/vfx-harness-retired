@@ -129,6 +129,30 @@ A test of the reader alone would have passed on both sides of the bug, which is 
 assertion is on the staging outcome. The point was raised by the room_1046_opening driver
 and it is the reason this test is shaped this way.
 
+### Live validation on accumulated durable state
+
+room_1046_opening had escalated four gaps across two materialization sessions of run
+`20260905T055927Z-d5ad87` — one at layer 1, three at layer 2 — every one of them written
+by a session that had no way to know the reader was broken. At `d2228b3`, against that
+shot's real state:
+
+```
+recorded_vocabulary_gap_ids(artifacts/room_1046_opening)
+  -> {'R33': ('VG-001',), 'R21': ('VG-002',), 'R52': ('VG-003',), 'R20': ('VG-004',)}
+```
+
+Pre-fix that call returned `{}` for every shot, so all four were invisible to the rule
+that asks for them.
+
+This is the stronger of the two live citations. The 2470.0s refusal proves the branch is
+now *reachable*; this proves the accumulated durable state it must read is intact,
+parseable, and correctly keyed by requirement id after months of writes nothing ever read.
+A fixture cannot produce that evidence, because a fixture writes what it expects to read.
+
+The reader was found by the driver of the shot that had been stuck on it, which is also
+the point: four gaps had accumulated as orphaned audit state, and nothing in the system
+noticed, because an empty result and a wrong directory are the same value.
+
 ## Rejected alternatives
 
 - **Derive the shot folder from `resolutions_path`.** It already points at
