@@ -325,7 +325,26 @@ def validate_requirement_closure(
             # stronger statement of inexpressibility than a bare decision: it lets the
             # decision pay every domain the requirement still owes, structural included.
             decision_domains |= {domain for domain in declared if not by_domain[domain]}
-        if decision and not decision_domains:
+        if decision and not decision_domains and gap_ids:
+            # The gap already exists, so telling the session to escalate one is advice it
+            # has taken and cannot usefully repeat. What is left is that every declared
+            # domain is covered by contract bindings, so the decision has nothing to pay --
+            # and those same bindings are what the gap asserts cannot measure the statement.
+            # Naming the escalation here is what closed the loop: bind contracts, be told to
+            # decide; bind a decision too, be told to escalate; escalate, and the gap is
+            # already there (HIR-0222).
+            note(
+                json_ptr("requirement_bindings"),
+                f"requirement {requirement_id} has recorded vocabulary gap(s) "
+                f"{list(gap_ids)} and a decision, but every declared domain "
+                f"{list(declared)} is already covered by contract bindings "
+                f"{sorted({cid for ids in by_domain.values() for cid in ids}) or '(none)'}, "
+                "so the decision has nothing left to pay. The gap asserts those metrics "
+                "cannot measure the statement: remove them from this requirement's "
+                "contract_ids and let the decision carry the domains. Do not escalate "
+                "again -- the gap is recorded.",
+            )
+        elif decision and not decision_domains:
             unpaid_qualitative = [domain for domain in declared if domain in qualitative_domains]
             if unpaid_qualitative:
                 note(

@@ -1059,7 +1059,15 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   judgment; interaction judgment; human adjudication only for genuine uncertainty.
 - Metric identity is explicit: one canonical registry (`vfx-harness.look-vector/v1`); producers
   and consumers call the same implementation; unknown metric ids are rejected. Never maintain
-  parallel implementations of one metric (ADR-0003, HIR-0006).
+  parallel implementations of one metric (ADR-0003, HIR-0006). The same holds for any
+  quantity, not only metrics: where a second derivation of one value must exist, a test pins
+  it against the first, because **an unpinned second derivation is itself the defect**. Three
+  landed on one day — a role notation, a turn count, a layer order — and each had both
+  derivations present in the codebase with only one matching the recorded rule. The layer
+  order was the only one that surfaced *as itself* rather than as a downstream symptom, and
+  only because `judgment_debt_replay_authority` writes the two orders next to each other and
+  asserts they match. The role notation surfaced as a unit that could execute nothing; the
+  turn count surfaced only because someone read the number (HIR-0217, HIR-0221).
 - Every metric kind declares the evidence domain it can certify (scene, temporal,
   projected_composition, image); a claim binds only evidence that can certify its domain. Counts
   prove existence — never timing, ordering, or appearance (HIR-0014).
@@ -1475,6 +1483,13 @@ inventories, grep hits read as payloads, one finalizer read as another, a wait l
 its own pgrep pattern timed as the suite, and a stale discriminator that would have passed
 silently. State only what the artifact you opened evidences: a record that carries no layer
 field does not establish a layer, whoever else already believes it.
+
+**Truncating for display manufactures a description, and a self-authored one is exactly as
+untrustworthy as any other.** A `[:160]` slice of a DAG row, a `tail -40` of a suite, a
+260-character prefix of a 5,572-character refusal, a `head` of a search — each produces
+output that reads like data and is not. Re-derive from the artifact when you use it, never
+from your own earlier rendering of it; the truncation that was fine for looking is not fine
+for reasoning, and hours later nothing distinguishes the two.
 
 The same rule governs edits, because **shape is not identity**. A change applied by matching
 a pattern cannot distinguish "this looks like the ones I am changing" from "this is one I

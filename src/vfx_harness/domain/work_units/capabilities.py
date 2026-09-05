@@ -157,7 +157,14 @@ def topological_sparse_layer_ids(
             remaining[child].discard(layer_id)
             if not remaining[child] and child not in ordered and child not in ready:
                 unlocked.append(child)
-        ready.extend(sorted(unlocked, key=lambda item: authored[item]))
+        # Re-sort the whole queue, not just this batch. Sorting only `unlocked` left
+        # a layer unlocked earlier sitting ahead of a lower-authored one unlocked later:
+        # hansa_silk_road's DAG (3 needs 1,2; 4 needs 1) yielded 1,2,4,3 because 4 was
+        # queued when 1 completed and 3 only when 2 did. The authored order was itself a
+        # valid topological order, so the capsule set and this function disagreed and
+        # judgment replay capture refused the shot (HIR-0221).
+        ready.extend(unlocked)
+        ready.sort(key=lambda item: authored[item])
     if len(ordered) != len(by_id):
         return tuple(layer_id for _index, layer_id, _row in indexed)
     return tuple(ordered)

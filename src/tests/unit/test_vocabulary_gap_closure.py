@@ -211,3 +211,38 @@ def test_a_recorded_gap_is_read_from_the_shot_folder_not_the_plan_bundle(
         "the instructed action must change the next outcome; a recorded gap that the "
         "validator cannot see leaves the refusal that prescribed it firing forever"
     )
+
+
+def test_a_recorded_gap_plus_full_contract_cover_names_the_removal_not_the_escalation(
+    tmp_path: Path,
+) -> None:
+    """HIR-0222: a refusal must not prescribe an action already taken.
+
+    room_1046_opening layer 2 looped on R20 seventeen times. Bind contracts, and the
+    gap refuses them and asks for a decision. Bind the decision as well, and — because
+    the contracts still cover every declared domain — the decision has nothing to pay,
+    and the old message sent the session to `escalate_vocabulary_gap`, which it had
+    already called and which changes nothing. Neither refusal named the one action that
+    resolves it: remove the contract bindings the gap says cannot measure the statement.
+    """
+    root = _fixture_root(tmp_path)
+    _record_gap(root, "R-form")
+
+    binding = dict(_form_payload()["requirement_bindings"][0])
+    binding["decision"] = {
+        "statement": FORM_STATEMENT,
+        "decision_strength": "approved_start",
+    }
+
+    with pytest.raises(ValueError) as refused:
+        _validated_form(root, binding)
+    message = str(refused.value)
+
+    # It names the gap it already has, and does not ask for another.
+    assert "recorded vocabulary gap(s) ['VG-001']" in message
+    assert "escalate_vocabulary_gap" not in message
+    assert "Do not escalate again" in message
+    # It names the action that actually resolves the state.
+    assert "remove them from this requirement's contract_ids" in message
+    # And it shows the bindings that are blocking the decision.
+    assert "already covered by contract bindings" in message

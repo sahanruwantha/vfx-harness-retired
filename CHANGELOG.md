@@ -46,6 +46,26 @@ live in the linked Harness Improvement Records.
   fixture passed a single directory as both roots; the regression test keeps them apart and
   asserts the staging outcome changes, since a test of the reader alone passes either way.
 
+- A refusal no longer prescribes an action the session has already taken
+  ([HIR-0222](docs/improvements/HIR-0222-a-refusal-does-not-prescribe-an-action-already-taken.md)).
+  A layer-2 materialization spent 17 refusals alternating between "this requirement has a
+  recorded gap, so contracts cannot close it — bind a decision" and "a decision cannot pay
+  structural domains — call escalate_vocabulary_gap first", with the gap already recorded.
+  Both were true; neither named the resolution, which is to remove the contract bindings the
+  gap asserts cannot measure the statement. Where gaps are recorded, the refusal now names
+  the bindings blocking the decision, the removal, and that escalating again changes nothing.
+
+- The layer order derived from the DAG now keeps authored position among independent
+  layers ([HIR-0221](docs/improvements/HIR-0221-authored-order-survives-when-it-is-already-topological.md)).
+  A build died on "selected authority capsules do not preserve the stable topological layer
+  order" where the authored order was itself topologically valid — layers 3 and 4 were
+  independent, and the sorter simply chose the other valid order. Newly unlocked layers were
+  appended to the ready queue with only the new batch sorted, so a layer unlocked early sat
+  ahead of a lower-authored layer unlocked later. The queue is now ordered by authored
+  position throughout, which is what the function already documented. Stability stays a
+  tie-break: an authored order that violates an edge is still reordered and a cyclic DAG is
+  still refused.
+
 - Each metric now declares the values it can produce, and a threshold outside them is
   refused at authoring
   ([HIR-0219](docs/improvements/HIR-0219-a-metric-declares-the-values-it-can-produce.md)).
