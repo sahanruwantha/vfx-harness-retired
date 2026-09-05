@@ -32,6 +32,15 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- The unclassified-boundary audit record leads with the cause
+  ([HIR-0231](docs/improvements/HIR-0231-the-audit-record-leads-with-the-cause.md)).
+  HIR-0226 put that file in the reading order; inside it, the 270KB authority snapshot
+  sorted first by accident of the letter 'a' and the 95 bytes answering "what happened"
+  sat behind it in a 519KB document, unreachable by any bounded read. The snapshot now has
+  its own report named by locator and the audit is under 2KB. Reported by the
+  hansa_silk_road driver, who found it by opening the file as a reader — the exact use the
+  previous fix existed to enable.
+
 - The turn budget is reported against the counter it actually bounds
   ([HIR-0228](docs/improvements/HIR-0228-the-budget-is-reported-against-the-counter-it-bounds.md),
   superseding HIR-0199). `max_turns` reaches the CLI as `--max-turns` and the CLI reports

@@ -614,17 +614,29 @@ def test_unclassified_boundary_identity_is_restart_stable_until_authority_change
             encoding="utf-8"
         )
     )
+    # HIR-0231 moved the 270KB authority snapshot out of the audit record and behind a
+    # locator. The evidence is unchanged; this test now follows the pointer to it.
+    first_sources = json.loads(
+        (first_layout.root / first_audit["authority_sources_report"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    second_sources = json.loads(
+        (second_layout.root / second_audit["authority_sources_report"]).read_text(
+            encoding="utf-8"
+        )
+    )
     assert first_audit["run_id"] != second_audit["run_id"]
     assert (
-        first_audit["authority_sources"]["manifest"]["document"]["invocation"]
+        first_sources["authority_sources"]["manifest"]["document"]["invocation"]
         ["parameters"]
-        != second_audit["authority_sources"]["manifest"]["document"]["invocation"]
+        != second_sources["authority_sources"]["manifest"]["document"]["invocation"]
         ["parameters"]
     )
     assert (
-        first_audit["authority_sources"]["selected_bundle"]["pointer"]["document"]
+        first_sources["authority_sources"]["selected_bundle"]["pointer"]["document"]
         ["published_at"]
-        != second_audit["authority_sources"]["selected_bundle"]["pointer"]["document"]
+        != second_sources["authority_sources"]["selected_bundle"]["pointer"]["document"]
         ["published_at"]
     )
     first_evidence = json.loads(
@@ -1051,3 +1063,45 @@ def test_a_plan_gate_failure_reports_its_outcome_not_its_stop_class() -> None:
         # And it agrees with the boundary's own derivation, which is the same function.
         _s, _c, cause, _d = run_artifacts.terminal_record(failure)
         assert cause == expected
+
+
+def test_the_audit_record_leads_with_the_cause_not_the_authority_dump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HIR-0231: HIR-0226 pointed at this file and left a second lookup inside it.
+
+    Reports are written with sorted keys, so `authority_sources` sorted first by accident
+    of the letter 'a'. A real record measured 519KB, of which the authority snapshot was
+    270KB and the two fields answering "what happened" were 95 bytes. A reader opening it
+    with a line-limited read met the accepted_build dump and never reached the cause.
+    """
+    shot = tmp_path / "shot-audit-order"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(shot, "audit-order-001")
+
+    exc = _LayerFinalizationConflict("layer 1 already has an active finalization claim")
+    _state, code, cause, _detail = run_artifacts.terminal_record(exc)
+    run_artifacts.publish_exception_stop(layout, "build", exc, code=code, terminal_cause=cause)
+
+    audit = json.loads(
+        (layout.reports / "unclassified-boundary-audit.json").read_text(encoding="utf-8")
+    )
+    # The cause is in the record; the bulk is not.
+    assert audit["exception_message"] == "layer 1 already has an active finalization claim"
+    assert "authority_sources" not in audit, "the dump must not be inline"
+    assert audit["authority_sources_report"].endswith(
+        "unclassified-boundary-authority.json"
+    )
+
+    # And the snapshot is still published, by locator, losing no evidence.
+    sources = json.loads(
+        (layout.root / audit["authority_sources_report"]).read_text(encoding="utf-8")
+    )
+    assert "authority_sources" in sources
+    assert sources["boundary"] == "build"
+
+    # The record a reader opens is small enough that any read reaches the cause.
+    raw = (layout.reports / "unclassified-boundary-audit.json").read_text(encoding="utf-8")
+    assert len(raw) < 2000, f"audit record is {len(raw)} bytes; the cause must not be buried"
+    assert "exception_message" in raw[:2000]
