@@ -490,6 +490,19 @@ def _unclassified_authoritative_state(layout: RunLayout, command: str) -> dict[s
     return state
 
 
+def _exception_label(exc: BaseException, *, limit: int = 240) -> str:
+    """`module.QualName: message`, whitespace-normalised and bounded.
+
+    One value for the audit record and the operator-facing prose, so the envelope
+    cannot describe an exception differently from the file beside it (HIR-0226).
+    """
+    qualified = f"{type(exc).__module__}.{type(exc).__qualname__}"
+    message = " ".join(str(exc).split())
+    if len(message) > limit:
+        message = message[: limit - 1].rstrip() + "\u2026"
+    return f"{qualified}: {message}" if message else qualified
+
+
 def _unclassified_stop_envelope(
     layout: RunLayout,
     command: str,
@@ -570,9 +583,10 @@ def _unclassified_stop_envelope(
             "authority_sources": authority_audit,
         },
     )
+    audit_locator = audit_path.relative_to(layout.root).as_posix()
     layout.terminal_metadata.update(
         {
-            "unclassified_boundary_audit": audit_path.relative_to(layout.root).as_posix(),
+            "unclassified_boundary_audit": audit_locator,
         }
     )
     defect_path = layout.write_report("unclassified-boundary-defect", defect_document)
@@ -651,8 +665,22 @@ def _unclassified_stop_envelope(
         evidence_refs=(evidence,),
         budget_key="unclassified-boundary",
         expected="Every unaccepted run boundary publishes a typed stop before returning.",
-        found=f"The {command!r} boundary returned without typed stop authority.",
-        next_action="Route the boundary and exact attempt evidence to engineering.",
+        # The exception is already recorded verbatim in the audit beside this envelope.
+        # Naming only the boundary here discarded it at the one surface an operator
+        # reads, because `detail` is f"{stop_class}: {found} {next_action}". Four
+        # distinct causes were lost this way in one day, including a
+        # LayerFinalizationConflict whose own message names the `vfx finalizations
+        # release` transaction that recovers it (HIR-0226).
+        found=(
+            f"The {command!r} boundary returned without typed stop authority; it raised "
+            f"{_exception_label(exc)}"
+        ),
+        next_action=(
+            "Read that exception first -- it is the cause, and several of these name "
+            f"their own owning boundary or recovery transaction. {audit_locator} holds "
+            "it verbatim. Then route the boundary and exact attempt evidence to "
+            "engineering."
+        ),
     )
 
 

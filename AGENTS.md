@@ -51,7 +51,14 @@ operation.
   it cannot dispatch; do not force downstream work past it. `--force` is a bounded debugging
   experiment, never a deliverable.
 - Reading order after any invocation: `runs/latest.json`, then the selected run's
-  `manifest.json`, `status.json`, `reports/summary.json`, `artifacts.json`. Fail closed on an
+  `manifest.json`, `status.json`, `reports/summary.json`, `artifacts.json`; and when the stop
+  is a `harness_defect` naming an unclassified boundary, `reports/unclassified-boundary-audit.json`
+  before anything else, because that file holds the real exception type and message and the
+  envelope only summarises it. Omitting it from this list is why drivers diagnosed these from
+  console tracebacks while the faithful record sat unread one file away -- 46 such boundaries
+  accumulated across three shots, and the drivers who investigated them did not know the file
+  existed. Naming the audit in the stop's prose is not enough on its own, since identical
+  envelopes train a reader to skip that prose (HIR-0226). Fail closed on an
   unsupported manifest schema. Every run is the `vfx-harness.run/v2` generation owned by a claim
   and fence; `status.json` is `vfx-harness.run-status/v2` and holds only the selected record
   locators and digests, terminal diagnostics such as `terminal_cause` live in
@@ -1026,6 +1033,14 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   the exception type, and whether an operator initiated it — a constant identity made
   every such stop in every shot share one finding id, and the controller refuses a
   fingerprint already dispatched in the shot (HIR-0214).
+  Its operator prose is a third question: the envelope's `found` names the exception
+  it swallowed, from the same bounded label the audit beside it records, because `detail`
+  is composed from `found` at every consumer and is what `status.json` and
+  `reports/summary.json` carry. Keeping free-form prose out of the identity digest is
+  correct and does not extend to the sentence an operator reads — 46 unclassified
+  boundaries across three shots held 32 distinct causes and produced four sentences,
+  including a `BUILD TRUNCATED` message the harness had already authored. The label never
+  enters `classification_digest`, and `next_action` still names one action (HIR-0226).
 - Reopen a fixed or interrupted unit only through the audited `vfx units retry` transition, with
   reason and evidence. A reopened unit whose executable rows already pass may mutate until the
   first in-session verdict — the convergence guard cannot treat a failed qualitative claim as

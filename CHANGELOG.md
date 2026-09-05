@@ -32,6 +32,30 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- An unclassified boundary now names the exception it swallowed
+  ([HIR-0226](docs/improvements/HIR-0226-the-boundary-names-the-exception-it-swallowed.md)).
+  The envelope's `found` said only *"The 'build' boundary returned without typed stop
+  authority"* while `unclassified-boundary-audit.json`, written ninety lines earlier in the
+  same function, recorded the exception verbatim. `detail` is composed from `found`, so
+  that sentence is what `status.json` and `reports/summary.json` carry. All 46 audit
+  records on this machine — three shots, four days — hold **32 distinct causes** and
+  produced **four** sentences, differing only by boundary name: a `LayerFinalizationConflict`
+  whose message names the `vfx finalizations release` transaction that recovers it, seven
+  `UnitAttemptConflict`s that print their own legal state lists, and seven `RequestedExit`s
+  carrying operator sentences the harness had already authored (`BUILD TRUNCATED — builder
+  emitted no SDK event for 360s`). `found` now carries a bounded `module.QualName: message`
+  label from the same function the audit uses, and `next_action` points at that record
+  before naming its one action. Replaying all 32 real causes through the fixed boundary
+  yields 32 distinct details, the longest 633 characters against a 1000-character cap. The
+  load-bearing half is that `reports/unclassified-boundary-audit.json` now appears in
+  AGENTS.md's documented reading order: both drivers who investigated one of these diagnosed
+  it from a console traceback because they did not know the file existed, and prose alone
+  would not have reached them — 46 identical envelopes are the training set for skipping
+  `next_action` as boilerplate.
+  HIR-0214's identity is untouched: the label never enters `classification_digest`, so two
+  conflicts on different layers still share one fingerprint and one finding id, and the
+  controller's already-dispatched check still works.
+
 - A recorded vocabulary gap is now read where the tool writes it
   ([HIR-0218](docs/improvements/HIR-0218-a-recorded-gap-is-read-where-it-is-written.md)).
   `escalate_vocabulary_gap` writes under `<shot>/state/plan-escalations/`; the

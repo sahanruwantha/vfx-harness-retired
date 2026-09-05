@@ -837,3 +837,176 @@ def test_reader_refuses_shot_root_legacy_output(tmp_path: Path, monkeypatch: pyt
 
     with pytest.raises(FileNotFoundError, match="no structured run"):
         run_artifacts.readable_renders_dir(shot)
+
+
+class _ArtifactExecutionPolicyError(Exception):
+    pass
+
+
+def test_an_unclassified_boundary_puts_its_cause_in_the_operator_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HIR-0226: the envelope prose must carry what the audit beside it records.
+
+    `detail` is `f"{stop_class}: {found} {next_action}"`, so `found` is exactly what an
+    operator reads in status.json and reports/summary.json. It named only the boundary,
+    while `unclassified-boundary-audit.json` recorded `exception_type` and
+    `exception_message` faithfully one file away. Four distinct causes were lost that way
+    in a single day across three shots.
+    """
+    shot = tmp_path / "shot-boundary"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(shot, "boundary-001")
+
+    exc = _ArtifactExecutionPolicyError("artifact import denied: itertools")
+    # Mirror the boundary exactly: run_owner_boundary derives both from terminal_record.
+    _state, code, cause, _detail = run_artifacts.terminal_record(exc)
+    envelope = run_artifacts.publish_exception_stop(
+        layout, "build", exc, code=code, terminal_cause=cause
+    )
+
+    # The operator-facing sentence names the cause, not only the boundary.
+    assert "artifact import denied: itertools" in envelope.found
+    assert "_ArtifactExecutionPolicyError" in envelope.found
+    assert "returned without typed stop authority" in envelope.found
+
+    # And the next action points at the verbatim record rather than a boundary name.
+    assert "unclassified-boundary-audit" in envelope.next_action
+    assert "Read that exception first" in envelope.next_action
+    # One legal action still, and it is still engineering.
+    assert "route the boundary and exact attempt evidence to engineering" in envelope.next_action
+
+    # detail is what status.json carries; it must contain the cause end to end.
+    detail = f"{envelope.stop_class}: {envelope.found} {envelope.next_action}"
+    assert "itertools" in detail
+
+    # The audit record and the prose describe the same exception.
+    audit = json.loads(
+        (layout.reports / "unclassified-boundary-audit.json").read_text(encoding="utf-8")
+    )
+    assert audit["exception_message"] == "artifact import denied: itertools"
+    assert audit["exception_message"] in envelope.found
+
+
+class _LayerFinalizationConflict(Exception):
+    pass
+
+
+# The four causes this boundary actually swallowed on 2026-09-05, read back from the
+# `unclassified-boundary-audit.json` records of three shots. Each names its own owner:
+# a finalization claim recoverable by `vfx finalizations release`, a capsule-ordering
+# defect, a denied artifact import, and a dead pipe. The envelope told an operator only
+# that a boundary returned.
+_SWALLOWED = (
+    (
+        _LayerFinalizationConflict("layer 1 already has an active finalization claim"),
+        "already has an active finalization claim",
+    ),
+    (
+        ValueError("selected authority capsules do not preserve the stable topological layer order"),
+        "do not preserve the stable topological layer order",
+    ),
+    (
+        _ArtifactExecutionPolicyError("artifact import denied: itertools"),
+        "artifact import denied: itertools",
+    ),
+    (BrokenPipeError(32, "Broken pipe"), "Broken pipe"),
+)
+
+
+@pytest.mark.parametrize("exc, expected", _SWALLOWED, ids=[type(e).__name__ for e, _ in _SWALLOWED])
+def test_every_swallowed_cause_survives_into_the_published_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: BaseException, expected: str
+) -> None:
+    """HIR-0226: one boundary, four distinct causes, one indistinguishable sentence."""
+    shot = tmp_path / "shot-swallowed"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(shot, "swallowed-001")
+
+    _state, code, cause, _detail = run_artifacts.terminal_record(exc)
+    envelope = run_artifacts.publish_exception_stop(
+        layout, "build", exc, code=code, terminal_cause=cause
+    )
+
+    assert type(exc).__name__ in envelope.found
+    assert expected in envelope.found
+
+
+def test_the_envelope_label_is_bounded_and_whitespace_normalised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`found` reaches status.json through `detail`; a multi-line exception cannot run away."""
+    shot = tmp_path / "shot-noisy"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(shot, "noisy-001")
+
+    noisy = ValueError("first line\n   second   line\t\tthird " + "x " * 400)
+    _state, code, cause, _detail = run_artifacts.terminal_record(noisy)
+    envelope = run_artifacts.publish_exception_stop(
+        layout, "build", noisy, code=code, terminal_cause=cause
+    )
+
+    assert "first line second line third" in envelope.found
+    assert "\n" not in envelope.found and "\t" not in envelope.found
+    assert "…" in envelope.found
+    # Bounded: the message contributes at most the cap, not the whole 800-character string.
+    assert len(envelope.found) < 500
+    # And the composed detail still fits the 1000-character summary/status cap, so the
+    # cause is not itself truncated away by the consumer that carries it.
+    detail = f"{envelope.stop_class}: {envelope.found} {envelope.next_action}"
+    assert len(detail) <= 1000
+    assert "first line second line third" in detail[:1000]
+
+
+def test_an_exception_with_no_message_still_names_its_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shot = tmp_path / "shot-silent"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+    layout = run_artifacts.create(shot, "silent-001")
+
+    silent = RuntimeError()
+    _state, code, cause, _detail = run_artifacts.terminal_record(silent)
+    envelope = run_artifacts.publish_exception_stop(
+        layout, "build", silent, code=code, terminal_cause=cause
+    )
+
+    assert "builtins.RuntimeError" in envelope.found
+    assert envelope.found.rstrip().endswith("RuntimeError")
+
+
+def test_carrying_the_message_does_not_move_the_stop_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HIR-0214's identity is type-level; HIR-0226 changes prose only.
+
+    The controller refuses a cause fingerprint already dispatched in the shot, so if the
+    message reached `classification_digest` two runs of one defect would stop colliding
+    and a genuine repeat would dispatch twice. This guard passes with and without the
+    mechanism, deliberately: it asserts identity did not move.
+    """
+    shot = tmp_path / "shot-identity"
+    shot.mkdir()
+    monkeypatch.delenv(run_artifacts.ENV, raising=False)
+
+    envelopes = []
+    for index, message in enumerate(("layer 1 already has a claim", "layer 7 already has a claim")):
+        layout = run_artifacts.create(shot, f"identity-00{index}")
+        exc = _LayerFinalizationConflict(message)
+        _state, code, cause, _detail = run_artifacts.terminal_record(exc)
+        envelopes.append(
+            run_artifacts.publish_exception_stop(
+                layout, "build", exc, code=code, terminal_cause=cause
+            )
+        )
+
+    first, second = envelopes
+    assert first.cause_fingerprint == second.cause_fingerprint
+    assert first.cause.finding_ids == second.cause.finding_ids
+    # The prose still separates them for the operator.
+    assert first.found != second.found
+    assert "layer 1" in first.found and "layer 7" in second.found
