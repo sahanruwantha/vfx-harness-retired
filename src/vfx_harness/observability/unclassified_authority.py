@@ -90,6 +90,14 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+#: Causes an operator produced deliberately. The boundary still violated the invariant
+#: -- a recorded signal should have become an interruption receipt, not an unclassified
+#: stop -- so these remain harness defects. They are named so an operator action is at
+#: least distinguishable from a code fault in the identity, rather than sharing one
+#: finding id with four of them (HIR-0214).
+OPERATOR_CAUSES = frozenset({"interrupted", "requested_exit"})
+
+
 def closed_terminal_cause(value: str) -> str:
     """Keep arbitrary legacy exception metadata out of action identity."""
 

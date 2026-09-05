@@ -119,7 +119,10 @@ def test_run_bpy_refuses_mutation_when_selected_unit_is_not_atomic() -> None:
     message = _run_bpy_write_family_error("bvfx_role(obj, 'iris.blades')", card)
 
     assert "does not have exactly one derived write-cluster" in message
-    assert "Rematerialize or split" in message
+    # The message now names the one action a builder session CAN take, since
+    # rematerializing and splitting are both outside its authority (HIR-0215).
+    assert "Rematerializing or splitting the unit is the fix" in message
+    assert "cannot_express_in_scope" in message
 
 
 def test_typed_cannot_express_ends_live_critique_budget() -> None:

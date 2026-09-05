@@ -169,6 +169,7 @@ from vfx_harness.orchestration.unit_state import (
     freeze_checkpoint,
     ready_from_durable_state,
     transition,
+    unresolved_falsification,
 )
 from vfx_harness.orchestration.unit_state import load as load_unit_state
 from vfx_harness.orchestration.unit_state_claims import (
@@ -438,6 +439,28 @@ async def _build_layer_under_execution_fence(
         if not pending:
             raise RuntimeError(f"layer {layer.id} has no dependency-ready work unit; inspect logs/work_units state")
         unit = pending[0]
+
+        # A falsified unit is not waiting for a retry: its only legal successor is
+        # `superseded`, which a reviewed authority transaction publishes. The claim
+        # below correctly refuses it, but refusing with a traceback from a boundary
+        # that holds the finding wastes the one thing the operator needs (HIR-0214).
+        blocking_finding = unresolved_falsification(shot.folder, str(layer.id), unit.id)
+        if blocking_finding is not None:
+            raise BuildAuthorityDefect(
+                blocking_finding,
+                stage="builder",
+                exit_code=7,
+                legacy_detail=(
+                    f"layer {layer.id} unit {unit.id} is hypothesis_falsified by "
+                    f"{blocking_finding.get('record_id')} and no builder may claim it. "
+                    "Its only legal successor is `superseded`, published by a reviewed "
+                    "authority transaction: vfx plan <shot> --layer <owning layer> "
+                    "--rematerialize --owner <you> --trigger <why> --evidence "
+                    f"state/hypothesis-falsifications/{blocking_finding.get('record_id')}.json"
+                    " (add --discard-accepted when the layer holds passed units). "
+                    "`vfx units retry` does not accept this state."
+                ),
+            )
 
         require_due_clear(
             shot.folder,

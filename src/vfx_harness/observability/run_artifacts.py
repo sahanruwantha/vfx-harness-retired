@@ -504,12 +504,6 @@ def _unclassified_stop_envelope(
     not infer retry, replan, or recovery authority from the exception, exit code, or
     prose that exposed the omission.
     """
-    normalized_facts = {
-        "schema": "vfx-harness.unclassified-boundary-facts/v1",
-        "boundary": command,
-        "invariant": "terminal_boundary_requires_typed_stop",
-    }
-    classification_digest = canonical_digest(normalized_facts)
     authoritative_state, authority_audit = unclassified_authority.snapshot(
         layout.shot,
         layout.manifest,
@@ -517,6 +511,24 @@ def _unclassified_stop_envelope(
     )
     authoritative_before_digest = canonical_digest(authoritative_state)
     terminal_cause_id = unclassified_authority.closed_terminal_cause(terminal_cause)
+    # Identity and authority are two questions. The stop authorizes nothing either way,
+    # which is what the constant facts were protecting; but a constant identity meant
+    # every unclassified boundary in every shot shared one fingerprint and one finding
+    # id. Five genuinely different causes collided on one value -- an unhandled mint
+    # ValueError, a stale finalization claim, a builder truncation, an operator's
+    # SIGTERM, and an unclaimable-state conflict -- and the controller refuses a cause
+    # fingerprint already dispatched in the shot, so the second real defect would be
+    # suppressed as a repeat of the first. The cause is closed vocabulary and the
+    # exception is its type only, so neither admits free-form prose (HIR-0214).
+    normalized_facts = {
+        "schema": "vfx-harness.unclassified-boundary-facts/v2",
+        "boundary": command,
+        "invariant": "terminal_boundary_requires_typed_stop",
+        "terminal_cause": terminal_cause_id,
+        "exception_type": f"{type(exc).__module__}.{type(exc).__qualname__}",
+        "operator_initiated": terminal_cause_id in unclassified_authority.OPERATOR_CAUSES,
+    }
+    classification_digest = canonical_digest(normalized_facts)
     attempt_digest = canonical_digest(
         {
             "schema": "vfx-harness.unclassified-boundary-attempt/v1",

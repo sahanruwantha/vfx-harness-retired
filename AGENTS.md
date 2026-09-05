@@ -1001,6 +1001,17 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   layer's capsule alone (only a decision on a never-deferred requirement is shot-wide), and
   `vfx run` re-derives the receipt-backed prefix after every just-in-time publication and
   builds a reopened lower layer before the newly materialized one (HIR-0181).
+- A unit in `hypothesis_falsified` is not retryable: its only legal successor is
+  `superseded`, published by a reviewed `vfx plan --layer <owner> --rematerialize`
+  (adding `--discard-accepted` when that layer holds passed units). The driver reports
+  the durable finding as a typed authority-defect stop naming that transaction before it
+  attempts the claim; letting the claim refuse instead emitted a traceback from a boundary
+  holding every field the operator needed (HIR-0214).
+- A stop's identity and its authority are separate. An unclassified boundary authorizes
+  nothing whatever its cause, but its cause fingerprint carries the closed terminal cause,
+  the exception type, and whether an operator initiated it — a constant identity made
+  every such stop in every shot share one finding id, and the controller refuses a
+  fingerprint already dispatched in the shot (HIR-0214).
 - Reopen a fixed or interrupted unit only through the audited `vfx units retry` transition, with
   reason and evidence. A reopened unit whose executable rows already pass may mutate until the
   first in-session verdict — the convergence guard cannot treat a failed qualitative claim as

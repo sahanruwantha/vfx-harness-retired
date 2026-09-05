@@ -136,3 +136,25 @@ def ready_from_durable_state(
         completion_authorization=completion_authorization,
     ) & passed
     return ready_units(units, passed, sealed_producers=sealed)
+
+
+def unresolved_falsification(
+    folder: str | Path,
+    layer_id: str,
+    unit_id: str,
+) -> dict | None:
+    """The durable finding on a unit no builder may claim, or ``None``.
+
+    ``hypothesis_falsified`` has exactly one legal successor, ``superseded``, so a unit
+    in it is not waiting for a retry — it is waiting for a reviewed authority
+    transaction. The ready set is computed from passed rows and does not exclude it, so
+    the driver used to select it and the claim raised ``UnitAttemptConflict`` with a
+    traceback, from a boundary holding the finding all along (HIR-0214).
+    """
+
+    state = load(folder, layer_id)
+    slot = ((state or {}).get("units") or {}).get(str(unit_id))
+    if not isinstance(slot, dict) or slot.get("status") != "hypothesis_falsified":
+        return None
+    finding = slot.get("falsification")
+    return dict(finding) if isinstance(finding, dict) else None

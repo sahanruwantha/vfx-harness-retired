@@ -248,18 +248,24 @@ class RunController:
                 "budget_exhausted",
                 f"run dispatch cap {self.caps.max_dispatches} reached",
             )
-        attempts = controller_state.read_attempts(self.shot.folder)
+        # This run's dispatches, like max_dispatches above and max_usd below. The durable
+        # anti-repeat property is the cause-fingerprint guard, which refuses a fingerprint
+        # dispatched anywhere in this shot's life, so every dispatch here is necessarily a
+        # DIFFERENT defect. Counting shot-lifetime attempts instead capped the number of
+        # distinct defects a layer could ever have fixed at two, which is not a safety
+        # property; two live shots reached it in a day (HIR-0215).
         same_layer = sum(
             1
-            for attempt in attempts
-            if isinstance(attempt.action.target, PublishValidatedAmendmentTarget)
-            and attempt.action.target.layer_id == layer_id
+            for row in self.rows
+            if str(row.get("layer_id") or "") == str(layer_id)
+            and str(row.get("transaction_id") or "") in DISPATCHABLE_TRANSACTIONS
         )
         if same_layer >= self.caps.max_replans_per_layer:
             return DispatchRefusal(
                 "budget_exhausted",
-                f"layer {layer_id} already rematerialized {same_layer} time(s) by the controller; "
-                f"cap {self.caps.max_replans_per_layer}",
+                f"layer {layer_id} already rematerialized {same_layer} time(s) by the controller "
+                f"in this run; cap {self.caps.max_replans_per_layer} per run. A finding whose "
+                "cause was already dispatched in this shot is refused separately and permanently.",
             )
         if self.caps.max_usd is not None:
             spend = run_spend_usd(self.layout)

@@ -729,6 +729,31 @@ def atomicity_gaps(
                             + CONSUME_INTERFACE_RULE,
                         )
                     )
+        if not clusters:
+            # A zero-cluster unit passes every gate and can then execute NOTHING: the
+            # builder blocks each run_bpy for having no derived write-cluster, so the
+            # unit has no legal mutation at all. `unresolved_family` above needs a
+            # namespace to reject, so a unit that resolved none -- one that settled for a
+            # bare control after its control_roles forms were refused -- was never
+            # reached by it. Same hole from the other side (HIR-0215).
+            gaps.append(
+                AtomicityGap(
+                    unit.id,
+                    "unresolved_family",
+                    "derived no write-cluster at all, so no run_bpy payload it authors "
+                    "can execute. Mutation selectors: "
+                    + (
+                        ", ".join(
+                            f"{field}={list(getattr(unit.mutates, field, ()) or ())}"
+                            for field in ("roles", "controls", "dresses")
+                        )
+                    )
+                    + ". "
+                    + UNRESOLVED_FAMILY_RULE,
+                    clusters,
+                    tuple(considered),
+                )
+            )
         if len(clusters) > 1:
             labels = ", ".join(cluster.label() for cluster in clusters)
             gaps.append(

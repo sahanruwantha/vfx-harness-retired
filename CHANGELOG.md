@@ -32,6 +32,28 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A per-run cap counts its run, and a unit that can mutate nothing is refused before publication
+  ([HIR-0215](docs/improvements/HIR-0215-a-cap-counts-its-run-and-a-unit-that-cannot-mutate-is-refused.md)).
+  `run_max_replans_per_layer` was enforced against every dispatch a shot had ever made, while the
+  two caps beside it were run-scoped, so two live shots reached a permanent ceiling on the number of
+  distinct defects a layer could ever have fixed; the durable anti-repeat property is the
+  cause-fingerprint guard, which is untouched. Separately, a unit with no mutation roles and a bare
+  control derived no write-cluster, passed staging, validation and the terminal gate, and could then
+  execute no `run_bpy` at all — the predicate that teaches this needs a namespace to reject and that
+  unit had none. The builder's refusal now also names `cannot_express_in_scope`, the only action a
+  builder session can take when its unit cannot mutate.
+
+- A falsified unit is reported as a typed stop, and an unclassified boundary's cause has an
+  identity
+  ([HIR-0214](docs/improvements/HIR-0214-a-falsified-unit-is-a-stop-and-a-cause-has-an-identity.md)).
+  The driver selected a `hypothesis_falsified` unit and the claim rejected it with a traceback,
+  from a site holding the unit, its state, the legal set, and a finding already in durable state;
+  the run then read as a deadlock because nothing named `vfx plan --rematerialize` as the
+  transaction. Separately, every unclassified boundary in every shot shared one cause fingerprint
+  and one finding id — five different causes across two shots, including an operator's own
+  SIGTERM — so the controller's already-dispatched guard would suppress the second real defect in
+  a shot as a repeat of the first.
+
 - A sealed projection and its re-derivation select evidence the same way
   ([HIR-0213](docs/improvements/HIR-0213-a-projection-and-its-re-derivation-select-alike.md)).
   HIR-0210 converted the producers of the sealed evidence list to keep every typed measurement

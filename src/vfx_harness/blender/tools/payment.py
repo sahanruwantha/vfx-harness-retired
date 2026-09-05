@@ -34,10 +34,16 @@ def _run_bpy_write_family_error(source: str, unit_scope: Mapping | None) -> str:
             "/".join(str(row.get(key) or "") for key in ("role_namespace", "host_class", "instrument_family"))
             for row in clusters
         ]
+        # Rematerializing and splitting are both outside builder authority, so naming
+        # only those left the one action this session CAN take unstated; the builder
+        # that hit it found cannot_express_in_scope by searching (HIR-0215).
         return (
             "BLOCKED: active unit does not have exactly one derived write-cluster; "
-            f"found {labels or ['(none)']}. Rematerialize or split the unit before "
-            f"mutating Blender. {LIVE_WRITE_FAMILY_RULE}"
+            f"found {labels or ['(none)']}. Rematerializing or splitting the unit is "
+            "the fix, and neither is in this session's authority: record "
+            "cannot_express_in_scope naming the contracts this unit cannot satisfy, "
+            "which stops the unit without inventing scope. "
+            f"{LIVE_WRITE_FAMILY_RULE}"
         )
     try:
         evidence = script_write_family_evidence(source)

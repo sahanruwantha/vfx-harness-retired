@@ -637,6 +637,12 @@ def test_layer_runtime_carries_only_a_sealed_falsification_to_public_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shot, _layout, finding, unit = _fixture(tmp_path, monkeypatch)
+    # This covers the IN-RUN falsification: the build produces the finding, so at claim
+    # time durable state is not yet `hypothesis_falsified`. The fixture seeds the sealed
+    # finding up front for convenience, which the resume-path short-circuit would
+    # otherwise read as a prior attempt. The resume path has its own coverage in
+    # test_unclassified_stop_identity.py (HIR-0214).
+    monkeypatch.setattr(builder_layer, "unresolved_falsification", lambda *_a, **_k: None)
     layer = Layer(
         id="1",
         script="build/01_proxy.py",

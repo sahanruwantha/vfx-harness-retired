@@ -53,6 +53,9 @@ from vfx_harness.orchestration.unit_state_queries import load_snapshot as load_s
 from vfx_harness.orchestration.unit_state_queries import (
     ready_from_durable_state as ready_from_durable_state,
 )
+from vfx_harness.orchestration.unit_state_queries import (
+    unresolved_falsification as unresolved_falsification,
+)
 from vfx_harness.orchestration.unit_state_queries import validate_current as validate_current
 from vfx_harness.orchestration.unit_state_selection import selected_attempt_state_mutation
 from vfx_harness.orchestration.unit_state_storage import now as _now
