@@ -173,38 +173,60 @@ def _resolved_chains(node: ast.AST, bindings: _BindingMap) -> set[tuple[str, ...
     return set()
 
 
-def _artifact_bindings(tree: ast.Module) -> _BindingMap:
-    """Collect every possible module/namespace name without trusting assignment order."""
+def _artifact_bindings(tree: ast.Module) -> tuple[_BindingMap, list[tuple[int, str]]]:
+    """Collect every module/namespace name, and every import the policy refuses.
+
+    These six refusals used to raise. `artifact_violations` calls this on its first
+    line, so one denied import short-circuited the collector HIR-0216 exists to
+    provide: not "report the first violation" but report none and take the process
+    down. A layer that had already passed 11/11 contracts and 7/7 bound checks was
+    discarded at write time by `import itertools` on journal line 123, while eleven
+    refused *capability* constructs in the same shot were annotated in place and
+    sealed. Same policy, same entry point, two exit paths — one taught, one crashed
+    (HIR-0225).
+
+    Recording still admits nothing. `artifact_violations` returns these alongside
+    every other violation and the execution boundary refuses on any of them, so the
+    policy is unchanged; only the reporting is.
+    """
 
     bindings: _BindingMap = {}
+    refused: list[tuple[int, str]] = []
+
+    def deny(node: ast.AST, message: str) -> None:
+        refused.append((int(getattr(node, "lineno", 0)), message))
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.partition(".")[0]
                 if root not in _ALLOWED_IMPORT_ROOTS:
-                    raise ArtifactExecutionPolicyError(f"artifact import denied: {root}")
+                    deny(node, f"artifact import denied: {root}")
+                    continue
                 if root == "bpy" and alias.name != "bpy":
-                    raise ArtifactExecutionPolicyError(
-                        "artifact bpy submodule imports are denied; import bpy directly"
+                    deny(
+                        node,
+                        "artifact bpy submodule imports are denied; import bpy directly",
                     )
+                    continue
                 local = alias.asname or root
                 resolved = tuple(alias.name.split(".")) if alias.asname else (root,)
                 bindings.setdefault(local, set()).add(resolved)
         elif isinstance(node, ast.ImportFrom):
             if node.level or not node.module:
-                raise ArtifactExecutionPolicyError("relative artifact imports are denied")
+                deny(node, "relative artifact imports are denied")
+                continue
             root = node.module.partition(".")[0]
             if root not in _ALLOWED_IMPORT_ROOTS:
-                raise ArtifactExecutionPolicyError(f"artifact import denied: {root}")
+                deny(node, f"artifact import denied: {root}")
+                continue
             if root == "bpy":
-                raise ArtifactExecutionPolicyError(
-                    "artifact from-bpy imports are denied; import bpy directly"
-                )
+                deny(node, "artifact from-bpy imports are denied; import bpy directly")
+                continue
             for alias in node.names:
                 if alias.name == "*":
-                    raise ArtifactExecutionPolicyError(
-                        "artifact wildcard imports are denied"
-                    )
+                    deny(node, "artifact wildcard imports are denied")
+                    continue
                 local = alias.asname or alias.name
                 bindings.setdefault(local, set()).add(
                     (*node.module.split("."), alias.name)
@@ -241,7 +263,7 @@ def _artifact_bindings(tree: ast.Module) -> _BindingMap:
                 before = len(known)
                 known.update(chains)
                 changed = changed or len(known) != before
-    return bindings
+    return bindings, refused
 
 
 def _reject_capability_chain(chain: tuple[str, ...]) -> None:
@@ -379,13 +401,13 @@ def artifact_violations(source: str, tree: ast.Module) -> list[tuple[int, str]]:
     any violation still refuses the artifact.
     """
 
-    bindings = _artifact_bindings(tree)
+    bindings, refused_imports = _artifact_bindings(tree)
     parents = {
         child: parent
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
-    found: list[tuple[int, str]] = []
+    found: list[tuple[int, str]] = list(refused_imports)
 
     def record(node: ast.AST, message: str) -> None:
         found.append((int(getattr(node, "lineno", 0)), message))

@@ -46,6 +46,17 @@ live in the linked Harness Improvement Records.
   fixture passed a single directory as both roots; the regression test keeps them apart and
   asserts the staging outcome changes, since a test of the reader alone passes either way.
 
+- A refused artifact import is recorded rather than raised
+  ([HIR-0225](docs/improvements/HIR-0225-a-refused-import-is-recorded-not-raised.md)).
+  `artifact_violations` called `_artifact_bindings` on its first line, and that function
+  raised on the first denied import, so one `import itertools` in a journal returned no
+  violations at all and crashed the layer — strictly worse than the report-only-the-first
+  behaviour HIR-0216 replaced. A unit that had passed 11/11 owned contracts and 7/7 bound
+  checks was discarded at write time, and a second shot lost a run to the same mechanism
+  with `collections`. All six import refusals now record at their line and report with
+  every capability refusal in the same walk; the execution boundary still refuses on any
+  of them, so recording admits nothing.
+
 - An exception escaping a plan tool is now a typed defect, and a repeat does not execute
   ([HIR-0224](docs/improvements/HIR-0224-an-escape-is-a-defect-and-a-repeat-does-not-execute.md)).
   One shot spent twelve consecutive `finalize_materialization` calls on a `TypeError` that

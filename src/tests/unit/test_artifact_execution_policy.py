@@ -762,3 +762,85 @@ def test_alias_escape_rejection_names_line_capability_and_legal_forms() -> None:
     assert "bpy.context.active_object" in message
     assert "bpy.data.objects.new(...)" in message
     assert "bvfx_* helper return value" in message
+
+
+def test_a_denied_import_is_reported_with_every_other_violation() -> None:
+    """HIR-0225: a refused import must not short-circuit the collector HIR-0216 built.
+
+    `artifact_violations` calls `_artifact_bindings` on its first line. That function
+    raised on the first denied import, so one `import itertools` on journal line 123
+    returned no violations at all and took the process down — strictly worse than the
+    report-only-the-first behaviour HIR-0216 replaced. A layer that had already passed
+    11/11 owned contracts and 7/7 bound checks was discarded at write time.
+    """
+    import ast
+
+    from vfx_harness.blender.artifact_execution import artifact_violations
+
+    source = (
+        "import bpy\n"
+        "import itertools\n"
+        "signs = list(itertools.product([-1, 1], repeat=3))\n"
+        "from os import path\n"
+        "import bpy.ops\n"
+    )
+    violations = artifact_violations(source, ast.parse(source))
+    messages = [message for _line, message in violations]
+
+    assert "artifact import denied: itertools" in messages
+    assert "artifact import denied: os" in messages
+    assert any("bpy submodule" in message for message in messages)
+    # Reported together, in source order, so one edit can fix all of them.
+    assert [line for line, _ in violations] == sorted(line for line, _ in violations)
+    assert [line for line, _ in violations] == [2, 4, 5]
+
+
+def test_every_import_refusal_is_recorded_rather_than_raised() -> None:
+    """All six raise sites convert; none of them may abort the walk."""
+    import ast
+
+    from vfx_harness.blender.artifact_execution import artifact_violations
+
+    for source, expected in (
+        ("import itertools\n", "artifact import denied: itertools"),
+        ("import bpy.ops\n", "bpy submodule"),
+        ("from . import thing\n", "relative artifact imports are denied"),
+        ("from os import path\n", "artifact import denied: os"),
+        ("from bpy import ops\n", "from-bpy imports are denied"),
+        ("from math import *\n", "wildcard imports are denied"),
+    ):
+        violations = artifact_violations(source, ast.parse(source))
+        assert violations, source
+        assert any(expected in message for _line, message in violations), source
+
+
+def test_recording_an_import_still_admits_nothing() -> None:
+    """The policy is unchanged: the execution boundary refuses on any violation."""
+    for source in (
+        "import itertools\n",
+        "import bpy.ops\n",
+        "from . import thing\n",
+        "from bpy import ops\n",
+        "from math import *\n",
+    ):
+        with pytest.raises(ArtifactExecutionPolicyError):
+            validate_artifact_source(source)
+
+    validate_artifact_source("import bpy\nbpy.ops.mesh.primitive_cube_add()\n")
+
+
+def test_a_denied_import_and_a_capability_violation_report_together() -> None:
+    """The case that motivated converting all six rather than only the first.
+
+    A journal carrying a refused import and a refused capability used to report the
+    import by dying; the capability was never reached.
+    """
+    import ast
+
+    from vfx_harness.blender.artifact_execution import artifact_violations
+
+    source = "import itertools\nimport bpy\nexec('x = 1')\n"
+    messages = [message for _line, message in artifact_violations(source, ast.parse(source))]
+
+    assert any("import denied: itertools" in message for message in messages)
+    assert len(messages) >= 2, messages
