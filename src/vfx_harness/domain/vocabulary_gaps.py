@@ -18,6 +18,24 @@ from pathlib import Path
 
 SCHEMA = "vfx-harness.vocabulary-gap/v1"
 
+#: Domains a provisional decision may always pay, because no registry metric certifies
+#: them (ADR-0006, HIR-0124).
+QUALITATIVE_DOMAINS = frozenset({"image", "human"})
+
+
+def decision_may_pay_domain(domain: str, *, gap_ids: object) -> bool:
+    """Whether a provisional decision may close ``domain`` for this requirement.
+
+    AGENTS.md states it once: "A recorded gap is what makes that decision legal for any
+    declared domain, structural included." Two boundaries decided this independently --
+    materialization validation widened by gap, and the terminal gate refused every
+    structural domain unconditionally with no knowledge of gaps at all. Each was
+    individually correct and they disagreed, so a requirement could pass the local
+    validator and be refused by the gate for reaching the state the validator had just
+    prescribed (HIR-0223).
+    """
+    return str(domain) in QUALITATIVE_DOMAINS or bool(gap_ids)
+
 
 def vocabulary_gaps_path(shot_folder: str | Path) -> Path:
     """The one durable location for a shot's recorded vocabulary gaps."""

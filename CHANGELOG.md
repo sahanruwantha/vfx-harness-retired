@@ -46,6 +46,17 @@ live in the linked Harness Improvement Records.
   fixture passed a single directory as both roots; the regression test keeps them apart and
   asserts the staging outcome changes, since a test of the reader alone passes either way.
 
+- One predicate now decides whether a provisional decision may pay a domain
+  ([HIR-0223](docs/improvements/HIR-0223-one-predicate-decides-whether-a-decision-pays-a-domain.md)).
+  A materializer reached decision-only bindings for three structural requirements, passed the
+  local validator, and was refused six times by the terminal gate for exactly that state. The
+  gate implemented HIR-0124 and referenced vocabulary gaps nowhere, so it refused every
+  structural domain unconditionally; the local validator implemented HIR-0202 as well, which
+  AGENTS.md states verbatim — a recorded gap makes the decision legal for any declared domain,
+  structural included. Both boundaries now call one shared predicate and read gaps through one
+  function. HIR-0218 made the disagreement reachable: this is the third piece of code that fix
+  exposed as only accidentally correct, because nothing had ever carried a readable gap before.
+
 - A refusal no longer prescribes an action the session has already taken
   ([HIR-0222](docs/improvements/HIR-0222-a-refusal-does-not-prescribe-an-action-already-taken.md)).
   A layer-2 materialization spent 17 refusals alternating between "this requirement has a

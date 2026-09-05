@@ -5980,3 +5980,67 @@ def test_unselected_revert_of_last_layer_does_not_unlink_pointer(
     assert pointer.read_bytes() == before
     overlay_layers = load_layers_from_path(overlay / "layers.json")
     assert overlay_layers["1"].execution == "jit_deferred"
+
+
+def test_gate_refuses_a_decision_on_a_structural_domain_without_a_recorded_gap(
+    tmp_path: Path,
+) -> None:
+    """HIR-0223: the terminal gate asks the same question the local validator asks.
+
+    room_1046_opening reached decision-only bindings for three structural requirements,
+    got VALIDATION PASSED from the local validator, and was then refused six times by
+    this gate — which referenced vocabulary gaps nowhere and refused every structural
+    domain unconditionally. AGENTS.md states the rule the gate did not implement:
+    "A recorded gap is what makes that decision legal for any declared domain,
+    structural included."
+    """
+    _candidate(tmp_path)
+    requirements = json.loads((tmp_path / "requirements.json").read_text(encoding="utf-8"))
+    requirement_id = requirements["requirements"][0]["id"]
+    requirements["requirements"][0]["resolution"] = {
+        "kind": "decision",
+        "ids": [],
+        "decision": requirements["requirements"][0]["statement"],
+        "decision_strength": "approved_start",
+        "evidence_domains": ["projected_composition"],
+        "domain_bindings": [{
+            "domain": "projected_composition",
+            "kind": "provisional_decision",
+            "statement": requirements["requirements"][0]["statement"],
+            "decision_strength": "approved_start",
+        }],
+    }
+    _write(tmp_path / "requirements.json", requirements)
+
+    def _domain_findings():
+        findings, _ = _check_meta_records(tmp_path)
+        return [
+            finding for finding in findings
+            if finding.check == "requirement-domain-binding"
+            and "structural domain" in finding.what
+        ]
+
+    # No gap: the decision cannot pay a structural domain, and the refusal says why.
+    refused = _domain_findings()
+    assert refused, "a decision on a structural domain must be refused without a gap"
+    assert "without a recorded vocabulary gap" in refused[0].what
+    assert "record the gap that says none can" in refused[0].fix
+
+    # With the gap recorded where escalate_vocabulary_gap writes it, the same authority
+    # clears the gate — the state the local validator prescribes is now reachable.
+    gaps = tmp_path / "state" / "plan-escalations"
+    gaps.mkdir(parents=True, exist_ok=True)
+    (gaps / "vocabulary-gaps.jsonl").write_text(
+        json.dumps({
+            "schema": "vfx-harness.vocabulary-gap/v1",
+            "id": "VG-001",
+            "requirement_id": requirement_id,
+            "claim": "no registry metric expresses this statement",
+            "attempted": [{"kind": "object_count", "why_it_cannot_certify": "vacuous"}],
+            "note": "",
+            "run_id": "test",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    assert not _domain_findings(), "a recorded gap makes the decision legal at the gate"

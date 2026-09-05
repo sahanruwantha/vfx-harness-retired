@@ -246,3 +246,72 @@ def test_a_recorded_gap_plus_full_contract_cover_names_the_removal_not_the_escal
     assert "remove them from this requirement's contract_ids" in message
     # And it shows the bindings that are blocking the decision.
     assert "already covered by contract bindings" in message
+
+
+def test_one_predicate_decides_whether_a_decision_pays_a_domain() -> None:
+    """HIR-0223: the local validator and the terminal gate ask the same question.
+
+    They asked it independently. Materialization validation widened the payable domains
+    by a recorded gap; the terminal gate refused every structural domain unconditionally
+    and referenced gaps nowhere. Each was individually correct, and a requirement could
+    satisfy the validator and then be refused by the gate for reaching exactly the state
+    the validator had prescribed.
+    """
+    from vfx_harness.domain.vocabulary_gaps import (
+        QUALITATIVE_DOMAINS,
+        decision_may_pay_domain,
+    )
+
+    # A qualitative domain never needs a gap.
+    for domain in QUALITATIVE_DOMAINS:
+        assert decision_may_pay_domain(domain, gap_ids=())
+    # A structural domain needs one, and is paid once it has one.
+    for domain in ("scene", "projected_composition", "temporal"):
+        assert not decision_may_pay_domain(domain, gap_ids=())
+        assert decision_may_pay_domain(domain, gap_ids=("VG-001",))
+
+    # Both boundaries call it rather than restating it.
+    import inspect as inspect_module
+
+    from vfx_harness.evaluation.plan_gate import meta
+    from vfx_harness.orchestration.jit_materialization import validate_requirements
+
+    for module in (meta, validate_requirements):
+        source = inspect_module.getsource(module)
+        assert "decision_may_pay_domain" in source, module.__name__
+        assert '{"image", "human"}' not in source, (
+            f"{module.__name__} restates the domain set instead of sharing it"
+        )
+
+
+def test_a_gap_backed_decision_survives_the_terminal_gate(tmp_path: Path) -> None:
+    """The assertion that spans both boundaries, which neither alone provides.
+
+    room_1046_opening reached this state on its own: decision-only bindings for three
+    structural requirements, `VALIDATION PASSED` from the local validator, then six
+    blocking `requirement-domain-binding` findings from the terminal gate — "provisional
+    decision cannot pay structural domain 'projected_composition'". The fix is only
+    proven by asserting the same authority clears both.
+    """
+    root = _fixture_root(tmp_path)
+    _record_gap(root, "R-form")
+
+    validated = _validated_form(
+        root,
+        {
+            "requirement_id": "R-form",
+            "decision": {"statement": FORM_STATEMENT, "decision_strength": "approved_start"},
+        },
+    )
+    assert validated is not None
+
+    # The gate's own predicate must agree for every domain the requirement declares.
+    from vfx_harness.domain.vocabulary_gaps import (
+        decision_may_pay_domain,
+        recorded_vocabulary_gap_ids,
+    )
+
+    gaps = recorded_vocabulary_gap_ids(root)
+    assert gaps.get("R-form") == ("VG-001",)
+    for domain in ("scene", "projected_composition", "temporal"):
+        assert decision_may_pay_domain(domain, gap_ids=gaps["R-form"]), domain

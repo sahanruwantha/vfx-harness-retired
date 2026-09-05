@@ -15,7 +15,11 @@ from vfx_harness.domain.plan_records import (
     load_active_structured_decisions,
     load_judgment_debt_catalog,
 )
-from vfx_harness.domain.vocabulary_gaps import recorded_vocabulary_gap_ids
+from vfx_harness.domain.vocabulary_gaps import (
+    QUALITATIVE_DOMAINS,
+    decision_may_pay_domain,
+    recorded_vocabulary_gap_ids,
+)
 from vfx_harness.domain.work_units import (
     STRUCTURAL_CLAIM_DOMAINS,
     parse_evidence_domains,
@@ -268,7 +272,7 @@ def validate_requirement_closure(
             "image" if binding_kind == "image_contract" else KIND_DOMAINS.get(str(row.get("kind") or ""), "unknown")
         )
     contract_domains.update(dict.fromkeys(image_debt_ids, "image"))
-    qualitative_domains = {"image", "human"}
+    qualitative_domains = QUALITATIVE_DOMAINS
     # A recorded vocabulary gap is the harness's own evidence that no registry metric can
     # express a statement; without it in view this validator refused the decision path its
     # own escalate_vocabulary_gap tool had just prescribed, and the only shape that passed
@@ -319,12 +323,16 @@ def validate_requirement_closure(
                 "may classify the debt strength but cannot rewrite the proposition",
             )
         gap_ids = vocabulary_gap_ids.get(requirement_id, ())
-        decision_domains = {domain for domain in declared if domain in qualitative_domains and not by_domain[domain]}
-        if gap_ids:
-            # The gap enumerates the kinds tried and why each cannot certify, which is a
-            # stronger statement of inexpressibility than a bare decision: it lets the
-            # decision pay every domain the requirement still owes, structural included.
-            decision_domains |= {domain for domain in declared if not by_domain[domain]}
+        # One predicate, shared with the terminal gate: a decision pays a qualitative
+        # domain always and a structural one only behind a recorded gap. These were two
+        # implementations that disagreed, and a requirement could satisfy this validator
+        # and be refused by the gate for it (HIR-0223).
+        decision_domains = {
+            domain
+            for domain in declared
+            if not by_domain[domain]
+            and decision_may_pay_domain(domain, gap_ids=gap_ids)
+        }
         if decision and not decision_domains and gap_ids:
             # The gap already exists, so telling the session to escalate one is advice it
             # has taken and cannot usefully repeat. What is left is that every declared

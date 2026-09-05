@@ -70,6 +70,10 @@ from vfx_harness.domain.plan_records import (
     read_selected_bundle_hash,
     resolution_decision_strength,
 )
+from vfx_harness.domain.vocabulary_gaps import (
+    decision_may_pay_domain,
+    recorded_vocabulary_gap_ids,
+)
 from vfx_harness.domain.work_units import (
     EVIDENCE_DOMAINS,
     REQUIREMENT_DOMAIN_COVERAGE_FIX,
@@ -247,6 +251,7 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
     # pointer to an unavailable prior plan is not an adoption mechanism. Adoption is
     # last-write-wins for the selected bundle: another generation's values.contract is
     # inert, and a later superseded or falsified row retires the id (HIR-0028).
+    recorded_gaps = recorded_vocabulary_gap_ids(folder)
     decision_path = folder / "state" / "plan-resolutions.jsonl"
 
     if decision_path.is_file():
@@ -654,13 +659,17 @@ def _check_meta_records(folder: Path) -> tuple[list[Finding], dict]:
             actual_domains.update(dict.fromkeys(image_ids, "image"))
             for domain, binding_kind, binding_ids in requirement.domain_bindings:
                 if binding_kind != "contract":
-                    if domain not in {"image", "human"}:
+                    if not decision_may_pay_domain(
+                        domain, gap_ids=recorded_gaps.get(requirement.id, ())
+                    ):
                         findings.append(Finding(
                             "requirement-domain-binding",
                             True,
                             requirement.id,
-                            f"provisional decision cannot pay structural domain {domain!r}",
-                            "bind a registry-backed contract whose metric certifies that domain",
+                            f"provisional decision cannot pay structural domain {domain!r} "
+                            "without a recorded vocabulary gap",
+                            "bind a registry-backed contract whose metric certifies that "
+                            "domain, or record the gap that says none can",
                         ))
                     continue
                 mismatched = [
