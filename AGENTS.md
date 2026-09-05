@@ -1475,3 +1475,14 @@ inventories, grep hits read as payloads, one finalizer read as another, a wait l
 its own pgrep pattern timed as the suite, and a stale discriminator that would have passed
 silently. State only what the artifact you opened evidences: a record that carries no layer
 field does not establish a layer, whoever else already believes it.
+
+The same rule governs edits, because **shape is not identity**. A change applied by matching
+a pattern cannot distinguish "this looks like the ones I am changing" from "this is one I
+meant to keep". Reverting an over-broad signature edit by matching the signature *shape*
+re-introduced a default into a function that was in the keep-set, and that default then
+masked the one call site that never received the argument — a correction of an over-reach
+becoming the defect it was correcting for. Name the functions, files or rows a change
+applies to, then verify the result by parsing what you changed rather than by searching for
+a token: a textual sweep for `shot_folder` matched a call that mentions it on an adjacent
+line and never passes it. Where the invariant can regress, the check belongs in an
+architecture test that parses, not in a sweep run once by hand.

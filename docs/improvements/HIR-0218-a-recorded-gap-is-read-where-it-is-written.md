@@ -155,6 +155,32 @@ The reader was found by the driver of the shot that had been stuck on it, which 
 the point: four gaps had accumulated as orphaned audit state, and nothing in the system
 noticed, because an empty result and a wrong directory are the same value.
 
+### What the fix prevented, measured on a live materialization
+
+room_1046_opening run `20260905T090236Z-c5d074`, layer 2, on `c8ffee5`. Three requirements
+attempted to close by contract padding and were refused because their gaps were now
+readable:
+
+```
+R20  gap ['VG-004']  attempted ['facade-bbox-f38','facade-bbox-f113','facade-pier-ground-clearance']
+R21  gap ['VG-002']  attempted ['facade-bbox-f113','facade-bbox-f151','facade-pier-ground-clearance']
+R52  gap ['VG-003']  attempted ['facade-bbox-f38','facade-bbox-f113','facade-bbox-f151',
+                                'facade-pier-ground-clearance']
+```
+
+All three then closed legally in the same session, and the gate passed with all ten owned
+requirements closed exactly once. Pre-fix every one of them would have closed by padding,
+silently.
+
+**They are three prevented closures, not three independent defects.** All three carry
+`owner_layer 2` with `reserved_roles ['building.*']` and domains
+`[projected_composition, temporal]`, and all three statements are camera-motion clauses —
+"the camera advances", "façade acceleration … emphasize speed", "acceleration during the
+push-in" — assigned to a layer that cannot write `camera.*`. That is one ownership
+misassignment observed three times, and it belongs to RESEARCH-0027; counting it as three
+corroborations of this fix would inflate it. The correction is the room_1046_opening
+driver's.
+
 ## Rejected alternatives
 
 - **Derive the shot folder from `resolutions_path`.** It already points at

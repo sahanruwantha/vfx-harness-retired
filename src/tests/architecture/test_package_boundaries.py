@@ -164,3 +164,52 @@ def test_generated_output_paths_are_owned_by_run_artifacts():
     assert not violations, "generated output paths must resolve through observability/run_artifacts.py: " + ", ".join(
         violations
     )
+
+
+def test_materialization_validation_call_sites_pass_the_shot_folder():
+    """HIR-0218/0220: recorded gaps are read from the shot, so every call names it.
+
+    Checked by parsing the call, not by searching the source. Two hand-rolled text
+    sweeps missed `materialize_mcp.finalize_materialization`, because that call's body
+    contains the token `shot_folder` in `resolutions_path=shot_folder / "state" / ...`
+    while never passing it as the argument. A true match answering the wrong question
+    is the failure this test exists to prevent: it killed two live runs.
+    """
+    import ast
+
+    missing: list[str] = []
+    for path in sorted(PACKAGE.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name not in {"validate_materialization", "inspect_materialization"}:
+                continue
+            if "shot_folder" not in {kw.arg for kw in node.keywords if kw.arg}:
+                missing.append(f"{path.relative_to(PACKAGE)}:{node.lineno} {name}")
+    assert not missing, (
+        "these calls resolve recorded vocabulary gaps against the plan bundle instead of "
+        "the shot, which reads as 'no gap' in every shot: " + ", ".join(missing)
+    )
+
+
+def test_materialization_validation_requires_the_shot_folder():
+    """The argument stays required: a default is what let the missing call site through.
+
+    `inspect_materialization` briefly regained `shot_folder: ... | None = None` when an
+    over-broad revert matched it by signature pattern rather than by function. The
+    default turned a loud import-time failure into `Path(None)` at runtime, fourteen
+    times, inside one materialization session.
+    """
+    import inspect as inspect_module
+
+    from vfx_harness.orchestration.jit_materialization import (
+        inspect_materialization,
+        validate_materialization,
+    )
+
+    for fn in (validate_materialization, inspect_materialization):
+        parameter = inspect_module.signature(fn).parameters["shot_folder"]
+        assert parameter.default is inspect_module.Parameter.empty, fn.__name__
+        assert parameter.kind is inspect_module.Parameter.KEYWORD_ONLY, fn.__name__

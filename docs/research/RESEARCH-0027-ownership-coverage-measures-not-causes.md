@@ -133,6 +133,26 @@ So the ownership rule is still loose, but it is **not currently load-bearing**: 
 mechanism catches the same failure one layer earlier, at the layer that can actually cause
 it. Do not open an ADR on this until the sealed layer-1 location curve is available.
 
+## Update: three instances in one layer of one plan
+
+room_1046_opening layer 2 owns **R20, R21 and R52**, verified from the selected bundle:
+
+| id | owner | reserved | statement |
+|---|---|---|---|
+| R20 | 2 | `building.*` | "the camera advances while the building grows…" |
+| R21 | 2 | `building.*` | "Façade acceleration: perspective and window repetition emphasize speed" |
+| R52 | 2 | `building.*` | "Window repetition produces convincing scale and acceleration during the push-in" |
+
+All three declare `[projected_composition, temporal]`; all three are about camera-induced
+motion; none can be caused by a layer restricted to `building.*`. Each independently
+reached the point of attempting a padding closure, which HIR-0218 then refused.
+
+This moves the finding from "a requirement was misplaced" to **"one layer received three
+camera-motion clauses it cannot cause, and the coverage rule accepted all three"**. The
+count matters: a single misassignment is a planner slip, three in one layer is the rule
+admitting a class. It does not change the disposition — the mechanism candidates still all
+either over-refuse or require prose-subject inference — but it raises the priority.
+
 ## What would decide it
 
 room_1046_opening's current run reaches layer 2 and either its layer-1 camera animates the

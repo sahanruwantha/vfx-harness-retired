@@ -64,7 +64,7 @@ def inspect_materialization(
     materialization_path: str | Path,
     *,
     expected_bundle_hash: str,
-    shot_folder: str | Path | None = None,
+    shot_folder: str | Path,
     base_layers_path: str | Path | None = None,
     base_scene_checks_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,

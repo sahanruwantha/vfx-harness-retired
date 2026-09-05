@@ -593,6 +593,7 @@ def register_materialize_tools(**closed):
                     authority.bundle_root,
                     candidate,
                     expected_bundle_hash=authority.bundle_hash,
+                    shot_folder=shot_folder,
                     base_layers_path=authority.base_layers,
                     base_scene_checks_path=authority.base_scene_checks,
                     resolutions_path=shot_folder / "state" / "plan-resolutions.jsonl",
