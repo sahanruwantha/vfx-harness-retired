@@ -234,6 +234,27 @@ a unit declaring `geometry` gains `mesh` even where its write clusters do not de
 That line does not silence non-geometry layers; the `validate.py` and
 `evidence_coherence.py` guards are the ones that would.
 
+## An amendment fixes what the finding names, and spends what it does not
+
+caesar's controller-dispatched rematerialization solved the problem it was given — it
+restructured ten units into seven, folded shading into the shells, dropped the unpayable
+unit-level image contracts, and all seven then passed. It did not solve the layer-level
+judgment debt, because no finding named it. That cost $21.90 for a layer that ended
+`failed` with every unit `passed`.
+
+The same shape was then observed on `room_1046_opening`, and it is worse there because
+the amendment did not merely leave something unfixed — it *spent* something. Resolving an
+unsatisfiable contract pair, the layer-1 amendment widened f1 to `0.28-0.46` against a
+reference still measuring ~0.21-0.26: it bought satisfiability with reference fidelity at
+the establishing frame. Nothing in the finding said "and the band must still match the
+still", so nothing protected it.
+
+Generalised: **a finding-driven amendment optimises exactly the predicate the finding
+states. Every property that is true but unstated is free to be traded away, and the
+amendment receipt records that authority changed without recording in which direction.**
+Before dispatching one, the useful question is not "will this fix the finding" but "what
+does this layer also need to be true, that the finding does not say".
+
 ## A fix is not exempt from the defect it fixes
 
 This finding's own remedy carried an instance of the class it belongs to. The merged
