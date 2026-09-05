@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from vfx_harness.domain import evidence_authority
 from vfx_harness.domain.layer_finalization_claims import (
     LayerFinalizationClaim,
     _text,
@@ -124,7 +125,12 @@ def _source_summary(
             marker = item.get("authoritative")
             if not isinstance(marker, bool):
                 raise ValueError(f"{item_where}.authoritative must be a boolean")
-            if not marker:
+            # The producers of the sealed list -- the finalization receipt's point
+            # evidence and the revalidation projection -- keep every typed measurement,
+            # so this re-derivation must too or the two sets differ by exactly the
+            # builder-paid image rows and the projection refuses its own record
+            # (HIR-0210, HIR-0213).
+            if not evidence_authority.is_recorded_evidence(item):
                 continue
             passed = item.get("pass")
             if not isinstance(passed, bool):

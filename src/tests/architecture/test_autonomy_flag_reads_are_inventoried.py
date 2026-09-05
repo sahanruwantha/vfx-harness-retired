@@ -80,3 +80,26 @@ def test_the_receipts_that_seal_evidence_no_longer_read_it_raw() -> None:
         body = (SOURCE / rel).read_text(encoding="utf-8")
         assert not _READ.search(body), f"{rel} reads the autonomy flag directly"
         assert "evidence_authority" in body, f"{rel} does not use the shared predicates"
+
+
+# Modules that PRODUCE the sealed `authoritative` list and modules that RE-DERIVE it must
+# select rows the same way, or the two sets differ and the projection refuses its own
+# record. Converting one side alone is what HIR-0213 cost: the producers kept every typed
+# measurement while the re-derivation still filtered on autonomy, so they differed by
+# exactly the builder-paid image rows.
+SEALED_EVIDENCE_SELECTORS = (
+    "domain/layer_finalization_receipts.py",   # produces the point projection
+    "orchestration/revalidation.py",           # produces the sealed canonical projection
+    "domain/layer_outcome_projections.py",     # re-derives it from the terminal verdicts
+    "agents/builder/verify.py",                # produces evidence_failures
+    "domain/layer_evaluation_receipts.py",     # re-derives evidence_failures
+)
+
+
+def test_every_selector_of_sealed_evidence_uses_the_shared_predicate() -> None:
+    for rel in SEALED_EVIDENCE_SELECTORS:
+        body = (SOURCE / rel).read_text(encoding="utf-8")
+        assert "evidence_authority.is_recorded_evidence" in body, (
+            f"{rel} selects sealed evidence without the shared predicate; a producer and "
+            "its re-derivation must agree or the projection cannot verify its own record"
+        )

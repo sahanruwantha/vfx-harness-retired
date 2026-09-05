@@ -32,6 +32,13 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A sealed projection and its re-derivation select evidence the same way
+  ([HIR-0213](docs/improvements/HIR-0213-a-projection-and-its-re-derivation-select-alike.md)).
+  HIR-0210 converted the producers of the sealed evidence list to keep every typed measurement
+  and missed the outcome projection that re-derives it, so the two sets differed by exactly the
+  builder-paid image rows and the projection refused a record that was correct. Every module that
+  produces or re-derives sealed evidence is now named and asserted to use the shared predicate.
+
 - A deferred forecast row on the unit card states the condition it turns on
   ([HIR-0212](docs/improvements/HIR-0212-a-forecast-row-states-its-condition-not-a-verdict.md)).
   The card asserted `diagnostic_only: True` at kickoff, where the rule makes that conditional on
