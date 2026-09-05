@@ -634,3 +634,110 @@ def test_path_clearance_sentinel_and_zero_floor_are_vacuous() -> None:
     assert "vacuous" in (validate_row({**row, "lo": 1e9}) or "")
     assert "vacuous" in (validate_row({**row, "op": "max", "lo": None, "hi": 1e9}) or "")
     assert validate_row(row) is None
+
+
+def _magnitude(**overrides) -> dict:
+    return _row(
+        kind="transform_return_delta",
+        roles=["camera.rig"],
+        frames=[201, 251],
+        component="rotation",
+        **overrides,
+    )
+
+
+def test_a_band_outside_a_metrics_range_is_refused_at_authoring() -> None:
+    """HIR-0219: the two hansa_silk_road rows no scene could satisfy.
+
+    `transform_return_delta` is a vector length, a quaternion angle, or a max of
+    absolute steps, then `max()` — non-negative in every branch. Both rows cleared
+    authoring, materialization and the plan gate, and cost $3.50 of builder budget
+    to disprove by six direct probes before the unit abstained.
+    """
+    for lo, hi in ((-0.4, -0.05), (-0.3, -0.02)):
+        message = validate_row(_magnitude(op="band", lo=lo, hi=hi))
+        assert message is not None, (lo, hi)
+        assert "lies wholly outside the values this metric can produce [0, inf]" in message
+        assert "no scene can satisfy it" in message
+
+    # The replacements the rematerialization actually authored stay legal.
+    for lo, hi in ((0.08, 0.22), (0.0, 0.15)):
+        assert validate_row(_magnitude(op="band", lo=lo, hi=hi)) is None, (lo, hi)
+
+    # min above the ceiling and max below the floor are the same impossibility.
+    # smooth_fraction is [0,1] and states no range of its own, so the backstop answers.
+    assert "exceeds the largest value" in (
+        validate_row(_row(kind="smooth_fraction", roles=["a"], op="min", lo=4)) or ""
+    )
+    assert "is below the smallest value" in (
+        validate_row(_magnitude(op="max", hi=-1)) or ""
+    )
+    # A band that merely overlaps the range is reachable and stays legal.
+    assert validate_row(_magnitude(op="band", lo=-0.1, hi=0.3)) is None
+
+
+def test_a_signed_metric_still_accepts_a_negative_band() -> None:
+    """HIR-0219: a non-negative default would refuse two metrics legitimately.
+
+    `radial_distance_trend` is a least-squares slope — negative means the subject
+    approaches. `onset_order` is a difference of frame indices — negative means one
+    group starts first. Neither declares a range, and a metric with no declared range
+    gets no range check rather than a guessed one.
+    """
+    from vfx_harness.evidence.scene_checks.kinds import KIND_VALUE_RANGE
+
+    for kind, extra in (
+        ("radial_distance_trend", {}),
+        ("onset_order", {"compare_roles": ["other.role"]}),
+    ):
+        assert kind not in KIND_VALUE_RANGE, kind
+        row = _row(kind=kind, roles=["a.role"], frames=[1, 40], op="band", lo=-30, hi=-5, **extra)
+        assert validate_row(row) is None, kind
+
+    # An undeclared metric is untouched by the rule, so nothing gains a default.
+    assert "kind" not in KIND_VALUE_RANGE
+    undeclared = _row(
+        kind="object_property", roles=["a.role"], frame=1,
+        op="band", lo=-5, hi=-1, property="location.2",
+    )
+    assert validate_row(undeclared) is None
+
+
+def test_kinds_that_state_their_own_range_keep_their_wording() -> None:
+    """HIR-0219 is a backstop, not a rewrite: bespoke branches answer first."""
+    occluded = _row(kind="visible_fraction", roles=["a"], frame=1, op="min", lo=0)
+    assert validate_row(occluded) == (
+        "visible_fraction min with lo<=0 passes even when fully occluded — vacuous"
+    )
+    fully_visible = _row(kind="visible_fraction", roles=["a"], frame=1, op="max", hi=1)
+    assert validate_row(fully_visible) == (
+        "visible_fraction max with hi>=1 passes even when fully visible — vacuous"
+    )
+    outside_frame = _row(kind="visible_fraction", roles=["a"], frame=1, op="band", lo=-0.5, hi=-0.2)
+    assert "lies outside the normalized frame" in (outside_frame_message := validate_row(outside_frame) or "")
+    assert "wholly outside the values" not in outside_frame_message
+    clearance = _row(
+        kind="path_clearance_min", roles=["a"], compare_roles=["b"], frames=[1, 10], op="min", lo=0,
+    )
+    assert validate_row(clearance) == (
+        "path_clearance_min min with lo<=0 passes any measured distance — vacuous"
+    )
+
+
+def test_every_declared_range_names_a_supported_kind_and_orders_its_bounds() -> None:
+    """The declaration cannot drift from the kind vocabulary it describes."""
+    from vfx_harness.evidence.scene_checks.kinds import KIND_VALUE_RANGE
+
+    for kind, (low, high) in KIND_VALUE_RANGE.items():
+        assert kind in SUPPORTED_KINDS, kind
+        assert low is not None or high is not None, kind
+        if low is not None and high is not None:
+            assert low < high, kind
+
+
+def test_the_magnitude_definition_does_not_invite_a_signed_bound() -> None:
+    """The registry called a non-negative magnitude a "delta", and a planner
+    authored a signed band in good faith (HIR-0219)."""
+    definition = KIND_DEFINITIONS["transform_return_delta"]
+    assert "magnitude" in definition
+    assert "Never negative" in definition

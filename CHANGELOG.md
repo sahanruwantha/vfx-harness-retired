@@ -46,6 +46,21 @@ live in the linked Harness Improvement Records.
   fixture passed a single directory as both roots; the regression test keeps them apart and
   asserts the staging outcome changes, since a test of the reader alone passes either way.
 
+- Each metric now declares the values it can produce, and a threshold outside them is
+  refused at authoring
+  ([HIR-0219](docs/improvements/HIR-0219-a-metric-declares-the-values-it-can-produce.md)).
+  `transform_return_delta` is a vector length, a quaternion angle, or a maximum of
+  absolute steps — non-negative in every branch — and two wholly negative bands over it
+  cleared authoring, materialization and the plan gate. A builder proved them impossible
+  with six probes and abstained; the controller dispatched a rematerialization that
+  authored satisfiable replacements. The loop worked, and cost $3.50 to learn what
+  authoring can now refuse for nothing. Range-aware validation already existed, written
+  by hand four times for four kinds, so a fifth kind inherited none of it; the interval
+  now sits in the canonical kind registry beside the domain and camera declarations. The
+  check decides disjointness only and runs last, so the four existing vacuity refusals
+  keep their exact wording, and metrics that are genuinely signed declare no range rather
+  than receiving a non-negative default.
+
 - One work-unit record now carries one role notation
   ([HIR-0217](docs/improvements/HIR-0217-one-record-carries-one-role-notation.md)).
   HIR-0150 replaced absolute `mutates.roles` with a relative `role_namespace` plus

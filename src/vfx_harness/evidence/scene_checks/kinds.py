@@ -132,6 +132,99 @@ KIND_DOMAINS: dict[str, str] = {
     # screen-space displacement is a projected claim even though it samples two frames
     "parallax_displacement_profile": "projected_composition",
 }
+#: The interval each metric can physically produce, as (low, high); ``None`` is
+#: unbounded on that side. A threshold lying wholly outside it cannot be satisfied by
+#: any scene, so it is a target rather than a measurement.
+#:
+#: This is knowledge the metric has and the validator used to re-derive by hand, once
+#: per kind. Four kinds carried a bespoke range branch; ``transform_return_delta`` was
+#: the fifth that needed one and inherited nothing, so two wholly-negative bands over a
+#: magnitude cleared authoring, materialization and the plan gate and cost $3.50 of
+#: builder budget to disprove empirically (HIR-0219).
+#:
+#: Only declare a range that follows from the implementation. A metric whose value is
+#: genuinely signed -- ``radial_distance_trend`` is a least-squares slope,
+#: ``onset_order`` a difference of frame indices -- is absent here on purpose, and a
+#: metric with no entry gets no range check rather than a guessed default. A
+#: non-negative default would refuse those two legitimately.
+KIND_VALUE_RANGE: dict[str, tuple[float | None, float | None]] = {
+    # counts
+    "object_count": (0.0, None),
+    "mesh_vertex_count": (0.0, None),
+    "material_count": (0.0, None),
+    "material_user_count": (0.0, None),
+    "node_count": (0.0, None),
+    "node_link_count": (0.0, None),
+    "animation_count": (0.0, None),
+    # fractions of a population
+    "smooth_fraction": (0.0, 1.0),
+    "radial_inward_fraction": (0.0, 1.0),
+    "material_assignment_fraction": (0.0, 1.0),
+    "visible_fraction": (0.0, 1.0),
+    # a boolean read as 0/1
+    "compositor_enabled": (0.0, 1.0),
+    # magnitudes: a vector length, a quaternion angle, a max of absolute steps, a
+    # closest-approach distance, a ratio of two on-screen displacements
+    "transform_return_delta": (0.0, None),
+    "curve_derivative_max": (0.0, None),
+    "path_clearance_min": (0.0, None),
+    "parallax_displacement_profile": (0.0, None),
+    # an 8-bit image statistic
+    "render_region_stat": (0.0, 255.0),
+}
+
+
+def _numeric(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def unsatisfiable_bound(row: dict) -> str | None:
+    """Reject a threshold no scene can satisfy, naming the metric's range.
+
+    Only disjointness is decided here. A bound that merely sits at the edge of the
+    range is vacuous rather than impossible, which is a different rule that several
+    kinds already state in their own words.
+    """
+    kind = str(row.get("kind") or "")
+    span = KIND_VALUE_RANGE.get(kind)
+    if span is None:
+        return None
+    low, high = span
+    readable = f"[{'-inf' if low is None else format(low, 'g')}, "\
+        f"{'inf' if high is None else format(high, 'g')}]"
+    op = str(row.get("op") or "")
+    lo, hi = _numeric(row.get("lo")), _numeric(row.get("hi"))
+    exact = _numeric(row.get("value"))
+    # the whole interval must miss the range; a partial overlap stays reachable
+    if op == "band" and lo is not None and hi is not None and (
+        (high is not None and lo > high) or (low is not None and hi < low)
+    ):
+        return (
+            f"{kind} band [{lo:g}, {hi:g}] lies wholly outside the values this "
+            f"metric can produce {readable}, so no scene can satisfy it"
+        )
+    if op == "min" and lo is not None and high is not None and lo > high:
+        return (
+            f"{kind} min lo={lo:g} exceeds the largest value this metric can produce "
+            f"({high:g}), so no scene can satisfy it"
+        )
+    if op == "max" and hi is not None and low is not None and hi < low:
+        return (
+            f"{kind} max hi={hi:g} is below the smallest value this metric can produce "
+            f"({low:g}), so no scene can satisfy it"
+        )
+    if op == "eq" and exact is not None and (
+        (low is not None and exact < low) or (high is not None and exact > high)
+    ):
+        return (
+            f"{kind} eq value={exact:g} lies outside the values this metric can "
+            f"produce {readable}, so no scene can satisfy it"
+        )
+    return None
+
+
 SUPPORTED_OPS = {"band", "eq", "min", "max"}
 OPERATOR_FIELDS = {
     "band": {
@@ -223,7 +316,12 @@ KIND_DEFINITIONS = {
         "comparison-role onset frame minus selected-role onset frame; positive means selected roles start first"
     ),
     "radial_distance_trend": "least-squares slope of mean XY distance from origin across a frame window",
-    "transform_return_delta": "selected transform-component delta between two declared frames",
+    "transform_return_delta": (
+        "magnitude of the selected transform-component change between two declared "
+        "frames: a vector length for location and scale, an angle for rotation. "
+        "Never negative -- direction is expressed by which frames you compare, not "
+        "by the sign of the bound"
+    ),
     "keyframe_schedule": (
         "maximum property error against an exact semantic keyframe schedule; any missing or "
         "extra keyed frame fails the contract. Sample path P matches object P, object "

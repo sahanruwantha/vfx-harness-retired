@@ -31,6 +31,7 @@ from vfx_harness.evidence.scene_checks.kinds import (
     TEMPORAL_KINDS,
     VACUOUS_NORMALIZED_BAND_SPAN,
     WINDOW_KINDS,
+    unsatisfiable_bound,
 )
 
 
@@ -526,7 +527,10 @@ def validate_row(row: dict) -> str | None:
             return 'op "min" requires numeric field `lo`'
     elif not numeric(row.get("hi")):
         return 'op "max" requires numeric field `hi`'
-    return None
+    # Last, so a kind that states its own range in its own words keeps that wording.
+    # This is the backstop for every kind that declares a range and has no bespoke
+    # branch -- the case a wholly-negative band over a magnitude fell through (HIR-0219).
+    return unsatisfiable_bound(row)
 
 
 def _sample_vector(values: dict, property_name: str) -> tuple[float, ...] | None:

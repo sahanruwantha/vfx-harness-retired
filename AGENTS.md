@@ -1093,7 +1093,18 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   Threshold operators have one enumerated field shape: `eq` uses numeric `value`
   and optional numeric `tol` (there is no `eq` field), `min` uses `lo`, `max`
   uses `hi`, and `band` uses both `lo` and `hi`; validation names the exact field
-  on the first rejection (HIR-0125).
+  on the first rejection (HIR-0125). Each metric declares the interval it can
+  physically produce in `KIND_VALUE_RANGE`, beside its domain and camera
+  capability, and a threshold lying wholly outside that interval is refused at
+  authoring naming the range: a magnitude cannot carry a negative band. Only a
+  range that follows from the implementation is declared, and a metric with no
+  entry gets no range check rather than a guessed default — `radial_distance_trend`
+  is a slope and `onset_order` a difference of frame indices, and a non-negative
+  default would refuse both. The check decides disjointness only; edge-touching
+  bounds remain the separate vacuity rules, which answer first and keep their own
+  wording. Range knowledge restated per kind in the consumer is how two wholly
+  negative bands over a magnitude cleared every gate and cost a builder $3.50 to
+  disprove (HIR-0219).
   A projected `band` whose width is greater than half the normalized frame is
   vacuous. `projected_origin` of a camera-only host is alignment, not subject
   composition coverage; coverage is `bbox_*` of a rendered subject, deferred to
