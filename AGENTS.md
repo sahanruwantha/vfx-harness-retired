@@ -1461,3 +1461,17 @@ verbatim; partial success is partial, not done.
 Judge a fix only on a path that provably executed it. A resumed run that can reuse products
 sealed before the fix is evidence of nothing: re-run the producing step — or the pipeline from
 the start — before reading any outcome as a verdict on the fix, and say which one you did.
+
+Where an artifact exists, reasoning about a description of it is not verification. Open the
+render, the receipt, the sealed script, the payload. A description is uncomparative, so any
+conclusion resting on a comparison it did not make is unsupported however accurate it is —
+and accuracy is exactly what makes this hard. The misleading evidence is usually *true about
+something adjacent*: a prefix does show a string is absent from the prefix, a clean seal is
+evidence the builder finalizer works, a discriminator that returns ABSENT did discriminate
+before the file it keyed on landed in both trees. None of that is noise; it is a true answer
+to a different question, which is why opening the artifact beats resolving to be careful.
+Four sessions produced five instances of this in one day — truncated results read as
+inventories, grep hits read as payloads, one finalizer read as another, a wait loop matching
+its own pgrep pattern timed as the suite, and a stale discriminator that would have passed
+silently. State only what the artifact you opened evidences: a record that carries no layer
+field does not establish a layer, whoever else already believes it.
