@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import anyio
 from claude_agent_sdk import create_sdk_mcp_server
 
+from vfx_harness.agents.plan_tools.boundary import guard_tool_boundary
 from vfx_harness.agents.plan_tools.constants import _JPEG_Q, SERVER_NAME
 from vfx_harness.agents.plan_tools.gate import register_gate_tools
 from vfx_harness.agents.plan_tools.materialize_mcp import register_materialize_tools
@@ -22,6 +23,15 @@ from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.log import log
 from vfx_harness.orchestration.jit_materialization import materialization_candidate_revision
 from vfx_harness.orchestration.plan_authority import PlanPublicationError, resolve_current
+
+
+def _log_tool_defect(tool_name: str, exc: BaseException, count: int) -> None:
+    """A tool defect is run evidence, not only transcript prose."""
+    log(
+        f"! plan tool {tool_name} raised {type(exc).__name__} (occurrence {count}); "
+        "further calls to it are refused without executing",
+        1,
+    )
 
 
 def build_plan_tools(
@@ -232,6 +242,11 @@ def build_plan_tools(
         tools = [probe_video, contact_sheet, extract_frames, *tools]
     if enabled_tools is not None:
         tools = [candidate for candidate in tools if candidate.name in enabled_tools]
+    # Every plan tool carries the same exception policy: an escape is a defect, and a
+    # repeat does not execute. Ten hand-picked except-tuples decided this per handler,
+    # so whether a programming error reached the model as retryable prose depended on
+    # which tool it happened in (HIR-0224).
+    tools = [guard_tool_boundary(candidate, on_defect=_log_tool_defect) for candidate in tools]
     server = create_sdk_mcp_server(name=SERVER_NAME, version="0.1.0", tools=tools)
     names = [f"mcp__{SERVER_NAME}__{t.name}" for t in tools]
     log(

@@ -46,6 +46,17 @@ live in the linked Harness Improvement Records.
   fixture passed a single directory as both roots; the regression test keeps them apart and
   asserts the staging outcome changes, since a test of the reader alone passes either way.
 
+- An exception escaping a plan tool is now a typed defect, and a repeat does not execute
+  ([HIR-0224](docs/improvements/HIR-0224-an-escape-is-a-defect-and-a-repeat-does-not-execute.md)).
+  One shot spent twelve consecutive `finalize_materialization` calls on a `TypeError` that
+  arrived as prose with no JSON pointer; another spent five at roughly $1.70 each. Ten
+  hand-picked except-tuples across the plan tools decided per handler whether a programming
+  error became retryable text — the handler that raised omitted `TypeError` while its
+  neighbour included it. A handler already catches what it can express as a refusal, so an
+  escape is by definition unexpected and needs no type list: it is now typed as a defect
+  naming the tool and exception, and further calls to that tool return without reaching the
+  handler. Refusals and successes pass through unchanged.
+
 - One predicate now decides whether a provisional decision may pay a domain
   ([HIR-0223](docs/improvements/HIR-0223-one-predicate-decides-whether-a-decision-pays-a-domain.md)).
   A materializer reached decision-only bindings for three structural requirements, passed the

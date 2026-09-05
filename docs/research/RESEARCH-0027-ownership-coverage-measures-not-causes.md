@@ -147,11 +147,34 @@ All three declare `[projected_composition, temporal]`; all three are about camer
 motion; none can be caused by a layer restricted to `building.*`. Each independently
 reached the point of attempting a padding closure, which HIR-0218 then refused.
 
-This moves the finding from "a requirement was misplaced" to **"one layer received three
-camera-motion clauses it cannot cause, and the coverage rule accepted all three"**. The
-count matters: a single misassignment is a planner slip, three in one layer is the rule
-admitting a class. It does not change the disposition — the mechanism candidates still all
-either over-refuse or require prose-subject inference — but it raises the priority.
+**Correction, from the published layer-2 view (`c70720b4…/requirements.json`).** The
+"three instances" reading above was over-compressed, and the resolved bindings falsify it
+for two of the three:
+
+```
+R20   kind=decision   projected_composition -> provisional_decision
+                      temporal              -> provisional_decision
+R21   kind=contract   projected_composition -> contract ['facade-parallax-76-151']
+                      temporal              -> provisional_decision
+R52   kind=contract   projected_composition -> contract ['facade-parallax-76-151']
+                      temporal              -> provisional_decision
+```
+
+Layer 2 **can** measure the projected half of R21 and R52 — façade parallax is a metric it
+owns and it paid both by contract. What it could not express was the *temporal* claim about
+speed. Only **R20** was wholly inexpressible and went decision-only on both domains.
+
+So this is one wholly-misplaced clause and two partly-misplaced ones, and the partial cases
+are arguably correct ownership against an incomplete metric registry rather than an
+ownership defect at all. The finding stays **"a requirement was misplaced"**, with one
+confirmed instance and two that are better read as a registry gap. It is not the rule
+admitting a class, and I should not have written that it was. The correction is the
+room_1046_opening driver's, from the published rows rather than from the earlier inference
+we both made.
+
+This also cuts the other way usefully: the mixed rows are evidence the gap-backed decision
+predicate (HIR-0223) discriminates rather than merely permits. Payment widened to a decision
+exactly where a domain had no contract evidence, and nowhere else.
 
 ## What would decide it
 
