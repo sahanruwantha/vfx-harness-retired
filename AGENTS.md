@@ -567,9 +567,15 @@ mechanism when it improves control, observability, or agent capability.
   declares, capped at 24 (HIR-0177). That ceiling is the only one: the draft's own
   `--max-turns` never clamps it, and the log line states the derivation so a clamp cannot
   read as the computation (HIR-0198). A turn budget is declared once, at the single SDK-options
-  constructor, and the harness counts the assistant turns it observes: completion reports
-  `turns=<observed>/<budget>` and prints the provider's own counter separately as
-  `cli_num_turns`, which is a different quantity and never the budget's measure (HIR-0199). Parallelize independent evidence production while
+  constructor (HIR-0199), and is reported against the counter it actually bounds: the budget
+  reaches the CLI as `--max-turns` and the CLI reports `num_turns`, so completion prints
+  `turns=<num_turns>/<budget>` and the harness's own stream count separately as
+  `assistant_messages`. That stream count is not turns and is never shown over the budget --
+  it counts `AssistantMessage` values, a median 1.55 per CLI turn, and reached 2.03x its
+  budget on a session that terminated `success`, while across 168 sessions `num_turns`
+  overshoots its cap by at most 3 and the one session where the cap engaged reported exactly
+  `cap + 1`. This supersedes HIR-0199's conclusion, which read a 2-turn overshoot as proof
+  the CLI counter was unbounded and replaced it with one that overshoots by 38 (HIR-0228). Parallelize independent evidence production while
   authoritative scene mutation and publication remain serialized.
 - Before adding an SDK workaround, verify the installed SDK does not already provide the needed
   primitive. Pin and test every SDK behavior the harness depends on, and fail closed when an

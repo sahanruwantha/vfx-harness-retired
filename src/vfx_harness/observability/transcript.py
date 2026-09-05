@@ -246,9 +246,10 @@ def message(m) -> None:
         accounting = session_turns.accounting()
         _emit("result", subtype=getattr(m, "subtype", None),
               is_error=bool(getattr(m, "is_error", False)),
-              # ``turns`` is the CLI's counter; the harness-observed count and the budget
-              # it was given are the pair that can be compared (HIR-0199).
-              observed_turns=accounting["observed"],
+              # ``turns`` is the CLI's counter and the quantity ``max_turns`` bounds, so
+              # it and ``turn_budget`` are the comparable pair. ``assistant_messages`` is
+              # the harness's own stream count -- a median 1.55 per CLI turn (HIR-0228).
+              assistant_messages=accounting["assistant_messages"],
               turn_budget=accounting["budget"],
               turns=getattr(m, "num_turns", None),
               duration_ms=getattr(m, "duration_ms", None),

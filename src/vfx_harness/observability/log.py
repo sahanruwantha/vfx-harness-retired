@@ -212,31 +212,6 @@ def _result_text(block) -> str:
     return str(content)
 
 
-# One session's turn accounting, owned by the harness rather than read off the CLI.
-#
-# The budget the harness computes (HIR-0177) is denominated in turns, is passed to the SDK
-# as ``max_turns``, and was reported at completion as the CLI's ``num_turns`` — a different
-# counter that empirically exceeded its own cap (hansa run 20260904T143358Z-238376: cap 12,
-# reported 14, subtype success). An operator could therefore not tell from the logs whether
-# a budget bound anything or how much headroom was left. The harness counts the assistant
-# turns it actually observes in the stream it already reads, and reports that beside the
-# budget; the CLI counter is still printed, labelled as its own (HIR-0199).
-_TURNS: dict[str, object] = {"observed": 0, "budget": None}
-
-
-def begin_turn_budget(budget: int | None) -> None:
-    """Declare the turn budget the next model session runs under, and reset the counter."""
-
-    _TURNS["observed"] = 0
-    _TURNS["budget"] = int(budget) if isinstance(budget, int) and budget > 0 else None
-
-
-def turn_accounting() -> dict[str, object]:
-    """Observed assistant turns and the declared budget for the live session."""
-
-    return {"observed": int(_TURNS["observed"] or 0), "budget": _TURNS["budget"]}
-
-
 def log_message(m) -> None:
     """Pretty-print one SDK message: reasoning, text, tool calls, results, result.
 
@@ -256,7 +231,7 @@ def log_message(m) -> None:
         return
 
     if isinstance(m, AssistantMessage):
-        session_turns.observe_turn()
+        session_turns.observe_assistant_message()
         for b in m.content:
             if ThinkingBlock is not None and isinstance(b, ThinkingBlock):
                 for line in b.thinking.strip().splitlines():
@@ -292,13 +267,17 @@ def log_message(m) -> None:
         accounting = session_turns.accounting()
         bits = [f"subtype={getattr(m, 'subtype', '?')}"]
         budget = accounting["budget"]
-        bits.append(
-            f"turns={accounting['observed']}"
-            + (f"/{budget}" if budget is not None else "")
-        )
+        # `num_turns` is the quantity `max_turns` bounds: the budget goes to the CLI as
+        # `--max-turns` and the CLI reports this counter back. Pairing it with the budget
+        # is the only ratio an operator can read for headroom (HIR-0228).
         if turns is not None:
-            # The CLI's own counter, which is not the quantity ``max_turns`` bounds.
-            bits.append(f"cli_num_turns={turns}")
+            bits.append(f"turns={turns}" + (f"/{budget}" if budget is not None else ""))
+        elif budget is not None:
+            bits.append(f"turns=?/{budget}")
+        # The harness's own stream count. Available live, where `num_turns` is not, but it
+        # counts assistant messages -- a median 1.55 per CLI turn -- so it is not turns and
+        # is never shown over the budget.
+        bits.append(f"assistant_messages={accounting['assistant_messages']}")
         if dur is not None:
             bits.append(f"dur={dur / 1000:.1f}s")
         if cost is not None:

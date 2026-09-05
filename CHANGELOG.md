@@ -32,6 +32,22 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- The turn budget is reported against the counter it actually bounds
+  ([HIR-0228](docs/improvements/HIR-0228-the-budget-is-reported-against-the-counter-it-bounds.md),
+  superseding HIR-0199). `max_turns` reaches the CLI as `--max-turns` and the CLI reports
+  `num_turns`; across **168 sessions** that is demonstrably the bounded quantity — the one
+  session where the cap engaged reported 39 against a cap of 38, exactly `cap + 1`, while the
+  harness's own counter stood at 75. That counter fires once per `AssistantMessage`, and the
+  SDK emits a median of 1.55 per CLI turn, so it reached **2.03x its budget on a session that
+  terminated `success`**. HIR-0199 had seen `num_turns` report 14 against a cap of 12 and read
+  the overshoot as proof it was not bounded; across the corpus it overshoots by at most 3, so
+  the fix replaced a counter that is nearly right with one that is nearly double, and stated
+  it as a rule. Completion now prints `turns=<num_turns>/<budget>` with the stream count
+  beside it as `assistant_messages`, named for what it counts. A dead second copy of the whole
+  counter in `log.py`, left by HIR-0199's own refactor and carrying the same wrong claim, is
+  deleted. Found by a shot driver disbelieving its own logs; nothing in the runtime compares
+  the two counters.
+
 - An unclassified boundary now names the exception it swallowed
   ([HIR-0226](docs/improvements/HIR-0226-the-boundary-names-the-exception-it-swallowed.md)).
   The envelope's `found` said only *"The 'build' boundary returned without typed stop
