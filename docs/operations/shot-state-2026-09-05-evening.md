@@ -86,19 +86,40 @@ the parameter carries `Parameter.empty`, and an integration test that drives
    cannot be halved away, and the budget is inert — enforcement is the SDK's `--max-turns` on
    its own counter. `cost.jsonl` `turns` is the trustworthy figure. Contradicts HIR-0199 as
    written, and is an SDK-semantics assumption of the kind AGENTS.md says to pin and test.
-3. **Run manifests record no harness commit.** Two sessions independently could not attribute
+3. **`summary.json` disagrees with a `cost.jsonl` that is correct, and plan rows null their
+   own `phase`.** The standing assumption all day — and the earlier version of this list —
+   was "console sums are the only trustworthy numbers". That is true of `summary.json` and
+   **false of `cost.jsonl`**, which reproduces console totals to a hundredth of a cent and is
+   queryable by `role`, `phase` and layer:
+
+   ```
+   caesar, all runs      console (pinned)  $46.7007      cost.jsonl  $46.7010
+   summary.json vs cost.jsonl, per run:
+     20260905T090459Z-95e903    4.4100  vs   8.0158     understates ~2x
+     20260905T095921Z-f6b83e   57.2000  vs  21.9006     overstates ~2.6x
+   ```
+
+   Wrong in **both directions**, so it is not a scale factor to correct for. Separately,
+   every plan row carries `phase: None` and identifies itself in `role`
+   (`plan:plan`, `plan:verify`, `plan:layer`, `plan:materialize`), so a filter on `phase`
+   returns nothing for exactly the phases anyone would query — `plan:plan + plan:verify`
+   is `$1.1671` against a console figure of `$1.1670`. Both are cheaper to fix than the
+   "spend accounting is unreliable" item this list previously carried. Found by the
+   caesar_curia driver.
+
+4. **Run manifests record no harness commit.** Two sessions independently could not attribute
    behaviour to a code version and reconstructed it from file mtimes. Note the obvious fix is
    wrong: `git rev-parse HEAD` would have reported `09daa94` for a process importing a mix of
    committed and uncommitted code — a confident wrong answer. The record wanted is a digest of
    the source **as loaded**, which also makes a mixed import detectable.
-4. **RESEARCH-0027** — ownership coverage checks whether an owner can *measure* a row, never
+5. **RESEARCH-0027** — ownership coverage checks whether an owner can *measure* a row, never
    whether it can *cause* it. Now three instances in one layer of one plan.
-5. **RESEARCH-0028** — a boot-time falsification is as determined as an in-run one and is not
+6. **RESEARCH-0028** — a boot-time falsification is as determined as an in-run one and is not
    dispatched, because no envelope is minted at boot.
-6. **Per-row contract findings carry no typed owner**, so a gate refusal on a row with a known
+7. **Per-row contract findings carry no typed owner**, so a gate refusal on a row with a known
    `owner_layer` resolves plan-wide and the controller refuses it as reviewed.
 
-Items 4, 5 and 6 are one shape: the harness holds information it declines to act on because
+Items 5, 6 and 7 are one shape: the harness holds information it declines to act on because
 it is not in the field the mechanism reads.
 
 ## The rule this day earned
