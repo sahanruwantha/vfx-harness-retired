@@ -104,3 +104,72 @@ def test_locators_cannot_escape_the_shot_root(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         evidence.replacement_evidence_block(shot, ("../outside.json",))
+
+
+def test_a_dispatched_plan_gate_stop_renders_its_findings(tmp_path) -> None:
+    """The kickoff cited plan-gate evidence by path, and the workspace refuses paths.
+
+    hansa run 20260905T035847Z-dc8f69: the materializer was told "EVIDENCE THIS
+    REPLACEMENT MUST ANSWER" followed by one filename it could not open, and knew only
+    the finding count and two opaque fingerprints. replacement_evidence_block renders
+    hypothesis falsifications compactly (HIR-0191); a plan-gate stop is a different
+    record, so it fell through to being named by path alone (HIR-0216).
+    """
+    import json
+
+    from vfx_harness.agents.planner.rematerialization_evidence import (
+        replacement_evidence_block,
+    )
+
+    evidence = tmp_path / "reports" / "plan-stop-evidence.json"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text(
+        json.dumps(
+            {
+                "artifact_state": {
+                    "gate_report": {
+                        "findings": [
+                            {
+                                "check": "unit-atomicity",
+                                "layer": "2",
+                                "severity": "blocking",
+                                "where": "layer 2 unit hero_podium_material",
+                                "what": "derived no write-cluster at all. Residual control "
+                                "is not a family.",
+                            },
+                            {
+                                "check": "role-selector-closure",
+                                "layer": "2",
+                                "severity": "advisory",
+                                "where": "layer 2 unit other",
+                                "what": "advisory row",
+                            },
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    block = replacement_evidence_block(tmp_path, ("reports/plan-stop-evidence.json",))
+
+    assert "1 blocking finding(s)" in block
+    assert "hero_podium_material" in block, "the unit name must reach the materializer"
+    assert "Residual control is not a family" in block
+    assert "unit-atomicity" in block
+    assert "advisory row" not in block, "only blocking findings are rendered"
+
+
+def test_an_unrecognised_evidence_file_is_still_named(tmp_path) -> None:
+    """Nothing cited may be hidden, even when it cannot be rendered."""
+    from vfx_harness.agents.planner.rematerialization_evidence import (
+        replacement_evidence_block,
+    )
+
+    other = tmp_path / "reports" / "something.json"
+    other.parent.mkdir(parents=True)
+    other.write_text('{"schema": "unknown"}', encoding="utf-8")
+
+    block = replacement_evidence_block(tmp_path, ("reports/something.json",))
+    assert "- evidence reports/something.json" in block

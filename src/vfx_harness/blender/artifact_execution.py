@@ -369,13 +369,15 @@ def _alias_escape_message(
     )
 
 
-def validate_artifact_source(source: str) -> ast.Module:
-    """Parse and reject any capability outside the artifact replay vocabulary."""
+def artifact_violations(source: str, tree: ast.Module) -> list[tuple[int, str]]:
+    """Every policy violation in one parsed artifact, as (line, message) pairs.
 
-    try:
-        tree = ast.parse(source, filename="<vfx-artifact>", mode="exec")
-    except SyntaxError as exc:
-        raise ArtifactExecutionPolicyError(f"artifact source is invalid Python: {exc}") from exc
+    The walk finds them all and used to report the first. A finalizer fixing line 24
+    then paid another write-then-probe round trip to be told about line 25, which was
+    already there and already illegal when the walk ran: three cycles on one candidate,
+    on the most expensive phase in a shot (HIR-0216). Recording never admits anything —
+    any violation still refuses the artifact.
+    """
 
     bindings = _artifact_bindings(tree)
     parents = {
@@ -383,12 +385,22 @@ def validate_artifact_source(source: str) -> ast.Module:
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
+    found: list[tuple[int, str]] = []
+
+    def record(node: ast.AST, message: str) -> None:
+        found.append((int(getattr(node, "lineno", 0)), message))
+
+    def capability_violation(chain) -> str | None:
+        try:
+            _reject_capability_chain(chain)
+        except ArtifactExecutionPolicyError as exc:
+            return str(exc)
+        return None
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _BANNED_NAMES:
-            raise ArtifactExecutionPolicyError(
-                f"artifact capability denied: {node.id}"
-            )
+            record(node, f"artifact capability denied: {node.id}")
+            continue
         elif isinstance(node, ast.Name):
             chains = _resolved_chains(node, bindings)
             parent = parents.get(node)
@@ -399,29 +411,27 @@ def validate_artifact_source(source: str) -> ast.Module:
                 and not (isinstance(parent, ast.Call) and parent.func is node)
                 and not _is_simple_name_alias_value(node, parent)
             ):
-                raise ArtifactExecutionPolicyError(
-                    _alias_escape_message(source, node, chains)
-                )
+                record(node, _alias_escape_message(source, node, chains))
+                continue
         elif isinstance(node, ast.Attribute):
             if node.attr.startswith("__") or node.attr.endswith("__"):
-                raise ArtifactExecutionPolicyError(
-                    f"artifact dunder access denied: {node.attr}"
-                )
+                record(node, f"artifact dunder access denied: {node.attr}")
+                continue
             if node.attr in _BANNED_ATTRIBUTES or node.attr.startswith(("export", "save", "write")):
-                raise ArtifactExecutionPolicyError(
-                    f"artifact file-writing attribute denied: {node.attr}"
-                )
+                record(node, f"artifact file-writing attribute denied: {node.attr}")
+                continue
             chains = _resolved_chains(node, bindings)
-            for chain in chains:
-                _reject_capability_chain(chain)
+            rejected = [message for chain in chains if (message := capability_violation(chain))]
+            if rejected:
+                for message in rejected:
+                    record(node, message)
+                continue
             parent = parents.get(node)
             if (
                 not isinstance(node.ctx, ast.Store)
                 and not isinstance(parent, ast.Attribute)
                 and not _is_direct_invocation(node, parent)
-                and any(
-                _is_bpy_namespace(chain) for chain in chains
-                )
+                and any(_is_bpy_namespace(chain) for chain in chains)
                 and not _is_simple_alias_value(node, parent)
                 and not _is_exact_current_frame_reevaluation_read(
                     node,
@@ -430,43 +440,63 @@ def validate_artifact_source(source: str) -> ast.Module:
                     bindings=bindings,
                 )
             ):
-                raise ArtifactExecutionPolicyError(
-                    _alias_escape_message(source, node, chains)
-                )
+                record(node, _alias_escape_message(source, node, chains))
+                continue
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            targets = (
-                node.targets
-                if isinstance(node, ast.Assign)
-                else [node.target]
-            )
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
                 for nested in ast.walk(target):
                     if (
                         isinstance(nested, ast.Attribute)
                         and nested.attr in _BANNED_OUTPUT_TARGETS
                     ):
-                        raise ArtifactExecutionPolicyError(
-                            "artifact external-output target denied: " + nested.attr
-                        )
+                        record(nested, "artifact external-output target denied: " + nested.attr)
                     if (
                         isinstance(nested, ast.Attribute)
                         and nested.attr in _BANNED_DYNAMIC_CODE_TARGETS
                     ):
-                        raise ArtifactExecutionPolicyError(
-                            "artifact deferred dynamic-code target denied: "
-                            + nested.attr
+                        record(
+                            nested,
+                            "artifact deferred dynamic-code target denied: " + nested.attr,
                         )
         elif isinstance(node, ast.Call):
             for chain in _resolved_chains(node.func, bindings):
-                _reject_capability_chain(chain)
+                message = capability_violation(chain)
+                if message is not None:
+                    record(node, message)
         elif isinstance(node, ast.Constant) and node.value in _BANNED_NODE_TYPES:
-            raise ArtifactExecutionPolicyError(
-                f"artifact external-output node denied: {node.value}"
-            )
+            record(node, f"artifact external-output node denied: {node.value}")
         elif isinstance(node, (ast.ClassDef, ast.AsyncFunctionDef, ast.Await, ast.Yield, ast.YieldFrom)):
-            raise ArtifactExecutionPolicyError(
-                f"artifact statement denied: {type(node).__name__}"
-            )
+            record(node, f"artifact statement denied: {type(node).__name__}")
+
+    # Source order, not ast.walk's breadth-first order: a list that reads 72, 24, 25 is
+    # worse than three ordered refusals.
+    seen: set[tuple[int, str]] = set()
+    ordered: list[tuple[int, str]] = []
+    for row in sorted(found, key=lambda item: item[0]):
+        if row not in seen:
+            seen.add(row)
+            ordered.append(row)
+    return ordered
+
+
+def validate_artifact_source(source: str) -> ast.Module:
+    """Parse and reject any capability outside the artifact replay vocabulary."""
+
+    try:
+        tree = ast.parse(source, filename="<vfx-artifact>", mode="exec")
+    except SyntaxError as exc:
+        raise ArtifactExecutionPolicyError(f"artifact source is invalid Python: {exc}") from exc
+
+    violations = artifact_violations(source, tree)
+    if violations:
+        if len(violations) == 1:
+            raise ArtifactExecutionPolicyError(violations[0][1])
+        raise ArtifactExecutionPolicyError(
+            f"artifact source has {len(violations)} policy violations; every one refuses "
+            "this artifact, so fix all of them in one edit:\n"
+            + "\n".join(f"  {index}. {message}" for index, (_line, message) in enumerate(violations, 1))
+        )
     return tree
 
 

@@ -32,6 +32,17 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A gate reports every violation it found, and a kickoff renders the evidence it cites
+  ([HIR-0216](docs/improvements/HIR-0216-a-gate-reports-every-violation-and-the-kickoff-renders-what-it-cites.md)).
+  The artifact policy walked a candidate once, found every violation, and reported one — three
+  write-then-probe cycles on adjacent lines of one file, on the most expensive phase in a shot. The
+  journal that finalizers compose from is written in the dialect that policy rejects and its header
+  never said so. And a controller-dispatched rematerialization cited its blocking findings as a
+  file path the materialization workspace correctly refuses, so the session was told it must answer
+  findings it could not open. Violations are now collected in source order, journal entries carry a
+  policy note on every line that will be refused, and plan-gate findings are compiled into the
+  kickoff with their unit names and diagnostics.
+
 - A per-run cap counts its run, and a unit that can mutate nothing is refused before publication
   ([HIR-0215](docs/improvements/HIR-0215-a-cap-counts-its-run-and-a-unit-that-cannot-mutate-is-refused.md)).
   `run_max_replans_per_layer` was enforced against every dispatch a shot had ever made, while the

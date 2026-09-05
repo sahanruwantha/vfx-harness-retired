@@ -42,6 +42,7 @@ from vfx_harness.agents.builder.script_agent import _run_script_agent
 from vfx_harness.agents.builder.state import _APPROACH, _ERRORS, _JOURNAL_INFO, _RECIPES_USED
 from vfx_harness.agents.builder.unit_evaluation import publish_unit_evaluation_outcome
 from vfx_harness.agents.builder.verify import _verify_script
+from vfx_harness.blender.journal_policy import annotate_journal
 from vfx_harness.evidence.metrics import compare, look_pair, report
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import (
@@ -114,6 +115,16 @@ async def _persist_journal_and_finalize_script(
         limit=(best.get("snap") or {}).get("journal_index"),
     )
     if info.get("calls"):
+        # The journal is written verbatim from live calls and is the finalizer's input.
+        # Name the lines the artifact policy will refuse, rather than letting the
+        # finalizer find them one write-then-probe cycle at a time (HIR-0216).
+        flagged = annotate_journal(journal)
+        if flagged:
+            log(
+                f"journal: {flagged} line(s) carry constructs the artifact policy refuses "
+                "— each is annotated in place with its legal form",
+                1,
+            )
         journal_rel = jrel
         _JOURNAL_INFO.clear()
         _JOURNAL_INFO.update(info)

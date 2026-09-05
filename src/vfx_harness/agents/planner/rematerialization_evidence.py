@@ -11,6 +11,7 @@ compactly and bounded; every other locator is named by path so nothing cited is 
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from vfx_harness.domain.unit_outcomes import (
@@ -48,6 +49,47 @@ def _render_finding(finding: HypothesisFalsification, locator: str) -> str:
     return "\n".join(lines)
 
 
+FINDING_LIMIT = 12
+
+
+def _render_gate_findings(path: Path, locator: str) -> str | None:
+    """Render a plan-gate stop's blocking findings, or None if this is not one.
+
+    A controller-dispatched rematerialization cites plan-stop evidence, which is not a
+    hypothesis falsification, so it fell through to being named by path alone. The
+    materialization workspace then correctly refuses that path — fresh planning may read
+    only its staged relative files — so the session was told it must answer findings it
+    could not open, and knew only their count and opaque fingerprints. Two mechanisms each
+    correct alone, composing into a context gap (HIR-0216).
+    """
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    state = document.get("artifact_state") if isinstance(document, dict) else None
+    report = state.get("gate_report") if isinstance(state, dict) else None
+    findings = report.get("findings") if isinstance(report, dict) else None
+    if not isinstance(findings, list) or not findings:
+        return None
+    blocking = [
+        row
+        for row in findings
+        if isinstance(row, dict) and str(row.get("severity") or "") == "blocking"
+    ] or [row for row in findings if isinstance(row, dict)]
+    lines = [f"- plan-gate evidence {locator}: {len(blocking)} blocking finding(s)"]
+    for row in blocking[:FINDING_LIMIT]:
+        what = str(row.get("what") or "").strip()
+        if len(what) > REASON_LIMIT:
+            what = what[: REASON_LIMIT - 1] + "…"
+        lines.append(
+            f"  {row.get('check', 'finding')} [{row.get('where', '?')}]: {what}"
+        )
+    if len(blocking) > FINDING_LIMIT:
+        lines.append(f"  … {len(blocking) - FINDING_LIMIT} further blocking finding(s)")
+    return "\n".join(lines)
+
+
 def replacement_evidence_block(shot_root: str | Path, locators: tuple[str, ...] | list[str]) -> str:
     """The evidence card appended to a rematerialization's replacement reason.
 
@@ -63,7 +105,8 @@ def replacement_evidence_block(shot_root: str | Path, locators: tuple[str, ...] 
         try:
             finding = load_hypothesis_falsification(path)
         except (OSError, ValueError):
-            rendered.append(f"- evidence {locator}")
+            gate = _render_gate_findings(path, locator)
+            rendered.append(gate if gate is not None else f"- evidence {locator}")
             continue
         rendered.append(_render_finding(finding, locator))
     if not rendered:
