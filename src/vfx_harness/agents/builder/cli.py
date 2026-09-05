@@ -13,6 +13,7 @@ from vfx_harness.agents.builder.models import (
     BuildTruncated,
     BuildUnpassed,
     LayerVerdictFailed,
+    UnclaimableUnit,
     UnpassedPrior,
     builder_model,
     critic_model,
@@ -298,6 +299,9 @@ def main() -> None:
                 f"BUILD TRUNCATED — {e}",
                 terminal_cause=e.terminal_cause,
             ) from None
+        except UnclaimableUnit as e:
+            log(f"UNCLAIMABLE UNIT — {e}")
+            raise run_artifacts.RequestedExit(7, f"UNCLAIMABLE UNIT — {e}") from None
         except BuildUnpassed as e:
             log(f"BUILD UNPASSED — {e}")
             raise run_artifacts.RequestedExit(7, f"INCOMPLETE CHAIN — {e}") from None

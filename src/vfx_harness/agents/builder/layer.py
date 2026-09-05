@@ -59,7 +59,12 @@ from vfx_harness.agents.builder.layer_finalization_guard import (
 from vfx_harness.agents.builder.layer_finalization_reconcile import (
     reconcile_layer_finalization,
 )
-from vfx_harness.agents.builder.models import _RESET, BuildAuthorityDefect, critic_model
+from vfx_harness.agents.builder.models import (
+    _RESET,
+    BuildAuthorityDefect,
+    UnclaimableUnit,
+    critic_model,
+)
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.prior import (
     _ARTIFACT_EVALUATION_BARRIER,
@@ -169,6 +174,7 @@ from vfx_harness.orchestration.unit_state import (
     freeze_checkpoint,
     ready_from_durable_state,
     transition,
+    unclaimable_state,
     unresolved_falsification,
 )
 from vfx_harness.orchestration.unit_state import load as load_unit_state
@@ -460,6 +466,19 @@ async def _build_layer_under_execution_fence(
                     " (add --discard-accepted when the layer holds passed units). "
                     "`vfx units retry` does not accept this state."
                 ),
+            )
+
+        # The same boundary, one state over. An operator interrupt — including one
+        # taken to honour a budget ceiling — leaves the active unit in `building`, and
+        # the claim below refuses it with a traceback while holding the status, the
+        # legal states, and the transaction that clears it. HIR-0214 fixed this for
+        # `hypothesis_falsified` and this path never received it.
+        blocking_state = unclaimable_state(shot.folder, str(layer.id), unit.id)
+        if blocking_state is not None:
+            status, next_action = blocking_state
+            raise UnclaimableUnit(
+                f"layer {layer.id} unit {unit.id} is {status!r} and no builder may "
+                f"claim it. {next_action}"
             )
 
         require_due_clear(

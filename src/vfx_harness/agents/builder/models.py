@@ -132,6 +132,18 @@ def _budget_terminal_cause(subtype: str) -> str:
     )
 
 
+class UnclaimableUnit(RuntimeError):
+    """The next dependency-ready unit is in a state no builder may claim.
+
+    HIR-0214 gave `hypothesis_falsified` a typed stop naming its reviewed transaction.
+    Every other unclaimable state kept the old behaviour: the claim refused with a
+    traceback from a boundary holding the status, the legal states and the closed
+    lifecycle, and the run terminalized as an unclassified `harness_defect` routed to
+    engineering.  An operator interrupt -- including one taken to honour a budget
+    ceiling -- leaves `building`, which `vfx units retry` clears in seconds.
+    """
+
+
 class BuildUnpassed(RuntimeError):
     """A direct build completed without accepting every unit in its requested layer."""
 

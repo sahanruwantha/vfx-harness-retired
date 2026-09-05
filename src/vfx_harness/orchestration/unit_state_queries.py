@@ -26,6 +26,7 @@ from vfx_harness.orchestration.unit_state_identity import (
     authorized_passed_unit_ids,
     unit_digest,
 )
+from vfx_harness.orchestration.unit_state_lifecycle import TRANSITIONS
 from vfx_harness.orchestration.unit_state_lock import unit_state_lock, unit_state_path
 from vfx_harness.orchestration.unit_state_storage import read
 
@@ -158,3 +159,61 @@ def unresolved_falsification(
         return None
     finding = slot.get("falsification")
     return dict(finding) if isinstance(finding, dict) else None
+
+
+# ``claim_ready_unit_for_planning`` owns this set; naming it here would be a second
+# derivation of one rule, which is the defect this module exists to avoid.
+def _planning_claimable() -> frozenset[str]:
+    # Local import: unit_state_claims imports this module, so a module-scope import
+    # would close a cycle.  noqa: PLC0415 — proven circular dependency.
+    from vfx_harness.orchestration.unit_state_claims import (  # noqa: PLC0415
+        PLANNING_CLAIMABLE_STATES,
+    )
+
+    return frozenset(PLANNING_CLAIMABLE_STATES)
+
+
+def unclaimable_state(
+    folder: str | Path,
+    layer_id: str,
+    unit_id: str,
+) -> tuple[str, str] | None:
+    """The durable status no builder may claim, with the transaction that clears it.
+
+    Returns ``(status, next_action)`` or ``None`` when the unit is claimable.
+
+    An operator interrupt — including one taken to honour a budget ceiling — leaves the
+    active unit in ``building``.  The claim below correctly refuses it, but refusing with
+    a traceback from a boundary that holds the status, the legal states, and the closed
+    lifecycle wastes every one of them: the run terminalized as an unclassified
+    ``harness_defect`` routed to engineering, while ``vfx units retry`` cleared it in
+    seconds and nothing said so (HIR-0214 fixed the sibling case for
+    ``hypothesis_falsified`` and this path never received it).
+
+    The next action is DERIVED from ``TRANSITIONS`` rather than listed here, so a
+    lifecycle edge cannot be added without this sentence following it.
+    """
+
+    state = load(folder, layer_id)
+    slot = ((state or {}).get("units") or {}).get(str(unit_id))
+    if not isinstance(slot, dict):
+        return None
+    status = str(slot.get("status") or "")
+    if not status or status in _planning_claimable():
+        return None
+    if status == "hypothesis_falsified":
+        # Its own typed stop already names the reviewed transaction (HIR-0214).
+        return None
+    if "retryable" in TRANSITIONS.get(status, frozenset()):
+        return status, (
+            f"`{status}` reaches `retryable`, so a reviewed retry reopens it: "
+            f"vfx units retry <shot> --layer {layer_id} --unit {unit_id} "
+            "--reason <why it is retryable now> --evidence <locator>. "
+            "Then rerun the build."
+        )
+    reachable = sorted(TRANSITIONS.get(status, frozenset()))
+    return status, (
+        f"`{status}` does not reach `retryable`, so no retry exists for it; its only "
+        f"legal successors are {reachable or ['(none)']}. Reopening it requires a "
+        "reviewed authority transaction, not a builder retry."
+    )
