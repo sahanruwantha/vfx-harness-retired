@@ -32,6 +32,18 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- An amendment is bounded by the finding that drove it
+  ([HIR-0232](docs/improvements/HIR-0232-an-amendment-is-bounded-by-its-finding.md)).
+  A controller-dispatched repair resolved a genuine contradiction between two camera-owned
+  bands and, unasked, raised one band's floor from 0.15 to 0.28 — past a reference
+  measuring 0.216 — at the shot's establishing frame. Only the other row was ever wrong;
+  the amendment fixed the broken one and broke the correct one, because the finding said
+  "jointly unsatisfiable" and nothing defended the row that was right. Resolving an
+  unsatisfiability requires giving some row *more* room, never less, so a named row whose
+  admissible set shrank was not asked for by the finding — a rule needing no measurement,
+  no reference instrument, and only the two bands and the finding's own contract ids.
+  Operator-directed rematerializations carry no finding and are untouched.
+
 - The unclassified-boundary audit record leads with the cause
   ([HIR-0231](docs/improvements/HIR-0231-the-audit-record-leads-with-the-cause.md)).
   HIR-0226 put that file in the reading order; inside it, the 270KB authority snapshot

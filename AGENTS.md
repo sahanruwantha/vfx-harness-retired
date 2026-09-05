@@ -1018,6 +1018,19 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   repeated work it has no scope to repair (HIR-0049, HIR-0154, HIR-0171). The typed stop
   therefore targets the owner's layer view, and the controller dispatches that rematerialization
   (HIR-0191).
+- An amendment is bounded by the finding that drove it. Resolving a joint-unsatisfiability
+  finding requires giving some named row a larger admissible set; it can never require a
+  smaller one, so a named row whose band shrank was not asked for and is refused at
+  materialization. A repair that resolved a real contradiction also raised an unrelated
+  bound's floor from 0.15 to 0.28 past a reference measuring 0.216, at the shot's
+  establishing frame -- only the other row was ever wrong, and nothing defended the row
+  that was right because the finding had not named it as wrong, only as party to a
+  contradiction. An amendment's search space is the finding's statement, and anything true
+  but unstated is free to be spent. The rule needs no measurement: only the two bands and
+  the finding's `contract_ids`. A finding's `layer` is where it was raised, not the
+  authority it indicts, so scope by row identity rather than by that field. An
+  operator-directed rematerialization carries no finding and is bounded by the operator
+  (HIR-0232).
 - When passing requires a decision, dependency, ownership, scope, contract, or sealed-outcome
   change outside the active unit, record `hypothesis_falsified` and stop. Replanning is a
   versioned transaction: freeze accepted state, validate the amendment, compute the complete

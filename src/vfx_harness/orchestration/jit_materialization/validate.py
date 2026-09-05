@@ -7,6 +7,10 @@ import json
 import tempfile
 from pathlib import Path
 
+from vfx_harness.domain.amendment_scope import (
+    AMENDMENT_RELAXATION_RULE,
+    tightened_conflict_rows,
+)
 from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
 from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
 from vfx_harness.domain.construction_routes import construction_route_gaps
@@ -46,6 +50,9 @@ from vfx_harness.evidence.scene_checks import (
     deferred_subject_composition_payment_gaps,
     validate_row,
     validate_row_set,
+)
+from vfx_harness.orchestration.hypothesis_falsification_projection import (
+    open_conflict_contract_ids,
 )
 from vfx_harness.orchestration.jit_materialization.candidate import (
     load_materialization_candidate,
@@ -408,6 +415,20 @@ def validate_materialization(
         for row in base_scene_rows
         if str(row.get("owner_layer") or "") != layer_id
     ] + list(scene_rows)
+
+    # An amendment driven by a joint-unsatisfiability finding is bounded by that finding.
+    # Resolving a contradiction requires giving some row more room, never less -- so a
+    # named row whose admissible set SHRANK was not asked for by the finding. room's
+    # layer-1 amendment resolved a real conflict and, unasked, raised f1's floor from
+    # 0.15 to 0.28 past a reference measuring 0.216, spending fidelity at the
+    # establishing frame to buy satisfiability elsewhere (HIR-0232).
+    for record_id, conflict_ids in open_conflict_contract_ids(shot_folder):
+        for tightened in tightened_conflict_rows(conflict_ids, base_scene_rows, scene_rows):
+            note(
+                json_ptr("scene_contracts"),
+                f"amendment for finding {record_id} {tightened.describe()}, which its "
+                f"conflict did not put in question. {AMENDMENT_RELAXATION_RULE}",
+            )
 
     # HIR-0132: a required visibility row activates at its repair-owner unit. Later
     # geometry must depend on and protect that owner; future surfaces are not due early.
