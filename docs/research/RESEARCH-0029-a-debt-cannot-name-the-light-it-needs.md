@@ -123,7 +123,8 @@ geometry sections, lighting last at L4 of 4, structurally identical to caesar's.
    turning a payable debt unpayable. Inherits `image-subject-bootstrap`'s existing
    closure-membership shape.
    Deferring does not break payer binding: `activates_at` and the payer set are computed
-   together (`judgment_debt_models.py:725` `payer_layer`), so a later activation yields a longer prefix
+   together (`judgment_debt_models.py:743` `for_definition`, taking
+   `definition.binding.activates_at` at `:754`), so a later activation yields a longer prefix
    that strictly contains the earlier one.
    Status: open. Prerequisite: the carrier vocabulary must admit signal families first,
    across all nine gates (below), or there is nothing for the predicate to match.
@@ -220,7 +221,26 @@ new derivations at review time, separate from whether the fix is correct.
 ## A note on this note
 
 Every line number above was re-verified against `cc49c24` by reading the line, not by
-trusting the message it came from. Two were wrong on the first pass — both were relayed
-from another session's report and both were off by several lines. That is the same
-failure this file documents one level up: a true statement, taken from a description
-rather than the artifact, that stops being true where it matters.
+trusting the message it came from. Two were wrong on the first pass — both relayed from
+another session's report. That is the same failure this file documents one level up: a
+true statement, taken from a description rather than the artifact, that stops being true
+where it matters.
+
+**And that verification pass itself introduced an error while removing one.** Correcting
+`judgment_debt_models.py:742` (a decorator line, off by one) I wrote `:725`, which is the
+`payer_layer: str` field declaration — a different construct entirely, not the assignment
+the claim rests on. Caught by the session whose number I was correcting. The citation is
+now `:743` for the method and `:754` for the assignment, both read.
+
+That is three times in one day that a correction carried the defect it was correcting:
+HIR-0199 installed a turn counter worse than the one it replaced, `a0404a1` introduced an
+eighth duplicate of the rule it derives, and this pass replaced a wrong line number with a
+differently wrong one. The mechanism (vfx-harness-4d) is not carelessness: **attention goes
+to the thing being fixed, and the fix's own new content gets the attention a first draft
+gets, not the attention a review gets.**
+
+A related instance from the same night, worth recording because it is about how this
+analysis was produced rather than about its subject: three sessions reasoned from a
+feasibility model that had already been falsified on the shot in question, and none
+questioned its premise — including one who had read another's account of that exact error
+an hour earlier. Reading about a failure mode does not confer immunity to it.
