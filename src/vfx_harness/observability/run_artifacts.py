@@ -83,14 +83,20 @@ class RequestedExit(SystemExit):
 class TypedStop(SystemExit):
     """Non-zero process exit carrying the boundary's complete typed stop authority."""
 
-    def __init__(self, code: int, envelope: StopEnvelope):
+    def __init__(self, code: int, envelope: StopEnvelope, *, terminal_cause: str):
         if not isinstance(code, int) or isinstance(code, bool) or code == 0:
             raise ValueError("TypedStop.code must be a non-zero integer")
         if not isinstance(envelope, StopEnvelope):
             raise ValueError("TypedStop.envelope must be a StopEnvelope")
         self.stop_envelope = envelope
         self.detail = f"{envelope.stop_class}: {envelope.found} {envelope.next_action}"
-        self.terminal_cause = envelope.stop_class
+        # Required, and validated against the closed vocabulary. This used to be
+        # `envelope.stop_class`, which is a different question with a disjoint set of
+        # answers, so every typed stop reported a terminal cause that could not be one
+        # (HIR-0227).
+        self.terminal_cause = unclassified_authority.require_terminal_cause(
+            terminal_cause, "TypedStop.terminal_cause"
+        )
         super().__init__(code)
 
     def __str__(self) -> str:
@@ -736,10 +742,7 @@ def terminal_record(exc: BaseException) -> tuple[str, int, str, str]:
     metadata = getattr(exc, "run_metadata", {})
     outcome = str(metadata.get("outcome") or "") if isinstance(metadata, dict) else ""
     if not cause and outcome:
-        cause = {
-            "stalled": "gate_stalled",
-            "budget": "plan_budget_exhausted",
-        }.get(outcome, "gate_rejected")
+        cause = unclassified_authority.plan_outcome_terminal_cause(outcome)
     if not cause:
         cause = "requested_exit" if isinstance(exc, SystemExit) else "process_error"
     raw = str(exc).strip()

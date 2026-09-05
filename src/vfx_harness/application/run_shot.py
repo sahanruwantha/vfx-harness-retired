@@ -242,7 +242,12 @@ def _stop(
     summary.update(
         {
             "detail": detail[:1000],
-            "terminal_cause": envelope.stop_class,
+            # Not `envelope.stop_class`. That answers who owns the stop and is not a
+            # member of the terminal-cause vocabulary at all; writing it here put an
+            # illegal value in 42 of this repository's run summaries. The envelope
+            # carries the specifics in `stop_class`, `stop_stage` and `detail`, all
+            # three of which this summary already publishes (HIR-0227).
+            "terminal_cause": "typed_stop_selected",
             "stop_envelope": "reports/stop-envelope.json",
             "stop_envelope_digest": envelope.digest,
             "stop_class": envelope.stop_class,

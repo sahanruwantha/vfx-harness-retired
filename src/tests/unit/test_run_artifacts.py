@@ -383,7 +383,7 @@ def test_typed_stop_is_published_and_read_back_before_direct_exit(
         pytest.raises(run_artifacts.TypedStop),
         run_owner_boundary.invocation(shot, "build", shot_id="typed-stop") as layout,
     ):
-        raise run_artifacts.TypedStop(9, envelope)
+        raise run_artifacts.TypedStop(9, envelope, terminal_cause="acceptance_rejected")
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
     summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
@@ -683,7 +683,7 @@ def test_inherited_stage_publishes_typed_stop_without_waiting_for_driver(
         pytest.raises(run_artifacts.TypedStop),
         run_owner_boundary.invocation(shot, "accept", shot_id="inherited-stop"),
     ):
-        raise run_artifacts.TypedStop(9, envelope)
+        raise run_artifacts.TypedStop(9, envelope, terminal_cause="acceptance_rejected")
 
     # An inherited stage publishes only its typed stop; the root owner selects status.
     assert layout.read_stop_envelope(expected_digest=envelope.digest) == envelope
@@ -701,7 +701,9 @@ def test_typed_stop_with_wrong_run_identity_is_not_publishable(tmp_path: Path, m
         pytest.raises(run_artifacts.TypedStop),
         run_owner_boundary.invocation(shot, "accept", shot_id="wrong-run-stop") as layout,
     ):
-        raise run_artifacts.TypedStop(9, _typed_harness_stop("wrong-run-001"))
+        raise run_artifacts.TypedStop(
+            9, _typed_harness_stop("wrong-run-001"), terminal_cause="acceptance_rejected"
+        )
 
     status = json.loads(layout.status.read_text(encoding="utf-8"))
     summary = json.loads((layout.reports / "summary.json").read_text(encoding="utf-8"))
@@ -1010,3 +1012,42 @@ def test_carrying_the_message_does_not_move_the_stop_identity(
     # The prose still separates them for the operator.
     assert first.found != second.found
     assert "layer 1" in first.found and "layer 7" in second.found
+def test_a_typed_stop_reports_a_cause_and_refuses_a_stop_class() -> None:
+    """HIR-0227: `terminal_cause` and `stop_class` are disjoint vocabularies.
+
+    `TypedStop.terminal_cause` was `envelope.stop_class`, so a typed stop reported a
+    reason that is not a member of the terminal-cause set at all. 42 run summaries in
+    this repository carry `harness_defect` there and 17 carry `authority_defect`.
+    """
+    envelope = _typed_harness_stop("typed-cause-001")
+
+    stop = run_artifacts.TypedStop(9, envelope, terminal_cause="acceptance_rejected")
+    assert stop.terminal_cause == "acceptance_rejected"
+    assert stop.terminal_cause != envelope.stop_class
+
+    # `terminal_record` is what the boundary writes into summary.json.
+    _state, code, cause, _detail = run_artifacts.terminal_record(stop)
+    assert cause == "acceptance_rejected"
+    assert code == 9
+
+    with pytest.raises(ValueError, match="says who owns the stop"):
+        run_artifacts.TypedStop(9, envelope, terminal_cause=envelope.stop_class)
+
+
+def test_a_plan_gate_failure_reports_its_outcome_not_its_stop_class() -> None:
+    """The same conflation in the planner, at `agents/planner/types.py`."""
+    envelope = _typed_harness_stop("plan-cause-001")
+    for outcome, expected in (
+        ("stalled", "gate_stalled"),
+        ("budget", "plan_budget_exhausted"),
+        ("blocked", "gate_rejected"),
+    ):
+        failure = PlanGateFailure(
+            PlanLoopResult(outcome=outcome, blocking_count=1, path=Path("plan.md")),
+            stop_envelope=envelope,
+        )
+        assert failure.terminal_cause == expected
+        assert failure.terminal_cause != envelope.stop_class
+        # And it agrees with the boundary's own derivation, which is the same function.
+        _s, _c, cause, _d = run_artifacts.terminal_record(failure)
+        assert cause == expected

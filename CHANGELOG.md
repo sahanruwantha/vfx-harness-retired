@@ -55,6 +55,20 @@ live in the linked Harness Improvement Records.
   HIR-0214's identity is untouched: the label never enters `classification_digest`, so two
   conflicts on different layers still share one fingerprint and one finding id, and the
   controller's already-dispatched check still works.
+- A stop class is no longer written into `terminal_cause`
+  ([HIR-0227](docs/improvements/HIR-0227-a-stop-class-is-not-a-terminal-cause.md)).
+  `StopEnvelope.stop_class` says who owns a stop; `terminal_cause` says why the run ended;
+  the two closed vocabularies share no member. Three sites assigned one to the other, so
+  **59 of 115 run summaries in this repository — 51% — carry a `terminal_cause` that is not
+  one**: 42 `harness_defect`, 17 `authority_defect`. Seven of those were `RequestedExit`
+  stops, three carrying HIR-0138's `model_session_idle_timeout`, all reported as harness
+  defects an operator would go hunting. The sites reached for the adjacent field because a
+  `StopEnvelope` carries no cause and the vocabulary — which predates typed stops — had no
+  member for one. `TypedStop` now requires a cause validated against the closed set, the
+  set gains the six members its own writers were already reaching past, and
+  `plan_outcome_terminal_cause` is one function instead of two disagreeing copies. An
+  AST-parsing architecture test refuses the category error and found two writers outside
+  the vocabulary that a hand-written sweep would have missed.
 
 - A recorded vocabulary gap is now read where the tool writes it
   ([HIR-0218](docs/improvements/HIR-0218-a-recorded-gap-is-read-where-it-is-written.md)).

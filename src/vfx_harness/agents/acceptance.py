@@ -633,7 +633,7 @@ async def accept(shot: Shot, session: BlenderSession, only: str | None = None,
             results,
             axes,
         )
-        raise run_artifacts.TypedStop(9, envelope)
+        raise run_artifacts.TypedStop(9, envelope, terminal_cause="acceptance_rejected")
     return acceptance_record
 
 

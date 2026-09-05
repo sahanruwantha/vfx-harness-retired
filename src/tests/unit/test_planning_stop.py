@@ -29,7 +29,7 @@ from vfx_harness.domain.stop_transactions import (
     action_idempotency_key,
 )
 from vfx_harness.evaluation.plan_gate import Finding, GateResult
-from vfx_harness.observability import run_artifacts
+from vfx_harness.observability import run_artifacts, unclassified_authority
 
 
 def _sha(path: Path) -> str:
@@ -377,7 +377,16 @@ def test_plan_gate_failure_carries_the_compiled_envelope_to_run_publication(
 
     assert raised.value.code == 3
     assert raised.value.stop_envelope is envelope
-    assert raised.value.terminal_cause == "authority_defect"
+    # HIR-0227 supersedes the assertion this line used to make. It read
+    # `== "authority_defect"`, which is the envelope's stop_class -- who owns the
+    # stop -- and not a terminal cause. The cause now comes from the plan outcome,
+    # through the one function `terminal_record` also uses. The stop_class itself is
+    # unchanged and asserted at the top of this module.
+    assert raised.value.terminal_cause == unclassified_authority.plan_outcome_terminal_cause(
+        result.outcome
+    )
+    assert raised.value.terminal_cause != envelope.stop_class
+    assert raised.value.terminal_cause in unclassified_authority.TERMINAL_CAUSES
     assert "1 blocking structural finding" in str(raised.value)
 
 

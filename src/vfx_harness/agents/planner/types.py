@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vfx_harness.domain.stop_envelopes import StopEnvelope
+from vfx_harness.observability import unclassified_authority
 
 # Materialization authority is the selected bundle, the decision ledger, sealed
 # outcomes, and the candidate file. Glob/Grep of historical bundles is not a repair
@@ -65,7 +66,11 @@ class PlanGateFailure(SystemExit):
         )
         if envelope is not None:
             self.stop_envelope = envelope
-            self.terminal_cause = envelope.stop_class
+            # `envelope.stop_class` answers who owns the stop, not why the run ended,
+            # and is never a legal terminal cause. The outcome already knows (HIR-0227).
+            self.terminal_cause = unclassified_authority.plan_outcome_terminal_cause(
+                result.outcome
+            )
         self.run_metadata = {
             "outcome": result.outcome,
             "blocking_count": result.blocking_count,

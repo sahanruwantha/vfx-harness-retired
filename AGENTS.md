@@ -1041,6 +1041,17 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   boundaries across three shots held 32 distinct causes and produced four sentences,
   including a `BUILD TRUNCATED` message the harness had already authored. The label never
   enters `classification_digest`, and `next_action` still names one action (HIR-0226).
+  A stop's class is not its terminal cause and never a legal value for it: `stop_class`
+  says who owns the stop, `terminal_cause` says why the run ended, and the two closed
+  vocabularies share no member. `TypedStop` requires a validated cause, the vocabulary
+  carries a member for every stop the harness actually publishes, and one function derives
+  a plan outcome's cause for both the exception and the boundary. Assigning one to the
+  other put an illegal value in 51% of all run summaries -- including HIR-0138's
+  `model_session_idle_timeout`, relabelled `harness_defect` -- because a `StopEnvelope`
+  carries no cause and the set had no member for a typed stop, so three sites each reached
+  for the adjacent field. Author a cause with `require_terminal_cause`, which fails closed;
+  `closed_terminal_cause` is for normalising observed metadata off arbitrary historical
+  records and degrades an unknown value silently by design (HIR-0227).
 - Reopen a fixed or interrupted unit only through the audited `vfx units retry` transition, with
   reason and evidence. A reopened unit whose executable rows already pass may mutate until the
   first in-session verdict — the convergence guard cannot treat a failed qualitative claim as

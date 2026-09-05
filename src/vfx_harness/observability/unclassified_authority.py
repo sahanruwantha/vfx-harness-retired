@@ -16,6 +16,8 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from vfx_harness.domain.stop_envelopes import STOP_CLASSES
+
 _PLAN_POINTER = Path("plans/current.json")
 _PLAN_POINTER_SCHEMA = "vfx-harness.plan-pointer/v2"
 _PLAN_BUNDLE_SCHEMA = "vfx-harness.plan-bundle/v1"
@@ -57,24 +59,45 @@ _PUBLISHABLE_OUTCOMES = frozenset(
     {"clean", "clean_with_assumptions", "clean_with_deferred"}
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
-_TERMINAL_CAUSES = {
-    "build_truncated",
-    "gate_rejected",
-    "gate_stalled",
-    "interrupted",
-    "max_turns_exhausted",
-    "missing_stop_envelope",
-    "model_budget_exhausted",
-    "model_session_failure",
-    "model_session_idle_timeout",
-    "plan_budget_exhausted",
-    "process_error",
-    "requested_exit",
-    "service_unavailable",
-    "session_stalled",
-    "terminal_service_error",
-    "usage_limit",
-}
+#: Why a run ended.  This is a different question from ``StopEnvelope.stop_class``,
+#: which says who owns the stop -- and the two vocabularies are disjoint, so a stop
+#: class is never a legal value here.  Three members exist because typed stops arrived
+#: after this set did and had no honest cause to name; the sites that needed them
+#: reached for the stop class instead (HIR-0227).
+TERMINAL_CAUSES = frozenset(
+    {
+        "acceptance_rejected",
+        "authority_amendment_required",
+        "build_truncated",
+        "cancelled_without_intent",
+        "gate_rejected",
+        "gate_stalled",
+        "interrupted",
+        "materialization_failed",
+        "max_turns_exhausted",
+        "missing_stop_envelope",
+        "model_budget_exhausted",
+        "model_session_failure",
+        "model_session_idle_timeout",
+        "plan_budget_exhausted",
+        "process_error",
+        "requested_exit",
+        "service_unavailable",
+        "session_stalled",
+        "stop_envelope_publication_failure",
+        "terminal_service_error",
+        "typed_stop_selected",
+        "usage_limit",
+    }
+)
+_TERMINAL_CAUSES = TERMINAL_CAUSES
+
+#: Named here only so the most common miswrite is legible in its own rejection. The
+#: values are ``StopEnvelope``'s and are imported rather than restated: this module
+#: exists to stop one closed vocabulary being mistaken for another, and a second copy
+#: of one of them is that same defect one level down. The first draft of HIR-0227
+#: restated them, which the duplicate scanner then found in HIR-0227 itself.
+_STOP_CLASSES = STOP_CLASSES
 
 
 class _DuplicateJsonKey(ValueError):
@@ -99,9 +122,52 @@ OPERATOR_CAUSES = frozenset({"interrupted", "requested_exit"})
 
 
 def closed_terminal_cause(value: str) -> str:
-    """Keep arbitrary legacy exception metadata out of action identity."""
+    """Normalise arbitrary *observed* metadata for identity.
 
-    return value if value in _TERMINAL_CAUSES else "unclassified_terminal_cause"
+    Lenient on purpose: the input may be exception metadata from any historical
+    record, and unknown prose must not enter action identity.  It is the wrong
+    function for a value this repository authors -- there a typo would degrade
+    silently into a plausible-looking record.  Author with
+    :func:`require_terminal_cause` instead (HIR-0227).
+    """
+
+    return value if value in TERMINAL_CAUSES else "unclassified_terminal_cause"
+
+
+def plan_outcome_terminal_cause(outcome: str) -> str:
+    """The one derivation of a plan loop outcome's terminal cause.
+
+    `PlanGateFailure` and `terminal_record` both need it.  When they each had their
+    own, the exception's answer was a stop class and the boundary's was a cause, and
+    the exception's is the one that reached the operator (HIR-0227).
+    """
+
+    return {
+        "stalled": "gate_stalled",
+        "budget": "plan_budget_exhausted",
+    }.get(str(outcome), "gate_rejected")
+
+
+def require_terminal_cause(value: object, field: str) -> str:
+    """Accept only a member of the closed vocabulary, naming the accepted set.
+
+    A ``StopEnvelope.stop_class`` is the value this most often receives by mistake:
+    it answers "who owns this stop", not "why did the run end", and the two
+    vocabularies share no members (HIR-0227).
+    """
+
+    text = str(value or "").strip()
+    if text in TERMINAL_CAUSES:
+        return text
+    hint = (
+        " -- that is a StopEnvelope.stop_class, which says who owns the stop, "
+        "not why the run ended"
+        if text in _STOP_CLASSES
+        else ""
+    )
+    raise ValueError(
+        f"{field} must be one of {sorted(TERMINAL_CAUSES)}; found {text!r}{hint}"
+    )
 
 
 def _is_digest(value: object) -> bool:

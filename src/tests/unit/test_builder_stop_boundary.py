@@ -36,7 +36,7 @@ from vfx_harness.domain.stop_transactions import (
     SelectedAuthorityAmendmentCommitted,
 )
 from vfx_harness.domain.unit_outcomes import HYPOTHESIS_FALSIFICATION_SCHEMA
-from vfx_harness.observability import run_artifacts
+from vfx_harness.observability import run_artifacts, unclassified_authority
 from vfx_harness.orchestration.authority_selection import (
     AuthorityPointerObservation,
     ResolvedSelectedAuthority,
@@ -629,7 +629,14 @@ def test_public_builder_exit_keeps_legacy_code_and_detail_with_typed_envelope(
     assert stopped.code == 7
     assert str(stopped).startswith("INCOMPLETE CHAIN — layer 1")
     assert stopped.stop_envelope is envelope
-    assert stopped.terminal_cause == "authority_defect"
+    # HIR-0227 supersedes the assertion this line used to make. It read
+    # `== "authority_defect"`, pinning the conflation: that is the envelope's
+    # stop_class, which says who owns the stop, and is not a member of the
+    # terminal-cause vocabulary at all. The stop_class is unchanged and still
+    # asserted where it belongs, three tests above.
+    assert stopped.terminal_cause == "authority_amendment_required"
+    assert stopped.terminal_cause != envelope.stop_class
+    assert stopped.terminal_cause in unclassified_authority.TERMINAL_CAUSES
 
 
 def test_layer_runtime_carries_only_a_sealed_falsification_to_public_boundary(

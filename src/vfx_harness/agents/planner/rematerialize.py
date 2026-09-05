@@ -343,7 +343,9 @@ global authority, create unit state, write prose, or write another file."""
             candidate=target,
             overlay_root=overlay_root,
         )
-        raise run_artifacts.TypedStop(3, envelope) from exc
+        raise run_artifacts.TypedStop(
+            3, envelope, terminal_cause="materialization_failed"
+        ) from exc
     finally:
         transcript.unbind()
         costlog.unbind()
@@ -357,7 +359,9 @@ global authority, create unit state, write prose, or write another file."""
             candidate=target,
             overlay_root=overlay_root,
         )
-        raise run_artifacts.TypedStop(3, envelope) from exc
+        raise run_artifacts.TypedStop(
+            3, envelope, terminal_cause="materialization_failed"
+        ) from exc
     log(f"deferred layer {layer.id} materialized against bundle {bundle.content_hash[:12]}")
 
 

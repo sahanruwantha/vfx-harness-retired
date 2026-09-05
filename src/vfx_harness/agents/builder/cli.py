@@ -241,7 +241,9 @@ def _authority_defect_exit(shot, failure: BuildAuthorityDefect) -> run_artifacts
     else:
         log(f"LAYER VERDICT — {failure.legacy_detail}")
         detail = failure.legacy_detail
-    stopped = run_artifacts.TypedStop(failure.exit_code, envelope)
+    stopped = run_artifacts.TypedStop(
+        failure.exit_code, envelope, terminal_cause="authority_amendment_required"
+    )
     # Keep the established operator-facing exit detail while the immutable
     # envelope, not prose or exit code, becomes dispatch authority.
     stopped.detail = detail
