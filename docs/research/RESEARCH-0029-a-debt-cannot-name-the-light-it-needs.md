@@ -187,6 +187,24 @@ guards that a signal check must not inherit — `jit_materialization/validate.py
 and `evaluation/plan_gate/evidence_coherence.py:652` all gate on
 `"geometry" in unit.provides`. Use the activation ids directly (vfx-harness-4d).
 
+**Read the activation compiler directly, and it is not gated.**
+
+    evidence/scene_checks/deferred_subject.py:121
+      def deferred_subject_composition_activation_ids(rows, layer_id, frame=None)
+
+No unit parameter, no `provides`, no filter — activation ids are computed from rows and
+layer id alone. The *forecast* function calls this compiler and then filters per-unit;
+the compiler itself does not. So a layer-start check reading it directly sees every
+activation row on every layer, including the camera-only, lighting-only and
+compositor-only layers the forecast projection would silence.
+
+This distinction is worth keeping because it inverts the usual reading. The observation
+that motivated the layer-start proposal ("the builder card already carries the prior
+layer's rows") *did* come through the gated projection, on a unit declaring
+`provides: ["geometry"]`. Normally that would be a reason to distrust the conclusion.
+Here it is not: the evidence was gated, the data is not, and the conclusion holds when
+taken from the compiler instead of the projection.
+
 Stated precisely, because the nearby guard works the other way and is easy to conflate:
 `jit_materialization/judgment_authority.py:96` is **additive**, not a filter —
 
