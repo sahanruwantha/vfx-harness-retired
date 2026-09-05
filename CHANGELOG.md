@@ -32,6 +32,38 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A recorded vocabulary gap is now read where the tool writes it
+  ([HIR-0218](docs/improvements/HIR-0218-a-recorded-gap-is-read-where-it-is-written.md)).
+  `escalate_vocabulary_gap` writes under `<shot>/state/plan-escalations/`; the
+  materialization validator read the same relative path under the selected **plan bundle**,
+  which is content-addressed and has no `state/` directory. So the read returned nothing in
+  every shot and every run, and HIR-0202's rule — that a recorded gap makes a decision legal
+  on a structural-only requirement — had never once executed. A materializer escalated the
+  same requirement three times, submitted the prescribed decision twice, and was refused
+  each time by the rule that had asked for the escalation. The path is now one shared
+  function, and materialization validation takes `shot_folder` as a required argument
+  distinct from the plan-bundle root. The defect survived its own tests because every
+  fixture passed a single directory as both roots; the regression test keeps them apart and
+  asserts the staging outcome changes, since a test of the reader alone passes either way.
+
+- One work-unit record now carries one role notation
+  ([HIR-0217](docs/improvements/HIR-0217-one-record-carries-one-role-notation.md)).
+  HIR-0150 replaced absolute `mutates.roles` with a relative `role_namespace` plus
+  `role_members` and left `control_roles` — the one other field whose values must be drawn
+  from that list — reading the old absolute shape, with no description of its own. Thirteen
+  refusals across seven materializations on all three shots wrote `$self` or a bare member
+  into `control_roles`, the notation the schema taught three lines above, and were told only
+  which token was wrong. `control_roles` now takes relative members compiled from the same
+  namespace by the same rule; a control mapped on a unit with no `role_members` is refused
+  naming the write family it cannot derive; and every role-value refusal names the accepted
+  set. `dresses` stays absolute by design, since it names another layer's roles.
+  The same dialect now reaches `patch_materialization`, which compiles a patched `mutates`
+  through the staging tool's own function, and `MutationScope.parse` refuses
+  `role_namespace`/`role_members` instead of discarding them. Silently discarding them is
+  how a published unit came to mutate nothing at all: a patch in the staging dialect landed
+  with its roles dropped, leaving a bare control with no derivable write family and no legal
+  `run_bpy`.
+
 - A gate reports every violation it found, and a kickoff renders the evidence it cites
   ([HIR-0216](docs/improvements/HIR-0216-a-gate-reports-every-violation-and-the-kickoff-renders-what-it-cites.md)).
   The artifact policy walked a candidate once, found every violation, and reported one — three

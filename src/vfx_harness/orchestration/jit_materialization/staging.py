@@ -64,6 +64,7 @@ def inspect_materialization(
     materialization_path: str | Path,
     *,
     expected_bundle_hash: str,
+    shot_folder: str | Path | None = None,
     base_layers_path: str | Path | None = None,
     base_scene_checks_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,
@@ -75,6 +76,7 @@ def inspect_materialization(
             global_root,
             materialization_path,
             expected_bundle_hash=expected_bundle_hash,
+            shot_folder=shot_folder,
             base_layers_path=base_layers_path,
             base_scene_checks_path=base_scene_checks_path,
             resolutions_path=resolutions_path,
@@ -328,6 +330,9 @@ class MaterializationInspection:
 
     global_root: Path
     expected_bundle_hash: str
+    # Durable shot state, not bundle content: a recorded vocabulary gap lives here and
+    # is invisible when read relative to the immutable bundle (HIR-0218).
+    shot_folder: Path
     base_layers_path: Path | None = None
     base_scene_checks_path: Path | None = None
     resolutions_path: Path | None = None
@@ -350,6 +355,7 @@ class MaterializationInspection:
                 self.global_root,
                 proposed_path,
                 expected_bundle_hash=self.expected_bundle_hash,
+                shot_folder=self.shot_folder,
                 base_layers_path=self.base_layers_path,
                 base_scene_checks_path=self.base_scene_checks_path,
                 resolutions_path=self.resolutions_path,
@@ -688,7 +694,7 @@ def apply_materialization_patch(
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
     expected_revision: str | None = None,
-    shot_folder: str | Path | None = None,
+    shot_folder: str | Path,
     candidate_write_guard: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> list[str]:
     """Set one JSON pointer on the candidate file and return remaining findings."""
@@ -718,7 +724,7 @@ def apply_materialization_patches(
     resolutions_path: str | Path | None = None,
     base_requirements_path: str | Path | None = None,
     expected_revision: str | None = None,
-    shot_folder: str | Path | None = None,
+    shot_folder: str | Path,
     candidate_write_guard: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> list[str]:
     """Atomically set several JSON pointers and validate the resulting candidate once.
@@ -784,6 +790,7 @@ def apply_materialization_patches(
                 global_root,
                 proposed_path,
                 expected_bundle_hash=expected_bundle_hash,
+                shot_folder=shot_folder,
                 base_layers_path=base_layers_path,
                 base_scene_checks_path=base_scene_checks_path,
                 resolutions_path=resolutions_path,

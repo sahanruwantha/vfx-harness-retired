@@ -1869,8 +1869,8 @@ def test_materialization_refuses_mixed_clusters_and_keeps_single_cluster(
     polish["evaluation"]["claims"][0]["subject_controls"] = []
     _write_plan(payload, document)
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
     assert materialized is None
     text = "\n".join(findings)
     assert "world.lighting_rig" in text
@@ -1879,8 +1879,8 @@ def test_materialization_refuses_mixed_clusters_and_keeps_single_cluster(
 
     payload = _jit_payload(tmp_path, bundle.content_hash)
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
     assert materialized is not None
     assert not any("write-cluster" in line for line in findings)
 

@@ -871,7 +871,21 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   two-token `role_namespace` plus relative `role_members`, compiled to durable full
   selectors before staging. Absolute `mutates.roles` is not accepted on that tool, so
   one request cannot express two write namespaces; `$self` names the namespace tag
-  itself (HIR-0150). An `interaction` claim requires the complete conditional coordination
+  itself (HIR-0150). Every authoring field whose legal values are that unit's own roles
+  speaks the same relative notation and is compiled from the same namespace value —
+  `control_roles` included, since its values must be drawn from `role_members`. One record
+  carries one role notation. `dresses` is the deliberate exception and stays absolute
+  because it names another layer's roles (ADR-0007). A control mapped on a unit with no
+  `role_members` is refused naming the consequence — a control steering no mutated role
+  derives no write family — and every refusal of a role value names the accepted set, not
+  only the offending token: 13 refusals across seven materializations on three shots each
+  reported what was wrong and never what would have been right, and the model's guess was
+  the notation the field beside it had just taught. `patch_materialization` compiles a
+  `mutates` value through that same function, so what a session may stage it may patch, and
+  `MutationScope.parse` refuses `role_namespace`/`role_members` rather than ignoring them —
+  a durable record holds no staging-only key. Dropping them silently is what manufactured
+  the published unit that mutates nothing: the patch landed, `role_members` vanished, and a
+  bare control derived no write family (HIR-0217). An `interaction` claim requires the complete conditional coordination
   shape — `coordination_owner`, at least two `participants`, and non-empty `controls` —
   while an `atomic` claim forbids all three. Owners and participants are exact
   same-layer work-unit ids, never semantic roles or controls; a miss enumerates the
@@ -1027,7 +1041,14 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   decision referencing it. A recorded gap is what makes that decision legal for any declared
   domain, structural included: it enumerates the kinds tried and why each cannot certify.
   A requirement carrying a gap may not then be closed by contract bindings, and a decision on
-  a structural requirement without one is refused naming the escalation path (HIR-0202). Padding —
+  a structural requirement without one is refused naming the escalation path (HIR-0202).
+  Recorded gaps are durable shot state read through the one shared
+  `vocabulary_gaps_path(shot_folder)`; materialization validation takes `shot_folder` as a
+  required argument distinct from the plan-bundle `global_root`. Reading them relative to the
+  immutable bundle returned no gap in every shot and every run, so the branch that lets a gap
+  close a structural requirement had never executed and the refusal prescribing escalation
+  could never clear — a wrong directory and an empty file are the same value unless the
+  boundary keeps them apart (HIR-0218). Padding —
   vacuous bounds, self-certifying properties, invented evidence — is forbidden and rejected at
   validation (HIR-0017).
 

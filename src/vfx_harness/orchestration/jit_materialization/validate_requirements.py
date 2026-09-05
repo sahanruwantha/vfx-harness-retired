@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,7 @@ from vfx_harness.domain.plan_records import (
     load_active_structured_decisions,
     load_judgment_debt_catalog,
 )
+from vfx_harness.domain.vocabulary_gaps import recorded_vocabulary_gap_ids
 from vfx_harness.domain.work_units import (
     STRUCTURAL_CLAIM_DOMAINS,
     parse_evidence_domains,
@@ -67,34 +67,6 @@ def note_required_claim_metric_domains(*, note, unit, unit_index, claim, all_con
         )
 
 
-def recorded_vocabulary_gap_ids(root) -> dict[str, tuple[str, ...]]:
-    """Vocabulary-gap ids this shot recorded, by requirement id.
-
-    ``escalate_vocabulary_gap`` appends one JSON row per gap; a malformed or missing file
-    means no gap, never a crash in a validator.
-    """
-    path = Path(root) / "state" / "plan-escalations" / "vocabulary-gaps.jsonl"
-    gaps: dict[str, list[str]] = {}
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(row, dict) or row.get("schema") != "vfx-harness.vocabulary-gap/v1":
-            continue
-        requirement_id = str(row.get("requirement_id") or "")
-        gap_id = str(row.get("id") or "")
-        if requirement_id and gap_id:
-            gaps.setdefault(requirement_id, []).append(gap_id)
-    return {key: tuple(value) for key, value in gaps.items()}
-
-
 def validate_requirement_closure(
     *,
     note,
@@ -113,6 +85,7 @@ def validate_requirement_closure(
     parsed_layers,
     provider_scene_rows,
     root,
+    shot_folder,
     resolutions_path,
     expected_bundle_hash,
     base_requirements_path,
@@ -301,7 +274,7 @@ def validate_requirement_closure(
     # own escalate_vocabulary_gap tool had just prescribed, and the only shape that passed
     # bound twelve bbox_height rows to a text-absence proposition (caesar run
     # 20260904T143311Z-c0f282 R20, HIR-0202).
-    vocabulary_gap_ids = recorded_vocabulary_gap_ids(root)
+    vocabulary_gap_ids = recorded_vocabulary_gap_ids(shot_folder)
     judgment_debt_definitions: list[JudgmentDebtDefinition] = []
     judgment_definition_by_requirement: dict[str, JudgmentDebtDefinition] = {}
     known_debt_ids = {definition.debt_id for definition in existing_definitions}
@@ -568,6 +541,7 @@ def complete_validated_layer(
     parsed_layers,
     provider_scene_rows,
     root,
+    shot_folder,
     resolutions_path,
     expected_bundle_hash,
     base_requirements_path,
@@ -597,6 +571,7 @@ def complete_validated_layer(
         parsed_layers=parsed_layers,
         provider_scene_rows=provider_scene_rows,
         root=root,
+        shot_folder=shot_folder,
         resolutions_path=resolutions_path,
         expected_bundle_hash=expected_bundle_hash,
         base_requirements_path=base_requirements_path,

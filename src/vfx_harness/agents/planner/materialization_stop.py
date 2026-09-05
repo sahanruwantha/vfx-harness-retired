@@ -582,6 +582,7 @@ def _publish_materialization_stop_locked(
             bundle.root,
             candidate_path,
             expected_bundle_hash=bundle.content_hash,
+            shot_folder=layout.shot,
             base_layers_path=base_layers,
             base_scene_checks_path=base_scene,
             resolutions_path=layout.shot / "state" / "plan-resolutions.jsonl",

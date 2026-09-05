@@ -521,8 +521,8 @@ def test_materialization_requires_visibility_at_every_judge_frame(tmp_path) -> N
     _write(payload, data)
     with _pytest.raises(ValueError, match="visible_fraction"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_control_render_response_must_declare_its_render_frame() -> None:

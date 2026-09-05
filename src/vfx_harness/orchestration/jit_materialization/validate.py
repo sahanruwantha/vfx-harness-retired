@@ -17,15 +17,6 @@ from vfx_harness.domain.image_debts import (
     image_property_vocabulary_gaps,
     payable_image_property_kinds,
 )
-from vfx_harness.domain.image_signal import (
-    IMAGE_SIGNAL_DEPENDENCY_RULE,
-    IMAGE_SUBJECT_DEPENDENCY_RULE,
-    image_signal_dependency_gaps,
-    image_signal_provider_ids,
-    image_signal_witness_guidance,
-    image_subject_dependency_gaps,
-    image_subject_provider_ids,
-)
 from vfx_harness.domain.json_pointer import encode as json_ptr
 from vfx_harness.domain.json_pointer import format_finding
 from vfx_harness.domain.work_units import (
@@ -70,6 +61,9 @@ from vfx_harness.orchestration.jit_materialization.schema import (
 from vfx_harness.orchestration.jit_materialization.validate_framing import (
     framing_findings,
 )
+from vfx_harness.orchestration.jit_materialization.validate_image_bootstrap import (
+    note_image_bootstrap_gaps,
+)
 from vfx_harness.orchestration.jit_materialization.validate_requirements import (
     complete_validated_layer,
     note_required_claim_metric_domains,
@@ -82,6 +76,7 @@ def validate_materialization(
     materialization_path: str | Path,
     *,
     expected_bundle_hash: str,
+    shot_folder: str | Path,
     base_layers_path: str | Path | None = None,
     base_scene_checks_path: str | Path | None = None,
     resolutions_path: str | Path | None = None,
@@ -91,6 +86,10 @@ def validate_materialization(
 
     Callers pass the shot's `state/plan-resolutions.jsonl` as `resolutions_path` and the
     selected-view register as `base_requirements_path`; bundles do not freeze either.
+
+    ``shot_folder`` is required and separate from ``global_root``: recorded vocabulary
+    gaps are durable shot state, and reading them relative to the immutable plan bundle
+    returned "no gap" in every shot for as long as the rule existed (HIR-0218).
     """
     root = Path(global_root)
     source = Path(materialization_path)
@@ -527,80 +526,15 @@ def validate_materialization(
             )
 
 
-        target_index = next(
-            (
-                index
-                for index, row in enumerate(combined_layers)
-                if str(row.get("id") or "") == layer_id
-            ),
-            0,
+        note_image_bootstrap_gaps(
+            note=note,
+            layer=layer,
+            layer_id=layer_id,
+            combined_layers=combined_layers,
+            combined_scene_rows=combined_scene_rows,
+            parsed=parsed or {},
+            unit_index_by_id=unit_index_by_id,
         )
-        earlier_signal_available = any(
-            str(row.get("execution") or "") == "ready"
-            and str(row.get("id") or "") in parsed
-            and image_signal_provider_ids(
-                parsed[str(row.get("id"))].stages, combined_scene_rows
-            )
-            for row in combined_layers[:target_index]
-        )
-        earlier_subject_available = any(
-            str(row.get("execution") or "") == "ready"
-            and str(row.get("id") or "") in parsed
-            and image_subject_provider_ids(
-                parsed[str(row.get("id"))].stages, combined_scene_rows
-            )
-            for row in combined_layers[:target_index]
-        )
-        for gap in image_signal_dependency_gaps(
-            layer.stages,
-            combined_scene_rows,
-            earlier_signal_available=earlier_signal_available,
-        ):
-            available = (
-                " Same-layer signal provider(s) exist but are outside the dependency "
-                f"closure: {list(gap.available_provider_ids)}."
-                if gap.available_provider_ids
-                else " No same-layer unit currently derives a signal family."
-            )
-            note(
-                json_ptr(
-                    "layer",
-                    "stages",
-                    unit_index_by_id[gap.unit_id],
-                    "depends_on",
-                ),
-                f"unit {gap.unit_id} owes image-contract debt "
-                f"{list(gap.contract_ids)} before optical signal is available."
-                + available
-                + " Registered write-kind witnesses: "
-                + image_signal_witness_guidance()
-                + ". "
-                + IMAGE_SIGNAL_DEPENDENCY_RULE,
-            )
-        for gap in image_subject_dependency_gaps(
-            layer.stages,
-            combined_scene_rows,
-            earlier_subject_available=earlier_subject_available,
-        ):
-            available = (
-                " Same-layer rendered-carrier unit(s) exist but are outside the "
-                f"dependency closure: {list(gap.available_provider_ids)}."
-                if gap.available_provider_ids
-                else " No same-layer unit currently derives a mesh, volume, or compositor family."
-            )
-            note(
-                json_ptr(
-                    "layer",
-                    "stages",
-                    unit_index_by_id[gap.unit_id],
-                    "depends_on",
-                ),
-                f"unit {gap.unit_id} owes image-contract debt "
-                f"{list(gap.contract_ids)} before a rendered carrier is available."
-                + available
-                + " "
-                + IMAGE_SUBJECT_DEPENDENCY_RULE,
-            )
     # A binding that declares its moments must include the bound contract's own frame:
     # declaring moments [150] for a frame-72 contract authors evidence that can never
     # be produced when it is due.
@@ -893,6 +827,7 @@ def validate_materialization(
         parsed_layers=parsed or {},
         provider_scene_rows=combined_scene_rows,
         root=root,
+        shot_folder=Path(shot_folder),
         resolutions_path=resolutions_path,
         expected_bundle_hash=expected_bundle_hash,
         base_requirements_path=base_requirements_path,

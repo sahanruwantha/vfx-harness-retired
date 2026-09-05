@@ -305,6 +305,7 @@ def _composed_documents(
         bundle.root,
         materialization_path,
         expected_bundle_hash=bundle.content_hash,
+        shot_folder=shot,
         base_layers_path=base_layers,
         base_scene_checks_path=base_scene,
         resolutions_path=(

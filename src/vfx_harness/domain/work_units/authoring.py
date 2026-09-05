@@ -10,6 +10,7 @@ from vfx_harness.domain.construction import UNIT_CONSTRUCTION_ROUTES
 from vfx_harness.domain.publish_interfaces import PUBLISH_INTERFACE_KINDS
 from vfx_harness.domain.publish_interfaces import SCHEMA as PUB_SCHEMA
 from vfx_harness.domain.work_units.capabilities import CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE, UNIT_PROVIDES
+from vfx_harness.domain.work_units.claims import MutationScope
 from vfx_harness.domain.work_units.evidence_domains import CLAIM_DOMAINS
 from vfx_harness.domain.work_units.parsing import (
     CLAIM_AUTHORITIES,
@@ -20,9 +21,53 @@ from vfx_harness.domain.work_units.parsing import (
 )
 from vfx_harness.domain.work_units.unit import LOOK_CAPABILITIES
 
+#: Authoring fields whose legal values are roles of the unit's *own* write namespace.
+#: They share one notation: relative members of ``mutates.role_namespace``, with
+#: ``$self`` for the namespace tag. ``dresses`` is deliberately absent -- it names
+#: another layer's roles by design (ADR-0007) and stays absolute (HIR-0217).
+NAMESPACE_RELATIVE_ROLE_FIELDS: tuple[str, ...] = ("role_members", "control_roles")
+
+RELATIVE_ROLE_MEMBER_PATTERN = r"^(?:\$self|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)$"
+
+#: Keys that mark a ``mutates`` object as written in the staging authoring dialect.
+#: One source of truth with the durable parser that refuses them (HIR-0217).
+NAMESPACE_RELATIVE_STAGING_KEYS: tuple[str, ...] = MutationScope.STAGING_ONLY_KEYS
+
+SELF_MEMBER = "$self"
+
+
+def _compiled_member(namespace: str, member: Any) -> str:
+    text = str(member)
+    return namespace if text == SELF_MEMBER else f"{namespace}.{text}"
+
+
+def compile_clustered_mutation(mutates: Mapping[str, Any]) -> dict[str, Any]:
+    """Compile one ``mutates`` object written in the clustered authoring dialect.
+
+    ``patch_materialization`` writes the same object the staging tool takes, so it
+    compiles through the same function. Without this the two tools spoke different
+    dialects: a patch carrying ``role_members`` reached the durable parser, which
+    dropped it, and the unit landed with no roles at all (HIR-0217).
+    """
+    return compile_clustered_mutation_roles({"mutates": mutates})["mutates"]
+
+
+def clustered_mutation_dialect(value: Any) -> bool:
+    """True when a value is a ``mutates`` object in the staging authoring dialect."""
+    return isinstance(value, Mapping) and any(
+        key in value for key in NAMESPACE_RELATIVE_STAGING_KEYS
+    )
+
 
 def compile_clustered_mutation_roles(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Compile the staging-only one-namespace role shape into a WorkUnit row."""
+    """Compile the staging-only one-namespace role shape into a WorkUnit row.
+
+    Every field in ``NAMESPACE_RELATIVE_ROLE_FIELDS`` is compiled from the same
+    ``role_namespace`` by the same rule, so one record carries one role notation.
+    ``control_roles`` used to read absolute roles while its sibling ``role_members``
+    refused them, which cost 13 refusals across seven materializations on three
+    shots (HIR-0217).
+    """
     unit = dict(value)
     raw_mutates = unit.get("mutates")
     if not isinstance(raw_mutates, Mapping):
@@ -41,13 +86,63 @@ def compile_clustered_mutation_roles(value: Mapping[str, Any]) -> dict[str, Any]
         raise ValueError("non-empty role_members requires one role_namespace")
     if not members and namespace:
         raise ValueError("role_namespace must be omitted when role_members is empty")
-    roles = [namespace if str(member) == "$self" else f"{namespace}.{member!s}" for member in members]
+    roles = [_compiled_member(namespace, member) for member in members]
     if any(role != namespace and not role.startswith(f"{namespace}.") for role in roles):
         # Defense below the JSON schema for direct/non-SDK callers.
         raise ValueError(f"compiled mutation roles must stay in one namespace {namespace!r}: {roles}")
     mutates["roles"] = roles
+    mutates["control_roles"] = _compile_control_roles(mutates.get("control_roles"), namespace, members, roles)
     unit["mutates"] = mutates
     return unit
+
+
+def _compile_control_roles(
+    raw: Any,
+    namespace: str,
+    members: list[Any],
+    roles: list[str],
+) -> dict[str, list[str]]:
+    """Compile ``control_roles`` values with the same relative rule as ``role_members``."""
+    if raw in (None, {}, []):
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("unit.mutates.control_roles must be an object")
+    legal = ", ".join(sorted({SELF_MEMBER if role == namespace else role[len(namespace) + 1 :] for role in roles}))
+    compiled: dict[str, list[str]] = {}
+    for control, values in raw.items():
+        key = str(control)
+        if not isinstance(values, list):
+            raise ValueError(f"unit.mutates.control_roles.{key} must be a list of relative role members")
+        if not namespace:
+            raise ValueError(
+                f"unit.mutates.control_roles.{key} maps roles but this unit declares no "
+                "role_members; control_roles values are relative members of "
+                "role_namespace, so a control can only steer a role this unit mutates. "
+                "Declare the role_namespace and role_members this control writes, or "
+                "drop the control -- a control steering no mutated role derives no write "
+                "family and the unit cannot execute any mutation."
+            )
+        seen: list[str] = []
+        for member in values:
+            text = str(member)
+            if text.startswith(f"{namespace}.") or text == namespace:
+                raise ValueError(
+                    f"unit.mutates.control_roles.{key} takes relative role members, not "
+                    f"absolute roles: {text!r} is already prefixed with role_namespace "
+                    f"{namespace!r}. Legal members: {legal}."
+                )
+            compiled_role = _compiled_member(namespace, text)
+            if compiled_role not in roles:
+                raise ValueError(
+                    f"unit.mutates.control_roles.{key} maps {text!r}, which is not one of "
+                    f"this unit's role_members. Legal members: {legal}."
+                )
+            if compiled_role not in seen:
+                seen.append(compiled_role)
+        if not seen:
+            raise ValueError(f"unit.mutates.control_roles.{key} must map at least one role member")
+        compiled[key] = seen
+    return compiled
 
 
 def work_unit_authoring_schema(
@@ -322,12 +417,34 @@ def work_unit_authoring_schema(
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "pattern": r"^(?:\$self|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)$",
+                        "pattern": RELATIVE_ROLE_MEMBER_PATTERN,
                     },
                     "uniqueItems": True,
                     "description": (
                         "Relative role suffixes inside role_namespace; use $self for the "
                         "namespace tag itself. Absolute roles are not accepted."
+                    ),
+                },
+                # control_roles values are roles of this unit's own namespace, so they
+                # carry the same relative notation as role_members. Two notations in one
+                # record cost 13 refusals across seven materializations (HIR-0217).
+                "control_roles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": RELATIVE_ROLE_MEMBER_PATTERN,
+                        },
+                        "uniqueItems": True,
+                        "minItems": 1,
+                    },
+                    "description": (
+                        "Which roles each mutable control steers, keyed by control id. "
+                        "Values use the same relative notation as role_members ($self for "
+                        "the namespace tag) and must be drawn from role_members; absolute "
+                        "roles are not accepted. A unit with no role_members maps no "
+                        "control here."
                     ),
                 },
             }

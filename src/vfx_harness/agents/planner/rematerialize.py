@@ -125,6 +125,7 @@ async def _materialize_deferred_layer(
                 bundle.root,
                 target,
                 expected_bundle_hash=bundle.content_hash,
+                shot_folder=shot.folder,
                 base_layers_path=_base("layers.json"),
                 base_scene_checks_path=_base("scene_checks.json"),
                 resolutions_path=shot.folder / "state" / "plan-resolutions.jsonl",

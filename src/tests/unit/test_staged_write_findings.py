@@ -86,7 +86,7 @@ def test_stage_call_runs_the_terminal_validator_on_its_own_write(tmp_path: Path)
     inspection = MaterializationInspection(
         global_root=bundle.root,
         expected_bundle_hash=bundle.content_hash,
-    )
+        shot_folder=bundle.root,)
     unit = json.loads(json.dumps(full["layer"]["stages"][0]))
     unit["look_capabilities"] = ["material"]
     before = target.read_bytes()

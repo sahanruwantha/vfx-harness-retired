@@ -469,8 +469,8 @@ def test_materialization_refuses_volume_vis_and_keeps_camera_vis(tmp_path: Path)
     )
     _write_plan(payload, document)
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
     assert materialized is not None
     assert not any("visible_fraction" in line and "volume" in line for line in findings)
 
@@ -504,8 +504,8 @@ def test_materialization_refuses_volume_vis_and_keeps_camera_vis(tmp_path: Path)
     document["layer"]["stages"].append(fog)
     _write_plan(payload, document)
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
     assert materialized is None
     text = "\n".join(findings)
     assert "visible_fraction" in text
@@ -573,8 +573,8 @@ def test_materialization_requires_later_geometry_to_depend_on_vis_owner(tmp_path
     _write_plan(payload, document)
 
     order_findings, order_materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert order_materialized is None
     order_text = "\n".join(order_findings)
@@ -586,8 +586,8 @@ def test_materialization_requires_later_geometry_to_depend_on_vis_owner(tmp_path
     document["layer"]["stages"][1]["depends_on"] = ["polish"]
     _write_plan(payload, document)
     findings, _materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     text = "\n".join(findings)
     assert "geometry unit" not in text or "protects visible_fraction" not in text

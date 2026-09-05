@@ -343,9 +343,26 @@ class MutationScope:
     # owner's contracts) — ADR-0007
     dresses: tuple[str, ...] = ()
 
+    #: Staging-only authoring keys. ``compile_clustered_mutation_roles`` pops both and
+    #: emits absolute ``roles``; a durable record must never carry them. Ignoring them
+    #: here let a ``patch_materialization`` written in the clustered dialect land as
+    #: ``roles: ()`` -- a unit with a bare control, no write family, and no legal
+    #: ``run_bpy`` at all (HIR-0217).
+    STAGING_ONLY_KEYS = ("role_namespace", "role_members")
+
     @classmethod
     def parse(cls, value: Any, where: str) -> MutationScope:
         row = _mapping(value, where)
+        uncompiled = [key for key in cls.STAGING_ONLY_KEYS if key in row]
+        if uncompiled:
+            raise ValueError(
+                f"{where} carries staging-only authoring key(s) "
+                f"{', '.join(uncompiled)}, which the durable shape does not hold. "
+                "They are compiled into absolute mutates.roles when a unit is staged; "
+                "a patch that writes them directly would silently mutate no roles. "
+                "Write mutates.roles with the full selectors this unit mutates, or "
+                "restage the unit."
+            )
         mode = row.get("mode", "scoped")
         if mode not in {"scoped", "none"}:
             raise ValueError(f"{where}.mode must be 'scoped' or 'none'")
@@ -383,10 +400,28 @@ class MutationScope:
             key = _text(control, f"{where}.control_roles key")
             targets = _strings(values, f"{where}.control_roles.{key}", allow_empty=False)
             if key not in controls:
-                raise ValueError(f"{where}.control_roles maps undeclared control {key!r}")
+                declared = ", ".join(controls) if controls else "(none)"
+                raise ValueError(
+                    f"{where}.control_roles maps undeclared control {key!r}; "
+                    f"declared controls: {declared}"
+                )
             unknown = sorted(set(targets) - set(roles))
             if unknown:
-                raise ValueError(f"{where}.control_roles.{key} maps roles outside mutation scope: {', '.join(unknown)}")
+                # Name the accepted set, not only the offending token. Thirteen
+                # materialization refusals across three shots each reported what was
+                # wrong and never what would have been right (HIR-0217).
+                if roles:
+                    legal = f"this unit's mutation roles are: {', '.join(roles)}"
+                else:
+                    legal = (
+                        "this unit mutates no roles, so no control can map one; declare "
+                        "the roles this control steers, or drop the control -- a control "
+                        "steering no mutated role derives no write family"
+                    )
+                raise ValueError(
+                    f"{where}.control_roles.{key} maps roles outside mutation scope: "
+                    f"{', '.join(unknown)}; {legal}"
+                )
             mapping.append((key, targets))
         if mapping and set(raw_mapping) != set(controls):
             missing = sorted(set(controls) - set(raw_mapping))

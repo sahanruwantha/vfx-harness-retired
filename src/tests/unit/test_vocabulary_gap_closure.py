@@ -56,11 +56,12 @@ def _record_gap(root: Path, requirement_id: str, gap_id: str = "VG-001") -> None
         )
 
 
-def _validated_form(root: Path, binding: dict):
+def _validated_form(root: Path, binding: dict, shot_folder: Path | None = None):
     """Validate the structural (scene-domain) form layer with one requirement binding."""
+    shot = root if shot_folder is None else shot_folder
     camera = validate_materialization(
-        root, _write_payload(root, "camera.json", _camera_payload()), expected_bundle_hash=BUNDLE_HASH
-    )
+        root, _write_payload(root, "camera.json", _camera_payload()), expected_bundle_hash=BUNDLE_HASH,
+        shot_folder=shot,)
     overlay = _overlay_camera_view(root, camera)
     payload = _form_payload()
     payload["requirement_bindings"] = [binding]
@@ -70,7 +71,7 @@ def _validated_form(root: Path, binding: dict):
         expected_bundle_hash=BUNDLE_HASH,
         base_layers_path=overlay / "layers.json",
         base_scene_checks_path=overlay / "scene_checks.json",
-    )
+        shot_folder=shot,)
 
 
 def test_gap_records_are_read_by_requirement_id(tmp_path: Path) -> None:
@@ -144,3 +145,69 @@ def test_a_recorded_gap_refuses_closing_the_same_requirement_with_contracts(
     assert "recorded vocabulary gap(s) ['VG-001']" in message
     assert "cannot then be closed by contract bindings" in message
     assert "approved_start" in message and "retract the gap" in message
+
+
+def test_a_recorded_gap_is_read_from_the_shot_folder_not_the_plan_bundle(
+    tmp_path: Path,
+) -> None:
+    """HIR-0218: production's plan bundle root is not the shot folder.
+
+    ``escalate_vocabulary_gap`` writes under ``<shot>/state/plan-escalations/``; the
+    validator read ``<bundle>/state/plan-escalations/``. A content-addressed plan bundle
+    has no ``state/`` directory, so the read returned ``{}`` in every shot and every run
+    — the branch that lets a recorded gap close a structural-only requirement had never
+    executed. Every fixture passed one directory as both roots, so the rule passed its
+    own tests throughout.
+
+    This asserts the outcome the refusal promises — "a recorded gap makes the decision
+    legal here" — with the two directories genuinely apart, because a test of the reader
+    alone passes on both sides of the bug.
+    """
+    shot = tmp_path
+    bundle_root = shot / "runs" / "r1" / "checkpoints" / "plans" / "bundles" / "h0"
+    bundle_root.mkdir(parents=True)
+    root = _fixture_root(bundle_root)
+    assert root != shot and not (root / "state").exists()
+
+    # Without the escalation the decision is refused, naming the escalation as the path.
+    with pytest.raises(ValueError) as refused:
+        _validated_form(
+            root,
+            {
+                "requirement_id": "R-form",
+                "decision": {"statement": FORM_STATEMENT, "decision_strength": "approved_start"},
+            },
+            shot_folder=shot,
+        )
+    assert "declares only structural domains" in str(refused.value)
+
+    # A gap recorded where the OLD reader looked — inside the plan bundle — is inert.
+    # This is the assertion that discriminates the two implementations by behaviour
+    # rather than by signature: pre-fix it closed the requirement, post-fix it cannot,
+    # because a content-addressed bundle is not where the escalation tool writes.
+    _record_gap(root, "R-form")
+    with pytest.raises(ValueError) as still_refused:
+        _validated_form(
+            root,
+            {
+                "requirement_id": "R-form",
+                "decision": {"statement": FORM_STATEMENT, "decision_strength": "approved_start"},
+            },
+            shot_folder=shot,
+        )
+    assert "declares only structural domains" in str(still_refused.value)
+
+    # Recording it where the tool actually writes must change that outcome.
+    _record_gap(shot, "R-form")
+    validated = _validated_form(
+        root,
+        {
+            "requirement_id": "R-form",
+            "decision": {"statement": FORM_STATEMENT, "decision_strength": "approved_start"},
+        },
+        shot_folder=shot,
+    )
+    assert validated is not None, (
+        "the instructed action must change the next outcome; a recorded gap that the "
+        "validator cannot see leaves the refusal that prescribed it firing forever"
+    )

@@ -9,6 +9,15 @@ not be guessed from an obsolete document.
 from vfx_harness.domain.claim_bindings import bound_claim_contract_ids as bound_claim_contract_ids
 from vfx_harness.domain.evidence_kinds import PROJECTED_ORIGIN_KINDS as PROJECTED_ORIGIN_KINDS
 from vfx_harness.domain.work_units.authoring import (
+    NAMESPACE_RELATIVE_STAGING_KEYS as NAMESPACE_RELATIVE_STAGING_KEYS,
+)
+from vfx_harness.domain.work_units.authoring import (
+    clustered_mutation_dialect as clustered_mutation_dialect,
+)
+from vfx_harness.domain.work_units.authoring import (
+    compile_clustered_mutation as compile_clustered_mutation,
+)
+from vfx_harness.domain.work_units.authoring import (
     compile_clustered_mutation_roles as compile_clustered_mutation_roles,
 )
 from vfx_harness.domain.work_units.authoring import work_unit_authoring_schema as work_unit_authoring_schema

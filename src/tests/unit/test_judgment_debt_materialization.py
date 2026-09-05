@@ -397,7 +397,7 @@ def test_camera_materialization_defers_judgment_debt_until_matching_form_layer(
     root = _fixture_root(tmp_path)
     camera_payload = _write_payload(root, "camera.json", _camera_payload())
 
-    camera = validate_materialization(root, camera_payload, expected_bundle_hash=BUNDLE_HASH)
+    camera = validate_materialization(root, camera_payload, expected_bundle_hash=BUNDLE_HASH, shot_folder=root)
 
     assert len(camera.judgment_debt_definitions) == 1
     assert camera.judgment_debt_definitions[0]["binding"]["activates_at"] == "2"
@@ -409,7 +409,7 @@ def test_form_materialization_activates_overlaid_camera_debt_once_with_exact_pay
 ) -> None:
     root = _fixture_root(tmp_path)
     camera_payload = _write_payload(root, "camera.json", _camera_payload())
-    camera = validate_materialization(root, camera_payload, expected_bundle_hash=BUNDLE_HASH)
+    camera = validate_materialization(root, camera_payload, expected_bundle_hash=BUNDLE_HASH, shot_folder=root)
     overlay = _overlay_camera_view(root, camera)
     form_payload = _write_payload(root, "form.json", _form_payload())
 
@@ -420,7 +420,7 @@ def test_form_materialization_activates_overlaid_camera_debt_once_with_exact_pay
         base_layers_path=overlay / "layers.json",
         base_scene_checks_path=overlay / "scene_checks.json",
         base_requirements_path=overlay / "requirements.json",
-    )
+        shot_folder=root,)
 
     assert len(form.judgment_debt_activations) == 1
     activation = form.judgment_debt_activations[0]
@@ -441,7 +441,7 @@ def test_camera_materialization_rejects_no_future_matching_reserved_role_carrier
     camera_payload = _write_payload(root, "camera.json", _camera_payload())
 
     with pytest.raises(ValueError, match="no matching provider"):
-        validate_materialization(root, camera_payload, expected_bundle_hash=BUNDLE_HASH)
+        validate_materialization(root, camera_payload, expected_bundle_hash=BUNDLE_HASH, shot_folder=root)
 
 
 def test_camera_owner_cannot_misown_subject_appearance_debt(tmp_path: Path) -> None:
@@ -453,7 +453,7 @@ def test_camera_owner_cannot_misown_subject_appearance_debt(tmp_path: Path) -> N
     )
 
     with pytest.raises(ValueError, match="subject_appearance cannot be owned"):
-        validate_materialization(root, camera_payload, expected_bundle_hash=BUNDLE_HASH)
+        validate_materialization(root, camera_payload, expected_bundle_hash=BUNDLE_HASH, shot_folder=root)
 
 
 def _form_qualitative_payload(
@@ -527,7 +527,7 @@ def test_non_camera_judgment_requires_fault_owner_subject_closure(
     path = _write_payload(root, f"unrelated-{property_kind}.json", payload)
 
     with pytest.raises(ValueError, match=r"subjects escape fault owner.*hall\.mass"):
-        validate_materialization(root, path, expected_bundle_hash=BUNDLE_HASH)
+        validate_materialization(root, path, expected_bundle_hash=BUNDLE_HASH, shot_folder=root)
 
 
 @pytest.mark.parametrize("property_kind", ["subject_appearance", "reference_identity"])
@@ -547,6 +547,6 @@ def test_non_camera_judgment_accepts_fault_owner_subject_closure(
         ),
     )
 
-    materialized = validate_materialization(root, path, expected_bundle_hash=BUNDLE_HASH)
+    materialized = validate_materialization(root, path, expected_bundle_hash=BUNDLE_HASH, shot_folder=root)
 
     assert materialized.judgment_debt_definitions[0]["seed"]["property"] == property_kind

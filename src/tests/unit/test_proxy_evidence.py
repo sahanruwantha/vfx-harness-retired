@@ -43,8 +43,8 @@ def _materialize(tmp_path, mutate, *, requirement_domain: str = "image") -> None
     mutate(data)
     _write(payload, data)
     validate_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
 
 def test_metric_domains_separate_existence_from_behaviour() -> None:

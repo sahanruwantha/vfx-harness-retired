@@ -163,7 +163,11 @@ def test_stage_call_lists_the_composition_obligation_for_a_form_layer(tmp_path: 
         unit=full["layer"]["stages"][0],
         scene_contracts=full["scene_contracts"],
         requirement_bindings=full["requirement_bindings"],
-        inspection=MaterializationInspection(global_root=bundle.root, expected_bundle_hash=bundle.content_hash),
+        inspection=MaterializationInspection(
+            global_root=bundle.root,
+            expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,
+        ),
     )
     open_findings = [row for row in staged.remaining_findings if "composition-coverage" in row]
     assert open_findings, staged.remaining_findings
@@ -236,7 +240,9 @@ def test_camera_layer_candidate_reports_uncovered_downstream_subjects(tmp_path: 
         scene_contracts=[*full["scene_contracts"], *covering],
         requirement_bindings=full["requirement_bindings"],
     )
-    findings, _materialized = inspect_materialization(bundle.root, target, expected_bundle_hash=bundle.content_hash)
+    findings, _materialized = inspect_materialization(
+        bundle.root, target, expected_bundle_hash=bundle.content_hash, shot_folder=bundle.root
+    )
     downstream = [finding for finding in findings if "downstream subject coverage" in finding]
     assert len(downstream) == 1, findings
     assert "judge f239 is shared with layer 3 (future.*)" in downstream[0]
@@ -247,5 +253,7 @@ def test_camera_layer_candidate_reports_uncovered_downstream_subjects(tmp_path: 
     covered["scene_contracts"].append(_bbox("future-f239", 239, ["future.subject"], owner="2", activates_at="3"))
     covered["layer"]["stages"][0]["evaluation"]["composition_context"]["contract_ids"].append("future-f239")
     _write(target, covered)
-    findings, _materialized = inspect_materialization(bundle.root, target, expected_bundle_hash=bundle.content_hash)
+    findings, _materialized = inspect_materialization(
+        bundle.root, target, expected_bundle_hash=bundle.content_hash, shot_folder=bundle.root
+    )
     assert not [finding for finding in findings if "downstream subject coverage" in finding], findings

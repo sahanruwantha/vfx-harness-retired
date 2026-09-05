@@ -1485,7 +1485,7 @@ def test_materialization_patch_batch_is_atomic_and_supports_append(
         candidate,
         patches,
         expected_bundle_hash="0" * 64,
-    ) == []
+        shot_folder=tmp_path,) == []
     assert json.loads(candidate.read_text(encoding="utf-8")) == expected
     assert len(validations) == 1
     assert validations[0] != candidate
@@ -1498,7 +1498,7 @@ def test_materialization_patch_batch_is_atomic_and_supports_append(
             candidate,
             (("/motion/missing", 1), ("/absent/child", 2)),
             expected_bundle_hash="0" * 64,
-        )
+            shot_folder=tmp_path,)
     assert candidate.read_bytes() == before
 
 
@@ -1545,7 +1545,7 @@ def test_materialization_candidate_is_seeded_and_staged_one_unit_at_a_time(
         bundle.root,
         target,
         expected_bundle_hash=bundle.content_hash,
-    )
+        shot_folder=bundle.root,)
     before = target.read_bytes()
     with pytest.raises(ValueError, match="already staged"):
         stage_materialization_unit(
@@ -1648,8 +1648,8 @@ def test_materialization_finalization_rejects_camera_layer_geometry_proxy(
     _write(payload, materialized)
 
     findings, accepted = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert accepted is None
     text = "\n".join(findings)
@@ -1741,8 +1741,8 @@ def test_future_active_contract_is_context_not_claim_evidence(tmp_path: Path) ->
     direct_document["scene_contracts"].append(deferred_bbox)
     _write(direct_payload, direct_document)
     findings, accepted = inspect_materialization(
-        bundle.root, direct_payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, direct_payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
     assert accepted is None
     assert DEFERRED_CONTRACT_CONTEXT_RULE in "\n".join(findings)
 
@@ -2348,7 +2348,7 @@ def test_materialization_candidate_compare_and_swap_serializes_overlapping_write
             ((pointer, value),),
             expected_bundle_hash="0" * 64,
             expected_revision=revision,
-        )
+            shot_folder=tmp_path,)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(patch, "/product", "metal")
@@ -2487,7 +2487,7 @@ def test_patch_cannot_insert_or_pad_a_staged_unit(
             target,
             (("/layer/stages/-", full["layer"]["stages"][0]),),
             expected_bundle_hash=bundle.content_hash,
-        )
+            shot_folder=bundle.root,)
     assert target.read_bytes() == before
 
     stage_materialization_unit(
@@ -2503,7 +2503,7 @@ def test_patch_cannot_insert_or_pad_a_staged_unit(
             target,
             (("/layer/stages/0/family", "mesh"),),
             expected_bundle_hash=bundle.content_hash,
-        )
+            shot_folder=bundle.root,)
     assert target.read_bytes() == before
 
 
@@ -2837,8 +2837,8 @@ def test_jit_materialization_rejects_candidate_sensitive_image_contracts(tmp_pat
 
     with pytest.raises(ValueError, match="candidate-sensitive image checks"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_materialized_unit_cannot_invent_global_camera_capability(tmp_path: Path) -> None:
@@ -2854,8 +2854,8 @@ def test_materialized_unit_cannot_invent_global_camera_capability(tmp_path: Path
 
     with pytest.raises(ValueError, match=r"did not reserve it in jit\.provides"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_materialization_must_fulfill_global_camera_capability(tmp_path: Path) -> None:
@@ -2871,8 +2871,8 @@ def test_materialization_must_fulfill_global_camera_capability(tmp_path: Path) -
 
     with pytest.raises(ValueError, match=r"does not fulfill globally declared.*camera"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 @pytest.mark.parametrize("kind", ["bbox_center_x", "visible_fraction"])
@@ -2913,8 +2913,8 @@ def test_control_host_unit_cannot_bind_surface_metric_on_its_mutated_role(
 
     with pytest.raises(ValueError, match=r"surface metric.*does not provide geometry"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_control_producer_cannot_own_camera_projection_repair(tmp_path: Path) -> None:
@@ -2993,8 +2993,8 @@ def test_control_producer_cannot_own_camera_projection_repair(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match=r"repair_owner polish does not provide camera"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 @pytest.mark.parametrize("role", ["product.camera_target", "motion.aim_control"])
@@ -3131,8 +3131,8 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
     _write(payload, document)
 
     materialized = validate_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert [unit.id for unit in materialized.layer.stages] == ["target", "camera"]
     assert all(row["kind"] != "visible_fraction" for row in materialized.scene_contracts)
@@ -3172,8 +3172,8 @@ def test_control_host_unit_publishes_with_point_projection_and_no_visibility_pro
     _write(payload, document)
     with pytest.raises(ValueError, match="consumes no compatible typed interface"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_camera_unit_must_mutate_the_globally_bound_interface_role(tmp_path: Path) -> None:
@@ -3192,8 +3192,8 @@ def test_camera_unit_must_mutate_the_globally_bound_interface_role(tmp_path: Pat
 
     with pytest.raises(ValueError, match="without mutating any globally reserved camera"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_materialization_rejects_uncovered_unit_judge_frame(tmp_path: Path) -> None:
@@ -3210,8 +3210,8 @@ def test_materialization_rejects_uncovered_unit_judge_frame(tmp_path: Path) -> N
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
     assert materialized is None
     text = "\n".join(findings)
     assert "/layer/stages/0/evaluation/judge:" in text
@@ -3234,8 +3234,8 @@ def test_materialization_rejects_look_without_image_domain(tmp_path: Path) -> No
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
     assert materialized is None
     text = "\n".join(findings)
     assert "/layer/stages/0/look_capabilities:" in text
@@ -3272,8 +3272,8 @@ def test_materialization_rejects_image_debt_before_optical_signal(tmp_path: Path
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized is None
     text = "\n".join(findings)
@@ -3330,8 +3330,8 @@ def test_materialization_rejects_image_debt_before_rendered_carrier(tmp_path: Pa
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized is None
     text = "\n".join(findings)
@@ -3451,8 +3451,8 @@ def test_materialization_rejects_same_layer_dressing(tmp_path: Path) -> None:
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized is None
     text = "\n".join(findings)
@@ -3479,8 +3479,8 @@ def test_materialization_rejects_generate_on_non_mesh_family(tmp_path: Path) -> 
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized is None
     text = "\n".join(findings)
@@ -3632,8 +3632,8 @@ def test_materialization_requirement_binding_accepts_required_image_debt(
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert not findings
     assert materialized is not None
@@ -3666,8 +3666,8 @@ def test_materialization_requirement_binding_rejects_optional_image_reference(
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized is None
     assert any(
@@ -3696,8 +3696,8 @@ def test_materialization_interaction_feedback_enumerates_unit_ids(tmp_path: Path
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized is None
     text = "\n".join(findings)
@@ -3727,8 +3727,8 @@ def test_materialization_rejects_unpayable_image_property(tmp_path: Path) -> Non
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized is None
     text = "\n".join(findings)
@@ -3778,8 +3778,8 @@ def test_materialization_reports_independent_findings_with_pointers(tmp_path: Pa
     _write(payload, document)
 
     findings, materialized = inspect_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
     assert materialized is None
     text = "\n".join(findings)
     assert "/scene_contracts/1/owner_layer:" in text
@@ -3793,7 +3793,7 @@ def test_materialization_reports_independent_findings_with_pointers(tmp_path: Pa
         "/scene_contracts/1/owner_layer",
         "2",
         expected_bundle_hash=bundle.content_hash,
-    )
+        shot_folder=bundle.root,)
     remaining_text = "\n".join(remaining)
     assert "/scene_contracts/1/owner_layer:" not in remaining_text
     assert "/layer/stages/0/look_capabilities:" in remaining_text
@@ -3804,11 +3804,11 @@ def test_materialization_reports_independent_findings_with_pointers(tmp_path: Pa
         "/layer/stages/0/look_capabilities",
         [],
         expected_bundle_hash=bundle.content_hash,
-    )
+        shot_folder=bundle.root,)
     assert cleared == []
     validate_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
 
 def test_deferred_layer_has_no_fake_units_and_materializes_through_bound_contract(
@@ -3859,8 +3859,8 @@ def test_jit_materialization_fails_closed_on_unbound_requirement(tmp_path: Path)
 
     with pytest.raises(ValueError, match=r"missing R-final-lock"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_jit_materialization_waits_for_receipt_backed_upstream_publication(
@@ -4633,7 +4633,7 @@ def test_materialization_must_adopt_owned_structured_decision(tmp_path: Path) ->
             bundle.root, payload,
             expected_bundle_hash=bundle.content_hash,
             resolutions_path=state / "plan-resolutions.jsonl",
-        )
+            shot_folder=bundle.root,)
 
     data = json.loads(payload.read_text(encoding="utf-8"))
     data["scene_contracts"].append({
@@ -4657,7 +4657,7 @@ def test_materialization_must_adopt_owned_structured_decision(tmp_path: Path) ->
         bundle.root, payload,
         expected_bundle_hash=bundle.content_hash,
         resolutions_path=state / "plan-resolutions.jsonl",
-    )
+        shot_folder=bundle.root,)
     assert any(
         row.get("decision_id") == "A-polish" for row in materialized.scene_contracts
     )
@@ -4760,7 +4760,7 @@ def test_other_generation_structured_decision_does_not_force_materialization(
         bundle.root, payload,
         expected_bundle_hash=bundle.content_hash,
         resolutions_path=state / "plan-resolutions.jsonl",
-    )
+        shot_folder=bundle.root,)
 
     data = json.loads(payload.read_text(encoding="utf-8"))
     data["scene_contracts"][0]["decision_id"] = "A-polish"
@@ -4770,7 +4770,7 @@ def test_other_generation_structured_decision_does_not_force_materialization(
             bundle.root, payload,
             expected_bundle_hash=bundle.content_hash,
             resolutions_path=state / "plan-resolutions.jsonl",
-        )
+            shot_folder=bundle.root,)
 
 
 def test_later_falsified_row_retires_structured_decision(
@@ -4823,7 +4823,7 @@ def test_later_falsified_row_retires_structured_decision(
         bundle.root, payload,
         expected_bundle_hash=bundle.content_hash,
         resolutions_path=state / "plan-resolutions.jsonl",
-    )
+        shot_folder=bundle.root,)
 
 
 def test_deferred_dependent_may_leave_required_outcomes_empty(tmp_path: Path) -> None:
@@ -4952,8 +4952,8 @@ def test_root_materialization_validates_with_deferred_dependents(
     })
 
     materialized = validate_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized.layer.id == "1"
 
@@ -4988,8 +4988,8 @@ def test_concretely_resolved_owned_requirement_fails_closed_at_materialization(
 
     with pytest.raises(ValueError, match="inconsistent authority; republish"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_gate_rejects_owned_requirements_that_carry_no_debt(tmp_path: Path) -> None:
@@ -5037,8 +5037,8 @@ def test_owned_requirement_deferred_to_another_layer_fails_closed(
 
     with pytest.raises(ValueError, match="deferred to another layer"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_required_outcome_kind_error_enumerates_valid_kinds(tmp_path: Path) -> None:
@@ -5205,8 +5205,8 @@ def test_materialization_can_close_owned_requirement_with_typed_decision(tmp_pat
     _write(payload, data)
 
     materialized = validate_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized.requirement_decisions["R-final-lock"]["decision_strength"] == "approved_start"
 
@@ -5280,8 +5280,8 @@ def test_materialization_refuses_required_bbox_outside_mutation_roles(tmp_path: 
 
     with pytest.raises(ValueError, match="outside mutation authority"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_materialization_cannot_replace_requirement_with_meta_debt_statement(
@@ -5304,8 +5304,8 @@ def test_materialization_cannot_replace_requirement_with_meta_debt_statement(
 
     with pytest.raises(ValueError, match="preserve the authored requirement statement exactly"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_materialization_requires_and_retains_every_requirement_domain(
@@ -5357,8 +5357,8 @@ def test_materialization_requires_and_retains_every_requirement_domain(
 
     with pytest.raises(ValueError, match=r"does not pay \['image'\]"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
     data["requirement_bindings"][0]["decision"] = {
         "statement": "frames 239 and 240 are unchanged",
@@ -5368,8 +5368,8 @@ def test_materialization_requires_and_retains_every_requirement_domain(
     data["layer"]["stages"][0]["provides"] = ["geometry"]
     _write(payload, data)
     materialized = validate_materialization(
-        bundle.root, payload, expected_bundle_hash=bundle.content_hash
-    )
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
 
     assert materialized.requirement_evidence_domains["R-final-lock"] == (
         "image",
@@ -5475,8 +5475,8 @@ def test_requirement_binding_rejects_contract_padding_outside_declared_domains(
 
     with pytest.raises(ValueError, match="padding contract bindings"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_selected_requirement_map_refuses_unassigned_resolution_ids(

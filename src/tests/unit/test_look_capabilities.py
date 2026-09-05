@@ -195,8 +195,8 @@ def test_materialization_requires_an_explicit_capability_declaration(
 
     with pytest.raises(ValueError, match="must declare look_capabilities"):
         validate_materialization(
-            bundle.root, payload, expected_bundle_hash=bundle.content_hash
-        )
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
 
 
 def test_live_scope_rule_matches_the_canonical_replay_rule() -> None:

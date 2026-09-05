@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,12 @@ from vfx_harness.domain.judgment_debts import (
     OBSERVATION_MEDIA,
     RENDERED_CARRIER_FAMILIES,
 )
-from vfx_harness.domain.work_units import compile_clustered_mutation_roles, work_unit_authoring_schema
+from vfx_harness.domain.work_units import (
+    clustered_mutation_dialect,
+    compile_clustered_mutation,
+    compile_clustered_mutation_roles,
+    work_unit_authoring_schema,
+)
 from vfx_harness.domain.work_units.parsing import STAGEABLE_CLAIM_AUTHORITIES
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.evidence.checks import METRICS
@@ -74,6 +80,22 @@ def _require_same_selection(expected, observed, *, boundary: str) -> None:
     except AuthoritySelectionConflict as exc:
         raise ValueError(f"{boundary}: {exc}") from exc
 
+
+
+def _compiled_patch_value(pointer: str, value: object) -> object:
+    """Compile a patched ``mutates`` written in the staging authoring dialect.
+
+    ``stage_materialization_unit`` takes relative ``role_namespace``/``role_members``
+    and compiles them; ``patch_materialization`` writes the same object. Passing the
+    raw dialect through reached the durable parser, which held no such keys, so
+    ``role_members`` was dropped and the unit landed mutating nothing (HIR-0217).
+    Both tools now compile through one function.
+    """
+    if clustered_mutation_dialect(value) and pointer.endswith("/mutates"):
+        return compile_clustered_mutation(value)  # type: ignore[arg-type]
+    if isinstance(value, Mapping) and clustered_mutation_dialect(value.get("mutates")):
+        return compile_clustered_mutation_roles(value)
+    return value
 
 def _materialization_authority_inputs(
     shot_folder: Path,
@@ -181,7 +203,9 @@ def register_materialize_tools(**closed):
         "Mutation roles are cluster-shaped: choose one two-token "
         "mutates.role_namespace and list only relative role_members (`$self` means the "
         "namespace tag). Absolute mutates.roles is not in the schema, so one unit cannot "
-        "mix write namespaces. "
+        "mix write namespaces. mutates.control_roles uses that same relative notation and "
+        "its values must come from role_members; a unit with no role_members maps no "
+        "control. "
         "script_spans contains exactly the identity-derived unit file enumerated by the "
         "schema under build/units/<layer>/; layer scripts and #fragments are invalid. "
         "After all units, call finalize_materialization. This is unpublished scratch "
@@ -368,6 +392,7 @@ def register_materialize_tools(**closed):
                         ),
                         inspection=MaterializationInspection(
                             global_root=authority.bundle_root,
+                            shot_folder=layout.shot,
                             expected_bundle_hash=authority.bundle_hash,
                             base_layers_path=authority.base_layers,
                             base_scene_checks_path=authority.base_scene_checks,
@@ -705,9 +730,12 @@ def register_materialize_tools(**closed):
                 pointer = str((row or {}).get("pointer") or "")
                 if not pointer:
                     return _text(f"patches[{index}].pointer is required", is_error=True)
-                patches.append((pointer, json.loads(str((row or {}).get("value")))))
+                value = json.loads(str((row or {}).get("value")))
+                patches.append((pointer, _compiled_patch_value(pointer, value)))
         except (TypeError, json.JSONDecodeError) as exc:
             return _text(f"value must be JSON-encoded: {exc}", is_error=True)
+        except ValueError as exc:
+            return _text(str(exc), is_error=True)
 
         try:
             async with materialization_write_lock:

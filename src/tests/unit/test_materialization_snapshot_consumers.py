@@ -233,7 +233,7 @@ def test_patch_write_guard_rejects_head_aba_without_mutating_candidate(
                 tmp_path,
                 inputs.selected,
             ),
-        )
+            shot_folder=inputs.bundle_root,)
 
     assert candidate.read_bytes() == before
 
