@@ -131,9 +131,11 @@ and it is the reason this test is shaped this way.
 
 ### Live validation on accumulated durable state
 
-room_1046_opening had escalated four gaps across two materialization sessions of run
-`20260905T055927Z-d5ad87` — one at layer 1, three at layer 2 — every one of them written
-by a session that had no way to know the reader was broken. At `d2228b3`, against that
+room_1046_opening had escalated four gaps during run `20260905T055927Z-d5ad87`, every
+one written by a session that had no way to know the reader was broken. A gap row carries
+`id`, `requirement_id`, `run_id`, `claim`, `attempted` and `note` — **no layer** — so the
+rows evidence one run and four requirements, and any layer attribution comes from knowing
+which session owned which requirement, not from the record. At `d2228b3`, against that
 shot's real state:
 
 ```
