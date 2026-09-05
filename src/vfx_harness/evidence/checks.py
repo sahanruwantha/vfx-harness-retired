@@ -283,6 +283,41 @@ def evaluate(check: Check, image: str | Path) -> float:
         return float(fn(_prep(im.convert("RGB"), 960), regions))
 
 
+def _threshold_window(check: Check, value: float, margin: float, prior, floor: float) -> str:
+    """State the thresholds that would have been legal, not just that this one was not.
+
+    A rejection that names only the failed verdict makes the author search. hansa_silk_road
+    layer 2 spent $12.62 over 48 mutations and 62 renders on a `frame_detail` debt whose
+    legal window had already closed; 3 of its 47 candidate plates did admit a threshold and
+    it could not see which. The window is two-sided: above the adversary, or the check is
+    NOT NECESSARY; at or below value - margin, or it is FRAGILE.
+    """
+    if check.op not in (">=", "<="):
+        return ""
+    bound = value - margin if check.op == ">=" else value + margin
+    side = "lo" if check.op == ">=" else "hi"
+    out = [f". Legal {side} on this render: "]
+    if prior is None:
+        out.append(f"{side} <= {bound:.4g}" if check.op == ">=" else f"{side} >= {bound:.4g}")
+    elif check.op == ">=":
+        out.append(f"({float(prior):.4g}, {bound:.4g}]" if bound > float(prior)
+                   else f"EMPTY — needs lo > {float(prior):.4g} (adversary) and "
+                        f"lo <= {bound:.4g} (value {value:.4g} - margin {margin:.4g})")
+    else:
+        out.append(f"[{bound:.4g}, {float(prior):.4g})" if bound < float(prior)
+                   else f"EMPTY — needs hi < {float(prior):.4g} (adversary) and "
+                        f"hi >= {bound:.4g}")
+    if 2 * floor > 0.05 * max(abs(value), 1.0):
+        out.append(
+            f". The margin here is 2x the measured noise floor {floor:.4g}, not the 5% "
+            "term. That floor is measured by resampling, and it rises with the "
+            "high-frequency content this metric rewards — so adding more detail can "
+            "narrow this window rather than widen it. If it is EMPTY, a different "
+            "property or a region-scoped subject will pay where more signal will not"
+        )
+    return "".join(out)
+
+
 def noise_floor(check: Check, image: str | Path, scales=(0.5, 0.75, 1.0)) -> float:
     """How much this metric moves on ONE unchanged image under resampling alone.
 
@@ -751,6 +786,10 @@ def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
     # choosing lo just below today's scalar makes one current plate pass but is not a
     # durable decision boundary (the motivating f150 row cleared lo=48 by only 1.28).
     decision_margin = max(2 * v.floor, 0.05 * max(abs(float(v.ref_value)), 1.0))
+    prior = None
+    if before is not None and Path(before).is_file():
+        with contextlib.suppress(Exception):
+            prior = evaluate(check, before)
     if check.op == ">=":
         clearance = float(v.ref_value) - float(check.lo)
     elif check.op == "<=":
@@ -767,29 +806,26 @@ def verify_necessity(check: Check, after: Path, before: Path | None) -> Verdict:
             f"measured decision margin {decision_margin:.4g} (max of 2× resampling "
             "noise and 5% of the measured value). Do not shave a one-shot threshold "
             "against the current render; choose a stable property or build more margin"
+            + _threshold_window(check, float(v.ref_value), decision_margin, prior, v.floor)
         )
-    if before is not None and Path(before).is_file():
-        try:
-            prior = evaluate(check, before)
-        except Exception:
-            prior = None
-        if prior is not None:
-            v.bad_values = [prior]
-            if check.holds(prior):
-                v.ok = False
-                v.reasons.append(
-                    f"NOT NECESSARY — the state BEFORE this layer ran already reads "
-                    f"{prior:.4g} and passes. A check that holds both before and after "
-                    f"proves nothing about this layer; it belongs to an earlier one"
-                )
-            gap = abs(float(v.ref_value) - float(prior))
-            if gap < decision_margin:
-                v.ok = False
-                v.reasons.append(
-                    f"INDISCRIMINATE — candidate/adversary separation {gap:.4g} is below "
-                    f"the decision margin {decision_margin:.4g}; this check is too close "
-                    "to survive deterministic replay"
-                )
+    if prior is not None:
+        v.bad_values = [prior]
+        if check.holds(prior):
+            v.ok = False
+            v.reasons.append(
+                f"NOT NECESSARY — the state BEFORE this layer ran already reads "
+                f"{prior:.4g} and passes. A check that holds both before and after "
+                f"proves nothing about this layer; it belongs to an earlier one"
+                + _threshold_window(check, float(v.ref_value), decision_margin, prior, v.floor)
+            )
+        gap = abs(float(v.ref_value) - float(prior))
+        if gap < decision_margin:
+            v.ok = False
+            v.reasons.append(
+                f"INDISCRIMINATE — candidate/adversary separation {gap:.4g} is below "
+                f"the decision margin {decision_margin:.4g}; this check is too close "
+                "to survive deterministic replay"
+            )
     return v
 
 
