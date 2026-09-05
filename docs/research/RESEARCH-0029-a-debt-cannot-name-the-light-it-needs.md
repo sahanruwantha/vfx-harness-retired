@@ -179,6 +179,44 @@ passing shapes cannot be shaped around caesar.
 
 Cost of establishing this: $54.68 across one abandoned build and two rejected plan draws.
 
+## Caveat for a layer-start implementation
+
+Do not build the layer-start read on the deferred-row forecast path. It carries geometry
+guards that a signal check must not inherit — `jit_materialization/validate.py:620,732`
+and `evaluation/plan_gate/evidence_coherence.py:652` all gate on
+`"geometry" in unit.provides`. Use the activation ids directly (vfx-harness-4d).
+
+Stated precisely, because the nearby guard works the other way and is easy to conflate:
+`jit_materialization/judgment_authority.py:96` is **additive**, not a filter —
+
+    families = {cluster.instrument_family for cluster in write_clusters(...)
+                if cluster.instrument_family in RENDERED_CARRIER_FAMILIES}
+    if "geometry" in unit.provides:
+        families.add("mesh")
+
+a unit declaring `geometry` gains `mesh` even where its write clusters do not derive it.
+That line does not silence non-geometry layers; the `validate.py` and
+`evidence_coherence.py` guards are the ones that would.
+
+## A fix is not exempt from the defect it fixes
+
+This finding's own remedy carried an instance of the class it belongs to. The merged
+`a0404a1` derives "states that can reach `retryable`" from `TRANSITIONS` to tell an
+operator which transaction clears an unclaimable unit. `unit_state_claims.py` already
+held that set, hand-listed, gating `release_unclaimed_unit_for_retry` — the very command
+the new advice names. Byte-identical, same package, nothing making them agree. Had they
+drifted, the harness would have printed `vfx units retry` for a state retry then refuses:
+advice resolving to a refusal, worse than the traceback it replaced.
+
+Two of the day's eight duplicate-derivation defects were introduced *by fixes*: this one,
+and HIR-0199, which installed a turn counter that overshoots its budget by up to 38 in
+place of one that overshoots by at most 3.
+
+The generalisation (vfx-harness-4d): **a change that introduces a derivation is as likely
+to introduce a duplicate as any other change, and less likely to be checked for it,
+because the reviewer is checking whether the fix works.** Worth a pass specifically for
+new derivations at review time, separate from whether the fix is correct.
+
 ## A note on this note
 
 Every line number above was re-verified against `cc49c24` by reading the line, not by
