@@ -112,7 +112,24 @@ geometry sections, lighting last at L4 of 4, structurally identical to caesar's.
    whose closure lacks `camera`, naming the repair. Decidable at plan time *because it
    tests a declaration*. Note no layer currently declares anything but camera:
    `jit.provides` is `{}` for every non-camera layer in both caesar draws.
-   Status: open. Schema change to plan authority — ADR territory.
+   Status: **ADR territory, and for a harder reason than a schema change.** Built by
+   another session and it fails closed in the WRONG DIRECTION: it refuses caesar's plan
+   rather than deferring the debt, because there is no way to declare illumination.
+
+       domain/work_units/capabilities.py:16   UNIT_PROVIDES = {"camera", "geometry"}
+       domain/work_units/capabilities.py:17   GLOBAL_SCENE_CAPABILITIES = {"camera"}
+       orchestration/plan_authoring.py:257,262  a sparse layer's `provides` is refused
+                                                unless drawn from GLOBAL_SCENE_CAPABILITIES
+
+   A unit may declare `camera` or `geometry`; a sparse LAYER may declare only `camera`.
+   So the closure test has nothing to find, and a layer that will produce light cannot
+   say so. Extending it means widening two vocabularies and giving the planner an
+   obligation to use them — which is what makes it an ADR, not the schema edit.
+
+   Recorded plainly because three sessions reasoned about the wrong boundary and all
+   three were wrong in different ways: this one about the record schema (a seed field's
+   digest exposure), the other two about the digest surface. **None asked whether the
+   information exists at the point the decision is made.** It does not.
 
 2. **Signal-aware activation.** Compile signal witnesses alongside carrier providers and
    use them in the existing topological predicate at `judgment_debt_activation.py:70-79`,
@@ -227,9 +244,11 @@ the new advice names. Byte-identical, same package, nothing making them agree. H
 drifted, the harness would have printed `vfx units retry` for a state retry then refuses:
 advice resolving to a refusal, worse than the traceback it replaced.
 
-Two of the day's eight duplicate-derivation defects were introduced *by fixes*: this one,
-and HIR-0199, which installed a turn counter that overshoots its budget by up to 38 in
-place of one that overshoots by at most 3.
+Three of the day's duplicate-derivation defects were introduced *by fixes*: this one;
+HIR-0199, which installed a turn counter that overshoots its budget by up to 38 in place
+of one that overshoots by at most 3; and HIR-0227, whose `_STOP_CLASSES` restated
+`domain/stop_envelopes.STOP_CLASSES` inside the very commit about one vocabulary being
+mistaken for another (fixed in `19fc50c`, now a pinned alias rather than a restatement).
 
 The generalisation (vfx-harness-4d): **a change that introduces a derivation is as likely
 to introduce a duplicate as any other change, and less likely to be checked for it,
