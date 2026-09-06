@@ -747,11 +747,50 @@ CANNOT_EXPRESS_DESCRIPTION = (
     "Use it when interpolation, a child object, extra mutation, or an unpaid "
     "image-contract debt cannot legally pass — not for a fix you have not measured. "
     "Name the bare contract ids (no check: prefix). Distinct from ask_supervisor, "
-    "which does not block. When executable evidence pins the floor to a sealed upstream "
-    "unit, include its id from unit_scope.fault_owner_options so replan invalidates the "
-    "semantic owner rather than only retrying this unit."
+    "which does not block. When executable evidence pins the floor to sealed upstream "
+    "units, include EVERY one of their ids from unit_scope.fault_owner_options -- the "
+    "field is a list and the controller reads only this list, so an owner you name in "
+    "reason but omit here is invisible to it. If the causes have owners in different "
+    "layers, list them all: a finding whose owners span layers routes to reviewed "
+    "authority instead of an automatic dispatch, and that routing is the correct outcome."
 )
 
+
+
+CORRECTABLE_OWNER_SET_NOTE = (
+    "The controller reads only this list; a unit you named in reason and not here is "
+    "invisible to it. If this list is incomplete, call cannot_express_in_scope again now "
+    "with the full set -- the later call replaces this one."
+)
+
+
+def describe_recorded_fault_owners(owners, options) -> str:
+    """Echo the owners this finding recorded, and what follows for THIS finding.
+
+    Deliberately states no counterfactual. An echo that named dispatchability as a
+    property of the set the builder just chose would teach it that dropping an owner
+    buys a dispatch -- the incentive the tool description exists to remove, handed back
+    at the moment there are still turns to act on it (HIR-0243).
+    """
+    if not owners:
+        return (
+            "No fault owners recorded, so this finding names no upstream owner. "
+            + CORRECTABLE_OWNER_SET_NOTE
+        )
+    layers = {
+        str(owner): str((options.get(str(owner)) or {}).get("layer") or "?") for owner in owners
+    }
+    named = ", ".join(f"{owner} (layer {layers[owner]})" for owner in owners)
+    distinct = {layer for layer in layers.values() if layer != "?"}
+    if len(distinct) > 1:
+        head = (
+            f"Recorded fault owners: {named} -- owners span layers "
+            + ", ".join(sorted(distinct))
+            + "; this finding routes to reviewed authority."
+        )
+    else:
+        head = f"Recorded fault owners: {named} -- this finding names one owning layer."
+    return head + " " + CORRECTABLE_OWNER_SET_NOTE
 
 def record_cannot_express(comparison_state: dict | None, args: dict) -> dict:
     """Write a typed in-scope abstention onto the session the repair loop reads."""
@@ -794,7 +833,9 @@ def record_cannot_express(comparison_state: dict | None, args: dict) -> dict:
     return _text(
         "Recorded cannot_express_in_scope for "
         + ", ".join(ids)
-        + f" ({classification}). Do not edit the script further. The harness will stop "
+        + f" ({classification}). "
+        + describe_recorded_fault_owners(requested_owners, options)
+        + " Do not edit the script further. The harness will stop "
         "remaining repairs and publish a typed plan defect. The finding does not reopen "
         "state; publish reviewed replacement authority through its owning boundary. "
         f"Reason: {reason}"

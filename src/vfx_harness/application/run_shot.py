@@ -66,14 +66,10 @@ from vfx_harness.orchestration.selected_layer_chain import (
     selected_layer_chain,
 )
 
-_MEANING = {
-    0: "ok", 1: "crashed", 3: "TRUNCATED — raise the budget or split the layer",
-    4: "CHAIN BROKEN — a prior layer's script no longer composes",
-    5: "unanswered plan questions — settle them first",
-    6: "UNACCEPTED PRIOR — a lower layer must pass first",
-    7: "INCOMPLETE CHAIN", 8: "plan is STALE against brief.md — re-plan",
-    9: "layer ran cleanly but has no passing terminal publication",
-}
+# One table. This was a second copy of run_artifacts.EXIT_DETAILS and the two had already
+# drifted -- code 9 read "its VERDICT was not a pass" here and "has no passing terminal
+# publication" there, for one digit an operator sees from either surface (HIR-0243).
+_MEANING = {0: "ok", 1: "crashed", **run_artifacts.EXIT_DETAILS}
 
 
 class _ContinueRun(Exception):

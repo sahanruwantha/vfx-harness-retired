@@ -1086,7 +1086,9 @@ def test_composition_runtime_preserves_outcome_then_carries_sealed_finding(
     monkeypatch.setattr(
         builder_layer,
         "_composition_judge_unit",
-        lambda *_args: composition_unit,
+        # Accepts the keyword the caller now passes: a layer renders one plate per
+        # observation medium, so the group is compiled with the medium it owes (HIR-0241).
+        lambda *_args, **_kwargs: composition_unit,
     )
     monkeypatch.setattr(builder_layer, "_verify_script", verify)
     monkeypatch.setattr(

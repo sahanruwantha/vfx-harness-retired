@@ -178,3 +178,30 @@ def test_the_medium_and_the_render_mode_are_one_mapping() -> None:
         assert _unit_raster_mode(unit) == judgment_debt_models.render_mode_for_medium(
             judgment_debt_models.unit_observation_medium(unit)
         )
+
+
+def test_a_medium_only_group_always_carries_its_medium() -> None:
+    """The coupling the shared table was meant to remove, pinned rather than trusted.
+
+    `_unit_raster_mode`'s third branch returns "solid" for a unit with no look
+    capabilities, and a medium-only group declares none. It renders eevee only because
+    the medium branch returns first. That is branch order standing in for an invariant,
+    so assert the invariant: such a group's medium is never None. Raised by the
+    hansa_silk_road driver reviewing the split.
+    """
+    from vfx_harness.agents.builder.evidence import _unit_raster_mode
+
+    layer = _layer([_unit("hero_facade", look=("lighting",))])
+    plans = provisional_judgment.composed_group_plans(layer, (_decision("workbench_solid"),))
+
+    for decisions, medium in plans:
+        composed = provisional_judgment._composition_judge_unit(layer, decisions, medium=medium)
+        if composed.look_capabilities:
+            continue
+        assert composed.judgment_observation_medium is not None, (
+            "a group with no look capability must carry its medium explicitly; without it "
+            "_unit_raster_mode falls to solid"
+        )
+        assert _unit_raster_mode(composed) == judgment_debt_models.render_mode_for_medium(
+            composed.judgment_observation_medium
+        )

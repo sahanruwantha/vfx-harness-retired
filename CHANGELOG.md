@@ -43,6 +43,19 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- `cannot_express_in_scope` asks for every fault owner, and echoes the set it recorded
+  ([HIR-0243](docs/improvements/HIR-0243-a-surface-asks-for-what-its-field-accepts.md)).
+  The tool description said "a sealed upstream unit", "its id" and "the semantic owner" —
+  singular three times against a list field — so a builder that found two owners recorded
+  one, the controller's span check saw a single layer, and it dispatched an amendment onto
+  a layer that could not repair 3 of the 4 contracts named. The same file's own field
+  description already said "ids": one quantity with two derivations, in text.
+
+- Exit-code meanings are one table, and exit 3 names the record rather than prescribing one
+  cause's cure. `run_shot._MEANING` was a second copy of `EXIT_DETAILS` and the two had
+  drifted on code 9; exit 3 said "raise the budget or split the layer" for four causes,
+  including a stalled model stream that neither action touches.
+
 - A stale layer-finalization claim now names itself and the transaction that clears it
   ([HIR-0242](docs/improvements/HIR-0242-a-refusal-that-holds-the-claim-names-it.md)).
   The refusal read `layer 1 already has an active finalization claim` while holding the

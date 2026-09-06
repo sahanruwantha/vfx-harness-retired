@@ -50,7 +50,17 @@ _RESERVED_STATUS_FIELDS = {"schema", "run_id", "state", "updated_at", "exit_code
 # Integer SystemExit codes stringify to the digit ("7"), which is truthy and used to
 # become status.json detail. Map the digit back to the meaning the driver already has.
 EXIT_DETAILS = {
-    3: "TRUNCATED — raise the budget or split the layer",
+    # Exit 3 covers every way a model phase failed to complete -- turn exhaustion, the
+    # dollar ceiling, a provider/zero-work failure, and an idle stream that never emitted
+    # a terminal result (HIR-0080, HIR-0138). "Raise the budget or split the layer"
+    # addresses one of those and misroutes the other three: a stalled stream is not a
+    # budget problem and splitting the layer does not touch it. The typed cause is on the
+    # record; the digit says only which record to read (HIR-0243).
+    3: (
+        "MODEL PHASE DID NOT COMPLETE — reports/summary.json terminal_cause says which: "
+        "max_turns_exhausted, model_budget_exhausted, model_session_failure, or "
+        "model_session_idle_timeout"
+    ),
     4: "CHAIN BROKEN — a prior layer's script no longer composes",
     5: "unanswered plan questions — settle them first",
     6: "UNACCEPTED PRIOR — a lower layer must pass first",
