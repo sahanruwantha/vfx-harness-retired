@@ -49,10 +49,13 @@ def test_guarded_revalidation_commit_is_metadata_only(tmp_path, monkeypatch) -> 
     finally:
         checks.discard_layer_revalidation(prepared)
 
+    # The reason names the frame it was read at, on every drop and not only on a
+    # contract dropped more than once: the record has no frame field, so this is the
+    # only way a reader learns which frame failed (HIR-0237).
     assert result == {
         "kept": 0,
         "dropped": [
-            ("builder-check", "missing payment schema vfx-harness.image-payment/v2")
+            ("builder-check", "f1: missing payment schema vfx-harness.image-payment/v2")
         ],
     }
     assert json.loads(spec.read_text(encoding="utf-8")) == []

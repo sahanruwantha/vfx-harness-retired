@@ -133,6 +133,29 @@ E   AssertionError: [('hero-facade-appearance-debt', '...'), ('hero-facade-appea
 E   ValueError: projection.revalidation.result.dropped contains duplicate ids
 ```
 
+## The frame prefix is on every drop, and one pinned expectation moved
+
+`test_layer_revalidation_publication.py::test_guarded_revalidation_commit_is_metadata_only`
+pins the exact projection dict and failed:
+
+```
+{'dropped': [('builder-check', 'f1: missing payment schema vfx-harness.image-payment/v2')]}
+!= {'dropped': [('builder-check', 'missing payment schema vfx-harness.image-payment/v2')]}
+```
+
+The prefix is applied to every drop with a frame, not only to a contract dropped more than
+once. Conditional framing would be worse: the record carries no frame field, so a bare
+reason leaves a reader unable to tell "at the only frame" from "frame unknown", and a
+format that changes shape with the number of drops is harder to read than one that does
+not. This is the record being frame-blind, which is the defect.
+
+The test's subject is that the guarded commit is metadata-only -- directory fsync, no
+rehash of the runtime-check bytes -- and that is untouched. Only the expected reason
+string moved, recorded here because pinned expectations are a ratchet.
+
+It was found by a full suite at test 1,546, not by the targeted run. Two of this change's
+regressions were beyond what its own tests and the four files I judged related could see.
+
 ## What this does not fix
 
 The build that exposed it still has a genuine content gap -- `frame_detail` 1.826 against
