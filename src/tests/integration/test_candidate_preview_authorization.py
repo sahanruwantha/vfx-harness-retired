@@ -84,13 +84,36 @@ def _dependent_materialization(root: Path, bundle_hash: str) -> Path:
             },
             "evaluation": {
                 "primary_judge": 240,
-                "judge": [{"frame": 240, "ref": "refs/a.png"}],
+                # Layer 2 judges 239 and 240, so this unit must judge both and cover
+                # both with required claims: the composed canonical judges the layer's
+                # list against the union of its units' claims (HIR-0238).
+                "judge": [
+                    {"frame": 239, "ref": "refs/a.png"},
+                    {"frame": 240, "ref": "refs/a.png"},
+                ],
                 "temporal_evidence": "none",
                 "composition_context": {
                     "frames": [240],
                     "contract_ids": ["set-vis-f239", "set-vis-f240"],
                 },
                 "claims": [
+                    {
+                        "id": "set-count-claim-f239",
+                        "proposition": "the closing set exists at the hold-in",
+                        "axis": "set_dressing",
+                        "property": "object_count",
+                        "subject_roles": ["set.mass"],
+                        "subject_controls": [],
+                        "moments": [239],
+                        "kind": "atomic",
+                        "required": True,
+                        "authority": "executable_required",
+                        "repair_owner": "set",
+                        "asserts": "scene",
+                        "evidence": [
+                            {"kind": "scene_contract", "id": "set-count-f239"}
+                        ],
+                    },
                     {
                         "id": "set-count-claim",
                         "proposition": "the closing set exists",
@@ -136,6 +159,19 @@ def _dependent_materialization(root: Path, bundle_hash: str) -> Path:
                     "axis": "set_dressing",
                     "roles": ["set.mass"],
                     "frame": 240,
+                    "op": "min",
+                    "lo": 1,
+                },
+                {
+                    "id": "set-count-f239",
+                    "kind": "object_count",
+                    "owner_layer": "2",
+                    "fault_owner": "2",
+                    "activates_at": "2",
+                    "lifecycle": "layer",
+                    "axis": "set_dressing",
+                    "roles": ["set.mass"],
+                    "frame": 239,
                     "op": "min",
                     "lo": 1,
                 },

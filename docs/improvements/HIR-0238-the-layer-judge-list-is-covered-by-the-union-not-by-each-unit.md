@@ -149,6 +149,42 @@ This is `_check_evidence_coherence` in isolation over a copy of the selected vie
 full `vfx plan` gate invocation -- but it is the same function on the same bytes, and the
 before/after is a comparison actually performed rather than described.
 
+## One fixture encoded the defect, and updating it is a recorded decision
+
+`src/tests/integration/test_candidate_preview_authorization.py` failed five
+parametrisations with the new refusal:
+
+```
+/layer/stages: layer 2 judges frame(s) [239] that no unit required claim covers
+```
+
+The shared lifecycle fixture's layer 2 declares `judge: [239, 240]`. The preview test's
+`set` unit judged only 240 and its one required claim covered only 240, so frame 239 was
+a layer judge frame nothing could decide -- the same shape as caesar's layer 1, in a
+fixture, since before this change. At composed canonical that frame takes
+`_uncovered_judge_frame_verdict`: `contract_gap: True`, `pass: False`. The fixture
+described a layer that cannot pass its own composition.
+
+Suites are a ratchet, so this is recorded rather than done quietly. It is not a loosened
+assertion: the unit now judges both frames and a scene-domain `object_count` at 239 covers
+the added one, the `set-vis-f*` rows stay bound as extra-frame evidence through
+`composition_context` exactly as before, and the test's own subject -- preview
+authorization refusing five kinds of stale preserved source closure -- is untouched and
+still runs all five.
+
+The first attempt covered 239 with the `set-vis-f239` row already in the fixture, and the
+validator refused it:
+
+```
+claim set-vis-claim asserts 'scene' but carries padding evidence that cannot certify that
+domain (set-vis-f239=projected_composition)
+```
+
+That refusal is correct (HIR-0146) and worth keeping in the record: the covering claim has
+to be a scene metric because the layer declares `evidence_domains: ["scene"]`, and reaching
+for the nearest existing contract id would have been exactly the padding the gate exists to
+stop.
+
 ## What this does not fix
 
 `decided_by: lookless_requires_executable_claims` still crashes the layer evaluation
