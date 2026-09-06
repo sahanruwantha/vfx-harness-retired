@@ -88,11 +88,61 @@ medium it was paid in or not at all:
 - composition refuses when a required claim is covered by no group, so a medium mismatch
   produces an additional group rather than a silently skipped contract.
 
-## Status
+## Mechanism, as landed
 
-Evidence captured and verified; mechanism designed; implementation in progress on
-`fix/composed-group-medium`. This record exists before the code so the finding is durable
-independent of who finishes it.
+A unit with a required claim bound to an `image_contract` contributes its own medium --
+`unit_observation_medium(unit)` -- to the set `_composition_judge_unit` already checks. The
+existing invariant then sees the mix and refuses, naming both sides:
+
+```
+one composed judgment unit cannot mix observation media (eevee, workbench_solid);
+debt jd-95b82d78 declares workbench_solid; unit hero_facade pays hero_facade-claim in
+eevee. Schedule each typed debt independently, or give the debt the medium its layer's
+image contracts were paid in -- a contract is re-measured in the medium it was paid in
+or not at all
+```
+
+A scene-bound claim is computed from the scene rather than the plate, so it does not
+constrain the medium: a look-less geometry unit beside a `workbench_solid` debt -- the
+normal arrangement -- still composes. Three tests assert that, so the guard cannot widen
+into refusing every layer.
+
+The change also collapses three derivations of the medium-to-render-mode mapping into
+`RENDER_MODE_BY_MEDIUM` in `domain/judgment_debt_models.py`:
+`JudgmentObservationRequest`'s `expected_mode`, the builder's `_unit_raster_mode`, and the
+composed group's `render_mode` now read one table, with a test asserting the builder and
+the domain agree on every unit shape.
+
+## Validation
+
+`src/tests/unit/test_composed_group_medium.py`. The behavioural discriminator imports the
+domain module rather than any new name, so on the pre-fix tree it fails on the refusal not
+firing:
+
+```
+E   Failed: DID NOT RAISE ValueError
+```
+
+Three of the six pass on both trees by design -- they are the over-refusal guards.
+
+## What this does not fix
+
+**A mixed-media layer is refused, not repaired.** `hansa_silk_road` layer 2 now gets an
+explicit refusal naming both media instead of a false `frame_detail` failure, which is the
+correct state -- a wrong answer became a stop -- but the layer still cannot compose until
+its authority changes: either the `subject_appearance` debt declares `eevee`, or the debt
+and the beauty contracts are scheduled in separate groups.
+
+The full repair is one group per medium: unit claims evaluated in the medium they were paid
+in, debt claims in theirs, and composition refusing when a required claim is covered by no
+group. That restructures `decision_groups`, which currently produces one group per debt plus
+optionally one look-less group, and a group for the units' own medium cannot be expressed in
+that shape today. It is owed and is not attempted here.
+
+**It is also not an authoring-time check.** A debt whose declared medium cannot certify the
+image contracts its layer's units bind is knowable at materialization, before any spend. The
+refusal above fires at finalization, after the layer has been built. Moving it earlier is
+the same predicate at a cheaper boundary and is owed separately.
 
 Found by the hansa_silk_road driver, who also retracted their own earlier reading of the
 same number. HIR-0237's claim of a genuine content gap at 1.826 is retracted in that record.

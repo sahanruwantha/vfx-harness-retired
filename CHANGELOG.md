@@ -43,6 +43,15 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A composed group can no longer re-measure a contract on a plate that cannot show it
+  ([HIR-0241](docs/improvements/HIR-0241-a-contract-is-re-measured-in-the-medium-it-was-paid-in.md)).
+  A judgment debt declaring `workbench_solid` set the render medium for every claim in its
+  group, so a `frame_detail` contract paid at 5.266 on an EEVEE plate was re-measured at
+  1.826 on a Workbench solid one where the emissive pattern it measures does not exist, and
+  the layer stopped on a false failure. A unit paying an image contract now contributes its
+  own medium to the mixed-media check the composed judge already performs, and the refusal
+  names both sides.
+
 - A model phase's heartbeat records one start instant instead of two clock reads
   ([HIR-0239](docs/improvements/HIR-0239-a-phase-start-is-one-instant-not-two-clock-reads.md)).
   `phase_heartbeat.begin` captured `started_at` and `last_event_at` from separate
