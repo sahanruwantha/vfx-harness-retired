@@ -116,6 +116,39 @@ Coverage is asserted as a union: two units, neither judging all six frames, toge
 clear the layer. Both exemptions are asserted through the builder as well as the gate, so
 a future narrowing of one and not the other fails here.
 
+## Verified in action, on the artifact that produced it
+
+Not on a fixture. `caesar_curia`'s selected JIT view
+(`state/jit-layers/views/24199bde.../layers.json`, bundle `05275c6f`, plan revision 4)
+copied read-only to scratch, and `_check_evidence_coherence` run over it from two trees:
+
+```
+=== vfx-harness-wt9 @ 50a5b9f (main) ===
+total findings: 0   layer-judge-coverage: 0
+
+=== vfx-harness-wt11 @ 1bb281c (this change) ===
+total findings: 1   layer-judge-coverage: 1
+  check=layer-judge-coverage blocking=True layer='1'
+  where=layer 1 judge f541, f841, f1081
+  what=composed canonical is decided mechanically here, and no unit required claim covers
+       these layer judge frames
+```
+
+The view itself, read rather than taken from the report:
+
+```
+layer 1: judges=[1, 121, 301, 541, 841, 1081]
+         units=['camera_rig']
+         required moments=[1, 121, 301] authorities=['executable_required'] look=[]
+```
+
+On main the gate returns **zero** findings for the exact authority that published an
+unsatisfiable layer. Layers 2-5 carry no stages yet and are correctly untouched.
+
+This is `_check_evidence_coherence` in isolation over a copy of the selected view, not a
+full `vfx plan` gate invocation -- but it is the same function on the same bytes, and the
+before/after is a comparison actually performed rather than described.
+
 ## What this does not fix
 
 `decided_by: lookless_requires_executable_claims` still crashes the layer evaluation
