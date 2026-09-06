@@ -149,6 +149,41 @@ This is `_check_evidence_coherence` in isolation over a copy of the selected vie
 full `vfx plan` gate invocation -- but it is the same function on the same bytes, and the
 before/after is a comparison actually performed rather than described.
 
+## Blocking is measured, not assumed
+
+The refusal is blocking, which risks dead-ending a shot rather than routing it. The
+caesar_curia driver ran the rematerialization this record's refusal would force, with the
+coverage requirement named in the trigger, and published:
+
+```
+LAYER judge list                 [1, 121, 301, 541, 841, 1081]
+unit camera_rig judge            [1, 121, 301, 541, 841, 1081]
+union of required-claim moments  [1, 121, 301, 541, 841, 1081]
+UNCOVERED                        none
+```
+
+The materializer extended the unit's judge list to the full layer list and authored
+required claims reaching all six frames, for $1.07. **So f541/f841/f1081 are coverable
+executably on a camera layer**, and the blocking refusal sends a shot back to a
+materialization that can succeed rather than to a wall. The alternative reading -- that the
+sparse bundle had put six judge frames on a layer able to answer three -- is dead.
+
+## One cause, three symptoms
+
+The same uncovered frames surfaced three ways in caesar_curia layer 1, in this order within
+one function:
+
+```
+layer_composition_finalization.py:677  LayerEvaluationReceipt.mint      -> ValueError on decided_by
+layer_composition_finalization.py:771  build_layer_outcome_projection   -> revalidation.py:630
+                                       "executable-only canonical has no typed evidence for f541"
+```
+
+plus the contract gap itself. HIR-0240 fixed the first, and the run that proved it wrote its
+evaluation receipt to disk -- `lfc-c9083fac….evaluation.json`, carrying
+`{unit_executable_evidence: 3, uncovered_judge_frame: 3}` -- before failing 94 lines later
+at the projection. Coverage is upstream of all three.
+
 ## One fixture encoded the defect, and updating it is a recorded decision
 
 `src/tests/integration/test_candidate_preview_authorization.py` failed five
