@@ -71,6 +71,7 @@ class TightenedBound:
     contract_id: str
     before: tuple[float, float]
     after: tuple[float, float]
+    named: bool = True
 
     @property
     def lost_below(self) -> float:
@@ -106,7 +107,8 @@ class TightenedBound:
             refused.append(f"raised its floor {self.before[0]:g} -> {self.after[0]:g}")
         if self.lost_above > 0:
             refused.append(f"lowered its ceiling {self.before[1]:g} -> {self.after[1]:g}")
-        text = f"{self.contract_id} {' and '.join(refused)}"
+        scope = "" if self.named else " (a row the finding does not name at all)"
+        text = f"{self.contract_id}{scope} {' and '.join(refused)}"
         if self.gained_above > 0:
             text += (
                 f" — the resolution took its room at the ceiling "
@@ -143,22 +145,29 @@ def tightened_conflict_rows(
         str(r.get("id")): r for r in candidate_rows if isinstance(r, Mapping) and r.get("id")
     }
     found: list[TightenedBound] = []
-    for contract_id in sorted(named & set(before) & set(after)):
+    # Every row present on both sides, not only the ones the finding named. caesar_curia's
+    # amendment was asked about ONE row and pulled the ceiling on three: 0.9105 and 1.0,
+    # measured passing minutes earlier, failed against bands nobody asked to move. Scoping
+    # to the named ids would have reported the one row that was at least in question and
+    # stayed silent on the two that were not -- and an unnamed row is further outside the
+    # finding's bound, not nearer it (HIR-0245).
+    for contract_id in sorted(set(before) & set(after)):
         old = admissible_interval(before[contract_id])
         new = admissible_interval(after[contract_id])
         if old is None or new is None:
             continue
         if new[0] > old[0] or new[1] < old[1]:
-            found.append(TightenedBound(contract_id, old, new))
+            found.append(TightenedBound(contract_id, old, new, contract_id in named))
     return tuple(found)
 
 
 AMENDMENT_RELAXATION_RULE = (
-    "an amendment driven by a joint-unsatisfiability finding may enlarge the admissible "
-    "set of a named row but never shrink it: resolving a contradiction requires giving "
-    "some row more room, never less. A bound that shrank was not asked for by the "
-    "finding. Restore it, or -- if the narrower bound is genuinely intended -- raise it "
-    "as its own reviewed change rather than folding it into this repair"
+    "an amendment driven by a joint-unsatisfiability finding may enlarge an admissible "
+    "set but never shrink one: resolving a contradiction requires giving some row more "
+    "room, never less. A bound that shrank was not asked for by the finding -- and a row "
+    "the finding does not name at all is further outside its bound, not nearer it. "
+    "Restore it, or -- if the narrower bound is genuinely intended -- raise it as its own "
+    "reviewed change rather than folding it into this repair"
 )
 
 __all__ = [

@@ -144,3 +144,66 @@ def test_a_non_contract_conflict_names_no_rows_and_the_check_is_inert(
         encoding="utf-8",
     )
     assert open_conflict_contract_ids(tmp_path) == ()
+
+
+CAESAR_BASE = [
+    {"id": "bbox-f1-l2", "op": "band", "lo": 0.9, "hi": 1.0},
+    {"id": "bbox-f121-l2", "op": "band", "lo": 0.85, "hi": 1.0},
+    {"id": "bbox-f301-l2", "op": "band", "lo": 0.85, "hi": 1.0},
+]
+CAESAR_AFTER = [
+    {"id": "bbox-f1-l2", "op": "band", "lo": 0.62, "hi": 0.85},
+    {"id": "bbox-f121-l2", "op": "band", "lo": 0.6, "hi": 0.85},
+    {"id": "bbox-f301-l2", "op": "band", "lo": 0.6, "hi": 0.9},
+]
+
+
+def test_an_amendment_that_narrows_rows_the_finding_never_named_is_reported() -> None:
+    """caesar_curia: the finding named ONE row and the amendment moved three.
+
+    Measured minutes earlier, from `reports/layers/layer-2.columns_set.json`:
+
+        bbox-f1-l2    0.6785  against 0.9..1     FAIL   <- the only id in contract_ids
+        bbox-f121-l2  0.9105  against 0.85..1    PASS
+        bbox-f301-l2  1.0     against 0.85..1    PASS
+
+    After the amendment the two that were passing fail, against bands nobody asked to
+    move. Scoping the check to the named ids would have reported the one row that was at
+    least in question and stayed silent on the two that were not -- and an unnamed row is
+    further outside the finding's bound, not nearer it.
+    """
+    found = {t.contract_id: t for t in tightened_conflict_rows(["bbox-f1-l2"], CAESAR_BASE, CAESAR_AFTER)}
+
+    assert set(found) == {"bbox-f1-l2", "bbox-f121-l2", "bbox-f301-l2"}
+    assert found["bbox-f1-l2"].named is True
+    assert found["bbox-f121-l2"].named is False
+    assert found["bbox-f301-l2"].named is False
+
+
+def test_an_unnamed_row_says_it_was_never_in_question() -> None:
+    found = {t.contract_id: t for t in tightened_conflict_rows(["bbox-f1-l2"], CAESAR_BASE, CAESAR_AFTER)}
+
+    assert "a row the finding does not name at all" in found["bbox-f301-l2"].describe()
+    assert "a row the finding does not name at all" not in found["bbox-f1-l2"].describe()
+
+
+def test_the_measured_values_that_passed_before_now_fail_the_amended_bands() -> None:
+    """Why this matters rather than merely being out of scope: it broke passing work."""
+    after = {row["id"]: row for row in CAESAR_AFTER}
+    before = {row["id"]: row for row in CAESAR_BASE}
+    for contract_id, measured in (("bbox-f121-l2", 0.9105), ("bbox-f301-l2", 1.0)):
+        was = before[contract_id]
+        now = after[contract_id]
+        assert was["lo"] <= measured <= was["hi"], f"{contract_id} passed before"
+        assert not (now["lo"] <= measured <= now["hi"]), f"{contract_id} fails after"
+
+
+def test_widening_every_row_is_still_clean() -> None:
+    """The guard must not fire on an amendment that only gives room, named or not."""
+    wider = [
+        {"id": "bbox-f1-l2", "op": "band", "lo": 0.5, "hi": 1.0},
+        {"id": "bbox-f121-l2", "op": "band", "lo": 0.8, "hi": 1.0},
+        {"id": "bbox-f301-l2", "op": "band", "lo": 0.85, "hi": 1.0},
+    ]
+
+    assert tightened_conflict_rows(["bbox-f1-l2"], CAESAR_BASE, wider) == ()

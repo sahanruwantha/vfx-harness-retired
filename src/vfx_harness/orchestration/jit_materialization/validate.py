@@ -7,10 +7,6 @@ import json
 import tempfile
 from pathlib import Path
 
-from vfx_harness.domain.amendment_scope import (
-    AMENDMENT_RELAXATION_RULE,
-    tightened_conflict_rows,
-)
 from vfx_harness.domain.atomicity import ATOMICITY_RULE, atomicity_gaps
 from vfx_harness.domain.construction import CONSTRUCTION_ROUTE_RULE
 from vfx_harness.domain.construction_routes import construction_route_gaps
@@ -53,9 +49,6 @@ from vfx_harness.evidence.scene_checks import (
     validate_row,
     validate_row_set,
 )
-from vfx_harness.orchestration.hypothesis_falsification_projection import (
-    open_conflict_contract_ids,
-)
 from vfx_harness.orchestration.jit_materialization.candidate import (
     load_materialization_candidate,
 )
@@ -66,6 +59,9 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     _document,
     _matches_reserved,
     _rows,
+)
+from vfx_harness.orchestration.jit_materialization.validate_amendment_scope import (
+    amendment_scope_findings,
 )
 from vfx_harness.orchestration.jit_materialization.validate_framing import (
     framing_findings,
@@ -424,13 +420,15 @@ def validate_materialization(
     # layer-1 amendment resolved a real conflict and, unasked, raised f1's floor from
     # 0.15 to 0.28 past a reference measuring 0.216, spending fidelity at the
     # establishing frame to buy satisfiability elsewhere (HIR-0232).
-    for record_id, conflict_ids in open_conflict_contract_ids(shot_folder):
-        for tightened in tightened_conflict_rows(conflict_ids, base_scene_rows, scene_rows):
-            note(
-                json_ptr("scene_contracts"),
-                f"amendment for finding {record_id} {tightened.describe()}, which its "
-                f"conflict did not put in question. {AMENDMENT_RELAXATION_RULE}",
-            )
+    #
+    # The before-image is the SELECTED view, not the design base. On a rematerialization
+    # the design base is the reverted overlay HIR-0026 writes, which strips every row the
+    # target layer owns -- so on the controller-dispatched amendment this check exists to
+    # police, `base_scene_rows` was guaranteed to contain none of the named rows and the
+    # comparison never ran. One parameter answering two questions: what the materializer
+    # designs from, and what was admissible before (HIR-0245).
+    for message in amendment_scope_findings(shot_folder, base_scene_rows, scene_rows):
+        note(json_ptr("scene_contracts"), message)
 
     # HIR-0132: a required visibility row activates at its repair-owner unit. Later
     # geometry must depend on and protect that owner; future surfaces are not due early.

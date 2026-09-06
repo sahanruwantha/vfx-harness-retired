@@ -43,6 +43,15 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- The amendment-scope guard can see the rows it polices
+  ([HIR-0245](docs/improvements/HIR-0245-the-guard-was-blind-to-the-rows-it-polices.md)).
+  Its before-image was the rematerialization design base — the reverted overlay, which
+  strips every row the target layer owns — so on a controller-dispatched amendment it had
+  nothing to compare for any row being amended. And it scoped to the ids the finding named,
+  which waves through every row the finding did not name. A caesar_curia amendment asked
+  about one row pulled the ceiling on three, and the two it was never asked to touch now
+  fail against values measured as passing minutes earlier.
+
 - A threshold rejection reaches the builder whole
   ([HIR-0244](docs/improvements/HIR-0244-a-rejection-that-teaches-must-survive-its-surface.md)).
   The payment surface rendered `v.reasons[0][:120]`, cutting mid-word before the legal `lo`
