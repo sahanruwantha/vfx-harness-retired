@@ -17,11 +17,10 @@ from typing import TYPE_CHECKING
 
 from PIL import Image, ImageChops, ImageStat
 
-from vfx_harness.domain.contracts import active_for, validate_lifecycle
+from vfx_harness.domain.contracts import activation_begins_at, active_for, validate_lifecycle
 from vfx_harness.domain.evidence_kinds import PROJECTED_ORIGIN_KINDS as PROJECTED_ORIGIN_KINDS
 from vfx_harness.evidence.scene_checks.deferred_subject import (
     _scene_checks_path,
-    deferred_subject_composition_activation_ids,
     load_rows,
 )
 from vfx_harness.evidence.scene_checks.kinds import FUNCTIONAL_KINDS, KIND_DEFINITIONS
@@ -345,7 +344,13 @@ def prior_interface_rows(
 ) -> tuple[dict, ...]:
     """Earlier-layer rows testable before this layer mutates (HIR-0134)."""
     current = int(layer_id)
-    future_subject_ids = set(deferred_subject_composition_activation_ids(rows, current))
+    # A row whose active window BEGINS here measures a subject this layer has not built
+    # yet. HIR-0134 excluded that for camera-owned `bbox_*` rows via
+    # `deferred_subject_composition_activation_ids`, which filters on BBOX_KINDS -- so a
+    # `path_clearance_min` row carrying the same `activates_at` was evaluated at layer
+    # start, resolved to nothing, and failed as `None >= 0.5`, deadlocking a shot whose
+    # deferral was correct. `activates_at` is a general lifecycle field; the exclusion is
+    # general (HIR-0236).
     return tuple(
         r
         for r in rows
@@ -353,5 +358,5 @@ def prior_interface_rows(
         and not validate_lifecycle(r)
         and int(r["owner_layer"]) < current
         and active_for(r, current)
-        and str(r.get("id") or "") not in future_subject_ids
+        and not activation_begins_at(r, current)
     )

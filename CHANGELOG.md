@@ -32,6 +32,18 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A row that activates at this layer is not evaluated at its start
+  ([HIR-0236](docs/improvements/HIR-0236-a-row-that-activates-here-is-not-testable-at-layer-start.md)).
+  A `path_clearance_min` row deferred to layer 2 was evaluated by layer 2's prior-interface
+  preflight, before layer 2 built the subject it compares against; it read `None`, failed
+  `None >= 0.5`, and deadlocked the shot — layer 1 could not satisfy it, which is why it
+  was deferred, and layer 2 could not start to build what would. HIR-0134 already excluded
+  this for camera-owned `bbox_*` rows through a helper that filters on `BBOX_KINDS`, but
+  `activates_at` is a general lifecycle field, so the guard was narrower than the rule
+  AGENTS.md states. Layer-start revalidation now skips any row whose active window begins
+  at that layer, whatever its kind. Treating a `None` metric as not-due was rejected: that
+  is the vacuous pass HIR-0024 exists to prevent.
+
 - The construction import helper returns names, not Objects
   ([HIR-0235](docs/improvements/HIR-0235-the-import-helper-returned-objects-where-it-promised-names.md)).
   `bvfx_import_construction` compared Objects against a set of names, so its filter was

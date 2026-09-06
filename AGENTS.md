@@ -807,7 +807,13 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   binds the ids through `composition_context` and does not seal them. Geometry units
   that mutate the measured roles freeze-protect the active deferred rows. At the exact
   activation layer, layer-start prior-interface replay excludes the not-yet-instantiated
-  subject. Parent selectors may span several truthful geometry write clusters; the first
+  subject. That exclusion is keyed to `activates_at` and covers every row carrying
+  it, not only `bbox_*` kinds: a `path_clearance_min` row deferred to layer 2 was
+  evaluated at layer 2's start, read `None` because its `compare_roles` subject did not
+  exist yet, and deadlocked the shot — layer 1 could not satisfy it, which is why it was
+  deferred, and layer 2 could not start to build what would. Active at a layer and
+  testable at that layer's start are different properties. A `None` reading stays a
+  failure; the row is simply not selected before its subject can exist (HIR-0236). Parent selectors may span several truthful geometry write clusters; the first
   unit whose dependency closure contains every overlapping producer pays all owner-frame
   rows. Publication rejects a DAG with no such payer. Later layers protect the persistent
   bbox on every overlapping geometry mutation. Before that activation-layer payer, each

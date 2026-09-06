@@ -94,6 +94,32 @@ def bounds(row: dict) -> tuple[int, int | None]:
     return start, _layer(row["valid_through"], "valid_through")
 
 
+def activation_begins_at(row: dict, layer_id: str | int) -> bool:
+    """True when this row's active window BEGINS at ``layer_id``.
+
+    Active at a layer and testable at that layer's *start* are different properties. A
+    row deferred to layer 2 is active there -- that is what `activates_at` means -- but at
+    the moment layer 2 begins, the subject the row measures has not been built yet, so the
+    metric reads ``None``.
+
+    room_1046_opening deadlocked on exactly that: `cam-clearance-building`
+    (`path_clearance_min`, `compare_roles: ["building.*"]`, `activates_at: "2"`) was
+    evaluated by layer 2's prior-interface preflight, resolved to nothing, and failed as
+    `None >= 0.5`. Layer 1 could not satisfy it -- deferring it was correct -- and layer 2
+    could not start to build the subject that would. No operator transaction clears that.
+
+    HIR-0134 already excluded this case for camera-owned `bbox_*` rows. `activates_at` is
+    a general lifecycle field, so the exclusion is general too (HIR-0236).
+    """
+
+    if validate_lifecycle(row):
+        return False
+    try:
+        return bounds(row)[0] == _layer(layer_id, "current layer")
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def active_for(row: dict, layer_id: str | int, frame: int | None = None) -> bool:
     if validate_lifecycle(row):
         return False
