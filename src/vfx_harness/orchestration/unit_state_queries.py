@@ -26,7 +26,10 @@ from vfx_harness.orchestration.unit_state_identity import (
     authorized_passed_unit_ids,
     unit_digest,
 )
-from vfx_harness.orchestration.unit_state_lifecycle import TRANSITIONS
+from vfx_harness.orchestration.unit_state_lifecycle import (
+    PLANNING_CLAIMABLE_STATES,
+    TRANSITIONS,
+)
 from vfx_harness.orchestration.unit_state_lock import unit_state_lock, unit_state_path
 from vfx_harness.orchestration.unit_state_storage import read
 
@@ -161,18 +164,6 @@ def unresolved_falsification(
     return dict(finding) if isinstance(finding, dict) else None
 
 
-# ``claim_ready_unit_for_planning`` owns this set; naming it here would be a second
-# derivation of one rule, which is the defect this module exists to avoid.
-def _planning_claimable() -> frozenset[str]:
-    # Local import: unit_state_claims imports this module, so a module-scope import
-    # would close a cycle.  noqa: PLC0415 — proven circular dependency.
-    from vfx_harness.orchestration.unit_state_claims import (  # noqa: PLC0415
-        PLANNING_CLAIMABLE_STATES,
-    )
-
-    return frozenset(PLANNING_CLAIMABLE_STATES)
-
-
 def unclaimable_state(
     folder: str | Path,
     layer_id: str,
@@ -199,7 +190,7 @@ def unclaimable_state(
     if not isinstance(slot, dict):
         return None
     status = str(slot.get("status") or "")
-    if not status or status in _planning_claimable():
+    if not status or status in PLANNING_CLAIMABLE_STATES:
         return None
     if status == "hypothesis_falsified":
         # Its own typed stop already names the reviewed transaction (HIR-0214).

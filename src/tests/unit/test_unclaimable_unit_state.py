@@ -15,7 +15,10 @@ import inspect
 import pytest
 
 from vfx_harness.orchestration import unit_state_queries
-from vfx_harness.orchestration.unit_state_claims import PLANNING_CLAIMABLE_STATES
+from vfx_harness.orchestration.unit_state_claims import (
+    PLANNING_CLAIMABLE_STATES,
+    UNCLAIMED_RETRY_STATES,
+)
 from vfx_harness.orchestration.unit_state_lifecycle import TRANSITIONS
 
 
@@ -140,3 +143,26 @@ def test_the_state_machine_has_one_membership_everywhere() -> None:
 
     successors = {s for edges in TRANSITIONS.values() for s in edges}
     assert successors <= states, sorted(successors - states)
+
+
+def test_the_advice_resolves_to_a_transaction_that_accepts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every state told to run `vfx units retry` must be one that retry accepts.
+
+    ``unclaimable_state`` names the transaction; ``release_unclaimed_unit_for_retry``
+    gates on ``UNCLAIMED_RETRY_STATES``.  Held apart these are two derivations of one
+    rule, and if they drift the harness prints a command that then refuses -- advice
+    resolving to a refusal is worse than no advice.  Both now derive from TRANSITIONS.
+    """
+
+    told_to_retry = set()
+    for status in TRANSITIONS:
+        answer = _answer(monkeypatch, status)
+        if answer is not None and "vfx units retry" in answer[1]:
+            told_to_retry.add(status)
+
+    assert told_to_retry == set(UNCLAIMED_RETRY_STATES), sorted(
+        told_to_retry ^ set(UNCLAIMED_RETRY_STATES)
+    )
+    assert not (set(UNCLAIMED_RETRY_STATES) & set(PLANNING_CLAIMABLE_STATES))
