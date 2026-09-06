@@ -763,9 +763,14 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   when the unit is staged, since `bvfx_emission` and its siblings resolve to `shading` and
   the script does not yet exist. Sources are `light`, `volume` and `compositor`; a unit
   that is itself the light declares `provides: ["illumination"]`, which a role name or look
-  label never implies. A shading-over-mesh prefix with no light and no world renders black,
-  and its image debt is unpayable in both directions -- a darkness bound is trivially met
-  by the black adversary and a brightness bound has nothing to illuminate (HIR-0234). That optical-signal grant is not a rendered
+  label never implies. A *non-emissive* shading-over-mesh prefix with no light and no world
+  renders black, and its image debt is unpayable in both directions -- a darkness bound is
+  trivially met by the black adversary and a brightness bound has nothing to illuminate.
+  An emissive one renders perfectly well: hansa's accepted `hero_facade.py` mixes a
+  `ShaderNodeEmission` at strength 3.5 and its `frame_detail` debt read 5.135, 5.266 and
+  5.14 against `>= 2`. That is the reason for the declaration and not a counterexample to
+  it -- the two prefixes are indistinguishable at staging time, so the gate must be told
+  which it is rather than assume either (HIR-0234). That optical-signal grant is not a rendered
   carrier: image-contract debt also requires a `mesh`, `volume`, or `compositor`
   family in the same replay prefix. A shading-only root on a camera-only scene
   cannot pay beauty; the materialization and plan gates fail

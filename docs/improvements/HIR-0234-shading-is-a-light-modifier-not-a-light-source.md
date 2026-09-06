@@ -130,3 +130,46 @@ and **no layer declares an illumination capability**, because until this change 
 could. Whether a *sparse* layer should declare it -- so the plan gate can refuse an
 unlightable DAG before any materialization spends -- is the capability ADR, which now has
 three findings behind it.
+
+## Correction: the black-prefix sentence was too strong (2026-09-06)
+
+This record justified the modifier/source split partly with "a shading-over-mesh prefix
+with no light and no world renders black". That is true only of a *non-emissive* shading
+prefix, and the shot this record was written about contains the counterexample.
+
+`artifacts/hansa_silk_road/build/units/02/hero_facade.py`, the accepted script:
+
+```python
+emit = nt.nodes.new("ShaderNodeEmission")
+emit.inputs["Strength"].default_value = 3.5
+nt.links.new(emit.outputs["Emission"], mix.inputs[2])
+```
+
+and in run `20260906T023403Z-ed877b`, `reports/layers/layer-2.hero_facade.json`:
+
+```
+id: hero-facade-appearance-debt   metric: frame_detail
+frame 1   value 5.135   target >= 2   pass
+frame 51  value 5.266   target >= 2   pass
+frame 151 value 5.14    target >= 2   pass
+```
+
+An emission shader needs no light and no world. So a shading cluster can be the only
+optical signal in a prefix, and this record's own example shot proves it.
+
+**The mechanism is unchanged and the correction strengthens it.** The argument was never
+"shading cannot light"; it is that `bvfx_emission` and its siblings resolve to `shading`
+and *the script does not exist when the unit is staged*, so the gate cannot tell an
+emissive prefix from a dark one. Both prefixes exist in this one shot. That is precisely
+why the answer is a typed declaration (`provides: ["illumination"]`) rather than a
+classification the gate infers -- the same shape as HIR-0098 for camera.
+
+The unpayable-debt evidence in the sections above came from an earlier attempt of that
+layer whose design bound `region_mean` / `frame_mean` debts, not the `frame_detail` design
+above. Both attempts are real; the record previously read as though one prefix were the
+whole story.
+
+Found while reviewing the caesar_curia driver's `RESEARCH-0029`, which retracts a related
+claim of its own ("emission is not a light source") on the same measurement. Recorded here
+rather than left in that note, because the sentence being corrected is in this record and
+in AGENTS.md.
