@@ -29,7 +29,7 @@ which is the design working.
     -> light=0  emission=0  world=0  on every one
 
 Agrees with the builder's own in-worker report, `lights=(none) and world=(none) across the
-entire replayed scene`. That report is a direct read: `blender/worker.py:1481` is
+entire replayed scene`. That report is a direct read: `blender/worker.py:1502` is
 `world = sc.world`, so `(none)` is a measurement and not an untagged default.
 
 Layer order is not incidental. `jit.depends_on_layers` is `1<-2<-3<-4<-5`, strictly linear,
@@ -41,8 +41,8 @@ layer-scoped transaction can put illumination in front of it.
 The debt vocabulary cannot express a dependency on illumination.
 
     domain/judgment_debt_models.py:20   RENDERED_CARRIER_FAMILIES = {mesh, volume, compositor}
-    domain/image_signal.py:27           IMAGE_SUBJECT_FAMILIES    = {mesh, volume, compositor}
-    domain/image_signal.py:26           IMAGE_SIGNAL_FAMILIES     = {light, shading, volume, compositor}
+    domain/image_signal.py:41           IMAGE_SUBJECT_FAMILIES    = {mesh, volume, compositor}
+    domain/image_signal.py:40           IMAGE_SIGNAL_FAMILIES     = {light, shading, volume, compositor}
 
 `RENDERED_CARRIER_FAMILIES == IMAGE_SUBJECT_FAMILIES`, exactly. `light` and `shading` are
 not merely absent from the carrier set — they are actively refused, at
@@ -349,3 +349,38 @@ emissive unit able to say so instead of a gate guessing from its write family.
 unless drawn from it. So the closure test this note proposes as candidate mechanism 1 is
 now decidable at *unit* granularity and still not at *layer* granularity, which is where a
 global plan would have to declare it. Half the vocabulary widening landed.
+
+## Resolved: HIR-0234 splits source from modifier
+
+The distinction this note kept circling — emissive-vs-modulating, not shading-vs-light —
+is now in the code, and it cites the measurement that settled it:
+
+    domain/image_signal.py
+      IMAGE_SIGNAL_SOURCE_FAMILIES     things that emit
+      IMAGE_SIGNAL_MODIFIER_FAMILIES   frozenset({"shading"})
+      IMAGE_SIGNAL_FAMILIES = SOURCE | MODIFIER
+        "Every family that can affect pixels at all; used for witness guidance, not for
+         establishing that a prefix can be lit."
+
+with the comment recording hansa's case directly: a `shading` facade over a `mesh` tower,
+`world=None`, zero light objects, four image debts unpayable in both directions — darkness
+bounds trivially met by a black adversary, brightness bounds with nothing to illuminate the
+surface — *twice, on two independent designs*.
+
+And the capability half:
+
+    domain/work_units/capabilities.py
+      UNIT_PROVIDES = {"camera", "geometry", "illumination"}
+
+"A shading unit that is itself the light -- an emissive facade, a glowing sign -- says so
+with a typed capability, exactly as a camera or geometry producer does. A role name or a
+look label never implies it."
+
+So the answer was neither of the two forms argued in this note. Not "a light family must
+exist" (which would refuse an emissive design) and not "shading counts as signal" (which
+passed hansa twice into unpayable debt). It is: **shading may modify, only a declared
+source may light, and an emissive unit declares it rather than being inferred.**
+
+What remains open is the layer half. `GLOBAL_SCENE_CAPABILITIES` is still `{"camera"}`,
+so a sparse layer cannot declare illumination and the plan-time closure test proposed as
+candidate mechanism 1 is decidable at unit granularity only.
