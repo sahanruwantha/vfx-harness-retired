@@ -886,7 +886,13 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   one request cannot express two write namespaces; `$self` names the namespace tag
   itself (HIR-0150). Every authoring field whose legal values are that unit's own roles
   speaks the same relative notation and is compiled from the same namespace value —
-  `control_roles` included, since its values must be drawn from `role_members`. One record
+  `control_roles` included, since its values must be drawn from `role_members`. A
+  `mutates.mode` refusal likewise names every offending field with its value and both legal
+  modes: `mode 'none' cannot declare mutation targets` fired on a payload whose roles,
+  controls and dresses were all empty, because `script_spans` was set — a script span is a
+  mutation target since it is a file the unit writes — and the materializer, reading the
+  refusal against its own request, retried the identical shape on the next unit
+  (HIR-0233). One record
   carries one role notation. `dresses` is the deliberate exception and stays absolute
   because it names another layer's roles (ADR-0007). A control mapped on a unit with no
   `role_members` is refused naming the consequence — a control steering no mutated role

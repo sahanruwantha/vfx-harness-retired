@@ -32,6 +32,17 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A mutation-mode refusal names the field that fired it
+  ([HIR-0233](docs/improvements/HIR-0233-a-mode-refusal-names-the-field-that-fired-it.md)).
+  `mode 'none' cannot declare mutation targets` fired on a payload whose roles, controls
+  and dresses were all empty — `script_spans` was the offending field, and the message
+  named no field, no value, and no legal alternative. The materializer read the refusal
+  against its own request, concluded it had declared none, and retried the identical shape
+  on the next unit. Both mode refusals now list every offending field with its value,
+  explain that a script span is a mutation target because it is a file the unit writes,
+  and name both legal modes. The rule is unchanged; two tests pin that the accepting cases
+  still accept.
+
 - An amendment is bounded by the finding that drove it
   ([HIR-0232](docs/improvements/HIR-0232-an-amendment-is-bounded-by-its-finding.md)).
   A controller-dispatched repair resolved a genuine contradiction between two camera-owned

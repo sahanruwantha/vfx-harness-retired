@@ -377,10 +377,36 @@ class MutationScope:
         spans = tuple(_relative_path(v, f"{where}.script_spans") for v in row.get("script_spans", []))
         if len(set(spans)) != len(spans):
             raise ValueError(f"{where}.script_spans contains duplicates")
-        if mode == "none" and any((roles, controls, spans, dresses)):
-            raise ValueError(f"{where} mode 'none' cannot declare mutation targets")
-        if mode == "scoped" and not any((roles, controls, spans, dresses)):
-            raise ValueError(f"{where} scoped mutation needs roles, controls, script_spans, or dresses")
+        # Name the field and its value, not just the rule. A materializer sent
+        # mode 'none' with empty roles, empty controls and one script_span, read its own
+        # empty roles in the refusal's terms, concluded it had declared no targets, and
+        # retried the identical shape on the next unit. A script span IS a mutation
+        # target -- it is a file this unit writes -- and nothing said so (HIR-0233).
+        declared = {
+            "roles": roles,
+            "controls": controls,
+            "script_spans": spans,
+            "dresses": dresses,
+        }
+        if mode == "none":
+            nonempty = {key: value for key, value in declared.items() if value}
+            if nonempty:
+                shown = "; ".join(
+                    f"{key}={list(value)}" for key, value in sorted(nonempty.items())
+                )
+                raise ValueError(
+                    f"{where} mode 'none' declares no mutation, but {shown} is set. "
+                    "Every one of roles, controls, script_spans and dresses is a "
+                    "mutation target -- a script span is a file this unit writes. "
+                    "Either drop it and keep mode 'none' for a unit that mutates "
+                    "nothing, or use mode 'scoped' and declare what it mutates."
+                )
+        elif not any(declared.values()):
+            raise ValueError(
+                f"{where} mode 'scoped' declares no mutation target: roles, controls, "
+                "script_spans and dresses are all empty. Declare at least one, or use "
+                "mode 'none' for a unit that mutates nothing."
+            )
         overlap = sorted(set(dresses) & set(roles))
         if overlap:
             raise ValueError(
