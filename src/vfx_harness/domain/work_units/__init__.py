@@ -75,12 +75,15 @@ from vfx_harness.domain.work_units.evidence_domains import (
 )
 from vfx_harness.domain.work_units.evidence_domains import uncovered_evidence_domains as uncovered_evidence_domains
 from vfx_harness.domain.work_units.frames import EXTRA_FRAME_BINDING_RULE as EXTRA_FRAME_BINDING_RULE
+from vfx_harness.domain.work_units.frames import LAYER_JUDGE_CLAIM_COVERAGE_RULE as LAYER_JUDGE_CLAIM_COVERAGE_RULE
 from vfx_harness.domain.work_units.frames import LOOK_IMAGE_EVIDENCE_KINDS as LOOK_IMAGE_EVIDENCE_KINDS
 from vfx_harness.domain.work_units.frames import LOOK_REQUIRES_IMAGE_DOMAIN_RULE as LOOK_REQUIRES_IMAGE_DOMAIN_RULE
 from vfx_harness.domain.work_units.frames import UNIT_JUDGE_CLAIM_COVERAGE_RULE as UNIT_JUDGE_CLAIM_COVERAGE_RULE
 from vfx_harness.domain.work_units.frames import compile_frame_authority as compile_frame_authority
+from vfx_harness.domain.work_units.frames import composed_evaluation_is_lookless as composed_evaluation_is_lookless
 from vfx_harness.domain.work_units.frames import layer_judge_frames as layer_judge_frames
 from vfx_harness.domain.work_units.frames import required_claim_certifies_look as required_claim_certifies_look
+from vfx_harness.domain.work_units.frames import uncovered_layer_judge_frames as uncovered_layer_judge_frames
 from vfx_harness.domain.work_units.frames import uncovered_unit_judge_frames as uncovered_unit_judge_frames
 from vfx_harness.domain.work_units.frames import unearned_look_judge_frames as unearned_look_judge_frames
 from vfx_harness.domain.work_units.graph import DeferredClaimBindingGap as DeferredClaimBindingGap

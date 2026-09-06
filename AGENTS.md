@@ -722,7 +722,15 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   Unit judge frames, claim moments, and `composition_context.frames` are a subset of the
   layer judge list compiled into the materialization kickoff. Every unit judge frame
   must appear in a required claim's `moments`; an uncovered frame is a contract_gap,
-  not a critic look vote (HIR-0045).   A look-owning unit must cover every judge
+  not a critic look vote (HIR-0045). That rule is quantified per unit and the composed
+  canonical is not: it judges the LAYER's list against the union of its units' claims,
+  so every layer judge frame must also be covered by some unit's required claim. A frame
+  outside every unit's judge list satisfies the unit rule vacuously and makes the layer
+  unsatisfiable by construction. The layer judge list is structural and materialization
+  cannot shrink it, so the fix is a required executable claim reaching those frames on a
+  unit that judges them. The materialization validator, the plan gate, and the composed
+  judge decide "is this layer judged mechanically" with one predicate, so the gate cannot
+  demand executable coverage of a layer a critic will decide (HIR-0238).   A look-owning unit must cover every judge
   frame with a required image-domain claim; scene counts cannot seal appearance
   (HIR-0046). Claim-closure counts those bound `image_contract` ids as
   producers even while `checks.json` is empty; missing image rows are

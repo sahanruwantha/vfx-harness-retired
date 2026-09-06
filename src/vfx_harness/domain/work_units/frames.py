@@ -26,6 +26,16 @@ UNIT_JUDGE_CLAIM_COVERAGE_RULE = (
     "composition_context.contract_ids; do not add those frames to the unit judge."
 )
 
+LAYER_JUDGE_CLAIM_COVERAGE_RULE = (
+    "a layer whose composed canonical is decided mechanically -- no unit declares "
+    "look_capabilities and every required claim is executable_required -- must cover "
+    "every LAYER judge frame with some unit's required claim.moments. The layer judge "
+    "list is structural and materialization cannot shrink it, so the fix is a required "
+    "executable claim reaching the uncovered frames, authored on a unit that judges "
+    "them. A layer judge frame no required claim covers is a contract_gap the composed "
+    "evaluation refuses by construction, not a critic look vote."
+)
+
 LOOK_REQUIRES_IMAGE_DOMAIN_RULE = (
     "a unit that declares look_capabilities must cover every evaluation.judge "
     "frame with a required claim that asserts image and binds image-domain "
@@ -71,19 +81,64 @@ def unearned_look_judge_frames(unit: Any) -> tuple[int, ...]:
     return tuple(sorted(judged - certified))
 
 
+def _required_claim_moments(claims: Any) -> set[int]:
+    """Frames covered by required claims -- the one definition of "covered"."""
+    return {
+        int(moment)
+        for claim in (claims or ())
+        if getattr(claim, "required", False)
+        for moment in getattr(claim, "moments", ()) or ()
+    }
+
+
 def uncovered_unit_judge_frames(unit: Any) -> tuple[int, ...]:
     """Judge frames that no required claim covers (HIR-0045)."""
     evaluation = getattr(unit, "evaluation", None)
     judges = tuple(getattr(evaluation, "judges", ()) or ())
-    claims = tuple(getattr(evaluation, "claims", ()) or ())
     judged = {int(point.frame) for point in judges}
-    claimed = {
-        int(moment)
-        for claim in claims
-        if getattr(claim, "required", False)
-        for moment in getattr(claim, "moments", ()) or ()
-    }
+    claimed = _required_claim_moments(getattr(evaluation, "claims", ()) or ())
     return tuple(sorted(judged - claimed))
+
+
+def _unit_claims(units: Any) -> tuple[Any, ...]:
+    return tuple(
+        claim
+        for unit in units
+        for claim in (getattr(getattr(unit, "evaluation", None), "claims", ()) or ())
+    )
+
+
+def composed_evaluation_is_lookless(units: Any) -> bool:
+    """True when a layer's composed canonical is decided by unit executable claims.
+
+    This is the condition ``_composition_judge_unit`` uses to decide whether it may
+    compile a look-less composed judge at all, and the condition under which the layer
+    judge list must be covered by required claims.  One definition, so the gate cannot
+    demand coverage of a layer a critic will actually decide (HIR-0238).
+    """
+    units = tuple(units or ())
+    if not units:
+        return False
+    if any(tuple(getattr(unit, "look_capabilities", ()) or ()) for unit in units):
+        return False
+    required = [claim for claim in _unit_claims(units) if getattr(claim, "required", False)]
+    if not required:
+        return False
+    return all(getattr(claim, "authority", None) == "executable_required" for claim in required)
+
+
+def uncovered_layer_judge_frames(judge_frames: Any, units: Any) -> tuple[int, ...]:
+    """Layer judge frames no unit's required claim covers (HIR-0238).
+
+    HIR-0045 quantifies over one unit's judge list.  The composed canonical judges the
+    LAYER's list against the union of the units' claims, so a layer frame outside every
+    unit's judge list is unsatisfiable by construction and no unit-scoped check sees it.
+    """
+    units = tuple(units or ())
+    if not composed_evaluation_is_lookless(units):
+        return ()
+    covered = _required_claim_moments(_unit_claims(units))
+    return tuple(sorted({int(frame) for frame in judge_frames} - covered))
 
 
 def layer_judge_frames(global_row: dict[str, Any]) -> tuple[int, ...]:
@@ -117,5 +172,6 @@ def compile_frame_authority(global_row: dict[str, Any]) -> dict[str, Any]:
             "claim.moments."
         ),
         "required_claim_coverage": UNIT_JUDGE_CLAIM_COVERAGE_RULE,
+        "layer_judge_coverage": LAYER_JUDGE_CLAIM_COVERAGE_RULE,
         "look_image_domain": LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
     }

@@ -89,6 +89,7 @@ from vfx_harness.domain.work_units import (
     DEFERRED_CONTRACT_CONTEXT_RULE,
     GEOMETRY_VIS_CYCLE_RULE,
     GEOMETRY_VIS_DEPENDENCY_RULE,
+    LAYER_JUDGE_CLAIM_COVERAGE_RULE,
     PROJECTED_ORIGIN_REPAIR_RULE,
     VIS_REPAIR_OWNER_RULE,
     WorkUnit,
@@ -96,6 +97,7 @@ from vfx_harness.domain.work_units import (
     geometry_vis_dependency_gaps,
     point_projection_interface_gaps,
     read_document,
+    uncovered_layer_judge_frames,
     vis_roles_unrepairable_by,
 )
 from vfx_harness.domain.work_units.subject_framing import (
@@ -222,6 +224,22 @@ def _check_evidence_coherence(folder: Path) -> tuple[list[Finding], dict]:
             # Typed layer validation owns malformed units. Avoid duplicating its
             # partial-shape findings here.
             typed_stages = ()
+        # The composed canonical judges this layer's judge list against the union of its
+        # units' claims. A layer frame no unit judges is unsatisfiable by construction,
+        # and the unit-scoped HIR-0045 check cannot see it (HIR-0238).
+        uncovered_layer = uncovered_layer_judge_frames(judges, typed_stages)
+        if uncovered_layer:
+            out.append(
+                Finding.in_layer(
+                    "layer-judge-coverage",
+                    True,
+                    lid,
+                    "judge f" + ", f".join(str(frame) for frame in uncovered_layer),
+                    "composed canonical is decided mechanically here, and no unit "
+                    "required claim covers these layer judge frames",
+                    LAYER_JUDGE_CLAIM_COVERAGE_RULE,
+                )
+            )
         for gap in deferred_subject_composition_payment_gaps(
             scene_rows, typed_stages, lid
         ):

@@ -28,6 +28,7 @@ from vfx_harness.domain.work_units import (
     DEFERRED_CONTRACT_CONTEXT_RULE,
     GEOMETRY_VIS_CYCLE_RULE,
     GEOMETRY_VIS_DEPENDENCY_RULE,
+    LAYER_JUDGE_CLAIM_COVERAGE_RULE,
     LOOK_CAPABILITIES,
     LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
     PROJECTED_ORIGIN_REPAIR_RULE,
@@ -39,6 +40,7 @@ from vfx_harness.domain.work_units import (
     geometry_vis_dependency_gaps,
     plan_selector_declared,
     point_projection_interface_gaps,
+    uncovered_layer_judge_frames,
     uncovered_unit_judge_frames,
     unearned_look_judge_frames,
     vis_roles_unrepairable_by,
@@ -565,6 +567,19 @@ def validate_materialization(
         if isinstance(row, dict) and row.get("id") and row.get("frame") is not None
     }
     if layer is not None:
+        # HIR-0045 quantifies over one unit's judge list. The composed canonical judges
+        # the LAYER's list against the union of the units' claims, so a layer frame no
+        # unit judges is unsatisfiable by construction and no unit-scoped check sees it
+        # (HIR-0238).
+        uncovered_layer = uncovered_layer_judge_frames(
+            (frame for frame, _ref in layer.judges), layer.stages
+        )
+        if uncovered_layer:
+            note(
+                json_ptr("layer", "stages"),
+                f"layer {layer_id} judges frame(s) {list(uncovered_layer)} that no unit "
+                f"required claim covers. {LAYER_JUDGE_CLAIM_COVERAGE_RULE}",
+            )
 
         for unit_index, unit in enumerate(layer.stages):
             missing_frames = uncovered_unit_judge_frames(unit)

@@ -32,6 +32,15 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A layer judge frame no unit's required claim covers is refused before it is published
+  ([HIR-0238](docs/improvements/HIR-0238-the-layer-judge-list-is-covered-by-the-union-not-by-each-unit.md)).
+  HIR-0045 quantified over one unit's judge list, so a layer judging six frames whose
+  units' required claims reached three was internally consistent at every unit and
+  unsatisfiable as a layer — the composed canonical judges the layer's list against the
+  union of its units' claims, and it emitted a contract gap the plan gate had passed.
+  The materialization validator and the plan gate now check that union, using the same
+  predicate the composed judge itself uses to decide it is judged mechanically at all.
+
 - A dropped image debt is recorded once per contract, not once per frame
   ([HIR-0237](docs/improvements/HIR-0237-a-dropped-debt-is-recorded-once-per-contract.md)).
   A multi-frame image debt has one runtime row per frame, so a contract failing at two

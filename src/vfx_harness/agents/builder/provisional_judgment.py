@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import partial
 from types import SimpleNamespace
 
-from vfx_harness.domain.work_units import MutationScope
+from vfx_harness.domain.work_units import MutationScope, composed_evaluation_is_lookless
 from vfx_harness.orchestration import judgment_debt_state
 
 
@@ -74,14 +74,13 @@ def _composition_judge_unit(layer, provisional_decisions=()):
     if not stages:
         return None
     provisional_decisions = tuple(provisional_decisions or ())
-    if any(tuple(getattr(unit, "look_capabilities", ()) or ()) for unit in stages) and not provisional_decisions:
+    # No look capabilities, some required claim, all of them executable_required: the
+    # same predicate the materialization validator and the plan gate demand layer judge
+    # coverage under, so a layer cannot be refused for a coverage a critic would supply
+    # (HIR-0238).
+    if not provisional_decisions and not composed_evaluation_is_lookless(stages):
         return None
     unit_claims = tuple(claim for unit in stages for claim in (unit.evaluation.claims or ()))
-    required = [claim for claim in unit_claims if claim.required]
-    if not required and not provisional_decisions:
-        return None
-    if any(claim.authority != "executable_required" for claim in required) and not provisional_decisions:
-        return None
 
     roles = tuple(dict.fromkeys(role for unit in stages for role in unit.mutates.roles))
     controls = tuple(dict.fromkeys(control for unit in stages for control in unit.mutates.controls))
