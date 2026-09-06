@@ -43,6 +43,15 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- The bmesh lookup-table guard knows what its owner is
+  ([HIR-0246](docs/improvements/HIR-0246-a-name-is-not-a-type.md)). It keyed on the
+  attribute name, so `e.verts[0]` for a loop variable over edges was treated as BMesh
+  sequence access and blocked — and `ensure_lookup_table()` does not exist on `BMEdge.verts`,
+  so the prescribed remedy was unsatisfiable. Four blocks across two units of one shot, zero
+  true positives, with the builder re-submitting lines added above because nothing it could
+  add would pass. It now flags only subscripts whose owner is bound to a BMesh in the same
+  payload.
+
 - The amendment-scope guard can see the rows it polices
   ([HIR-0245](docs/improvements/HIR-0245-the-guard-was-blind-to-the-rows-it-polices.md)).
   Its before-image was the rematerialization design base — the reverted overlay, which

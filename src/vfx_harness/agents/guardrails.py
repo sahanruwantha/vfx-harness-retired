@@ -451,6 +451,15 @@ def script_sanity() -> HookMatcher:
                 ),
             }}
 
+        # Which names in THIS payload actually hold a BMesh. `ensure_lookup_table` exists
+        # on BMesh.verts/edges/faces and nowhere else -- not on BMEdge.verts, not on
+        # BMFace.verts. Keying the guard on the attribute name alone flagged `e.verts[0]`
+        # for a loop variable over edges and prescribed a method that does not exist, so
+        # the builder could not comply: room_1046_opening hit it four times across two
+        # units, re-submitting with lines added above (40 -> 42 -> 44 -> 46) because
+        # nothing it could add would satisfy the check, with zero true positives on that
+        # shot. A name is not a type (HIR-0246).
+        handles = _bmesh_handle_names(tree)
         indexed = []
         ensured: dict[tuple[str, str], list[int]] = {}
         for node in _ast.walk(tree):
@@ -466,7 +475,7 @@ def script_sanity() -> HookMatcher:
                 continue
             owner = node.value.value
             seq = node.value.attr
-            if isinstance(owner, _ast.Name) and seq in {"faces", "verts", "edges"}:
+            if isinstance(owner, _ast.Name) and owner.id in handles and seq in {"faces", "verts", "edges"}:
                 indexed.append((owner.id, seq, node.lineno))
         missing_lookup = []
         for owner, seq, line in indexed:
@@ -485,6 +494,33 @@ def script_sanity() -> HookMatcher:
         return {}
     return HookMatcher(matcher=None, hooks=[_check])
 
+
+
+_BMESH_CONSTRUCTORS = frozenset({"new", "from_edit_mesh", "from_object"})
+
+
+def _bmesh_handle_names(tree: Any) -> frozenset[str]:
+    """Names bound to a BMesh in this payload.
+
+    Only these own ``verts``/``edges``/``faces`` sequences with a lookup table. A loop
+    variable over them owns fixed-size element sequences that have none, so inferring the
+    type from the attribute name blocks correct code and prescribes an API that does not
+    exist (HIR-0246).
+    """
+    names: set[str] = set()
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Assign) or not isinstance(node.value, _ast.Call):
+            continue
+        func = node.value.func
+        if not isinstance(func, _ast.Attribute) or func.attr not in _BMESH_CONSTRUCTORS:
+            continue
+        root = func.value
+        if not (isinstance(root, _ast.Name) and root.id == "bmesh"):
+            continue
+        for target in node.targets:
+            if isinstance(target, _ast.Name):
+                names.add(target.id)
+    return frozenset(names)
 
 def metrics_feedback(shot_folder: str | Path, ref_rel: str | None, *,
                      look_actions: bool = True) -> HookMatcher:
