@@ -32,6 +32,16 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- The construction import helper returns names, not Objects
+  ([HIR-0235](docs/improvements/HIR-0235-the-import-helper-returned-objects-where-it-promised-names.md)).
+  `bvfx_import_construction` compared Objects against a set of names, so its filter was
+  always True and it then indexed the collection with an Object — it raised on every
+  import it performed. As the sole sanctioned import for a generate unit (ADR-0009), the
+  generate-construction route has never worked; nothing caught it because no shot had
+  taken that route until now, so every review of it reviewed code that had never executed.
+  Fixed at all three sites. Ruff's `SIM118` wanted to autofix `.keys()` away and
+  reintroduce the defect, since `bpy.data.objects` is not a dict.
+
 - Shading is a light modifier, not a light source
   ([HIR-0234](docs/improvements/HIR-0234-shading-is-a-light-modifier-not-a-light-source.md)).
   `image-signal-bootstrap` counted a `shading` write cluster as optical signal, so a

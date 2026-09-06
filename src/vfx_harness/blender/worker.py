@@ -654,7 +654,14 @@ def _bvfx_import_construction() -> "list[str]":
         with immutable_glb_path(raw, expected_sha256=expected) as glb:
             before = set(bpy.data.objects.keys())
             bpy.ops.import_scene.gltf(filepath=glb)
-        new = [n for n in bpy.data.objects if n not in before]
+        # Iterating a bpy collection yields Objects, not names. This read
+        # `for n in bpy.data.objects`, so an Object was compared against a set
+        # of names, `n not in before` was always True, `new` became every
+        # object in the scene, and indexing the collection with an Object
+        # raised. The helper failed whenever it imported anything, which is
+        # every time it ran (HIR-0235).
+        names = bpy.data.objects.keys()
+        new = [n for n in names if n not in before]
         for n in new:
             bpy.data.objects[n].rotation_mode = "XYZ"
         return new
@@ -707,7 +714,14 @@ def _bvfx_import_construction() -> "list[str]":
         )
     before = set(bpy.data.objects.keys())
     bpy.ops.import_scene.gltf(filepath=glb)
-    new = [n for n in bpy.data.objects if n not in before]
+    # Iterating a bpy collection yields Objects, not names. This read
+    # `for n in bpy.data.objects`, so an Object was compared against a set
+    # of names, `n not in before` was always True, `new` became every
+    # object in the scene, and indexing the collection with an Object
+    # raised. The helper failed whenever it imported anything, which is
+    # every time it ran (HIR-0235).
+    names = bpy.data.objects.keys()
+    new = [n for n in names if n not in before]
     for n in new:
         bpy.data.objects[n].rotation_mode = "XYZ"
     return new
@@ -731,7 +745,14 @@ def _bvfx_import_asset(name) -> "list[str]":
         raise FileNotFoundError(f"no asset {name!r}; available: {avail}")
     before = set(bpy.data.objects.keys())
     bpy.ops.import_scene.gltf(filepath=glb)
-    new = [n for n in bpy.data.objects if n not in before]
+    # Iterating a bpy collection yields Objects, not names. This read
+    # `for n in bpy.data.objects`, so an Object was compared against a set
+    # of names, `n not in before` was always True, `new` became every
+    # object in the scene, and indexing the collection with an Object
+    # raised. The helper failed whenever it imported anything, which is
+    # every time it ran (HIR-0235).
+    names = bpy.data.objects.keys()
+    new = [n for n in names if n not in before]
     # glTF import leaves objects in QUATERNION rotation mode, and in that mode Blender
     # ignores `rotation_euler` ENTIRELY — assigning to it is a silent no-op, not an error.
     # A lookdev turntable written against it produced four "different" angles that were
