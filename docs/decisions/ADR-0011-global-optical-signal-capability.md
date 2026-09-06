@@ -43,6 +43,40 @@ point where it can still change the DAG, that a layer owing `image` evidence nee
 lighting provider in its closure. It discovers this one layer at a time, at materialization
 cost, and — in hansa's case — twice for one layer.
 
+## One predicate, four boundaries, enforced at the two lowest
+
+The hansa_silk_road driver's table, from that shot's tenth attempt:
+
+```
+global publication   a layer declares evidence_domains ['image']   UNCHECKED
+debt seeding         an eevee observation needs illumination       unbuilt
+group planning       one plate per medium                          HIR-0241
+contract binding     image-signal-bootstrap                        HIR-0110 / HIR-0160
+```
+
+HIR-0124 checks that a layer **declares** every domain a deferred requirement names.
+**Nothing checks that it can produce one.** So `image` is admitted at publication and
+refused three boundaries later, each time after the plan has been paid for.
+
+**The measured cost of that ordering on one shot: `$1.19` to publish the plan, `$79.15`
+and ten attempts to reach the failure.** The tenth attempt is the sharpest form of it --
+both units passed, the silhouette defect was fixed, every critic panel passed on every
+frame it could judge, and the layer still failed because a judgment debt declared `eevee`
+on a layer with `world=None` and zero lights. The plate was black. Nothing was wrong with
+the work.
+
+Two of that layer's requirements make the point that this cannot be repaired downstream:
+
+```
+R8   "A dark podium/base anchoring the hero tower to the city plane"     image -> eevee debt
+R50  "The hero tower remains identifiable and visually dominant …"       image -> eevee debt
+```
+
+Both are appearance propositions about a **lit** scene. A rule at debt seeding refuses them
+correctly and leaves the layer declaring `image` with no legal way to close it -- a better
+failure at a cheaper boundary, but still not a satisfiable plan. Only the publication check
+refuses while the DAG can still be changed.
+
 ## Decision
 
 Add optical signal to the globally declared capability vocabulary, with exactly the camera
