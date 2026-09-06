@@ -284,12 +284,7 @@ def exported_role_tokens(interfaces: Iterable[PublishInterface]) -> frozenset[st
 def exported_role_tokens_from_unit(unit: WorkUnit) -> frozenset[str]:
     """Role tokens a successor may read from this producer, never mutate."""
     if unit.publishes:
-        return frozenset(
-            value
-            for spec in unit.publishes
-            for key, value in spec.exports
-            if key == "role" or key.endswith("_role")
-        )
+        return exported_role_tokens(unit.publishes)
     if unit.mutates.roles:
         return frozenset({unit.mutates.roles[0]})
     if unit.mutates.dresses:

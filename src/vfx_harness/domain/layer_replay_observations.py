@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -460,23 +459,6 @@ class LayerReplayObservation:
         }
 
 
-def canonical_layer_replay_observation_bytes(
-    observation: LayerReplayObservation,
-) -> bytes:
-    if not isinstance(observation, LayerReplayObservation):
-        raise ValueError("observation must be a typed layer replay observation")
-    return (
-        json.dumps(
-            observation.as_dict(),
-            allow_nan=False,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
 __all__ = [
     "LAYER_REPLAY_CLAIM_AUTHORITIES",
     "LAYER_REPLAY_DETERMINISTIC_STATUSES",
@@ -486,5 +468,4 @@ __all__ = [
     "LayerReplayEvaluationGroupPlan",
     "LayerReplayObservation",
     "LayerReplayPointObservation",
-    "canonical_layer_replay_observation_bytes",
 ]

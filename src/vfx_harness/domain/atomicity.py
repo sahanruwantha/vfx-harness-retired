@@ -163,15 +163,6 @@ def role_namespace(selector: str) -> str:
     return str(selector)
 
 
-def host_class_for(unit: WorkUnit) -> str:
-    provides = {str(item) for item in unit.provides}
-    if "camera" in provides:
-        return "camera"
-    if "geometry" in provides:
-        return "geometry"
-    return "control_host"
-
-
 def host_class_for_family(family: str) -> str:
     if family == "camera":
         return "camera"
