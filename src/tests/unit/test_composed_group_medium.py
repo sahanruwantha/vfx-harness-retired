@@ -16,8 +16,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
+# Imported as a MODULE for the same reason as `judgment_debt_models` below: every symbol
+# and keyword this change introduces is reached through attribute access, so on the
+# pre-fix tree the behavioural test collects and fails on the ValueError it used to
+# raise, rather than on an ImportError (see AGENTS.md on discriminators).
+from vfx_harness.agents.builder import provisional_judgment
 from vfx_harness.agents.builder.provisional_judgment import _composition_judge_unit
 
 # Imported as a MODULE, not by name: every symbol this change introduces is reached
@@ -74,19 +77,61 @@ def test_a_look_unit_is_judged_in_beauty_and_a_look_less_one_in_solid() -> None:
     assert judgment_debt_models.unit_observation_medium(_unit("mass", look=())) == "workbench_solid"
 
 
-def test_a_solid_debt_cannot_re_measure_an_eevee_image_contract() -> None:
-    """The exact hansa shape: the group's plate cannot show what the contract measures."""
+def test_a_solid_debt_does_not_re_measure_an_eevee_image_contract() -> None:
+    """The exact hansa shape: the debt's group cannot see what the contract measures.
+
+    Previously this raised. The refusal was correct and insufficient -- it stopped the
+    false failure and left the layer unable to compose at all. The claim now belongs to
+    the group whose plate can show it (HIR-0241).
+    """
     layer = _layer([_unit("hero_facade", look=("lighting",))])
 
-    with pytest.raises(ValueError) as excinfo:
-        _composition_judge_unit(layer, (_decision("workbench_solid"),))
+    solid = _composition_judge_unit(layer, (_decision("workbench_solid"),))
 
-    message = str(excinfo.value)
-    assert "cannot mix observation media" in message
-    # Both sides named, so the refusal says what to change.
-    assert "debt jd-95b82d78 declares workbench_solid" in message
-    assert "unit hero_facade pays hero_facade-claim in eevee" in message
-    assert "re-measured in the medium it was paid in" in message
+    assert solid is not None
+    assert solid.judgment_observation_medium == "workbench_solid"
+    claim_ids = {claim.id for claim in solid.evaluation.claims}
+    assert "hero_facade-claim" not in claim_ids
+    # The debt's own qualitative claim is still there: the group has work to do.
+    assert any(str(cid).startswith("judgment-debt:") for cid in claim_ids)
+
+
+def test_the_layer_owes_a_second_group_for_the_medium_the_debt_does_not_cover() -> None:
+    layer = _layer([_unit("hero_facade", look=("lighting",))])
+
+    plans = provisional_judgment.composed_group_plans(layer, (_decision("workbench_solid"),))
+
+    assert [medium for _decisions, medium in plans] == ["workbench_solid", "eevee"]
+    assert plans[1][0] == ()
+
+
+def test_that_second_group_measures_the_contract_and_takes_no_look_vote() -> None:
+    layer = _layer([_unit("hero_facade", look=("lighting",))])
+    beauty = provisional_judgment._composition_judge_unit(layer, (), medium="eevee")
+
+    assert beauty is not None
+    assert beauty.judgment_observation_medium == "eevee"
+    assert "hero_facade-claim" in {claim.id for claim in beauty.evaluation.claims}
+    # No look capability: it measures executable contracts, it does not judge appearance.
+    assert beauty.look_capabilities == ()
+    assert beauty.provisional_decisions == ()
+
+
+def test_every_image_contract_lands_in_exactly_one_group() -> None:
+    """The property the split exists for, asserted over the groups rather than one of them."""
+    layer = _layer(
+        [_unit("hero_facade", look=("lighting",)), _unit("hero_mass", look=())]
+    )
+    plans = provisional_judgment.composed_group_plans(layer, (_decision("workbench_solid"),))
+
+    placements: dict[str, int] = {}
+    for decisions, medium in plans:
+        composed = provisional_judgment._composition_judge_unit(layer, decisions, medium=medium)
+        for claim in composed.evaluation.claims:
+            if str(claim.id).endswith("-claim"):
+                placements[str(claim.id)] = placements.get(str(claim.id), 0) + 1
+
+    assert placements == {"hero_facade-claim": 1, "hero_mass-claim": 1}
 
 
 def test_a_matching_medium_still_composes() -> None:

@@ -173,6 +173,7 @@ from vfx_harness.agents.builder.verdicts import _required_claims_at as _required
 from vfx_harness.agents.builder.verdicts import _stash_motion_strip as _stash_motion_strip
 from vfx_harness.agents.builder.verdicts import _uncovered_judge_frame_verdict as _uncovered_judge_frame_verdict
 from vfx_harness.agents.builder.verdicts import _worklist_evidence as _worklist_evidence
+from vfx_harness.agents.builder.verdicts import composed_group_plans as composed_group_plans
 from vfx_harness.agents.builder.verify import _verify_script as _verify_script
 from vfx_harness.application.preflight import model_phase_failure as model_phase_failure
 from vfx_harness.infrastructure.config import Settings as Settings

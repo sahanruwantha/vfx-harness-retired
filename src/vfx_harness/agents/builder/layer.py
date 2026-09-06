@@ -75,6 +75,7 @@ from vfx_harness.agents.builder.prior import (
 from vfx_harness.agents.builder.provisional_judgment import (
     _composition_judge_unit,
     _load_provisional_decisions,
+    composed_group_plans,
 )
 from vfx_harness.agents.builder.revalidate import _blender_version
 from vfx_harness.agents.builder.unit_completion import (
@@ -225,6 +226,7 @@ __all__ = [
     "commit_layer_evaluation_receipt",
     "commit_layer_replay_receipt",
     "complete_layer_finalization",
+    "composed_group_plans",
     "costlog",
     "critic_model",
     "current_judgment_debt_states_for_authority",

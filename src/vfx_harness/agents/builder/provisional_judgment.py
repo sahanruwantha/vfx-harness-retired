@@ -70,17 +70,70 @@ def _load_provisional_decisions(
 
 
 
+def _claim_is_image_bound(claim) -> bool:
+    """A required claim bound to an image contract, so it owes a plate to be measured on."""
+    if not getattr(claim, "required", False):
+        return False
+    return any(
+        str(getattr(row, "kind", "")) == "image_contract"
+        for row in (getattr(claim, "evidence", ()) or ())
+    )
+
+
 def _image_bound_claim_ids(unit) -> tuple[str, ...]:
     """Required claims of ``unit`` bound to an image contract, which owe a plate."""
     return tuple(
         str(claim.id)
         for claim in (getattr(getattr(unit, "evaluation", None), "claims", ()) or ())
-        if getattr(claim, "required", False)
-        and any(
-            str(getattr(row, "kind", "")) == "image_contract"
-            for row in (getattr(claim, "evidence", ()) or ())
+        if _claim_is_image_bound(claim)
+    )
+
+
+def _layer_look_medium(stages) -> str:
+    """The medium a layer's own plate is rendered in when no debt names one."""
+    union = tuple(
+        dict.fromkeys(
+            capability for unit in stages for capability in (getattr(unit, "look_capabilities", ()) or ())
         )
     )
+    return unit_observation_medium(SimpleNamespace(look_capabilities=union))
+
+
+def _decision_medium(decision) -> str | None:
+    """A typed debt names its medium; an untyped requirement decision does not."""
+    if not decision.get("debt_id"):
+        return None
+    return str(decision["observation_medium"])
+
+
+def composed_group_plans(layer, provisional_decisions=()):
+    """The composed groups a layer owes: one per debt, plus one per uncovered medium.
+
+    A group renders one plate, and a contract is re-measured in the medium it was paid
+    in or not at all (HIR-0241).  So a layer whose debt is judged in Workbench solid and
+    whose units paid image contracts in EEVEE owes two groups, not one -- and the second
+    is not a second opinion, it is the only place those contracts can be evaluated.
+
+    Returns ``((decisions, medium), ...)``; ``medium`` is ``None`` where the group takes
+    the layer's own look-derived plate, which is the behaviour that predates this.
+    """
+    decisions = tuple(provisional_decisions or ())
+    stages = tuple(getattr(layer, "stages", ()) or ())
+    if not decisions:
+        return (((), None),)
+    plans: list[tuple[tuple, str | None]] = [((decision,), _decision_medium(decision)) for decision in decisions]
+    look_medium = _layer_look_medium(stages)
+    covered = {medium or look_medium for _decisions, medium in plans}
+    owed = {unit_observation_medium(unit) for unit in stages if _image_bound_claim_ids(unit)}
+    for medium in sorted(owed - covered):
+        plans.append(((), medium))
+    uncovered = owed - {medium or look_medium for _decisions, medium in plans}
+    if uncovered:
+        raise ValueError(
+            "composed groups cover no plate for image contracts paid in "
+            + ", ".join(sorted(uncovered))
+        )
+    return tuple(plans)
 
 
 def _mixed_media_detail(stages, provisional_decisions) -> str:
@@ -100,8 +153,14 @@ def _mixed_media_detail(stages, provisional_decisions) -> str:
             )
     return "; ".join(parts)
 
-def _composition_judge_unit(layer, provisional_decisions=()):
-    """Compile one local composed judge unit, optionally paying one typed debt."""
+def _composition_judge_unit(layer, provisional_decisions=(), *, medium=None):
+    """Compile one local composed judge unit, optionally paying one typed debt.
+
+    ``medium`` names the plate this group renders when no debt does -- the second group a
+    layer owes when its debt is judged in one medium and its units paid image contracts in
+    another (HIR-0241).  Such a group takes no look vote: it exists to measure executable
+    contracts on the plate they were paid on.
+    """
     stages = tuple(getattr(layer, "stages", ()) or ())
     if not stages:
         return None
@@ -109,10 +168,10 @@ def _composition_judge_unit(layer, provisional_decisions=()):
     # No look capabilities, some required claim, all of them executable_required: the
     # same predicate the materialization validator and the plan gate demand layer judge
     # coverage under, so a layer cannot be refused for a coverage a critic would supply
-    # (HIR-0238).
-    if not provisional_decisions and not composed_evaluation_is_lookless(stages):
+    # (HIR-0238). A group compiled for an explicit medium is exempt: it carries no
+    # qualitative claim and cannot reach a critic.
+    if not provisional_decisions and medium is None and not composed_evaluation_is_lookless(stages):
         return None
-    unit_claims = tuple(claim for unit in stages for claim in (unit.evaluation.claims or ()))
 
     roles = tuple(dict.fromkeys(role for unit in stages for role in unit.mutates.roles))
     controls = tuple(dict.fromkeys(control for unit in stages for control in unit.mutates.controls))
@@ -151,35 +210,38 @@ def _composition_judge_unit(layer, provisional_decisions=()):
                     binding_ids=(binding_id,),
                 )
             )
+    # The plate this group renders. A contract is re-measured in the medium it was paid
+    # in or not at all, so an image-bound claim from a unit judged in another medium
+    # belongs to that medium's group, not to this one (HIR-0241).
+    effective = medium or next(iter(media), None) or _layer_look_medium(stages)
+    unit_claims = tuple(
+        claim
+        for unit in stages
+        for claim in (unit.evaluation.claims or ())
+        if not _claim_is_image_bound(claim) or unit_observation_medium(unit) == effective
+    )
     claims = (*unit_claims, *qualitative)
-    # A unit's bound image contracts were paid on that unit's own plate, so re-measuring
-    # them on this group's plate compares a threshold calibrated in one medium against a
-    # measurement in another. That medium requirement is implicit -- it is whatever
-    # _unit_raster_mode gave the unit -- so it never entered `media` and the mix below
-    # could not see it. hansa_silk_road layer 2 failed a frame_detail debt at 1.826 on a
-    # Workbench solid plate that its unit had paid at 5.266 on EEVEE, because the group's
-    # medium came from an unrelated workbench_solid debt (HIR-0241).
-    for unit in stages:
-        if not _image_bound_claim_ids(unit):
-            continue
-        media.add(unit_observation_medium(unit))
     if len(media) > 1:
         raise ValueError(
             "one composed judgment unit cannot mix observation media "
             f"({', '.join(sorted(media))}); "
             + _mixed_media_detail(stages, provisional_decisions)
-            + ". Schedule each typed debt independently, or give the debt the medium its "
-            "layer's image contracts were paid in -- a contract is re-measured in the "
-            "medium it was paid in or not at all"
+            + ". Schedule each typed debt independently"
         )
     judges = tuple(
         SimpleNamespace(frame=int(frame), ref=ref) for frame, ref in dict.fromkeys((*layer_points, *debt_points))
     )
     return SimpleNamespace(
         id=f"{getattr(layer, 'id', 'layer')}._composition",
-        look_capabilities=tuple(
-            dict.fromkeys(
-                capability for unit in stages for capability in (getattr(unit, "look_capabilities", ()) or ())
+        # A medium-only group measures executable contracts on the plate they were paid
+        # on and takes no look vote, so it declares no look capability (HIR-0241).
+        look_capabilities=(
+            ()
+            if medium is not None and not provisional_decisions
+            else tuple(
+                dict.fromkeys(
+                    capability for unit in stages for capability in (getattr(unit, "look_capabilities", ()) or ())
+                )
             )
         ),
         evaluation=SimpleNamespace(
@@ -192,7 +254,7 @@ def _composition_judge_unit(layer, provisional_decisions=()):
         provisional_debt_ids=tuple(
             str(decision.get("debt_id") or "") for decision in provisional_decisions if decision.get("debt_id")
         ),
-        judgment_observation_medium=next(iter(media), None),
+        judgment_observation_medium=medium or next(iter(media), None),
         worklist_units=stages,
         mutates=MutationScope(
             mode="scoped",

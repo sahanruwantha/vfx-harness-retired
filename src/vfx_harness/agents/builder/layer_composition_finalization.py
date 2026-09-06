@@ -234,8 +234,12 @@ async def finalize_composed_layer(
         selected_authority=selected_authority,
     )
     finalization_guard.check("load current layer provisional judgments")
-    decision_groups = tuple((decision,) for decision in provisional_decisions) if provisional_decisions else ((),)
-    composition_units = tuple(runtime._composition_judge_unit(layer, decisions) for decisions in decision_groups)
+    # One group per debt, plus one per unit medium no debt group covers: a contract is
+    # re-measured in the medium it was paid in or not at all (HIR-0241).
+    group_plans = runtime.composed_group_plans(layer, provisional_decisions)
+    composition_units = tuple(
+        runtime._composition_judge_unit(layer, decisions, medium=medium) for decisions, medium in group_plans
+    )
     result = "passed"
     stored_layer_replays: list[Any] = []
     evaluation_groups: list[dict] = []

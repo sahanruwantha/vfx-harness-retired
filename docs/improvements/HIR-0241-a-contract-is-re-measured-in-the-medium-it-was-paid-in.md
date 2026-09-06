@@ -125,24 +125,66 @@ E   Failed: DID NOT RAISE ValueError
 
 Three of the six pass on both trees by design -- they are the over-refusal guards.
 
+## The repair: one group per medium
+
+The refusal above was correct and insufficient. It stopped the false failure and left the
+layer unable to compose at all, and hansa's authority was not wrong: R15's statement is
+*"hero windows should come from a repeatable façade module or shader mask rather than
+individually modeled rooms"*, a construction-method proposition whose `carrier_families`
+is `['mesh']`. **`workbench_solid` is exactly the medium that discriminates it** -- windows
+visible in solid mean modeled rooms, windows absent mean a shader mask. Moving that debt to
+`eevee` would make it unfalsifiable while looking like a repair, since in beauty both render
+as windows. The layer genuinely carries two media and owes two plates.
+
+`composed_group_plans(layer, decisions)` returns one group per debt plus one per unit medium
+no debt group covers, and refuses when an image contract is covered by no group at all. A
+group compiled for an explicit medium:
+
+- keeps only the image-bound claims whose unit medium matches its plate, so a contract is
+  re-measured where it was paid;
+- carries no qualitative claim and declares `look_capabilities: ()`, so it takes no look
+  vote -- it exists to measure executable contracts, not to judge appearance;
+- still rasters, because `_unit_requires_raster` returns true for a required claim bound to
+  an `image_contract` rather than a `scene_contract`.
+
+Medium-free claims -- scene contracts, which are computed from the scene rather than the
+plate -- stay in every group exactly as before, so the split changes nothing for a layer
+that carries one medium.
+
+The mixed-media raise stays for two typed debts in one group, which `decision_groups` has
+never produced. It is no longer the mechanism: filtering is.
+
+## Validation
+
+`src/tests/unit/test_composed_group_medium.py`, nine tests. The one that carries the
+property is `test_every_image_contract_lands_in_exactly_one_group`: it walks every plan,
+compiles each group, and asserts each unit contract appears exactly once across all of them
+-- not that one group has it, and not that another group lacks it. A split that dropped a
+contract or double-counted it fails there.
+
+Three tests remain over-refusal guards, passing on both trees by design.
+
+**One test was changed rather than added, and that is a ratchet decision.**
+`test_a_solid_debt_cannot_re_measure_an_eevee_image_contract` asserted the refusal; it now
+asserts the placement, under the name `..._does_not_re_measure_...`. The refusal it pinned
+was this record's own interim mechanism, superseded here by the repair it named as owed. The
+behaviour it protected -- an EEVEE contract is not measured on a solid plate -- is asserted
+more strongly than before, since the test now also says where the contract went.
+
 ## What this does not fix
 
-**A mixed-media layer is refused, not repaired.** `hansa_silk_road` layer 2 now gets an
-explicit refusal naming both media instead of a false `frame_detail` failure, which is the
-correct state -- a wrong answer became a stop -- but the layer still cannot compose until
-its authority changes: either the `subject_appearance` debt declares `eevee`, or the debt
-and the beauty contracts are scheduled in separate groups.
+**It is not an authoring-time check.** Which media a layer's plates must cover is knowable
+at materialization, before any spend; the split is computed at finalization, after the layer
+has been built. Nothing is measured in the wrong medium either way, so this is a cost
+question rather than a correctness one -- but a layer that will owe two plates could say so
+before it is paid for. Owed separately.
 
-The full repair is one group per medium: unit claims evaluated in the medium they were paid
-in, debt claims in theirs, and composition refusing when a required claim is covered by no
-group. That restructures `decision_groups`, which currently produces one group per debt plus
-optionally one look-less group, and a group for the units' own medium cannot be expressed in
-that shape today. It is owed and is not attempted here.
-
-**It is also not an authoring-time check.** A debt whose declared medium cannot certify the
-image contracts its layer's units bind is knowable at materialization, before any spend. The
-refusal above fires at finalization, after the layer has been built. Moving it earlier is
-the same predicate at a cheaper boundary and is owed separately.
+**It does not decide `JUDGMENT_DEBT_PROPERTIES`.** R15 is labelled `subject_appearance`
+because that vocabulary has three members -- `camera_framing`, `reference_identity`,
+`subject_appearance` -- and none expresses a construction-method proposition. The label is a
+forced choice rather than a mistake, and refusing the `subject_appearance` +
+`workbench_solid` pair would leave no legal way to author R15 at all. Extending the
+vocabulary is a schema decision, as that module's own comment says.
 
 Found by the hansa_silk_road driver, who also retracted their own earlier reading of the
 same number. HIR-0237's claim of a genuine content gap at 1.826 is retracted in that record.

@@ -23,6 +23,9 @@ from vfx_harness.agents.builder.provisional_judgment import (
 from vfx_harness.agents.builder.provisional_judgment import (
     _load_provisional_decisions as _load_provisional_decisions_impl,
 )
+from vfx_harness.agents.builder.provisional_judgment import (
+    composed_group_plans as composed_group_plans,
+)
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.image_debts import UNPAID_IMAGE_DEBT_RULE, image_contract_debt_cards, normalize_evidence_id
@@ -42,7 +45,7 @@ from vfx_harness.orchestration.judgment_debt_state import current_judgment_debt_
 from vfx_harness.orchestration.ledger import Milestone
 from vfx_harness.orchestration.unit_state import unit_digest
 
-__all__ = ("_composition_judge_unit", "_load_provisional_decisions")
+__all__ = ("_composition_judge_unit", "_load_provisional_decisions", "composed_group_plans")
 
 
 def _load_provisional_decisions(shot: Shot, layer_id: str) -> tuple[dict, ...]:
