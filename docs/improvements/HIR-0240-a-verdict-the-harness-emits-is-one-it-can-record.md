@@ -142,6 +142,15 @@ because no recorded shape changed.
   `ValueError: executable-only canonical has no typed evidence for f541` at
   `orchestration/revalidation.py:630`. The receipt can now record an uncovered frame; the
   revalidation path still cannot proceed without evidence at one. Untouched here.
+- **The behavioural invariant is not yet tested.** That a gap verdict with `pass: True`
+  raises is asserted nowhere: minting a receipt needs a full shot layout, and
+  `make_layer_finalization_receipt` refuses a non-empty canonical without sealed outcome
+  sources and then wants the tree. An earlier test claimed this by asserting on
+  `inspect.getsource` — the guard's identifier and message appearing in the file — which
+  passes if the guard is deleted with its message left in a comment, and fails on a pure
+  rename. That was a description standing in for the artifact, in the test whose name was
+  the invariant, and it was removed rather than left to imply coverage. The AST test that
+  pins emitter against receipt is real and stands; the behavioural one is owed.
 - **Known unproven boundary.** If `provisional_requirement_contract_gap` ever reaches a group
   with no minted qualitative claim, the receipt raises exactly as it did before. That path could
   not be constructed from `_provisional_composition_contract_gap`, which reads

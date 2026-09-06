@@ -15,8 +15,6 @@ import ast
 import inspect
 from pathlib import Path
 
-import pytest
-
 from vfx_harness.agents.builder import verdicts
 from vfx_harness.domain.verdict_deciders import (
     CONTRACT_GAP_DECIDERS,
@@ -68,17 +66,26 @@ def test_every_decider_the_lookless_paths_emit_is_admissible() -> None:
     )
 
 
-@pytest.mark.parametrize("decider", sorted(CONTRACT_GAP_DECIDERS))
-def test_a_contract_gap_is_never_a_pass(decider: str) -> None:
-    """A frame that could not be settled cannot have passed.
+def test_the_gap_deciders_are_disjoint_from_the_executable_one() -> None:
+    """What this file does NOT yet assert, stated so nobody reads more into it.
 
-    This replaces the deterministic-status agreement check for gap verdicts: there is no
-    deterministic status to agree with when the frame was never decided.
+    The behavioural invariant -- a canonical row carrying a gap decider with pass=True
+    raises -- is NOT tested here. Asserting it needs a minted LayerFinalizationReceipt,
+    which needs a full shot layout (layers.json, sealed outcome sources, a real replay
+    receipt and judge point); `make_layer_finalization_receipt` refuses a non-empty
+    canonical without `seal_outcome_sources=True` and then wants the shot tree.
+
+    An earlier version of this test asserted on `inspect.getsource(receipts)` -- that the
+    guard's identifier and message string appear in the file. Those pass if the guard is
+    deleted and its message left in a comment, and fail on a pure rename that preserves
+    behaviour: a description standing in for the artifact, in the test whose name was the
+    invariant. Removed rather than left to imply coverage it did not have (caught by
+    vfx-harness-4d).
+
+    What remains here is the vocabulary shape, which is real and cheap; the AST test above
+    is what actually protects the emitter/receipt pairing.
     """
 
-    from vfx_harness.domain import layer_evaluation_receipts as receipts
-
-    source = inspect.getsource(receipts)
-    assert "CONTRACT_GAP_DECIDERS" in source
-    assert "is a contract gap and cannot pass" in source
-    assert decider in CONTRACT_GAP_DECIDERS
+    assert EXECUTABLE_DECIDER not in CONTRACT_GAP_DECIDERS
+    assert not (CONTRACT_GAP_DECIDERS & JUDGMENT_ONLY_DECIDERS)
+    assert not (MECHANICAL_VERDICT_DECIDERS & JUDGMENT_ONLY_DECIDERS)
