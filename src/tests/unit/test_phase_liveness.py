@@ -130,3 +130,30 @@ def test_every_model_stream_is_iterated_through_the_deadline_helper() -> None:
         "iterate SDK streams through agents.model_stream.with_idle_deadline so the "
         f"event-idle deadline applies (HIR-0200): {offenders}"
     )
+
+
+def test_begin_reads_the_clock_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The flake, made deterministic.
+
+    `begin` captured `started_at` and `last_event_at` from two separate `_now()` calls
+    at millisecond resolution, so the two disagreed whenever a millisecond boundary fell
+    between them. That is one value derived twice: before any event, "when the phase
+    started" and "when it last saw something" are the same instant by definition.
+
+    Observed once in a full-suite run and never in isolation (5/5), which is exactly the
+    signature of a clock race and exactly why asserting the identity alone cannot pin it.
+    Forcing every `_now()` call to differ makes the identity a real discriminator.
+    """
+    ticks = iter(f"2026-09-06T00:00:00.{index:03d}+00:00" for index in range(100))
+    monkeypatch.setattr(phase_heartbeat, "_now", lambda: next(ticks))
+
+    path = tmp_path / phase_heartbeat.NAME
+    phase_heartbeat.begin(path, stage="plan", label=None, deadline_seconds=360)
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["last_event_at"] == record["started_at"]
+
+    # And an actual event still moves it: the fix must not freeze the field.
+    phase_heartbeat.event("AssistantMessage")
+    assert phase_heartbeat.snapshot()["last_event_at"] != record["started_at"]
+    phase_heartbeat.end()

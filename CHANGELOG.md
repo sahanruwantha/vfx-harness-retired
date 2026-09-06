@@ -32,6 +32,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A model phase's heartbeat records one start instant instead of two clock reads
+  ([HIR-0239](docs/improvements/HIR-0239-a-phase-start-is-one-instant-not-two-clock-reads.md)).
+  `phase_heartbeat.begin` captured `started_at` and `last_event_at` from separate
+  millisecond-resolution calls, so a freshly opened phase could report seeing an event
+  after it started, and the assertion pinning them failed once in a full suite and never
+  in isolation. The regression test forces every clock read to differ, so the race is
+  deterministic rather than rare.
+
 - A layer judge frame no unit's required claim covers is refused before it is published
   ([HIR-0238](docs/improvements/HIR-0238-the-layer-judge-list-is-covered-by-the-union-not-by-each-unit.md)).
   HIR-0045 quantified over one unit's judge list, so a layer judging six frames whose

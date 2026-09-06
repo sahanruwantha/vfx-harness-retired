@@ -64,6 +64,10 @@ def begin(path: str | Path | None, *, stage: str, label: str | None, deadline_se
     """A model phase is opening: record its deadline and start the clock."""
 
     _STATE.clear()
+    # One clock read. Before any event, "when the phase started" and "when it last saw
+    # something" are the same instant, and a reader computing remaining budget from
+    # last_event_at must get the start, not a millisecond after it (HIR-0239).
+    started = _now()
     _STATE.update({
         "path": None if path is None else str(path),
         "stage": stage,
@@ -72,8 +76,8 @@ def begin(path: str | Path | None, *, stage: str, label: str | None, deadline_se
         "deadline_seconds": int(deadline_seconds) if deadline_seconds else None,
         "events": 0,
         "last_event_kind": None,
-        "started_at": _now(),
-        "last_event_at": _now(),
+        "started_at": started,
+        "last_event_at": started,
         "written_at": 0.0,
     })
     _write(force=True)
