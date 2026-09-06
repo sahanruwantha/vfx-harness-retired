@@ -32,6 +32,10 @@ from vfx_harness.domain.layer_replay_contracts import (
     canonical_layer_replay_receipt_bytes,
 )
 from vfx_harness.domain.stop_envelope_primitives import require_digest
+from vfx_harness.domain.verdict_deciders import (
+    CONTRACT_GAP_DECIDERS,
+    MECHANICAL_VERDICT_DECIDERS,
+)
 
 LAYER_EVALUATION_RECEIPT_SCHEMA = "vfx-harness.layer-evaluation-receipt/v1"
 LAYER_EVALUATION_RESULTS = frozenset(
@@ -338,11 +342,19 @@ def _canonical_row(
     ):
         raise ValueError(f"{where}.verdict render changed after replay receipt")
     if not qualitative:
-        if decided_by != "unit_executable_evidence":
+        if decided_by not in MECHANICAL_VERDICT_DECIDERS:
             raise ValueError(
-                f"{where}.verdict executable claim result must be mechanically decided"
+                f"{where}.verdict executable claim result must be mechanically decided; "
+                f"{decided_by!r} is not one of {sorted(MECHANICAL_VERDICT_DECIDERS)}"
             )
-        if passed != (point.deterministic_status == "passed"):
+        if decided_by in CONTRACT_GAP_DECIDERS:
+            # The frame was never settled, so there is no deterministic status to agree
+            # with -- only the invariant that an unsettled frame cannot pass.
+            if passed:
+                raise ValueError(
+                    f"{where}.verdict {decided_by} is a contract gap and cannot pass"
+                )
+        elif passed != (point.deterministic_status == "passed"):
             raise ValueError(
                 f"{where}.verdict executable pass is not mechanically derived"
             )
