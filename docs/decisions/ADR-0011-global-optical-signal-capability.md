@@ -96,6 +96,21 @@ provider implies a medium — and collapsing them would let a plan promise the w
 `illumination` names what the closure must reach; which family supplies it stays the
 materializing layer's decision, checked by the JIT gate.
 
+## A partial implementation exists and was withdrawn
+
+An attempt at the JIT half of this — `exact_signal_layers()` compiling the layers whose
+ready units write an `IMAGE_SIGNAL_FAMILIES` cluster, and `compile_provider_activation`
+gaining `require_signal` for `eevee` observations — was written, left unwired, and swept
+into an unrelated commit by a `git add -A`. It is withdrawn, not adopted: the demand was
+live and no caller supplied the witness, so every `eevee` judgment debt failed to compile
+and four tests caught it.
+
+It is recorded here because the shape was right and the level was wrong. Compiling signal
+layers from *ready* units answers the question only for layers that have already
+materialized, which is the same limitation the bootstrap gates have. The witness this ADR
+proposes comes from the sparse DAG, where it can be checked before the plan is paid for.
+The withdrawn patch is not a starting point for that.
+
 ## Open question for the decision-maker
 
 Whether the global refusal should be blocking at publication, or a declared blocker the

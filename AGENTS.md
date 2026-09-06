@@ -1552,6 +1552,16 @@ Judge a fix only on a path that provably executed it. A resumed run that can reu
 sealed before the fix is evidence of nothing: re-run the producing step — or the pipeline from
 the start — before reading any outcome as a verdict on the fix, and say which one you did.
 
+A commit contains what you staged, not what you meant. `git add -A` in a worktree that has
+been used before stages whatever abandoned work is sitting in it, under your message — and a
+half-wired mechanism reads as deliberate to every later reader. One such sweep put a
+`require_signal` demand into a commit about drop-record keys: the demand was live, the
+witness that satisfies it was supplied by no caller, and every `eevee` judgment debt in
+every shot would have failed to compile. Targeted tests passed, ruff passed, and the peers
+were told it was ready; only the full suite found it, 1,424 tests in. Read `git status`
+before staging and stage by path unless every listed path belongs to this change. Then
+verify what you committed by reading `git show --stat`, not by remembering what you edited.
+
 A verification step whose strength depends on repository state is not a verification step.
 `git stash push -- <path>` reverts only *uncommitted* changes, so the moment the work is
 committed its discriminating power drops to zero and it reports success identically either
