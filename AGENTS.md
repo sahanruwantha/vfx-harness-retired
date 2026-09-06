@@ -1551,7 +1551,15 @@ A verification step whose strength depends on repository state is not a verifica
 `git stash push -- <path>` reverts only *uncommitted* changes, so the moment the work is
 committed its discriminating power drops to zero and it reports success identically either
 way: every test "fails without the mechanism" by passing. Revert from the parent commit
-(`git checkout <parent> -- <path>`), which discriminates whatever the tree holds. The general
+(`git checkout <parent> -- <path>`), which discriminates whatever the tree holds. That form
+overwrites the working tree and stages what it wrote, so the restore
+(`git checkout HEAD -- <path>`) returns the parent's bytes and the work is gone — unless
+that path had nothing uncommitted to begin with. So the precondition is per-path and
+checkable, not a matter of sequencing your work: **`git status --porcelain <path>` must be
+empty before you revert that path.** Someone who commits three files and leaves a fourth
+dirty follows "commit first" and still loses the fourth. The two forms trade off exactly —
+the safe one degrades to a no-op, the reliable one eats uncommitted work — which is why the
+precondition is written as something to check rather than something to remember. The general
 shape is the truncated-read problem one layer up — the check and the no-op are
 indistinguishable from their output, so the output is a true answer to a different question.
 Prefer the state-independent form of any check whose result you intend to rely on.
