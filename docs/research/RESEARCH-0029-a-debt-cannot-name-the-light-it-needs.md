@@ -302,3 +302,50 @@ analysis was produced rather than about its subject: three sessions reasoned fro
 feasibility model that had already been falsified on the shot in question, and none
 questioned its premise — including one who had read another's account of that exact error
 an hour earlier. Reading about a failure mode does not confer immunity to it.
+
+## Correction: emission IS self-luminous, and `illumination` now exists
+
+Two things above are stale or wrong. Both were established after this note was pushed and
+both are corrected here rather than edited silently.
+
+**1. "shading only modulates light" is too strong.** Measured on hansa_silk_road attempt 6:
+
+    build/units/**/hero_facade.py     light=0  world=0  emission=2
+    frame_detail reads 1.826 against >= 2
+    frame_detail reads 1.603 against >= 2
+
+An emission shader produced measurable image signal with `world=None` and zero light
+objects anywhere in the prefix. 1.826 is not a black frame. So an **emissive** shader is a
+signal source; a **non-emissive** shader in an unlit scene is not. The `shading` write
+family covers both, which is exactly why the family alone cannot settle the question —
+the distinction this note needed all along is emissive-vs-not, not shading-vs-light.
+
+**Where the contrary figure came from, because it is instructive.** A ~0.083 `region_mean`
+was read as evidence that emission renders black. It is a **pre-unit adversary** statistic
+quoted in `propose_checks` rejections — the scene *before* the facade unit ran, black
+because nothing had been shaded yet. The candidate was never black. An adversary reading
+was mistaken for a candidate reading, and a rule was built on it.
+
+That has its own consequence worth keeping: a black pre-unit adversary makes
+**darkness-direction bounds non-discriminating** — a `<= 8` bound passes trivially before
+the unit runs. That is a statement about the adversary, not about what shading can emit,
+and conflating the two produced both the wrong rule and its wrong retraction.
+
+Error and correction both from vfx-harness-7b, who supplied the measurement that disproved
+their own earlier claim after it was asked for rather than accepted.
+
+**2. `illumination` is now a declarable unit capability.**
+
+    domain/work_units/capabilities.py
+      UNIT_PROVIDES             = {"camera", "geometry", "illumination"}
+      GLOBAL_SCENE_CAPABILITIES = {"camera"}
+
+The section above says a unit may declare only `camera` or `geometry`. That is no longer
+true: a unit can now declare that it produces illumination, which is what makes an
+emissive unit able to say so instead of a gate guessing from its write family.
+
+**The layer half of the gap is still open.** `GLOBAL_SCENE_CAPABILITIES` remains
+`{"camera"}`, and `orchestration/plan_authoring.py` refuses a sparse layer's `provides`
+unless drawn from it. So the closure test this note proposes as candidate mechanism 1 is
+now decidable at *unit* granularity and still not at *layer* granularity, which is where a
+global plan would have to declare it. Half the vocabulary widening landed.
