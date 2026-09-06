@@ -21,6 +21,7 @@ from vfx_harness.agents.builder import verdicts
 from vfx_harness.domain.verdict_deciders import (
     CONTRACT_GAP_DECIDERS,
     EXECUTABLE_DECIDER,
+    JUDGMENT_ONLY_DECIDERS,
     MECHANICAL_VERDICT_DECIDERS,
 )
 
@@ -59,10 +60,8 @@ def test_every_decider_the_lookless_paths_emit_is_admissible() -> None:
                 ):
                     emitted.add(value.value)
 
-    # Values reached only on a qualitative group, where the mechanical guard does not
-    # apply. Listed explicitly so adding one is a decision rather than an omission.
-    judgment_only = {"provisional_requirement_contract_gap", "no_optical_signal"}
-    unclassified = emitted - MECHANICAL_VERDICT_DECIDERS - judgment_only
+    # JUDGMENT_ONLY_DECIDERS carries the reason and the unproven boundary.
+    unclassified = emitted - MECHANICAL_VERDICT_DECIDERS - JUDGMENT_ONLY_DECIDERS
     assert not unclassified, (
         "verdicts.py emits decided_by values the receipt cannot record and nobody has "
         f"classified: {sorted(unclassified)}"
