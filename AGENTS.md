@@ -1605,6 +1605,15 @@ wrong module returning `False`, which meant *wrong file* and was nearly reported
 world, which was true only of that pin. **A record is not scope-free.** The doc said the
 mechanism was owed because the doc predated the mechanism.
 
+A correction feels like verification and is not one. Confidence rises when you are
+correcting someone, and the claim you replace theirs with gets less scrutiny than the one
+you would have made unprompted — both of tonight's overshoots came from a corrector, not
+from an author. A loose "truncates at 150" was sharpened into a false claim about which cut
+fires first, on a line whose behaviour one execution settles; and a peer's correct flag that
+a record did not match the current bytes was escalated to "the id is fabricated" off a
+search that had excluded the archive by construction. In both, the original was imprecise
+and the correction was wrong. Run the thing you are correcting someone about.
+
 When a model's output looks like bad judgment, check what it was actually handed before
 concluding anything about the judgment. Three instances in one evening were surface defects
 diagnosed as reasoning defects, and the tell was identical each time — the output was
