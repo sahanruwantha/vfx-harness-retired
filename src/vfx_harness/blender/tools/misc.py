@@ -638,7 +638,12 @@ def register_misc(
                     f"{v.ref_value:.4g}" + (f" · before {v.bad_values[0]:.4g}" if v.bad_values else "")
                 )
             else:
-                lines.append(f"  REJECTED {cid:10} {v.reasons[0][:120]}")
+                # Whole, and every reason. A rejection whose purpose is to teach the
+                # legal threshold window was cut at 120 characters -- before the window
+                # began -- and reduced to reasons[0], so a verdict carrying FRAGILE and
+                # NOT NECESSARY showed one. The builder then re-proposed against advice
+                # it had never been given (HIR-0244).
+                lines.append(f"  REJECTED {cid:10} {v.why()}")
         if kept:
             prepare_and_publish(
                 f"publish layer {layer_id} runtime image checks",

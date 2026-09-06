@@ -43,6 +43,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A threshold rejection reaches the builder whole
+  ([HIR-0244](docs/improvements/HIR-0244-a-rejection-that-teaches-must-survive-its-surface.md)).
+  The payment surface rendered `v.reasons[0][:120]`, cutting mid-word before the legal `lo`
+  window began and dropping every reason after the first — so the window that landed on main
+  last night, correct and tested at the point of production, had never reached a builder. A
+  builder re-proposing thresholds after fragile rejections was doing so against advice it had
+  never been given.
+
 - `cannot_express_in_scope` asks for every fault owner, and echoes the set it recorded
   ([HIR-0243](docs/improvements/HIR-0243-a-surface-asks-for-what-its-field-accepts.md)).
   The tool description said "a sealed upstream unit", "its id" and "the semantic owner" —

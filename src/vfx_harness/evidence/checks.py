@@ -366,6 +366,17 @@ class Verdict:
     floor: float = 0.0
     reasons: list[str] = field(default_factory=list)
 
+    def why(self) -> str:
+        """Every reason this verdict carries, whole.
+
+        A rejection built to teach was rendered by each consumer with its own private
+        slice: the builder's payment surface cut it at 120 characters, mid-word and
+        before the legal threshold window began, and took `reasons[0]` so a verdict
+        carrying FRAGILE and NOT NECESSARY showed one of them. The window landed on main,
+        was tested at the point of production, and never reached a builder (HIR-0244).
+        """
+        return " · ".join(reason for reason in self.reasons if reason) or "failed verification"
+
 
 def verify(check: Check, ref: Path, known_bad: list[Path], root: Path | None = None) -> Verdict:
     """The three rules. All three, because each catches a defect the others do not.
@@ -1024,8 +1035,10 @@ def prepare_layer_revalidation(
             d["proof"]["on"] = str(Path(img).relative_to(Path(shot_folder)))
             keep.append(d)
         else:
-            reason = verdict.reasons[0] if verdict.reasons else (
-                f"reads {v:.4g} against {c.target()} on the final render"
+            reason = (
+                verdict.why()
+                if verdict.reasons
+                else f"reads {v:.4g} against {c.target()} on the final render"
             )
             _drop(c.id, d, reason)
     # Insertion order is the order the rows were read, so the projection stays stable.
