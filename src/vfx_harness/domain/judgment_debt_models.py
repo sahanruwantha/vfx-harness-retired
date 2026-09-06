@@ -19,6 +19,37 @@ from vfx_harness.domain.semantic_roles import match_semantic, selector_token_err
 PROVISIONAL_STRENGTHS = frozenset({"approved_start", "planner_start"})
 RENDERED_CARRIER_FAMILIES = frozenset({"mesh", "volume", "compositor"})
 OBSERVATION_MEDIA = frozenset({"workbench_solid", "eevee"})
+# One mapping from an observation medium to the render mode that realises it. Three
+# derivations of this existed -- JudgmentObservationRequest's expected_mode, the builder's
+# _unit_raster_mode, and the composed group's render_mode -- and a medium that reaches a
+# plate it cannot be measured in is HIR-0241's defect (HIR-0241).
+RENDER_MODE_BY_MEDIUM = {"workbench_solid": "solid", "eevee": "eevee"}
+MEDIUM_BY_RENDER_MODE = {mode: medium for medium, mode in RENDER_MODE_BY_MEDIUM.items()}
+
+
+def render_mode_for_medium(medium: str) -> str:
+    """The render mode an observation medium requires."""
+    try:
+        return RENDER_MODE_BY_MEDIUM[str(medium)]
+    except KeyError:
+        raise ValueError(
+            f"observation medium {medium!r} is not one of {sorted(OBSERVATION_MEDIA)}"
+        ) from None
+
+
+def unit_observation_medium(unit: object) -> str:
+    """The medium a unit's pixels are judged in.
+
+    A unit declaring look capabilities is judged in beauty; one that declares none is
+    judged in Workbench solid (HIR-0036). A composed judge unit paying a typed debt
+    carries that debt's medium explicitly and it wins.
+    """
+    declared = getattr(unit, "judgment_observation_medium", None)
+    if declared in OBSERVATION_MEDIA:
+        return str(declared)
+    if unit is not None and tuple(getattr(unit, "look_capabilities", ()) or ()):
+        return "eevee"
+    return "workbench_solid"
 JUDGMENT_DEBT_LIFECYCLES = frozenset({"persistent", "layer", "window"})
 JUDGMENT_DEBT_STATUSES = frozenset({"pending_not_due", "due", "satisfied", "falsified"})
 TERMINAL_JUDGMENT_DEBT_STATUSES = frozenset({"satisfied", "falsified"})

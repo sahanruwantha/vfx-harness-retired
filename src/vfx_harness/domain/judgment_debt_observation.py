@@ -22,6 +22,7 @@ from vfx_harness.domain.judgment_debt_models import (
     _record,
     _require_canonical_digest,
     _require_digest,
+    render_mode_for_medium,
 )
 
 JUDGMENT_OBSERVATION_RENDER_MODES = frozenset({"solid", "eevee"})
@@ -92,7 +93,7 @@ class JudgmentObservationRequest:
             raise ValueError("JudgmentObservationRequest.observation_medium must be workbench_solid or eevee")
         if self.render_mode not in JUDGMENT_OBSERVATION_RENDER_MODES:
             raise ValueError("JudgmentObservationRequest.render_mode must be solid or eevee")
-        expected_mode = "solid" if self.observation_medium == "workbench_solid" else "eevee"
+        expected_mode = render_mode_for_medium(self.observation_medium)
         if self.render_mode != expected_mode:
             raise ValueError(
                 "JudgmentObservationRequest.render_mode must match the observation medium "

@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import partial
 from types import SimpleNamespace
 
+from vfx_harness.domain.judgment_debt_models import unit_observation_medium
 from vfx_harness.domain.work_units import MutationScope, composed_evaluation_is_lookless
 from vfx_harness.orchestration import judgment_debt_state
 
@@ -68,6 +69,37 @@ def _load_provisional_decisions(
     return tuple(rows)
 
 
+
+def _image_bound_claim_ids(unit) -> tuple[str, ...]:
+    """Required claims of ``unit`` bound to an image contract, which owe a plate."""
+    return tuple(
+        str(claim.id)
+        for claim in (getattr(getattr(unit, "evaluation", None), "claims", ()) or ())
+        if getattr(claim, "required", False)
+        and any(
+            str(getattr(row, "kind", "")) == "image_contract"
+            for row in (getattr(claim, "evidence", ()) or ())
+        )
+    )
+
+
+def _mixed_media_detail(stages, provisional_decisions) -> str:
+    """Name every side of the mix, so the refusal says what to change."""
+    parts: list[str] = []
+    for decision in provisional_decisions:
+        identity = decision.get("debt_id") or decision.get("id")
+        medium = decision.get("observation_medium")
+        if medium:
+            parts.append(f"debt {identity} declares {medium}")
+    for unit in stages:
+        bound = _image_bound_claim_ids(unit)
+        if bound:
+            parts.append(
+                f"unit {getattr(unit, 'id', '?')} pays {', '.join(bound)} in "
+                f"{unit_observation_medium(unit)}"
+            )
+    return "; ".join(parts)
+
 def _composition_judge_unit(layer, provisional_decisions=()):
     """Compile one local composed judge unit, optionally paying one typed debt."""
     stages = tuple(getattr(layer, "stages", ()) or ())
@@ -120,9 +152,25 @@ def _composition_judge_unit(layer, provisional_decisions=()):
                 )
             )
     claims = (*unit_claims, *qualitative)
+    # A unit's bound image contracts were paid on that unit's own plate, so re-measuring
+    # them on this group's plate compares a threshold calibrated in one medium against a
+    # measurement in another. That medium requirement is implicit -- it is whatever
+    # _unit_raster_mode gave the unit -- so it never entered `media` and the mix below
+    # could not see it. hansa_silk_road layer 2 failed a frame_detail debt at 1.826 on a
+    # Workbench solid plate that its unit had paid at 5.266 on EEVEE, because the group's
+    # medium came from an unrelated workbench_solid debt (HIR-0241).
+    for unit in stages:
+        if not _image_bound_claim_ids(unit):
+            continue
+        media.add(unit_observation_medium(unit))
     if len(media) > 1:
         raise ValueError(
-            "one composed judgment unit cannot mix observation media; schedule each typed debt independently"
+            "one composed judgment unit cannot mix observation media "
+            f"({', '.join(sorted(media))}); "
+            + _mixed_media_detail(stages, provisional_decisions)
+            + ". Schedule each typed debt independently, or give the debt the medium its "
+            "layer's image contracts were paid in -- a contract is re-measured in the "
+            "medium it was paid in or not at all"
         )
     judges = tuple(
         SimpleNamespace(frame=int(frame), ref=ref) for frame, ref in dict.fromkeys((*layer_points, *debt_points))

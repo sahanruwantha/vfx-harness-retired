@@ -25,6 +25,10 @@ from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.contracts import load_document
+from vfx_harness.domain.judgment_debt_models import (
+    render_mode_for_medium,
+    unit_observation_medium,
+)
 from vfx_harness.domain.work_units import (
     geometry_vis_protection_ids,
     geometry_vis_protection_ids_for_unit,
@@ -521,15 +525,13 @@ def _unit_requires_raster(
 
 
 def _unit_raster_mode(unit) -> str:
-    """Use look-independent pixels when qualitative form is owed without look authority."""
-    debt_medium = getattr(unit, "judgment_observation_medium", None)
-    if debt_medium == "workbench_solid":
-        return "solid"
-    if debt_medium == "eevee":
+    """Use look-independent pixels when qualitative form is owed without look authority.
+
+    Delegates so the medium and the mode it realises stay one mapping (HIR-0241).
+    """
+    if unit is None:
         return "eevee"
-    if unit is not None and not tuple(getattr(unit, "look_capabilities", ()) or ()):
-        return "solid"
-    return "eevee"
+    return render_mode_for_medium(unit_observation_medium(unit))
 
 
 def _unit_completion_evidence_ids(unit) -> set[str] | None:
