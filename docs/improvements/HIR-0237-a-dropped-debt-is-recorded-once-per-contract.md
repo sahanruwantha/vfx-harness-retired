@@ -158,10 +158,32 @@ regressions were beyond what its own tests and the four files I judged related c
 
 ## What this does not fix
 
-The build that exposed it still has a genuine content gap -- `frame_detail` 1.826 against
-`>= 2`, with two independent critics and the metric naming the same fix. That belongs to a
-rebuild, not to an amendment: lowering the threshold to admit 1.826 would be tuning the
-target to the build, which is what HIR-0232 exists to stop.
+~~The build that exposed it still has a genuine content gap -- `frame_detail` 1.826 against
+`>= 2`.~~ **Retracted 2026-09-06.** There is no content gap. The 1.826 was measured in the
+wrong medium.
+
+`hero-facade-appearance-debt` was paid by its unit at **5.266** against `>= 2` at f51, on
+`2@hero_facade_canonical_f51.png` -- an EEVEE plate, black ground, the emissive window grid
+reaching 229. The composed canonical re-measured the same contract at the same frame on
+`2@f51_finalization_group_0_canonical_f51.png` and read **1.826**. Both files were opened,
+not described: the second is a Workbench solid plate, white ground, flat grey massing with
+floor lines, and **the emissive pattern `frame_detail` measures does not exist in it**.
+
+The composed group rendered solid because a judgment debt in that group declares
+`observation_medium: workbench_solid`, and `_unit_raster_mode` reads that medium off the
+composed unit -- while the claims that unit evaluates are `(*unit_claims, *qualitative)`,
+every unit's bound image contracts included. So one debt's medium decided the medium for
+every contract in the group, and a threshold calibrated in beauty was tested against a
+measurement in solid.
+
+That is its own defect and it is upstream of this one: the drop that produced the duplicate
+ids was a *false* failure. AGENTS.md already states the rule -- every evidence a layer binds
+must be visible in the medium that layer is judged in -- and no boundary calls it. Recorded
+separately; this record's mechanism is unaffected, since a dropped debt must be recorded
+once per contract whether the drop was earned or not.
+
+Found by the hansa_silk_road driver, who also retracted their own earlier reading of the
+same number; verified here by opening both plates.
 
 It is also not the same defect as the other receipt-minting crash of the night, where the
 verdict allowlist accepts one `decided_by` value while the composed path emits five. Same
