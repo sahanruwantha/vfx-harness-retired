@@ -92,6 +92,29 @@ class LayerFinalizationConflict(ValueError):
     """The claimed layer boundary is absent, stale, or internally inconsistent."""
 
 
+
+ACTIVE_CLAIM_RECOVERY_RULE = (
+    "A live owner may still hold this claim. Only after the builder fence proves no live "
+    "owner may an operator release it, and release is a reviewed transaction that archives "
+    "the named unsealed claim, preserves every accepted unit receipt, and marks unsealed "
+    "judgment output non-reusable (HIR-0170)."
+)
+
+
+def describe_active_claim_conflict(layer_id: object, active: Mapping[str, object]) -> str:
+    """Name the claim, its revision and owner, and the transaction that clears it."""
+    claim_id = str(active.get("claim_id") or "<unknown>")
+    revision = active.get("attempt_revision")
+    run_id = active.get("run_id")
+    owner = f", minted by run {run_id}" if run_id else ""
+    revised = f" (attempt_revision {revision})" if revision is not None else ""
+    return (
+        f"layer {layer_id} already has an active finalization claim {claim_id}{revised}"
+        f"{owner}. {ACTIVE_CLAIM_RECOVERY_RULE} The transaction is: "
+        f"vfx finalizations release <shot> --layer {layer_id} --claim-id {claim_id} "
+        "--reason <why> --evidence <path>"
+    )
+
 def _ordered_units(units: Sequence[WorkUnit]) -> tuple[WorkUnit, ...]:
     try:
         return dependency_ordered_units(tuple(units))
@@ -329,8 +352,13 @@ def claim_layer_finalization(
             )
         except LayerFinalizationReleaseSourceConflict as exc:
             raise LayerFinalizationConflict(str(exc)) from exc
-        if slot.get("active_claim") is not None:
-            raise LayerFinalizationConflict(f"layer {layer.id} already has an active finalization claim")
+        active = slot.get("active_claim")
+        if active is not None:
+            # The refusal holds the claim it is refusing on. Naming only the condition
+            # made an operator grep state/work-units/layer_<id>.json for the id this
+            # frame already has, and the message reaches summary.json through the
+            # envelope's `detail`, so it is the one surface they read (HIR-0242).
+            raise LayerFinalizationConflict(describe_active_claim_conflict(layer.id, active))
         if slot.get("terminal_receipt") is not None:
             raise LayerFinalizationConflict(f"layer {layer.id} already has a terminal finalization receipt")
         revision = int(slot.get("attempt_revision") or 0) + 1

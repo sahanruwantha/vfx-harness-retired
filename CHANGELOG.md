@@ -43,6 +43,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A stale layer-finalization claim now names itself and the transaction that clears it
+  ([HIR-0242](docs/improvements/HIR-0242-a-refusal-that-holds-the-claim-names-it.md)).
+  The refusal read `layer 1 already has an active finalization claim` while holding the
+  claim id, its attempt revision and the run that minted it, so an operator had to grep
+  durable state for an id the failing frame already had. It now renders the claim, the
+  precondition that a live owner may still hold it, and the exact
+  `vfx finalizations release` invocation — in that order, because release is not a retry.
+
 - A composed group can no longer re-measure a contract on a plate that cannot show it
   ([HIR-0241](docs/improvements/HIR-0241-a-contract-is-re-measured-in-the-medium-it-was-paid-in.md)).
   A judgment debt declaring `workbench_solid` set the render medium for every claim in its
