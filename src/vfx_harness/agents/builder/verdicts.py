@@ -26,6 +26,7 @@ from vfx_harness.agents.builder.provisional_judgment import (
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.image_debts import UNPAID_IMAGE_DEBT_RULE, image_contract_debt_cards, normalize_evidence_id
+from vfx_harness.domain.verdict_deciders import EXECUTABLE_DECIDER
 from vfx_harness.domain.work_units import (
     LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
     UNIT_JUDGE_CLAIM_COVERAGE_RULE,
@@ -155,7 +156,7 @@ def _executable_unit_verdict(
         "evidence": evidence,
         "evidence_failures": [*failures, *worklist_failures],
         "missing_evidence": missing,
-        "decided_by": "unit_executable_evidence",
+        "decided_by": EXECUTABLE_DECIDER,
         "judge_conflict": False,
         "contract_gap": bool(missing),
     }
