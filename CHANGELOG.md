@@ -7,6 +7,17 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- A verdict the harness emits is now one its receipt can record. `verdicts.py` emitted
+  four mechanically decided verdicts for a group with no qualitative claim — one pass/fail
+  from executable evidence and three structural refusals naming which authority fact
+  stopped a frame being settled — and `layer_evaluation_receipts` admitted one, so a
+  correct diagnosis became a `ValueError` and an unclassified boundary (HIR-0240).
+  caesar_curia layer 1 died that way after replaying: three of its six judge frames had no
+  required claim, the composed canonical said so, and minting the receipt refused it. Both
+  sides now read `domain/verdict_deciders`, and a contract gap is checked against "an
+  unsettled frame cannot pass" rather than against a deterministic status it never had.
+
+
 - Deferred-subject rows now tell each producer who shares their projected union and how
   much room is left on the irreversible side: the unit card lists the union's producers in
   dependency order and the ones still pending, and the forecast read-back states the
