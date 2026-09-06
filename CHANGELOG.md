@@ -43,6 +43,15 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A terminal finalization failure names the judgment that failed and who owns it
+  ([HIR-0247](docs/improvements/HIR-0247-a-finalization-failure-names-the-judgment.md)).
+  The publication check held the whole terminal receipt and reported `final_status`, so a
+  layer that failed on three judgments decided `no_optical_signal` — with the issue text,
+  the frames, and the debt and requirement they were paying all in the receipt — reached the
+  operator as "terminal finalization is 'failed', not 'passed'". The refusal is now rendered
+  from the failing rows, and distinguishes evidence that could not be produced from work
+  that was judged and did not pass.
+
 - The bmesh lookup-table guard knows what its owner is
   ([HIR-0246](docs/improvements/HIR-0246-a-name-is-not-a-type.md)). It keyed on the
   attribute name, so `e.verts[0]` for a loop variable over edges was treated as BMesh

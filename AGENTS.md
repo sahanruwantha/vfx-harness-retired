@@ -1574,10 +1574,19 @@ checkable, not a matter of sequencing your work: **`git status --porcelain <path
 empty before you revert that path.** Someone who commits three files and leaves a fourth
 dirty follows "commit first" and still loses the fourth. The two forms trade off exactly —
 the safe one degrades to a no-op, the reliable one eats uncommitted work — which is why the
-precondition is written as something to check rather than something to remember. The general
+precondition is written as something to check rather than something to remember. And it does not remove
+a file the parent never had: on a change that ADDS a module, `git checkout <parent> -- <dir>`
+leaves the new file in place, the tests import it happily, and every one of them "fails
+without the mechanism" by passing. Reverting an added path needs the directory removed first
+(`rm -rf <dir> && git checkout <parent> -- <dir>`), which is safe only under the same
+per-path precondition. The general
 shape is the truncated-read problem one layer up — the check and the no-op are
 indistinguishable from their output, so the output is a true answer to a different question.
-Prefer the state-independent form of any check whose result you intend to rely on.
+Three forms of it have now bitten in one day: a stash that stopped discriminating once the
+work was committed, a parent-revert that ate uncommitted work, and a parent-revert that
+silently skipped an added file. Prefer the state-independent form of any check whose result
+you intend to rely on, and confirm the revert actually changed the tree before believing the
+run.
 
 Where an artifact exists, reasoning about a description of it is not verification. Open the
 render, the receipt, the sealed script, the payload. A description is uncomparative, so any

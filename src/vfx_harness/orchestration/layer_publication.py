@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from vfx_harness.domain.authority_head_records import parse_authority_selection_token
+from vfx_harness.domain.layer_finalization_diagnosis import (
+    describe_failed_finalization,
+)
 from vfx_harness.domain.layer_finalizations import LayerFinalizationReceipt
 from vfx_harness.domain.layer_outcomes import (
     LayerOutcomeContractError,
@@ -474,9 +477,14 @@ def _require_one_current_layer_publication(
             f"{receipt.layer_script_path!r}, expected {str(layer.script)!r}"
         )
     if receipt.final_status != "passed":
+        # The receipt beside this line names which judgments failed, at which frames, by
+        # which decider, and the debt and requirement they were paying. Reporting only
+        # the status sent a driver to engineering with a generic route while the cause
+        # sat one attribute away (HIR-0247).
+        diagnosis = describe_failed_finalization(receipt.canonical, receipt.evaluation_groups)
         raise LayerPublicationConflict(
             f"layer {layer_id} terminal finalization is {receipt.final_status!r}, "
-            "not 'passed'"
+            "not 'passed'" + (f": {diagnosis}" if diagnosis else "")
         )
     expected_prefix = tuple(
         (
