@@ -66,16 +66,19 @@ from vfx_harness.orchestration.unit_evaluation_receipts import (
     prepare_unit_evaluation_completion,
     require_prepared_unit_evaluation_completion,
 )
+from vfx_harness.orchestration.unit_state_lifecycle import (
+    PLANNING_CLAIMABLE_STATES as PLANNING_CLAIMABLE_STATES,
+)
+from vfx_harness.orchestration.unit_state_lifecycle import (
+    UNCLAIMED_RETRY_STATES as UNCLAIMED_RETRY_STATES,
+)
 from vfx_harness.orchestration.unit_state_lock import (
     serialized_state_mutation,
     unit_state_path,
 )
 
-PLANNING_CLAIMABLE_STATES = frozenset({"pending", "blocked", "retryable"})
 ATTEMPT_RELEASE_STATES = frozenset({"retryable", "blocked", "failed"})
-UNCLAIMED_RETRY_STATES = frozenset(
-    {"failed", "planning", "building", "frozen", "evaluating", "repairing"}
-)
+
 
 
 def _selected_state_mutation(mutation):
