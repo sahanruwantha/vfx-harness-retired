@@ -23,13 +23,38 @@ from vfx_harness.domain.evidence_kinds import PIXEL_STATISTIC_KINDS
 from vfx_harness.domain.image_debts import image_contract_debt_cards
 from vfx_harness.domain.work_units import WorkUnit
 
-IMAGE_SIGNAL_FAMILIES = frozenset({"light", "shading", "volume", "compositor"})
+#: Families that can put light into a scene on their own.
+IMAGE_SIGNAL_SOURCE_FAMILIES = frozenset({"light", "volume", "compositor"})
+#: Shading decides how a surface RESPONDS to light. It is a source only when emissive,
+#: and emission is not visible at authoring time -- ``bvfx_emission`` and its siblings
+#: resolve to the ``shading`` family, and the script that would call them does not exist
+#: when the unit is staged. So a shading cluster alone does not establish that anything
+#: emits: hansa_silk_road layer 2 passed this gate on a `shading` facade over a `mesh`
+#: tower with `world=None` and zero light objects anywhere in the cumulative scene, and
+#: authored four image debts that were unpayable in both directions -- darkness bounds
+#: trivially met by a black adversary, brightness bounds with nothing to illuminate the
+#: surface. Twice, on two independent designs (HIR-0234).
+IMAGE_SIGNAL_MODIFIER_FAMILIES = frozenset({"shading"})
+#: Every family that can affect pixels at all; used for witness guidance, not for
+#: establishing that a prefix can be lit.
+IMAGE_SIGNAL_FAMILIES = IMAGE_SIGNAL_SOURCE_FAMILIES | IMAGE_SIGNAL_MODIFIER_FAMILIES
 IMAGE_SUBJECT_FAMILIES = frozenset({"mesh", "volume", "compositor"})
 
+#: A shading unit that is itself the light -- an emissive facade, a glowing sign -- says
+#: so with a typed capability, exactly as a camera or geometry producer does. A role name
+#: or a look label never implies it (HIR-0234).
+ILLUMINATION_CAPABILITY = "illumination"
+
 IMAGE_SIGNAL_DEPENDENCY_RULE = (
-    "a unit that owes required image_contract debt must itself derive a pixel-affecting "
-    "write family (light, shading, volume, or compositor), depend transitively on a "
-    "same-layer unit that does, or inherit one from an earlier materialized layer. "
+    "a unit that owes required image_contract debt needs a light SOURCE in its replay "
+    "prefix: its own light, volume or compositor write family, a same-layer dependency "
+    "that derives one, an earlier materialized layer that does, or a unit declaring "
+    "provides: [\"illumination\"] because it is itself emissive. A shading cluster alone "
+    "is not a source -- shading decides how a surface responds to light, and whether it "
+    "emits is not visible when the unit is staged -- so a shading-over-mesh prefix with "
+    "no light and no world renders black and its image debt is unpayable in both "
+    "directions. If this unit emits, declare the capability; if something else lights the "
+    "scene, depend on it. "
     "look_capabilities, role names, object counts, geometry, cameras, controls, and "
     "keyframes do not imply optical signal. For genuine beauty evidence, reorder or split "
     "the DAG and bind the signal producer through typed write-kind evidence. If the unit "
@@ -121,13 +146,16 @@ def _family_dependency_gaps(
     *,
     families: frozenset[str],
     earlier_available: bool,
+    extra_provider_ids: frozenset[str] = frozenset(),
 ) -> tuple[ImageSignalDependencyGap, ...]:
     if earlier_available:
         return ()
     unit_rows = tuple(units)
     contract_rows = tuple(rows)
     by_id = {unit.id: unit for unit in unit_rows}
-    providers = _family_provider_ids(unit_rows, contract_rows, families)
+    # `extra_provider_ids` carries capabilities a write cluster cannot express: an
+    # emissive shading unit is a light source and declares it (HIR-0234).
+    providers = _family_provider_ids(unit_rows, contract_rows, families) | extra_provider_ids
     gaps: list[ImageSignalDependencyGap] = []
     rows_by_id = {
         str(row.get("id")): row for row in contract_rows if isinstance(row, Mapping) and row.get("id")
@@ -193,7 +221,15 @@ def image_signal_provider_ids(
     rows: Sequence[Mapping[str, Any]] | Iterable[Mapping[str, Any]],
 ) -> frozenset[str]:
     """Unit ids whose one derived write cluster can affect optical image signal."""
-    return _family_provider_ids(units, rows, IMAGE_SIGNAL_FAMILIES)
+    sources = _family_provider_ids(units, rows, IMAGE_SIGNAL_SOURCE_FAMILIES)
+    # A declared capability is additive, exactly as `provides: ["geometry"]` adds a mesh
+    # carrier in judgment_authority: an emissive shading unit is a source and says so.
+    declared = frozenset(
+        unit.id
+        for unit in units
+        if ILLUMINATION_CAPABILITY in tuple(getattr(unit, "provides", ()) or ())
+    )
+    return sources | declared
 
 
 def image_signal_dependency_gaps(
@@ -206,8 +242,13 @@ def image_signal_dependency_gaps(
     return _family_dependency_gaps(
         units,
         rows,
-        families=IMAGE_SIGNAL_FAMILIES,
+        families=IMAGE_SIGNAL_SOURCE_FAMILIES,
         earlier_available=earlier_signal_available,
+        extra_provider_ids=frozenset(
+            unit.id
+            for unit in units
+            if ILLUMINATION_CAPABILITY in tuple(getattr(unit, "provides", ()) or ())
+        ),
     )
 
 

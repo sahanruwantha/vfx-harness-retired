@@ -436,6 +436,17 @@ def test_image_debt_requires_signal_provider_in_dependency_closure() -> None:
 
 
 def test_image_debt_may_be_paid_by_own_shading_family_or_earlier_layer() -> None:
+    """HIR-0234 supersedes what this test used to assert.
+
+    It read `image_signal_provider_ids((surface,), (material_row,)) == {"surface"}` and
+    `image_signal_dependency_gaps(...) == ()` -- a material assignment on a product shell,
+    with no light anywhere, treated as sufficient optical signal. hansa_silk_road layer 2
+    passed that gate on exactly this shape (`shading` facade, `world=None`, zero lights)
+    and authored four image debts unpayable in both directions.
+
+    Shading decides how a surface responds to light. It is a source only when emissive,
+    and emission is invisible at authoring time, so the unit says so with a capability.
+    """
     surface = _with_image_debt(
         _unit(
             "surface",
@@ -448,8 +459,23 @@ def test_image_debt_may_be_paid_by_own_shading_family_or_earlier_layer() -> None
         "surface-material", ["product.shell"], kind="material_assignment_fraction"
     )
 
-    assert image_signal_provider_ids((surface,), (material_row,)) == frozenset({"surface"})
-    assert image_signal_dependency_gaps((surface,), (material_row,)) == ()
+    # A shading cluster alone is a modifier, not a source.
+    assert image_signal_provider_ids((surface,), (material_row,)) == frozenset()
+    gaps = image_signal_dependency_gaps((surface,), (material_row,))
+    assert len(gaps) == 1 and gaps[0].unit_id == "surface"
+
+    # The same unit, declaring that it is itself the light, is a source.
+    emissive = _with_image_debt(
+        _unit(
+            "surface",
+            roles=["product.shell"],
+            contract_id="surface-material",
+            provides=["illumination"],
+        ),
+        "surface-beauty",
+    )
+    assert image_signal_provider_ids((emissive,), (material_row,)) == frozenset({"surface"})
+    assert image_signal_dependency_gaps((emissive,), (material_row,)) == ()
 
     mesh_only = _with_image_debt(
         _unit(

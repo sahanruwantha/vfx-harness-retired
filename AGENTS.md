@@ -750,7 +750,14 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   `compositor` family. Look labels, role names, object counts, geometry, camera,
   controls, and keyframes cannot self-certify optical signal; the materialization
   and plan gates fail `image-signal-bootstrap` and enumerate registry-derived
-  write-kind witnesses (HIR-0110). That optical-signal grant is not a rendered
+  write-kind witnesses (HIR-0110). A `shading` cluster is a light MODIFIER and not a
+  source: it decides how a surface responds to light, and whether it emits is invisible
+  when the unit is staged, since `bvfx_emission` and its siblings resolve to `shading` and
+  the script does not yet exist. Sources are `light`, `volume` and `compositor`; a unit
+  that is itself the light declares `provides: ["illumination"]`, which a role name or look
+  label never implies. A shading-over-mesh prefix with no light and no world renders black,
+  and its image debt is unpayable in both directions -- a darkness bound is trivially met
+  by the black adversary and a brightness bound has nothing to illuminate (HIR-0234). That optical-signal grant is not a rendered
   carrier: image-contract debt also requires a `mesh`, `volume`, or `compositor`
   family in the same replay prefix. A shading-only root on a camera-only scene
   cannot pay beauty; the materialization and plan gates fail

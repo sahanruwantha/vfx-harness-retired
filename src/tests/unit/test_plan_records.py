@@ -1595,7 +1595,11 @@ def test_camera_global_layer_refuses_geometry_proxy_before_candidate_write(
     )
     allowed = allowed_unit_provides(global_row)
     assert allowed == frozenset({"camera"})
-    assert allowed_unit_provides({"jit": {"provides": {}}}) == frozenset({"geometry"})
+    # HIR-0234 adds `illumination` beside `geometry` for a layer that provides no
+    # global capability. The assertion this test exists for is the camera one above.
+    assert allowed_unit_provides({"jit": {"provides": {}}}) == frozenset(
+        {"geometry", "illumination"}
+    )
     schema = work_unit_authoring_schema(allowed_provides=allowed)
     assert schema["properties"]["provides"]["items"]["enum"] == ["camera"]
     assert "persistent bbox_*" in schema["properties"]["provides"]["items"]["description"]
@@ -3539,6 +3543,10 @@ def test_materialization_requirement_binding_accepts_required_image_debt(
     unit["depends_on"] = ["polish_mass"]
     unit["mutates"]["controls"] = []
     unit["mutates"]["control_roles"] = {}
+    # HIR-0234: this unit assigns a material and owes beauty debt over a mesh carrier
+    # with no light anywhere -- hansa_silk_road layer 2's exact shape, which renders
+    # black. Shading is a light modifier; a unit that is itself the light says so.
+    unit["provides"] = ["illumination"]
     unit["look_capabilities"] = ["material"]
     unit["evaluation"]["temporal_evidence"] = "none"
     unit["evaluation"]["claims"] = [

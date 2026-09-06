@@ -32,6 +32,20 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- Shading is a light modifier, not a light source
+  ([HIR-0234](docs/improvements/HIR-0234-shading-is-a-light-modifier-not-a-light-source.md)).
+  `image-signal-bootstrap` counted a `shading` write cluster as optical signal, so a
+  shading facade over a mesh tower passed it with `world=None` and zero light objects
+  anywhere in the scene — and the layer's four image debts were unpayable in both
+  directions, a darkness bound trivially met by a black adversary and a brightness bound
+  with nothing to illuminate. It was authored twice, on two independent designs, because
+  the gate said the layer may owe them. Signal sources (`light`, `volume`, `compositor`)
+  are now separated from modifiers (`shading`), and a unit that is itself the light
+  declares `provides: ["illumination"]` — emission resolves to the `shading` family and
+  the script that would call it does not exist when the unit is staged, so no derivation
+  could have known. The pixel-affecting set keeps its value: witness guidance still names
+  all four families.
+
 - A mutation-mode refusal names the field that fired it
   ([HIR-0233](docs/improvements/HIR-0233-a-mode-refusal-names-the-field-that-fired-it.md)).
   `mode 'none' cannot declare mutation targets` fired on a payload whose roles, controls

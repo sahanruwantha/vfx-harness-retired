@@ -13,7 +13,12 @@ from typing import Any
 from vfx_harness.domain.judgment_debts import JudgmentProvider, compile_provider_activation
 from vfx_harness.domain.semantic_roles import match_semantic
 
-UNIT_PROVIDES = {"camera", "geometry"}
+#: `illumination` is the third because a shading unit that is itself the light -- an
+#: emissive facade, a glowing sign -- cannot be told from one that merely reacts to light
+#: by any authored field: `bvfx_emission` and its siblings resolve to the `shading`
+#: family, and the script that would call them does not exist when the unit is staged
+#: (HIR-0234).
+UNIT_PROVIDES = {"camera", "geometry", "illumination"}
 GLOBAL_SCENE_CAPABILITIES = {"camera"}
 
 CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE = (
