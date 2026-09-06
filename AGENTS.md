@@ -1593,6 +1593,29 @@ its own pgrep pattern timed as the suite, and a stale discriminator that would h
 silently. State only what the artifact you opened evidences: a record that carries no layer
 field does not establish a layer, whoever else already believes it.
 
+A negative result is a statement about the scope you searched, and it has to carry that
+scope in the same sentence or it will be read as universal by whoever gets it next —
+including you. Four in one evening across three sessions, every one a true measurement of
+something nobody asked about: a `grep -r` in a live shot folder reported as "appears nowhere
+in that shot, in any generation", when the id was in the archived generation the live folder
+excludes by construction; an `ls | grep -c` over `docs/` reported as "carries HIR-0241,
+verified by import", when three files existing is not code being present; a grep against the
+wrong module returning `False`, which meant *wrong file* and was nearly reported as
+*absent*; and a record read from a pinned worktree, quoted faithfully as the state of the
+world, which was true only of that pin. **A record is not scope-free.** The doc said the
+mechanism was owed because the doc predated the mechanism.
+
+When a model's output looks like bad judgment, check what it was actually handed before
+concluding anything about the judgment. Three instances in one evening were surface defects
+diagnosed as reasoning defects, and the tell was identical each time — the output was
+correct for the input received. A builder that kept re-proposing thresholds after fragile
+rejections had never been shown the legal window: the payment surface cut the reason at 120
+characters, before the window began (HIR-0244). A critic panel that faulted a build for
+reading "flat grey" was accurately describing the Workbench-solid plate it was given, on a
+layer whose contract was paid in EEVEE (HIR-0241). A materializer that appeared to ignore a
+rule was reading a refusal that named what was wrong and never what would have been right
+(HIR-0217). Each would have been settled by one command, and none of them was.
+
 **Truncating for display manufactures a description, and a self-authored one is exactly as
 untrustworthy as any other.** A `[:160]` slice of a DAG row, a `tail -40` of a suite, a
 260-character prefix of a 5,572-character refusal, a `head` of a search — each produces

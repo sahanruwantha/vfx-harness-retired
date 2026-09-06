@@ -81,10 +81,29 @@ adding its own slice fails and prose about the defect does not.
 
 ## What this does not fix
 
-`agents/plan_tools/session_tools.py` still splits `reasons[0]` on an em-dash and truncates
-at 150. Same shape, plan-authoring audience, no observed cost -- recorded rather than
-changed, because a fix with no evidence behind it is how the next private slice gets
-written.
+`agents/plan_tools/session_tools.py:393-394` still renders a rejection privately. **Measured
+rather than described, because the first two accounts of it -- mine and the hansa driver's
+-- were both wrong about the mechanism**, on the real FRAGILE text:
+
+```
+why    = v.reasons[0].split("—")[0].strip()                       -> "FRAGILE THRESHOLD"
+detail = v.reasons[0].split("—", 1)[1].strip()[:150]              -> cut at "...one-sh"
+```
+
+- `reasons[0]` drops every other reason. Real, and the same defect fixed above.
+- The em-dash split is **harmless**: `maxsplit=1` keeps the whole remainder, so a second or
+  third em-dash costs nothing. The hansa driver read it as losing everything after the
+  second; it does not.
+- **The 150 is the operative cut**, and it lands mid-word roughly 150 characters before the
+  window begins. My own note said "truncates at 150" as if length were incidental; it is the
+  whole of it.
+
+The decision is unchanged -- zero plan-authoring refusals in this shot's transcripts were cut
+near 150, so there is no evidence it has cost anything, and the audience differs: this
+degrades a materializer that is authoring, where the payment surface hid a window from a
+builder mid-repair with turns to spend. **But if it ever does bite, the length is the cause
+and the em-dash is not**, and someone reading either earlier account would tune the wrong
+thing.
 
 Nothing here bounds the rendered length. These strings are harness-authored and bounded by
 their producers; if a reason ever grows unbounded the cap belongs at the producer, where it
