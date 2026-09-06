@@ -22,3 +22,6 @@ renders/
 # Generated renders, transcripts, probes, and evaluation runs are local evidence.
 # Tracked evaluation definitions and small fixtures live under evals/.
 artifacts/
+
+# Editor logs written into the checkout root.
+nvim.log
