@@ -872,6 +872,7 @@ def critic_prompt(
     review_mode: str = "observer",
     focus_panels: list[dict] | None = None,
     focus_frames: list[int] | None = None,
+    render_medium: str | None = None,
 ) -> str:
     axes = "\n".join(f"  - {k}: {desc}" for k, desc in axes)
     # The images are ATTACHED to this request, not fetched. The critic used to be an agent
@@ -955,6 +956,24 @@ def critic_prompt(
             + "\nThese already answer the close-inspection request. Return an empty "
             "focus_requests list and cite any panel used in observations[].panel_ids.\n"
         )
+    medium_block = ""
+    if str(render_medium or "").lower() == "solid":
+        medium_block = (
+            "\n⚠ THIS PLATE IS WORKBENCH SOLID, NOT A BEAUTY RENDER. Materials, shaders, "
+            "emission, textures and world lighting are SUPPRESSED by the renderer. It shows "
+            "form only: silhouette, massing, proportion, placement, occlusion, and geometric "
+            "detail that exists as actual mesh.\n"
+            "Judge ONLY those. Colour, tone, brightness, reflectivity, glow, surface finish, "
+            "material pattern and window/panel detail carried by a shader are NOT ABSENT FROM "
+            "THE BUILD — they are absent from this rendering, by design. Their absence is not "
+            "a defect and must not be scored down or raised as an observation. A flat grey "
+            "surface here is what a correctly shaded surface looks like in this medium.\n"
+            "If an axis can only be judged from appearance, it cannot be judged on this plate: "
+            "score it from form where that is meaningful, and otherwise say so in "
+            "reference_note rather than inventing an appearance verdict. The REFERENCE is a "
+            "finished image; do not fault the candidate for the difference the medium itself "
+            "creates.\n"
+        )
     review_block = ""
     if review_mode == "evidence_audit":
         review_block = (
@@ -986,7 +1005,7 @@ def critic_prompt(
         f"TARGET STATE: {m.reads}\n\n"
         f"The FIRST image is the REFERENCE ({Path(m.ref).name}).\n"
         f"The SECOND image is the CANDIDATE render ({Path(candidate_rel).name}).{motion}"
-        f"{scope_block}{claims_block}{evidence_block}{focus_block}{review_block}"
+        f"{medium_block}{scope_block}{claims_block}{evidence_block}{focus_block}{review_block}"
         f"\nScore the candidate against the reference on these axes:\n"
         f"{axes}\n\n"
         f"Score each axis 0–5"
