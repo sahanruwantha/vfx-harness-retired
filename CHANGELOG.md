@@ -32,6 +32,14 @@ live in the linked Harness Improvement Records.
 
 ### Fixed
 
+- A dropped image debt is recorded once per contract, not once per frame
+  ([HIR-0237](docs/improvements/HIR-0237-a-dropped-debt-is-recorded-once-per-contract.md)).
+  A multi-frame image debt has one runtime row per frame, so a contract failing at two
+  frames was appended twice — and the drop record is keyed by id with no frame field, so
+  the projection validator refused and a layer whose four units had all sealed could not
+  mint its receipt. The list is now keyed by contract id with each reason naming its own
+  frame, which loses nothing and needs no schema change to a derived projection.
+
 - A row that activates at this layer is not evaluated at its start
   ([HIR-0236](docs/improvements/HIR-0236-a-row-that-activates-here-is-not-testable-at-layer-start.md)).
   A `path_clearance_min` row deferred to layer 2 was evaluated by layer 2's prior-interface

@@ -1243,7 +1243,12 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   `image_contract` ids as bound producers while `checks.json` is still empty
   (HIR-0047). A matching `runtime_checks.json` row is consumed as payment;
   unpaid debts are not scene-selector misses or critic handoff; readers of
-  falsification `contract_ids` strip a `check:` prefix (HIR-0048). A runtime row counts
+  falsification `contract_ids` strip a `check:` prefix (HIR-0048). A multi-frame debt has one
+  runtime row per frame, so anything summarising those rows is keyed by CONTRACT ID
+  and not by row: the layer-revalidation drop record carries `{id, reason}` with no
+  frame, so per-row appends produced duplicate ids and the projection validator
+  refused to mint a receipt for a layer whose every unit had sealed. Each reason
+  names the frame it was read at (HIR-0237). A runtime row counts
   only with a valid v2 payment envelope; the harness, never the model, selects its
   pre-unit adversary. Generated thresholds clear the measured replay margin, and
   candidate probing evaluates the same image rows before publication (HIR-0053). Live
@@ -1533,6 +1538,15 @@ verbatim; partial success is partial, not done.
 Judge a fix only on a path that provably executed it. A resumed run that can reuse products
 sealed before the fix is evidence of nothing: re-run the producing step — or the pipeline from
 the start — before reading any outcome as a verdict on the fix, and say which one you did.
+
+A verification step whose strength depends on repository state is not a verification step.
+`git stash push -- <path>` reverts only *uncommitted* changes, so the moment the work is
+committed its discriminating power drops to zero and it reports success identically either
+way: every test "fails without the mechanism" by passing. Revert from the parent commit
+(`git checkout <parent> -- <path>`), which discriminates whatever the tree holds. The general
+shape is the truncated-read problem one layer up — the check and the no-op are
+indistinguishable from their output, so the output is a true answer to a different question.
+Prefer the state-independent form of any check whose result you intend to rely on.
 
 Where an artifact exists, reasoning about a description of it is not verification. Open the
 render, the receipt, the sealed script, the payload. A description is uncomparative, so any

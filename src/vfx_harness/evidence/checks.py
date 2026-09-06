@@ -979,19 +979,35 @@ def prepare_layer_revalidation(
     rows = json.loads(source)
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError("runtime image checks must be a list of objects")
-    keep, dropped = [], []
+    keep: list[dict] = []
+    # One entry per CONTRACT ID, not per row. A multi-frame image debt has one runtime
+    # row per frame, each bound to its own candidate handle, so one id can be dropped
+    # more than once -- and the drop record's whole shape is {"id", "reason"} with no
+    # frame, so per-row appends produced duplicate ids and the projection validator
+    # refused to mint the receipt. hansa_silk_road layer 2 lost a build in which all
+    # four units had sealed to exactly that: `hero-facade-appearance-debt` read 1.826
+    # against `>= 2` at two frames (HIR-0237).
+    drops: dict[str, list[str]] = {}
+
+    def _drop(identifier: object, row: dict, reason: str) -> None:
+        """Record why one contract id was dropped, naming the frame it was read at."""
+        frame = row.get("frame")
+        drops.setdefault(str(identifier or "?"), []).append(
+            f"f{frame}: {reason}" if frame is not None else reason
+        )
+
     for d in rows:
         if d.get("origin") != "builder" or str(d.get("layer")) != str(layer_id):
             keep.append(d)
             continue
         provenance_error = runtime_image_payment_error(shot_folder, d)
         if provenance_error:
-            dropped.append((str(d.get("id") or "?"), provenance_error))
+            _drop(d.get("id"), d, provenance_error)
             continue
         c = Check.from_dict({**d, "lo": d.get("lo", float("-inf")), "hi": d.get("hi", float("inf"))})
         img = render_for(c)
         if img is None:
-            dropped.append((c.id, "no shipped render for its frame"))
+            _drop(c.id, d, "no shipped render for its frame")
             continue
         try:
             adversary_rel = ((d.get("payment") or {}).get("adversary") or {}).get("path")
@@ -1001,7 +1017,7 @@ def prepare_layer_revalidation(
             verdict = verify_necessity(c, Path(img), adversary)
             v = verdict.ref_value
         except Exception as e:
-            dropped.append((c.id, f"unevaluable: {str(e)[:60]}"))
+            _drop(c.id, d, f"unevaluable: {str(e)[:60]}")
             continue
         if verdict.ok and isinstance(v, (int, float)):
             d.setdefault("proof", {})["ref"] = round(v, 4)
@@ -1011,7 +1027,9 @@ def prepare_layer_revalidation(
             reason = verdict.reasons[0] if verdict.reasons else (
                 f"reads {v:.4g} against {c.target()} on the final render"
             )
-            dropped.append((c.id, reason))
+            _drop(c.id, d, reason)
+    # Insertion order is the order the rows were read, so the projection stays stable.
+    dropped = [(cid, "; ".join(reasons)) for cid, reasons in drops.items()]
     result = {
         "kept": sum(1 for d in keep if d.get("origin") == "builder" and str(d.get("layer")) == str(layer_id)),
         "dropped": dropped,
