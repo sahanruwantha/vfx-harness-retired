@@ -25,6 +25,7 @@ from vfx_harness.agents.builder.critic_focus import (
     _structured_or_text,
 )
 from vfx_harness.agents.builder.drain import _extract_json, _verdict
+from vfx_harness.agents.builder.evidence import _unit_raster_mode
 from vfx_harness.agents.builder.execution_guard import (
     ExecutionAuthorityLost,
     ExecutionGuard,
@@ -107,6 +108,12 @@ async def _critique(
         claims=claim_manifest,
         review_mode=review_mode,
         focus_panels=focus_panels,
+        # What may be ASKED is bounded by what the plate can SHOW. The same function
+        # that chose the raster mode names the medium, so the rubric cannot drift from
+        # the render: a workbench_solid debt suppresses materials, and a critic given an
+        # appearance rubric there returns "reads flat grey" about a facade whose emissive
+        # window mask is simply not in that image (HIR-0241).
+        render_medium=_unit_raster_mode(active_unit),
         focus_frames=sorted(focus_references),
     )
 
