@@ -50,6 +50,7 @@ from vfx_harness.orchestration.layer_outcome_paths import (
     layer_outcome_path,
 )
 from vfx_harness.orchestration.plan_bundle_integrity import PlanPublicationError
+from vfx_harness.orchestration.unit_state_lock import unit_state_path
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import (
@@ -60,6 +61,28 @@ if TYPE_CHECKING:
 
 class LayerPublicationConflict(ValueError):
     """A layer has no complete, current, mutually consistent publication."""
+
+
+class LayerFinalizationNotPassed(LayerPublicationConflict):
+    """The layer finalized, and its terminal receipt did not pass.
+
+    Carries the receipt and the durable state it was read from, because that receipt names
+    which judgments failed and why, and a boundary that discards it can only report a
+    status (HIR-0248).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        layer_id: str,
+        receipt: LayerFinalizationReceipt,
+        source_path: Path,
+    ) -> None:
+        self.layer_id = str(layer_id)
+        self.receipt = receipt
+        self.source_path = Path(source_path)
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,9 +505,12 @@ def _require_one_current_layer_publication(
         # the status sent a driver to engineering with a generic route while the cause
         # sat one attribute away (HIR-0247).
         diagnosis = describe_failed_finalization(receipt.canonical, receipt.evaluation_groups)
-        raise LayerPublicationConflict(
+        raise LayerFinalizationNotPassed(
             f"layer {layer_id} terminal finalization is {receipt.final_status!r}, "
-            "not 'passed'" + (f": {diagnosis}" if diagnosis else "")
+            "not 'passed'" + (f": {diagnosis}" if diagnosis else ""),
+            layer_id=layer_id,
+            receipt=receipt,
+            source_path=unit_state_path(root, layer_id),
         )
     expected_prefix = tuple(
         (

@@ -1103,6 +1103,41 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   for the adjacent field. Author a cause with `require_terminal_cause`, which fails closed;
   `closed_terminal_cause` is for normalising observed metadata off arbitrary historical
   records and degrades an unknown value silently by design (HIR-0227).
+  A layer whose terminal finalization did not pass stops on the receipt, not on the
+  status. `LayerFinalizationNotPassed` carries the parsed receipt and the durable state it
+  was read from, and the build boundary compiles a typed stop from it -- re-read from
+  `state/work-units/layer_<id>.json` and refused if the bytes disagree. It compiles that
+  stop when, and only when, the failures were evidence that could not be produced: a
+  `decided_by` in `EVIDENCE_UNAVAILABLE_DECIDERS` means no amount of rebuilding supplies
+  the prerequisite, so it escalates as `human_decision_required` over three answers --
+  move the judgment to a layer that can produce it, add the missing provider before this
+  layer, withdraw it -- naming the layer, requirement and debt as owner scope. The answers
+  are derived from the deciders that failed, never a fixed set: a contract gap offers the
+  required claim nobody authored and the vocabulary-gap escalation, because a remedy set
+  that does not contain the remedy is a misclassification wearing the right words. The
+  envelope also names the failing rows whose evidence did exist, so one group's missing
+  prerequisite cannot read as the layer's only blocker. A failing
+  `critic` or `unit_executable_evidence` row is the layer failing on its merits and
+  compiles no envelope at all: the exit stays plain with `terminal_cause`
+  `acceptance_rejected`, because a dispatchable transaction there would manufacture the
+  `local_implementation_miss` authority no producer proves. One exception type for every
+  incomplete publication is what left a boundary holding a complete receipt and exiting
+  with a number (HIR-0248).
+  An unreachable path has two opposite diagnoses and the symptom does not distinguish
+  them: a caller made it unreachable by accident, or a contract forbids what it asks for.
+  The first is a bug owned by the caller; the second is an ADR owned by the invariant. The
+  cheap fix is the tell -- the accident diagnosis always suggests one, and its
+  attractiveness is what makes it the default answer. A branch written to terminalize with
+  no stop envelope looked like the accident (a check made inert by its caller, the
+  HIR-0232 shape) and was the invariant: the run/v2 reader raises without
+  `stop_envelope_digest` on a `failed` status, because an unaccepted terminal run's
+  envelope is machine dispatch authority. Answer that question per failing row, not per
+  stop: one stop routinely carries several failing contracts, an authored row naming a
+  role that correct work must occlude sits on the accident branch while a row whose only
+  owned lever trades against a passing sealed row sits on the invariant branch, and a
+  diagnosis taken at stop granularity assigns both to whichever was read first. The two
+  answers have different owners, and the wrong one sends a repair to a boundary with no
+  scope to make it (HIR-0248).
 - Reopen a fixed or interrupted unit only through the audited `vfx units retry` transition, with
   reason and evidence. A reopened unit whose executable rows already pass may mutate until the
   first in-session verdict — the convergence guard cannot treat a failed qualitative claim as
@@ -1601,6 +1636,14 @@ inventories, grep hits read as payloads, one finalizer read as another, a wait l
 its own pgrep pattern timed as the suite, and a stale discriminator that would have passed
 silently. State only what the artifact you opened evidences: a record that carries no layer
 field does not establish a layer, whoever else already believes it.
+
+Marking which half of a claim you verified and which you took on someone's report is an
+audit trail, not a safeguard: it makes an error correctable later and does nothing at the
+moment it enters. A characterisation relayed from a peer was about to become a
+load-bearing example in this file, correctly marked unverified the whole time, and what
+removed it was the peer opening the per-role dump -- not the marking. Mark anyway, because
+the correction lands cleanly when it comes; never let the marking stand in for the check
+on anything you are about to make durable.
 
 A negative result is a statement about the scope you searched, and it has to carry that
 scope in the same sentence or it will be read as universal by whoever gets it next —

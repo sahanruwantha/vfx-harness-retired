@@ -7,6 +7,20 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- A failed layer finalization stops on its own receipt. `vfx build` used to catch the
+  publication refusal and exit with a number, so a run whose receipt named three failing
+  judgments, their frames, their decider, and the debt and requirement they were paying
+  terminalized as `harness_defect` — the route reserved for a boundary that cannot classify
+  itself. The boundary now compiles a typed stop from that receipt, re-read from durable
+  state and refused if the bytes disagree, and it does so only when the failures were
+  evidence that could not be produced: a black plate or an uncovered judge frame escalates
+  as `human_decision_required` over answers derived from the deciders that failed — a plate
+  with no signal offers a provider, an uncovered judge frame offers the claim nobody
+  authored — naming the layer, requirement and debt as its owner, and naming any further
+  judgments that were made and failed so the prerequisite does not read as the only blocker. A judgment that was actually made and did not pass compiles no
+  envelope — that is the layer failing on its merits, and inventing a dispatchable
+  transaction for it would manufacture authority no producer proves (HIR-0248).
+
 - A verdict the harness emits is now one its receipt can record. `verdicts.py` emitted
   four mechanically decided verdicts for a group with no qualitative claim — one pass/fail
   from executable evidence and three structural refusals naming which authority fact

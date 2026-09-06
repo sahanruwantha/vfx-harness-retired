@@ -184,7 +184,16 @@ class BuildAuthorityDefect(RuntimeError):
 
 
 class LayerVerdictFailed(RuntimeError):
-    """Units passed but the composed layer ledger verdict did not."""
+    """Units passed but the composed layer ledger verdict did not.
+
+    ``finalization`` is the underlying refusal when a terminal receipt exists and did not
+    pass, so the public boundary can compile a stop from the receipt instead of from this
+    exception's prose (HIR-0248). It is ``None`` for every other publication conflict.
+    """
+
+    def __init__(self, message: str, *, finalization: Exception | None = None) -> None:
+        self.finalization = finalization
+        super().__init__(message)
 
 
 class UnpassedPrior(RuntimeError):

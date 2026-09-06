@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import anyio
 
 import vfx_harness.agents.builder.stops as stop_runtime
+from vfx_harness.agents.builder import finalization_stops
 from vfx_harness.agents.builder.models import (
     BuildAuthorityDefect,
     BuildTruncated,
@@ -43,6 +44,7 @@ from vfx_harness.orchestration.generate_construction import (
     ensure_construction_read_namespace,
 )
 from vfx_harness.orchestration.layer_publication import (
+    LayerFinalizationNotPassed,
     LayerPublicationConflict,
     require_current_layer_publication,
 )
@@ -188,7 +190,8 @@ async def _run_already_fenced(
             )
         except LayerPublicationConflict as exc:
             raise LayerVerdictFailed(
-                f"layer {g.id} has no complete receipt-bound publication: {exc}"
+                f"layer {g.id} has no complete receipt-bound publication: {exc}",
+                finalization=exc if isinstance(exc, LayerFinalizationNotPassed) else None,
             ) from exc
     finally:
         session.close()
@@ -249,6 +252,48 @@ def _authority_defect_exit(shot, failure: BuildAuthorityDefect) -> run_artifacts
     # envelope, not prose or exit code, becomes dispatch authority.
     stopped.detail = detail
     return stopped
+def _layer_verdict_exit(
+    shot,
+    selected: ResolvedSelectedAuthority,
+    failure: LayerVerdictFailed,
+) -> SystemExit:
+    """Publish the receipt's own stop when the failure names a missing prerequisite.
+
+    A finalization that failed on evidence it could not produce has a nameable owner and
+    a nameable decision, so it leaves as a typed stop rather than as an exit code and a
+    sentence. A finalization that failed on judgments actually made is the layer failing
+    on its merits: it keeps the plain exit, because compiling a dispatchable transaction
+    for it would invent authority no producer proves (HIR-0248).
+    """
+    conflict = failure.finalization
+    layout = run_artifacts.active(shot.folder)
+    bundle = selected.assertion.bundle
+    view = selected.assertion.effective_view
+    if (
+        isinstance(conflict, LayerFinalizationNotPassed)
+        and layout is not None
+        and bundle is not None
+        and view is not None
+    ):
+        envelope = finalization_stops.compile_finalization_failure_stop(
+            layout,
+            layer_id=conflict.layer_id,
+            bundle_digest=bundle.digest,
+            view_digest=view.digest,
+            source_path=conflict.source_path,
+            receipt=conflict.receipt.as_dict(),
+        )
+        if envelope is not None:
+            stopped = run_artifacts.TypedStop(
+                9, envelope, terminal_cause="typed_stop_selected"
+            )
+            stopped.detail = str(failure)
+            return stopped
+    return run_artifacts.RequestedExit(
+        9, str(failure), terminal_cause="gate_rejected"
+    )
+
+
 def main() -> None:
     load_environment()
     ap = argparse.ArgumentParser(description="Build one plan layer with the critic loop.")
@@ -307,7 +352,7 @@ def main() -> None:
             raise run_artifacts.RequestedExit(7, f"INCOMPLETE CHAIN — {e}") from None
         except LayerVerdictFailed as e:
             log(f"LAYER VERDICT — {e}")
-            raise run_artifacts.RequestedExit(9, str(e)) from None
+            raise _layer_verdict_exit(shot, request.selected_authority, e) from None
         except ChainBroken as e:
             log(f"CHAIN BROKEN — {e}")
             raise run_artifacts.RequestedExit(4, f"CHAIN BROKEN — {e}") from None

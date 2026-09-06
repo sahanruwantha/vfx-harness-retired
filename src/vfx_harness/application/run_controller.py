@@ -725,6 +725,17 @@ def evaluate_rematerialization(
     if stored is not None and stored != evaluation:
         raise ValueError("stored controller postcondition evaluation conflicts with current proof")
     controller_state.publish_evaluation(shot, evaluation)
+    # A cause fingerprint is spent here and nowhere else, which is the only reason a
+    # non-dispatchable stop -- a human_decision_required escalation, say -- cannot burn one
+    # and make a later legitimate dispatch of the same cause refuse. That invariant is
+    # invisible at this line and would go away quietly if any other stop path reached it,
+    # so it is asserted rather than described (caesar_curia, HIR-0248).
+    if action.transaction_id not in DISPATCHABLE_TRANSACTIONS:
+        raise ValueError(
+            f"controller published a dispatch attempt for {action.transaction_id!r}, which has "
+            f"no receipt-backed adapter; only {sorted(DISPATCHABLE_TRANSACTIONS)} may spend a "
+            "cause fingerprint"
+        )
     attempt = PriorDispatchAttempt(
         cause_fingerprint=envelope.cause_fingerprint,
         authoritative_before_digest=envelope.authoritative_before_digest,
