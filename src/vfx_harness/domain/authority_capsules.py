@@ -34,12 +34,20 @@ _SCHEMAS: dict[str, object] = {
 _LAYER_FIELDS = frozenset(
     {
         "id", "script", "title", "primary_judge", "judge", "owns",
-        "evidence_domains", "reads", "execution", "stages", "jit", "dressable",
+        "evidence_domains", "image_observation_media", "reads", "execution", "stages",
+        "jit", "dressable",
     }
 )
+#: Required on every sparse layer.
 _LAYER_CORE = frozenset(
     {"id", "script", "title", "primary_judge", "judge", "owns", "evidence_domains", "reads"}
 )
+#: Fields a JIT view may not change from the sparse bundle. A superset of `_LAYER_CORE`,
+#: because "required on every layer" and "may not drift" are different properties and
+#: `image_observation_media` has the second without the first: only an image layer
+#: declares it, and a view silently moving one from eevee to workbench_solid would
+#: preserve receipts judged under the other medium (ADR-0011).
+_LAYER_STABLE = _LAYER_CORE | frozenset({"image_observation_media"})
 _JIT_FIELDS = frozenset(
     {"depends_on_layers", "required_outcomes", "provides", "reserved_roles", "owned_requirements"}
 )
@@ -185,7 +193,7 @@ def _effective_units(
         _fields(row, _LAYER_FIELDS, at, _LAYER_CORE | frozenset({"execution", "stages"}))
         layer_id = _text(row.get("id"), f"{at}.id")
         base = sparse[layer_id]
-        changed = sorted(field for field in _LAYER_CORE if row.get(field) != base.get(field))
+        changed = sorted(field for field in _LAYER_STABLE if row.get(field) != base.get(field))
         if changed:
             raise AuthorityCapsuleError(f"{at} changes sparse layer fields: {changed}")
         if row.get("execution") == "jit_deferred":

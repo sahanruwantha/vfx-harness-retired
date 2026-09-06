@@ -79,6 +79,7 @@ def _deferred_root(root: Path) -> None:
     layer["evidence_domains"] = sorted(
         set(layer.get("evidence_domains") or []) | {"image"}
     )
+    layer["image_observation_media"] = ["workbench_solid"]
     layer["jit"] = {
         "depends_on_layers": [],
         "required_outcomes": [],

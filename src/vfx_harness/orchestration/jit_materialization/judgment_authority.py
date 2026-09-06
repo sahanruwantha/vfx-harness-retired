@@ -21,6 +21,7 @@ from vfx_harness.domain.judgment_debts import (
     compile_judgment_debt,
     compile_provider_activation,
 )
+from vfx_harness.domain.lit_judgment_scope import IMAGE_MEDIA_FIELD
 from vfx_harness.domain.work_units import (
     allowed_unit_provides,
     plan_selector_declared,
@@ -215,6 +216,37 @@ def compile_materialized_judgment_definition(
         OBSERVATION_MEDIA,
         "decision.judgment.observation_medium",
     )
+    # The sparse layer declared, before this plan was paid for, which media its image
+    # judgments would use, and the publication gate proved an illumination provider is
+    # reachable for the lit ones. A debt seeded outside that declaration would be
+    # scheduling an observation the plan never promised it could produce, which is the
+    # decorative-declaration failure: the gate holds and the value it guards drifts
+    # (ADR-0011).
+    declared_media = global_layer.get(IMAGE_MEDIA_FIELD)
+    if declared_media is None:
+        # Strict migration, not a compatibility window: a pre-ADR-0011 bundle carries no
+        # declaration, so nothing proved a light is reachable for this layer, and reading
+        # the absence as "any medium is fine" is exactly the silent compatibility that
+        # lets an unpayable eevee debt through the boundary built to stop it.
+        declared_domains = sorted(
+            str(item) for item in (global_layer.get("evidence_domains") or ())
+        )
+        raise ValueError(
+            f"layer {layer.id} is seeding a {medium!r} judgment debt but declares no "
+            f"{IMAGE_MEDIA_FIELD}; its evidence_domains are {declared_domains}. Nothing "
+            "has proved an illumination provider is reachable for this layer, because "
+            "this selected plan predates that declaration. Republish the global plan with "
+            f"{IMAGE_MEDIA_FIELD} on every layer declaring image evidence (ADR-0011)"
+        )
+    if medium not in {str(item) for item in declared_media}:
+        raise ValueError(
+            f"decision.judgment.observation_medium {medium!r} is not declared by layer "
+            f"{layer.id}, whose {IMAGE_MEDIA_FIELD} is "
+            f"{sorted(map(str, declared_media))}. Publication proved illumination "
+            "reachability against that declaration; seeding another medium here would "
+            "schedule an observation the plan never promised. Judge in a declared medium, "
+            "or republish the global plan with this layer declaring it"
+        )
     lifecycle = _enum(
         judgment.get("lifecycle"),
         JUDGMENT_DEBT_LIFECYCLES,

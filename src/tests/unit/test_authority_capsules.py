@@ -557,3 +557,36 @@ def test_layer_capsule_content_changes_demand_a_digest_schema_bump() -> None:
     assert next(row for row in compiled.layers if row.layer_id == "1").capsule_digest == (
         "0ee322d71335f26a3603943484a0ca33d80d27c54b00ba3c06b1907f6a39621f"
     )
+
+
+def test_the_image_media_widening_leaves_prior_layer_digests_comparable() -> None:
+    """A widening must round-trip the key set that came before it.
+
+    ADR-0011 added `image_observation_media` to the allowed sparse-layer fields. The layer
+    capsule projection embeds the whole sparse row, which looks like a content change and
+    is not: a row that does not carry the field produces a byte-identical projection. That
+    distinction decides whether DIGEST_SCHEMA must bump, and getting it wrong in either
+    direction is expensive -- a needless bump forces a migration that changes nothing, and
+    a missing one leaves every stored digest stale with no migration path (HIR-0181).
+
+    A widening round-trips itself perfectly and breaks only the generation before it, so
+    this parses the previous key set explicitly rather than trusting the new one
+    (HIR-0207).
+    """
+    from vfx_harness.orchestration.unit_state_identity import DIGEST_SCHEMA
+
+    documents = _global_documents()
+    layer = documents["layers.json"]["layers"][0]
+    assert "image" in layer["evidence_domains"]
+    assert "image_observation_media" not in layer, (
+        "this fixture must stay on the pre-ADR-0011 key set for the comparison to mean anything"
+    )
+
+    view = deepcopy(documents)
+    _materialize_camera(view, _debt())
+    compiled = compile_authority_capsules(documents, view)
+
+    assert DIGEST_SCHEMA == 5
+    assert next(row for row in compiled.layers if row.layer_id == "1").capsule_digest == (
+        "0ee322d71335f26a3603943484a0ca33d80d27c54b00ba3c06b1907f6a39621f"
+    ), "a row without the new field must digest exactly as it did before the widening"

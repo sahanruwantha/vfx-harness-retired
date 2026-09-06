@@ -7,6 +7,16 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- A plan that cannot light a layer it promised appearance for now fails at publication
+  rather than at that layer's materialization. `hansa_silk_road` spent $1.19 publishing a
+  plan and $79.15 over ten attempts reaching the failure, twice for one layer, because
+  three gates checked optical signal and all of them see only materialized units. A layer
+  declaring `image` evidence now declares `image_observation_media`, and one naming a lit
+  medium must reach an `illumination` provider — while a layer judged in Workbench solid,
+  which needs no lamp and no world, is never blocked. The declaration is binding: a debt
+  seeded with an undeclared medium is refused, and a selected plan predating the field
+  fails closed naming republication (ADR-0011).
+
 - A failed layer finalization stops on its own receipt. `vfx build` used to catch the
   publication refusal and exit with a number, so a run whose receipt named three failing
   judgments, their frames, their decider, and the debt and requirement they were paying

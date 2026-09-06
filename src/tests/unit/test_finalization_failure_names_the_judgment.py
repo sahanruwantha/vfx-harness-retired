@@ -16,6 +16,8 @@ badly and a judgment that could not be made are different failures with differen
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from vfx_harness.domain.layer_finalization_diagnosis import (
     EVIDENCE_UNAVAILABLE_DECIDERS,
     describe_failed_finalization,
@@ -125,3 +127,63 @@ def test_several_deciders_are_reported_separately_not_merged() -> None:
     assert "no_optical_signal" in described
     assert "unit_executable_evidence" in described
     assert " | " in described
+
+
+def test_a_falsified_provisional_requirement_is_a_judgment_made_not_evidence_missing():
+    """Driven through the real producer, because the defect was in reading its output.
+
+    `_provisional_composition_contract_gap` runs *after* a qualified critic identified a
+    concrete defect. It returns early for `no_optical_signal` precisely because that case
+    is different, then clears `issues` and moves the criticism into `contract_gaps`.
+
+    Classifying its decider as unavailable evidence therefore made two errors at once: it
+    told the reader the plate could not be judged when a critic had judged it, and it
+    dropped the observation, because the only place the criticism still lived was the field
+    the producer had moved it to.
+    """
+    from vfx_harness.agents.builder.verdicts import _provisional_composition_contract_gap
+
+    unit = SimpleNamespace(
+        provisional_requirement_ids=("R41",),
+        provisional_debt_ids=("jd-abc123",),
+        mutates=SimpleNamespace(roles=("building.mass.crown",)),
+    )
+    judged = _provisional_composition_contract_gap(
+        {
+            "pass": False,
+            "decided_by": "critic",
+            "issues": ["Tower crown is absent"],
+            "observation_reconciliation": [
+                {
+                    "state": "actionable",
+                    "observation": {
+                        "claim_id": "judgment-debt:jd-abc123:crown",
+                        "observation": "Tower crown is absent",
+                        "action": "model the crown",
+                    },
+                }
+            ],
+        },
+        unit,
+        121,
+    )
+    # The producer's own postconditions, asserted so this test fails loudly rather than
+    # vacuously if it ever stops moving the criticism.
+    assert judged["decided_by"] == "provisional_requirement_contract_gap"
+    assert judged["issues"] == []
+    assert judged["contract_gaps"][0]["observation"]["observation"] == "Tower crown is absent"
+
+    diagnosis = describe_failed_finalization([{"frame": 121, "verdict": judged}])
+
+    assert "the work was judged and did not pass" in diagnosis
+    assert "the evidence could not be produced" not in diagnosis
+    assert "Tower crown is absent" in diagnosis
+
+
+def test_a_no_signal_verdict_is_still_unavailable_evidence():
+    """The other half: the producer returns this one untouched, and it must stay so."""
+    diagnosis = describe_failed_finalization(
+        [{"frame": 1, "verdict": {"pass": False, "decided_by": "no_optical_signal"}}]
+    )
+
+    assert "the evidence could not be produced" in diagnosis

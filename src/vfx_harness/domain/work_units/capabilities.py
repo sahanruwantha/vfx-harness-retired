@@ -19,7 +19,19 @@ from vfx_harness.domain.semantic_roles import match_semantic
 #: family, and the script that would call them does not exist when the unit is staged
 #: (HIR-0234).
 UNIT_PROVIDES = {"camera", "geometry", "illumination"}
-GLOBAL_SCENE_CAPABILITIES = {"camera"}
+#: Capabilities a sparse layer proves it can reach before any layer materializes.
+#: `illumination` joined `camera` because the JIT bootstrap gates that check optical
+#: signal see only materialized units, so a plan promising a lit appearance judgment on a
+#: layer with no reachable light was admitted at publication and refused three boundaries
+#: later, after the plan was paid for (ADR-0011).
+GLOBAL_SCENE_CAPABILITIES = {"camera", "illumination"}
+#: Capabilities whose global grant makes the layer exclusive to them: a camera-providing
+#: layer stages camera and control units only. This is a camera rule, not a property of
+#: being globally declarable. `illumination` is globally declarable *and* freely unit-
+#: declarable -- an emissive facade is the light and needs no dedicated layer -- so
+#: deriving exclusivity from GLOBAL_SCENE_CAPABILITIES membership would have silently
+#: retired HIR-0234's mechanism the moment illumination joined that set (ADR-0011).
+LAYER_EXCLUSIVE_CAPABILITIES = {"camera"}
 
 CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE = (
     "a sparse layer that globally provides camera may stage camera/control units only; "
@@ -92,9 +104,10 @@ def allowed_unit_provides(global_layer_row: Mapping[str, Any]) -> frozenset[str]
     jit = global_layer_row.get("jit")
     raw_global = jit.get("provides") if isinstance(jit, Mapping) else {}
     global_capabilities = {str(value) for value in raw_global} if isinstance(raw_global, Mapping) else set()
-    if "camera" in global_capabilities:
-        return frozenset({"camera"})
-    return frozenset(UNIT_PROVIDES - GLOBAL_SCENE_CAPABILITIES)
+    exclusive = sorted(global_capabilities & LAYER_EXCLUSIVE_CAPABILITIES)
+    if exclusive:
+        return frozenset(exclusive)
+    return frozenset(UNIT_PROVIDES - LAYER_EXCLUSIVE_CAPABILITIES)
 
 
 def _sparse_depends_on(row: Mapping[str, Any]) -> tuple[str, ...]:

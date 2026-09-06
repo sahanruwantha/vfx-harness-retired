@@ -22,6 +22,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from vfx_harness.domain.lit_judgment_scope import (
+    IMAGE_MEDIA_FIELD,
+    parse_image_media,
+    unreachable_illumination,
+)
 from vfx_harness.domain.plan_records import (
     DECISION_STRENGTHS,
     brief_clause_spans,
@@ -168,6 +173,7 @@ def validate_mapping(
     reserved_seen: list[tuple[str, str]] = []
     capability_closure: dict[str, set[str]] = {}
     layer_domains: dict[str, tuple[str, ...]] = {}
+    layer_media: dict[str, frozenset[str]] = {}
     refs_dir = Path(refs_dir)
     for index, layer in enumerate(layers):
         where = f"layers[{index}]"
@@ -227,6 +233,24 @@ def validate_mapping(
                 )
             except ValueError as exc:
                 errors.append(str(exc))
+        # A layer declaring image evidence says which medium it will be judged in, and
+        # that declaration is what the illumination closure is checked against. Image is
+        # not the same question as lit: silhouette and extent are image evidence a
+        # Workbench-solid plate settles with no lamp and no world (ADR-0011).
+        declares_image = isinstance(domains, list) and "image" in set(map(str, domains))
+        if declares_image:
+            try:
+                layer_media[lid] = parse_image_media(
+                    layer.get(IMAGE_MEDIA_FIELD), f"{where}.{IMAGE_MEDIA_FIELD}"
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+        elif layer.get(IMAGE_MEDIA_FIELD) is not None:
+            errors.append(
+                f"{where}.{IMAGE_MEDIA_FIELD} is declared but evidence_domains does not "
+                "name 'image'; the medium is how image evidence is observed and means "
+                "nothing without it"
+            )
         depends = layer.get("depends_on")
         if not isinstance(depends, list):
             errors.append(f"{where}.depends_on must be a list of earlier layer ids")
@@ -310,6 +334,13 @@ def validate_mapping(
             for capability in capability_closure.get(str(dependency), set())
         }
         capability_closure[lid] = provided | dependency_capabilities
+        unlit = unreachable_illumination(
+            layer_id=lid,
+            declared_media=layer_media.get(lid, frozenset()),
+            capability_closure=capability_closure,
+        )
+        if unlit:
+            errors.append(f"{where} {unlit}")
         if "camera" not in capability_closure[lid]:
             errors.append(
                 f"{where} is judged before a camera capability is available; declare "
@@ -475,6 +506,13 @@ def expand_mapping(
             ],
             "owns": [str(key) for key in layer["owns"]],
             "evidence_domains": [str(d) for d in layer["evidence_domains"]],
+            # Validated above; carried onto the published row because the JIT
+            # boundary checks each seeded debt's medium against it (ADR-0011).
+            **(
+                {IMAGE_MEDIA_FIELD: sorted(map(str, layer[IMAGE_MEDIA_FIELD]))}
+                if layer.get(IMAGE_MEDIA_FIELD)
+                else {}
+            ),
             "reads": str(layer["charter"]),
             "execution": "jit_deferred",
             "stages": [],

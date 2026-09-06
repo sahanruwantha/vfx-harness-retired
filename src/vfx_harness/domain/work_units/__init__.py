@@ -35,6 +35,7 @@ from vfx_harness.domain.work_units.capabilities import (
 )
 from vfx_harness.domain.work_units.capabilities import DEFERRED_SUBJECT_BBOX_KINDS as DEFERRED_SUBJECT_BBOX_KINDS
 from vfx_harness.domain.work_units.capabilities import GLOBAL_SCENE_CAPABILITIES as GLOBAL_SCENE_CAPABILITIES
+from vfx_harness.domain.work_units.capabilities import LAYER_EXCLUSIVE_CAPABILITIES as LAYER_EXCLUSIVE_CAPABILITIES
 from vfx_harness.domain.work_units.capabilities import UNIT_PROVIDES as UNIT_PROVIDES
 from vfx_harness.domain.work_units.capabilities import DeferredSubjectActivationGap as DeferredSubjectActivationGap
 from vfx_harness.domain.work_units.capabilities import allowed_unit_provides as allowed_unit_provides

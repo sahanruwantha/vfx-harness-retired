@@ -36,7 +36,8 @@ declares the layer DAG:
    "primary_judge": <frame>, "judge": [{"frame": <frame>, "ref": "refs/<file>"}],
    "owns": ["<axis_key>"], "evidence_domains": ["scene"|"image"|"temporal"|
      "projected_composition"|"human"],
-   "depends_on": [], "provides": {"camera": ["camera.*"]},
+   "image_observation_media": ["workbench_solid"|"eevee"],  // iff domains has "image"
+   "depends_on": [], "provides": {"camera": ["camera.*"], "illumination": ["<role>.*"]},
    "reserved_roles": ["<namespace>.*"]}],
  "axes": [{"key": "<snake_case>", "desc": "<routing test>"}],
  "resolutions": {
@@ -51,13 +52,25 @@ declares the layer DAG:
 Rules, all enforced mechanically:
 - Layer ids are contiguous strings in build order; `depends_on` names earlier layers
   only; reserved namespaces must not overlap; `owns` references declared axes.
-- `provides` maps global scene capabilities, currently only `camera`, to role selectors
+- `provides` maps global scene capabilities, `camera` and `illumination`, to role selectors
   repeated verbatim in that layer's `reserved_roles`. Every layer's own/dependency
   closure must contain camera because materialization owes visibility at each judge
   frame. Put the camera-owning layer before geometry that must be framed; use `{}` only
   after depending on the camera provider. A camera-providing layer's `reserved_roles`
   may only match that camera grant. Form namespaces belong on a later layer that does
-  not provide camera; combining them on one layer is refused.
+  not provide camera; combining them on one layer is refused. An `illumination` grant
+  carries no such exclusivity: the unit that is the light — an emissive facade, a glowing
+  sign — is ordinary look work on an ordinary layer.
+- A layer whose `evidence_domains` names `image` must declare `image_observation_media`.
+  Declare `["workbench_solid"]` when the layer is judged on form — silhouette, extent,
+  occlusion, framing — which Workbench solid settles with no lamp and no world. Declare
+  `["eevee"]` only when the proposition is genuinely about appearance under light, and
+  then that layer's own/dependency closure must contain `illumination`, exactly as it must
+  contain camera. An eevee judgment on a scene with no light renders black: the debt is
+  unpayable in both directions, a darkness bound is trivially met and a brightness bound
+  has nothing to illuminate. Choosing `workbench_solid` where it is truthful is not a
+  weaker plan; choosing `eevee` without a light in the closure is refused here rather than
+  after the layer has been paid for.
 - A clause settled by durable user or brief authority resolves as a decision; preserve
   explicitly approved values verbatim instead of re-deriving them. Every other clause
   resolves `deferred_owner` to exactly one layer and names `evidence_domains` from the

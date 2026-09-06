@@ -23,6 +23,12 @@ from vfx_harness.orchestration.unit_completion_authorizations import (
 # 5: a layer capsule attributes a deferred requirement's decision to its owner layer
 # (HIR-0181); every stored layer digest of generation 4 is incomparable and migrates
 # through the authority-state transaction (HIR-0182).
+# ADR-0011's `image_observation_media` is deliberately NOT a bump. The layer capsule
+# projection embeds the whole sparse row, which reads like a content change -- but a row
+# that does not carry the field produces a byte-identical projection, so every stored
+# digest stays comparable and a bump would force a migration that changes nothing. A
+# widening is pinned by a test that parses the previous key set, not by a generation
+# (HIR-0207).
 DIGEST_SCHEMA = 5
 PRIOR_DIGEST_SCHEMAS = frozenset({4})
 DIGEST_GENERATION_RULE = (

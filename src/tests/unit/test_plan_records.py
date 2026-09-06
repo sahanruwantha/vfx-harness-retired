@@ -590,6 +590,7 @@ def _add_deferred_layer(root: Path) -> None:
         "judge": [{"frame": 239, "ref": "refs/a.png"}, {"frame": 240, "ref": "refs/a.png"}],
         "owns": ["final_lock"], "reads": "polished ending",
         "evidence_domains": ["scene", "temporal", "image", "projected_composition"],
+        "image_observation_media": ["workbench_solid"],
         "execution": "jit_deferred", "stages": [],
         "jit": {
             "depends_on_layers": ["1"],
@@ -2791,6 +2792,7 @@ def test_unit_first_global_bundle_is_clean_for_heterogeneous_roots(
             "primary_judge": 1,
             "judge": [{"frame": 1, "ref": "refs/target.png"}],
             "owns": [axis], "reads": "approved target", "evidence_domains": ["image"],
+            "image_observation_media": ["workbench_solid"],
             "execution": "jit_deferred", "stages": [],
             "jit": {
                 "depends_on_layers": [], "required_outcomes": [],

@@ -151,6 +151,41 @@ nothing to adopt. caesar also confirmed from `run_controller.py:728` that a
 `human_decision_required` stop publishes no `PriorDispatchAttempt` and therefore burns no
 cause fingerprint.
 
+## A fourth correction, from review: the set was wrong
+
+`EVIDENCE_UNAVAILABLE_DECIDERS` was first written as
+`CONTRACT_GAP_DECIDERS | JUDGMENT_ONLY_DECIDERS`. The second set means "decided by
+judgment rather than mechanically" -- a statement about *how* the verdict was reached, not
+about whether evidence existed -- and it carries `provisional_requirement_contract_gap`,
+which `_provisional_composition_contract_gap` emits **after** a qualified critic has
+identified a concrete defect.
+
+That producer returns early for `no_optical_signal`, with a comment saying why: a
+no-signal result "is an inability to observe the proposition, not independent qualitative
+evidence that the proposition is false." The two cases are already distinguished, in the
+one function that produces both. Taking the union collapsed them again one module away.
+
+It failed twice over. A layer whose critic reported *"Tower crown is absent"* was described
+as one where "the evidence could not be produced", and the criticism vanished from the
+sentence -- because the producer sets `issues` to `[]` and preserves the observation in
+`contract_gaps`, so reading only `issues` reports a failure with no reason on exactly the
+verdicts carrying the most specific one. It would also have compiled a
+`human_decision_required` stop offering "add a provider, move the judgment, withdraw it"
+for a judgment that was made and answered.
+
+Fixed by naming the one decider that means unobservable
+(`CONTRACT_GAP_DECIDERS | {"no_optical_signal"}`) and by reading the criticism from
+wherever the producer left it. The regression drives the real producer rather than a
+hand-built verdict, asserts its postconditions so it cannot pass vacuously if the producer
+stops moving the criticism, and fails without the fix with the exact prose the review
+reported.
+
+The general shape is one this record already names in another form: **a set's name
+describes the property its author cared about, not every property a reader might want.**
+`JUDGMENT_ONLY_DECIDERS` answers "is this mechanically decided" and its own docstring says
+so. Reusing it to answer "could this be observed" is the unpinned-second-derivation defect
+with a union instead of a copy.
+
 ## What this does not fix, and why it stops here
 
 `run_artifacts.publish_exception_stop` gives any exception with no `stop_envelope`

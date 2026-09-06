@@ -19,15 +19,25 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from vfx_harness.domain.verdict_deciders import (
-    CONTRACT_GAP_DECIDERS,
-    JUDGMENT_ONLY_DECIDERS,
-)
+from vfx_harness.domain.verdict_deciders import CONTRACT_GAP_DECIDERS
+
+#: The one decider meaning the plate itself could not be observed.
+NO_SIGNAL_DECIDER = "no_optical_signal"
 
 # A verdict decided by one of these did not weigh the work: either the authority was
 # incomplete (a contract gap) or the plate could not be judged at all. Everything else
 # that fails is a negative judgment of work that was actually evaluated.
-EVIDENCE_UNAVAILABLE_DECIDERS = CONTRACT_GAP_DECIDERS | JUDGMENT_ONLY_DECIDERS
+#
+# This is deliberately NOT `CONTRACT_GAP_DECIDERS | JUDGMENT_ONLY_DECIDERS`, which is what
+# it was first written as. `JUDGMENT_ONLY_DECIDERS` means "decided by judgment rather than
+# mechanically" -- the opposite property -- and it carries
+# `provisional_requirement_contract_gap`, which `_provisional_composition_contract_gap`
+# emits *after* a qualified critic identified a concrete defect. That producer returns
+# early for `no_optical_signal` precisely because the two are different, and then clears
+# `issues` and moves the criticism into `contract_gaps`. Reading the union treated an
+# actionable observation as an unproducible plate and dropped the criticism with it, on a
+# set whose own docstring says it is critic-derived.
+EVIDENCE_UNAVAILABLE_DECIDERS = CONTRACT_GAP_DECIDERS | {NO_SIGNAL_DECIDER}
 
 
 def _group_owner(index: int, groups: Sequence[Mapping[str, Any]]) -> str:
@@ -56,6 +66,34 @@ def _group_owner(index: int, groups: Sequence[Mapping[str, Any]]) -> str:
     return "no group"
 
 
+def _first_criticism(verdict: Mapping[str, Any]) -> str:
+    """The criticism this verdict carries, wherever the producer left it.
+
+    `_provisional_composition_contract_gap` sets `issues` to `[]` and preserves the
+    critic's exact observation in `contract_gaps`, so reading only `issues` reports a
+    failure with no reason on precisely the verdicts that carry the most specific one.
+    """
+    issues = verdict.get("issues")
+    if isinstance(issues, Sequence) and not isinstance(issues, str) and issues:
+        return str(issues[0])
+    gaps = verdict.get("contract_gaps")
+    if isinstance(gaps, Sequence) and not isinstance(gaps, str):
+        for gap in gaps:
+            if not isinstance(gap, Mapping):
+                continue
+            observation = gap.get("observation")
+            text = (
+                observation.get("observation")
+                if isinstance(observation, Mapping)
+                else None
+            )
+            if text:
+                return str(text)
+            if gap.get("reason"):
+                return str(gap["reason"])
+    return ""
+
+
 def describe_failed_finalization(
     canonical: Sequence[Mapping[str, Any]],
     groups: Sequence[Mapping[str, Any]] = (),
@@ -75,11 +113,7 @@ def describe_failed_finalization(
         if verdict.get("pass"):
             continue
         decided_by = str(verdict.get("decided_by") or "undeclared")
-        issue = ""
-        issues = verdict.get("issues")
-        if isinstance(issues, Sequence) and not isinstance(issues, str) and issues:
-            issue = str(issues[0])
-        failed.append((decided_by, index, row.get("frame"), issue))
+        failed.append((decided_by, index, row.get("frame"), _first_criticism(verdict)))
     if not failed:
         return ""
 

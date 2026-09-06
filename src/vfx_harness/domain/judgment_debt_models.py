@@ -25,6 +25,27 @@ OBSERVATION_MEDIA = frozenset({"workbench_solid", "eevee"})
 # plate it cannot be measured in is HIR-0241's defect (HIR-0241).
 RENDER_MODE_BY_MEDIUM = {"workbench_solid": "solid", "eevee": "eevee"}
 MEDIUM_BY_RENDER_MODE = {mode: medium for medium, mode in RENDER_MODE_BY_MEDIUM.items()}
+# Which media need the scene to be lit. Derived from the render mode rather than listed,
+# so a new medium inherits the answer from the mode it realises instead of defaulting to
+# "no light needed" by being absent from a hand-kept set. Workbench solid shades from the
+# viewport's own lighting model and renders a scene with no lamp and no world; EEVEE
+# renders that same scene black, which is what makes an eevee judgment unpayable rather
+# than merely dark (ADR-0011).
+_UNLIT_RENDER_MODES = frozenset({"solid"})
+LIT_OBSERVATION_MEDIA = frozenset(
+    medium
+    for medium, mode in RENDER_MODE_BY_MEDIUM.items()
+    if mode not in _UNLIT_RENDER_MODES
+)
+
+
+def medium_requires_illumination(medium: str) -> bool:
+    """Whether judging in this medium needs an illumination provider in scope."""
+    if str(medium) not in OBSERVATION_MEDIA:
+        raise ValueError(
+            f"observation medium {medium!r} is not one of {sorted(OBSERVATION_MEDIA)}"
+        )
+    return str(medium) in LIT_OBSERVATION_MEDIA
 
 
 def render_mode_for_medium(medium: str) -> str:

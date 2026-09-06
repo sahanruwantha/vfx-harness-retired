@@ -54,6 +54,7 @@ def _layer(
         "owns": owns,
         "reads": title,
         "evidence_domains": ["image", "scene", "projected_composition"],
+        "image_observation_media": ["workbench_solid"],
         "execution": "jit_deferred",
         "stages": [],
         "jit": {

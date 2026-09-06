@@ -1,7 +1,7 @@
 ---
 id: ADR-0011
 title: Optical signal is a globally declared capability, like camera
-status: proposed
+status: accepted
 date: 2026-09-06
 supersedes: null
 ---
@@ -85,10 +85,12 @@ mechanism and no new one:
 1. `GLOBAL_SCENE_CAPABILITIES` becomes `{"camera", "illumination"}`. A sparse layer may
    declare `jit.provides.illumination` mapping to reserved-role selectors, as it does for
    camera.
-2. Global publication requires: every layer declaring an `image` evidence domain must have
-   an `illumination` provider in its transitive `depends_on` closure, or be that provider.
-   The refusal names the layer, its declared domains, and the layers that could supply it —
-   the same shape as the `deferred_owner` domain-coverage refusal (HIR-0124).
+2. **A layer declaring the `image` evidence domain declares `image_observation_media`, a
+   non-empty subset of `{workbench_solid, eevee}`.** Global publication requires an
+   `illumination` provider in the transitive `depends_on` closure of every layer naming a
+   *lit* medium; a layer declaring only `workbench_solid` is never blocked by this rule.
+   The refusal names the layer, the lit media it declared, both repairs, and the option of
+   declaring solid-only if the layer judges form rather than appearance.
 3. A materialized unit on an illumination-providing layer must mutate one of that layer's
    exact reserved illumination selectors, exactly as the camera grant already requires.
 4. The JIT bootstrap gates are unchanged. They remain the check that the *unit* actually
@@ -145,11 +147,75 @@ materialized, which is the same limitation the bootstrap gates have. The witness
 proposes comes from the sparse DAG, where it can be checked before the plan is paid for.
 The withdrawn patch is not a starting point for that.
 
-## Open question for the decision-maker
+## The open question, answered
 
-Whether the global refusal should be blocking at publication, or a declared blocker the
-planner may close with an explicit `approved_start`/`planner_start` decision when a layer's
-appearance is genuinely deferred. Camera is blocking today. The asymmetry argument is that a
-missing camera makes projected evidence *unmeasurable*, while a missing light makes image
-debt *unpayable but still well-defined* — which is the same distinction HIR-0124 draws
-between structural and image domains.
+The question put to the decision-maker was whether the refusal should block at publication
+or be a closable blocker, given that a missing camera makes evidence *unmeasurable* while a
+missing light makes it *unpayable but well-defined*.
+
+**Answered: blocking, and scoped to lit judgments.** The asymmetry is real but it is not
+between camera and light — it is between the two media a layer may be judged in. Blocking
+every layer that declares `image` would refuse legitimate Workbench-solid form judgment,
+which needs no lamp and no world. Blocking none admits hansa's failure. So the declaration
+carries the distinction and the gate reads it, rather than the gate guessing from the
+domain.
+
+That is why `image_observation_media` exists rather than a bare closure check on `image`.
+The declaration is also what makes the promise binding: a judgment debt seeded with a
+medium its layer did not declare is refused at materialization, because publication proved
+illumination reachability against the declaration and a debt outside it schedules an
+observation the plan never promised.
+
+`LIT_OBSERVATION_MEDIA` is derived from `RENDER_MODE_BY_MEDIUM`, not listed beside it. A
+medium added later inherits its lighting requirement from the mode it realises instead of
+being absent from a hand-kept set and silently reading as "needs no light" — the failure
+direction that renders black.
+
+One coupling had to be undone to land this. `allowed_unit_provides` computed a unit's legal
+capabilities as `UNIT_PROVIDES - GLOBAL_SCENE_CAPABILITIES`, so adding `illumination` to the
+global set would have silently removed it from what a unit may declare — retiring HIR-0234's
+mechanism, under which an emissive facade declares that it is the light on an ordinary look
+layer. Layer exclusivity is a *camera* rule, not a property of being globally declarable, so
+it now has its own set (`LAYER_EXCLUSIVE_CAPABILITIES = {"camera"}`) and the two questions
+are asked separately.
+
+## The fixture that proves declaration beats inference
+
+hansa_silk_road's selected view, read by that shot's session at the time of the decision,
+holds 29 distinct debts: 18 `eevee`, 11 `workbench_solid`. Six of them carry **one verbatim
+statement** at both media, produced by a single materialization:
+
+```
+jd-7a3dce76  workbench_solid   "Hero windows should come from a repeatable facade
+jd-95b82d78  workbench_solid    module or shader mask rather than individually
+jd-bc92453d  workbench_solid    modeled rooms."
+jd-a3311859  eevee             (same statement, verbatim)
+jd-e416a127  eevee
+jd-e8549f34  eevee
+```
+
+The proposition is about construction method — windows visible in a solid plate mean
+modeled geometry, windows absent mean a shader mask — so the three solid debts are correct
+and the three eevee ones are over-specified. **Nothing in the sentence says which.** A gate
+inferring the medium from the proposition would have to separate two textually identical
+groups, which is the argument for declaring rather than inferring, stated by production
+rather than by design.
+
+That shot's DAG also declares no illumination provider on any of its seven layers, so for
+those eighteen eevee debts there is no later layer at which any becomes satisfiable. A gate
+that fired only at activation would let the plan publish and then die eighteen times. It
+also means "schedule appearance judgments where lighting exists" has no target in that DAG:
+the repair must *add* a provider, not relocate judgments to one.
+
+## Migration
+
+Strict, with no compatibility window (ADR-0004). A layer declaring `image` with no
+`image_observation_media` is rejected where a debt would be seeded against it, naming
+republication: nothing proved a light is reachable for that layer, and reading the absence
+as "any medium is fine" is the silent compatibility this gate exists to prevent.
+
+Measured on the three shots in flight at the time of the decision: **fifteen layers across
+three shots declare `image`, and no layer in any of them declares an illumination
+provider.** All three need one republication. None was running when enforcement landed —
+caesar_curia and hansa_silk_road terminal `failed`, room_1046_opening `interrupted` — so no
+active run was interrupted by the transition.

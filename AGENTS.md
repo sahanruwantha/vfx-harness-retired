@@ -376,6 +376,21 @@ effect.
   fails closed and enumerates legal `object=` choices (HIR-0147).
 - Camera availability comes only from typed `provides: ["camera"]` authority; role names,
   including `camera.target`, never imply a capability (HIR-0098).
+  Illumination is the second globally declared capability. A layer declaring the `image`
+  evidence domain also declares `image_observation_media`, a non-empty subset of
+  `{workbench_solid, eevee}`, and global publication refuses a layer naming a lit medium
+  with no `illumination` provider in its dependency closure. Image is not the same
+  question as lit: silhouette, extent, occlusion and framing are image evidence a
+  Workbench-solid plate settles with no lamp and no world, and that case is never blocked.
+  A debt seeded with a medium its layer did not declare is refused at materialization, and
+  a selected layer declaring `image` with no media field is stale authority that fails
+  closed naming republication -- publication proved reachability against the declaration,
+  so an absent one proved nothing. `LIT_OBSERVATION_MEDIA` is derived from
+  `RENDER_MODE_BY_MEDIUM` rather than listed, so a medium added later inherits its
+  lighting requirement instead of silently reading as needing none. Global declarability
+  and layer exclusivity are separate properties: a camera grant makes the layer
+  camera-only, an illumination grant does not, because an emissive facade is the light and
+  lives on an ordinary look layer (ADR-0011, HIR-0234).
   A capability is originated once per layer: exactly one declarer may reach no other
   declarer of it, and every other unit declaring the same capability must contain that
   originator in its dependency closure. Declaring `provides` does not create the host, and
@@ -1111,7 +1126,12 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   `decided_by` in `EVIDENCE_UNAVAILABLE_DECIDERS` means no amount of rebuilding supplies
   the prerequisite, so it escalates as `human_decision_required` over three answers --
   move the judgment to a layer that can produce it, add the missing provider before this
-  layer, withdraw it -- naming the layer, requirement and debt as owner scope. The answers
+  layer, withdraw it -- naming the layer, requirement and debt as owner scope. That set is
+  the contract gaps plus `no_optical_signal` alone, never `JUDGMENT_ONLY_DECIDERS`, which
+  answers whether a verdict was decided mechanically and carries
+  `provisional_requirement_contract_gap` -- emitted after a critic identified a concrete
+  defect, with the criticism moved out of `issues` into `contract_gaps`. A reader of a
+  failed verdict takes its criticism from wherever the producer left it. The answers
   are derived from the deciders that failed, never a fixed set: a contract gap offers the
   required claim nobody authored and the vocabulary-gap escalation, because a remedy set
   that does not contain the remedy is a misclassification wearing the right words. The

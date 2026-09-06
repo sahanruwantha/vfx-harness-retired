@@ -125,6 +125,7 @@ def _product_mapping(registry) -> dict:
                 "charter": "studio camera outcome", "primary_judge": 1,
                 "judge": [{"frame": 1, "ref": "refs/f001.png"}],
                 "owns": ["object_presentation"], "evidence_domains": ["scene", "image"],
+                "image_observation_media": ["workbench_solid"],
                 "depends_on": ["1"], "provides": {},
                 "reserved_roles": ["hero.*"],
             },
@@ -445,7 +446,10 @@ def _readable_mapping(registry) -> dict:
                 "judge": [{"frame": 24, "ref": "refs/f024.png"}],
                 "owns": ["subject_readability"],
                 "evidence_domains": ["image", "scene"],
-                "depends_on": ["1"], "provides": {},
+                # A layer whose reserved namespace is `light.*` is the illumination
+                # provider, so it declares the grant and is judged in beauty (ADR-0011).
+                "image_observation_media": ["eevee"],
+                "depends_on": ["1"], "provides": {"illumination": ["light.*"]},
                 "reserved_roles": ["light.*"],
             },
         ],
