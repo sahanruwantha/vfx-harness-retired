@@ -22,9 +22,11 @@ from vfx_harness.agents.plan_tools.spike import _SPIKE_SELF_FULFILLING_KINDS as 
 from vfx_harness.agents.plan_tools.spike import _CheckBatchBudget as _CheckBatchBudget
 from vfx_harness.agents.plan_tools.spike import _decision_value_signals as _decision_value_signals
 from vfx_harness.agents.plan_tools.spike import _persist_spike_evidence as _persist_spike_evidence
-from vfx_harness.agents.plan_tools.spike import _publish_unit_plan_content as _publish_unit_plan_content
 from vfx_harness.agents.plan_tools.spike import _ready_measure_refs as _ready_measure_refs
 from vfx_harness.agents.plan_tools.spike import _spike as _spike
 from vfx_harness.agents.plan_tools.spike import _spike_ineligibility as _spike_ineligibility
 from vfx_harness.agents.plan_tools.spike import _SpikeBudget as _SpikeBudget
 from vfx_harness.blender.resolution import resolve_blender as resolve_blender
+from vfx_harness.orchestration import unit_plan_content
+
+_publish_unit_plan_content = unit_plan_content.publish_unit_plan_content

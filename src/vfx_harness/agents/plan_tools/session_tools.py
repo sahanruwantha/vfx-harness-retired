@@ -16,13 +16,13 @@ from vfx_harness.agents.plan_tools.constants import (
 )
 from vfx_harness.agents.plan_tools.media import _frame, _metric_list, _probe, _sheet, _text
 from vfx_harness.agents.plan_tools.spike import (
-    _publish_unit_plan_content,
     _ready_measure_refs,
 )
 from vfx_harness.blender.tools import _b64, _load, _metrics_line, _stats
 from vfx_harness.evidence.checks import Check, verify
 from vfx_harness.evidence.metrics import canonical_fingerprint
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration import unit_plan_content
 
 
 def register_session_tools(**closed):
@@ -57,7 +57,7 @@ def register_session_tools(**closed):
             )
         try:
             content = str(args.get("content") or "")
-            target, lines = _publish_unit_plan_content(
+            target, lines = unit_plan_content.publish_unit_plan_content(
                 shot_folder,
                 unit_plan_target,
                 content,

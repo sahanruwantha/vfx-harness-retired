@@ -129,3 +129,39 @@ checks passed. No live inference or visual-quality comparison ran.
 GitHub CI configuration is not yet operational: the VFX repository had no secrets when
 checked, so its read-only `FLYNN_SDK_SSH_KEY` must be provisioned before the workflow can
 install the private dependency. No existing private key was copied into either repository.
+
+## Native unit-plan publication capability
+
+`agents/flynn_plan_tools.py` exposes `unit_plan_publication`, returning a native Flynn
+structured tool and dispatch guard. Its sole model-authored argument is content. The
+harness binds the target, selected authority, current-attempt check and live
+`WorkUnitPlanTransaction`. The transaction must already claim its current plan/stamp
+pair. Closed or mismatched transactions, stale selected authority, unsafe paths and
+invalid content refuse before external dispatch. Content is bounded to 200 trimmed
+characters minimum, 24,000 total characters maximum and 160 lines.
+
+The existing writer now lives in `orchestration/unit_plan_content.py`. Both the current
+planner tool and the native Flynn capability call this same writer; no second plan
+writer or Claude-to-Flynn message adapter was introduced. The native handler reopens and
+validates the integrity stamp and returns hashes for the exact plan and stamp bytes.
+The observation explicitly reports that terminal gate approval is still outstanding.
+A successful SDK operation neither commits SDK state nor accepts a VFX unit.
+
+Content and its sidecar are separate file publications. The native handler claims the
+actual pair even after a partial failure, leaving rollback to the owning VFX transaction.
+SQLite retains an unresolved dispatched effect; it does not invent an atomic filesystem
+commit or silently retry. The injected partial-write test proves the VFX owner can
+restore the predecessor pair while the SDK still records the uncertain operation.
+
+This is a planning capability gate, not the completed planning-session cutover. Global
+planning, materialization and unit-planning model sessions still use their current
+transport until their remaining tools, context and terminal policies are migrated.
+
+Validation: the extraction passed all 2,962 full-suite tests, including real confined
+Blender and authority checks. Final review added the exact plan/JIT selection token to
+the observation and qualified the shared writer's collaborator references; all 48 focused
+planning/publication/transaction checks then passed, including a new test preserving a
+newer writer's bytes after inference without spending the external-action reservation.
+Full-source Ruff and diff checks passed. A non-editable wheel includes the new capability
+and imports it with Claude blocked. This used installed SDK main `50a8df2`; no paid
+inference or planning-session cutover was claimed.
