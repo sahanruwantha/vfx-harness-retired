@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from pathlib import PurePosixPath
 from uuid import uuid4
 
@@ -14,7 +13,6 @@ from vfx_harness.agents.planning_workspace import PlanningWorkspace
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.evaluation.plan_gate.types import _CITE
-from vfx_harness.observability.run_artifacts import RunLayout
 from vfx_harness.orchestration.plan_bundle_integrity import digest, read_real_file
 
 READ_CHARS = 4_000
@@ -23,7 +21,7 @@ GATE_CALLS = 4
 
 
 def global_planning_tools(
-    *, layout: RunLayout, check_current: Callable[[], None],
+    binding: PlanningWorkspace,
 ) -> tuple[tuple[flynn.Tool, ...], flynn.DispatchGuard]:
     """Register publication, selected text reads and bounded deterministic gate feedback.
 
@@ -31,7 +29,7 @@ def global_planning_tools(
     observations never authorize plan publication. Every gate writes a complete audit
     report, so it is charged as an external action even though it changes no plan bytes.
     """
-    binding = PlanningWorkspace(layout, check_current)
+    layout = binding.layout
     readable = tuple(sorted({
         "brief.md", *binding.record["decision_inputs"], *binding.owned,
     }))

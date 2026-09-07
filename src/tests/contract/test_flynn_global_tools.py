@@ -11,6 +11,7 @@ import pytest
 from tests.contract.test_flynn_mapping_publication import bound as bound
 from tests.contract.test_flynn_plan_publication import ObservationOnly
 from vfx_harness.agents import flynn_global_tools
+from vfx_harness.agents.planning_workspace import PlanningWorkspace
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.evaluation.plan_gate.types import Finding, GateResult
 from vfx_harness.orchestration import authority_selection
@@ -32,7 +33,7 @@ def execute(bound, steps, *, after_inference=lambda _: None, check=lambda: None)
             return flynn.InferenceResult.scripted(flynn.ToolCall(name, json.dumps(arguments)))
 
     async def run():
-        tools, guard = flynn_global_tools.global_planning_tools(layout=layout, check_current=check)
+        tools, guard = flynn_global_tools.global_planning_tools(PlanningWorkspace(layout, check))
         grants = tuple(tool.name for tool in tools)
         limits = flynn.RunLimits(len(steps), len(steps), len(steps))
         with flynn.SQLiteRun.create(layout.checkpoints / "global.sqlite", run_id="global",

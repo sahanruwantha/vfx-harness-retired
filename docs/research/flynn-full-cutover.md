@@ -295,3 +295,53 @@ Full-source Ruff and diff checks passed. A fresh non-editable VFX wheel imports 
 native global tool set with Claude blocked, using SSH-installed SDK main
 `50a8df20fb69d01a4baced1bee617b2c075e732b`. The only suite warnings were the existing
 15 Pillow deprecations. SDK source was unchanged; no ARC tests or paid inference ran.
+
+
+## Native global planning sweep
+
+`agents/global_planning_session.py` executes draft, verify and repair sweeps through
+Flynn Session. Each invocation has an explicit name, required caller-selected role
+context, finite wall-time and output-token limits, and a mandatory live ownership check.
+The invocation creates one SQLite journal and refuses to reopen an existing journal or
+replace its report. It does not automatically retry model errors, uncertain writes,
+timeouts or cancellation. Verify and repair require a complete existing draft.
+
+The session and tools now share the same `PlanningWorkspace` object. The old tool-factory
+signature was replaced directly and its callers updated. Workspace checks run before
+inference, before dispatch and before returning. A model must submit the mapping during
+this sweep before `run_gate` becomes an available grant. A clean gate stops the session;
+a dirty plateau, four-call cap or feedback overflow also stops it, preserving the exact
+gate feedback and report locator. These are sweep outcomes, never plan publication.
+Independent terminal gating and authority publication remain due at their existing owners.
+
+Request text is compiled within 32,000 characters from the role policy, selected context
+and the latest complete tool observation. Required items refuse on overflow rather than
+being truncated. The SDK's default observation transport is cleared so serialized image
+payloads and prior observations are not duplicated into text. Native image content is
+selected only for the request immediately after that image read. Further reads replace
+it; neither text nor images accumulate as implicit session history. This character cap
+is not a token estimate or a cap on the separately transported tool schemas and images.
+
+The run report preserves the input/context identity, journal locator, neutral usage,
+output budget, typed termination, latest gate feedback and whether the final workspace
+check completed. Spending is explicitly unpriced. No state commits or selected authority
+are produced by this session.
+
+This completes the native sweep policy, not the production global-planner entry-point
+migration. The public driver currently launches planning in a child process, while its
+live run-owner lease is process-bound and rejects descendant use. Passing an on-disk
+claim or a no-op callback would not satisfy that ownership contract. The command cutover
+must establish an actual ownership boundary (or execute this stage in the owning
+process), compile exact required draft/verify/repair context, move draft audit snapshots
+outside the gate workspace, and replace the old prompt/session/configuration path. No
+Claude-shaped adapter or runtime selector was introduced here.
+
+Validation: the final native session suite passed **44 tests**, including real gate
+execution on still/motion fixtures, real DeepSeek request serialization through an
+offline transport, latest-only text/image selection, budget exhaustion, cancellation,
+timeout, stale inputs/owners, explicit gate stops and uncertain-write retention. The
+complete **3,131-test VFX suite passed** on unchanged runtime source. Full-source Ruff
+and diff checks passed. A fresh non-editable VFX wheel imports the session with Claude
+blocked and uses SSH-installed SDK main `50a8df20fb69d01a4baced1bee617b2c075e732b`.
+The full suite emitted only the existing 15 Pillow deprecation warnings. No SDK source
+changed, no ARC tests ran and no paid inference ran.
