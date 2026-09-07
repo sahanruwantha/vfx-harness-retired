@@ -107,7 +107,11 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
                 assert "inspect_unit" not in request.allowed_tools
                 assert {"write_candidate", "probe_candidate", "freeze_candidate"} & set(request.allowed_tools)
             self.requests += 1
-            return await self.scripted.generate(request)
+            result = await self.scripted.generate(request)
+            return flynn.InferenceResult(result.call, flynn.InferenceUsage(
+                "model", flynn.UsageStatus.KNOWN, True, "fixture", "offline-model",
+                input_tokens=11, output_tokens=3,
+            ))
 
     milestone = Milestone("1@lock", 240, "refs/a.png", "control exists")
     script_rel = unit.mutates.script_spans[0]
@@ -127,6 +131,14 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
             assert len(run.records()["operations"]) == 5
             assert run.remaining()["external"] == 0
             assert run.outcome() is not None
+            usage = run.usage_summary()
+            assert usage["scripted_invocations"] == 1
+            assert usage["model_requests"] == 4
+            assert usage["known_input_tokens"] == 44
+            assert usage["known_output_tokens"] == 12
+            assert usage["usage_complete"] is True
+            report = json.loads((layout.reports / f"flynn-usage-{guard.claim.claim_id}.json").read_text())
+            assert report["usage"] == usage
         if not should_pass:
             assert (tmp_path / script_rel).read_text() == program
             assert ledger._slot(milestone)["script_sha"] == digest[:16]
@@ -172,17 +184,25 @@ def test_flynn_refuses_false_finish_stale_attempt_and_session_resume(tmp_path, m
         async def generate(self, request):
             self.calls += 1
             if fault == "abstained":
-                return flynn.ToolCall("abstain", json.dumps({"reason": "No supported construction identified"}))
+                return flynn.InferenceResult.scripted(
+                    flynn.ToolCall("abstain", json.dumps({"reason": "No supported construction identified"}))
+                )
             if fault == "ungranted":
-                return flynn.ToolCall("accept_unit", "{}")
+                return flynn.InferenceResult.scripted(flynn.ToolCall("accept_unit", "{}"))
             if fault == "false_freeze":
-                return flynn.ToolCall("freeze_candidate", json.dumps({"sha256": "a" * 64}))
+                return flynn.InferenceResult.scripted(
+                    flynn.ToolCall("freeze_candidate", json.dumps({"sha256": "a" * 64}))
+                )
             if self.calls == 1:
-                return flynn.ToolCall("write_candidate", json.dumps({"source": _PROGRAM}))
+                return flynn.InferenceResult.scripted(
+                    flynn.ToolCall("write_candidate", json.dumps({"source": _PROGRAM}))
+                )
             if fault == "interrupted":
                 raise asyncio.CancelledError()
             if fault == "unobserved_rewrite":
-                return flynn.ToolCall("write_candidate", json.dumps({"source": "# unobserved replacement"}))
+                return flynn.InferenceResult.scripted(
+                    flynn.ToolCall("write_candidate", json.dumps({"source": "# unobserved replacement"}))
+                )
             unit_state_claims.release_unit_attempt(
                 tmp_path, "1", unit.id, layer.stages, guard.claim,
                 expected_plan_hash=guard.expected_plan_hash, selection_token=selected.selection_token,
@@ -190,7 +210,7 @@ def test_flynn_refuses_false_finish_stale_attempt_and_session_resume(tmp_path, m
             )
             # Use a currently granted operation so the stale-attempt guard, rather
             # than the earlier SDK grant check, must refuse the revoked authority.
-            return flynn.ToolCall("probe_candidate", "{}")
+            return flynn.InferenceResult.scripted(flynn.ToolCall("probe_candidate", "{}"))
 
     adapter = FaultAdapter()
     exception = {
@@ -292,7 +312,7 @@ def test_flynn_required_candidate_context_refuses_overflow_before_inference(tmp_
         async def generate(self, request):
             self.calls += 1
             assert self.calls == 1, "oversized required source must refuse before another model call"
-            return flynn.ToolCall("write_candidate", json.dumps({"source": source}))
+            return flynn.InferenceResult.scripted(flynn.ToolCall("write_candidate", json.dumps({"source": source})))
 
     adapter = Adapter()
     with builder_execution_fence(tmp_path) as lease, pytest.raises(ValueError, match="Required context item"):

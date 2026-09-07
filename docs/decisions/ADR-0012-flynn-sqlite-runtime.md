@@ -255,3 +255,11 @@ SQLite reduces cross-record publication gaps, but its hardware/filesystem assump
 apply; see the [SQLite atomic commit documentation](https://www.sqlite.org/atomiccommit.html).
 The first implementation uses local rollback journaling with full synchronization. WAL mode
 is a later measured concurrency choice, not a prerequisite for SQLite-based journaling.
+
+### Provider-neutral usage records
+
+[The accounting integration](../research/flynn-usage-accounting.md) adds SDK schema-3
+usage records and a VFX attempt-scoped audit projection. Schema-2 journals remain
+readable for historical inspection only; execution still refuses them. The VFX
+SDK dependency names `codex/sqlite-runtime` directly, following the owner's explicit
+branch-installation preference. This does not change VFX acceptance or resume authority.

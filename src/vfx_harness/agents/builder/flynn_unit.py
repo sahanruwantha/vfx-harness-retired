@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
 
@@ -32,6 +33,20 @@ from vfx_harness.orchestration import unit_completion_state, unit_state
 from vfx_harness.orchestration.authority_selection_transaction import durably_ensure_real_directory
 from vfx_harness.orchestration.builder_execution_fence import builder_execution_fenced
 from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
+
+
+@contextmanager
+def _usage_report(run, layout, claim_id):
+    """Publish an audit projection; SQLite remains the source after interruption."""
+    try:
+        yield
+    finally:
+        layout.write_report(f"flynn-usage-{claim_id}", {
+            "schema": "vfx-harness.flynn-usage/v1",
+            "claim_id": claim_id,
+            "journal": str(run.path.relative_to(layout.root)),
+            "usage": run.usage_summary(),
+        })
 
 
 def _arguments(arguments: str, field: str | None = None) -> dict:
@@ -355,7 +370,7 @@ async def build_unit(
         run_id=attempt_guard.claim.claim_id,
         initial_state=json.dumps(attempt_guard.claim.as_dict(), sort_keys=True),
         limits=limits,
-    ) as run:
+    ) as run, _usage_report(run, layout, attempt_guard.claim.claim_id):
         ledger = unit_runtime.start_unit_runtime(
             shot,
             m,
