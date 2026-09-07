@@ -39,6 +39,11 @@ from vfx_harness.domain.work_units import (
 )
 
 MAPPING_SCHEMA = "vfx-harness.ownership-mapping/v1"
+MAPPING_ARTIFACTS = (
+    "requirements.json", "layers.json", "critic_axes.json", "acceptance.json",
+    "checks.json", "scene_checks.json", "obligations.json", "assumptions.json",
+    "plans/global.md", "plans/ownership_mapping.json",
+)
 
 
 def ownership_mapping_authoring_schema() -> dict[str, Any]:
@@ -82,12 +87,34 @@ def ownership_mapping_authoring_schema() -> dict[str, Any]:
         "required": ["kind", "statement", "decision_strength"],
         "additionalProperties": False,
     }
+    strings = {"type": "array", "items": text, "uniqueItems": True}
+    layer_properties = {
+        "id": text, "title": text, "script": text, "charter": text,
+        "primary_judge": {"type": "integer"},
+        "judge": {"type": "array", "minItems": 1, "items": {
+            "type": "object", "properties": {"frame": {"type": "integer"}, "ref": text},
+            "required": ["frame", "ref"], "additionalProperties": False,
+        }},
+        "owns": {**strings, "minItems": 1}, "evidence_domains": domains,
+        "depends_on": strings, "reserved_roles": {**strings, "minItems": 1},
+        "provides": {
+            "type": "object",
+            "properties": {key: {**strings, "minItems": 1} for key in sorted(GLOBAL_SCENE_CAPABILITIES)},
+            "additionalProperties": False,
+        },
+    }
     return {
         "type": "object",
         "properties": {
             "schema": {"const": MAPPING_SCHEMA},
-            "layers": {"type": "array", "minItems": 1, "items": {"type": "object"}},
-            "axes": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+            "layers": {"type": "array", "minItems": 1, "items": {
+                "type": "object", "properties": layer_properties,
+                "required": list(layer_properties), "additionalProperties": False,
+            }},
+            "axes": {"type": "array", "minItems": 1, "items": {
+                "type": "object", "properties": {"key": text, "desc": text},
+                "required": ["key", "desc"], "additionalProperties": False,
+            }},
             "resolutions": {
                 "type": "object",
                 "additionalProperties": {
@@ -421,6 +448,8 @@ def expand_mapping(
     written: dict[str, Path] = {}
 
     def _write(name: str, payload: Any) -> None:
+        if name not in MAPPING_ARTIFACTS:
+            raise ValueError(f"unregistered mapping artifact: {name}")
         path = workspace / name
         path.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(payload, str):

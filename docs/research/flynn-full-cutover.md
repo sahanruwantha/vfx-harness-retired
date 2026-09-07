@@ -165,3 +165,45 @@ newer writer's bytes after inference without spending the external-action reserv
 Full-source Ruff and diff checks passed. A non-editable wheel includes the new capability
 and imports it with Claude blocked. This used installed SDK main `50a8df2`; no paid
 inference or planning-session cutover was claimed.
+
+
+## Native global ownership-mapping publication
+
+`agents/flynn_mapping_tools.py` registers `publish_ownership_mapping` as a native
+structured Flynn tool. Its only input is the complete mapping; it accepts no output
+path and caps the serialized UTF-8 input at 64,000 bytes. The shared authoring schema
+now closes layer, axis, judge, and capability objects and exposes their required fields.
+Schema and semantic validation reject malformed proposals before tool/external spend.
+
+The capability requires an existing run-owned `plan-workspace/v3` workspace. Its guard
+and handler verify the exact marker, run/shot binding, selected plan/JIT generation,
+authored inputs and decision inputs in both the source shot and the workspace, and
+previous output identities. Changed drafts, symlinks and hard-linked output files
+refuse before publication. The mapping uses the existing prepared-file CAS transport;
+the existing deterministic expander remains the sole compiler of generated documents.
+Every declared output is reopened and hashed before the tool emits a structured draft
+observation. Missing outputs cannot be certified by the expander's returned manifest.
+
+Neither the operation nor its SQLite evaluator selects plan authority or attests a
+terminal gate. A partial expansion remains an unresolved external effect, with no
+automatic retry or rollback. An input change detected after writes likewise remains
+unresolved. Repeated successful draft submissions retain the preceding output identities
+so another writer's work is preserved.
+
+Scripted Session tests cover heterogeneous still/motion drafts and independently run
+the real deterministic VFX gate, while proving that the live shot has no selected
+plan and Flynn has no state commit. Fault injection covers schema/ownership errors,
+byte bounds, changed inputs, changed authority, expired attempts, substituted run
+markers, changed outputs, symlinks, hard links, partial writes and missing artifacts.
+The native module imports with Claude blocked. This capability is not yet wired into
+the production global-planner loop; native bounded reads, gate feedback and escalation
+remain prerequisites for that session migration. No new SDK feature or compatibility
+adapter is required for this boundary.
+
+Validation: all **3,006 VFX tests passed** on unchanged source, including **43 native
+mapping contract cases**; the focused mapping/authoring gate passed **62 tests**.
+Full-source Ruff and diff checks passed. A fresh non-editable VFX wheel imported the
+native mapping capability with Claude blocked, using the SSH-installed SDK main
+`50a8df20fb69d01a4baced1bee617b2c075e732b`. The SDK source was unchanged and no ARC
+gate or paid inference ran. The full suite emitted only the existing 15 Pillow
+`Image.getdata` deprecation warnings.
