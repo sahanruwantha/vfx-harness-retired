@@ -34,7 +34,6 @@ from vfx_harness.orchestration.jit_materialization.schema import (
     materialization_base_selection,
 )
 from vfx_harness.orchestration.ledger import load_layers_from_path
-from vfx_harness.orchestration.plan_authoring import expand_mapping, validate_mapping
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,30 +131,6 @@ def _materialization_kickoff_authority(
         bundle_hash=selected_bundle.content_hash,
         selected_layers=selected_layers,
     )
-
-
-def mapping_expander(workspace: Path, registry, mapping_path: Path):
-    """The warm authoring loop: each mapping write is validated with enumerated errors
-    and, when valid, expanded into the full authority surface immediately — so the
-    session's `run_gate` always measures fresh artifacts and `plans/global.md` exists
-    exactly when the mapping is publishable."""
-
-    def _expand_or_errors() -> list[str]:
-
-        try:
-            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return [f"ownership_mapping.json is not readable JSON: {exc}"]
-        errors = validate_mapping(mapping, registry, workspace / "refs")
-        if errors:
-            return errors
-        try:
-            expand_mapping(workspace, mapping)
-        except (ValueError, OSError) as exc:
-            return [str(exc)]
-        return []
-
-    return _expand_or_errors
 
 
 def _with_target_feedback(hooks: dict, target: Path, validate) -> dict:

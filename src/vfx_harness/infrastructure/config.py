@@ -171,6 +171,9 @@ class Settings:
     distill_inline: bool = False
     execution_model: str = DEFAULT_EXECUTION_MODEL
     planner_model: str = DEFAULT_EXECUTION_MODEL
+    global_planner_model: str = VISION_MODEL
+    global_plan_seconds: int = 600
+    global_plan_output_tokens: int = 32768
     builder_model: str = DEFAULT_EXECUTION_MODEL
     script_model: str = DEFAULT_EXECUTION_MODEL
     reviewer_model: str = VISION_MODEL
@@ -207,6 +210,9 @@ class Settings:
             distill_inline=_flag("VFXH_DISTILL_INLINE"),
             execution_model=execution_model,
             planner_model=_text("VFXH_PLANNER_MODEL", execution_model),
+            global_planner_model=_text("VFXH_GLOBAL_PLANNER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
+            global_plan_seconds=_int("VFXH_GLOBAL_PLAN_SECONDS", 600),
+            global_plan_output_tokens=_int("VFXH_GLOBAL_PLAN_OUTPUT_TOKENS", 32768),
             builder_model=_text("VFXH_BUILDER_MODEL", execution_model),
             script_model=_text("VFXH_SCRIPT_MODEL", execution_model),
             reviewer_model=_text("VFXH_REVIEWER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),

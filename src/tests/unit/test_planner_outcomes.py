@@ -24,7 +24,8 @@ from tests.unit.test_plan_records import (
     publish_current as _publish_fixture_current,
 )
 from tests.unit_attempt_fixtures import legacy_apply_replan, pass_unit
-from vfx_harness.agents import planner
+from vfx_harness.agents import global_planner, planner
+from vfx_harness.agents.global_planning_session import PlanningSweepExhausted
 from vfx_harness.agents.planner import kickoff as kickoff_runtime
 from vfx_harness.domain.layer_outcomes import SealedLayerOutcome
 from vfx_harness.observability import run_artifacts
@@ -35,46 +36,42 @@ from vfx_harness.orchestration.authority_selection_transaction import (
 )
 
 
-def test_two_pass_seeds_canonical_gate_candidate_from_draft(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    draft = tmp_path / "plans" / "global.draft.md"
-    draft.parent.mkdir()
-    draft.write_text("# exact draft\n", encoding="utf-8")
-    final = tmp_path / "plans" / "global.md"
-    final.write_text("# stale candidate\n", encoding="utf-8")
-    shot = SimpleNamespace(folder=tmp_path)
+def _native_two_pass_setup(tmp_path, monkeypatch):
+    final = tmp_path / "plans/global.md"
+    final.parent.mkdir(exist_ok=True)
+    snapshot = tmp_path / "reports/draft.json"
+    snapshot.parent.mkdir(exist_ok=True)
+    monkeypatch.setattr(planner, "load_shot", lambda _: SimpleNamespace(folder=tmp_path))
+    monkeypatch.setattr(planner.Settings, "from_environment", lambda **_: SimpleNamespace(
+        global_planner_model="model", plan_verify_max_turns=6,
+    ))
+    monkeypatch.setattr(run_artifacts, "ensure", lambda *a, **kw: SimpleNamespace(scratch=tmp_path / "scratch"))
 
-    async def fake_generate(*args, **kwargs):
-        if kwargs.get("verify_draft"):
-            assert final.read_bytes() == draft.read_bytes()
-            final.write_text("# verified\n", encoding="utf-8")
-            return final
-        return draft
+    def archive(_):
+        snapshot.write_bytes(final.read_bytes())
+        return snapshot
 
-    monkeypatch.setattr(planner, "load_shot", lambda folder: shot)
-    monkeypatch.setattr(planner, "generate_plan", fake_generate)
-    monkeypatch.setattr(
-        planner.Settings,
-        "from_environment",
-        lambda **kwargs: SimpleNamespace(planner_model="model"),
-    )
-    monkeypatch.setattr(
-        run_artifacts,
-        "ensure",
-        lambda *args, **kwargs: SimpleNamespace(scratch=tmp_path / "scratch"),
-    )
+    monkeypatch.setattr(global_planner, "snapshot_candidate", archive)
+    return final, snapshot
 
-    async def invoke():
-        return await planner.generate_plan_two_pass(
-            tmp_path, verify_only=True, workspace=tmp_path
-        )
 
-    result = anyio.run(invoke)
+def test_two_pass_preserves_canonical_candidate_and_external_snapshot(tmp_path, monkeypatch):
+    final, snapshot = _native_two_pass_setup(tmp_path, monkeypatch)
 
-    assert result == final
-    assert final.read_text(encoding="utf-8") == "# verified\n"
-    assert draft.read_text(encoding="utf-8") == "# exact draft\n"
+    async def generate(*args, **kwargs):
+        if kwargs.get("role") == "verify":
+            assert kwargs["phase_input"] == snapshot
+            assert final.read_bytes() == snapshot.read_bytes() == b"# exact draft\n"
+            final.write_text("# verified\n")
+        else:
+            final.write_text("# exact draft\n")
+        return final
+
+    monkeypatch.setattr(planner, "generate_plan", generate)
+    result = anyio.run(lambda: planner.generate_plan_two_pass(tmp_path, workspace=tmp_path))
+    assert result == final and final.read_text() == "# verified\n"
+    assert snapshot.read_text() == "# exact draft\n"
+    assert not (final.parent / "global.draft.md").exists()
 
 
 def test_target_validation_feedback_closes_the_warm_loop(tmp_path: Path) -> None:
@@ -237,101 +234,40 @@ def test_two_pass_verify_budget_scales_with_drafted_layers(
     with pytest.raises(ValueError):
         budget.plan_verify_turn_budget(0, 3)
 
-    draft = tmp_path / "plans" / "global.draft.md"
-    draft.parent.mkdir()
-    draft.write_text("# exact draft\n", encoding="utf-8")
-    (tmp_path / "ownership_mapping.json").write_text(
-        json.dumps({"layers": [{"id": index} for index in range(6)]}), encoding="utf-8"
-    )
-    shot = SimpleNamespace(folder=tmp_path)
-    seen: list[int] = []
+    final, _snapshot = _native_two_pass_setup(tmp_path, monkeypatch)
+    (tmp_path / "ownership_mapping.json").write_text(json.dumps({"layers": [{"id": i} for i in range(6)]}))
+    seen = []
 
-    async def capturing_generate(*args, **kwargs):
-        if kwargs.get("verify_draft"):
+    async def generate(*args, **kwargs):
+        if kwargs.get("role") == "verify":
             seen.append(kwargs["max_turns"])
-        return draft
+        final.write_text("# draft\n")
+        return final
 
-    monkeypatch.setattr(planner, "load_shot", lambda folder: shot)
-    monkeypatch.setattr(planner, "generate_plan", capturing_generate)
-    monkeypatch.setattr(
-        planner.Settings,
-        "from_environment",
-        lambda **kwargs: SimpleNamespace(planner_model="model", plan_verify_max_turns=6),
-    )
-    monkeypatch.setattr(
-        run_artifacts,
-        "ensure",
-        lambda *args, **kwargs: SimpleNamespace(scratch=tmp_path / "scratch"),
-    )
-
-    async def invoke():
-        return await planner.generate_plan_two_pass(
-            tmp_path, verify_only=True, workspace=tmp_path, max_turns=100
-        )
-
-    anyio.run(invoke)
+    monkeypatch.setattr(planner, "generate_plan", generate)
+    anyio.run(lambda: planner.generate_plan_two_pass(tmp_path, workspace=tmp_path, max_turns=100))
     assert seen == [18]
-
-    (tmp_path / "ownership_mapping.json").write_text("not json", encoding="utf-8")
-    anyio.run(invoke)
+    (tmp_path / "ownership_mapping.json").write_text("not json")
+    anyio.run(lambda: planner.generate_plan_two_pass(tmp_path, workspace=tmp_path, max_turns=100))
     assert seen == [18, 6]
 
 
-def test_two_pass_verify_exhaustion_falls_back_to_candidate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Runs 1c18c2/7040c2/270652 each died when verify hit its ceiling, discarding a
-    converging candidate the deterministic gate and repair rounds never saw. Exhaustion
-    hands the on-disk candidate forward; any other terminal cause still propagates."""
-    from vfx_harness.agents.resilience import AgentSessionFailure
+def test_two_pass_only_verified_budget_exhaustion_retains_candidate(tmp_path, monkeypatch):
+    final, _ = _native_two_pass_setup(tmp_path, monkeypatch)
+    failure = PlanningSweepExhausted("spent, no pending operation, current workspace")
 
-    draft = tmp_path / "plans" / "global.draft.md"
-    draft.parent.mkdir()
-    draft.write_text("# exact draft\n", encoding="utf-8")
-    shot = SimpleNamespace(folder=tmp_path)
+    async def generate(*args, **kwargs):
+        if kwargs.get("role") == "verify":
+            raise failure
+        final.write_text("# exact draft\n")
+        return final
 
-    async def exhausted_verify(*args, **kwargs):
-        if kwargs.get("verify_draft"):
-            raise AgentSessionFailure("verify died", "max_turns_exhausted")
-        return draft
-
-    monkeypatch.setattr(planner, "load_shot", lambda folder: shot)
-    monkeypatch.setattr(planner, "generate_plan", exhausted_verify)
-    monkeypatch.setattr(
-        planner.Settings,
-        "from_environment",
-        lambda **kwargs: SimpleNamespace(planner_model="model", plan_verify_max_turns=6),
-    )
-    monkeypatch.setattr(
-        run_artifacts,
-        "ensure",
-        lambda *args, **kwargs: SimpleNamespace(scratch=tmp_path / "scratch"),
-    )
-
-    async def invoke():
-        return await planner.generate_plan_two_pass(
-            tmp_path, verify_only=True, workspace=tmp_path
-        )
-
-    result = anyio.run(invoke)
-
-    assert result == tmp_path / "plans" / "global.md"
-    assert result.read_bytes() == draft.read_bytes()
-
-    async def terminally_failing_verify(*args, **kwargs):
-        if kwargs.get("verify_draft"):
-            raise AgentSessionFailure("billing", "usage_limit")
-        return draft
-
-    monkeypatch.setattr(planner, "generate_plan", terminally_failing_verify)
-
-    async def invoke_terminal():
-        return await planner.generate_plan_two_pass(
-            tmp_path, verify_only=True, workspace=tmp_path
-        )
-
-    with pytest.raises(AgentSessionFailure):
-        anyio.run(invoke_terminal)
+    monkeypatch.setattr(planner, "generate_plan", generate)
+    assert anyio.run(lambda: planner.generate_plan_two_pass(tmp_path, workspace=tmp_path)) == final
+    assert final.read_text() == "# exact draft\n"
+    failure = RuntimeError("unresolved provider failure")
+    with pytest.raises(RuntimeError, match="unresolved"):
+        anyio.run(lambda: planner.generate_plan_two_pass(tmp_path, workspace=tmp_path))
 
 
 def test_until_clean_main_exits_three_and_preserves_dirty_plan(tmp_path, monkeypatch) -> None:
@@ -372,6 +308,7 @@ def test_standalone_unit_plan_refuses_before_shot_or_model_spend(
         "from_environment",
         lambda **_kwargs: SimpleNamespace(
             planner_model="model",
+            global_planner_model="model",
             blender_bin="blender",
         ),
     )

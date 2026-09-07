@@ -271,3 +271,17 @@ reservations before inference. The harness selects the cap; the SDK preserves
 unknown usage and enforces future admission. Scripted canonical replay reserves
 zero output tokens but retains every existing VFX authority check. Input usage
 remains accounting only until an adapter supplies a verified pre-request bound.
+
+
+## Production global planning
+
+Global draft, verify and repair now use Flynn directly. The root owner runs this stage
+in process so the native dispatch guard can verify its actual process-bound lease;
+run-directory metadata is not a substitute capability. Layer process isolation remains
+separate. Required phase context and immutable draft snapshots belong to VFX, as do the
+independent terminal gate and selected-plan publisher. JIT planning and other remaining
+roles retain their existing implementations until their native boundaries migrate.
+
+The gate now enforces declared client blockers from the compiler's preserved ownership
+mapping (HIR-0252). This repairs VFX evidence interpretation; no SDK mechanism derives
+client intent or plan acceptance.

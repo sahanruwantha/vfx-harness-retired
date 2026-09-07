@@ -15,14 +15,14 @@ from types import SimpleNamespace
 import anyio
 import pytest
 
-from vfx_harness.agents import planner
+from vfx_harness.agents import global_planner, planner
 from vfx_harness.agents.planner import budget
 from vfx_harness.infrastructure import config
 from vfx_harness.observability import run_artifacts
 
 
 def _two_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, layers: int, max_turns: int):
-    draft = tmp_path / "plans" / "global.draft.md"
+    draft = tmp_path / "plans" / "global.md"
     draft.parent.mkdir(parents=True, exist_ok=True)
     draft.write_text("# exact draft\n", encoding="utf-8")
     (tmp_path / "ownership_mapping.json").write_text(
@@ -31,7 +31,7 @@ def _two_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, layers: int, m
     seen: list[int] = []
 
     async def capturing_generate(*args, **kwargs):
-        if kwargs.get("verify_draft"):
+        if kwargs.get("role") == "verify":
             seen.append(kwargs["max_turns"])
         return draft
 
@@ -40,15 +40,17 @@ def _two_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, layers: int, m
     monkeypatch.setattr(
         planner.Settings,
         "from_environment",
-        lambda **kwargs: SimpleNamespace(planner_model="model", plan_verify_max_turns=6),
+        lambda **kwargs: SimpleNamespace(global_planner_model="model", plan_verify_max_turns=6),
     )
     monkeypatch.setattr(
         run_artifacts, "ensure", lambda *args, **kwargs: SimpleNamespace(scratch=tmp_path / "scratch")
     )
 
+    monkeypatch.setattr(global_planner, "snapshot_candidate", lambda _: tmp_path / "draft-snapshot.json")
+
     async def invoke():
         return await planner.generate_plan_two_pass(
-            tmp_path, verify_only=True, workspace=tmp_path, max_turns=max_turns
+            tmp_path, workspace=tmp_path, max_turns=max_turns
         )
 
     anyio.run(invoke)

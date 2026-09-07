@@ -85,40 +85,7 @@ class PlanGateFailure(SystemExit):
         return self.detail
 
 
-@dataclass(frozen=True, slots=True)
-class PlanRoleCapabilities:
-    """Testable workflow contract for one global planning role."""
-
-    role: str
-    verbs: frozenset[str]
-    allowed_tools: frozenset[str]
-    denied_tools: frozenset[str]
-    include_gate: bool
-
-
-def plan_role_capabilities(role: str) -> PlanRoleCapabilities:
-    """Return the declared verbs and concrete affordances for a global plan role."""
-    if role not in {"draft", "verify", "repair"}:
-        raise ValueError(f"unknown global plan role: {role!r}")
-    denied = {"Bash"}
-    if role == "repair":
-        denied.update({"Task", "Agent"})
-    return PlanRoleCapabilities(
-        role=role,
-        verbs=frozenset({"author", "patch", "gate", "escalate"}),
-        allowed_tools=frozenset({"Edit"}),
-        denied_tools=frozenset(denied),
-        include_gate=True,
-    )
-
-
 def _phase_tools(names: list[str], *short_names: str) -> list[str]:
     """Expose only tools that belong to the current authority boundary."""
     suffixes = tuple(f"__{name}" for name in short_names)
     return [name for name in names if name.endswith(suffixes)]
-
-
-def _planner_tool_policy(repair: bool) -> tuple[list[str], list[str]]:
-    """Compatibility adapter for callers that predate explicit role manifests."""
-    capabilities = plan_role_capabilities("repair" if repair else "draft")
-    return sorted(capabilities.allowed_tools), sorted(capabilities.denied_tools)

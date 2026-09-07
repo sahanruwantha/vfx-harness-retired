@@ -19,8 +19,7 @@ from vfx_harness.agents.plan_guardrails import (
     planner_path_scope,
     staged_relative_reads,
 )
-from vfx_harness.agents.planner import _phase_tools, plan_role_capabilities
-from vfx_harness.agents.prompts import verifier_user_prompt
+from vfx_harness.agents.planner import _phase_tools
 from vfx_harness.infrastructure.trusted_files import TrustedFileError
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import (
@@ -669,7 +668,7 @@ def test_publication_preserves_the_compact_mapping_for_provenance(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _write_plan(tmp_path)
     (tmp_path / "plans" / "ownership_mapping.json").write_text(
-        '{"schema": "vfx-harness.ownership-mapping/v1"}', encoding="utf-8"
+        '{"schema": "vfx-harness.ownership-mapping/v1", "blockers": []}', encoding="utf-8"
     )
     layout = run_artifacts.create(tmp_path, "plan-run-mapping")
 
@@ -1311,7 +1310,8 @@ def test_published_ownership_mapping_round_trips_through_resolution(
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _write_plan(tmp_path)
     (tmp_path / "plans" / "ownership_mapping.json").write_text(
-        json.dumps({"schema": 1, "layers": [], "axes": [], "resolutions": {}, "blockers": []}) + "\n",
+        json.dumps({"schema": "vfx-harness.ownership-mapping/v1", "layers": [],
+                    "axes": [], "resolutions": {}, "blockers": []}) + "\n",
         encoding="utf-8",
     )
     layout = run_artifacts.create(tmp_path, "plan-run")
@@ -1594,28 +1594,6 @@ def test_staged_relative_reads_cap_names_remainder(tmp_path: Path) -> None:
     assert format_staged_relative_reads(tmp_path, limit=1) == "file-0.txt, and 2 more"
 
 
-def test_verifier_kickoff_compiles_relative_workspace_reads(tmp_path: Path) -> None:
-    (tmp_path / "refs").mkdir()
-    (tmp_path / "plans").mkdir()
-    (tmp_path / "brief.md").write_text("# brief\n", encoding="utf-8")
-    (tmp_path / "ownership_mapping.json").write_text("{}\n", encoding="utf-8")
-    (tmp_path / "plans" / "global.draft.md").write_text("# draft\n", encoding="utf-8")
-    still = tmp_path / "refs" / "frame.png"
-    still.write_bytes(b"ref")
-    shot = SimpleNamespace(
-        id="fixture",
-        frames=24,
-        fps=24,
-        engine="BLENDER_EEVEE_NEXT",
-        folder=tmp_path,
-        refs=[still],
-    )
-    text = verifier_user_prompt(shot, "plans/global.draft.md")
-    assert "there is no source video" not in text
-    assert "clips inside refs/" in text
-    assert "do not prefix another project or filesystem root" in text
-    assert "Open first: `brief.md`, `plans/global.draft.md`, `ownership_mapping.json`." in text
-    assert "Staged relative files: brief.md, ownership_mapping.json, plans/global.draft.md, refs/frame.png." in text
 
 
 def test_layer_planner_can_write_only_its_exact_jit_target_and_never_a_bundle(
@@ -1799,22 +1777,8 @@ def test_repair_snapshots_are_isolated_by_run(
     assert second_snapshot.is_relative_to(second.root)
 
 
-def test_global_plan_roles_have_declared_patch_and_gate_capabilities() -> None:
-    for role in ("draft", "verify", "repair"):
-        capabilities = plan_role_capabilities(role)
-        assert {"author", "patch", "gate", "escalate"} <= capabilities.verbs
-        assert "measure" not in capabilities.verbs
-        assert capabilities.include_gate is True
-        assert "Edit" in capabilities.allowed_tools
-        assert "Edit" not in capabilities.denied_tools
-        assert "Bash" in capabilities.denied_tools
-
-    assert {"Task", "Agent"} <= plan_role_capabilities("repair").denied_tools
 
 
-def test_unknown_plan_role_fails_closed() -> None:
-    with pytest.raises(ValueError, match="unknown global plan role"):
-        plan_role_capabilities("invented")
 
 
 def test_global_tool_routing_excludes_preproduction_capabilities() -> None:

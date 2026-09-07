@@ -345,3 +345,60 @@ and diff checks passed. A fresh non-editable VFX wheel imports the session with 
 blocked and uses SSH-installed SDK main `50a8df20fb69d01a4baced1bee617b2c075e732b`.
 The full suite emitted only the existing 15 Pillow deprecation warnings. No SDK source
 changed, no ARC tests ran and no paid inference ran.
+
+
+## Production global-planner cutover
+
+Global `generate_plan` now lives in `agents/global_planner.py` and uses Flynn directly.
+The old Claude query loop, mtime success heuristic, global SDK hooks, compatibility tool
+policy and old draft/verify/repair prompt functions were removed. JIT planning keeps its
+separate implementation pending its own migration. Global model configuration is now
+separate from JIT: `VFXH_GLOBAL_PLANNER_MODEL`, with `DEEPSEEK_MODEL` then Flynn's vision
+model as defaults, plus explicit phase wall-time and output-token limits. Missing keys,
+unsupported models and unpriced USD caps refuse before inference.
+
+The root boundary exposes only its scoped, live same-process owner lease. It checks the
+lease's actual identity and exact run before returning it; inherited environment variables,
+a different run, a released lease and forked descendants cannot use it. `vfx run` now
+executes only its global planning stage in that owning process. Layer isolation remains
+at its existing boundary. Direct `vfx plan` uses the same owner capability. A dirty global
+stage publishes its typed stop through the inherited boundary; the driver alone selects
+terminal status.
+
+The role compiles required authored brief, clause registry, frame convention and decision
+inputs. Verify and repair additionally consume a complete source-verified draft snapshot
+and its baseline mapping; repair includes explicit gate feedback. Snapshots bind every
+generated document and remain in run reports outside the closed gate workspace. Their
+bytes are checked throughout the phase. Tagged runs keep the canonical draft path and
+remain diagnostic. The old `--verify-only` implicit reuse path was removed; model-free
+retained-candidate promotion remains explicit through `--promote-run`.
+
+Verify budget exhaustion can hand the candidate to the independent outer gate only through
+`PlanningSweepExhausted`, which certifies no pending operation and a current workspace.
+An ordinary budget error with an unresolved operation, changed authority, or provider
+failure does not authorize that continuation. All accepted plan selection still passes
+through the existing terminal gate and VFX authority publisher.
+
+
+The production dirty-plan probe also exposed and fixed HIR-0252: the old deterministic
+gate ignored declared client blockers retained by the compiler. The shared contract
+evaluator now emits plan-wide blocking findings from that typed list. Both native and
+terminal gate paths use it, and the heterogeneous production-stage regression proves
+that the driver receives a typed stop without selecting plan authority.
+
+
+The first broad regression run exposed that consumer projections use legitimate links.
+The blocker reader now resolves the exact verified global bundle through the same
+source-selection helper as global layer ownership, then reads the immutable source.
+It does not follow arbitrary projection links. Old synthetic mapping fixture headers
+were updated to the current schema; production parsing remains strict. That initial
+known-failing run was stopped and is not counted as passing validation.
+
+Final validation on the corrected source passed all 3,157 collected tests across four
+isolated groups (656 + 976 + 781 + 744). The only warnings were 15 existing Pillow
+`getdata` deprecations. Complete-source Ruff and `git diff --check` passed. A freshly
+installed wheel's production `global_planner` module imported with `claude_agent_sdk`
+blocked, using Flynn from SSH `main` at `50a8df20fb69d01a4baced1bee617b2c075e732b`.
+This proves the global role's import boundary, not removal of Claude from the whole
+application: JIT planning, builders, and critics still require migration. No SDK source
+changed, no ARC gate ran, and no paid inference or full-shot visual acceptance was claimed.

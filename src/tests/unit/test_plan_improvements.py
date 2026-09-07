@@ -7,8 +7,8 @@ from pathlib import Path
 from PIL import Image
 
 from vfx_harness.agents import plan_tools
+from vfx_harness.agents.global_planning_policy import PLANNER_SYSTEM
 from vfx_harness.agents.plan_guardrails import validate_planner_artifact
-from vfx_harness.agents.prompts import PLANNER_SYSTEM
 from vfx_harness.evaluation.grounding import audit
 from vfx_harness.evaluation.plan_gate import (
     Finding,

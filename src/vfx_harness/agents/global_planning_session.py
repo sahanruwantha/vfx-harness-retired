@@ -32,6 +32,10 @@ request immediately following read_reference only. A new read replaces that sele
 """
 
 
+class PlanningSweepExhausted(flynn.BudgetExhausted):
+    """A spent sweep with no pending operation and a still-current workspace."""
+
+
 @dataclass(frozen=True)
 class PlanningSweep:
     termination: flynn.SessionTermination
@@ -152,6 +156,11 @@ async def execute(
             termination = await session.execute()
             binding.check()
             verified_current = True
+        except flynn.BudgetExhausted as exc:
+            if run.pending() is not None:
+                raise
+            binding.check()
+            raise PlanningSweepExhausted(str(exc)) from exc
         finally:
             report = layout.write_report(report_name, {
                 "schema": "vfx-harness.global-planning-sweep/v1", "role": role,

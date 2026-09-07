@@ -37,7 +37,7 @@ from vfx_harness.agents.planner.planning_stop import (
     publish_layer_plan_gate_stop,
 )
 from vfx_harness.agents.planner.types import PlanLoopResult
-from vfx_harness.application import run_controller
+from vfx_harness.application import global_plan_stage, run_controller
 from vfx_harness.application.inspect_run import collect
 from vfx_harness.application.preflight import environment_result, environment_stop
 from vfx_harness.application.preflight import probe as preflight_probe
@@ -444,8 +444,8 @@ def _drive(
     console = layout.logs / "console.log"
     if _needs_global_plan(shot):
         # A shot with brief.md and refs/ but no selected plan bundle is the first-run case,
-        # not a replan: draft, verify, gate, and repair the global plan as a child stage
-        # under this run id, then continue into the layers it publishes. Global
+        # not a replan: draft, verify, gate, and repair the global plan inside the owner
+        # process under this run id, then continue into the layers it publishes. Global
         # republication over an existing bundle stays a reviewed operator transaction
         # (ADR-0010).
         if a.dry_run:
@@ -454,12 +454,7 @@ def _drive(
                 "(vfx plan <shot> --until-clean)"
             )
         log("════ GLOBAL PLAN · no selected authority; drafting ════")
-        rc = _run(
-            [py, "-m", "vfx_harness.agents.planner", str(shot.folder), "--until-clean",
-             "--blender", a.blender],
-            dry=a.dry_run,
-            tee=console,
-        )
+        rc = global_plan_stage.run(layout)
         if rc:
             log(f"✗ global plan exited {rc}; no layer was started")
             _stop_after_stage(layout, lease, rc, "global-plan")

@@ -11,27 +11,16 @@ from vfx_harness.agents.builder.critic_focus import _image_block, _one_user_mess
 from vfx_harness.agents.model_stream import with_idle_deadline
 from vfx_harness.agents.plan_guardrails import planner_hooks
 from vfx_harness.agents.plan_tools import build_plan_tools
-from vfx_harness.agents.planner.kickoff import (
-    _with_target_feedback,
-    mapping_expander,
-)
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.planner.rematerialize import (
     _rematerialize_layer,
 )
 from vfx_harness.agents.planner.types import (
     _phase_tools,
-    plan_role_capabilities,
 )
 from vfx_harness.agents.prompts import (
     LAYER_PLANNER_ADDENDUM,
-    PLANNER_SYSTEM,
-    REPAIR_ADDENDUM,
-    VERIFIER_ADDENDUM,
     layer_user_prompt,
-    planner_user_prompt,
-    repair_user_prompt,
-    verifier_user_prompt,
 )
 from vfx_harness.agents.resilience import result_signal, run_session
 from vfx_harness.agents.sdk_options import sdk_options
@@ -66,7 +55,6 @@ from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 from vfx_harness.orchestration.layer_plans import (
     amendment_block,
     contract_gaps_block,
-    global_plan_path,
     is_selected_bundle_member,
     stamp_work_unit_plan,
     validate_work_unit_plan_authority,
@@ -74,8 +62,7 @@ from vfx_harness.orchestration.layer_plans import (
     work_unit_plan_path,
 )
 from vfx_harness.orchestration.ledger import load_layers
-from vfx_harness.orchestration.plan_authoring import clause_registry, registry_prompt_block
-from vfx_harness.orchestration.plan_authority import prepare_consumer_view, prepare_staging
+from vfx_harness.orchestration.plan_authority import prepare_consumer_view
 from vfx_harness.orchestration.unit_completion_state import (
     authorize_completed_units_for_layer,
 )
@@ -108,164 +95,6 @@ def _kickoff_blocks(text: str, shot, *, refs=None) -> list[dict]:
         except Exception as e:  # a corrupt plate must not cost the whole pass
             log(f"! could not attach {p.name}: {str(e)[:120]}", 1)
     return blocks
-
-
-async def generate_plan(
-    folder: str | Path,
-    *,
-    model: str | None = None,
-    blender: str = "blender",
-    max_turns: int = 100,
-    tag: str | None = None,
-    verify_draft: str | None = None,
-    repair: tuple[str, int] | None = None,
-    workspace: str | Path | None = None,
-) -> Path:
-    """Run ONE global planning session. With `tag`, outputs are isolated:
-    plans/global.md → plans/global.<tag>.md, lab artifacts → active run scratch/plan-lab/.
-    With `verify_draft`, the session runs in VERIFY MODE against that draft file.
-    With `repair=(findings, round)`, it runs in REPAIR MODE against `verify_draft`."""
-    source_shot = planner_package().load_shot(folder)
-    layout = run_artifacts.ensure(source_shot.folder, command="plan")
-    if workspace is None:
-
-        workspace = prepare_staging(layout)
-    workspace = Path(workspace).resolve()
-    shot = planner_package().load_shot(workspace)
-    model = model or Settings.from_environment(load_dotenv_file=False).planner_model
-    plan_path = global_plan_path(shot.folder)
-    plan_path.parent.mkdir(parents=True, exist_ok=True)
-    lab_dir = layout.scratch / "plan-lab" / (tag or "global")
-
-
-    registry = clause_registry(workspace / "brief.md")
-    mapping_path = workspace / "ownership_mapping.json"
-
-    if repair:
-        findings, rnd = repair
-        system = PLANNER_SYSTEM + REPAIR_ADDENDUM.format(draft=verify_draft, findings=findings)
-        kickoff = repair_user_prompt(shot, verify_draft, rnd)
-        mode = f"REPAIR round {rnd} (against {verify_draft})"
-        role = "repair"
-    elif verify_draft:
-        system = PLANNER_SYSTEM + VERIFIER_ADDENDUM.format(draft=verify_draft)
-        kickoff = verifier_user_prompt(shot, verify_draft)
-        mode = f"VERIFY (auditing {verify_draft})"
-        role = "verify"
-    else:
-        system = PLANNER_SYSTEM
-        kickoff = planner_user_prompt(shot, registry_prompt_block(registry))
-        mode = "PLAN (from scratch)"
-        role = "draft"
-
-    _expand_mapping_or_errors = mapping_expander(workspace, registry, mapping_path)
-
-    capabilities = plan_role_capabilities(role)
-    pserver, pnames = build_plan_tools(
-        shot.folder,
-        blender=blender,
-        lab_dir=lab_dir,
-        include_gate=capabilities.include_gate,
-        run_layout=layout,
-        enabled_tools=frozenset({"ask_supervisor", "run_gate"}),
-    )
-    # Every global role authors the same transaction and therefore needs the same patch and
-    # validation verbs. Repair additionally loses delegation so a bounded mechanical patch
-    # cannot escape into an agent that lacks its exact context or tools.
-    options = sdk_options(
-        model=model,
-        system_prompt=system,
-        cwd=str(shot.folder),
-        mcp_servers={"plan": pserver},
-        allowed_tools=[
-            "Read", "Glob", "Grep", "Write", *sorted(capabilities.allowed_tools),
-            *_phase_tools(pnames, "ask_supervisor", "run_gate"),
-        ],
-        disallowed_tools=sorted(capabilities.denied_tools),
-        permission_mode="bypassPermissions",
-        max_buffer_size=32 * 1024 * 1024,  # sheets/frames as base64 image blocks
-        setting_sources=[],  # isolate from user/project settings
-        max_turns=max_turns,
-        effort="high",
-        hooks=_with_target_feedback(
-            planner_hooks(
-                workspace,
-                readable_files=(verify_draft,) if repair and verify_draft else (),
-                # The mapping is the ONLY model-authored surface; every published
-                # artifact is machine-expanded from it, so other writes are denied
-                # rather than merely discouraged.
-                writable_files=(mapping_path,),
-            ),
-            mapping_path,
-            _expand_mapping_or_errors,
-        ),
-    )
-
-    stills = [p.name for p in shot.refs]
-    videos = sorted(p.name for p in (shot.folder / "refs").glob("*.mp4"))
-    log(
-        f"plan agent [{mode}]: shot '{shot.id}' ({shot.frames}f @ {shot.fps}fps, "
-        f"{shot.engine}), model {model}" + (f", tag '{tag}'" if tag else "")
-    )
-    log(f"refs: {len(stills)} stills {stills} + {len(videos)} videos {videos}", 1)
-    log(
-        f"workspace: {workspace.relative_to(source_shot.folder)}/ · "
-        f"lab: {lab_dir.relative_to(source_shot.folder)}/ · "
-        f"global tools: ownership, escalation, and deterministic gate only · max_turns {max_turns}",
-        1,
-    )
-
-    costlog.bind(source_shot.folder, role="plan:" + mode.split()[0].lower(), model=model, tag=tag)
-    tpath = transcript.bind(source_shot.folder, "plan", label=tag or mode)
-    if tpath:
-        log(f"transcript → {tpath.relative_to(source_shot.folder)}", 1)
-    transcript.prompt(
-        kickoff, role="kickoff", mode=mode, model=model, tag=tag, refs=stills, videos=videos, max_turns=max_turns
-    )
-    # Attaching every future approval frame recreated whole-shot visual preproduction.
-    # Ready-unit references are requested explicitly after the sparse DAG exists.
-    blocks = _kickoff_blocks(kickoff, shot, refs=())
-    log("kickoff: reference stills available on demand; none attached globally", 1)
-    # The post-condition, not the absence of an exception. Two repair rounds were lost to a
-    # session that raised "error result: success" at $0.0007 having written nothing, and the
-    # real cause ("Repeated 529 Overloaded errors") was only in its assistant text — which is
-    # why one attempt collects that text and hands it to the classifier.
-    before = plan_path.stat().st_mtime_ns if plan_path.is_file() else -1
-
-    async def _attempt() -> str:
-        said: list[str] = []
-        async for message in with_idle_deadline(
-            query(prompt=_one_user_message(blocks), options=options),
-            label=f"plan {mode}",
-        ):
-            log_message(message)
-            for blk in getattr(message, "content", None) or []:
-                text = getattr(blk, "text", None)
-                if text:
-                    said.append(text)
-            if signal := result_signal(message):
-                said.append(signal)
-        return "\n".join(said)[-4000:]
-
-    def _wrote() -> bool:
-        return plan_path.is_file() and plan_path.stat().st_mtime_ns != before
-
-    try:
-        await run_session(_attempt, succeeded=_wrote, label=f"plan {mode}")
-    except Exception as e:
-        log(f"! plan session died: {str(e)[:200]}")
-        transcript.event("died", error=str(e)[:2000])
-        raise
-    finally:
-        transcript.unbind()
-        costlog.unbind()
-    if tag:
-        final = plan_path.with_name(f"global.{tag}.md")
-        plan_path.rename(final)
-        plan_path = final
-    lines = plan_path.read_text(encoding="utf-8").count("\n")
-    log(f"plan written: {plan_path.relative_to(shot.folder)} ({lines} lines)")
-    return plan_path
 
 
 async def _generate_layer_plan(

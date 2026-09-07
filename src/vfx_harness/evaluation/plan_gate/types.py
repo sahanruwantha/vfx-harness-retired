@@ -189,6 +189,20 @@ def _materialized_view(folder: Path) -> tuple[set[str], set[str]]:
         return set(), set()
 
 
+def _global_authority_bundle(folder: Path):
+    """Resolve the exact verified global bundle behind a consumer projection."""
+    marker_path = folder / ".plan-consumer-view.json"
+    if not marker_path.exists() and not marker_path.is_symlink():
+        return None
+    marker = PlanConsumerViewMarker.from_bytes(marker_path.read_bytes())
+    bundle = resolve_published_bundle(
+        marker.shot, run_id=marker.bundle_run_id, content_hash=marker.content_hash,
+    )
+    if bundle.root != marker.bundle:
+        raise ValueError("consumer view global bundle differs from its verified source")
+    return bundle
+
+
 def _global_authority_layers(folder: Path, consumer_layers: list[dict]) -> list[dict]:
     """Return the immutable sparse layer rows behind a run-scoped consumer view.
 
@@ -202,17 +216,9 @@ def _global_authority_layers(folder: Path, consumer_layers: list[dict]) -> list[
     bundle named by the snapshot. A later global selection is irrelevant to this gate
     attempt; the publication CAS decides whether this snapshot may still commit.
     """
-    marker_path = folder / ".plan-consumer-view.json"
-    if not marker_path.is_file():
-        return consumer_layers
     try:
-        marker = PlanConsumerViewMarker.from_bytes(marker_path.read_bytes())
-        bundle = resolve_published_bundle(
-            marker.shot,
-            run_id=marker.bundle_run_id,
-            content_hash=marker.content_hash,
-        )
-        if bundle.root != marker.bundle:
+        bundle = _global_authority_bundle(folder)
+        if bundle is None:
             return consumer_layers
         document = json.loads((bundle.root / "layers.json").read_text(encoding="utf-8"))
         rows = document.get("layers") if document.get("schema") == 5 else None

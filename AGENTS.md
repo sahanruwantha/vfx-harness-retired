@@ -219,6 +219,12 @@ operation.
   interruption authority unavailable. The authoritative interrupted reader re-evaluates the
   archive and derives zero legal transactions and no retry, resume, or dispatch authority
   (HIR-0172).
+- Global draft, verify and repair execute through Flynn in the live root-owner process.
+  An inherited run directory or on-disk claim is not an ownership capability; native global
+  dispatch requires the current process-bound lease for that exact run. Draft phase snapshots
+  stay outside the gate workspace. Declared client blockers in the compiler-preserved
+  `plans/ownership_mapping.json` are plan-wide gate blockers, never informational prose
+  that a clean gate may ignore (ADR-0012, HIR-0252).
 - Run output never becomes authority by proximity. Promotion from evidence into a contract,
   plan, HIR, or ADR is an explicit decision (ADR-0002).
 - Builder image payments use `vfx-harness.image-payment/v2`: the harness captures the

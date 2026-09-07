@@ -326,7 +326,7 @@ This is a strict migration. Obsolete schemas are rejected, not translated.
 
 ### Model lanes
 
-Execution roles default to `claude-sonnet-5`; the visual critic defaults to
+JIT planning and builder roles default to `claude-sonnet-5`; the visual critic defaults to
 `claude-opus-5`. Override without code edits:
 
 ```bash
@@ -334,7 +334,10 @@ VFXH_EXECUTION_MODEL=claude-sonnet-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <sh
 VFXH_EXECUTION_MODEL=claude-opus-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <shot>
 ```
 
-`VFXH_PLANNER_MODEL`, `VFXH_BUILDER_MODEL`, `VFXH_SCRIPT_MODEL`,
+`VFXH_PLANNER_MODEL` selects JIT planning. `VFXH_GLOBAL_PLANNER_MODEL` selects the
+native Flynn global planner and defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
+Global planning requires `DEEPSEEK_API_KEY`; it uses no Claude session.
+`VFXH_BUILDER_MODEL`, `VFXH_SCRIPT_MODEL`,
 `VFXH_ASSET_MODEL`, and `VFXH_DISTILLER_MODEL` override individual roles. Changing the
 critic model, prompt, or evidence layout is a new judge configuration: qualify it before
 its qualitative verdicts can block. The active lane is stored on the run; a different
@@ -421,10 +424,15 @@ advisory report under `reports/` with source digests, context selection, termina
 neutral usage and explicit `unpriced` status. It refuses a configured
 `VFXH_RUN_MAX_USD` because this role does not yet have a price policy. Provider,
 validation and cancellation failures propagate after durable recording.
-Planning, builder and critic roles are still being migrated; the Claude dependency
+Global draft, verify and repair now use native Flynn sessions as well. The global
+planner runs in the root-owner process, uses 32,000-character bounded text context,
+and stores complete phase snapshots outside its gate workspace. It requires explicit
+wall-time and output-token caps (`VFXH_GLOBAL_PLAN_SECONDS`, default 600, and
+`VFXH_GLOBAL_PLAN_OUTPUT_TOKENS`, default 32768). It also refuses unpriced USD caps.
+JIT planning, builder and critic roles are still being migrated; the Claude dependency
 remains for those roles until their native gates pass. Preflight still checks those
 remaining roles and confinement; a successful preflight does not verify DeepSeek
-credentials. No Claude fallback exists in approach review.
+credentials. No Claude fallback exists in approach review or global planning.
 
 The opt-in executable-unit engine lives in `agents/builder/flynn_unit.py`. Development
 callers bind its `inference` and `limits` arguments and pass it as `unit_builder` to

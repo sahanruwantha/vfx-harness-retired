@@ -16,6 +16,7 @@ import signal
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,9 +25,22 @@ from typing import Any
 from vfx_harness.domain.run_signal_intent import SIGNAL_INTERRUPTION_KINDS, RecordedSignalIntent
 from vfx_harness.domain.run_status import RUN_SUMMARY_SCHEMA, STOP_ENVELOPE_LOCATOR
 from vfx_harness.observability import run_artifacts
-from vfx_harness.observability.run_owner_fence import RunOwnerFenceLease, acquire_run_owner_fence
+from vfx_harness.observability.run_owner_fence import RunOwnerFenceError, RunOwnerFenceLease, acquire_run_owner_fence
 from vfx_harness.observability.runid import RUN_ID
 from vfx_harness.orchestration import run_terminalizer
+
+_CURRENT_OWNER: ContextVar[RunOwnerFenceLease | None] = ContextVar("vfx_current_root_owner", default=None)
+
+
+def require_current_owner(layout: run_artifacts.RunLayout) -> RunOwnerFenceLease:
+    """Return the live same-process owner, never derive a capability from disk or env."""
+    lease = _CURRENT_OWNER.get()
+    if lease is None or lease.acquisition_kind != "owner":
+        raise RunOwnerFenceError("global planning requires execution inside the live root-owner process")
+    lease.require_current_identity()
+    if lease.run_root != layout.root or lease.claim.run_id != layout.run_id:
+        raise RunOwnerFenceError("current run owner does not own the requested planning run")
+    return lease
 
 
 class RunCancellation(BaseException):
@@ -238,7 +252,11 @@ def owned_root_run(
         owner_kind=owner_kind,
     ) as lease:
         run_terminalizer.publish_running_status(layout.root, lease=lease, updated_at=_now())
-        yield lease
+        token = _CURRENT_OWNER.set(lease)
+        try:
+            yield lease
+        finally:
+            _CURRENT_OWNER.reset(token)
 
 
 @contextmanager

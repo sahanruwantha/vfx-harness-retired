@@ -133,7 +133,7 @@ def _deferred_root(root: Path) -> None:
     _write(root / "requirements.json", requirements)
     _write(root / "obligations.json", {"schema": "vfx-harness.obligations/v1", "obligations": []})
     (root / "plans" / "ownership_mapping.json").write_text(
-        json.dumps({"schema": 1, "layers": ["1"], "axes": ["final_lock"],
+        json.dumps({"schema": "vfx-harness.ownership-mapping/v1", "layers": ["1"], "axes": ["final_lock"],
                     "resolutions": {}, "blockers": []}) + "\n",
         encoding="utf-8",
     )

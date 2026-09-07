@@ -42,12 +42,16 @@ def _driver(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, plan_selected: b
 
     def fake_run(command, *, dry=False, tee=None):
         commands.append([str(item) for item in command])
-        text = " ".join(str(item) for item in command)
-        if "vfx_harness.agents.planner" in text and "--until-clean" in text:
-            if state["planner_rc"] == 0:
-                state["plan_selected"] = True
-            return state["planner_rc"]
         return 0
+
+    def global_stage(layout):
+        run_shot.run_owner_boundary.require_current_owner(layout)
+        commands.append(["in-process-global"])
+        if state["planner_rc"] == 0:
+            state["plan_selected"] = True
+        return state["planner_rc"]
+
+    monkeypatch.setattr(run_shot.global_plan_stage, "run", global_stage)
 
     def selected_layers(_shot):
         if not state["plan_selected"]:
@@ -77,10 +81,7 @@ def test_run_drafts_the_global_plan_before_its_first_layer(tmp_path: Path, monke
     except SystemExit as raised:
         assert raised.code in (0, None), raised.code
 
-    planner = commands[0]
-    assert "vfx_harness.agents.planner" in planner and "--until-clean" in planner
-    assert "--layer" not in planner
-    assert commands[0][commands[0].index("--blender") + 1] == "/usr/bin/blender"
+    assert commands[0] == ["in-process-global"]
     layout = run_artifacts.latest(tmp_path)
     assert json.loads(layout.status.read_text())["state"] == "passed"
 
@@ -93,7 +94,7 @@ def test_run_with_selected_plan_never_redrafts_it(tmp_path: Path, monkeypatch: p
     except SystemExit as raised:
         assert raised.code in (0, None), raised.code
 
-    assert not any("--until-clean" in command for command in commands)
+    assert ["in-process-global"] not in commands
 
 
 def test_failed_global_plan_is_a_typed_stop_before_any_layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +105,7 @@ def test_failed_global_plan_is_a_typed_stop_before_any_layer(tmp_path: Path, mon
         run_shot.main()
 
     assert raised.value.code == 2
-    assert len(commands) == 1 and "--until-clean" in commands[0]
+    assert commands == [["in-process-global"]]
     layout = run_artifacts.latest(tmp_path)
     status = json.loads(layout.status.read_text())
     assert status["state"] == "failed"

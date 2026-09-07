@@ -1,11 +1,11 @@
 """Stage 2 — the PLAN harness."""
 
 from vfx_harness.agents.builder.critic_focus import _one_user_message as _one_user_message
+from vfx_harness.agents.global_planner import generate_plan as generate_plan
 from vfx_harness.agents.plan_tools import build_plan_tools as build_plan_tools
 from vfx_harness.agents.planner.generate import _KICKOFF_MAX_PX as _KICKOFF_MAX_PX
 from vfx_harness.agents.planner.generate import _kickoff_blocks as _kickoff_blocks
 from vfx_harness.agents.planner.generate import generate_layer_plan as generate_layer_plan
-from vfx_harness.agents.planner.generate import generate_plan as generate_plan
 from vfx_harness.agents.planner.kickoff import _MATERIALIZATION_EXAMPLE as _MATERIALIZATION_EXAMPLE
 from vfx_harness.agents.planner.kickoff import _PUBLISH_CONSUME_EXAMPLE as _PUBLISH_CONSUME_EXAMPLE
 from vfx_harness.agents.planner.kickoff import _TWO_SIDED_CONTRACT_BINDING as _TWO_SIDED_CONTRACT_BINDING
@@ -18,7 +18,6 @@ from vfx_harness.agents.planner.kickoff import _sealed_outcomes_block as _sealed
 from vfx_harness.agents.planner.kickoff import _unit_capability_authority_block as _unit_capability_authority_block
 from vfx_harness.agents.planner.kickoff import _upstream_interfaces_block as _upstream_interfaces_block
 from vfx_harness.agents.planner.kickoff import _with_target_feedback as _with_target_feedback
-from vfx_harness.agents.planner.kickoff import mapping_expander as mapping_expander
 from vfx_harness.agents.planner.loops import generate_plan_two_pass as generate_plan_two_pass
 from vfx_harness.agents.planner.loops import generate_plan_until_clean as generate_plan_until_clean
 from vfx_harness.agents.planner.loops import main as main
@@ -30,10 +29,7 @@ from vfx_harness.agents.planner.rematerialize import _rematerialize_layer as _re
 from vfx_harness.agents.planner.types import MATERIALIZATION_DENIED_TOOLS as MATERIALIZATION_DENIED_TOOLS
 from vfx_harness.agents.planner.types import PlanGateFailure as PlanGateFailure
 from vfx_harness.agents.planner.types import PlanLoopResult as PlanLoopResult
-from vfx_harness.agents.planner.types import PlanRoleCapabilities as PlanRoleCapabilities
 from vfx_harness.agents.planner.types import _phase_tools as _phase_tools
-from vfx_harness.agents.planner.types import _planner_tool_policy as _planner_tool_policy
-from vfx_harness.agents.planner.types import plan_role_capabilities as plan_role_capabilities
 from vfx_harness.domain.brief import load_shot as load_shot
 from vfx_harness.infrastructure.config import Settings as Settings
 from vfx_harness.orchestration.ledger import load_layers as load_layers

@@ -15,11 +15,23 @@ refs/                    authored visual references
 ```
 
 Set credentials and model/runtime configuration in the repository `.env` or real environment.
+Global planning uses Flynn with `DEEPSEEK_API_KEY` and `VFXH_GLOBAL_PLANNER_MODEL`
+(defaulting to `DEEPSEEK_MODEL`, then Flynn's vision model). It runs inside the live
+root-owner process for both `vfx plan` and `vfx run`. Each phase has a 600-second
+default wall-time cap and 32768 output-token budget, configurable with
+`VFXH_GLOBAL_PLAN_SECONDS` and `VFXH_GLOBAL_PLAN_OUTPUT_TOKENS`. Global planning
+refuses `VFXH_RUN_MAX_USD` until its usage has a price policy.
+
+JIT planning, builders and critics still use their existing Claude sessions.
 When both Claude credentials are configured, the harness selects the subscription token
 (`CLAUDE_CODE_OAUTH_TOKEN`) by default and withholds `ANTHROPIC_API_KEY` from the SDK; set
-`VFXH_CREDENTIAL=api_key` to bill API credits instead. `VFXH_PLAN_MAX_TURNS` (default 24)
+`VFXH_CREDENTIAL=api_key` to bill API credits instead. `VFXH_PLAN_MAX_TURNS` (default 12)
 is the hard turn ceiling for one global plan session; `vfx plan --max-turns` overrides it per
-invocation. Verification is separately bounded by `VFXH_PLAN_VERIFY_MAX_TURNS` (default 12).
+invocation. Verification is separately bounded by `VFXH_PLAN_VERIFY_MAX_TURNS` (default 6), with the existing layer-count scaling.
+The obsolete `--verify-only` path is removed: start a fresh owned run, or use
+`--promote-run` for model-free evaluation and promotion of a retained candidate.
+`--tag` labels diagnostic work and prevents selection of plan authority; it no longer
+renames files inside the gate workspace.
 Confirm Python dependencies and Blender before spending model budget:
 
 ```bash

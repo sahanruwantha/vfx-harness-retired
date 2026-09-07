@@ -340,35 +340,6 @@ def test_missing_clause_resolution_fails_closed(tmp_path: Path) -> None:
     assert any(dropped in error and "resolved exactly once" in error for error in errors)
 
 
-def test_mapping_expander_closes_the_session_authoring_loop(tmp_path: Path) -> None:
-    """The write-hook loop the sessions run on: invalid mapping -> enumerated errors,
-    valid mapping -> full authority surface expanded, including plans/global.md, which
-    is the flow's success condition."""
-    import json
-
-    from vfx_harness.agents.planner import mapping_expander
-
-    shot = _shot(tmp_path, PRODUCT_BRIEF, ["f001.png"])
-    registry = clause_registry(shot / "brief.md")
-    mapping_path = shot / "ownership_mapping.json"
-    expander = mapping_expander(shot, registry, mapping_path)
-
-    mapping_path.write_text("{not json", encoding="utf-8")
-    assert any("not readable JSON" in error for error in expander())
-
-    bad = _product_mapping(registry)
-    bad["layers"][0]["evidence_domains"] = ["vibes"]
-    mapping_path.write_text(json.dumps(bad), encoding="utf-8")
-    errors = expander()
-    assert any("projected_composition" in error for error in errors)
-    assert not (shot / "plans" / "global.md").is_file()
-
-    mapping_path.write_text(json.dumps(_product_mapping(registry)), encoding="utf-8")
-    assert expander() == []
-    assert (shot / "plans" / "global.md").is_file()
-    assert (shot / "plans" / "ownership_mapping.json").is_file()  # bundle provenance
-    result = plan_gate.run(shot, "plans/global.md", require_scene_checks=True)
-    assert result.clean
 
 
 def test_registry_prompt_block_carries_ids_lines_and_text(tmp_path: Path) -> None:

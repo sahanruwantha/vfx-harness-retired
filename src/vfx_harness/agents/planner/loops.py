@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 from pathlib import Path
 
 import anyio
 
+from vfx_harness.agents import global_planner
+from vfx_harness.agents.global_planning_session import PlanningSweepExhausted
 from vfx_harness.agents.planner.budget import (
     PLAN_VERIFY_TURN_CEILING,
     PLAN_VERIFY_TURN_FLOOR,
@@ -22,14 +23,10 @@ from vfx_harness.agents.planner.types import (
     PlanGateFailure,
     PlanLoopResult,
 )
-from vfx_harness.agents.resilience import AgentSessionFailure
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.observability import run_artifacts
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 from vfx_harness.orchestration import plan_authority, run_owner_boundary
-from vfx_harness.orchestration.layer_plans import (
-    global_plan_path,
-)
 from vfx_harness.orchestration.plan_authority import prepare_staging, promote_candidate
 
 
@@ -41,11 +38,10 @@ async def generate_plan_two_pass(
     blender: str = "blender",
     max_turns: int = 100,
     tag: str | None = None,
-    verify_only: bool = False,
     workspace: str | Path | None = None,
 ) -> Path:
     """The standard flow: draft from scratch, then adversarially verify.
-    Keeps the draft (plan.<tag->draft.md + its lab) as the audit trail."""
+    Keeps a complete immutable draft snapshot outside the gate workspace."""
     shot = planner_package().load_shot(folder)
     layout = run_artifacts.ensure(shot.folder, command="plan")
     if workspace is None:
@@ -53,34 +49,14 @@ async def generate_plan_two_pass(
         workspace = prepare_staging(layout)
     workspace = Path(workspace).resolve()
     configured_settings = planner_package().Settings.from_environment(load_dotenv_file=False)
-    configured = configured_settings.planner_model
+    configured = configured_settings.global_planner_model
     draft_model = draft_model or configured
     verify_model = verify_model or configured
-    dtag = f"{tag}-draft" if tag else "draft"
-    draft_path = global_plan_path(workspace).with_name(f"global.{dtag}.md")
-
-    if verify_only:
-        if not draft_path.is_file():
-            raise FileNotFoundError(f"--verify-only needs an existing {draft_path.name}")
-        log(f"two-pass: reusing existing draft {draft_path.name}")
-    else:
-        log(f"══ two-pass 1/2 · DRAFT · {draft_model} ══")
-        await planner_package().generate_plan(
-            folder,
-            model=draft_model,
-            blender=blender,
-            max_turns=max_turns,
-            tag=dtag,
-            workspace=workspace,
-        )
-
-    # VERIFY audits the immutable draft path, while its write contract and run_gate tool
-    # operate on plans/global.md. Seed that canonical candidate with the exact draft bytes
-    # so the verifier's first gate measures the artifact it was assigned instead of
-    # reporting a synthetic "global.md missing" blocker.
-    verify_candidate = global_plan_path(workspace)
-    verify_candidate.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(draft_path, verify_candidate)
+    log(f"══ two-pass 1/2 · DRAFT · {draft_model} ══")
+    verify_candidate = await planner_package().generate_plan(
+        folder, model=draft_model, max_turns=max_turns, tag=tag, workspace=workspace,
+    )
+    draft_path = global_planner.snapshot_candidate(layout)
     log(f"══ two-pass 2/2 · VERIFY · {verify_model} · auditing {draft_path.name} ══")
     drafted_layers = drafted_layer_count(workspace)
     # The verify budget is whatever its own rule computes; the draft's cap is a different
@@ -98,21 +74,14 @@ async def generate_plan_two_pass(
         final = await planner_package().generate_plan(
             folder,
             model=verify_model,
-            blender=blender,
             max_turns=verify_turns,
             tag=tag,
-            verify_draft=draft_path.relative_to(workspace).as_posix(),
+            role="verify", phase_input=draft_path,
             workspace=workspace,
         )
-    except AgentSessionFailure as failure:
-        if failure.terminal_cause != "max_turns_exhausted":
-            raise
-        # The until-clean loop converges against the DETERMINISTIC gate, not the verify
-        # critique. An audit that exhausts its budget must not discard a viable draft:
-        # the canonical candidate was seeded from the exact draft bytes above, any
-        # artifact repairs the dying verifier landed are on disk, and the gate re-measures
-        # all of it from scratch. Runs 1c18c2, 7040c2, and 270652 each aborted here with a
-        # converging candidate (27→7 findings in 270652) the repair rounds never saw.
+    except PlanningSweepExhausted:
+        # This typed refusal proves no pending operation and a current workspace.
+        # The independent outer gate can inspect the complete retained candidate.
         log(
             f"! verify exhausted its {verify_turns}-turn budget — handing the on-disk "
             f"candidate to the deterministic gate and repair rounds instead of discarding it"
@@ -145,7 +114,6 @@ async def generate_plan_until_clean(
     blender: str = "blender",
     max_turns: int = 100,
     tag: str | None = None,
-    verify_only: bool = False,
     max_rounds: int = 3,
 ) -> PlanLoopResult:
     """Draft → verify → GATE → repair → gate → … until the plan clears or stops moving.
@@ -170,7 +138,7 @@ async def generate_plan_until_clean(
     must never happen is a dirty plan looking clean.
     """
 
-    configured = planner_package().Settings.from_environment(load_dotenv_file=False).planner_model
+    configured = planner_package().Settings.from_environment(load_dotenv_file=False).global_planner_model
     draft_model = draft_model or configured
     verify_model = verify_model or configured
 
@@ -184,7 +152,6 @@ async def generate_plan_until_clean(
         blender=blender,
         max_turns=max_turns,
         tag=tag,
-        verify_only=verify_only,
         workspace=workspace,
     )
     plan_name = final.relative_to(workspace).as_posix()
@@ -212,7 +179,7 @@ async def generate_plan_until_clean(
         prev_sig = sig
         # The repair input is immutable evidence owned by this run. Shot-global round names
         # let a later invocation overwrite the only record of what an earlier repair saw.
-        snap = plan_authority.snapshot_repair_input(layout, rnd, final)
+        snap = global_planner.snapshot_candidate(layout)
         snap_rel = snap.relative_to(shot.folder).as_posix()
         log(
             f"══ repair {rnd}/{max_rounds} · {verify_model} · {len(res.blocking)} "
@@ -221,11 +188,10 @@ async def generate_plan_until_clean(
         final = await planner_package().generate_plan(
             folder,
             model=verify_model,
-            blender=blender,
             max_turns=max_turns,
             tag=tag,
-            verify_draft=str(snap),
-            repair=(plan_gate.feedback(res), rnd),
+            role="repair", phase_input=snap,
+            repair_feedback=plan_gate.feedback(res),
             workspace=workspace,
         )
         plan_name = final.relative_to(workspace).as_posix()
@@ -323,12 +289,9 @@ def main() -> None:
         help="evidence locator for --rematerialize; repeat for each item",
     )
     ap.add_argument("--single", action="store_true", help="one from-scratch pass with --model (no verify)")
-    ap.add_argument(
-        "--verify-only", action="store_true", help="skip drafting; audit the existing plans/global.<tag->draft.md"
-    )
-    ap.add_argument("--model", default=settings.planner_model, help="model for --single or --layer runs")
-    ap.add_argument("--draft-model", default=settings.planner_model)
-    ap.add_argument("--verify-model", default=settings.planner_model)
+    ap.add_argument("--model", default=None, help="model for --single or --layer runs")
+    ap.add_argument("--draft-model", default=settings.global_planner_model)
+    ap.add_argument("--verify-model", default=settings.global_planner_model)
     ap.add_argument(
         "--blender", default=settings.blender_bin, help="blender executable for the spike lab"
     )
@@ -336,7 +299,7 @@ def main() -> None:
         "--max-turns", type=int, default=None, help="turn cap per pass (default: 24 for --layer, 100 globally)"
     )
     ap.add_argument("--tag", default=None,
-                    help="isolate plan output and its active-run plan-lab artifacts")
+                    help="label a diagnostic plan run without selecting plan authority")
     ap.add_argument(
         "--until-clean",
         action="store_true",
@@ -356,7 +319,7 @@ def main() -> None:
             "--unit no longer starts paid planning; run `vfx build <shot> --layer <id>` "
             "so one exact claimed attempt owns unit planning and building"
         )
-    if args.layer and (args.single or args.verify_only or args.until_clean or args.tag):
+    if args.layer and (args.single or args.until_clean or args.tag):
         ap.error("--layer is a dedicated JIT pass; do not combine it with global-pass flags")
     if args.rematerialize and not (args.layer and args.owner and args.trigger and args.evidence):
         ap.error(
@@ -364,7 +327,7 @@ def main() -> None:
             "--trigger, and at least one --evidence"
         )
     if args.promote_run and (
-        args.layer or args.single or args.verify_only or args.until_clean or args.tag
+        args.layer or args.single or args.until_clean or args.tag
     ):
         ap.error("--promote-run is a dedicated model-free transaction")
 
@@ -413,7 +376,7 @@ def main() -> None:
         elif args.single:
             plan_path = anyio.run(
                 lambda: planner_package().generate_plan(
-                    args.folder, model=args.model, blender=args.blender,
+                    args.folder, model=args.model,
                     max_turns=args.max_turns or settings.plan_max_turns, tag=args.tag
                 )
             )
@@ -426,7 +389,6 @@ def main() -> None:
                     blender=args.blender,
                     max_turns=args.max_turns or settings.plan_max_turns,
                     tag=args.tag,
-                    verify_only=args.verify_only,
                     max_rounds=args.max_rounds,
                 )
             )
@@ -440,7 +402,6 @@ def main() -> None:
                     blender=args.blender,
                     max_turns=args.max_turns or settings.plan_max_turns,
                     tag=args.tag,
-                    verify_only=args.verify_only,
                 )
             )
         if args.layer:

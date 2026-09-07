@@ -64,6 +64,7 @@ from vfx_harness.domain.work_units import (
 )
 from vfx_harness.evaluation.plan_gate.types import (
     Finding,
+    _global_authority_bundle,
     _global_authority_layers,
     _global_executable_checks_apply,
     _materialized_view,
@@ -78,6 +79,7 @@ from vfx_harness.evidence.scene_checks import (
 )
 from vfx_harness.evidence.scene_checks import validate_row as validate_scene_check
 from vfx_harness.orchestration.ledger import load_layers
+from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
 
 
 def _cross_row_contract_findings(scene_rows: list) -> list[Finding]:
@@ -117,6 +119,21 @@ def _cross_row_contract_findings(scene_rows: list) -> list[Finding]:
 def _check_contracts(folder: Path, *, require_scene_checks: bool = False) -> tuple[list[Finding], dict]:
 
     out = []
+    bundle = _global_authority_bundle(folder)
+    mapping_root = folder if bundle is None else bundle.root
+    mapping_path = mapping_root / "plans/ownership_mapping.json"
+    if mapping_path.exists() or mapping_path.is_symlink():
+        # The compiler preserves client blockers in this declared mapping artifact.
+        # Rendering them as prose never made them visible to the deterministic gate.
+        mapping = json.loads(read_real_file(mapping_root, mapping_path, "global ownership mapping"))
+        if (not isinstance(mapping, dict) or mapping.get("schema") != "vfx-harness.ownership-mapping/v1"
+                or not isinstance(mapping.get("blockers"), list)
+                or any(not isinstance(item, str) or not item.strip() for item in mapping["blockers"])):
+            raise ValueError("global ownership mapping requires schema v1 and an explicit list of client blockers")
+        out.extend(Finding(
+            "contracts", True, "plans/ownership_mapping.json:blockers", item,
+            "Resolve this declared client blocker through reviewed intent before publishing the global plan.",
+        ) for item in mapping["blockers"])
     missing = [n for n in ("layers.json", "critic_axes.json", "acceptance.json") if not (folder / n).is_file()]
     if missing:
         legacy = (
