@@ -7,6 +7,24 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- A global capability grant is now checked against the roles a unit mutates, for every
+  capability rather than for camera. `GLOBAL_SCENE_CAPABILITIES` was a one-member set for
+  its whole life, so the grant-to-role check was written as `if "camera" in unit.provides`
+  — correct then, and silently incomplete when ADR-0011 admitted `illumination`. A layer
+  promising `illumination: ["light.*"]` validated clean with a unit that declared the word
+  while mutating `hall.mass`, so the provider the plan promised could go unbuilt while the
+  plan read as fulfilled. Whether a grant must exist stays camera's rule alone, so a unit
+  may still declare that it is the light on a layer that reserved no light namespace
+  (HIR-0250).
+
+- Composed groups that are looking at the same picture now share it. One finalization
+  renders a plate per judgment debt, so groups differing only in which debt they pay
+  produced byte-identical captures — three of them in one `hansa_silk_road` finalization.
+  A capture is reused on a digest over the replay scene, frame, mode and scale, and over
+  nothing about the judgment: each group keeps its own locator, receipt, claims and
+  verdict. A hit is re-verified against the bytes on disk, and any unusable key is a miss
+  that simply renders (HIR-0249).
+
 - A plan that cannot light a layer it promised appearance for now fails at publication
   rather than at that layer's materialization. `hansa_silk_road` spent $1.19 publishing a
   plan and $79.15 over ten attempts reaching the failure, twice for one layer, because

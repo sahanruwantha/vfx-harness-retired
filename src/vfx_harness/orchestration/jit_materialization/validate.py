@@ -24,6 +24,8 @@ from vfx_harness.domain.work_units import (
     DEFERRED_CONTRACT_CONTEXT_RULE,
     GEOMETRY_VIS_CYCLE_RULE,
     GEOMETRY_VIS_DEPENDENCY_RULE,
+    GLOBAL_SCENE_CAPABILITIES,
+    GRANT_REQUIRED_CAPABILITIES,
     LAYER_JUDGE_CLAIM_COVERAGE_RULE,
     LOOK_CAPABILITIES,
     LOOK_REQUIRES_IMAGE_DOMAIN_RULE,
@@ -248,23 +250,33 @@ def validate_materialization(
                     f"{', '.join(sorted(allowed_capabilities)) or '(none)'}. "
                     + CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE,
                 )
-            if "camera" in unit.provides:
-                camera_roles = global_capabilities.get("camera", ())
-                if not camera_roles:
+            # Two separate questions, and collapsing them breaks one capability or the
+            # other. "Must a grant exist" is camera's rule: camera ownership is decided in
+            # the sparse global DAG, while an emissive facade is the light on an ordinary
+            # layer that reserved no light namespace (HIR-0234). "Must an existing grant be
+            # honoured" is every capability's rule: a grant is a promise about a role, and
+            # checking it only for camera let a layer promising
+            # `illumination: ["light.*"]` be fulfilled by a unit repeating the word while
+            # mutating `hall.mass` (HIR-0250).
+            for capability in sorted(set(unit.provides) & GRANT_REQUIRED_CAPABILITIES):
+                if not global_capabilities.get(capability, ()):
                     note(
                         json_ptr("layer", "stages", unit_index, "provides"),
-                        f"unit {unit.id} declares camera capability, but global layer "
-                        f"{layer_id} did not reserve it in jit.provides; camera ownership "
-                        "must be decided in the sparse global DAG",
+                        f"unit {unit.id} declares {capability} capability, but global layer "
+                        f"{layer_id} did not reserve it in jit.provides; {capability} "
+                        "ownership must be decided in the sparse global DAG",
                     )
-                elif not any(
-                    _matches_reserved(role, camera_roles) for role in unit.mutates.roles
+            for capability in sorted(set(unit.provides) & GLOBAL_SCENE_CAPABILITIES):
+                reserved_for_capability = global_capabilities.get(capability, ())
+                if reserved_for_capability and not any(
+                    _matches_reserved(role, reserved_for_capability)
+                    for role in unit.mutates.roles
                 ):
                     note(
                         json_ptr("layer", "stages", unit_index, "provides"),
-                        f"unit {unit.id} declares camera capability without mutating any "
-                        "globally reserved camera interface role: "
-                        + ", ".join(camera_roles),
+                        f"unit {unit.id} declares {capability} capability without mutating "
+                        f"any globally reserved {capability} interface role: "
+                        + ", ".join(reserved_for_capability),
                     )
             escaped = sorted(
                 role for role in unit.mutates.roles if not _matches_reserved(role, reserved)

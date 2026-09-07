@@ -15,6 +15,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+from vfx_harness.agents.builder.capture_cache import CaptureCache
 from vfx_harness.agents.builder.layer_artifact import (
     LayerArtifactPublicationConflict,
 )
@@ -240,6 +241,9 @@ async def finalize_composed_layer(
     composition_units = tuple(
         runtime._composition_judge_unit(layer, decisions, medium=medium) for decisions, medium in group_plans
     )
+    # One cache for this finalization only: groups within it share a scene, and a plate
+    # must never outlive the replay that produced it (HIR-0249).
+    capture_cache = CaptureCache(shot.folder)
     result = "passed"
     stored_layer_replays: list[Any] = []
     evaluation_groups: list[dict] = []
@@ -598,6 +602,7 @@ async def finalize_composed_layer(
             selected_authority=selected_authority,
             execution_guard=finalization_guard,
             canonical_namespace=f"finalization_group_{group_index}",
+            capture_cache=capture_cache,
         )
         evaluation_groups.append(
             {

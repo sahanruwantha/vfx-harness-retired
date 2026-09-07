@@ -96,6 +96,7 @@ async def _verify_script(
     selected_authority: ResolvedSelectedAuthority | None = None,
     execution_guard: ExecutionGuard | None = None,
     canonical_namespace: str | None = None,
+    capture_cache=None,
 ) -> str:
     """-> passed | reproduced | contract_gap | judge_conflict | failed.
 
@@ -182,6 +183,9 @@ async def _verify_script(
                             "issues": list(scope_errors),
                         }))
                 return "failed"
+        executed_replay_inputs = (
+            tuple(item.executed for item in prepared_replay) if prepared_replay else ()
+        )
         if on_replay_ready is not None:
             # Debt activation is a claim about the actual cumulative replay, not merely
             # selected plan rows. Invoke the harness callback only after every prior and
@@ -270,18 +274,47 @@ async def _verify_script(
                 if canonical_namespace is None
                 else f"{canonical_namespace}_canonical"
             )
-            render_rel, render_receipt = builder_package()._stash_render_with_receipt(
-                session,
-                shot,
-                m_i,
-                (
-                    f"{canonical_tag}_f{frame}"
-                    if len(judges) > 1
-                    else canonical_tag
-                ),
-                scale=render_scale,
-                mode=render_mode,
+            destination_tag = (
+                f"{canonical_tag}_f{frame}" if len(judges) > 1 else canonical_tag
             )
+            # Groups of one finalization that differ only in which debt they pay replay
+            # the same scripts and render the same frame in the same mode. Reuse the
+            # pixels; never reuse the obligation (HIR-0249).
+            capture_key = (
+                None
+                if capture_cache is None
+                else capture_cache.key(
+                    replay_inputs=executed_replay_inputs,
+                    frame=int(frame),
+                    mode=render_mode,
+                    scale=render_scale,
+                )
+            )
+            reused = (
+                None
+                if capture_cache is None
+                else capture_cache.reuse(
+                    capture_key,
+                    destination_tag=destination_tag,
+                    milestone_id=str(m_i.id),
+                    frame=int(frame),
+                    mode=render_mode,
+                    scale=render_scale,
+                )
+            )
+            if reused is not None:
+                render_rel, render_receipt = reused
+            else:
+                render_rel, render_receipt = builder_package()._stash_render_with_receipt(
+                    session,
+                    shot,
+                    m_i,
+                    destination_tag,
+                    scale=render_scale,
+                    mode=render_mode,
+                )
+                if capture_cache is not None:
+                    capture_cache.record(capture_key, render_rel, render_receipt)
         shots_.append((frame, ref, m_i, render_rel, render_receipt))
 
     canonical_motion_evidence = None

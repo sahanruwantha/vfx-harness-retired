@@ -3202,6 +3202,137 @@ def test_camera_unit_must_mutate_the_globally_bound_interface_role(tmp_path: Pat
             shot_folder=bundle.root,)
 
 
+#: One reserved namespace per globally declared capability, so the grant tests below run
+#: over the whole vocabulary rather than over the members that existed when they were
+#: written. A capability added to GLOBAL_SCENE_CAPABILITIES without an entry here fails
+#: `test_every_global_capability_is_covered_by_a_grant_test` rather than passing silently.
+_GRANT_NAMESPACES = {"camera": "camera", "illumination": "light"}
+
+
+def test_every_global_capability_is_covered_by_a_grant_test() -> None:
+    """The vocabulary decides what is tested, not the list someone typed once."""
+    from vfx_harness.domain.work_units import GLOBAL_SCENE_CAPABILITIES, GRANT_REQUIRED_CAPABILITIES
+
+    assert set(_GRANT_NAMESPACES) == set(GLOBAL_SCENE_CAPABILITIES), (
+        "a capability joined GLOBAL_SCENE_CAPABILITIES with no grant-to-role coverage; "
+        "add its reserved namespace here so both directions are exercised"
+    )
+    # The two rules are separate sets, and the smaller one must stay a subset: a
+    # capability whose grant is mandatory is necessarily one a layer can grant.
+    assert GRANT_REQUIRED_CAPABILITIES <= GLOBAL_SCENE_CAPABILITIES
+    assert {"camera"} == GRANT_REQUIRED_CAPABILITIES, (
+        "a capability gained a mandatory grant; add a test that a unit declaring it "
+        "without one is refused, beside the camera case"
+    )
+
+
+def _grant_bundle(tmp_path: Path, capability: str, label: str):
+    namespace = _GRANT_NAMESPACES[capability]
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layers = json.loads((tmp_path / "layers.json").read_text(encoding="utf-8"))
+    layers["layers"][1]["jit"]["reserved_roles"].append(f"{namespace}.*")
+    layers["layers"][1]["jit"]["provides"] = {capability: [f"{namespace}.*"]}
+    _write(tmp_path / "layers.json", layers)
+    layout = run_artifacts.create(tmp_path, label)
+    return publish_current(tmp_path, layout, outcome="clean_with_deferred")
+
+
+@pytest.mark.parametrize("capability", sorted(_GRANT_NAMESPACES))
+def test_a_global_capability_grant_demands_a_mutated_reserved_role(
+    tmp_path: Path, capability: str
+) -> None:
+    """A grant is a promise about a role, not a word a unit may repeat.
+
+    The check was written as `if "camera" in unit.provides` when camera was the only
+    member of the vocabulary. Admitting `illumination` (ADR-0011) therefore gave it the
+    presence check that runs over the vocabulary and no role check at all: a layer
+    promising `illumination: ["light.*"]` was satisfied by a unit declaring the word while
+    mutating `hall.mass`, and the provider the plan promised went unbuilt.
+
+    Parametrised over the vocabulary so the next capability admitted to it inherits both
+    directions instead of a presence check (HIR-0250).
+    """
+    bundle = _grant_bundle(tmp_path, capability, f"{capability}-interface-role")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["layer"]["stages"][0]["provides"] = [capability]
+    _write(payload, document)
+
+    with pytest.raises(
+        ValueError, match=f"without mutating any globally reserved {capability}"
+    ):
+        validate_materialization(
+            bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+            shot_folder=bundle.root,)
+
+
+def test_a_unit_may_be_the_light_without_a_global_illumination_grant(tmp_path: Path) -> None:
+    """An emissive facade is the light and lives on an ordinary layer (HIR-0234).
+
+    Generalising the grant-to-role check over the vocabulary also generalised camera's
+    *mandatory grant*, which illumination does not have: `bvfx_emission` on a hero facade
+    resolves to the `shading` family, the unit declares `provides: ["illumination"]` to say
+    it is a source rather than a modifier, and no sparse layer reserved a light namespace
+    for it. Requiring a grant there would make the declaration unusable exactly where
+    ADR-0011 says it belongs.
+    """
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "unit-local-illumination")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["layer"]["stages"][0]["provides"] = ["geometry", "illumination"]
+    _write(payload, document)
+
+    findings, _materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
+
+    assert not any("illumination" in row for row in findings), findings
+
+
+def test_a_unit_may_not_be_the_camera_without_a_global_grant(tmp_path: Path) -> None:
+    """Camera keeps its mandatory grant: ownership is decided in the sparse global DAG."""
+    _candidate(tmp_path)
+    _add_deferred_layer(tmp_path)
+    layout = run_artifacts.create(tmp_path, "unit-local-camera")
+    bundle = publish_current(tmp_path, layout, outcome="clean_with_deferred")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    document["layer"]["stages"][0]["provides"] = ["camera"]
+    _write(payload, document)
+
+    findings, _materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
+
+    assert any("did not reserve it in jit.provides" in row for row in findings), findings
+
+
+@pytest.mark.parametrize("capability", sorted(_GRANT_NAMESPACES))
+def test_a_unit_honouring_a_global_capability_grant_is_accepted(
+    tmp_path: Path, capability: str
+) -> None:
+    """The accepting half, without which the refusal above could pass by refusing always."""
+    bundle = _grant_bundle(tmp_path, capability, f"{capability}-honoured")
+    payload = _jit_payload(tmp_path, bundle.content_hash)
+    document = json.loads(payload.read_text(encoding="utf-8"))
+    unit = document["layer"]["stages"][0]
+    unit["provides"] = [capability]
+    unit["mutates"]["roles"] = [f"{_GRANT_NAMESPACES[capability]}.key"]
+    _write(payload, document)
+
+    findings, _materialized = inspect_materialization(
+        bundle.root, payload, expected_bundle_hash=bundle.content_hash,
+        shot_folder=bundle.root,)
+
+    assert not any(
+        f"globally reserved {capability}" in row for row in findings
+    ), findings
+
+
 def test_materialization_rejects_uncovered_unit_judge_frame(tmp_path: Path) -> None:
     """HIR-0045: atmosphere judged f150 with claims only at f72."""
     from vfx_harness.domain.work_units import UNIT_JUDGE_CLAIM_COVERAGE_RULE

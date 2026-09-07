@@ -390,7 +390,14 @@ effect.
   lighting requirement instead of silently reading as needing none. Global declarability
   and layer exclusivity are separate properties: a camera grant makes the layer
   camera-only, an illumination grant does not, because an emissive facade is the light and
-  lives on an ordinary look layer (ADR-0011, HIR-0234).
+  lives on an ordinary look layer (ADR-0011, HIR-0234). Two separate rules govern a
+  capability declaration, and collapsing them breaks one member or the other. Whether a
+  grant must EXIST is `GRANT_REQUIRED_CAPABILITIES`, which is camera alone: camera
+  ownership is decided in the sparse global DAG, while an emissive facade is the light on
+  an ordinary layer that reserved no light namespace. Whether an existing grant BINDS runs
+  over every global capability: a unit declaring one must mutate that layer's exact
+  reserved selectors for it. A grant is a promise about a role, and a rule written against
+  a single member of a closed set reads as correct until the set grows (HIR-0250).
   A capability is originated once per layer: exactly one declarer may reach no other
   declarer of it, and every other unit declaring the same capability must contain that
   originator in its dependency closure. Declaring `provides` does not create the host, and
@@ -1326,6 +1333,14 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   atomic claims stay protected, and anything broader requires a validated authority replacement.
 - Warm-scene success proves nothing durable. The deterministic script and its empty-scene replay
   are the artifacts of record.
+- A rendered plate may be shared between composed groups only on a verified digest over
+  everything that moves a pixel: the ordered replay inputs with their script and
+  dependency digests, the frame, the render mode, and the render scale. Nothing about the
+  judgment enters that key -- not the debt, the claims, the judge points, or the verdict --
+  because sharing a plate must never share an obligation, and each group keeps its own
+  locator, receipt and verdict. A hit is re-checked against the bytes on disk and the
+  stored receipt rather than trusted from a lookup, and any unusable key is a miss that
+  renders: reuse is an optimisation and must never be why a layer cannot seal (HIR-0249).
 
 ## Mutation, repair, and recovery
 

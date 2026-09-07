@@ -32,6 +32,13 @@ GLOBAL_SCENE_CAPABILITIES = {"camera", "illumination"}
 #: deriving exclusivity from GLOBAL_SCENE_CAPABILITIES membership would have silently
 #: retired HIR-0234's mechanism the moment illumination joined that set (ADR-0011).
 LAYER_EXCLUSIVE_CAPABILITIES = {"camera"}
+#: Capabilities a unit may not declare without its sparse layer granting them. Camera
+#: ownership is decided in the global DAG because every judged layer's closure must reach
+#: it. Illumination is deliberately absent: an emissive facade IS the light and lives on an
+#: ordinary look layer that reserved no light namespace, so requiring a grant there would
+#: make the declaration unusable exactly where HIR-0234 introduced it. A grant that does
+#: exist still binds -- that is a different rule, applied to every capability (HIR-0250).
+GRANT_REQUIRED_CAPABILITIES = {"camera"}
 
 CAMERA_LAYER_DEFERS_SUBJECT_FORM_RULE = (
     "a sparse layer that globally provides camera may stage camera/control units only; "
