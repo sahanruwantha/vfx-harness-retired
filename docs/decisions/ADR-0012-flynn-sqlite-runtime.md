@@ -206,6 +206,21 @@ replay, and verified native checkpoint/completion. Planning authority was seeded
 test fixture. The normal CLI, visual roles and dependent composition remain unmigrated.
 The SDK dependency is unchanged; 40 focused VFX regressions and complete-source Ruff pass.
 
+### Dependent executable layer
+
+[HIR-0249](../improvements/HIR-0249-flynn-predecessor-context.md) records a missing
+predecessor-context defect exposed by the three-unit layer gate. The Flynn adapter now
+supplies the exact attempt DAG, durable state and source-verified completion authorization
+to the existing context compiler. The scripted gate exercises an independent unit,
+a producer and its consumer through native checkpointing and composed layer finalization.
+It also verifies failed-consumer preservation and refusal before inference on stale
+producer bytes. These are executable-only fixtures with seeded planning attestations;
+visual media, receipt-backed amendments and full-shot acceptance remain separate gates.
+The live three-unit DeepSeek probe awaits explicit approval after automatic review
+rejected the expanded synthetic payload and paid-call scope. No live DAG calls ran.
+The complete unchanged-source suite passed **2,914 tests**, plus complete-source Ruff,
+CLI help and strict preflight. The SDK source and pinned dependency are unchanged.
+
 ## Consequences
 
 SDK durability defects can be fixed once for both harnesses. Domain acceptance remains

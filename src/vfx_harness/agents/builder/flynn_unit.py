@@ -28,6 +28,7 @@ from vfx_harness.agents.builder.attempt_guard import AttemptBoundBlenderSession,
 from vfx_harness.agents.builder.models import BuildUnpassed
 from vfx_harness.domain.semantic_roles import match_semantic
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration import unit_completion_state, unit_state
 from vfx_harness.orchestration.authority_selection_transaction import durably_ensure_real_directory
 from vfx_harness.orchestration.builder_execution_fence import builder_execution_fenced
 from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
@@ -135,10 +136,17 @@ async def build_unit(
         raise ValueError("Flynn executable unit cannot pay raster or visual judgment debts")
     if active_unit.construction.route != "procedural":
         raise ValueError("Flynn executable unit currently requires procedural construction")
+    completion_authorization = unit_completion_state.authorize_completed_units_for_layer(
+        shot.folder, str(layer.id), attempt_guard.units,
+        expected_plan_hash=attempt_guard.expected_plan_hash, selected_authority=selected_authority,
+    )
     card = unit_scope.compile_unit_scope_for_shot(
         shot,
         active_unit,
         str(layer.id),
+        units=attempt_guard.units,
+        durable_state=unit_state.load(shot.folder, str(layer.id)),
+        completion_authorization=completion_authorization,
         selected_authority=selected_authority,
     )
     # Authority and selected context must fit before any ledger write or reservation.

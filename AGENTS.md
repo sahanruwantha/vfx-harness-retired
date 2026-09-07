@@ -553,7 +553,10 @@ writer; an SDK commit or recovery never certifies a VFX unit or authorizes sessi
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial
-inspection must not consume the unit's action budget (HIR-0248).
+inspection must not consume the unit's action budget (HIR-0248). Flynn unit context
+must compile the exact attempt's complete DAG with source-verified completion authorization
+and durable state, projecting only declared consumed predecessor interfaces. An active-unit
+card compiled without those inputs is not dependent-unit context (HIR-0249).
 
 Treat the Claude Agent SDK as a production runtime, not merely a prompt transport. Before
 building custom orchestration, inspect the installed SDK and use the strongest applicable native
