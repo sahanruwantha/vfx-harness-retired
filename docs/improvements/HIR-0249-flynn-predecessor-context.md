@@ -93,5 +93,6 @@ The offline three-unit composition gate remains passing evidence for that wiring
 This exposes another VFX phase-policy gap: unobserved candidates can be rewritten until
 the probe budget is spent. A proposed next mechanism is requiring candidate replay
 before another rewrite, preserving revision after measured feedback and abstention.
-That mechanism is not implemented or validated in this record. No additional paid
-retry or SDK change was made. This follow-up changes documentation only.
+That follow-up changed documentation only. The subsequent implementation, regression
+and bounded live retries are recorded in [HIR-0250](HIR-0250-flynn-candidate-observation-phase.md).
+The SDK is unchanged.

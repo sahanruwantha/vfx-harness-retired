@@ -557,6 +557,13 @@ inspection must not consume the unit's action budget (HIR-0248). Flynn unit cont
 must compile the exact attempt's complete DAG with source-verified completion authorization
 and durable state, projecting only declared consumed predecessor interfaces. An active-unit
 card compiled without those inputs is not dependent-unit context (HIR-0249).
+After a Flynn candidate write, only probe or abstention is model-dispatchable. After
+that probe, permit revision, freeze or abstention; do not re-probe unchanged bytes.
+A revision clears the observation and must be probed again. Enforce these phases through
+grants. Reserve the full remaining write/probe/freeze/canonical path before offering
+an action, so revision cannot consume its own required probe allowance. Transport the
+existing replay-failure stage/message to the model as selected feedback; an empty verdict
+list must not hide a script error. Canonical acceptance authority is unchanged (HIR-0250).
 
 Treat the Claude Agent SDK as a production runtime, not merely a prompt transport. Before
 building custom orchestration, inspect the installed SDK and use the strongest applicable native

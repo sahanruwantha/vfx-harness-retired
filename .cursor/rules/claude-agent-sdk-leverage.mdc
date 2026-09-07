@@ -13,7 +13,10 @@ The executable Flynn builder permits initial inspection once, before a candidate
 subsequent scene evidence comes from replay. Expose execution phase with bounded feedback
 and enforce this through grants (HIR-0248). Compile predecessor context from the exact
 attempt DAG, durable state and verified completion authorization; project only declared
-consumed interfaces (HIR-0249).
+consumed interfaces (HIR-0249). Enforce write → probe → revise/freeze through grants;
+revision requires a fresh probe, unchanged observed candidates cannot be re-probed,
+and abstention remains legal. Grants must leave enough budget for the complete remaining
+path; forward replay failure stage/message as selected feedback (HIR-0250).
 
 Treat the Claude Agent SDK as a production runtime, not merely prompt transport. Inspect the
 installed SDK before building custom orchestration and prefer its strongest applicable native

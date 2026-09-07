@@ -95,6 +95,27 @@ def _selected_feedback(observation: str | None) -> str | None:
     return json.dumps(result, sort_keys=True)
 
 
+def _model_grants(*, inspected: bool, written: bool, observed: str | None, remaining: dict) -> tuple[str, ...]:
+    """Grant only phases that leave room for observation, freeze and cold replay."""
+    def fits(inference, external):
+        return (
+            remaining["inference"] >= inference
+            and remaining["tool"] >= inference
+            and remaining["external"] >= external
+        )
+
+    grants = ["abstain"]
+    if not inspected and not written and fits(5, 4):
+        grants.append("inspect_unit")
+    if (not written or observed is not None) and fits(4, 3):
+        grants.append("write_candidate")
+    if written and observed is None and fits(3, 2):
+        grants.append("probe_candidate")
+    if observed is not None and fits(2, 1):
+        grants.append("freeze_candidate")
+    return tuple(grants)
+
+
 @builder_execution_fenced
 async def build_unit(
     shot,
@@ -223,11 +244,17 @@ async def build_unit(
 
     async def replay(arguments):
         nonlocal observed
+        attempt_guard.check("start Flynn candidate replay")
         before = candidate_digest()
         if frozen is not None and before != frozen:
             raise ValueError("frozen Flynn candidate bytes changed; no replay or publication authorized")
         canonical_verdicts.clear()
         replay_inputs.clear()
+        replay_errors = []
+
+        def record_replay_failure(inputs, stage, message, context):
+            replay_errors.append({"stage": stage, "message": message})
+
         result = await verify._verify_script(
             shot,
             m,
@@ -242,6 +269,7 @@ async def build_unit(
             active_unit=active_unit,
             out_verdicts=canonical_verdicts,
             out_replay_inputs=replay_inputs,
+            on_replay_failed=record_replay_failure,
             authority_script_rel=script_rel,
             selected_authority=selected_authority,
             execution_guard=attempt_guard,
@@ -250,7 +278,8 @@ async def build_unit(
             raise ValueError("Flynn candidate changed during replay; freeze requires a fresh observation")
         observed = before
         return json.dumps(
-            {"candidate_sha256": before, "canonical": result, "verdicts": canonical_verdicts}, sort_keys=True
+            {"candidate_sha256": before, "canonical": result, "verdicts": canonical_verdicts,
+             "replay_errors": replay_errors}, sort_keys=True
         )
 
     async def freeze(arguments):
@@ -341,21 +370,9 @@ async def build_unit(
         while frozen is None:
             # Leave one deterministic invocation and external dispatch for cold replay.
             remaining = run.remaining()
-            grants = ["write_candidate", "abstain"]
-            # Inspection reads the current worker, not the unexecuted scratch file.
-            # After a write, candidate replay supplies fresh scene evidence instead.
-            if not inspected and not written:
-                grants.insert(0, "inspect_unit")
-            if written:
-                grants.append("probe_candidate")
-            if observed is not None:
-                grants.append("freeze_candidate")
-            if remaining["external"] <= 1:
-                grants = ["abstain"]
-                if observed is not None and remaining["external"] == 1:
-                    grants.append("freeze_candidate")
-            if remaining["inference"] <= 1 or remaining["tool"] <= 1:
-                grants = ["abstain"]
+            grants = _model_grants(
+                inspected=inspected, written=written, observed=observed, remaining=remaining,
+            )
             step = await runtime.step(
                 "Inspect the unit, write and probe its candidate, then freeze the observed digest.",
                 grants=tuple(grants),

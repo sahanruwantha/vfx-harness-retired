@@ -105,7 +105,7 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
         async def generate(self, request):
             if self.requests:
                 assert "inspect_unit" not in request.allowed_tools
-                assert "write_candidate" in request.allowed_tools or "freeze_candidate" in request.allowed_tools
+                assert {"write_candidate", "probe_candidate", "freeze_candidate"} & set(request.allowed_tools)
             self.requests += 1
             return await self.scripted.generate(request)
 
@@ -160,7 +160,9 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
             )
 
 
-@pytest.mark.parametrize("fault", ["ungranted", "false_freeze", "revoked", "interrupted", "abstained"])
+@pytest.mark.parametrize(
+    "fault", ["ungranted", "false_freeze", "revoked", "interrupted", "abstained", "unobserved_rewrite"],
+)
 def test_flynn_refuses_false_finish_stale_attempt_and_session_resume(tmp_path, monkeypatch, fault):
     shot, layer, unit, selected, guard, layout = _authority(tmp_path, monkeypatch)
 
@@ -179,18 +181,22 @@ def test_flynn_refuses_false_finish_stale_attempt_and_session_resume(tmp_path, m
                 return flynn.ToolCall("write_candidate", json.dumps({"source": _PROGRAM}))
             if fault == "interrupted":
                 raise asyncio.CancelledError()
+            if fault == "unobserved_rewrite":
+                return flynn.ToolCall("write_candidate", json.dumps({"source": "# unobserved replacement"}))
             unit_state_claims.release_unit_attempt(
                 tmp_path, "1", unit.id, layer.stages, guard.claim,
                 expected_plan_hash=guard.expected_plan_hash, selection_token=selected.selection_token,
                 reason="injected exact claim revocation", evidence=["test:revocation"],
             )
-            return flynn.ToolCall("write_candidate", json.dumps({"source": "# unauthorized replacement"}))
+            # Use a currently granted operation so the stale-attempt guard, rather
+            # than the earlier SDK grant check, must refuse the revoked authority.
+            return flynn.ToolCall("probe_candidate", "{}")
 
     adapter = FaultAdapter()
     exception = {
         "ungranted": flynn.ContractError, "false_freeze": flynn.ContractError,
         "revoked": UnitAttemptAuthorityLost, "interrupted": asyncio.CancelledError,
-        "abstained": BuildUnpassed,
+        "abstained": BuildUnpassed, "unobserved_rewrite": flynn.ContractError,
     }[fault]
     with builder_execution_fence(tmp_path) as lease, pytest.raises(exception):
         asyncio.run(flynn_unit.build_unit(
@@ -208,7 +214,7 @@ def test_flynn_refuses_false_finish_stale_attempt_and_session_resume(tmp_path, m
         assert run.read().revision == 0
         assert run.outcome() == ("unit_abstained" if fault == "abstained" else None)
         assert run.remaining()["inference"] == 5 - adapter.calls
-    if fault in {"revoked", "interrupted"}:
+    if fault in {"revoked", "interrupted", "unobserved_rewrite"}:
         candidate = layout.scratch / "unit-candidates" / f"{guard.claim.claim_id}.py"
         assert candidate.read_text() == _PROGRAM
     if fault == "interrupted":
@@ -222,3 +228,49 @@ def test_flynn_refuses_false_finish_stale_attempt_and_session_resume(tmp_path, m
                 fence_lease=lease, verbose=False,
             ))
         assert adapter.calls == 2
+
+
+@pytest.mark.parametrize("bad_program", ["# no control yet\n", "raise RuntimeError('injected candidate failure')\n"])
+def test_flynn_candidate_revision_requires_measured_feedback(tmp_path, monkeypatch, bad_program):
+    shot, layer, unit, selected, guard, layout = _authority(tmp_path, monkeypatch)
+    repaired_digest = hashlib.sha256(_PROGRAM.encode()).hexdigest()
+    scripted = flynn.ScriptedAdapter([
+        flynn.ToolCall("write_candidate", json.dumps({"source": bad_program})),
+        flynn.ToolCall("probe_candidate", "{}"),
+        flynn.ToolCall("write_candidate", json.dumps({"source": _PROGRAM})),
+        flynn.ToolCall("probe_candidate", "{}"),
+        flynn.ToolCall("freeze_candidate", json.dumps({"sha256": repaired_digest})),
+    ])
+
+    class Adapter:
+        calls = 0
+
+        async def generate(self, request):
+            if self.calls in (1, 3):
+                assert set(request.allowed_tools) == {"probe_candidate", "abstain"}
+            if self.calls == 2:
+                assert "probe_candidate" not in request.allowed_tools
+                assert "write_candidate" in request.allowed_tools
+                feedback = json.loads(request.observation)
+                assert feedback["canonical"] == "failed"
+                if bad_program.startswith("raise"):
+                    assert "injected candidate failure" in feedback["replay_errors"][0]["message"]
+            self.calls += 1
+            return await scripted.generate(request)
+
+    milestone = Milestone("1@lock", 240, "refs/a.png", "control exists")
+    with builder_execution_fence(tmp_path) as lease, BlenderSession(
+        artifacts_dir=layout.scratch / "worker", cwd=tmp_path,
+    ) as session:
+        ledger = asyncio.run(flynn_unit.build_unit(
+            shot, milestone, unit.mutates.script_spans[0], [], session,
+            inference=Adapter(), limits=flynn.RunLimits(6, 6, 5, 180),
+            layer=layer, active_unit=unit, selected_authority=selected, attempt_guard=guard,
+            fence_lease=lease, verbose=False,
+        ))
+    assert ledger.status(milestone) == "passed"
+    assert (tmp_path / unit.mutates.script_spans[0]).read_text() == _PROGRAM
+    with flynn.SQLiteRun.open(layout.checkpoints / "flynn" / f"{guard.claim.claim_id}.sqlite") as run:
+        assert run.read().revision == 0
+        assert len(run.records()["operations"]) == 6
+        assert run.outcome().startswith("unit_evaluation_receipt:")

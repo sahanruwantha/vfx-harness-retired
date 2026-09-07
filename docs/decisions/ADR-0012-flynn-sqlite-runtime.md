@@ -224,6 +224,16 @@ composition remains unproven.
 The complete unchanged-source suite passed **2,914 tests**, plus complete-source Ruff,
 CLI help and strict preflight. The SDK source and pinned dependency are unchanged.
 
+### Measured candidate revision
+
+[HIR-0250](../improvements/HIR-0250-flynn-candidate-observation-phase.md) enforces
+write/probe/revise-or-freeze phases, reserves the full remaining path, and transports
+actual replay failures to the model. All 58 focused regressions pass. In the final live
+retry, the independent unit repaired a script from observed error feedback and completed;
+the producer completed too. The consumer passed its probe but the turn's model-call cap
+stopped before freeze. These runs spent 18 calls total and published no composed layer.
+A fresh live layer run is still required; no automatic session resume is authorized.
+
 ## Consequences
 
 SDK durability defects can be fixed once for both harnesses. Domain acceptance remains
