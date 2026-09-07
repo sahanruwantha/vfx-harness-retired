@@ -182,14 +182,25 @@ def test_native_structured_scope_result_is_observation_only(tmp_path, scope):
     path = tmp_path / "structured.sqlite"
     with flynn.SQLiteRun.create(path, run_id="scope", initial_state="unaccepted",
                                limits=flynn.RunLimits(1, 1, 0)) as run:
-        runtime = flynn.Runtime(
+        steps = []
+
+        def policy(view):
+            if view.last_step is None:
+                return flynn.SessionStep("Inspect declared scope", ("unit_scope",))
+            assert flynn.ToolResult.from_json(view.observation) == expected
+            return flynn.SessionStop("scope observed; VFX acceptance remains unproven")
+
+        session = flynn.Session(
             inference=flynn.ScriptedAdapter([flynn.ToolCall("unit_scope", "{}")]),
             tools=flynn.ToolBroker([tool]), evaluator=Evaluation(), run=run, grants=("unit_scope",),
+            policy=policy, on_step=steps.append,
         )
-        step = asyncio.run(runtime.step("Inspect declared scope"))
-        assert not step.committed
+        terminal = asyncio.run(session.execute())
+        assert terminal.kind == "stopped"
+        assert terminal.completed_steps == 1
+        assert len(steps) == 1 and not steps[0].committed
         assert run.read().value == "unaccepted"
-        run.finish("scope observed")
     with flynn.SQLiteRun.open(path) as run:
         assert flynn.ToolResult.from_json(run.latest_observation()) == expected
+        assert flynn.SessionTermination.from_json(run.outcome()) == terminal
         assert run.read().revision == 0

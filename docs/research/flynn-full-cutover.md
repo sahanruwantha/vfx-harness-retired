@@ -65,3 +65,26 @@ The initial VFX gate caught a KeyError in uncommitted CLI summary plumbing left 
 the abandoned selector work: active run-layout objects do not share in-memory metadata.
 That entire unlanded reporting change and its test assertions were removed. The existing
 native usage-report writer is unchanged. The final 167-test gate used unchanged source.
+
+## Bounded session lifecycle
+
+SDK main `3da3579` adds `Session`, driven by explicit `SessionStep` and `SessionStop`
+application decisions. Its view contains current state, the latest observation and one
+previous step; request preparation still belongs to the harness. It enforces the existing
+run budgets, narrows grants and persists a typed termination in the journal's terminal
+outcome. Stopping does not certify domain success. Exceptions and cancellation propagate;
+uncertain effects stay pending and no retry or recovery is automatic. Finished or initially
+unresolved journals refuse before policy runs. Expired deadlines refuse before policy too.
+
+VFX's native scope-transport gate now uses Session and verifies termination after reopening,
+while state remains unaccepted. Production role loops are not yet migrated. The next boundary
+is native dispatch guards and role-specific tool registration, followed by migration of the
+planning and judgment loops; no Claude API wrapper is introduced.
+
+Session validation: 135 SDK tests, Ruff, formatting and mypy passed. Wheel and source
+builds passed, and a clean installed wheel executed a terminal session with no Claude
+package present. SSH consumers installed `3da3579506003dc0ab0270081c99ce9637997b13`:
+ARC passed 224 offline tests and VFX passed 149 contract/unit/architecture tests. No
+VFX production source changed in this step, so the full VFX suite and live Blender/model
+runs were not repeated. No paid inference ran. ARC's updated lock remains in its shared
+worktree; unrelated ARC changes were not staged or committed.
