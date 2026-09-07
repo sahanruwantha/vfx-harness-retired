@@ -544,6 +544,13 @@ running code, or adding a probe — never by assumption.
 
 ## Claude Agent SDK leverage
 
+The Flynn/SQLite rewrite follows ADR-0012: Flynn owns permitted execution, generic
+records and budgets; VFX owns permissions, evidence, replay and production authority.
+The target API may break with explicit schema refusal; no backwards compatibility is
+required. The Claude-native preference below applies to the existing runtime, not as a
+prohibition on its replacement. Prove each migrated boundary before retiring its current
+writer; an SDK commit or recovery never certifies a VFX unit or authorizes session resume.
+
 Treat the Claude Agent SDK as a production runtime, not merely a prompt transport. Before
 building custom orchestration, inspect the installed SDK and use the strongest applicable native
 mechanism when it improves control, observability, or agent capability.
