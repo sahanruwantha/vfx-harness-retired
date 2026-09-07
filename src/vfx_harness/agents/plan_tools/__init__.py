@@ -27,6 +27,3 @@ from vfx_harness.agents.plan_tools.spike import _spike as _spike
 from vfx_harness.agents.plan_tools.spike import _spike_ineligibility as _spike_ineligibility
 from vfx_harness.agents.plan_tools.spike import _SpikeBudget as _SpikeBudget
 from vfx_harness.blender.resolution import resolve_blender as resolve_blender
-from vfx_harness.orchestration import unit_plan_content
-
-_publish_unit_plan_content = unit_plan_content.publish_unit_plan_content

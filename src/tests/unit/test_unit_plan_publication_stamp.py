@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from tests.integration.test_judgment_debt_public_pipeline import _public_fixture_root
-from vfx_harness.agents.plan_tools import _publish_unit_plan_content
 from vfx_harness.observability import run_artifacts
+from vfx_harness.orchestration import unit_plan_content
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.layer_plans import (
     UNIT_PLAN_AUTHORITY_SCHEMA,
@@ -42,7 +42,7 @@ def test_publication_stamps_integrity_without_gate_attestation(tmp_path: Path) -
     selected = resolve_selected_authority(root)
     target = root / "plans" / "units" / "aim_target.md"
 
-    published, lines = _publish_unit_plan_content(
+    published, lines = unit_plan_content.publish_unit_plan_content(
         root, target, _CONTENT, selected_authority=selected
     )
 
@@ -68,10 +68,10 @@ def test_republication_restamps_the_new_bytes(tmp_path: Path) -> None:
     root = _selected_shot(tmp_path)
     selected = resolve_selected_authority(root)
     target = root / "plans" / "units" / "aim_target.md"
-    _publish_unit_plan_content(root, target, _CONTENT, selected_authority=selected)
+    unit_plan_content.publish_unit_plan_content(root, target, _CONTENT, selected_authority=selected)
     first = json.loads(work_unit_plan_authority_path(target).read_text(encoding="utf-8"))
 
-    _publish_unit_plan_content(
+    unit_plan_content.publish_unit_plan_content(
         root, target, _CONTENT + "one more ticket\n", selected_authority=selected
     )
 
@@ -88,7 +88,7 @@ def test_publication_without_selected_authority_pins_to_the_current_pointer(
     root = _selected_shot(tmp_path)
     target = root / "plans" / "units" / "aim_target.md"
 
-    _publish_unit_plan_content(root, target, _CONTENT)
+    unit_plan_content.publish_unit_plan_content(root, target, _CONTENT)
 
     record = json.loads(work_unit_plan_authority_path(target).read_text(encoding="utf-8"))
     assert record["bundle_hash"] == resolve_selected_authority(root).plan.bundle.content_hash

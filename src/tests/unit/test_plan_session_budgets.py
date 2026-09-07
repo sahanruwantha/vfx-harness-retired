@@ -11,6 +11,7 @@ from vfx_harness.domain.authority_head_records import (
     canonical_json_bytes,
 )
 from vfx_harness.infrastructure.config import Settings
+from vfx_harness.orchestration import unit_plan_content
 
 
 def _write_selected_plan_pointer(root: Path, content_hash: str) -> None:
@@ -159,15 +160,13 @@ def test_unit_planner_registers_fixed_publish_sink_only_when_target_is_bound(
 def test_fixed_unit_plan_sink_publishes_only_under_active_shot(
     tmp_path: Path, relative: str
 ) -> None:
-    from vfx_harness.agents.plan_tools import _publish_unit_plan_content
-
     content = "# Bounded unit plan\n\n" + ("one atomic execution ticket\n" * 10)
-    target, lines = _publish_unit_plan_content(tmp_path, tmp_path / relative, content)
+    target, lines = unit_plan_content.publish_unit_plan_content(tmp_path, tmp_path / relative, content)
 
     assert target.read_text(encoding="utf-8") == content
     assert lines == content.count("\n") + 1
     with pytest.raises(ValueError, match="active shot"):
-        _publish_unit_plan_content(tmp_path, tmp_path.parent / "escape.md", content)
+        unit_plan_content.publish_unit_plan_content(tmp_path, tmp_path.parent / "escape.md", content)
 
 
 def test_spike_refuses_adopted_decision_and_falsification_hypotheses(tmp_path) -> None:
