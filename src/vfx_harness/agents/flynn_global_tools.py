@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import flynn_agents_sdk as flynn
 
-from vfx_harness.agents import flynn_mapping_tools
+from vfx_harness.agents import flynn_mapping_tools, flynn_planning_inputs
 from vfx_harness.agents.planning_workspace import PlanningWorkspace
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.evaluation import plan_gate
@@ -182,6 +182,7 @@ def global_planning_tools(
                     "type": "object", "properties": {}, "additionalProperties": False,
                 }), validate=validate_gate, execute=gate, external_action=True,
             ),
+            *flynn_planning_inputs.planning_input_tools(binding),
         ),
         flynn.DispatchGuard("current-vfx-global-planning-attempt", guard),
     )

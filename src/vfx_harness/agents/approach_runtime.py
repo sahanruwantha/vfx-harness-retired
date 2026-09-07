@@ -6,9 +6,7 @@ execution, guards and usage; neither a successful tool nor session accepts VFX w
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import io
 import json
 from collections.abc import Callable
 from dataclasses import asdict, replace
@@ -16,29 +14,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import flynn_agents_sdk as flynn
-from PIL import Image
 
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.authority_selection_transaction import durably_ensure_real_directory
-from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
 
 MAX_CONTEXT_CHARACTERS = 24000
-MAX_IMAGE_BYTES = 8 * 1024 * 1024
 LIMITS = flynn.RunLimits(1, 1, 0, 90, output_tokens=2048)
-
-
-def image_input(folder: Path, relative: str) -> tuple[flynn.ImageInput, dict]:
-    """Snapshot a selected local still, refusing links, escapes and unsupported bytes."""
-    payload = read_real_file(folder, folder / relative, "approach review image")
-    if len(payload) > MAX_IMAGE_BYTES:
-        raise ValueError(f"approach image {relative!r} exceeds {MAX_IMAGE_BYTES} bytes")
-    with Image.open(io.BytesIO(payload)) as image:
-        mime = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}.get(image.format)
-        if mime is None:
-            raise ValueError(f"approach image {relative!r} must be PNG, JPEG or WEBP")
-        image.verify()
-    url = f"data:{mime};base64,{base64.b64encode(payload).decode('ascii')}"
-    return flynn.ImageInput(url), {"path": relative, "sha256": hashlib.sha256(payload).hexdigest()}
 
 
 def validate_recommendation(value: dict[str, object]) -> None:

@@ -258,3 +258,40 @@ checks passed. The final non-editable VFX wheel imports the native global tool s
 Claude blocked and uses SSH-installed SDK main
 `50a8df20fb69d01a4baced1bee617b2c075e732b`. No SDK source changed, no ARC tests were
 run, and no paid inference ran. Production global-planner session migration remains open.
+
+
+## Native global-planner questions and reference images
+
+The global tool set now includes `ask_supervisor` and, when authored stills exist,
+`read_reference`. Questions require an explicit assumption, reason and impact scope.
+Named layers/axes must exist in the current mapping; a global question may precede
+mapping publication. The existing prepared-file CAS transport writes the source shot's
+question stream under the current workspace/owner checks. A duplicate returns the
+actual stored assumption and scope, and the observation binds the reopened stream hash.
+A question does not invent an answer, change plan authority, or populate the gate's
+workspace. Concurrent publication is preserved and an uncertain dispatch is not retried.
+Malformed JSON and invalid question ids now refuse rather than silently disappearing
+from question history. This is not a new complete event-record schema.
+
+Reference names are enumerated from the bound authored PNG/JPEG/WebP inputs. Reads
+verify the selected bytes and actual image format, return native image content plus
+source identity, and enforce the existing 8 MiB limit. Unsupported content produces an
+explicit refusal; changed input generations refuse dispatch. Image snapshotting is now
+shared with approach review, with the old helper removed. The harness still decides
+which image observations belong in subsequent bounded requests.
+
+The native tool set has the planned question and image capabilities, but production
+global planning still uses its existing session implementation. The next migration must
+thread the live run-owner lease into the role guard, define bounded context and typed
+termination for draft/verify/repair, and keep draft audit snapshots outside the closed
+gate workspace. The existing two-pass loop writes `global.<tag>.md` inside that workspace;
+those snapshots are not part of the native gate's declared input/output set. Terminal
+gating and promotion remain at their existing authority owners. No SDK extension was
+needed for these two VFX capabilities.
+
+Validation: **3,087 VFX tests passed** with runtime source frozen, including real
+confined Blender and authority lifecycle checks; the focused suite passed **176 tests**.
+Full-source Ruff and diff checks passed. A fresh non-editable VFX wheel imports the
+native global tool set with Claude blocked, using SSH-installed SDK main
+`50a8df20fb69d01a4baced1bee617b2c075e732b`. The only suite warnings were the existing
+15 Pillow deprecations. SDK source was unchanged; no ARC tests or paid inference ran.

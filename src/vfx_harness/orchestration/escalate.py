@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from vfx_harness.observability import prepared_publication
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 
 QUESTIONS = "questions.jsonl"
 ANSWERS = "answers.md"
@@ -52,7 +52,8 @@ def _append_record(raw: bytes | None, record: dict) -> bytes:
     return prefix + json.dumps(record).encode("utf-8") + b"\n"
 
 
-def _load_bytes(raw: bytes | None, path: Path) -> list[dict]:
+def parse_questions(raw: bytes | None, path: Path) -> list[dict]:
+    """Merge question events without silently discarding corrupt records."""
     if raw is None:
         return []
     out = []
@@ -61,13 +62,10 @@ def _load_bytes(raw: bytes | None, path: Path) -> list[dict]:
             try:
                 out.append(json.loads(line))
             except json.JSONDecodeError as exc:
-                # Preserve the existing operator-visible behavior.  The prepared
-                # replacement keeps every original byte even when one legacy row is
-                # unreadable; this parser never silently rewrites the event stream.
-                log(
-                    f"! {path.name}:{n} is not valid JSON and was SKIPPED ({exc}); "
-                    "a question or answer may be missing"
-                )
+                raise ValueError(f"{path.name}:{n} is not valid question JSON; repair the event stream") from exc
+    for n, row in enumerate(out, 1):
+        if not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] < 1:
+            raise ValueError(f"{path.name} record {n} requires a positive integer question id")
     merged: dict[int, dict] = {}
     for question in out:
         merged[question["id"]] = {
@@ -101,7 +99,7 @@ def prepare_question(
         )
 
     def build(raw: bytes | None) -> tuple[bytes | None, tuple[int, bool]]:
-        existing = _load_bytes(raw, path)
+        existing = parse_questions(raw, path)
         normalized = question.strip().lower()
         for row in existing:
             if row["question"].strip().lower() == normalized:
@@ -205,7 +203,7 @@ def load(shot_folder: str | Path) -> list[dict]:
     path = Path(shot_folder) / QUESTIONS
     if not path.is_file():
         return []
-    return _load_bytes(path.read_bytes(), path)
+    return parse_questions(path.read_bytes(), path)
 
 
 def answer(shot_folder: str | Path, qid: int, text: str) -> bool:
@@ -213,7 +211,7 @@ def answer(shot_folder: str | Path, qid: int, text: str) -> bool:
     path = folder / QUESTIONS
 
     def build(raw: bytes | None) -> tuple[bytes | None, bool]:
-        questions = {row["id"]: row for row in _load_bytes(raw, path)}
+        questions = {row["id"]: row for row in parse_questions(raw, path)}
         if qid not in questions:
             return None, False
         record = {"id": qid, "answer": text.strip(), "answered": _now()}

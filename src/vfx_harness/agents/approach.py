@@ -9,7 +9,7 @@ from collections.abc import Callable
 import flynn_agents_sdk as flynn
 from flynn_agents_sdk import deepseek
 
-from vfx_harness.agents import approach_runtime
+from vfx_harness.agents import approach_runtime, image_inputs
 from vfx_harness.infrastructure.config import Settings
 from vfx_harness.knowledge import recipes
 from vfx_harness.observability.console import log
@@ -68,8 +68,8 @@ async def review(shot, layer, render_rel: str, verdict: dict, script_rel: str,
     stuck = _stuck_axes(verdict, tuple(layer.owns))
     hits = {h["name"]: h for axis in stuck for h in recipes.search_recipes(axis.replace("_", " "), k=2)}
     script = read_real_file(shot.folder, shot.folder / script_rel, "approach current script")
-    render, render_source = approach_runtime.image_input(shot.folder, render_rel)
-    reference, reference_source = approach_runtime.image_input(shot.folder, layer.judge_ref)
+    render, render_source = image_inputs.snapshot_image(shot.folder, render_rel)
+    reference, reference_source = image_inputs.snapshot_image(shot.folder, layer.judge_ref)
     stuck_line = ", ".join(f"{key}={verdict['scores'][key]}" for key in stuck)
     prompt = (
         f"Layer {layer.id} — {layer.title}. It has stopped improving.\n"

@@ -17,7 +17,7 @@ from vfx_harness.orchestration import authority_selection
 from vfx_harness.orchestration.plan_bundle_integrity import digest
 
 
-def execute(bound, steps, *, after_inference=lambda _: None):
+def execute(bound, steps, *, after_inference=lambda _: None, check=lambda: None):
     layout, _, _ = bound
     results = []
 
@@ -32,7 +32,7 @@ def execute(bound, steps, *, after_inference=lambda _: None):
             return flynn.InferenceResult.scripted(flynn.ToolCall(name, json.dumps(arguments)))
 
     async def run():
-        tools, guard = flynn_global_tools.global_planning_tools(layout=layout, check_current=lambda: None)
+        tools, guard = flynn_global_tools.global_planning_tools(layout=layout, check_current=check)
         grants = tuple(tool.name for tool in tools)
         limits = flynn.RunLimits(len(steps), len(steps), len(steps))
         with flynn.SQLiteRun.create(layout.checkpoints / "global.sqlite", run_id="global",
