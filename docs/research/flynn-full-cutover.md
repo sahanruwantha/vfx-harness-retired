@@ -449,3 +449,38 @@ warnings. Complete-source Ruff and diff checks passed. An isolated installed whe
 imports the native module with Claude blocked, explicitly declares `jsonschema`, and
 passes dependency checks using SSH Flynn `main` at
 `50a8df20fb69d01a4baced1bee617b2c075e732b`.
+
+## Native JIT planning knowledge
+
+`agents/flynn_planning_knowledge.py` supplies native evidence vocabulary, recipe lookup,
+and supervisor-question capabilities for one selected layer or unit. Registration and
+dispatch check the caller's live attempt, exact selected authority, and authored/decision
+inputs. Invalid schema and unknown question impact refuse before tool reservations.
+
+The evidence instrument returns a registry index or one exact kind's definition,
+domain, fields, and operators. Its source is the same provider-neutral vocabulary
+compiler used by the existing planning transport. Recipes likewise share discovery and
+section formatting; selected units retain mutation-role filtering, while layer planning
+discovery remains informational. Native reads are limited to six calls, three distinct
+body fragments and 12,000 emitted characters. Rereads count against the budget rather
+than assuming earlier fragments remain in context. Oversized code is never truncated.
+
+Global and JIT native questions now use one publication helper. It prepares the existing
+VFX append transaction, rechecks the live binding before commit, discards only its own
+uncommitted preparation on failure, then reads the durable question back. Duplicates
+return the original assumption and impact; no answer, approval, or state commit is
+invented. Read-only knowledge tools consume no external-action reservation; question
+publication does. The caller still owns feedback selection and session completion.
+
+This step does not switch the production JIT session. Native vocabulary-gap recording,
+reference measurement and bounded spike execution remain before that cutover. No SDK
+source change, ARC installation gate, paid inference, or visual-quality claim is involved.
+
+Validation: **94 focused tests passed** across the new capabilities, existing global
+questions/reference selection, recipe scope and evidence vocabulary. The final full
+suite passed **3,198 tests** on unchanged runtime source (655 + 980 + 785 + 778),
+with only the 15 existing Pillow deprecation warnings. Complete-source Ruff and diff
+checks passed. The freshly installed wheel imports native planning knowledge and the
+global planner with Claude blocked, exposes all 32 registered evidence kinds, performs
+recipe lookup, and passes dependency checks. Flynn remains installed from SSH `main`
+at `50a8df20fb69d01a4baced1bee617b2c075e732b`; its checkout is unchanged.

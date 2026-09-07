@@ -1,11 +1,10 @@
 """Legacy recipe registration for roles awaiting the Flynn cutover."""
 
-import re
 from collections.abc import Sequence
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from vfx_harness.knowledge import recipes
+from vfx_harness.knowledge import recipe_lookup, recipes
 
 
 def build_recipe_tools(on_use=None, mutation_roles: Sequence[str] | None = None):
@@ -25,29 +24,10 @@ def build_recipe_tools(on_use=None, mutation_roles: Sequence[str] | None = None)
         {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     )
     async def find_recipe(args):
-        hits = recipes.search_recipes(args["query"], mutation_roles=roles)
-        if not hits:
-            blocked = recipes.out_of_scope_hits(args["query"], roles or ()) if roles is not None else []
-            if blocked:
-                names = ", ".join(rec["name"] for rec in blocked)
-                present = ", ".join(roles) if roles else "(none)"
-                return {"content": [{"type": "text",
-                        "text": (
-                            "ABSTAIN: no in-scope recipe for that query. Keyword hits "
-                            f"{names} require mutation roles this unit does not own. "
-                            f"Requested query {args['query']!r}; mutation roles present: "
-                            f"{present}. Do not improvise those techniques here — they "
-                            "belong to a unit that mutates the missing roles."
-                        )}]}
-            return {"content": [{"type": "text",
-                    "text": "no matching recipe — improvise; a good solution may be harvested "
-                            "into the cookbook if this milestone passes."}]}
-        text, used = recipes.recipe_search_response(str(args["query"]), hits)
+        result = recipe_lookup.lookup(args["query"], roles)
+        text, used = result.text, list(result.used)
         if used:
-            base, separator, selector = str(args["query"]).lower().partition("#")
-            key = "-".join(re.findall(r"[a-z0-9]+", base))
-            if separator:
-                key += "#" + "-".join(re.findall(r"[a-z0-9]+", selector))
+            key = recipe_lookup.fragment_key(str(args["query"]), result.used)
             refused = context_budget.admit(key, len(text))
             if refused:
                 return {"content": [{"type": "text", "text": refused}]}

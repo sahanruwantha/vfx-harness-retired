@@ -9,27 +9,14 @@ import flynn_agents_sdk as flynn
 from jsonschema import Draft202012Validator
 from PIL import UnidentifiedImageError
 
-from vfx_harness.agents import image_inputs
+from vfx_harness.agents import flynn_questions, image_inputs
 from vfx_harness.agents.planning_workspace import PlanningWorkspace
-from vfx_harness.orchestration import escalate
 from vfx_harness.orchestration.plan_bundle_integrity import digest, read_real_file
-
-_TEXT = {"type": "string", "minLength": 1, "maxLength": 2000}
-_IMPACT = {"type": "array", "maxItems": 64, "uniqueItems": True,
-           "items": {"type": "string", "minLength": 1, "maxLength": 128}}
-QUESTION_SCHEMA = {
-    "type": "object", "properties": {
-        "question": _TEXT, "assumption": _TEXT, "why_it_matters": _TEXT,
-        "affected_layers": _IMPACT, "affected_axes": _IMPACT, "global_decision": {"type": "boolean"},
-    },
-    "required": ["question", "assumption", "why_it_matters", "affected_layers", "affected_axes", "global_decision"],
-    "additionalProperties": False,
-}
 
 
 def planning_input_tools(binding: PlanningWorkspace) -> tuple[flynn.Tool, ...]:
     """Select references explicitly; record questions without inventing answers or authority."""
-    validator = Draft202012Validator(QUESTION_SCHEMA)
+    validator = Draft202012Validator(flynn_questions.QUESTION_SCHEMA)
     layout = binding.layout
     references = tuple(sorted(
         name for name in binding.record["authored_inputs"]
@@ -56,38 +43,10 @@ def planning_input_tools(binding: PlanningWorkspace) -> tuple[flynn.Tool, ...]:
                 raise ValueError("supervisor question impact must name layers and axes from the current mapping")
 
     async def ask(arguments):
-        binding.check()
-        authority = f"native-global-question:{layout.run_id}:{digest(binding.marker_bytes)}"
-        prepared = escalate.prepare_question(layout.shot, layer="PLAN", authority_binding=authority, **arguments)
-        try:
-            binding.check()
-            qid = escalate.commit_prepared_question(prepared, authority_binding=authority)
-        except BaseException:
-            # Discard only this staged CAS publication; never erase a committed row.
-            escalate.discard_prepared_question(prepared)
-            raise
-        path = layout.shot / escalate.QUESTIONS
-        payload = read_real_file(layout.shot, path, "committed supervisor question stream")
-        records = {row["id"]: row for row in escalate.parse_questions(payload, path)}
-        if qid not in records:
-            raise ValueError("committed supervisor question is absent from the verified event stream")
-        record = records[qid]
-        if not {"affected_layers", "affected_axes", "global_decision"} <= record.keys():
-            raise ValueError("stored supervisor question lacks the required impact schema; migrate it explicitly")
-        binding.check()
-        data = json.dumps({
-            "schema": "vfx-harness.plan-question-observation/v1", **binding.identity(),
-            "created": prepared.update.result[1], "question": record,
-            "ledger": escalate.QUESTIONS, "ledger_sha256": digest(payload),
-            "plan_authority_changed": False,
-        }, sort_keys=True)
-        if len(data) > 32_000:
-            raise ValueError("stored supervisor question exceeds bounded feedback; inspect the question ledger")
-        return flynn.ToolResult(
-            content=(flynn.TextContent(
-                f"Question Q{qid} recorded or already present. Use its stored assumption and impact scope. "
-                "No answer or plan approval was generated."
-            ),), data_json=data,
+        return await flynn_questions.record_question(
+            layout=layout, arguments=arguments, check_current=binding.check,
+            authority_binding=f"native-global-question:{layout.run_id}:{digest(binding.marker_bytes)}",
+            identity=binding.identity,
         )
 
     def validate_reference(arguments):
@@ -123,7 +82,8 @@ def planning_input_tools(binding: PlanningWorkspace) -> tuple[flynn.Tool, ...]:
             "Record an ambiguity the human must settle and the assumption to proceed on. "
             "Declare affected mapping layers/axes, or global_decision only if the whole plan depends on it. "
             "A duplicate returns the existing question's actual assumption and scope."
-        ), parameters_json=json.dumps(QUESTION_SCHEMA), validate=validate_question, execute=ask, external_action=True,
+        ), parameters_json=json.dumps(flynn_questions.QUESTION_SCHEMA),
+        validate=validate_question, execute=ask, external_action=True,
     )]
     if references:
         tools.append(flynn.Tool.structured(

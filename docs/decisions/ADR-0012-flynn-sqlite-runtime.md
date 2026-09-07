@@ -301,3 +301,20 @@ run report. Feedback text and structured detail are bounded, with omissions expl
 A claimed clean result earns `finalization_current` only through the existing durable
 reader. No native tool selects authority or commits unit state. This capability change
 does not switch the remaining JIT model session or remove its other tools.
+
+### Native planning knowledge and questions
+
+Evidence descriptions and recipe discovery now have shared VFX implementations outside
+model transports. Native JIT knowledge registration binds the selected layer or unit,
+current authority generation, authored/decision inputs and a caller-owned live attempt
+check. Evidence vocabulary is an index plus exact-kind detail; recipe discovery retains
+the existing section format and filters by actual mutation roles for a selected unit.
+Layer-level discovery grants no mutation permission. Read observations name their scope
+and content identities, without committing domain state.
+
+Native recipe retrieval allows rereads because selected observations may have left
+bounded context. Six reads, three distinct fragments and 12,000 cumulative response
+characters prevent unbounded reconstruction. Retained-conversation roles keep their
+existing duplicate-read refusal. Global and JIT native supervisor questions share the
+same prepared VFX publication path and read back the actual stored question; neither
+assumptions nor successful tool calls become answers or plan approval.

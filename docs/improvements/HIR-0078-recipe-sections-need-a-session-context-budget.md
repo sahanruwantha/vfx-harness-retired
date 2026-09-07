@@ -51,3 +51,19 @@ ceiling.
 
 No persisted schema migration. The budget resets with each bounded build or repair session.
 Rollback restores unbounded cumulative recipe reconstruction.
+
+## Native Flynn planning refinement
+
+The native planning knowledge tool does not assume its caller retains earlier
+observations. A fragment can be read again after context eviction, but every retrieval
+consumes one of six reads and every emitted response character, including discovery,
+consumes a cumulative 12,000-character budget. Three distinct fragment identities remain
+the maximum. Alias normalization cannot create new identities for the same fragment.
+An oversized response is refused whole, so code is never cut mid-expression. The
+existing retained-conversation transport still refuses duplicate reads.
+
+The native contract suite covers repeated exposures, the seventh-read refusal,
+character exhaustion, and fourth-fragment refusal followed by a legal reread of a
+previous fragment. These are controlled tests of retrieval behavior, not evidence of
+improved live model quality. The ownership decision remains with ADR-0012: VFX chooses
+context and retrieval policy; Flynn executes and journals the permitted operations.

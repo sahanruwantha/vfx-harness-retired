@@ -1354,8 +1354,12 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   ranked summaries, an exact recipe name returns a compact prose/code section index,
   `<name>#<section>` loads one fragment, and only explicit `<name>#full` loads the whole
   body. One session may load at most three distinct recipe bodies within a cumulative
-  character budget; rereads and incremental full-recipe reconstruction fail closed so
-  cookbook context cannot scale with turn count (HIR-0062, HIR-0067, HIR-0078). A lighting hit is not
+  character budget; retained-conversation roles refuse rereads. Native Flynn planning
+  may reread evicted material, but each retrieval consumes one of six reads and its full
+  text consumes the shared 12,000-character budget, while the three-distinct-fragment
+  limit remains. Oversized bodies are refused whole, never truncated. Incremental
+  full-recipe reconstruction still fails closed, so cookbook context cannot scale with
+  turn count (HIR-0062, HIR-0067, HIR-0078, ADR-0012). A lighting hit is not
   permission on a camera unit (HIR-0033). `run_bpy` errors that reinvent
   `path_clearance_min` or `BVHTree.FromMesh` name the bound instrument (HIR-0034).
   Live `render_frame` / `verify_change` default to Workbench `solid` when the
