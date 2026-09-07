@@ -16,7 +16,9 @@ attempt DAG, durable state and verified completion authorization; project only d
 consumed interfaces (HIR-0249). Enforce write → probe → revise/freeze through grants;
 revision requires a fresh probe, unchanged observed candidates cannot be re-probed,
 and abstention remains legal. Grants must leave enough budget for the complete remaining
-path; forward replay failure stage/message as selected feedback (HIR-0250).
+path; forward replay failure stage/message as selected feedback (HIR-0250). Include exact
+current candidate source and SHA-256 as required bounded context; refuse overflow before
+inference, without accumulating prior versions or predecessor scripts (HIR-0251).
 
 Treat the Claude Agent SDK as a production runtime, not merely prompt transport. Inspect the
 installed SDK before building custom orchestration and prefer its strongest applicable native

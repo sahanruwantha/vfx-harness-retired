@@ -246,6 +246,12 @@ def test_flynn_candidate_revision_requires_measured_feedback(tmp_path, monkeypat
         calls = 0
 
         async def generate(self, request):
+            if self.calls:
+                assert "\n\nCurrent candidate: " in request.objective
+                current = json.loads(request.objective.split("\n\nCurrent candidate: ", 1)[1])
+                expected_source = bad_program if self.calls < 3 else _PROGRAM
+                assert current["source"] == expected_source
+                assert current["sha256"] == hashlib.sha256(expected_source.encode()).hexdigest()
             if self.calls in (1, 3):
                 assert set(request.allowed_tools) == {"probe_candidate", "abstain"}
             if self.calls == 2:
@@ -274,3 +280,32 @@ def test_flynn_candidate_revision_requires_measured_feedback(tmp_path, monkeypat
         assert run.read().revision == 0
         assert len(run.records()["operations"]) == 6
         assert run.outcome().startswith("unit_evaluation_receipt:")
+
+
+def test_flynn_required_candidate_context_refuses_overflow_before_inference(tmp_path, monkeypatch):
+    shot, layer, unit, selected, guard, layout = _authority(tmp_path, monkeypatch)
+    source = "#" + "x" * 12000
+
+    class Adapter:
+        calls = 0
+
+        async def generate(self, request):
+            self.calls += 1
+            assert self.calls == 1, "oversized required source must refuse before another model call"
+            return flynn.ToolCall("write_candidate", json.dumps({"source": source}))
+
+    adapter = Adapter()
+    with builder_execution_fence(tmp_path) as lease, pytest.raises(ValueError, match="Required context item"):
+        asyncio.run(flynn_unit.build_unit(
+            shot, Milestone("1@lock", 240, "refs/a.png", "control exists"),
+            unit.mutates.script_spans[0], [], object(),
+            inference=adapter, limits=flynn.RunLimits(4, 4, 3, 180),
+            layer=layer, active_unit=unit, selected_authority=selected, attempt_guard=guard,
+            fence_lease=lease, verbose=False,
+        ))
+    assert adapter.calls == 1
+    with flynn.SQLiteRun.open(layout.checkpoints / "flynn" / f"{guard.claim.claim_id}.sqlite") as run:
+        assert run.remaining()["inference"] == 3
+        assert len(run.records()["operations"]) == 1
+        assert run.outcome() is None
+    assert not (tmp_path / unit.mutates.script_spans[0]).exists()

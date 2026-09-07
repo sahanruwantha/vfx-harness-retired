@@ -234,6 +234,17 @@ the producer completed too. The consumer passed its probe but the turn's model-c
 stopped before freeze. These runs spent 18 calls total and published no composed layer.
 A fresh live layer run is still required; no automatic session resume is authorized.
 
+### Live dependent-layer completion
+
+[HIR-0251](../improvements/HIR-0251-flynn-current-candidate-context.md) closes a
+remaining repair-context gap by including exact current candidate source and SHA-256
+under the existing required-context cap. All 59 focused regressions passed. A fresh
+DeepSeek run completed the independent unit, producer and consumer in 14 model calls,
+including one measured repair. Native empty-scene composition passed all three scene
+contracts at both judge points, and a separate process verified the published layer
+receipt. Planning remains seeded fixture authority; visual roles, amendments, full-shot
+acceptance and the CLI cutover remain separate gates. The SDK is unchanged.
+
 ## Consequences
 
 SDK durability defects can be fixed once for both harnesses. Domain acceptance remains

@@ -205,6 +205,11 @@ async def build_unit(
             "frozen_candidate_sha256": frozen,
         }, sort_keys=True)
         objective = packet.text + "\n\n" + request.objective + "\n\nExecution phase: " + phase
+        if written:
+            source = read_real_file(shot.folder, candidate, "Flynn current candidate context")
+            objective += "\n\nCurrent candidate: " + json.dumps({
+                "source": source.decode("utf-8"), "sha256": hashlib.sha256(source).hexdigest(),
+            }, sort_keys=True)
         flynn.ContextCompiler(max_characters=max_context_characters).compile(
             (
                 flynn.ContextItem("objective", objective, required=True),

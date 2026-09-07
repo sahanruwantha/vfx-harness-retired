@@ -564,6 +564,10 @@ grants. Reserve the full remaining write/probe/freeze/canonical path before offe
 an action, so revision cannot consume its own required probe allowance. Transport the
 existing replay-failure stage/message to the model as selected feedback; an empty verdict
 list must not hide a script error. Canonical acceptance authority is unchanged (HIR-0250).
+Flynn candidate repair context includes the exact current scratch source and its SHA-256,
+read from the guarded candidate path, alongside selected feedback. It is required material
+under the existing context cap; overflow refuses before inference. No prior source versions
+or producer scripts are accumulated into this context (HIR-0251).
 
 Treat the Claude Agent SDK as a production runtime, not merely a prompt transport. Before
 building custom orchestration, inspect the installed SDK and use the strongest applicable native
