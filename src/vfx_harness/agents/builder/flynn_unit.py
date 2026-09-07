@@ -159,6 +159,7 @@ async def build_unit(
     frozen = None
     observed = None
     written = False
+    inspected = False
     canonical_verdicts = []
     replay_inputs = []
 
@@ -168,19 +169,27 @@ async def build_unit(
     def prepare(request):
         attempt_guard.check("prepare Flynn request")
         feedback = _selected_feedback(request.observation)
+        phase = json.dumps({
+            "initial_scene_inspected": inspected,
+            "candidate_written": written,
+            "observed_candidate_sha256": observed,
+            "frozen_candidate_sha256": frozen,
+        }, sort_keys=True)
+        objective = packet.text + "\n\n" + request.objective + "\n\nExecution phase: " + phase
         flynn.ContextCompiler(max_characters=max_context_characters).compile(
             (
-                flynn.ContextItem("authority", packet.text, required=True),
-                flynn.ContextItem("objective", request.objective, required=True),
+                flynn.ContextItem("objective", objective, required=True),
                 flynn.ContextItem("selected-observation", feedback or "", required=True),
             )
         )
-        return replace(request, objective=packet.text + "\n\n" + request.objective, observation=feedback)
+        return replace(request, objective=objective, observation=feedback)
 
     async def inspect(arguments):
+        nonlocal inspected
         attempt_guard.check("inspect Flynn unit")
         session.run(prior._ARTIFACT_EVALUATION_BARRIER, journal=False)
         objects = revalidate._scene_object_manifest(session)
+        inspected = True
         return json.dumps(
             {
                 "objects": {
@@ -251,7 +260,13 @@ async def build_unit(
 
     tools = flynn.ToolBroker(
         [
-            flynn.Tool("inspect_unit", _validate_arguments, inspect, observation=True, external_action=True),
+            flynn.Tool(
+                "inspect_unit", _validate_arguments, inspect, observation=True, external_action=True,
+                description=(
+                    'Read initial scoped scene objects once, before writing a candidate. This '
+                    'does not execute a candidate.'
+                ),
+            ),
             flynn.Tool(
                 "write_candidate",
                 partial(_validate_arguments, field="source"),
@@ -259,14 +274,28 @@ async def build_unit(
                 observation=True,
                 external_action=True,
                 parameters_json=_schema("source"),
+                description=(
+                    "Write the complete self-contained Blender Python candidate to this unit's "
+                    'scratch file. Does not execute it; probe next.'
+                ),
             ),
-            flynn.Tool("probe_candidate", _validate_arguments, replay, observation=True, external_action=True),
+            flynn.Tool(
+                "probe_candidate", _validate_arguments, replay, observation=True, external_action=True,
+                description=(
+                    'Cold-replay accepted priors and the written candidate, returning measured '
+                    'verdicts and the candidate SHA-256.'
+                ),
+            ),
             flynn.Tool(
                 "freeze_candidate",
                 partial(_validate_arguments, field="sha256"),
                 freeze,
                 observation=True,
                 parameters_json=_schema("sha256"),
+                description=(
+                    'Freeze the exact probed SHA-256 for independent canonical replay. This '
+                    'does not accept the unit.'
+                ),
             ),
             flynn.Tool("canonical_replay", _validate_arguments, replay, observation=True, external_action=True),
             flynn.Tool(
@@ -304,7 +333,11 @@ async def build_unit(
         while frozen is None:
             # Leave one deterministic invocation and external dispatch for cold replay.
             remaining = run.remaining()
-            grants = ["inspect_unit", "write_candidate", "abstain"]
+            grants = ["write_candidate", "abstain"]
+            # Inspection reads the current worker, not the unexecuted scratch file.
+            # After a write, candidate replay supplies fresh scene evidence instead.
+            if not inspected and not written:
+                grants.insert(0, "inspect_unit")
             if written:
                 grants.append("probe_candidate")
             if observed is not None:

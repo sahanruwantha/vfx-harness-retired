@@ -97,6 +97,18 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
         flynn.ToolCall("probe_candidate", "{}"),
         flynn.ToolCall("freeze_candidate", json.dumps({"sha256": digest})),
     ]
+    class PhaseAdapter:
+        def __init__(self):
+            self.scripted = flynn.ScriptedAdapter(calls)
+            self.requests = 0
+
+        async def generate(self, request):
+            if self.requests:
+                assert "inspect_unit" not in request.allowed_tools
+                assert "write_candidate" in request.allowed_tools or "freeze_candidate" in request.allowed_tools
+            self.requests += 1
+            return await self.scripted.generate(request)
+
     milestone = Milestone("1@lock", 240, "refs/a.png", "control exists")
     script_rel = unit.mutates.script_spans[0]
     with builder_execution_fence(tmp_path) as lease, BlenderSession(
@@ -104,7 +116,7 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
     ) as session:
         ledger = asyncio.run(flynn_unit.build_unit(
             shot, milestone, script_rel, [], session,
-            inference=flynn.ScriptedAdapter(calls), limits=flynn.RunLimits(5, 5, 4, 180),
+            inference=PhaseAdapter(), limits=flynn.RunLimits(5, 5, 4, 180),
             layer=layer, active_unit=unit, selected_authority=selected, attempt_guard=guard,
             fence_lease=lease, verbose=False,
         ))

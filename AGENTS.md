@@ -550,6 +550,10 @@ The target API may break with explicit schema refusal; no backwards compatibilit
 required. The Claude-native preference below applies to the existing runtime, not as a
 prohibition on its replacement. Prove each migrated boundary before retiring its current
 writer; an SDK commit or recovery never certifies a VFX unit or authorizes session resume.
+The executable Flynn builder grants initial scene inspection at most once and only before
+writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
+explicit execution phase alongside bounded selected feedback; repeated unchanged initial
+inspection must not consume the unit's action budget (HIR-0248).
 
 Treat the Claude Agent SDK as a production runtime, not merely a prompt transport. Before
 building custom orchestration, inspect the installed SDK and use the strongest applicable native

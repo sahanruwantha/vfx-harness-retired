@@ -197,6 +197,15 @@ edit during that run. The complete rerun held source bytes unchanged and passed 
 The Flynn dependency remained the non-editable SSH installation of `f6b164e`; later SDK
 provider-diagnostic commits are outside this validation. No paid inference was used.
 
+### First live executable unit
+
+[HIR-0248](../improvements/HIR-0248-flynn-inspection-phase.md) records the first
+DeepSeek probe failure and the VFX phase-policy fix. A fresh live probe then completed
+inspect/write/probe/freeze in four model calls, passed independent confined canonical
+replay, and verified native checkpoint/completion. Planning authority was seeded by a
+test fixture. The normal CLI, visual roles and dependent composition remain unmigrated.
+The SDK dependency is unchanged; 40 focused VFX regressions and complete-source Ruff pass.
+
 ## Consequences
 
 SDK durability defects can be fixed once for both harnesses. Domain acceptance remains

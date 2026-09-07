@@ -9,6 +9,9 @@ The Flynn/SQLite migration is governed by ADR-0012 and AGENTS.md. This native-SD
 preference applies to the existing Claude runtime, not to its replacement. Flynn owns
 generic execution durability; VFX retains domain authority, replay and acceptance.
 Breaking APIs and explicit schema refusal are permitted; no compatibility layer is owed.
+The executable Flynn builder permits initial inspection once, before a candidate write;
+subsequent scene evidence comes from replay. Expose execution phase with bounded feedback
+and enforce this through grants (HIR-0248).
 
 Treat the Claude Agent SDK as a production runtime, not merely prompt transport. Inspect the
 installed SDK before building custom orchestration and prefer its strongest applicable native
