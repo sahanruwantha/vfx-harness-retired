@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -259,6 +260,7 @@ async def _build_layer_under_execution_fence(
     verbose: bool = True,
     resume_ok: bool = False,
     force: bool = False,
+    unit_builder: Callable[..., Awaitable[Ledger]] | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
     fence_lease: BuilderExecutionFenceLease,
 ) -> Ledger:
@@ -597,7 +599,8 @@ async def _build_layer_under_execution_fence(
         # failed.  Preserve the in-flight state until a producer-sealed outcome can
         # classify the cause; otherwise infrastructure, harness, or session failures
         # falsely invalidate the unit and its entire dependency closure.
-        ledger = await builder_package().build_unit(
+        execute_unit = builder_package().build_unit if unit_builder is None else unit_builder
+        ledger = await execute_unit(
             shot,
             milestone,
             _unit_artifact_path(layer, unit),
@@ -741,6 +744,7 @@ async def build_layer(
     verbose: bool = True,
     resume_ok: bool = False,
     force: bool = False,
+    unit_builder: Callable[..., Awaitable[Ledger]] | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
 ) -> Ledger:
     """Serialize all shared shot and Blender state for one complete layer build."""
@@ -760,6 +764,7 @@ async def build_layer(
             verbose=verbose,
             resume_ok=resume_ok,
             force=force,
+            unit_builder=unit_builder,
             selected_authority=selected_authority,
             fence_lease=fence_lease,
         )
@@ -774,6 +779,7 @@ async def build_layer_already_fenced(
     verbose: bool = True,
     resume_ok: bool = False,
     force: bool = False,
+    unit_builder: Callable[..., Awaitable[Ledger]] | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
     fence_lease: BuilderExecutionFenceLease,
 ) -> Ledger:
@@ -795,6 +801,7 @@ async def build_layer_already_fenced(
             verbose=verbose,
             resume_ok=resume_ok,
             force=force,
+            unit_builder=unit_builder,
             selected_authority=selected_authority,
             fence_lease=fence_lease,
         )

@@ -315,6 +315,21 @@ def test_already_fenced_builder_refuses_without_live_lease_before_work(
     assert started is False
 
 
+def test_layer_retains_explicit_unit_executor_under_its_fence(tmp_path, monkeypatch):
+    executor = object()
+
+    async def selected_layer(shot, layer, session, *, unit_builder, fence_lease, **kwargs):
+        require_builder_execution_lease(fence_lease, shot.folder)
+        assert unit_builder is executor
+        return "selected executor retained"
+
+    monkeypatch.setattr(builder_layer, "_build_layer_under_execution_fence", selected_layer)
+    result = asyncio.run(builder_layer.build_layer(
+        SimpleNamespace(folder=tmp_path), object(), object(), unit_builder=executor,
+    ))
+    assert result == "selected executor retained"
+
+
 def test_builder_operation_retains_fence_if_owner_context_exits_early(
     tmp_path: Path,
     monkeypatch,

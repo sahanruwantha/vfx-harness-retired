@@ -405,6 +405,16 @@ installation does not use a sibling editable checkout. The existing production r
 is still active while the [migration gates](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)
 are proved.
 
+The opt-in executable-unit engine lives in `agents/builder/flynn_unit.py`. Development
+callers bind its `inference` and `limits` arguments and pass it as `unit_builder` to
+`build_layer`; the existing layer controller still owns checkpointing and completion.
+The scripted lifecycle gate runs real confined Blender and the production unit receipt
+writers without model calls:
+
+```bash
+.venv/bin/python -m pytest -q src/tests/integration/test_flynn_unit_lifecycle.py
+```
+
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 cp .env.example .env          # set ONE auth variable (below)

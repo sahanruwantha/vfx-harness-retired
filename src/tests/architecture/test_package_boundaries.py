@@ -59,6 +59,8 @@ def test_oversize_allowlist_names_existing_files():
 
 def test_domain_does_not_import_runtime_adapters():
     forbidden = (
+        "flynn_agents_sdk",
+        "claude_agent_sdk",
         "vfx_harness.agents",
         "vfx_harness.application",
         "vfx_harness.assets",

@@ -89,6 +89,8 @@ def publish_candidate_script(
     candidate_path: str | Path,
     script_rel: str,
     attempt_guard: UnitAttemptGuard,
+    *,
+    expected_sha256: str | None = None,
 ) -> str:
     """Stage candidate bytes unlocked, then bind them under the exact attempt."""
 
@@ -125,6 +127,11 @@ def publish_candidate_script(
         source_root=candidate.parent,
     )
     try:
+        if expected_sha256 is not None and prepared.sha256 != expected_sha256:
+            raise ValueError(
+                "canonical unit script differs from the frozen candidate: "
+                f"expected {expected_sha256}, found {prepared.sha256}; replay the current candidate"
+            )
         return attempt_guard.publish(
             "publish canonical unit replay script",
             lambda: blender_session.commit_durable_parent_publish(prepared),

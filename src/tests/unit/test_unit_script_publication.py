@@ -4,6 +4,8 @@ import hashlib
 from threading import Event, Thread
 from types import SimpleNamespace
 
+import pytest
+
 from tests.architecture.test_staged_architecture import _unit
 from tests.unit_attempt_fixtures import claim_for_build, legacy_apply_replan
 from vfx_harness.agents.builder.attempt_guard import (
@@ -70,6 +72,25 @@ def test_candidate_script_publication_uses_prepared_parent_bytes(tmp_path) -> No
     destination = tmp_path / "build" / "units" / "01" / "hero.py"
     assert observed == hashlib.sha256(payload).hexdigest()
     assert destination.read_bytes() == payload
+    assert list(destination.parent.glob(".hero.py.prepared.*")) == []
+
+
+def test_publication_refuses_bytes_substituted_after_freeze(tmp_path) -> None:
+    _unit_value, _units, guard = _building_guard(tmp_path, plan_hash="a" * 64)
+    candidate = (
+        tmp_path / "runs" / guard.claim.run_id / "scratch" / "unit-candidates"
+        / f"{guard.claim.claim_id}.py"
+    )
+    candidate.parent.mkdir(parents=True)
+    frozen_digest = hashlib.sha256(b"# frozen\npass\n").hexdigest()
+    candidate.write_bytes(b"# substituted\npass\n")
+    with pytest.raises(ValueError, match="differs from the frozen candidate"):
+        publish_candidate_script(
+            tmp_path, candidate, "build/units/01/hero.py", guard,
+            expected_sha256=frozen_digest,
+        )
+    destination = tmp_path / "build/units/01/hero.py"
+    assert not destination.exists()
     assert list(destination.parent.glob(".hero.py.prepared.*")) == []
 
 

@@ -138,16 +138,64 @@ its declared count; the other deliberately fails it. Both preserve observation/e
 without accepting a unit. The first attempt correctly rejected an overbroad scene reset
 inside the artifact; the corrected fixture leaves reset with the harness-owned setup.
 
-These are six execution/context seam tests, not a complete production unit lifecycle.
-Attempt-bound authorization, freeze, canonical unit receipt publication and composition
-still need to be connected to Flynn. The current VFX controller and authority writers
-are unchanged. No paid model calls were made.
+Those initial six tests covered execution/context seams without publishing unit receipts.
+No paid model calls were made.
 
 Final follow-up validation: the complete current VFX collection ran in four isolated
 pytest processes with separate temporary directories: **586 + 717 + 822 + 775 = 2,900
 passed**. This includes all six Flynn seam tests. Ruff passed on the complete `src` tree.
 The suite reported 15 existing Pillow `getdata()` deprecation warnings. The parallel run
 replaced an interrupted serial attempt; no partial run is counted as full-suite evidence.
+
+### Executable unit integration
+
+`agents/builder/flynn_unit.py` now supplies an explicit unit executor to the existing
+layer controller through `unit_builder`. The controller continues to own dependency
+selection, planning claims, checkpoint freeze, completion, failure dispatch and layer
+finalization. Selecting Flynn is explicit; an unsupported raster or non-procedural unit
+raises instead of falling back to Claude. Normal CLI runs still select the existing engine.
+
+The Flynn engine binds its database to the exact run/attempt under `checkpoints/flynn/`.
+It uses the current attempt guard, authority snapshot, scope compiler, confined artifact
+replay, evaluation receipt publisher and completion readers. Model grants change with the
+phase: a candidate must be written before probing, and observed before freezing. The model
+has no acceptance tool. An explicit insufficient-evidence abstention records its reason and
+ends execution without inventing unit failure, plan-defect or completion authority.
+Freeze records the observed script digest; a separate scripted Flynn
+dispatch performs canonical replay, using one reserved inference-adapter invocation, tool
+dispatch and external-action allowance. That scripted invocation makes no model request.
+The existing script publisher checks the staged bytes against the frozen digest before
+publication. SQLite records the resulting evaluation receipt identity without committing
+tool output as accepted state or claiming that the unit checkpoint has completed.
+As in the current builder, a failed canonical evaluation publishes its frozen script for
+diagnosis and binds the failure ledger to those exact bytes; it earns no completion receipt.
+
+Full results stay in SQLite. VFX selects the latest measured feedback, preserving its source
+digest, and checks that the selected feedback, objective, exact scope and unit plan fit the
+context cap together. It does not accumulate prior turns or silently drop required material.
+Reopening SQLite is diagnostic only: the engine refuses re-entry into the same attempt and
+does not offer session recovery or a budget reset.
+
+The lifecycle fixtures seed selected planning authority through the existing test
+materialization helper; they do not prove planning quality or run a paid planner. From that
+authority onward, attempt claims, confined Blender replay, unit evaluation, checkpointing
+and completion are real. Failure cases cover unmet evidence, undeclared roles, script
+execution errors, false finish, revoked claims, interruption and frozen-source substitution.
+The completion reader must also reject later script drift despite SQLite's terminal record.
+
+This remains an opt-in scripted migration route. Provider usage/USD settlement, live model
+adapters, visual judgment, heterogeneous dependent composition and public CLI selection
+remain separate gates. The current layer and shot acceptance authorities are retained.
+
+Validation on the final unchanged source: **653 + 757 + 697 + 804 = 2,911 passed**
+in four isolated pytest processes. This includes nine Flynn lifecycle cases, the
+frozen-script substitution regression and the explicit executor/fence routing test.
+Ruff passed on all `src`, and the public `vfx --help` command passed. The suite emitted
+15 existing Pillow deprecation warnings. The earlier full run is not counted as passing:
+one fixture assertion was corrected, and a sealed-outcome test correctly detected a source
+edit during that run. The complete rerun held source bytes unchanged and passed every test.
+The Flynn dependency remained the non-editable SSH installation of `f6b164e`; later SDK
+provider-diagnostic commits are outside this validation. No paid inference was used.
 
 ## Consequences
 
