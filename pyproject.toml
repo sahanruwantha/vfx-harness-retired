@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 # Explicit development gate until private-SDK authentication is configured in CI.
 flynn = [
-  "flynn-agents-sdk @ git+ssh://git@github.com/sahanruwantha/flynn-agents-sdk.git@f6b164efa03efe5472334983c7c4a740823d65fc",
+  "flynn-agents-sdk @ git+ssh://git@github.com/sahanruwantha/flynn-agents-sdk.git@codex/sqlite-runtime",
 ]
 dev = [
   "pytest>=8,<10",
