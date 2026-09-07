@@ -102,7 +102,11 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
             self.scripted = flynn.ScriptedAdapter(calls)
             self.requests = 0
 
+        def plan_output(self, request, available):
+            return flynn.OutputReservation("model", 3)
+
         async def generate(self, request):
+            assert request.max_output_tokens == 3
             if self.requests:
                 assert "inspect_unit" not in request.allowed_tools
                 assert {"write_candidate", "probe_candidate", "freeze_candidate"} & set(request.allowed_tools)
@@ -120,7 +124,7 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
     ) as session:
         ledger = asyncio.run(flynn_unit.build_unit(
             shot, milestone, script_rel, [], session,
-            inference=PhaseAdapter(), limits=flynn.RunLimits(5, 5, 4, 180),
+            inference=PhaseAdapter(), limits=flynn.RunLimits(5, 5, 4, 180, output_tokens=12),
             layer=layer, active_unit=unit, selected_authority=selected, attempt_guard=guard,
             fence_lease=lease, verbose=False,
         ))
@@ -139,6 +143,9 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
             assert usage["usage_complete"] is True
             report = json.loads((layout.reports / f"flynn-usage-{guard.claim.claim_id}.json").read_text())
             assert report["usage"] == usage
+            assert report["output_budget"] == {
+                "limit": 12, "available": 0, "spent": 12, "held": 0, "unresolved": 0, "breached": 0,
+            }
         if not should_pass:
             assert (tmp_path / script_rel).read_text() == program
             assert ledger._slot(milestone)["script_sha"] == digest[:16]

@@ -263,3 +263,11 @@ usage records and a VFX attempt-scoped audit projection. Schema-2 journals remai
 readable for historical inspection only; execution still refuses them. The VFX
 SDK dependency names `codex/sqlite-runtime` directly, following the owner's explicit
 branch-installation preference. This does not change VFX acceptance or resume authority.
+
+### Optional model-output budgets
+
+[Output-token admission](../research/flynn-output-token-budget.md) adds schema-4
+reservations before inference. The harness selects the cap; the SDK preserves
+unknown usage and enforces future admission. Scripted canonical replay reserves
+zero output tokens but retains every existing VFX authority check. Input usage
+remains accounting only until an adapter supplies a verified pre-request bound.

@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from functools import partial
 
 import flynn_agents_sdk as flynn
@@ -42,10 +42,11 @@ def _usage_report(run, layout, claim_id):
         yield
     finally:
         layout.write_report(f"flynn-usage-{claim_id}", {
-            "schema": "vfx-harness.flynn-usage/v1",
+            "schema": "vfx-harness.flynn-usage/v2",
             "claim_id": claim_id,
             "journal": str(run.path.relative_to(layout.root)),
             "usage": run.usage_summary(),
+            "output_budget": asdict(run.output_budget()),
         })
 
 
