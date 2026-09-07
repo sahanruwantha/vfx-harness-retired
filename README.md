@@ -401,9 +401,9 @@ Requires **Blender 5.x** on `PATH` (headless) and Python ≥ 3.11.
 
 The optional Flynn migration gate requires SSH access to the private
 `sahanruwantha/flynn-agents-sdk` repository. Install it with `.venv/bin/pip install -e ".[dev,flynn]"`.
-`pyproject.toml` tracks the SDK working branch `codex/sqlite-runtime`, not `main`.
+`pyproject.toml` tracks the SDK `main` branch.
 To refresh an existing SDK installation after that branch advances, run
-`.venv/bin/python -m pip install --force-reinstall --no-deps "flynn-agents-sdk @ git+ssh://git@github.com/sahanruwantha/flynn-agents-sdk.git@codex/sqlite-runtime"`.
+`.venv/bin/python -m pip install --force-reinstall --no-deps "flynn-agents-sdk @ git+ssh://git@github.com/sahanruwantha/flynn-agents-sdk.git@main"`.
 Installation does not use a sibling editable checkout. The existing production runtime
 is still active while the [migration gates](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)
 are proved.
