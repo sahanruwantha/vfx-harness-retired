@@ -11,7 +11,7 @@ import anyio
 import pytest
 
 from tests.unit.test_plan_authority import _write_plan
-from vfx_harness.agents.plan_tools import materialize_mcp
+from vfx_harness.agents import materialization_operations as materialize_mcp
 from vfx_harness.agents.planner import kickoff
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import authority_selection, authority_state_transaction, plan_authority
@@ -329,7 +329,7 @@ def test_stage_and_unstage_tools_guard_candidate_write_with_exact_selection(
     )
 
     async def invoke():
-        tools = materialize_mcp.register_materialize_tools(
+        tools = materialize_mcp.materialization_operations(
             shot_folder=tmp_path,
             _resolve=lambda *_args: None,
             _keep=lambda *_args: None,
@@ -344,7 +344,7 @@ def test_stage_and_unstage_tools_guard_candidate_write_with_exact_selection(
     result = anyio.run(invoke)
 
     assert entered_guard is True
-    assert result.get("is_error") is not True
+    assert not result.refused
 
 
 def test_kickoff_resolves_once_and_threads_that_snapshot(

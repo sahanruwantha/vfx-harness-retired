@@ -402,3 +402,50 @@ blocked, using Flynn from SSH `main` at `50a8df20fb69d01a4baced1bee617b2c075e732
 This proves the global role's import boundary, not removal of Claude from the whole
 application: JIT planning, builders, and critics still require migration. No SDK source
 changed, no ARC gate ran, and no paid inference or full-shot visual acceptance was claimed.
+
+## Native JIT materialization tools
+
+`agents/materialization_operations.py` now owns the six existing VFX candidate
+operations independently of either model SDK. Their Claude registration is a small
+transport wrapper used by the still-unmigrated JIT model session; the native Flynn
+factory calls those same VFX handlers directly. There is one staging/patch/finalization
+implementation, and no Claude message conversion in the native path.
+
+`agents/flynn_materialization_tools.py` binds an existing seeded candidate to one run's
+scratch directory, exact authority selection, candidate and finalization revisions,
+validation sources (including every replacement-overlay artifact), authored and
+decision inputs, and the layer's declared references. Its required caller-owned live
+attempt check runs at registration, dispatch, execution and the guarded candidate write.
+Undeclared paths, linked candidates, schema-invalid calls and stale inputs refuse; no
+newer candidate is silently adopted. The native crop tool enumerates only the layer's
+judge references. A complete structured observation and text are retained in a hashed
+run report; model feedback has explicit text/detail bounds and omission fields.
+
+Flynn records operations, reservations and uncertainty. VFX retains schema compilation,
+mutation permission, revision CAS, deterministic gate interpretation and independent
+publication. `finalization_current` comes from reopening the actual finalization
+record, not interpreting success prose. Exceptions after a write remain pending in the
+SDK journal, and no native observation commits state or selects plan authority.
+
+`jsonschema` is now an explicit runtime dependency: native schema validation already
+needed it for global planning and must not rely on a development or transitive install.
+
+The production JIT model session still uses its existing transport while its other
+capabilities and bounded context policy migrate. No paid inference, model-quality
+comparison, automatic resume, SDK change, or ARC gate is part of this step.
+
+The next JIT session gate requires native reference measurement, evidence vocabulary
+and gap escalation, recipe lookup, supervisor questions, and bounded spike execution.
+Its policy must provide the active layer's compiled context and terminate by checking
+the exact finalization record. Switching the model loop before those instruments are
+available would remove existing planner capabilities.
+
+Validation: **39 focused tests passed**, including real staging/patching/unstaging,
+crop-witness creation, candidate ownership and schema refusal, post-write uncertainty,
+bounded feedback, and clean/dirty finalization through the real attestation writer with
+a controlled gate verdict. The full suite then passed **3,179 tests** on unchanged
+runtime source (667 + 973 + 762 + 777), with only the 15 existing Pillow deprecation
+warnings. Complete-source Ruff and diff checks passed. An isolated installed wheel
+imports the native module with Claude blocked, explicitly declares `jsonschema`, and
+passes dependency checks using SSH Flynn `main` at
+`50a8df20fb69d01a4baced1bee617b2c075e732b`.

@@ -26,7 +26,7 @@ from vfx_harness.evaluation.plan_gate.types import Finding, GateResult
 
 ROOT = Path(__file__).resolve().parents[2] / "vfx_harness"
 GATE_SITES = (
-    ROOT / "agents" / "plan_tools" / "materialize_mcp.py",
+    ROOT / "agents" / "materialization_operations.py",
     ROOT / "orchestration" / "jit_materialization" / "publish.py",
 )
 

@@ -285,3 +285,19 @@ roles retain their existing implementations until their native boundaries migrat
 The gate now enforces declared client blockers from the compiler's preserved ownership
 mapping (HIR-0252). This repairs VFX evidence interpretation; no SDK mechanism derives
 client intent or plan acceptance.
+
+### Native materialization capabilities
+
+The six layer-candidate operations now share provider-neutral VFX handlers and schemas:
+stage, unstage, patch, status, crop-witness creation, and finalization. The remaining
+Claude JIT session has only a transport wrapper around those handlers. Native Flynn
+registration invokes the shared operations directly, validates their closed schemas,
+and checks the exact live attempt, candidate/finalization bytes, authority generation,
+validation inputs and references before dispatch. Candidate mutations additionally
+check the live attempt at the existing guarded write boundary.
+
+Each native observation names the before/after byte identities and a complete hashed
+run report. Feedback text and structured detail are bounded, with omissions explicit.
+A claimed clean result earns `finalization_current` only through the existing durable
+reader. No native tool selects authority or commits unit state. This capability change
+does not switch the remaining JIT model session or remove its other tools.

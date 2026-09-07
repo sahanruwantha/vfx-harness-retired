@@ -225,6 +225,13 @@ operation.
   stay outside the gate workspace. Declared client blockers in the compiler-preserved
   `plans/ownership_mapping.json` are plan-wide gate blockers, never informational prose
   that a clean gate may ignore (ADR-0012, HIR-0252).
+- Native materialization tools bind one run-owned scratch candidate, its finalization
+  revision, exact selected authority, validation sources, authored inputs, and declared
+  reference bytes. Register their dispatch guard and supply the live attempt check;
+  a changed candidate is never silently adopted. Shared VFX operations own staging,
+  patching, witness creation and gate attestation. Flynn journals their observations;
+  successful text never substitutes for a current finalization record, and publication
+  remains the separate VFX authority transaction (ADR-0012).
 - Run output never becomes authority by proximity. Promotion from evidence into a contract,
   plan, HIR, or ADR is an explicit decision (ADR-0002).
 - Builder image payments use `vfx-harness.image-payment/v2`: the harness captures the
