@@ -15,7 +15,6 @@ the one function all five drain paths already call.
 from __future__ import annotations
 
 import json
-import time
 from collections import Counter
 
 from claude_agent_sdk import (
@@ -26,6 +25,7 @@ from claude_agent_sdk import (
 )
 
 from . import session_turns, transcript
+from .console import log as log
 
 # Optional block/message types — import defensively across SDK versions.
 try:
@@ -40,22 +40,6 @@ try:
     from claude_agent_sdk import SystemMessage
 except Exception:
     SystemMessage = None
-
-_t0: float | None = None
-
-
-def _elapsed() -> float:
-    global _t0
-    now = time.monotonic()
-    if _t0 is None:
-        _t0 = now
-    return now - _t0
-
-
-def log(msg: str, indent: int = 0) -> None:
-    """Timestamped, immediately-flushed log line."""
-    print(f"[{_elapsed():6.1f}s] {'  ' * indent}{msg}", flush=True)
-
 
 # Display caps. Ordinary tool results stay short (they are mostly scene stats we can
 # re-derive); errors get a far bigger budget because the log is the ONLY record of a

@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "claude-agent-sdk>=0.2.101,<0.3",
+  "flynn-agents-sdk[deepseek] @ git+ssh://git@github.com/sahanruwantha/flynn-agents-sdk.git@main",
   "pyyaml>=6,<7",
   "httpx>=0.27,<1",   # asset stage: image generation + image→3D HTTP
   "pillow>=10,<14",   # asset stage: local background keying for cutout isolation
@@ -17,10 +18,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Explicit development gate until private-SDK authentication is configured in CI.
-flynn = [
-  "flynn-agents-sdk @ git+ssh://git@github.com/sahanruwantha/flynn-agents-sdk.git@main",
-]
 dev = [
   "pytest>=8,<10",
   "jsonschema>=4,<5", # validates agent-facing closed tool schemas in regression tests
@@ -45,6 +42,10 @@ vfx-asset = "vfx_harness.agents.asset_builder:main"
 vfx-prepare-asset = "vfx_harness.assets.normalize:main"
 vfx-evals = "vfx_harness.evaluation.cli:main"
 vfx-verify-recipes = "vfx_harness.knowledge.verify_recipes:main"
+
+[tool.hatch.metadata]
+# Private SSH source is required; this package is not published to PyPI.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vfx_harness"]

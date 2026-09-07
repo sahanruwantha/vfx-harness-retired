@@ -10,14 +10,13 @@ import asyncio
 import json
 import shutil
 
+import flynn_agents_sdk as flynn
 import pytest
 
 from vfx_harness.agents.builder.models import _RESET
 from vfx_harness.agents.builder.prior import _run_artifact_script
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.evidence.scene_checks import _blender_probe, _evidence, validate_row
-
-flynn = pytest.importorskip("flynn_agents_sdk", reason="Install the private .[flynn] migration extra")
 
 _PROGRAM = """import bpy
 host = bpy.data.objects.new('test_control', None)

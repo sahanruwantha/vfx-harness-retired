@@ -334,7 +334,7 @@ VFXH_EXECUTION_MODEL=claude-sonnet-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <sh
 VFXH_EXECUTION_MODEL=claude-opus-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <shot>
 ```
 
-`VFXH_PLANNER_MODEL`, `VFXH_BUILDER_MODEL`, `VFXH_SCRIPT_MODEL`, `VFXH_REVIEWER_MODEL`,
+`VFXH_PLANNER_MODEL`, `VFXH_BUILDER_MODEL`, `VFXH_SCRIPT_MODEL`,
 `VFXH_ASSET_MODEL`, and `VFXH_DISTILLER_MODEL` override individual roles. Changing the
 critic model, prompt, or evidence layout is a new judge configuration: qualify it before
 its qualitative verdicts can block. The active lane is stored on the run; a different
@@ -399,14 +399,32 @@ vfx evals plan       # no model, no Blender; plan artifacts on disk
 
 Requires **Blender 5.x** on `PATH` (headless) and Python ≥ 3.11.
 
-The optional Flynn migration gate requires SSH access to the private
-`sahanruwantha/flynn-agents-sdk` repository. Install it with `.venv/bin/pip install -e ".[dev,flynn]"`.
-`pyproject.toml` tracks the SDK `main` branch.
-To refresh an existing SDK installation after that branch advances, run
+Flynn is a required dependency, installed from the private
+`sahanruwantha/flynn-agents-sdk` repository over SSH with `pip install -e ".[dev]"`.
+`pyproject.toml` tracks SDK `main`; no sibling editable checkout is used.
+To refresh an existing installation after that branch advances, run
 `.venv/bin/python -m pip install --force-reinstall --no-deps "flynn-agents-sdk @ git+ssh://git@github.com/sahanruwantha/flynn-agents-sdk.git@main"`.
-Installation does not use a sibling editable checkout. The existing production runtime
-is still active while the [migration gates](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)
-are proved.
+CI requires the repository secret `FLYNN_SDK_SSH_KEY`, a read-only SSH key authorized
+for the private SDK repository. The key is installed only in the ephemeral runner.
+
+Approach review now uses Flynn directly, with `DEEPSEEK_API_KEY` and
+`VFXH_REVIEWER_MODEL` (falling back to `DEEPSEEK_MODEL`, then Flynn's supported vision
+model). Text-only model configurations refuse before inference. Its fixed budget is
+one model call, one advisory submission, 2,048 output tokens and 90 seconds; required
+text must fit 24,000 characters and each selected image must fit 8 MiB. Required context
+is never truncated. The current script is required; relevant recipe excerpts are
+included whole when space permits. This replaces the former eight-turn file-browsing
+session. A recommendation grants no mutation or acceptance authority.
+
+Each review writes a SQLite journal in the owning run's `checkpoints/flynn/` and an
+advisory report under `reports/` with source digests, context selection, termination,
+neutral usage and explicit `unpriced` status. It refuses a configured
+`VFXH_RUN_MAX_USD` because this role does not yet have a price policy. Provider,
+validation and cancellation failures propagate after durable recording.
+Planning, builder and critic roles are still being migrated; the Claude dependency
+remains for those roles until their native gates pass. Preflight still checks those
+remaining roles and confinement; a successful preflight does not verify DeepSeek
+credentials. No Claude fallback exists in approach review.
 
 The opt-in executable-unit engine lives in `agents/builder/flynn_unit.py`. Development
 callers bind its `inference` and `limits` arguments and pass it as `unit_builder` to

@@ -88,3 +88,44 @@ ARC passed 224 offline tests and VFX passed 149 contract/unit/architecture tests
 VFX production source changed in this step, so the full VFX suite and live Blender/model
 runs were not repeated. No paid inference ran. ARC's updated lock remains in its shared
 worktree; unrelated ARC changes were not staged or committed.
+
+## First production role: approach review
+
+Approach review now uses a native Flynn Session and a single structured `submit_review`
+operation. The harness snapshots the selected render/reference and exact current script,
+compiles bounded required context plus whole optional recipe excerpts, and checks the
+owning attempt before inference and before submission. Native advice cannot mutate scene
+state, change authority or accept a build. The recommendation preserves the existing
+`replace`/`text` revision contract, with KEEP/REPLACE derived from a validated field.
+
+The role enforces one inference, one submission, zero external tool actions, 2,048 output
+tokens and a 90-second session deadline. Required text fits 24,000 characters or refuses;
+images are explicit verified local stills capped at 8 MiB each. There is no ambient Read,
+Glob, shell, history accumulation or Claude fallback. Provider failure, malformed output,
+stale attempts and cancellation propagate; the former broad exception-to-empty-review
+path is removed. This is a deliberate replacement of the eight-turn browsing policy.
+
+A run-owned SQLite journal records selected input identities, request and observations,
+guard decisions, termination and neutral usage. A report locates that journal and marks
+usage unpriced. A configured run USD cap refuses this role before inference until a price
+policy exists; unknown dollars are not zero. Basic console logging and pure recipe reads
+are separated from the legacy SDK registration so importing this native role requires no
+Claude package. Other production roles still require Claude during their migration.
+
+Flynn is now a required private SSH main dependency. Hatch explicitly allows the direct
+reference, and CI requires `FLYNN_SDK_SSH_KEY` for read access. Production-role tests no
+longer skip when Flynn is absent. This step does not claim a full Claude-free VFX install,
+a live model comparison, or completion of planning/building/critic migration.
+
+Validation for this role: 2,947 full VFX tests passed against SDK `a9f3c61`, including
+real confined Blender replay. SDK main advanced independently during the run; after
+freezing source through completion, the working VFX environment was refreshed over SSH
+to `50a8df20fb69d01a4baced1bee617b2c075e732b` and all 58 Flynn/model-configuration
+consumer checks passed, including the confined replay and lifecycle gates. A separate
+fresh, non-editable VFX wheel installation resolved that same SDK commit and passed all
+16 native approach tests, dependency checks and CLI help. Full-source Ruff and diff
+checks passed. No live inference or visual-quality comparison ran.
+
+GitHub CI configuration is not yet operational: the VFX repository had no secrets when
+checked, so its read-only `FLYNN_SDK_SSH_KEY` must be provisioned before the workflow can
+install the private dependency. No existing private key was copied into either repository.

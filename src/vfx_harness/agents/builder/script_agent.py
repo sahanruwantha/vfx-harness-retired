@@ -43,7 +43,7 @@ from vfx_harness.blender.tools import CANNOT_EXPRESS_DESCRIPTION, CANNOT_EXPRESS
 from vfx_harness.domain.brief import Shot
 from vfx_harness.evidence.checks import layer_evidence as image_layer_evidence
 from vfx_harness.evidence.scene_checks import layer_evidence as scene_layer_evidence
-from vfx_harness.knowledge.recipes import build_recipe_tools
+from vfx_harness.knowledge.recipe_tools import build_recipe_tools
 from vfx_harness.observability import transcript
 from vfx_harness.observability.log import (
     TOOL_USE,

@@ -10,9 +10,11 @@ import asyncio
 import hashlib
 import json
 
+import flynn_agents_sdk as flynn
 import pytest
 
 from tests.unit.test_plan_records import _candidate, _write, publish_current
+from vfx_harness.agents.builder import flynn_unit
 from vfx_harness.agents.builder.attempt_guard import UnitAttemptAuthorityLost, UnitAttemptGuard
 from vfx_harness.agents.builder.models import BuildUnpassed
 from vfx_harness.agents.builder.unit_completion import complete_and_resolve_unit, resolve_completed_unit
@@ -25,10 +27,6 @@ from vfx_harness.orchestration.authority_capsule_resolution import selected_laye
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.builder_execution_fence import builder_execution_fence
 from vfx_harness.orchestration.ledger import Milestone, load_layers
-
-flynn = pytest.importorskip("flynn_agents_sdk", reason="Install the private .[flynn] migration extra")
-flynn_unit = pytest.importorskip("vfx_harness.agents.builder.flynn_unit")
-
 
 _PROGRAM = """import bpy
 host = bpy.data.objects.new('unit_control', None)

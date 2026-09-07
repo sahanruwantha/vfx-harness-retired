@@ -81,7 +81,8 @@ from vfx_harness.domain.image_debts import (
 )
 from vfx_harness.evidence.checks import load_image_contract_payment_rows
 from vfx_harness.evidence.scene_checks import prior_interface_evidence
-from vfx_harness.knowledge.recipes import build_recipe_tools, log_recipe_use
+from vfx_harness.knowledge.recipe_tools import build_recipe_tools
+from vfx_harness.knowledge.recipes import log_recipe_use
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import (
     TOOL_USE,
@@ -580,9 +581,8 @@ async def build_unit(
                         script_rel,
                         metric_report=_metric_report(shot, render_rel, layer.judge_ref),
                         verbose=verbose,
+                        check_current=lambda: attempt_guard.check("submit approach recommendation"),
                     )
-                if not out["text"]:
-                    break  # review unavailable: old behaviour
                 ledger.record_review(m, rnd, out)
                 _revision_tools_before = sum(TOOL_USE.values())
                 _revision_prior_cost = float(last_info.get("cost") or 0.0)

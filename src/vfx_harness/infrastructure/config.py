@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+from flynn_agents_sdk.deepseek import VISION_MODEL
 
 ENV_FILE_VARIABLE = "VFXH_ENV_FILE"
 CREDENTIAL_VARIABLE = "VFXH_CREDENTIAL"
@@ -172,7 +173,7 @@ class Settings:
     planner_model: str = DEFAULT_EXECUTION_MODEL
     builder_model: str = DEFAULT_EXECUTION_MODEL
     script_model: str = DEFAULT_EXECUTION_MODEL
-    reviewer_model: str = DEFAULT_EXECUTION_MODEL
+    reviewer_model: str = VISION_MODEL
     asset_model: str = DEFAULT_EXECUTION_MODEL
     distiller_model: str = DEFAULT_EXECUTION_MODEL
     critic_model: str = DEFAULT_CRITIC_MODEL
@@ -208,7 +209,7 @@ class Settings:
             planner_model=_text("VFXH_PLANNER_MODEL", execution_model),
             builder_model=_text("VFXH_BUILDER_MODEL", execution_model),
             script_model=_text("VFXH_SCRIPT_MODEL", execution_model),
-            reviewer_model=_text("VFXH_REVIEWER_MODEL", execution_model),
+            reviewer_model=_text("VFXH_REVIEWER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
             asset_model=_text("VFXH_ASSET_MODEL", execution_model),
             distiller_model=_text("VFXH_DISTILLER_MODEL", execution_model),
             critic_model=_text("VFXH_CRITIC_MODEL", DEFAULT_CRITIC_MODEL),

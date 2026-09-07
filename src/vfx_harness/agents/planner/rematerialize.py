@@ -22,7 +22,7 @@ from vfx_harness.agents.planner.types import MATERIALIZATION_DENIED_TOOLS, _phas
 from vfx_harness.agents.resilience import AgentSessionFailure, result_signal, run_session
 from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.infrastructure.config import DEFAULT_EXECUTION_MODEL
-from vfx_harness.knowledge.recipes import build_recipe_tools
+from vfx_harness.knowledge.recipe_tools import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import log, log_message
 from vfx_harness.orchestration import plan_authority, unit_state

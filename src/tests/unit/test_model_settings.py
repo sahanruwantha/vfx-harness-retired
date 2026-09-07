@@ -24,6 +24,7 @@ MODEL_VARIABLES = (
     "VFXH_BUILDER_MODEL",
     "VFXH_SCRIPT_MODEL",
     "VFXH_REVIEWER_MODEL",
+    "DEEPSEEK_MODEL",
     "VFXH_ASSET_MODEL",
     "VFXH_DISTILLER_MODEL",
     "VFXH_CRITIC_MODEL",
@@ -56,12 +57,12 @@ def test_default_lane_uses_sonnet_execution_and_opus_critic(monkeypatch):
     settings = Settings.from_environment(load_dotenv_file=False)
 
     assert settings.execution_model == DEFAULT_EXECUTION_MODEL == "claude-sonnet-5"
+    assert settings.reviewer_model == config.VISION_MODEL
     assert settings.critic_model == DEFAULT_CRITIC_MODEL == "claude-opus-5"
     assert {
         settings.planner_model,
         settings.builder_model,
         settings.script_model,
-        settings.reviewer_model,
         settings.asset_model,
         settings.distiller_model,
     } == {"claude-sonnet-5"}
@@ -234,3 +235,12 @@ def test_input_manifest_uses_one_selected_snapshot_without_hybrid_reads(
     ] == hashlib.sha256(bundle_plan.read_bytes()).hexdigest()
     assert "build/effective-a.py" in manifest["files"]
     assert "build/sparse-must-not-run.py" not in manifest["files"]
+
+
+def test_flynn_reviewer_does_not_inherit_claude_execution_lane(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("VFXH_EXECUTION_MODEL", "legacy-execution-model")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "provider-model")
+    assert Settings.from_environment(load_dotenv_file=False).reviewer_model == "provider-model"
+    monkeypatch.setenv("VFXH_REVIEWER_MODEL", config.VISION_MODEL)
+    assert Settings.from_environment(load_dotenv_file=False).reviewer_model == config.VISION_MODEL

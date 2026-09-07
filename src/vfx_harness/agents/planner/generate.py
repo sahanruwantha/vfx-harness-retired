@@ -41,7 +41,7 @@ from vfx_harness.domain.work_units import ready_units
 from vfx_harness.evaluation.plan_gate import report as gate_report
 from vfx_harness.evaluation.plan_gate import run as run_plan_gate
 from vfx_harness.infrastructure.config import Settings
-from vfx_harness.knowledge.recipes import build_recipe_tools
+from vfx_harness.knowledge.recipe_tools import build_recipe_tools
 from vfx_harness.observability import costlog, run_artifacts, transcript
 from vfx_harness.observability.log import log, log_message
 from vfx_harness.orchestration.authority_capsule_resolution import (

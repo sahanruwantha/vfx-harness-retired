@@ -27,6 +27,17 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Private Flynn SDK SSH access
+        env:
+          FLYNN_SDK_SSH_KEY: ${{ secrets.FLYNN_SDK_SSH_KEY }}
+        run: |
+          test -n "$FLYNN_SDK_SSH_KEY" || { echo "Configure FLYNN_SDK_SSH_KEY for the private SDK repository"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$FLYNN_SDK_SSH_KEY" > ~/.ssh/flynn_sdk
+          chmod 600 ~/.ssh/flynn_sdk
+          curl --fail --silent --show-error https://api.github.com/meta | python -c 'import json,sys; print("\n".join("github.com " + key for key in json.load(sys.stdin)["ssh_keys"]))' > ~/.ssh/known_hosts
+          echo 'GIT_SSH_COMMAND=ssh -i ~/.ssh/flynn_sdk -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes' >> "$GITHUB_ENV"
+
       - run: pip install -e ".[dev]"
 
       # Correctness before style, and F821 before either: it is the rule that would have

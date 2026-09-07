@@ -1,7 +1,7 @@
 """Opt-in executable-only Flynn unit engine, using the existing VFX publishers.
 
-Import this module only with the private ``flynn`` extra installed. Bind ``inference``
-and ``limits`` with functools.partial and pass it as build_layer's unit_builder.
+Bind ``inference`` and ``limits`` with functools.partial and pass this engine as
+build_layer's unit_builder. Flynn is installed from the private SDK main branch.
 This engine cannot resume an interrupted attempt or certify layer completion.
 """
 

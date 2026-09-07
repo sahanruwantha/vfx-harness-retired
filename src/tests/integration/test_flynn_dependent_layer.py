@@ -11,11 +11,12 @@ import hashlib
 import json
 from contextlib import nullcontext
 
+import flynn_agents_sdk as flynn
 import pytest
 
 from tests.unit.test_plan_records import _candidate, _write, publish_current
+from vfx_harness.agents.builder import flynn_unit, unit_completion
 from vfx_harness.agents.builder import layer as layer_runtime
-from vfx_harness.agents.builder import unit_completion
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.brief import Shot
 from vfx_harness.domain.unit_completion_receipts import UnitCompletionReceipt
@@ -26,9 +27,6 @@ from vfx_harness.orchestration.authority_capsule_resolution import selected_laye
 from vfx_harness.orchestration.authority_selection import resolve_selected_authority
 from vfx_harness.orchestration.layer_publication import require_current_layer_publication
 from vfx_harness.orchestration.ledger import load_layers
-
-flynn = pytest.importorskip("flynn_agents_sdk")
-flynn_unit = pytest.importorskip("vfx_harness.agents.builder.flynn_unit")
 
 
 def _fixture(root, monkeypatch):
