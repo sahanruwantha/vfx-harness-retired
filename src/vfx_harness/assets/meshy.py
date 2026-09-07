@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from vfx_harness.infrastructure.config import load_environment
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 
 BASE = "https://api.meshy.ai/openapi/v1"
 MULTI_IMAGE_PATH = "/multi-image-to-3d"

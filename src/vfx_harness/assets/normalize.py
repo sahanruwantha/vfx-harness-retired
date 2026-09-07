@@ -26,7 +26,7 @@ from PIL import Image
 
 from vfx_harness.application.facade import compare_profiles, facade_profile
 from vfx_harness.domain.brief import load_shot
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 
 from ..blender.session import BlenderSession
 from .adapter import get_backend

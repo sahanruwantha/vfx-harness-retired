@@ -14,7 +14,7 @@ import pytest
 
 from tests.contract.test_flynn_plan_publication import ObservationOnly
 from tests.unit.test_plan_authoring import MOTION_BRIEF, PRODUCT_BRIEF, _motion_mapping, _product_mapping, _shot
-from vfx_harness.agents import flynn_mapping_tools
+from vfx_harness.agents import flynn_global_tools
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import authority_selection, plan_authoring, plan_inputs
@@ -42,7 +42,8 @@ def execute(bound, *, after_inference=lambda: None, check=lambda: None, count=1)
             return flynn.InferenceResult.scripted(flynn.ToolCall("publish_ownership_mapping", json.dumps(mapping)))
 
     async def run():
-        tool, guard = flynn_mapping_tools.ownership_mapping_publication(layout=layout, check_current=check)
+        tools, guard = flynn_global_tools.global_planning_tools(layout=layout, check_current=check)
+        tool = tools[0]
         with flynn.SQLiteRun.create(layout.checkpoints / "mapping.sqlite", run_id="mapping",
                                    initial_state="unaccepted", limits=flynn.RunLimits(count, count, count)) as journal:
             session = flynn.Session(
@@ -228,7 +229,7 @@ def test_native_mapping_module_imports_without_claude():
     result = subprocess.run([sys.executable, "-c", """
 import sys
 sys.modules['claude_agent_sdk'] = None
-from vfx_harness.agents.flynn_mapping_tools import ownership_mapping_publication
-assert callable(ownership_mapping_publication)
+from vfx_harness.agents.flynn_global_tools import global_planning_tools
+assert callable(global_planning_tools)
 """], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr

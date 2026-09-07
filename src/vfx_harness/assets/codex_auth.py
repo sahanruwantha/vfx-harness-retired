@@ -47,7 +47,7 @@ from pathlib import Path
 
 import httpx
 
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 
 REFRESH_URL = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"  # the CLI's own OAuth client

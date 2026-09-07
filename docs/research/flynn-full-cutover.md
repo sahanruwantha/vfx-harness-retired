@@ -207,3 +207,54 @@ native mapping capability with Claude blocked, using the SSH-installed SDK main
 `50a8df20fb69d01a4baced1bee617b2c075e732b`. The SDK source was unchanged and no ARC
 gate or paid inference ran. The full suite emitted only the existing 15 Pillow
 `Image.getdata` deprecation warnings.
+
+
+## Native global-planner reads and gate feedback
+
+`agents/flynn_global_tools.py` now assembles mapping publication, `read_plan_input`
+and `run_gate` under one `PlanningWorkspace` and one Flynn dispatch guard. The
+standalone mapping factory contract is replaced directly: publication takes the shared
+binding and returns a tool. There is no old-signature alias or compatibility adapter.
+
+Reads expose an enumerated set of planning text documents, never arbitrary paths or
+search. Each request returns at most 4,000 Unicode characters, the complete source hash,
+explicit slice offsets and continuation, and the workspace/selection identity. An
+unwritten draft document returns an explicit refusal. The shared binding checks both
+source and workspace inputs and prevents reads or writes against another writer's draft.
+
+The native gate evaluates the actual complete workspace through the existing VFX
+validator. Before and after evaluation it proves that the expected inputs and draft
+outputs remain unchanged, that the workspace contains no unbound auxiliary files, and
+that citations do not leave that workspace. The evaluator's permanent selection-lock
+file is explicitly allowed as synchronization metadata; alternate authority pointers
+and consumer markers are not allowed.
+
+Each gate writes a run-owned `plan-gate-observation/v1` wrapper containing its exact
+draft identity and complete typed evaluation. It returns a hashed report locator,
+complete gate status/counts/signature, and up to 8,000 serialized characters of whole
+findings, with blockers first and an explicit omitted count. This wrapper is diagnostic
+evidence, not a terminal gate attestation or authority publication. Report writes count
+as external actions. An evaluation whose inputs change or whose report fails remains
+unresolved in SQLite and is not automatically retried.
+
+The existing four-evaluation limit is enforced before a fifth dispatch. Two unchanged
+dirty signatures signal a plateau and refuse further gate calls. If no complete finding
+fits bounded feedback, `feedback_overflow` ends further evaluations and points the outer
+owner to the full report. The eventual role policy must consume these explicit stop
+signals; no generic SDK policy chooses VFX completion or repair.
+
+The deterministic gate's import graph exposed logging-only Claude dependencies through
+asset adapters and construction. Those modules now import the existing provider-neutral
+console logger. Native global-tool imports work with Claude blocked. Production planner
+sessions still require migration, including escalation and selected reference images;
+this capability set does not claim the full planning or operational cutover.
+
+Validation: the complete **3,044-test VFX suite passed** with source frozen, including
+real confined Blender and authority lifecycle checks. After that run, review identified
+one local read edge case: offsets beyond EOF now return a structured refusal with the
+source length rather than leaving a failed operation unresolved. The final mapping/read/
+gate suite passed **83 tests**, including both new EOF cases. Full-source Ruff and diff
+checks passed. The final non-editable VFX wheel imports the native global tool set with
+Claude blocked and uses SSH-installed SDK main
+`50a8df20fb69d01a4baced1bee617b2c075e732b`. No SDK source changed, no ARC tests were
+run, and no paid inference ran. Production global-planner session migration remains open.

@@ -41,7 +41,7 @@ from pathlib import Path
 import httpx
 from PIL import Image
 
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 
 from . import codex_auth
 from .codex_auth import CodexAuthError

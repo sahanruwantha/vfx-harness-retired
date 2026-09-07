@@ -12,7 +12,7 @@ from pathlib import Path
 from PIL import Image, ImageStat
 
 from vfx_harness.assets import higgsfield as _higgsfield
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 
 ORBIT_CAMERAS = frozenset({"front", "three_quarter", "left", "right", "back"})
 PLATE_PARENT_RULE = (

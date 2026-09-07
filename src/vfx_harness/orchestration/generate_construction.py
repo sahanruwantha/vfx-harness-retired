@@ -33,7 +33,7 @@ from vfx_harness.infrastructure.trusted_files import (
     read_trusted_file,
     require_trusted_file_unchanged,
 )
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 from vfx_harness.observability.run_artifacts import active as active_run
 from vfx_harness.orchestration.authority_selection_transaction import (
     durable_replace_file_bytes,

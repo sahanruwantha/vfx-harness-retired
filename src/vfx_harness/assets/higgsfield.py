@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 
 from vfx_harness.infrastructure.config import Settings
-from vfx_harness.observability.log import log
+from vfx_harness.observability.console import log
 
 _NVM = Path.home() / ".nvm/versions/node/v22.14.0/bin/higgsfield"
 _URL_RE = re.compile(r"https?://[^\s\"'\\]+")
