@@ -484,3 +484,40 @@ checks passed. The freshly installed wheel imports native planning knowledge and
 global planner with Claude blocked, exposes all 32 registered evidence kinds, performs
 recipe lookup, and passes dependency checks. Flynn remains installed from SSH `main`
 at `50a8df20fb69d01a4baced1bee617b2c075e732b`; its checkout is unchanged.
+
+## Native vocabulary-gap publication
+
+Layer planning now exposes `escalate_vocabulary_gap` through Flynn. Its requirement
+ids come from the selected global layer's owned requirement register; the claim must
+match the exact authored statement. Requests enumerate at most eight distinct registered
+kinds with bounded explanations. Unit sessions receive no gap-publication grant.
+
+Both planning transports use `orchestration/vocabulary_gap_publication.py`. It prepares
+an atomic replacement of the existing shot ledger, rechecks current authority before
+publication under the selection guard, and reads back the committed record and digest.
+Identical requests return the stored record, including its original run id. Concurrent
+writes refuse rather than overwrite; malformed existing rows refuse publication rather
+than being silently repaired. Flynn records this as an external observation, with no
+SDK state commit or plan acceptance.
+
+This preserves the existing v1 gap semantics: records are shot-wide, keyed by requirement
+id, and permit a separately evaluated provisional decision. The tool's selected-authority
+binding is enforced at publication and recorded in the Flynn observation; this change does
+not introduce generation-scoped gap expiration or change the existing gate reader's
+malformed-line policy. The model's explanation remains a declared vocabulary limitation,
+not executable proof that no metric exists. Materialization validation and the terminal
+gate retain their existing shared decision predicate.
+
+Reference measurement and confined spikes remain before switching production JIT sessions
+to Flynn. The SDK is unchanged; this capability is VFX domain policy and publication.
+
+Focused validation: **40 tests passed**, including native scope/budget checks, owner loss
+after preparation, concurrent ledger publication, malformed-ledger refusal, duplicate
+read-back, and actual materialization validation before and after publication. The built
+package imports both native planning knowledge and the gap publisher from an isolated
+installation with `claude_agent_sdk` blocked. Complete-source Ruff and diff checks passed.
+
+Full regression validation passed **3,211 tests** on unchanged runtime source
+(642 + 926 + 831 + 812), with the 15 existing Pillow warnings. All four groups exited
+successfully. Flynn's checkout remains clean on `main` at `50a8df2`; no ARC tests or SDK
+changes were required for this VFX-only capability.

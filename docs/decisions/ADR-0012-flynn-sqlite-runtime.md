@@ -318,3 +318,11 @@ characters prevent unbounded reconstruction. Retained-conversation roles keep th
 existing duplicate-read refusal. Global and JIT native supervisor questions share the
 same prepared VFX publication path and read back the actual stored question; neither
 assumptions nor successful tool calls become answers or plan approval.
+
+Native layer planning also exposes vocabulary-gap publication. VFX derives the allowed
+requirement ids from selected global ownership, requires the authored statement and
+registered attempted kinds, bounds explanations, and serializes the durable update.
+Flynn transports the stored record and ledger digest as an external observation. It does
+not certify that the vocabulary is insufficient, select a provisional decision, or
+commit accepted state. The existing shot-wide gap semantics and independent VFX decision
+evaluation remain unchanged. Unit sessions have no gap-publication grant.

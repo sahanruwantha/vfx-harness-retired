@@ -1139,6 +1139,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   domain, structural included: it enumerates the kinds tried and why each cannot certify.
   A requirement carrying a gap may not then be closed by contract bindings, and a decision on
   a structural requirement without one is refused naming the escalation path (HIR-0202).
+  Native layer planning grants gap publication only for its selected global owned
+  requirements, with the exact authored statement and bounded explanations naming
+  registered evidence kinds. Unit sessions receive no such grant. Publication rechecks
+  the live attempt and selected authority, atomically compares the ledger predecessor,
+  and reads back the stored record; a tool observation is not plan acceptance (ADR-0012).
   Recorded gaps are durable shot state read through the one shared
   `vocabulary_gaps_path(shot_folder)`; materialization validation takes `shot_folder` as a
   required argument distinct from the plan-bundle `global_root`. Reading them relative to the

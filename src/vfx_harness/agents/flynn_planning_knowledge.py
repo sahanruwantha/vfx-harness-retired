@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from contextlib import contextmanager
 
 import flynn_agents_sdk as flynn
 from jsonschema import Draft202012Validator
@@ -11,8 +12,12 @@ from jsonschema import Draft202012Validator
 from vfx_harness.agents import flynn_questions
 from vfx_harness.knowledge import planning_vocabulary, recipe_lookup
 from vfx_harness.observability.run_artifacts import RunLayout
-from vfx_harness.orchestration import authority_selection, plan_inputs
-from vfx_harness.orchestration.authority_selection_transaction import require_matching_authority_selection_token
+from vfx_harness.orchestration import authority_selection, plan_inputs, vocabulary_gap_publication
+from vfx_harness.orchestration.authority_selection_heads import read_authority_selection_heads
+from vfx_harness.orchestration.authority_selection_transaction import (
+    authority_selection_lock,
+    require_matching_authority_selection_token,
+)
 from vfx_harness.orchestration.plan_bundle_integrity import digest, read_real_file
 
 MAX_RESPONSE_CHARACTERS = 12_000
@@ -42,6 +47,15 @@ def planning_knowledge_tools(
     layer = next((row for row in layers if str(row["id"]) == layer_id), None)
     if layer is None:
         raise ValueError(f"unknown planning layer {layer_id!r}; use an exact selected layer id")
+    global_layers = json.loads(read_real_file(
+        layout.shot, selected.plan.bundle.root / "layers.json", "global planning layers",
+    ))["layers"]
+    global_layer = next(row for row in global_layers if str(row["id"]) == layer_id)
+    owned_ids = set(global_layer["jit"]["owned_requirements"])
+    requirements = json.loads(read_real_file(
+        layout.shot, selected.plan.bundle.root / "requirements.json", "global planning requirements",
+    ))["requirements"]
+    statements = {row["id"]: row["statement"].strip() for row in requirements if row["id"] in owned_ids}
     roles = None
     if unit_id is not None:
         unit = next((row for row in layer["stages"] if row["id"] == unit_id), None)
@@ -149,6 +163,35 @@ def planning_knowledge_tools(
             authority_binding=f"native-jit-question:{layout.run_id}:{scope_digest}",
         )
 
+    def validate_gap(arguments):
+        if unit_id is not None:
+            raise ValueError("vocabulary gap recording belongs to layer planning, not a unit session")
+        vocabulary_gap_publication.validate_arguments(arguments, statements)
+
+    @contextmanager
+    def gap_commit_guard():
+        with authority_selection_lock(layout.shot, exclusive=False):
+            check_current()
+            require_matching_authority_selection_token(
+                selected.selection_token, read_authority_selection_heads(layout.shot).token,
+            )
+            if plan_inputs.exact_planning_input_identity_digest(layout.shot) != inputs_digest:
+                raise ValueError("native planning inputs changed before gap publication")
+            yield
+
+    async def record_gap(arguments):
+        binding_digest = digest(json.dumps(identity(), sort_keys=True).encode())
+        data = vocabulary_gap_publication.record_gap(
+            shot=layout.shot, run_id=layout.run_id, arguments=arguments, statements=statements,
+            check_current=check, commit_guard=gap_commit_guard,
+            authority_binding=f"native-jit-gap:{layout.run_id}:{binding_digest}",
+        )
+        return result(
+            f"Recorded {data['record']['id']}. Propose an explicit decision with the exact authored statement; "
+            "the VFX gate still evaluates that decision. The gap itself accepts no plan or scene.",
+            {"schema": "vfx-harness.vocabulary-gap-observation/v1", **data},
+        )
+
     async def guard(_):
         check()
         return flynn.GuardDecision(True, "selected VFX planning knowledge scope remains current")
@@ -177,5 +220,12 @@ def planning_knowledge_tools(
                 "A duplicate returns its stored assumption; this neither answers the question nor approves a plan."
             ), parameters_json=json.dumps(flynn_questions.QUESTION_SCHEMA),
                 validate=validate_question, execute=ask, external_action=True),
+            *((flynn.Tool.structured("escalate_vocabulary_gap", description=(
+                "Record why registered evidence kinds cannot certify one requirement owned by this layer. "
+                "Use its exact authored statement as claim. This enables an explicit provisional decision; "
+                "it does not approve that decision or prove the model's diagnosis."
+            ), parameters_json=json.dumps(vocabulary_gap_publication.argument_schema(statements)),
+                validate=validate_gap, execute=record_gap, external_action=True),)
+               if unit_id is None and statements else ()),
         ), flynn.DispatchGuard("current-vfx-planning-knowledge", guard),
     )

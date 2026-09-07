@@ -8,11 +8,14 @@ from pathlib import Path
 import anyio
 from claude_agent_sdk import tool
 
+from vfx_harness.agents import materialization_operations
 from vfx_harness.agents.plan_tools.media import _text
 from vfx_harness.domain.brief import load_shot
 from vfx_harness.evaluation import plan_gate
 from vfx_harness.knowledge import planning_vocabulary
 from vfx_harness.observability.log import log
+from vfx_harness.orchestration import authority_selection, vocabulary_gap_publication
+from vfx_harness.orchestration.authority_selection_transaction import require_matching_authority_selection_token
 from vfx_harness.orchestration.escalate import ask as _ask
 from vfx_harness.orchestration.jit_materialization import stage_candidate_view
 from vfx_harness.orchestration.plan_authority import prepare_consumer_view
@@ -76,51 +79,22 @@ def register_gate_tools(**closed):
         "requirement with an explicit decision resolution that references the returned "
         "gap id — never with a trivially-satisfiable contract (those are rejected at "
         "validation). Gaps are visible to the operator and to future planning sessions.",
-        {
-            "type": "object",
-            "properties": {
-                "requirement_id": {"type": "string"},
-                "claim": {"type": "string"},
-                "attempted": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "kind": {"type": "string"},
-                            "why_it_cannot_certify": {"type": "string"},
-                        },
-                        "required": ["kind", "why_it_cannot_certify"],
-                    },
-                    "minItems": 1,
-                },
-                "note": {"type": "string"},
-            },
-            "required": ["requirement_id", "claim", "attempted"],
-        },
+        vocabulary_gap_publication.argument_schema(materialization_requirement_statements),
     )
     async def escalate_vocabulary_gap(args):
-        record_dir = shot_folder / "state" / "plan-escalations"
-        record_dir.mkdir(parents=True, exist_ok=True)
-        path = record_dir / "vocabulary-gaps.jsonl"
-        existing = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
-        gap_id = f"VG-{len(existing) + 1:03d}"
-        record = {
-            "schema": "vfx-harness.vocabulary-gap/v1",
-            "id": gap_id,
-            "requirement_id": str(args["requirement_id"]),
-            "claim": str(args["claim"]),
-            "attempted": [
-                {
-                    "kind": str(item.get("kind") or ""),
-                    "why_it_cannot_certify": str(item.get("why_it_cannot_certify") or ""),
-                }
-                for item in args["attempted"]
-            ],
-            "note": str(args.get("note") or ""),
-            "run_id": layout.run_id,
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        selected = authority_selection.resolve_selected_authority(shot_folder)
+
+        def check_current():
+            current = authority_selection.resolve_selected_authority(shot_folder)
+            require_matching_authority_selection_token(selected.selection_token, current.selection_token)
+
+        observed = vocabulary_gap_publication.record_gap(
+            shot=shot_folder, run_id=layout.run_id, arguments=args,
+            statements=materialization_requirement_statements, check_current=check_current,
+            authority_binding=f"plan-gap:{layout.run_id}:{selected.selection_token}",
+            commit_guard=lambda: materialization_operations._current_selection_guard(shot_folder, selected),
+        )
+        gap_id = observed["record"]["id"]
         log(f"plan-lab vocabulary gap {gap_id}: {args['requirement_id']} — {str(args['claim'])[:70]}", 1)
         authored = materialization_requirement_statements.get(
             str(args["requirement_id"]), ""
