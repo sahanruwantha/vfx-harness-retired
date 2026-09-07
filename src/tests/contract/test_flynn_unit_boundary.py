@@ -153,3 +153,43 @@ def test_required_vfx_scope_cannot_be_dropped_to_fit(tmp_path, scope):
             asyncio.run(runtime.step("inspect"))
         assert run.records()["operations"] == []
         assert run.remaining()["inference"] == 1
+
+
+def test_native_structured_scope_result_is_observation_only(tmp_path, scope):
+    expected = flynn.ToolResult(
+        (flynn.TextContent("Exact active-unit scope"),),
+        data_json=json.dumps(scope, sort_keys=True),
+    )
+
+    def validate(arguments):
+        if arguments:
+            raise ValueError("scope substitution is forbidden")
+
+    async def inspect(arguments):
+        return expected
+
+    class Evaluation:
+        async def evaluate(self, candidate):
+            result = flynn.ToolResult.from_json(candidate.output)
+            assert json.loads(result.data_json) == scope
+            return flynn.Evaluation(candidate, "scope-transport", "observation", flynn.Verdict.SATISFIED,
+                                    "Transport proven, not unit acceptance")
+
+    tool = flynn.Tool.structured(
+        "unit_scope", description="Read exact scope", parameters_json='{"type":"object"}',
+        validate=validate, execute=inspect,
+    )
+    path = tmp_path / "structured.sqlite"
+    with flynn.SQLiteRun.create(path, run_id="scope", initial_state="unaccepted",
+                               limits=flynn.RunLimits(1, 1, 0)) as run:
+        runtime = flynn.Runtime(
+            inference=flynn.ScriptedAdapter([flynn.ToolCall("unit_scope", "{}")]),
+            tools=flynn.ToolBroker([tool]), evaluator=Evaluation(), run=run, grants=("unit_scope",),
+        )
+        step = asyncio.run(runtime.step("Inspect declared scope"))
+        assert not step.committed
+        assert run.read().value == "unaccepted"
+        run.finish("scope observed")
+    with flynn.SQLiteRun.open(path) as run:
+        assert flynn.ToolResult.from_json(run.latest_observation()) == expected
+        assert run.read().revision == 0

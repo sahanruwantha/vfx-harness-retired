@@ -542,14 +542,17 @@ evidence, or extra mutation authority so a builder can "figure it out".
 The same standard binds coding agents on this repository: resolve unknowns by reading authority,
 running code, or adding a probe — never by assumption.
 
-## Claude Agent SDK leverage
+## Flynn runtime cutover
 
 The Flynn/SQLite rewrite follows ADR-0012: Flynn owns permitted execution, generic
 records and budgets; VFX owns permissions, evidence, replay and production authority.
 The target API may break with explicit schema refusal; no backwards compatibility is
-required. The Claude-native preference below applies to the existing runtime, not as a
-prohibition on its replacement. Prove each migrated boundary before retiring its current
-writer; an SDK commit or recovery never certifies a VFX unit or authorizes session resume.
+required. Flynn is the sole target runtime: remove Claude models, the Claude Agent SDK,
+its subprocess/session transport, and Claude-specific configuration from the completed
+cutover. Do not add an engine selector, fallback, or Claude API compatibility wrapper.
+Extend Flynn when a generic execution capability is missing; VFX-specific tools and
+policy stay here. SDK development and installation use its `main` branch over SSH.
+Prove each migrated boundary before retiring its current writer; an SDK commit or recovery never certifies a VFX unit or authorizes session resume.
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial
@@ -569,45 +572,24 @@ read from the guarded candidate path, alongside selected feedback. It is require
 under the existing context cap; overflow refuses before inference. No prior source versions
 or producer scripts are accumulated into this context (HIR-0251).
 
-Treat the Claude Agent SDK as a production runtime, not merely a prompt transport. Before
-building custom orchestration, inspect the installed SDK and use the strongest applicable native
-mechanism when it improves control, observability, or agent capability.
-
-- Prefer SDK-native typed messages, tools, hooks, permission and tool policy, MCP integration,
-  session lifecycle, cancellation, resume, model configuration, and usage reporting over custom
-  glue that recreates the same contract.
-- Preserve structured SDK events, tool errors, termination reasons, usage, and results until the
-  owning boundary records them; do not flatten authoritative state into prose prematurely.
-- Give each role bounded tools and compiled active-unit context. SDK capability never grants an
-  agent repository-wide context, unrestricted mutation, or broader authority by default.
-- Use hooks and tool policy for deterministic enforcement. Prompt text is not a substitute for a
-  mechanical boundary the SDK can enforce.
-- Resume only when checkpoint, journal, authority generation, and active-unit identity still
-  match. A resumable SDK session does not by itself prove a valid harness resume.
-- Choose model, effort, turn, token, and cost budgets for the role and measured uncertainty; do
-  not maximize every setting indiscriminately. A materialization session's turn budget is the
-  larger of the requested cap and 24 plus two turns per owned requirement, capped at 96; an
-  exhausted session still publishes nothing. The global verify pass runs under the larger of
-  the configured verify cap and 6 plus two turns per layer the draft's ownership mapping
-  declares, capped at 24 (HIR-0177). That ceiling is the only one: the draft's own
-  `--max-turns` never clamps it, and the log line states the derivation so a clamp cannot
-  read as the computation (HIR-0198). A turn budget is declared once, at the single SDK-options
-  constructor (HIR-0199), and is reported against the counter it actually bounds: the budget
-  reaches the CLI as `--max-turns` and the CLI reports `num_turns`, so completion prints
-  `turns=<num_turns>/<budget>` and the harness's own stream count separately as
-  `assistant_messages`. That stream count is not turns and is never shown over the budget --
-  it counts `AssistantMessage` values, a median 1.55 per CLI turn, and reached 2.03x its
-  budget on a session that terminated `success`, while across 168 sessions `num_turns`
-  overshoots its cap by at most 3 and the one session where the cap engaged reported exactly
-  `cap + 1`. This supersedes HIR-0199's conclusion, which read a 2-turn overshoot as proof
-  the CLI counter was unbounded and replaced it with one that overshoots by 38 (HIR-0228). Parallelize independent evidence production while
-  authoritative scene mutation and publication remain serialized.
-- Before adding an SDK workaround, verify the installed SDK does not already provide the needed
-  primitive. Pin and test every SDK behavior the harness depends on, and fail closed when an
-  upgrade changes message schemas, hooks, tools, permissions, or session semantics.
-- Adopt an SDK feature only when it removes a measured bottleneck, closes a control gap, or
-  improves evidence-backed agent performance. It never replaces domain contracts, replay,
-  deterministic validation, or acceptance evidence.
+Use native Flynn contracts for structured tools/results, grants, lifecycle events,
+cancellation, inference, and durable budgets. Preserve structured failures and observations
+until the owning boundary records them. A tool refusal, execution failure, model termination,
+and VFX acceptance are separate outcomes. Never hide a missing SDK feature behind prompt text.
+The harness selects bounded context and feedback; the SDK must not silently accumulate history.
+VFX chooses model and budgets per role, owns file/Blender mutation policy, and derives domain
+success from current receipts and replay. Session or journal recovery alone cannot authorize resume.
+Preserve the existing role budget policy during migration: materialization uses the larger
+of the requested cap and 24 plus two turns per owned requirement, capped at 96; global
+verification uses the larger of its configured cap and 6 plus two turns per declared layer,
+capped at 24. Draft limits do not clamp verification. Declare budgets once and report the
+counter actually enforced, not an unrelated event count (HIR-0177, HIR-0198, HIR-0199,
+HIR-0228). Any conversion from legacy turns to Flynn operations must name and test the
+new counting contract. Parallelize independent evidence production; serialize authoritative
+scene mutation and publication.
+The remaining Claude implementation is migration work, not an endorsed alternate runtime.
+Cutover verification must install VFX without the Claude package and exercise planning,
+materialization, building, repair, critique, and acceptance through Flynn.
 
 ## Fix policy: permanent mechanisms only
 
