@@ -216,8 +216,11 @@ a producer and its consumer through native checkpointing and composed layer fina
 It also verifies failed-consumer preservation and refusal before inference on stale
 producer bytes. These are executable-only fixtures with seeded planning attestations;
 visual media, receipt-backed amendments and full-shot acceptance remain separate gates.
-The live three-unit DeepSeek probe awaits explicit approval after automatic review
-rejected the expanded synthetic payload and paid-call scope. No live DAG calls ran.
+The approved live DeepSeek follow-up used 10 model calls. The independent unit earned
+a verified completion receipt, but the producer rewrote three candidates without probing
+and then abstained at its action budget. The consumer did not run and no composed layer
+was published. HIR-0249 records this remaining VFX phase-policy gap; live dependent
+composition remains unproven.
 The complete unchanged-source suite passed **2,914 tests**, plus complete-source Ruff,
 CLI help and strict preflight. The SDK source and pinned dependency are unchanged.
 

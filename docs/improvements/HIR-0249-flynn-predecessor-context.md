@@ -69,10 +69,29 @@ processes, with 15 existing Pillow deprecation warnings. Logs are under
 `/tmp/vfx-sqlite-regression-aojvalo_`. Complete-source Ruff, `git diff --check`,
 `vfx --help` and strict preflight passed.
 
-A live DeepSeek runner is prepared at `/tmp/vfx_live_flynn_dag.py`, bounded to six
-model calls per unit (18 total), 2,048 output tokens per call and the existing
-per-unit Flynn budgets. Automatic approval review rejected dispatch because the
-three-unit synthetic payload and paid-call scope exceeded the earlier single-unit
-approval. No live DAG model calls ran. Explicit user approval is the remaining
-live-model gate; this record accepts the reproduced context fix and offline evidence,
-not a live multi-unit result.
+## Live follow-up
+
+After explicit user approval, `/tmp/vfx_live_flynn_dag.py` ran with six model calls
+per unit maximum (18 total), 2,048 output tokens per call and existing Flynn budgets.
+The probe at `/tmp/vfx-live-flynn-dag-pss3bdq4/probe-summary.json` stopped unaccepted
+after **10 model calls**, **34,667 prompt tokens** and **1,068 completion tokens**.
+
+The independent unit inspected, wrote twice, probed and froze; its separate scripted
+canonical replay passed. Its native completion receipt remained source-verifiable:
+`f7bd1a93c240dd5f20146bba49184d3a64e4e9d15ee0a3e340ebebf3e3ba098f`.
+The producer inspected, wrote three distinct candidate digests without probing, then
+abstained when only the canonical external-action reservation remained. The journal
+confirms `probe_candidate` was granted after every write. The final model explanation
+about unavailable tools describes the terminal restricted grant set, not the earlier
+requests. This was no authentication, transport, or Blender failure.
+
+Durable states are independent=passed, producer=building, consumer=pending. No composed
+layer artifact exists. Abstention earned no fabricated failure or completion authority.
+The consumer never ran, so this live result does not validate predecessor-interface use.
+The offline three-unit composition gate remains passing evidence for that wiring.
+
+This exposes another VFX phase-policy gap: unobserved candidates can be rewritten until
+the probe budget is spent. A proposed next mechanism is requiring candidate replay
+before another rewrite, preserving revision after measured feedback and abstention.
+That mechanism is not implemented or validated in this record. No additional paid
+retry or SDK change was made. This follow-up changes documentation only.
