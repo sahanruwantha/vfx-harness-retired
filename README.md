@@ -399,6 +399,12 @@ vfx evals plan       # no model, no Blender; plan artifacts on disk
 
 Requires **Blender 5.x** on `PATH` (headless) and Python ≥ 3.11.
 
+The optional Flynn migration gate requires SSH access to the private
+`sahanruwantha/flynn-agents-sdk` repository. Install it with `.venv/bin/pip install -e ".[dev,flynn]"`. `pyproject.toml` pins the tested SDK commit;
+installation does not use a sibling editable checkout. The existing production runtime
+is still active while the [migration gates](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)
+are proved.
+
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 cp .env.example .env          # set ONE auth variable (below)

@@ -7,7 +7,7 @@ name = "vfx-harness"
 version = "0.3.0"
 description = "An agent-driven 3D/VFX pipeline built on the Claude Agent SDK. Input: a shot folder (brief.md + refs/). Stage 2 — the plan agent — turns the brief into a frame-numbered build plan."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "claude-agent-sdk>=0.2.101,<0.3",
   "pyyaml>=6,<7",
@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Explicit development gate until private-SDK authentication is configured in CI.
+flynn = [
+  "flynn-agents-sdk @ git+ssh://git@github.com/sahanruwantha/flynn-agents-sdk.git@f6b164efa03efe5472334983c7c4a740823d65fc",
+]
 dev = [
   "pytest>=8,<10",
   "jsonschema>=4,<5", # validates agent-facing closed tool schemas in regression tests

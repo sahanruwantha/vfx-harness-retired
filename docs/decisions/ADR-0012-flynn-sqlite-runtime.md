@@ -105,10 +105,49 @@ unit/integration tests outside the checkout. VFX's complete source Ruff check an
 architecture tests pass. The full VFX behavior suite was not run for this documentation
 and rule-scope change.
 
-The first SDK tranche is local development work. ARC migration/SSH installation, a real VFX
-unit through Flynn, Blender replay and production cutover have not been validated. The current
-VFX controller and authority writers are unchanged. This ADR authorizes the direction and
-defines gates; it does not mark those gates passed.
+The initial commits were pushed on 2026-09-07. ARC's toy, visual and official consumers
+now use schema 2 and explicitly treat prediction/observation assessments as observation-only
+work. Official RESET runs through a scripted Flynn operation, so its reservation counts a
+scripted inference-adapter invocation rather than a model request. Replay reads dispatched
+schema-2 operations and rejects old generations. A small ARC reporting projection derives
+execution counts from tool reservations rather than counting rejected inference proposals.
+
+The required sync command in the real ARC checkout installed exactly
+`f6b164efa03efe5472334983c7c4a740823d65fc` over SSH and pinned it in `uv.lock`.
+All 82 ARC tests, Ruff and mypy passed. This includes deterministic replay equality,
+restored operation budgets, terminal refusal and old-schema refusal. ARC already had substantial
+uncommitted work; the migration was prepared in an isolated copy, tested, reviewed as an exact
+12-file patch, and applied only after checking every original file hash. Preimages remain at
+`/tmp/arc-sqlite-apply/before`. Its unrelated changes were not staged or committed.
+
+VFX now declares the same exact Git dependency in its explicit `flynn` development extra
+and a Python 3.11 minimum. VFX CI currently has no repository secrets; the extra avoids
+breaking its existing credential-free installation. Migration tests explicitly skip when
+the extra is absent. Both local migration environments install it from SSH; production
+cutover must configure CI authentication and make this gate mandatory. Four offline
+contract tests exercise the real VFX WorkUnit/scope compiler through Flynn: required context
+cannot be omitted, an ungranted mutation is rejected, and scope evidence survives reopening
+without becoming a unit acceptance or state commit. These tests do not execute Blender.
+
+Strict `vfx preflight --strict` passed on this host, including a real confined Blender
+boot, kernel fences and the plan-consumer directory primitive. Two further integration
+tests dispatch a frozen fixture program through Flynn into the existing confined VFX
+worker, measure it with VFX's scene-contract evaluator, and compare the observation with
+a fresh worker's empty-scene replay through `_run_artifact_script`. One fixture satisfies
+its declared count; the other deliberately fails it. Both preserve observation/evaluation
+without accepting a unit. The first attempt correctly rejected an overbroad scene reset
+inside the artifact; the corrected fixture leaves reset with the harness-owned setup.
+
+These are six execution/context seam tests, not a complete production unit lifecycle.
+Attempt-bound authorization, freeze, canonical unit receipt publication and composition
+still need to be connected to Flynn. The current VFX controller and authority writers
+are unchanged. No paid model calls were made.
+
+Final follow-up validation: the complete current VFX collection ran in four isolated
+pytest processes with separate temporary directories: **586 + 717 + 822 + 775 = 2,900
+passed**. This includes all six Flynn seam tests. Ruff passed on the complete `src` tree.
+The suite reported 15 existing Pillow `getdata()` deprecation warnings. The parallel run
+replaced an interrupted serial attempt; no partial run is counted as full-suite evidence.
 
 ## Consequences
 
