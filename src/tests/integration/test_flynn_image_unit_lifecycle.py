@@ -161,8 +161,11 @@ def test_native_image_unit_earns_completion_from_canonical_render(tmp_path, monk
             fence_lease=lease, verbose=False,
         ))
         assert ledger.status(milestone) == 'passed'
+        rendered_candidate = tmp_path / ledger._slot(milestone)['best']['render']
+        render_sha = hashlib.sha256(rendered_candidate.read_bytes()).hexdigest()
+        assert render_sha != candidate_sha
         frozen = unit_state.freeze_checkpoint(
-            tmp_path, '1', unit, active_contract_ids=(), candidate_hash=candidate_sha,
+            tmp_path, '1', unit, active_contract_ids=(), candidate_hash=render_sha,
             settings_hash=hashlib.sha256(b'eevee').hexdigest(), script_hash=candidate_sha,
             input_hash=guard.expected_plan_hash, layer_active_vis_ids=(),
             attempt=guard.claim, selection_token=selected.selection_token,

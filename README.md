@@ -446,7 +446,12 @@ credentials. No Claude fallback exists in approach review or global planning.
 
 The production dispatcher selects `agents/builder/flynn_unit.py` for procedural units
 whose typed requirements need only executable evidence. Other evidence/construction
-routes retain their existing engine. Flynn failures never fall back to Claude.
+routes retain their existing engine. This includes EEVEE image units with executable
+required claims covering every judge point and no provisional visual requirements.
+They capture current candidate/adversary images, pay image debts, and bind the canonical
+primary render to the layer checkpoint. A composed layer's independent look judgment
+remains required. Solid, qualitative and generated units still await migration.
+Flynn failures never fall back to Claude.
 `VFXH_EXECUTABLE_BUILDER_MODEL` defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
 `VFXH_EXECUTABLE_BUILDER_SECONDS`, `VFXH_EXECUTABLE_BUILDER_OUTPUT_TOKENS` and
 `VFXH_EXECUTABLE_BUILDER_MAX_STEPS` default to 600, 32768 and 12. Steps include the

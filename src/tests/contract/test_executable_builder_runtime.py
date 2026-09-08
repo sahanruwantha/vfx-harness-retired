@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 
 import flynn_agents_sdk as flynn
 import pytest
@@ -108,7 +109,7 @@ def test_native_failure_propagates_without_retry_or_other_engine(bound, monkeypa
     assert len(calls) == 1
 
 
-def test_raster_route_stays_explicit_and_does_not_construct_native_provider(bound, monkeypatch):
+def test_solid_route_stays_explicit_and_does_not_construct_native_provider(bound, monkeypatch):
     monkeypatch.setattr(unit_dispatch.evidence, "_unit_requires_raster", lambda *a, **kw: True)
     monkeypatch.setattr(deepseek, "DeepSeekAdapter", lambda **kw: pytest.fail("raster reached native provider"))
 
@@ -118,6 +119,37 @@ def test_raster_route_stays_explicit_and_does_not_construct_native_provider(boun
 
     monkeypatch.setattr(unit_dispatch.unit_loop, "build_unit", raster)
     assert invoke(bound) == "raster fixture"
+
+
+def test_executable_eevee_route_uses_native_engine(bound, monkeypatch):
+    monkeypatch.setattr(unit_dispatch.evidence, "_unit_requires_raster", lambda *a, **kw: True)
+    monkeypatch.setattr(unit_dispatch.evidence, "_unit_raster_mode", lambda unit: "eevee")
+    monkeypatch.setattr(deepseek, "DeepSeekAdapter", lambda **kw: Adapter())
+    monkeypatch.setattr(unit_dispatch.unit_loop, "build_unit", lambda *a, **kw: pytest.fail("legacy image engine"))
+
+    async def native(*args, **kwargs):
+        assert kwargs["active_unit"] is bound[2]
+        return "native image"
+
+    monkeypatch.setattr(unit_dispatch.flynn_unit, "build_unit", native)
+    assert invoke(bound) == "native image"
+
+
+@pytest.mark.parametrize("unsupported", ["qualitative", "uncovered", "provisional", "construction", "solid"])
+def test_native_eligibility_refuses_unsupported_evidence(bound, unsupported):
+    unit = bound[2]
+    if unsupported == "qualitative":
+        claim = replace(unit.evaluation.claims[0], authority="qualified_qualitative_required")
+        unit = replace(unit, evaluation=replace(unit.evaluation, claims=(claim,)))
+    elif unsupported == "uncovered":
+        unit = replace(unit, evaluation=replace(unit.evaluation, claims=()))
+    elif unsupported == "provisional":
+        # Synthetic composed units carry provisional requirements outside WorkUnit.
+        unit = SimpleNamespace(evaluation=unit.evaluation, provisional_requirement_ids=("required-look",),
+                               construction=unit.construction)
+    elif unsupported == "construction":
+        unit = replace(unit, construction=replace(unit.construction, route="generated"))
+    assert unit_dispatch.flynn_unit.native_execution_refusal(unit, raster=unsupported == "solid")
 
 
 def test_native_configuration_is_independent_of_remaining_builder_model(monkeypatch):

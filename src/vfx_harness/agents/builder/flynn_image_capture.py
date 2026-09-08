@@ -210,7 +210,13 @@ class UnitImageCapture:
                 flynn.TextContent("Pre-unit adversary (harness selected):"), flynn.ImageContent(baseline_image.url),
                 flynn.TextContent("Current candidate:"), flynn.ImageContent(candidate_image.url),
             ), data_json=json.dumps({
-                "schema": "vfx-harness.unit-image-observation/v1", "claim_id": self.attempt.claim.claim_id,
-                "candidate": candidate, "adversary": adversary, "accepted": False,
+                "schema": "vfx-harness.unit-image-observation/v2", "claim_id": self.attempt.claim.claim_id,
+                # The guarded registry and source-verifiable report retain the full
+                # ownership binding. Model feedback needs the payment handle and pixels,
+                # not two additional copies of the current run/unit/prefix identity.
+                **{name: {key: record[key] for key in (
+                    "handle", "frame", "path", "sha256", "candidate_sha256", "mode", "resolution", "scale",
+                )} for name, record in (("candidate", candidate), ("adversary", adversary))},
+                "accepted": False,
                 "report": report_path.relative_to(self.root).as_posix(), "report_sha256": digest(report_bytes),
             }, sort_keys=True))

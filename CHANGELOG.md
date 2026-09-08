@@ -7,6 +7,11 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Supported procedural EEVEE units now use Flynn in production. Image feedback keeps the
+  fixed context cap, and native evaluation receipts identify the same canonical render as
+  the layer checkpoint. Layer look judgment and receipt-backed driver advancement remain
+  separate requirements ([HIR-0253](docs/improvements/HIR-0253-native-image-layer-integration.md)).
+
 - A verdict the harness emits is now one its receipt can record. `verdicts.py` emitted
   four mechanically decided verdicts for a group with no qualitative claim — one pass/fail
   from executable evidence and three structural refusals naming which authority fact

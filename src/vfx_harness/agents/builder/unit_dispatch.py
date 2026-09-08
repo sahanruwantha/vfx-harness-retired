@@ -34,9 +34,8 @@ async def build_unit(shot, m, script_rel, prior_paths, session, *, fence_lease=N
             raise ValueError("production builder selected authority must match the exact claim")
         if kwargs.get("resume_ok"):
             raise ValueError("builder resume requires a complete VFX receipt; start a reviewed new attempt")
-        if unit.construction.route != "procedural" or evidence._unit_requires_raster(
-            shot, unit, selected_authority=selected,
-        ):
+        raster = evidence._unit_requires_raster(shot, unit, selected_authority=selected)
+        if flynn_unit.native_execution_refusal(unit, raster=raster) is not None:
             return await unit_loop.build_unit(
                 shot, m, script_rel, prior_paths, session, fence_lease=fence_lease, **kwargs,
             )

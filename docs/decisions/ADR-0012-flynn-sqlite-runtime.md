@@ -468,7 +468,7 @@ Explicit native unit execution now supports procedural units whose required clai
 executable at every judge point and whose raster medium is EEVEE. Other raster media,
 required qualitative decisions and generated construction are refused before execution.
 The executor retains the live builder lease through capture, payment and completion.
-Default production raster routing remains unchanged pending its separate layer/driver gate.
+Production routing for this supported subset is described in the layer integration section below.
 
 Capture and payment tools share the exact candidate/prefix guard with the engine. Their
 execution clears the previous probe, including when a payment is refused. Phase grants
@@ -483,3 +483,24 @@ again before script publication. A substitution between freeze and canonical dis
 refuses before that external operation or script publication. Existing VFX replay and
 evaluation/completion readers remain authoritative; the ledger records their canonical
 primary-frame render and measured score. Flynn publishes no unit state revision.
+
+## Production executable image units
+
+The dispatcher and explicit native executor now share one eligibility predicate:
+procedural construction, executable required claims at every judge point, no provisional
+visual requirements, and EEVEE for raster evidence. Unsupported units retain their existing
+migration path; native failures never cause a second-engine retry. Composed layer look
+judgment remains separate and is not waived by this unit routing decision.
+
+The layer gate exposed two native integration defects (HIR-0253). The v2 image observation
+omits duplicated ownership bindings while preserving payment handles, pixel/source identities,
+settings and the complete report locator/digest. Guards, registry and report retain every
+binding. The context cap is unchanged. Native image evaluation now identifies the canonical
+primary render as its candidate, matching the layer checkpoint; the replay closure separately
+binds the exact unit script. Existing completion and layer publication readers remain unchanged.
+
+Validation uses real camera and dependent image layers, payments, empty-scene replay and
+receipts with scripted inference and a scripted layer look judgment. The driver gate executes
+the actual layer builder through its subprocess seam and reopens current publication; it
+must refuse substituted composed output despite a successful child exit. This does not claim
+live planning, visual judgment quality, whole-shot acceptance or complete Claude removal.

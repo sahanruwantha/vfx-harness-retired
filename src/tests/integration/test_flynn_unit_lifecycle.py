@@ -35,7 +35,8 @@ host['bvfx_role'] = 'comp'
 """
 
 
-def _authority(root, monkeypatch, expected=1, configure=None):
+def _authority(root, monkeypatch, expected=1, configure=None, claim=True, publisher=publish_current,
+               run_parameters=None):
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _candidate(root)
     layers = json.loads((root / "layers.json").read_text())
@@ -44,8 +45,8 @@ def _authority(root, monkeypatch, expected=1, configure=None):
     stage = layer["stages"][0]
     stage["evaluation"].pop("composition_context")
     stage["evaluation"]["temporal_evidence"] = "none"
-    claim = stage["evaluation"]["claims"][0]
-    claim.update(property="object_count", asserts="scene")
+    claim_row = stage["evaluation"]["claims"][0]
+    claim_row.update(property="object_count", asserts="scene")
     _write(root / "layers.json", layers)
     _write(root / "scene_checks.json", {"schema": 2, "contracts": [{
         "id": "final-lock", "kind": "object_count", "roles": ["comp"],
@@ -61,8 +62,8 @@ def _authority(root, monkeypatch, expected=1, configure=None):
     _write(root / "obligations.json", {"schema": "vfx-harness.obligations/v1", "obligations": []})
     if configure is not None:
         configure(root)
-    layout = run_artifacts.create(root, RUN_ID)
-    publish_current(root, layout, outcome="clean_with_deferred")
+    layout = run_artifacts.create(root, RUN_ID, **(run_parameters or {}))
+    publisher(root, layout, outcome="clean_with_deferred")
     monkeypatch.setenv(run_artifacts.ENV, str(layout.root))
     selected = resolve_selected_authority(root)
     shot = Shot(root, {"frames": 240, "fps": 24, "resolution": [64, 64]}, "Fixture")
@@ -70,6 +71,8 @@ def _authority(root, monkeypatch, expected=1, configure=None):
     unit = layer.stages[0]
     plan_hash = selected_layer_capsule_digest(root, "1", selected)
     unit_state.initialize(root, "1", layer.stages, plan_hash=plan_hash)
+    if not claim:
+        return shot, layer, unit, selected, None, layout
     kwargs = {
         "expected_plan_hash": plan_hash, "eligible_passed": set(), "completion_authorization": None,
         "run_id": layout.run_id, "selection_token": selected.selection_token, "reason": "scripted unit gate",

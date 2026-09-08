@@ -139,6 +139,24 @@ def _prepare_feedback(request: flynn.InferenceRequest) -> flynn.InferenceRequest
     return replace(request, observation=feedback, images=images)
 
 
+def native_execution_refusal(unit, *, raster: bool) -> str | None:
+    """Shared domain eligibility for routing and explicit native execution.
+
+    This governs one unit, not the composed layer's independent look judgment.
+    """
+    for point in unit.evaluation.judges:
+        required = verdicts._required_claims_at(unit, point.frame)
+        if not required or any(claim.authority != "executable_required" for claim in required):
+            return "Flynn requires executable claims covering every judge frame; visual judgment is unsupported"
+    if getattr(unit, "provisional_requirement_ids", ()):
+        return "Flynn executable unit cannot decide provisional visual requirements"
+    if raster and evidence._unit_raster_mode(unit) != "eevee":
+        return "Flynn image capture requires the unit's canonical medium to be EEVEE"
+    if unit.construction.route != "procedural":
+        return "Flynn executable unit currently requires procedural construction"
+    return None
+
+
 def _model_grants(*, inspected: bool, written: bool, observed: str | None, remaining: dict,
                   image_tools=False, captures=0, payments=0, can_pay=False, unpaid=False,
                   write_captures=None) -> tuple[str, ...]:
@@ -215,17 +233,9 @@ async def _build_unit(
     if selected_authority != attempt_guard.selected_authority:
         raise ValueError("Flynn selected authority must be the exact attempt's snapshot")
     raster = evidence._unit_requires_raster(shot, active_unit, selected_authority=selected_authority)
-    for point in active_unit.evaluation.judges:
-        required = verdicts._required_claims_at(active_unit, point.frame)
-        if not required or any(claim.authority != "executable_required" for claim in required):
-            raise ValueError("Flynn requires executable claims covering every judge frame; "
-                             "visual judgment is unsupported")
-    if getattr(active_unit, "provisional_requirement_ids", ()):
-        raise ValueError("Flynn executable unit cannot decide provisional visual requirements")
-    if raster and evidence._unit_raster_mode(active_unit) != "eevee":
-        raise ValueError("Flynn image capture requires the unit's canonical medium to be EEVEE")
-    if active_unit.construction.route != "procedural":
-        raise ValueError("Flynn executable unit currently requires procedural construction")
+    refusal = native_execution_refusal(active_unit, raster=raster)
+    if refusal is not None:
+        raise ValueError(refusal)
     completion_authorization = unit_completion_state.authorize_completed_units_for_layer(
         shot.folder, str(layer.id), attempt_guard.units,
         expected_plan_hash=attempt_guard.expected_plan_hash, selected_authority=selected_authority,
@@ -625,7 +635,7 @@ async def _build_unit(
             canonical_verdicts=canonical_verdicts,
             ledger_slot=ledger._slot(m),
             replay_inputs=replay_inputs,
-            candidate_path=script_rel,
+            candidate_path=primary["render"] if primary else script_rel,
         )
         ledger.snapshot_scripts(m)
         run.finish("unit_evaluation_receipt:" + receipt.receipt.receipt_digest)

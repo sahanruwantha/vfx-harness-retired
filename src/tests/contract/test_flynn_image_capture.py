@@ -88,6 +88,11 @@ def test_capture_and_payment_share_a_journal_without_acceptance(tmp_path, monkey
                                     prepare_request=flynn_unit._prepare_feedback)
             first = asyncio.run(runtime.step('Capture.'))
             data = json.loads(flynn.ToolResult.from_json(first.candidate.output).data_json)
+            assert data['schema'] == 'vfx-harness.unit-image-observation/v2'
+            for name in ('candidate', 'adversary'):
+                assert set(data[name]) == {
+                    'handle', 'frame', 'path', 'sha256', 'candidate_sha256', 'mode', 'resolution', 'scale',
+                }
             assert data['candidate']['candidate_sha256'] == digest(candidate.read_bytes())
             assert data['adversary']['candidate_sha256'] is None
             result = asyncio.run(runtime.step('Propose the measured check.'))
@@ -99,6 +104,9 @@ def test_capture_and_payment_share_a_journal_without_acceptance(tmp_path, monkey
         assert sum(isinstance(c, tuple) for c in session.calls) == 2
         report = json.loads((tmp_path / data['report']).read_text())
         assert report['replay_inputs'][0]['script_path'] == 'prior.py'
+        for name in ('candidate', 'adversary'):
+            assert report[name] == capture.state['image_artifacts'][data[name]['handle']]
+            assert {'claim_id', 'unit_hash', 'parent_chain_hash', 'run_id'} <= report[name].keys()
         assert digest((tmp_path / data['report']).read_bytes()) == data['report_sha256']
 
 

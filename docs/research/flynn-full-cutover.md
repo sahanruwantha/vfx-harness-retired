@@ -1030,3 +1030,43 @@ The full frozen-source regression passed all 3,390 tests in four isolated proces
 (848 + 848 + 847 + 847), with 64 existing Pillow deprecation warnings. Final complete-source
 Ruff and diff checks passed. The next gate is default raster dispatch through layer and
 driver completion; this unit result does not claim that gate or complete Claude removal.
+
+## Production executable image routing and layer/driver gate
+
+The real two-layer fixture exposed two integration defects: duplicated image ownership
+metadata overflowed required context, then the evaluation receipt's script candidate
+disagreed with the layer checkpoint's canonical render. HIR-0253 records both fixes.
+The v2 image observation carries compact payment/pixel identities with the full report
+locator and digest; registry/report ownership checks remain complete. Native image evaluation
+now names the canonical primary render, while its replay closure independently binds script
+bytes. The fixed context cap, checkpoint derivation and completion readers are unchanged.
+
+Production unit dispatch now shares the explicit native executor's eligibility predicate.
+It selects Flynn for procedural executable units, including EEVEE image units, with coverage
+at every judge point and no provisional visual requirement. Unsupported units keep their
+existing migration path. Native errors never trigger another engine.
+
+The integration gate executes an accepted camera layer followed by a scene predecessor and
+an emissive image unit, with authored order deliberately reversed from dependency order.
+Real Blender captures, measured payments, probe/freeze/canonical replay, unit checkpoints,
+completion receipts and composed layer publications all execute. A second test uses the
+production unit dispatcher through the driver's subprocess seam, then substitutes the
+composed image script and proves that a successful child exit cannot advance the driver.
+The failure preserves the accepted camera bytes and all existing unit completion records.
+
+The composed image layer still owes an independent look judgment. That judgment is scripted
+in these tests, as is unit inference; executable unit checks do not waive it. This is a
+transport/publication gate, not proof of visual quality, CLI preflight, live planning or
+whole-shot acceptance. No SDK change, ARC testing or paid inference was needed.
+
+All 30 focused routing/capture/layer/driver tests passed in 263.02 seconds, with 25 existing
+Pillow deprecation warnings. The frozen-source full regression passed all 3,398 tests in
+four isolated processes (840 + 840 + 859 + 859), with 84 existing Pillow deprecation
+warnings and the longest process taking 998.38 seconds. Complete-source Ruff and diff
+checks passed.
+
+Next is the remaining critic transport in `builder/critic.py` and its Claude message
+helpers in `critic_focus.py`: native image inputs, structured verdict submission, current
+execution guards, bounded attempts and neutral usage. VFX qualification, panel citation,
+evidence reconciliation and layer acceptance stay authoritative. Solid, qualitative and
+generated units and a clean installation without Claude remain separate migration gates.

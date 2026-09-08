@@ -617,6 +617,14 @@ cutover. Do not add an engine selector, fallback, or Claude API compatibility wr
 Extend Flynn when a generic execution capability is missing; VFX-specific tools and
 policy stay here. SDK development and installation use its `main` branch over SSH.
 Prove each migrated boundary before retiring its current writer; an SDK commit or recovery never certifies a VFX unit or authorizes session resume.
+Production unit routing and explicit Flynn execution share the same eligibility predicate:
+procedural construction, executable required claims covering every judge point, no provisional
+visual requirement, and EEVEE when raster is owed. This does not waive a composed layer's
+separate look judgment. Native image feedback carries payment handles and pixel identities;
+full ownership bindings remain in the guarded registry and source-verifiable report. Its unit
+evaluation receipt names the canonical primary render used by the layer checkpoint, while
+the replay closure separately binds the script; a script digest cannot stand in for that
+render (HIR-0253).
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial
@@ -624,10 +632,11 @@ inspection must not consume the unit's action budget (HIR-0248). Flynn unit cont
 must compile the exact attempt's complete DAG with source-verified completion authorization
 and durable state, projecting only declared consumed predecessor interfaces. An active-unit
 card compiled without those inputs is not dependent-unit context (HIR-0249).
-After a Flynn candidate write, only probe or abstention is model-dispatchable. After
-that probe, permit revision, freeze or abstention; do not re-probe unchanged bytes.
-A revision clears the observation and must be probed again. Enforce these phases through
-grants. Reserve the full remaining write/probe/freeze/canonical path before offering
+After a Flynn candidate write, permit probe, owed image capture/payment or abstention.
+After that probe, permit revision, freeze, image evidence work or abstention; do not re-probe
+unchanged bytes and evidence. A revision, capture or payment clears the observation and must
+be probed again. Enforce these phases through grants. Reserve the full remaining
+write/capture/payment/probe/freeze/canonical path before offering
 an action, so revision cannot consume its own required probe allowance. Transport the
 existing replay-failure stage/message to the model as selected feedback; an empty verdict
 list must not hide a script error. Canonical acceptance authority is unchanged (HIR-0250).
