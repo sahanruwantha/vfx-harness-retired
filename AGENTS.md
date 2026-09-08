@@ -670,6 +670,13 @@ evaluation, journals and images, and derives the artifact again through consumpt
 Old asserted-rate artifacts without measured proof refuse native admission. Authored label
 review and layer/debt qualification selection remain owning harness responsibilities
 (ADR-0012).
+Composed judgment debt derives typed `Claim`/`EvidenceBinding` values with no qualification
+credential. Those exact semantics may enter native calibration. Explicit measured binding
+returns a new claim only after reopening proof and matching the complete calibrated
+semantics and suite; it cannot change the proposition, fault owner, roles, controls or
+judge points. A composed group's selected debt qualifications must cover exactly its
+typed debt claims, with no duplicates or scope changes. Neither that structural selection
+nor a typed unqualified claim grants native admission or layer acceptance (ADR-0012).
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial

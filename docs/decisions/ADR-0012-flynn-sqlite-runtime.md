@@ -714,3 +714,32 @@ the layer/debt ownership wrapper are connected.
 Admission fixtures now create actual offline calibration journals and publish their
 measured proof. They no longer manufacture passing metric fields as the positive path.
 These mocked-provider trials exercise the mechanism, not the quality of a live model.
+
+### Binding measured qualification to owned judgment debt
+
+The composed judge now derives real `Claim` and `EvidenceBinding` values for its debt
+propositions, preserving the previous ids, statement, axis/property, subjects, controls,
+fault owner and debt-owned judge points. Their qualification is absent. The declared
+required qualitative authority states an obligation; constructing this typed value does
+not provide a credential. It enables calibration to receive the actual debt semantics
+instead of an untyped placeholder that the native path must refuse.
+
+The VFX `bind_claim` adapter takes an explicitly selected measured artifact and an owning
+authority check. It reopens the full calibration proof, compares the complete claim
+semantics and exact suite binding, and returns a new artifact-bound claim. The input claim
+and plans remain unchanged. Existing qualifications cannot be silently overwritten through
+this API. Source selection, artifact bytes and authority are checked through return.
+
+`_composition_judge_unit` accepts an explicit `qualified_debt_claims` selection for a typed
+debt group. It requires exactly the derived claim ids and unchanged semantics, rejecting
+partial/duplicate selection, another fault owner or judge point, unbound claims, untyped
+requirements and a missing owning group. Existing unit claims remain in the composition;
+the selector changes only the qualification of the exact debt propositions. Structural
+selection is not proof verification: native admission must still reopen measured proof
+and match the actual invocation.
+
+This does not mint an implicit layer-look qualification, select credentials from disk by
+proximity, or switch the production critic. The owning production wrapper still needs
+reviewed selected-artifact authority. Tests exercise debt derivation through offline
+calibration, measured publication, explicit binding, group composition and native admission,
+while proving no VFX acceptance is granted.

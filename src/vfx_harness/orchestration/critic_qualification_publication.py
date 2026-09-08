@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from dataclasses import asdict, replace
 from pathlib import Path
 from uuid import uuid4
 
+from vfx_harness.domain.work_units.claims import Claim
 from vfx_harness.evaluation import critic_calibration
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.plan_bundle_integrity import decode_json_object, is_digest, read_real_file
@@ -75,6 +77,41 @@ def verify(root: Path, record: dict) -> None:
     if critic_calibration.fingerprint(record) != critic_calibration.fingerprint(_artifact(request, derived, proof)):
         raise ValueError("critic qualification artifact differs from measured results; republish qualification")
     _read(root, proof["request"])
+
+
+def bind_claim(root: Path, *, claim: Claim, artifact: dict, check_current: Callable[[], None]) -> Claim:
+    """Bind an explicitly selected measured credential without changing the owning claim.
+
+    This returns a new value; the caller still owns selecting and publishing authority.
+    Runtime admission independently checks the eventual invocation and current proof.
+    """
+    if (not isinstance(claim, Claim) or claim.qualification is not None or
+            claim.authority != "qualified_qualitative_required" or claim.required is not True):
+        raise ValueError("qualification binding requires an unqualified typed required qualitative claim")
+    _keys(artifact, {"path", "sha256"}, "critic qualification artifact")
+    selected = dict(artifact)
+    check_current()
+    record = _read(root, selected)
+    verify(root, record)
+    request = _read(root, record["calibration_proof"]["request"])
+    matching = [row for row in request["profile"]["scope"]["claims"] if row["id"] == claim.id]
+    semantics = {key: value for key, value in asdict(claim).items() if key != "qualification"}
+    if (record["claim_id"] != claim.id or len(matching) != 1 or
+            critic_calibration.fingerprint(matching[0]) != critic_calibration.fingerprint(semantics)):
+        raise ValueError("measured qualification changes the selected claim's semantics or owner; requalify that scope")
+    if not any(row.kind == "qualification" and row.id == record["suite"] for row in claim.evidence):
+        raise ValueError("selected claim does not bind the measured qualification suite")
+    qualification = {key: record[key] for key in ("suite", "judge_model", "prompt", "evidence_shape")}
+    qualification.update(artifact=selected["path"], artifact_sha256=selected["sha256"])
+    check_current()
+    if artifact != selected:
+        raise ValueError("qualification artifact selection changed; restart binding")
+    verify(root, _read(root, selected))
+    check_current()
+    if artifact != selected:
+        raise ValueError("qualification artifact selection changed; restart binding")
+    _read(root, selected)
+    return replace(claim, qualification=qualification)
 
 
 def publish(root: Path, *, request: dict, check_current: Callable[[], None]) -> dict:

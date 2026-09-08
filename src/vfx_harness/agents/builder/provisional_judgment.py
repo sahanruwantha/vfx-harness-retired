@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from functools import partial
 from types import SimpleNamespace
 
 from vfx_harness.domain.judgment_debt_models import unit_observation_medium
 from vfx_harness.domain.work_units import MutationScope, composed_evaluation_is_lookless
+from vfx_harness.domain.work_units.claims import Claim, EvidenceBinding
 from vfx_harness.orchestration import judgment_debt_state
 
 
@@ -153,7 +155,7 @@ def _mixed_media_detail(stages, provisional_decisions) -> str:
             )
     return "; ".join(parts)
 
-def _composition_judge_unit(layer, provisional_decisions=(), *, medium=None):
+def _composition_judge_unit(layer, provisional_decisions=(), *, medium=None, qualified_debt_claims=()):
     """Compile one local composed judge unit, optionally paying one typed debt.
 
     ``medium`` names the plate this group renders when no debt does -- the second group a
@@ -161,8 +163,14 @@ def _composition_judge_unit(layer, provisional_decisions=(), *, medium=None):
     another (HIR-0241).  Such a group takes no look vote: it exists to measure executable
     contracts on the plate they were paid on.
     """
+    if qualified_debt_claims and not provisional_decisions:
+        raise ValueError("selected debt qualification requires an owning debt group")
+    if qualified_debt_claims and any(not decision.get("debt_id") for decision in provisional_decisions):
+        raise ValueError("selected debt qualification requires typed judgment-debt identity")
     stages = tuple(getattr(layer, "stages", ()) or ())
     if not stages:
+        if qualified_debt_claims:
+            raise ValueError("selected debt qualification requires the owning layer's units")
         return None
     provisional_decisions = tuple(provisional_decisions or ())
     # No look capabilities, some required claim, all of them executable_required: the
@@ -193,7 +201,7 @@ def _composition_judge_unit(layer, provisional_decisions=(), *, medium=None):
                 f"judgment-debt:{decision['debt_id']}:{axis}" if typed else f"requirement:{decision['id']}:{axis}"
             )
             qualitative.append(
-                SimpleNamespace(
+                Claim(
                     id=binding_id,
                     proposition=decision["statement"],
                     axis=str(axis),
@@ -206,10 +214,23 @@ def _composition_judge_unit(layer, provisional_decisions=(), *, medium=None):
                     authority="qualified_qualitative_required",
                     repair_owner=str(decision.get("fault_owner") or f"{getattr(layer, 'id', 'layer')}._composition"),
                     asserts="image",
-                    evidence=(SimpleNamespace(kind="qualification", id=binding_id),),
-                    binding_ids=(binding_id,),
+                    evidence=(EvidenceBinding(kind="qualification", id=binding_id),),
                 )
             )
+    if qualified_debt_claims:
+        if any(not isinstance(claim, Claim) or claim.qualification is None for claim in qualified_debt_claims):
+            raise ValueError("selected debt qualification requires explicit artifact-bound claims")
+        selected = {claim.id: claim for claim in qualified_debt_claims}
+        if len(selected) != len(qualified_debt_claims) or set(selected) != {claim.id for claim in qualitative}:
+            raise ValueError("selected debt qualification must cover exactly the group's debt claims")
+        for claim in qualitative:
+            candidate = asdict(selected[claim.id])
+            candidate["qualification"] = None
+            if candidate != asdict(claim):
+                raise ValueError(
+                    f"selected debt qualification changes owning claim {claim.id}; requalify its exact scope"
+                )
+        qualitative = [selected[claim.id] for claim in qualitative]
     # The plate this group renders. A contract is re-measured in the medium it was paid
     # in or not at all, so an image-bound claim from a unit judged in another medium
     # belongs to that medium's group, not to this one (HIR-0241).

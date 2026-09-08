@@ -1307,3 +1307,31 @@ cutover gates; no production critic route changed.
 Final frozen-source regression passed all 3,512 VFX tests (869 + 869 + 887 + 887),
 with 84 existing Pillow deprecation warnings. The longest process took 1,321.25 seconds.
 Complete-source Ruff and final diff checks passed.
+
+## Binding measured qualification to composed judgment debt
+
+Composed judgment debt now derives typed `Claim`/`EvidenceBinding` values with the same
+identity, statement, subjects, controls, fault owner and debt-owned judge points. They
+carry no qualification credential, but their exact semantics can enter native calibration.
+
+An explicit `bind_claim` operation reopens the measured artifact and its sources, compares
+the full calibrated semantics and exact suite binding, and returns a new qualified claim.
+It changes neither the input claim nor selected plans. The composed judge accepts a
+complete explicit debt-claim selection only when ids and semantics match its derived
+obligations; partial, duplicate, unbound, untyped or differently owned selections refuse.
+Native admission remains the independent proof and invocation check.
+
+The positive test runs an actual composed debt through mocked-provider calibration,
+measured publication, binding, composition and native admission, while retaining
+`acceptance_authorized: false`. Negative tests cover changed owners, propositions,
+subjects, frames, properties, source selection/bytes and revoked authority. Judge-frame
+coverage tests confirm that a debt still owes judgment only at its own points.
+
+All 66 focused binding, publication and composed-judgment tests passed in 56.07 seconds.
+No SDK change, ARC validation or paid inference was needed. This does not invent an
+implicit layer-look qualification or switch production critic routing; reviewed live
+calibration and plan-backed selection by the owning wrapper remain migration gates.
+
+The frozen-source full suite passed all 3,531 VFX tests (874 + 873 + 892 + 892),
+with 84 existing Pillow deprecation warnings. The longest process took 1,194.29 seconds.
+Complete-source Ruff and final diff checks passed.

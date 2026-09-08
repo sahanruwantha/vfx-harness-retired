@@ -37,9 +37,10 @@ def measured_artifact(bound, claim, expected, monkeypatch, invoke):
                 value["reference_usable"] = expected_label != "unjudgeable"
                 if expected_label == "fail":
                     value["observations"] = [{
-                        "id": "form-miss", "kind": "qualitative", "axis": "form", "property": "shape",
+                        "id": "form-miss", "kind": "qualitative", "axis": claim.axis, "property": claim.property,
                         "observation": "Form differs", "action": "Correct form", "moment": 7,
-                        "roles": ["subject"], "claim_id": claim.id, "check_ids": ["form-v1"], "panel_ids": [],
+                        "roles": list(claim.subject_roles), "claim_id": claim.id,
+                        "check_ids": list(claim.binding_ids), "panel_ids": [],
                     }]
                 result = invoke(layout, claim, lambda _, value=value: response(value), qualification_claims=(),
                                 calibration_claims=(replace(claim, qualification=None),),
@@ -55,7 +56,7 @@ def measured_artifact(bound, claim, expected, monkeypatch, invoke):
                 ))
             cases.append(critic_calibration.Case(control, control, expected_label, tuple(rows),
                                                 "known_good" if control == "irrelevant" else None))
-        request = {"schema": publication.SUITE_SCHEMA, "suite": "form-v1", "claim_id": claim.id,
+        request = {"schema": publication.SUITE_SCHEMA, "suite": expected["suite"], "claim_id": claim.id,
                    "profile": profile, "cases": [asdict(case) for case in cases], "budgets": expected["budgets"]}
         path = layout.write_report("selected-calibration-suite", request)
         selected = {"path": path.relative_to(bound.shot).as_posix(),
