@@ -1249,3 +1249,34 @@ and execution-guard tests passed in 9.42 seconds. This change stays within the n
 concern and adds no package/import dependency changes; the full suite was not rerun.
 No SDK change, ARC test or paid inference was needed. Independent measured-suite evaluation,
 selected layer/debt qualification and the production critic cutover remain outstanding.
+
+## Independent native calibration evaluator
+
+Added a read-only VFX evaluator for labeled native model trials. Each trial binds report
+bytes and the canonical Flynn inspection snapshot; the evaluator reopens original images,
+verifies terminal model identity/configuration, and derives its verdict from the submitted
+tool call and recorded observation. It reconstructs the claimed prompt, scope, tool and
+image representation from the actual request. Changing and rehashing only a report cannot
+change what the evaluator measures.
+
+All six architecture-defined control types and at least two distinct trials per case are
+required. The evaluator derives all five rate numerators and denominators, including
+pairwise repeatability and irrelevant-change comparisons. Score changes within the same
+pass band remain errors. Unusable-reference mistakes and missing owned defect citations
+are additional explicit blockers. Duplicate trials, missing coverage, mixed invocation
+profiles, changed source bytes and invalid baseline labels refuse evaluation.
+
+The new `vfx-harness.critic-calibration-evaluation/v1` report cannot be consumed as an
+admission artifact: qualification and acceptance are always false. Labels and declared
+irrelevance remain authored ground truth, and the minimum sample count is a mechanical
+coverage rule, not statistical proof. Reviewed held-out labels, qualification publication,
+layer/debt ownership and production critic cutover remain outstanding.
+
+Focused validation passed all 87 evaluator, admission and transport tests in 40.80 seconds.
+The metric tests run the actual DeepSeek adapter against mocked HTTP and reopen its real
+SQLite records, including injected bad votes, scope leakage and score instability.
+No paid inference or SDK change was needed; ARC was not touched.
+
+Frozen-source full validation passed all 3,498 VFX tests (865 + 865 + 884 + 884),
+with 84 existing Pillow deprecation warnings. The longest test process took 1,099.50
+seconds. Complete-source Ruff and final diff checks passed.

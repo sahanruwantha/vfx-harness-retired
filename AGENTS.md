@@ -654,6 +654,13 @@ existing qualification artifact. Require a configuration-reporting model and com
 durable dispatched fingerprint; preserve failed attempts and spend. Trial reports never
 mark qualification verified or grant acceptance. Passing fixture trials is not a measured
 qualification suite, and implicit layer/debt placeholders remain inadmissible (ADR-0012).
+Native calibration evaluation reopens hash-selected reports, read-only Flynn journal
+snapshots and original images. Derive decisions from recorded tool results and check the
+recorded request against its claimed invocation. Require all six control types, repeated
+distinct trials and an explicit irrelevant-change baseline; never treat missing samples
+as zero errors. Preserve metric numerators/denominators, score instability, citation errors
+and unusable-reference errors. A measurement report does not publish qualification or
+select layer/debt authority (ADR-0012).
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial

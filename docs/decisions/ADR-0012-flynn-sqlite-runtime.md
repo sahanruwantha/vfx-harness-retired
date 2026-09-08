@@ -640,3 +640,43 @@ send identical HTTP request bodies, including bounded claim context. They also i
 configuration/claim substitution, missing accounting metadata, implicit or out-of-scope
 claims, oversized context, conflicting modes and scripted adapters. No live model is
 qualified by these offline fixtures.
+
+### Independent calibration measurement
+
+`evaluation.critic_calibration.evaluate` accepts authored case labels, five explicit error
+budgets and exact trial source selections. Each selection binds the owning run root,
+report bytes and a canonical digest of Flynn's read-only journal inspection. The evaluator
+reopens those records and the original images; it never consumes a supplied metric or
+model-authored qualification decision. This API is an offline reader, not a public shot
+operation or a qualification publisher.
+
+Every trial must be terminal, contain one completed model operation and no state commit,
+and have matching recorded provider/model/configuration. The submitted tool arguments
+must equal the recorded observation. The actual request must match the claimed prompt,
+scope, tool schema, image order, original image bytes and representation. Rehashing a
+substituted report does not replace those independent journal checks. Repeated trials
+must use identical images and distinct SDK run identities; one result cannot be counted
+twice through two file locators.
+
+The suite requires known-good, identical-image, targeted-defect, near-threshold,
+irrelevant-change and unusable-reference controls, each with at least two trials.
+Identical images are checked by bytes. An irrelevant control names a separately judged
+baseline with the same expected label, changes its candidate, and preserves other image
+inputs. Labels and the asserted irrelevance remain authored ground truth; this evaluator
+does not establish their scientific validity or statistical sufficiency.
+
+False passes count passing decisions on failing/unjudgeable labels. False failures count
+any non-passing decision on passing labels. Repeatability compares every unordered pair
+within a case; irrelevant-change sensitivity compares every trial against every baseline
+trial. Those comparisons retain score, pass/fail/abstention, reference usability and scope
+leakage, so score drift within one passing band remains visible. Scope leakage counts
+trials with observations outside their declared claim, axis, property, roles, moments or
+evidence bindings. Every metric records its numerator and denominator; empty coverage
+refuses instead of reporting zero.
+
+Failure to identify an unusable reference and a failing decision without an owned defect
+citation are explicit additional blockers. The output is
+`vfx-harness.critic-calibration-evaluation/v1`, with `within_budgets` derived from all checks,
+and qualification/acceptance always false. It is deliberately not an admission artifact.
+Reviewed ground truth, sufficient held-out coverage, qualification publication, and exact
+layer/debt authority selection remain required before production critic cutover.
