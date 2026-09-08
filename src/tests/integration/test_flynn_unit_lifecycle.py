@@ -35,7 +35,7 @@ host['bvfx_role'] = 'comp'
 """
 
 
-def _authority(root, monkeypatch, expected=1):
+def _authority(root, monkeypatch, expected=1, configure=None):
     monkeypatch.delenv(run_artifacts.ENV, raising=False)
     _candidate(root)
     layers = json.loads((root / "layers.json").read_text())
@@ -59,6 +59,8 @@ def _authority(root, monkeypatch, expected=1):
     }
     _write(root / "requirements.json", requirements)
     _write(root / "obligations.json", {"schema": "vfx-harness.obligations/v1", "obligations": []})
+    if configure is not None:
+        configure(root)
     layout = run_artifacts.create(root, RUN_ID)
     publish_current(root, layout, outcome="clean_with_deferred")
     monkeypatch.setenv(run_artifacts.ENV, str(layout.root))

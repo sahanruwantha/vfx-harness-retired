@@ -19,19 +19,23 @@ from vfx_harness.agents import unit_scope
 from vfx_harness.agents.builder import (
     candidate_script,
     evidence,
+    flynn_image_capture,
     prior,
     revalidate,
     unit_evaluation,
     unit_runtime,
+    verdicts,
     verify,
 )
 from vfx_harness.agents.builder.attempt_guard import AttemptBoundBlenderSession, UnitAttemptGuard
 from vfx_harness.agents.builder.models import _RESET, BuildUnpassed
+from vfx_harness.domain.image_debts import image_contract_debt_cards, unpaid_image_contract_debts
 from vfx_harness.domain.semantic_roles import match_semantic
+from vfx_harness.evidence import checks, image_check_operation
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import unit_completion_state, unit_state
 from vfx_harness.orchestration.authority_selection_transaction import durably_ensure_real_directory
-from vfx_harness.orchestration.builder_execution_fence import builder_execution_fenced
+from vfx_harness.orchestration.builder_execution_fence import require_builder_execution_lease
 from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
 
 
@@ -135,7 +139,9 @@ def _prepare_feedback(request: flynn.InferenceRequest) -> flynn.InferenceRequest
     return replace(request, observation=feedback, images=images)
 
 
-def _model_grants(*, inspected: bool, written: bool, observed: str | None, remaining: dict) -> tuple[str, ...]:
+def _model_grants(*, inspected: bool, written: bool, observed: str | None, remaining: dict,
+                  image_tools=False, captures=0, payments=0, can_pay=False, unpaid=False,
+                  write_captures=None) -> tuple[str, ...]:
     """Grant only phases that leave room for observation, freeze and cold replay."""
     def fits(inference, external):
         return (
@@ -145,25 +151,40 @@ def _model_grants(*, inspected: bool, written: bool, observed: str | None, remai
         )
 
     grants = ["abstain"]
-    if not inspected and not written and fits(5, 4):
+    extra = captures + payments
+    write_extra = (captures if write_captures is None else write_captures) + payments
+    if not inspected and not written and fits(5 + extra, 4 + extra):
         grants.append("inspect_unit")
-    if (not written or observed is not None) and fits(4, 3):
+    if (not written or observed is not None) and fits(4 + write_extra, 3 + write_extra):
         grants.append("write_candidate")
     if written and observed is None and fits(3, 2):
         grants.append("probe_candidate")
-    if observed is not None and fits(2, 1):
+    if image_tools and written:
+        if fits(3 + max(1, captures) + payments, 2 + max(1, captures) + payments):
+            grants.append("capture_unit_frame")
+        if can_pay and fits(3 + captures + max(1, payments), 2 + captures + max(1, payments)):
+            grants.append("propose_checks")
+    if observed is not None and not unpaid and not captures and fits(2, 1):
         grants.append("freeze_candidate")
     return tuple(grants)
 
 
-@builder_execution_fenced
-async def build_unit(
+async def build_unit(shot, m, script_rel, prior_paths, session, *, fence_lease=None, **kwargs):
+    """Retain the live lease through native tools and the completion transaction."""
+    require_builder_execution_lease(fence_lease, shot.folder)
+    with fence_lease.operation(shot.folder):
+        return await _build_unit(shot, m, script_rel, prior_paths, session,
+                                 fence_lease=fence_lease, **kwargs)
+
+
+async def _build_unit(
     shot,
     m,
     script_rel,
     prior_paths,
     session,
     *,
+    fence_lease,
     inference: flynn.InferenceAdapter,
     limits: flynn.RunLimits,
     max_context_characters: int = 12000,
@@ -193,8 +214,16 @@ async def build_unit(
     attempt_guard.check("start Flynn executable unit")
     if selected_authority != attempt_guard.selected_authority:
         raise ValueError("Flynn selected authority must be the exact attempt's snapshot")
-    if evidence._unit_requires_raster(shot, active_unit, selected_authority=selected_authority):
-        raise ValueError("Flynn executable unit cannot pay raster or visual judgment debts")
+    raster = evidence._unit_requires_raster(shot, active_unit, selected_authority=selected_authority)
+    for point in active_unit.evaluation.judges:
+        required = verdicts._required_claims_at(active_unit, point.frame)
+        if not required or any(claim.authority != "executable_required" for claim in required):
+            raise ValueError("Flynn requires executable claims covering every judge frame; "
+                             "visual judgment is unsupported")
+    if getattr(active_unit, "provisional_requirement_ids", ()):
+        raise ValueError("Flynn executable unit cannot decide provisional visual requirements")
+    if raster and evidence._unit_raster_mode(active_unit) != "eevee":
+        raise ValueError("Flynn image capture requires the unit's canonical medium to be EEVEE")
     if active_unit.construction.route != "procedural":
         raise ValueError("Flynn executable unit currently requires procedural construction")
     completion_authorization = unit_completion_state.authorize_completed_units_for_layer(
@@ -227,6 +256,7 @@ async def build_unit(
     session = AttemptBoundBlenderSession(session, attempt_guard)
     frozen = None
     observed = None
+    observed_payments = None
     written = False
     inspected = False
     owned_candidate = None
@@ -244,11 +274,43 @@ async def build_unit(
         elif candidate_digest() != owned_candidate:
             raise ValueError("Flynn candidate changed outside this attempt; preserve the newer bytes and stop")
 
-    async def guard_dispatch(_context):
+    debts = image_contract_debt_cards(active_unit)
+    payment_batch_size = image_check_operation.SCHEMA["properties"]["checks"]["maxItems"]
+
+    def payment_state():
+        rows = checks.load_image_contract_payment_rows(
+            shot.folder, selected_authority=selected_authority,
+        ) if debts else []
+        return unpaid_image_contract_debts(debts, rows), hashlib.sha256(
+            json.dumps(rows, sort_keys=True).encode()
+        ).hexdigest()
+
+    def require_freeze_evidence():
+        unpaid, fingerprint = payment_state()
+        if unpaid:
+            raise ValueError("freeze requires paid image-contract debts: " + ", ".join(
+                f"{debt.id}@{debt.frame}" for debt in unpaid
+            ))
+        if fingerprint != observed_payments:
+            raise ValueError("image payments changed after observation; probe the current evidence before freeze")
+        if images is not None:
+            images.require_current_images()
+            for record in images.state["image_artifacts"].values():
+                images.reopen(record)
+
+    async def guard_dispatch(context):
         check_current()
+        if context.call.name in {"freeze_candidate", "canonical_replay"}:
+            require_freeze_evidence()
         return flynn.GuardDecision(True, "exact VFX unit claim and owned candidate remain current")
 
+    images = flynn_image_capture.UnitImageCapture(
+        shot=shot, attempt_guard=attempt_guard, fence_lease=fence_lease, session=session,
+        prior_paths=prior_paths, check_candidate=check_current,
+    ) if raster else None
     guards = (flynn.DispatchGuard("current-vfx-builder-attempt", guard_dispatch),)
+    if images is not None:
+        guards += (images.guard,)
 
     def prepare(request):
         check_current()
@@ -259,6 +321,13 @@ async def build_unit(
             "candidate_written": written,
             "observed_candidate_sha256": observed,
             "frozen_candidate_sha256": frozen,
+            "unpaid_image_debts": [debt.as_dict() for debt in payment_state()[0]],
+            "current_image_handles": [
+                {key: record[key] for key in ("handle", "frame", "candidate_sha256", "sha256")}
+                for record in images.state["image_artifacts"].values()
+                if record["role"] == "live_candidate" and written
+                and record["candidate_sha256"] == candidate_digest()
+            ] if images is not None else [],
         }, sort_keys=True)
         objective = packet.text + "\n\n" + request.objective + "\n\nExecution phase: " + phase
         if written:
@@ -339,9 +408,10 @@ async def build_unit(
         return json.dumps({"candidate_sha256": expected})
 
     async def replay(arguments):
-        nonlocal observed
+        nonlocal observed, observed_payments
         check_current()
         before = candidate_digest()
+        payments_before = payment_state()[1]
         if frozen is not None and before != frozen:
             raise ValueError("frozen Flynn candidate bytes changed; no replay or publication authorized")
         canonical_verdicts.clear()
@@ -371,7 +441,10 @@ async def build_unit(
             execution_guard=attempt_guard,
         )
         check_current()
+        if payment_state()[1] != payments_before:
+            raise ValueError("image payments changed during replay; no current observation can be recorded")
         observed = before
+        observed_payments = payments_before
         return json.dumps(
             {"candidate_sha256": before, "canonical": result, "verdicts": canonical_verdicts,
              "replay_errors": replay_errors}, sort_keys=True
@@ -383,6 +456,7 @@ async def build_unit(
         requested = _arguments(arguments, "sha256")["sha256"]
         if requested != observed or requested != candidate_digest():
             raise ValueError("freeze requires the exact observed candidate digest; probe the current candidate")
+        require_freeze_evidence()
         frozen = requested
         return json.dumps({"frozen_sha256": frozen})
 
@@ -390,8 +464,19 @@ async def build_unit(
         attempt_guard.check("record Flynn unit abstention")
         return json.dumps({"abstention": _arguments(arguments, "reason")["reason"]})
 
+    async def image_operation(arguments, *, tool):
+        nonlocal observed, observed_payments
+        if frozen is not None:
+            raise ValueError("frozen image evidence cannot be changed")
+        observed = observed_payments = None
+        return await tool.execute(arguments)
+
+    image_tools = [replace(tool, execute=partial(image_operation, tool=tool))
+                   for tool in images.tools] if images is not None else []
+
     tools = flynn.ToolBroker(
         [
+            *image_tools,
             flynn.Tool(
                 "inspect_unit", _validate_arguments, inspect, observation=True, external_action=True,
                 description=(
@@ -461,18 +546,35 @@ async def build_unit(
             tools=tools,
             evaluator=_ObservationEvaluator(),
             run=run,
-            grants=("inspect_unit", "write_candidate", "probe_candidate", "freeze_candidate", "abstain"),
+            grants=("inspect_unit", "write_candidate", "probe_candidate", "freeze_candidate", "abstain",
+                    *(tool.name for tool in image_tools)),
             prepare_request=prepare,
             guards=guards,
         )
         while frozen is None:
             # Leave one deterministic invocation and external dispatch for cold replay.
             remaining = run.remaining()
+            unpaid, fingerprint = payment_state()
+            if observed is not None and fingerprint != observed_payments:
+                observed = None
+            current_images = [record for record in images.state["image_artifacts"].values()
+                              if record["role"] == "live_candidate" and written
+                              and record["candidate_sha256"] == candidate_digest()] if images is not None else []
+            captured_frames = {record["frame"] for record in images.state["image_artifacts"].values()
+                               if record["role"] == "live_candidate"} if images is not None else set()
+            needed_frames = {debt.frame for debt in unpaid} | captured_frames
+            missing_frames = needed_frames - {record["frame"] for record in current_images}
             grants = _model_grants(
                 inspected=inspected, written=written, observed=observed, remaining=remaining,
+                image_tools=images is not None, captures=len(missing_frames),
+                payments=(len(unpaid) + payment_batch_size - 1) // payment_batch_size,
+                can_pay=bool(current_images), unpaid=bool(unpaid),
+                write_captures=len(needed_frames),
             )
             step = await runtime.step(
-                "Inspect the unit, write and probe its candidate, then freeze the observed digest.",
+                "Inspect the unit, write and probe its candidate, then freeze the observed digest."
+                + (" Capture declared frames and pay required image debts with propose_checks. "
+                   "Probe again after captures or payment changes before freezing." if raster else ""),
                 grants=tuple(grants),
             )
             if step.candidate.call.name == "abstain":
@@ -493,6 +595,7 @@ async def build_unit(
         )
         canonical = json.loads(result.candidate.output)["canonical"]
         check_current()
+        require_freeze_evidence()
         if candidate_digest() != frozen:
             raise ValueError("Flynn frozen candidate changed before publication")
         unit_runtime.publish_candidate_script(
@@ -509,8 +612,10 @@ async def build_unit(
             ledger.mark(m, canonical)
             run.finish("unit_evaluation_failed")
             return ledger
-        # Executable-only checkpoints bind the replay script bytes, never an invented raster.
-        ledger.mark(m, "passed", best={"round": 0, "mean": 0.0, "render": script_rel})
+        # The existing replay verifier owns the canonical render, not the diagnostic capture.
+        primary = next(verdict for point, verdict in canonical_verdicts if point[0] == m.frame) if raster else None
+        ledger.mark(m, "passed", best={"round": 0, "mean": primary["mean"] if primary else 0.0,
+                                      "render": primary["render"] if primary else script_rel})
         receipt = unit_evaluation.publish_unit_evaluation_outcome(
             shot.folder,
             str(layer.id),

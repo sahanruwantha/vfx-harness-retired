@@ -461,3 +461,25 @@ observations. This does not change VFX acceptance or publish a state revision. P
 canonical replay feedback retains its measured-point selection. Unsupported or malformed
 Flynn result envelopes fail closed. This connects the builder's feedback preparation
 to the native capture/payment seam; raster probe/freeze integration remains outstanding.
+
+## Native executable image-unit lifecycle
+
+Explicit native unit execution now supports procedural units whose required claims are
+executable at every judge point and whose raster medium is EEVEE. Other raster media,
+required qualitative decisions and generated construction are refused before execution.
+The executor retains the live builder lease through capture, payment and completion.
+Default production raster routing remains unchanged pending its separate layer/driver gate.
+
+Capture and payment tools share the exact candidate/prefix guard with the engine. Their
+execution clears the previous probe, including when a payment is refused. Phase grants
+reserve room for the remaining captures, payment batches, probe, freeze and canonical
+replay; rewriting a captured candidate also reserves recapture. Bounded context lists
+current candidate handles by frame and the unpaid debt cards, without retaining old images.
+
+The probe binds both the candidate and the current payment-row fingerprint. Payment
+changes during replay refuse the observation. Freeze reopens unpaid debts and image bytes
+and requires the probed fingerprint. The same check runs before canonical dispatch and
+again before script publication. A substitution between freeze and canonical dispatch
+refuses before that external operation or script publication. Existing VFX replay and
+evaluation/completion readers remain authoritative; the ledger records their canonical
+primary-frame render and measured score. Flynn publishes no unit state revision.

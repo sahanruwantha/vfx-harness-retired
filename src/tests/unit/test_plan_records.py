@@ -53,6 +53,7 @@ from vfx_harness.domain.plan_records import (
     read_selected_bundle_hash,
 )
 from vfx_harness.domain.unit_evaluation_receipts import ReplayInputBinding
+from vfx_harness.domain.work_units.capabilities import GLOBAL_SCENE_CAPABILITIES
 from vfx_harness.evaluation.plan_gate import _check_meta_records
 from vfx_harness.evidence.checks import acceptance_evidence
 from vfx_harness.observability import run_artifacts
@@ -676,7 +677,8 @@ def _unit_provides(layer: dict) -> dict[str, list[str]]:
     for unit in layer.get("stages") or []:
         roles = [str(role) for role in (unit.get("mutates") or {}).get("roles") or []]
         for capability in unit.get("provides") or []:
-            provided.setdefault(str(capability), set()).update(roles)
+            if capability in GLOBAL_SCENE_CAPABILITIES:
+                provided.setdefault(str(capability), set()).update(roles)
     return {key: sorted(values) for key, values in sorted(provided.items())}
 
 

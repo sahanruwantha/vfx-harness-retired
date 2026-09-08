@@ -248,6 +248,13 @@ operation.
   image inputs, outside the bounded text context; replace images with each selected
   observation instead of accumulating them. A tool refusal is not a satisfied execution
   assessment, and neither assessment authorizes VFX acceptance (ADR-0012).
+- When explicitly selected, the native Flynn unit executor supports procedural EEVEE
+  image contracts with required executable claims covering every judge frame. Capture
+  and payment invalidate the prior probe; freeze and canonical dispatch reopen payment
+  identity and captured bytes. Reserve recapture after candidate rewrites and retain
+  budget for probing, freeze and independent replay. The ledger names the canonical
+  render, never a diagnostic capture or a script masquerading as an image. Default
+  raster routing remains a separate migration gate (ADR-0012).
 - Native builder inspection reconstructs the selected prior chain from an empty scene,
   evaluates the active unit frame and exposes only owned and read-only predecessor
   objects. Prepare and recheck replay-source bindings through the inspection report;

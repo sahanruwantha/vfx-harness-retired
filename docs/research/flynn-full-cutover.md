@@ -988,3 +988,45 @@ reopen required payments at freeze. Prove a genuinely accepted executable image-
 unit and injected unpaid/stale cases through existing cold canonical replay and receipt
 readers before enabling production raster routing. Qualitative and generated construction
 need their own explicit migrations; they must not fall through to an implicit critic call.
+
+## Native executable image-unit completion
+
+The explicit Flynn unit executor now retains the live builder lease and registers the
+cold capture/payment capability alongside its candidate and claim guard. It admits only
+procedural execution, required executable claims at every judge point and EEVEE raster
+evidence. Production raster dispatch remains unchanged for the next layer/driver gate.
+
+Capture and payment clear the previous probe. The next request contains current frame
+handles and unpaid debt cards, while image transport remains limited to the latest
+observation. Phase grants account for missing captures, payment batches and the remaining
+probe/freeze/canonical path; a rewrite of a captured candidate reserves recapture too.
+Batch size comes from the shared payment tool schema.
+
+The probe binds the candidate and payment-row fingerprint, refusing a payment change
+during replay. Freeze reopens payment coverage, the fingerprint and captured bytes;
+canonical dispatch and pre-publication repeat that check. The canonical verifier supplies
+the ledger's primary-frame image and score. Existing evaluation and completion readers
+reopen the actual artifacts; the Flynn journal has no unit state commits.
+
+The real Blender fixture creates an emissive mesh through the permitted artifact API,
+declares geometry and illumination plus visibility evidence, and pays an image contract
+against a cold pre-unit adversary. Normal execution and recapture followed by a fresh
+probe both earn completion through the real VFX readers without a model critic. Replacing
+captured bytes after freeze refuses before canonical external spend and publishes no
+candidate. Additional injections cover unpaid evidence and payment changes during probe,
+during freeze inference and after freeze. This proves the unit seam, not full-shot quality
+or readiness of qualitative/generated construction routes.
+
+Fixture preparation exposed a test-helper defect: unit-local geometry/illumination
+capabilities were being copied into the global capability map, whose vocabulary contains
+only camera. The helper now projects only declared global capabilities; unit capabilities
+remain on the real materialized unit and pass ordinary validation. No production gate was
+relaxed to admit the fixture.
+
+All 78 focused tests passed, with 42 existing Pillow `getdata` deprecation warnings.
+Complete-source Ruff and diff checks passed. No SDK change or paid inference was needed.
+
+The full frozen-source regression passed all 3,390 tests in four isolated processes
+(848 + 848 + 847 + 847), with 64 existing Pillow deprecation warnings. Final complete-source
+Ruff and diff checks passed. The next gate is default raster dispatch through layer and
+driver completion; this unit result does not claim that gate or complete Claude removal.
