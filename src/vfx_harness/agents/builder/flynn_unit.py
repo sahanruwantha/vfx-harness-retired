@@ -205,14 +205,29 @@ async def build_unit(
     observed = None
     written = False
     inspected = False
+    owned_candidate = None
     canonical_verdicts = []
     replay_inputs = []
 
     def candidate_digest():
         return hashlib.sha256(read_real_file(shot.folder, candidate, "Flynn candidate")).hexdigest()
 
+    def check_current():
+        attempt_guard.check("check Flynn unit dispatch authority")
+        if owned_candidate is None:
+            if candidate.exists() or candidate.is_symlink():
+                raise ValueError("Flynn candidate exists outside this attempt's writes; preserve it and stop")
+        elif candidate_digest() != owned_candidate:
+            raise ValueError("Flynn candidate changed outside this attempt; preserve the newer bytes and stop")
+
+    async def guard_dispatch(_context):
+        check_current()
+        return flynn.GuardDecision(True, "exact VFX unit claim and owned candidate remain current")
+
+    guards = (flynn.DispatchGuard("current-vfx-builder-attempt", guard_dispatch),)
+
     def prepare(request):
-        attempt_guard.check("prepare Flynn request")
+        check_current()
         feedback = _selected_feedback(request.observation)
         phase = json.dumps({
             "initial_scene_inspected": inspected,
@@ -250,22 +265,27 @@ async def build_unit(
         )
 
     async def write(arguments):
-        nonlocal observed, written
+        nonlocal observed, written, owned_candidate
+        check_current()
         if frozen is not None:
             raise ValueError("frozen Flynn candidate cannot be edited")
+        source = _arguments(arguments, "source")["source"]
+        expected = hashlib.sha256(source.encode("utf-8")).hexdigest()
         candidate_script.write_scratch_candidate(
             shot.folder,
             candidate,
-            _arguments(arguments, "source")["source"],
+            source,
             attempt_guard,
         )
+        owned_candidate = expected
+        check_current()
         observed = None
         written = True
-        return json.dumps({"candidate_sha256": candidate_digest()})
+        return json.dumps({"candidate_sha256": expected})
 
     async def replay(arguments):
         nonlocal observed
-        attempt_guard.check("start Flynn candidate replay")
+        check_current()
         before = candidate_digest()
         if frozen is not None and before != frozen:
             raise ValueError("frozen Flynn candidate bytes changed; no replay or publication authorized")
@@ -295,8 +315,7 @@ async def build_unit(
             selected_authority=selected_authority,
             execution_guard=attempt_guard,
         )
-        if candidate_digest() != before:
-            raise ValueError("Flynn candidate changed during replay; freeze requires a fresh observation")
+        check_current()
         observed = before
         return json.dumps(
             {"candidate_sha256": before, "canonical": result, "verdicts": canonical_verdicts,
@@ -305,7 +324,7 @@ async def build_unit(
 
     async def freeze(arguments):
         nonlocal frozen
-        attempt_guard.check("freeze Flynn candidate")
+        check_current()
         requested = _arguments(arguments, "sha256")["sha256"]
         if requested != observed or requested != candidate_digest():
             raise ValueError("freeze requires the exact observed candidate digest; probe the current candidate")
@@ -372,6 +391,7 @@ async def build_unit(
         initial_state=json.dumps(attempt_guard.claim.as_dict(), sort_keys=True),
         limits=limits,
     ) as run, _usage_report(run, layout, attempt_guard.claim.claim_id):
+        check_current()
         ledger = unit_runtime.start_unit_runtime(
             shot,
             m,
@@ -387,6 +407,7 @@ async def build_unit(
             run=run,
             grants=("inspect_unit", "write_candidate", "probe_candidate", "freeze_candidate", "abstain"),
             prepare_request=prepare,
+            guards=guards,
         )
         while frozen is None:
             # Leave one deterministic invocation and external dispatch for cold replay.
@@ -409,12 +430,13 @@ async def build_unit(
             run=run,
             grants=("canonical_replay",),
             prepare_request=prepare,
+            guards=guards,
         )
         result = await canonical_runtime.step(
             "Independently replay the frozen unit candidate from the accepted prefix."
         )
         canonical = json.loads(result.candidate.output)["canonical"]
-        attempt_guard.check("publish Flynn evaluated candidate")
+        check_current()
         if candidate_digest() != frozen:
             raise ValueError("Flynn frozen candidate changed before publication")
         unit_runtime.publish_candidate_script(

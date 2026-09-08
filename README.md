@@ -447,6 +447,10 @@ credentials. No Claude fallback exists in approach review or global planning.
 The opt-in executable-unit engine lives in `agents/builder/flynn_unit.py`. Development
 callers bind its `inference` and `limits` arguments and pass it as `unit_builder` to
 `build_layer`; the existing layer controller still owns checkpointing and completion.
+Both model and canonical dispatch recheck the live unit claim and exact candidate
+revision before tool/external budget reservations. The engine refuses pre-existing,
+replaced, deleted or linked scratch candidates instead of adopting them. Writes bind
+the requested source digest, and uncertain writes never become a fresh observation.
 The scripted lifecycle gate runs real confined Blender and the production unit receipt
 writers without model calls:
 

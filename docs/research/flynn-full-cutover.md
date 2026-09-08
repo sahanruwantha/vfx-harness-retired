@@ -776,3 +776,37 @@ frozen throughout the full run; only that test fixture changed. Complete-source 
 diff checks and the isolated installed native imports passed. Thus every collected
 case is covered by a passing run; the original full invocation itself exited nonzero
 for the explicitly resolved fixture errors.
+
+## Executable builder ownership before production cutover
+
+Inspection of the opt-in native builder found two gaps: unit-claim checks happened
+inside handlers after tool/external budget reservations, and the engine reread its
+scratch file without retaining the exact revision it had written. A newer candidate
+could therefore reach a later probe or be overwritten before the frozen-digest check
+became relevant.
+
+`builder/flynn_unit.py` now registers the same exact claim/candidate DispatchGuard on
+its model and scripted canonical runtimes. Request preparation and ledger startup
+also check that identity. Ownership begins with an absent candidate and advances to
+the SHA-256 of requested source bytes only after a completed write. The handler then
+reopens and verifies those bytes. It never establishes ownership by hashing whatever
+happens to be present. Missing, linked and substituted candidates fail closed, and a
+revoked claim consumes no additional tool/external reservation. Inference usage is
+still recorded, and a failure after actual dispatch remains an uncertain external
+operation in SQLite.
+
+This is a prerequisite fix, not the production builder cutover: the existing native
+engine still supports procedural executable-only units and refuses raster/judgment
+debts and generated-asset construction. Existing VFX canonical replay, evaluation and
+completion publishers remain unchanged. No SDK source, ARC or production shot changed;
+Flynn already supplies the required generic guard and durable reservation contracts.
+
+Validation: 34 dispatch, budget, real confined Blender lifecycle and dependent-layer
+tests passed. The final nine-case dispatch module also passed after adding canonical
+revocation between scripted inference and dispatch (35 distinct tested cases in total).
+The cases preserve foreign bytes, reject deleted/symlinked candidates before external
+spend, refuse pre-existing candidates before ledger startup, retain uncertain writer
+effects, and prove that frozen candidate substitution never reaches canonical publication.
+Complete-source Ruff and diff checks passed. This changes one existing builder module
+without import-order or package-boundary changes; the complete repository suite was not
+rerun, and no live inference was performed.

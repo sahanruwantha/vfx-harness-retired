@@ -226,6 +226,13 @@ operation.
   stay outside the gate workspace. Declared client blockers in the compiler-preserved
   `plans/ownership_mapping.json` are plan-wide gate blockers, never informational prose
   that a clean gate may ignore (ADR-0012, HIR-0252).
+- The native executable builder registers its exact claim/candidate dispatch guard on
+  both model and scripted canonical runtimes. Recheck before inference and before tool
+  reservations, retain the requested source digest after each completed write, and
+  refuse pre-existing or externally changed candidate bytes. A failed or uncertain
+  write never grants a new observation or permission to adopt replacement bytes.
+  SQLite records execution; existing VFX replay and completion receipts retain acceptance
+  authority (ADR-0012).
 - Unit-plan generation uses a fresh Flynn SQLite session under the live builder
   execution fence and exact planning claim. Publication writes only the selected unit's
   plan and integrity stamp while holding that claim. The session previews the current

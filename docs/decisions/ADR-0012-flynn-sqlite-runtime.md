@@ -373,3 +373,16 @@ rollback. A clean preview remains an observation, never an SDK state commit or V
 acceptance. Model responses no longer make the transaction adopt whatever bytes are
 present at session exit. The selected unit's knowledge and reference tools, confined
 spikes, required authority context and latest feedback remain bounded by this session.
+
+## Executable builder dispatch ownership
+
+The native executable unit engine registers one claim/candidate guard on both its
+model runtime and its scripted canonical runtime. The same check precedes request
+preparation and ledger startup. A claim revoked during inference refuses dispatch
+before tool or external reservations, while inference usage remains recorded.
+Candidate ownership starts absent and advances only to the digest of source this
+attempt requested and successfully wrote. Pre-existing, changed, missing or linked
+candidate bytes refuse continuation; neither replay nor a subsequent write silently
+adopts them. The final publisher still checks the exact frozen bytes and independent
+VFX evaluation. This uses Flynn's existing DispatchGuard contract; it introduces no
+new SDK acceptance semantics and does not enable raster or generated-asset units.
