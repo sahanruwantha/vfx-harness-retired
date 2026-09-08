@@ -179,6 +179,10 @@ class Settings:
     materialization_model: str = VISION_MODEL
     materialization_seconds: int = 600
     materialization_output_tokens: int = 32768
+    executable_builder_model: str = VISION_MODEL
+    executable_builder_seconds: int = 600
+    executable_builder_output_tokens: int = 32768
+    executable_builder_max_steps: int = 12
     builder_model: str = DEFAULT_EXECUTION_MODEL
     script_model: str = DEFAULT_EXECUTION_MODEL
     reviewer_model: str = VISION_MODEL
@@ -223,6 +227,10 @@ class Settings:
             materialization_model=_text("VFXH_MATERIALIZATION_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
             materialization_seconds=_int("VFXH_MATERIALIZATION_SECONDS", 600),
             materialization_output_tokens=_int("VFXH_MATERIALIZATION_OUTPUT_TOKENS", 32768),
+            executable_builder_model=_text("VFXH_EXECUTABLE_BUILDER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
+            executable_builder_seconds=_int("VFXH_EXECUTABLE_BUILDER_SECONDS", 600),
+            executable_builder_output_tokens=_int("VFXH_EXECUTABLE_BUILDER_OUTPUT_TOKENS", 32768),
+            executable_builder_max_steps=_int("VFXH_EXECUTABLE_BUILDER_MAX_STEPS", 12, minimum=4),
             builder_model=_text("VFXH_BUILDER_MODEL", execution_model),
             script_model=_text("VFXH_SCRIPT_MODEL", execution_model),
             reviewer_model=_text("VFXH_REVIEWER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),

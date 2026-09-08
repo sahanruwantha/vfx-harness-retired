@@ -844,3 +844,41 @@ inputs, including substitution during report publication, yield no model observa
 Complete-source Ruff and diff checks passed. This change stays within the existing
 builder module and its dependency graph; the full repository suite was not rerun.
 No live inference was performed.
+
+## Production procedural executable builder
+
+The builder facade now exports `unit_dispatch.build_unit`. It requires the live shot
+fence and exact building claim, then chooses by typed construction and the shared
+`_unit_requires_raster` predicate. Procedural executable-only units use Flynn by default;
+raster/judgment-debt or generated-asset units retain their explicit existing engine.
+This choice occurs before execution. Native configuration, provider, budget and replay
+failures propagate without a retry or fallback through Claude.
+
+The native path requires its claim's active run, the supported DeepSeek vision model
+and `DEEPSEEK_API_KEY`. Independent executable-builder settings default to 600 seconds,
+32768 output tokens and 12 total steps including scripted canonical replay (minimum
+four). Unpriced USD caps refuse before provider construction. The provider is created
+inside the retained execution lease and the core engine rechecks its exact unit/candidate
+guards. Existing script publication, cold replay, checkpoint, unit completion and layer
+finalization readers retain all acceptance decisions.
+
+Focused validation passed 12 tests. The default production layer path (without a custom
+unit_builder injection) executed the dependency fixture through a scripted
+provider, actual confined Blender, canonical replay and real unit/layer publishers.
+It earned all completion receipts, reopened the passing layer publication, and retained
+five guarded journal operations per unit with no SDK state commits. Other tests verify
+exact argument/budget forwarding, credential/model/USD/step/phase/run/resume refusal
+before provider construction, explicit raster routing and propagation of native budget
+failure without calling the legacy engine. A temporary installed package resolves the
+public builder entry point to the new dispatcher. No paid inference or production shot
+was used, and SDK source and ARC were unchanged.
+
+Remaining: native raster/image-payment and visual-judgment builder capabilities,
+generated-asset execution, critic sessions and retirement of their Claude dependencies.
+
+The full 3,343-test regression executed against frozen production source: 3,341 passed
+and two source-inspection assertions failed because they still inspected the facade's
+former raster implementation. Those assertions now inspect the owning raster engine
+and also pin the public dispatcher identity; both complete affected modules then passed
+all 47 tests. No runtime fix was needed. The full run emitted 15 Pillow `getdata`
+deprecation warnings. Complete-source Ruff and diff checks passed.

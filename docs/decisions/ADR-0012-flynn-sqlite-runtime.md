@@ -398,3 +398,18 @@ a prefix count and the inspection report identity; the complete ordered input
 identities stay in that run report. A leftover Blender scene, successful prose or an
 inspection report cannot establish unit acceptance. This is a VFX instrument built
 on Flynn's existing tool, guard and journal contracts.
+
+## Production executable-unit routing
+
+The public builder facade now selects its engine through `builder/unit_dispatch.py`.
+A procedural unit that the shared typed evidence predicate classifies as executable-only
+runs through Flynn. Other construction/evidence requirements keep their explicit existing
+engine. This is domain routing before execution, never a response to failure: native
+provider, budget, claim and replay errors propagate without invoking Claude.
+
+The dispatcher requires the exact building claim, selected authority and live shot fence.
+Native execution additionally requires the claim's active run, the supported DeepSeek
+model and credentials, finite output/time limits and at least four total steps including
+scripted canonical replay. Unpriced USD caps refuse before provider construction. The
+existing engine retains its candidate guards and canonical evaluator, and the layer
+controller still publishes and independently reopens unit and layer completion receipts.

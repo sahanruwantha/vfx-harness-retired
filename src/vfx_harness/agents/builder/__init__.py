@@ -150,12 +150,12 @@ from vfx_harness.agents.builder.state import _RECIPES_USED as _RECIPES_USED
 from vfx_harness.agents.builder.stops import (
     compile_hypothesis_falsification_stop as compile_hypothesis_falsification_stop,
 )
+from vfx_harness.agents.builder.unit_dispatch import build_unit as build_unit
 from vfx_harness.agents.builder.unit_finalize import _metric_report as _metric_report
 from vfx_harness.agents.builder.unit_finalize import (
     _persist_journal_and_finalize_script as _persist_journal_and_finalize_script,
 )
 from vfx_harness.agents.builder.unit_finalize import _publish_unit_outcome as _publish_unit_outcome
-from vfx_harness.agents.builder.unit_loop import build_unit as build_unit
 from vfx_harness.agents.builder.verdicts import _composition_judge_unit as _composition_judge_unit
 from vfx_harness.agents.builder.verdicts import _executable_unit_verdict as _executable_unit_verdict
 from vfx_harness.agents.builder.verdicts import _judge_unit_or_layer as _judge_unit_or_layer

@@ -208,8 +208,10 @@ def test_classify_cannot_express_uses_bare_debt_ids() -> None:
 
 def test_build_unit_freeze_gate_is_wired() -> None:
     from vfx_harness.agents import builder
+    from vfx_harness.agents.builder import unit_dispatch, unit_loop
 
-    source = inspect.getsource(builder.build_unit)
+    assert builder.build_unit is unit_dispatch.build_unit
+    source = inspect.getsource(unit_loop.build_unit)
     assert "freeze_refusal" in source
     assert "skip_canonical" in source
 

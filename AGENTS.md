@@ -226,6 +226,12 @@ operation.
   stay outside the gate workspace. Declared client blockers in the compiler-preserved
   `plans/ownership_mapping.json` are plan-wide gate blockers, never informational prose
   that a clean gate may ignore (ADR-0012, HIR-0252).
+- Production unit routing derives from typed construction and evidence requirements.
+  Procedural units requiring only executable evidence use Flynn with the exact active
+  building claim, live shot fence and explicit step, output-token and wall-time caps.
+  Native failures propagate; never retry through the other engine. Raster and generated
+  construction routes retain their explicit existing engine until migrated. The layer
+  controller and VFX receipt readers retain checkpoint/completion authority (ADR-0012).
 - Native builder inspection reconstructs the selected prior chain from an empty scene,
   evaluates the active unit frame and exposes only owned and read-only predecessor
   objects. Prepare and recheck replay-source bindings through the inspection report;

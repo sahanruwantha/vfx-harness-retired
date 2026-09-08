@@ -38,7 +38,15 @@ model); `VFXH_UNIT_PLAN_SECONDS` and `VFXH_UNIT_PLAN_OUTPUT_TOKENS` default to 6
 `reports/unit-planning-session-*.json` and its SQLite journal under `checkpoints/flynn/`.
 A clean preview is not publication: the outer VFX transaction runs the terminal gate
 and stamps or rolls back only the pair it still owns. There is no automatic retry or
-session resume. Builders and critics still use their existing Claude sessions.
+session resume. Procedural units requiring only executable evidence now use Flynn through the default
+builder dispatcher. `VFXH_EXECUTABLE_BUILDER_MODEL` defaults to `DEEPSEEK_MODEL` (or
+Flynn's vision model). The `VFXH_EXECUTABLE_BUILDER_SECONDS`,
+`VFXH_EXECUTABLE_BUILDER_OUTPUT_TOKENS` and `VFXH_EXECUTABLE_BUILDER_MAX_STEPS` limits
+default to 600 seconds, 32768 tokens and 12 total steps including scripted canonical
+replay (minimum four). This path requires `DEEPSEEK_API_KEY`, refuses unpriced USD caps,
+and never retries a failed native attempt through Claude. Its usage reports select
+claim-owned SQLite journals under `checkpoints/flynn/`. Raster and generated-asset
+units and critics retain their existing Claude sessions until their native migration.
 When both Claude credentials are configured, the harness selects the subscription token
 (`CLAUDE_CODE_OAUTH_TOKEN`) by default and withholds `ANTHROPIC_API_KEY` from the SDK; set
 `VFXH_CREDENTIAL=api_key` to bill API credits instead. `VFXH_PLAN_MAX_TURNS` (default 12)

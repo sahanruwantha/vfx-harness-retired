@@ -439,14 +439,21 @@ planner runs in the root-owner process, uses 32,000-character bounded text conte
 and stores complete phase snapshots outside its gate workspace. It requires explicit
 wall-time and output-token caps (`VFXH_GLOBAL_PLAN_SECONDS`, default 600, and
 `VFXH_GLOBAL_PLAN_OUTPUT_TOKENS`, default 32768). It also refuses unpriced USD caps.
-Builder and critic roles are still being migrated; the Claude dependency
+Raster/generated-asset builder and critic roles are still being migrated; the Claude dependency
 remains for those roles until their native gates pass. Preflight still checks those
 remaining roles and confinement; a successful preflight does not verify DeepSeek
 credentials. No Claude fallback exists in approach review or global planning.
 
-The opt-in executable-unit engine lives in `agents/builder/flynn_unit.py`. Development
-callers bind its `inference` and `limits` arguments and pass it as `unit_builder` to
-`build_layer`; the existing layer controller still owns checkpointing and completion.
+The production dispatcher selects `agents/builder/flynn_unit.py` for procedural units
+whose typed requirements need only executable evidence. Other evidence/construction
+routes retain their existing engine. Flynn failures never fall back to Claude.
+`VFXH_EXECUTABLE_BUILDER_MODEL` defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
+`VFXH_EXECUTABLE_BUILDER_SECONDS`, `VFXH_EXECUTABLE_BUILDER_OUTPUT_TOKENS` and
+`VFXH_EXECUTABLE_BUILDER_MAX_STEPS` default to 600, 32768 and 12. Steps include the
+scripted canonical invocation; at least four are required. `DEEPSEEK_API_KEY` is required,
+and unpriced USD caps refuse before provider construction. The existing layer controller
+owns checkpointing and completion. Development callers may still inject `unit_builder`
+with explicit inference and limits for offline tests.
 Both model and canonical dispatch recheck the live unit claim and exact candidate
 revision before tool/external budget reservations. The engine refuses pre-existing,
 replaced, deleted or linked scratch candidates instead of adopting them. Writes bind

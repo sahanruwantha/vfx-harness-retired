@@ -1,7 +1,7 @@
-"""Opt-in executable-only Flynn unit engine, using the existing VFX publishers.
+"""Executable-only Flynn unit engine, using the existing VFX publishers.
 
-Bind ``inference`` and ``limits`` with functools.partial and pass this engine as
-build_layer's unit_builder. Flynn is installed from the private SDK main branch.
+The production dispatcher supplies the provider and bounded limits. Development
+callers may bind those explicitly through build_layer's unit_builder injection.
 This engine cannot resume an interrupted attempt or certify layer completion.
 """
 

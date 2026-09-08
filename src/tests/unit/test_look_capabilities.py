@@ -431,8 +431,10 @@ def test_live_unit_render_is_guarded_by_typed_raster_need() -> None:
     import inspect
 
     from vfx_harness.agents import builder
+    from vfx_harness.agents.builder import unit_dispatch, unit_loop
 
-    source = inspect.getsource(builder.build_unit)
+    assert builder.build_unit is unit_dispatch.build_unit
+    source = inspect.getsource(unit_loop.build_unit)
     assert "raster_required = _unit_requires_raster(" in source
     assert "selected_authority=selected_authority" in source
     assert "if raster_required" in source
