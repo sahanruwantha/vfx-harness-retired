@@ -810,3 +810,37 @@ effects, and prove that frozen candidate substitution never reaches canonical pu
 Complete-source Ruff and diff checks passed. This changes one existing builder module
 without import-order or package-boundary changes; the complete repository suite was not
 rerun, and no live inference was performed.
+
+## Native builder cold-prefix inspection
+
+The opt-in builder's `inspect_unit` previously applied an evaluation barrier to the
+worker's current scene without reconstructing accepted priors. That scene could hold
+unaccepted objects or omit an accepted producer, so its observation disagreed with
+what later canonical verification would execute.
+
+Inspection now prepares the exact ordered replay inputs, resets to an empty scene,
+applies the shared preamble, executes the shared prior replay path, sets the unit
+frame, then applies the evaluation barrier and reads objects. It rechecks script and
+construction dependency bindings after replay and after recording its report. Missing,
+failed or substituted inputs propagate as execution failures, leaving no successful
+observation. Owned objects and read-only predecessor objects are selected through the
+shared semantic-role matcher; seeing predecessors does not expand mutation permission.
+
+The new `vfx-harness.unit-inspection/v1` report binds the actual claim, frame, complete
+ordered script/dependency identities and scoped objects. Bounded model feedback carries
+only those scoped objects, prefix count and report locator/digest. Both explicitly
+carry `acceptance_authorized: false`. Existing VFX replay and completion receipts
+remain the acceptance boundary; the production builder and visual-debt migration
+remain outstanding. SDK source, ARC and production shots were unchanged.
+
+Validation passed 35 builder budget, dispatch, real confined Blender lifecycle and
+dependent-layer tests, plus four new inspection failure cases (39 distinct tests).
+The lifecycle fixture starts with an unaccepted object and a wrong current frame;
+inspection removes the object and selects the actual unit frame. A direct Blender
+frame read was then verified in all four canonical lifecycle cases. The dependent
+chain verifies that the consumer sees its accepted producer, excludes unrelated
+objects and records exact ordered prior paths. Missing, failed and substituted
+inputs, including substitution during report publication, yield no model observation.
+Complete-source Ruff and diff checks passed. This change stays within the existing
+builder module and its dependency graph; the full repository suite was not rerun.
+No live inference was performed.

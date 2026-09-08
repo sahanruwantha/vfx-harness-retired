@@ -26,7 +26,7 @@ from vfx_harness.agents.builder import (
     verify,
 )
 from vfx_harness.agents.builder.attempt_guard import AttemptBoundBlenderSession, UnitAttemptGuard
-from vfx_harness.agents.builder.models import BuildUnpassed
+from vfx_harness.agents.builder.models import _RESET, BuildUnpassed
 from vfx_harness.domain.semantic_roles import match_semantic
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import unit_completion_state, unit_state
@@ -251,18 +251,48 @@ async def build_unit(
 
     async def inspect(arguments):
         nonlocal inspected
-        attempt_guard.check("inspect Flynn unit")
+        check_current()
+        root = shot.folder.expanduser().absolute()
+        prepared = prior._prepare_artifact_replay_inputs(root, [
+            (path.expanduser().absolute().relative_to(root).as_posix(), path)
+            for path in prior_paths
+        ])
+        session.run(_RESET)
+        session.run(prior._preamble(shot))
+        prior._run_prior_paths(session, prior_paths, prepared)
+        session.run(f"bpy.context.scene.frame_set({int(m.frame)})", journal=False)
         session.run(prior._ARTIFACT_EVALUATION_BARRIER, journal=False)
         objects = revalidate._scene_object_manifest(session)
+        for item in prepared:
+            prior.require_prepared_artifact_replay_input_unchanged(item)
+        check_current()
+        own_objects = {name: role for name, role in objects.items()
+                       if match_semantic(role, active_unit.mutates.roles)}
+        predecessor_roles = tuple(role for row in card["predecessor_interfaces"]
+                                  for role in row["semantic_roles"])
+        predecessor_objects = {name: role for name, role in objects.items()
+                               if match_semantic(role, predecessor_roles)}
+        inputs = [{"script_path": item.executed.script_path, "sha256": item.executed.script_sha256,
+                   "dependencies": [{"kind": dep.kind, "path": dep.path, "sha256": dep.sha256}
+                                    for dep in item.executed.dependencies]} for item in prepared]
+        record = {
+            "schema": "vfx-harness.unit-inspection/v1", "claim": attempt_guard.claim.as_dict(),
+            "frame": int(m.frame), "replay_inputs": inputs, "objects": own_objects,
+            "predecessor_objects": predecessor_objects, "acceptance_authorized": False,
+        }
+        report = attempt_guard.publish("record Flynn unit inspection", lambda: layout.write_report(
+            f"flynn-unit-inspection-{attempt_guard.claim.claim_id}", record,
+        ))
+        for item in prepared:
+            prior.require_prepared_artifact_replay_input_unchanged(item)
+        check_current()
         inspected = True
-        return json.dumps(
-            {
-                "objects": {
-                    name: role for name, role in objects.items() if match_semantic(role, active_unit.mutates.roles)
-                }
-            },
-            sort_keys=True,
-        )
+        return json.dumps({
+            "frame": int(m.frame), "objects": own_objects, "predecessor_objects": predecessor_objects,
+            "prior_count": len(prepared), "report": str(report.relative_to(layout.root)),
+            "report_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
+            "acceptance_authorized": False,
+        }, sort_keys=True)
 
     async def write(arguments):
         nonlocal observed, written, owned_candidate
@@ -340,8 +370,9 @@ async def build_unit(
             flynn.Tool(
                 "inspect_unit", _validate_arguments, inspect, observation=True, external_action=True,
                 description=(
-                    'Read initial scoped scene objects once, before writing a candidate. This '
-                    'does not execute a candidate.'
+                    'Reset to an empty scene, replay the exact accepted prefix, and inspect owned '
+                    'and read-only predecessor objects at the unit frame. Once, before writing; '
+                    'never executes a candidate or grants acceptance.'
                 ),
             ),
             flynn.Tool(

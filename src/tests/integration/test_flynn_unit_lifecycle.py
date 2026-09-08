@@ -105,6 +105,15 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
 
         async def generate(self, request):
             assert request.max_output_tokens == 3
+            if self.requests == 1:
+                observation = json.loads(request.observation)
+                assert observation["objects"] == observation["predecessor_objects"] == {}
+                assert observation["frame"] == 240 and observation["prior_count"] == 0
+                assert session.run("RESULT = bpy.context.scene.frame_current", journal=False)["result"] == 240
+                assert not observation["acceptance_authorized"]
+                inspection = layout.root / observation["report"]
+                assert hashlib.sha256(inspection.read_bytes()).hexdigest() == observation["report_sha256"]
+                assert json.loads(inspection.read_text())["replay_inputs"] == []
             if self.requests:
                 assert "inspect_unit" not in request.allowed_tools
                 assert {"write_candidate", "probe_candidate", "freeze_candidate"} & set(request.allowed_tools)
@@ -120,6 +129,11 @@ def test_flynn_unit_earns_completion_only_from_canonical_evidence(tmp_path, monk
     with builder_execution_fence(tmp_path) as lease, BlenderSession(
         artifacts_dir=layout.scratch / "worker", cwd=tmp_path,
     ) as session:
+        session.run("import bpy\n"
+                    "host = bpy.data.objects.new('stale_unaccepted_host', None)\n"
+                    "bpy.context.scene.collection.objects.link(host)\n"
+                    "host['bvfx_role'] = 'comp'\n"
+                    "bpy.context.scene.frame_set(1)\n")
         ledger = asyncio.run(flynn_unit.build_unit(
             shot, milestone, script_rel, [], session,
             inference=PhaseAdapter(), limits=flynn.RunLimits(5, 5, 4, 180, output_tokens=12),

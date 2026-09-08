@@ -386,3 +386,15 @@ candidate bytes refuse continuation; neither replay nor a subsequent write silen
 adopts them. The final publisher still checks the exact frozen bytes and independent
 VFX evaluation. This uses Flynn's existing DispatchGuard contract; it introduces no
 new SDK acceptance semantics and does not enable raster or generated-asset units.
+
+## Native builder inspection source
+
+`inspect_unit` reconstructs the selected prefix with the same prepared-input,
+empty-scene setup and artifact replay helpers used by canonical verification. It
+sets the active unit's frame before the evaluation barrier and scoped object read.
+Prepared script and construction dependencies must still match after replay and
+report publication. The model receives owned objects, read-only predecessor objects,
+a prefix count and the inspection report identity; the complete ordered input
+identities stay in that run report. A leftover Blender scene, successful prose or an
+inspection report cannot establish unit acceptance. This is a VFX instrument built
+on Flynn's existing tool, guard and journal contracts.

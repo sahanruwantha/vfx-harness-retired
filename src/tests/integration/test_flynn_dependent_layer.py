@@ -139,13 +139,29 @@ def test_flynn_dependency_order_and_native_composition(tmp_path, monkeypatch, fa
             if unit.id == "consumer" and fault == "consumer_failure" else _program(unit.id)
         )
         scripted = flynn.ScriptedAdapter([
+            flynn.ToolCall("inspect_unit", "{}"),
             flynn.ToolCall("write_candidate", json.dumps({"source": program})),
             flynn.ToolCall("probe_candidate", "{}"),
             flynn.ToolCall("freeze_candidate", json.dumps({"sha256": hashlib.sha256(program.encode()).hexdigest()})),
         ])
 
         class Adapter:
+            calls = 0
+
             async def generate(self, request):
+                self.calls += 1
+                if self.calls == 2:
+                    observed = json.loads(request.observation)
+                    expected = {"producer": "comp.producer"} if unit.id == "consumer" else {}
+                    assert observed["objects"] == {}
+                    assert observed["predecessor_objects"] == expected
+                    assert observed["prior_count"] == len(dispatched) - 1
+                    record = json.loads((layout.root / observed["report"]).read_text())
+                    assert [row["script_path"] for row in record["replay_inputs"]] == [
+                        path.relative_to(tmp_path).as_posix() for path in args[3]
+                    ]
+                    assert all(row["sha256"] for row in record["replay_inputs"])
+                    assert not record["acceptance_authorized"]
                 if unit.id == "consumer":
                     consumer_calls.append(request)
                 card = json.loads(request.objective.split("[unit-scope]\n", 1)[1].split("\n\n[unit-plan]", 1)[0])
@@ -161,7 +177,7 @@ def test_flynn_dependency_order_and_native_composition(tmp_path, monkeypatch, fa
                         assert f"UNIT_PLAN_SENTINEL_{other.id}" not in request.objective
                 return await scripted.generate(request)
 
-        return await flynn_unit.build_unit(*args, **kwargs, inference=Adapter(), limits=flynn.RunLimits(4, 4, 3, 180))
+        return await flynn_unit.build_unit(*args, **kwargs, inference=Adapter(), limits=flynn.RunLimits(5, 5, 4, 180))
 
     with BlenderSession(artifacts_dir=layout.scratch / "worker", cwd=tmp_path) as session:
         expectation = (
@@ -208,7 +224,7 @@ def test_flynn_dependency_order_and_native_composition(tmp_path, monkeypatch, fa
             assert consumer_calls == []
             assert len(list((layout.checkpoints / "flynn").glob("*.sqlite"))) == 2
         else:
-            assert len(consumer_calls) == 3
+            assert len(consumer_calls) == 4
         return
     assert ledger.status(layer.as_milestone({})) == "passed"
     publication = require_current_layer_publication(tmp_path, layer, selected)

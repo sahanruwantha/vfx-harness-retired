@@ -226,6 +226,12 @@ operation.
   stay outside the gate workspace. Declared client blockers in the compiler-preserved
   `plans/ownership_mapping.json` are plan-wide gate blockers, never informational prose
   that a clean gate may ignore (ADR-0012, HIR-0252).
+- Native builder inspection reconstructs the selected prior chain from an empty scene,
+  evaluates the active unit frame and exposes only owned and read-only predecessor
+  objects. Prepare and recheck replay-source bindings through the inspection report;
+  a missing, changed or failed prior yields no successful observation. The report
+  retains the complete replay inputs outside bounded model context and grants no
+  acceptance authority (ADR-0012).
 - The native executable builder registers its exact claim/candidate dispatch guard on
   both model and scripted canonical runtimes. Recheck before inference and before tool
   reservations, retain the requested source digest after each completed write, and

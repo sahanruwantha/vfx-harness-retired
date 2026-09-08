@@ -451,6 +451,10 @@ Both model and canonical dispatch recheck the live unit claim and exact candidat
 revision before tool/external budget reservations. The engine refuses pre-existing,
 replaced, deleted or linked scratch candidates instead of adopting them. Writes bind
 the requested source digest, and uncertain writes never become a fresh observation.
+`inspect_unit` starts from an empty scene and replays the selected prefix at the unit
+frame. It reports owned objects and read-only predecessor objects, with a digest-bound
+run report containing the exact replay inputs. It never treats a leftover worker scene
+as accepted state or grants acceptance from an inspection.
 The scripted lifecycle gate runs real confined Blender and the production unit receipt
 writers without model calls:
 
