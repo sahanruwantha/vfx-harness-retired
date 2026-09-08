@@ -7,6 +7,11 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Native Flynn budget, inference and cancellation failures retain their terminal
+  causes. The root run selects an inherited stage's exact published stop instead of
+  conflicting with it during terminalization; original exceptions and usage survive
+  ([ADR-0012](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)).
+
 - Procedural executable Workbench solid image units now use Flynn in production.
   Cold captures and image payments use the unit's canonical render medium; wrong-medium
   captures refuse before publishing handles. Independent replay and completion receipts

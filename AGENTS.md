@@ -220,6 +220,12 @@ operation.
   interruption authority unavailable. The authoritative interrupted reader re-evaluates the
   archive and derives zero legal transactions and no retry, resume, or dispatch authority
   (HIR-0172).
+- Native Flynn failure types supply terminal diagnostics, never recovery authority.
+  An inherited stage propagates its exact published stop on the original exception;
+  the root selects that stop without reclassifying it under a different command.
+  Preserve the exception and its usage. Cooperative cancellation without recorded
+  signal intent remains failed, and no native exception grants retry or resume
+  permission (ADR-0012).
 - Global draft, verify and repair execute through Flynn in the live root-owner process.
   An inherited run directory or on-disk claim is not an ownership capability; native global
   dispatch requires the current process-bound lease for that exact run. Draft phase snapshots

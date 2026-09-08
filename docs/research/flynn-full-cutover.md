@@ -1413,3 +1413,40 @@ remaining builder loops/options/drain/facade, guard adapters, legacy planning an
 Blender tool servers, recipe adapter, sandbox hooks and message logger. Full removal
 of those paths, native failure-to-stop projection, explicit layer/debt/acceptance
 qualification selection and reviewed live validation remain required by the goal.
+
+## Native terminal causes and child-stop preservation
+
+The root run boundary now derives `model_budget_exhausted` from Flynn budget
+exhaustion and `model_session_failure` from native inference failures, including
+rejected responses. Explicit phase causes remain authoritative. Generic contract
+errors and tool proposal rejections stay distinct from model transport failures.
+Cooperative cancellation without recorded signal intent is a failed run with
+`cancelled_without_intent`; it cannot issue an interruption receipt.
+
+Failure injection also reproduced a publication collision: a child build boundary
+published an immutable stop, then the root planning boundary classified the same
+exception under its own command and tried to publish a different stop. Both the
+normal failure publication and its fallback conflicted, masking the native error.
+The inherited boundary now carries its exact successful publication on the original
+exception. The root consumes it, preserving the original exception, SDK usage,
+child stop bytes and child audit bytes. No existing file is adopted for another
+exception. The new inherited-failure test failed on this collision before the fix.
+
+The conservative engineering classification still names the missing phase-specific
+recovery contract. Typed SDK failures identify a cause; they do not prove a legal
+retry, resume, environment recovery or domain acceptance transaction.
+
+Initial focused validation passed **70 tests** across native failure injection,
+run ownership, run artifacts and terminal-cause vocabulary. These are offline
+boundary tests, not live provider validation. Complete-source Ruff and public CLI
+loading passed. VFX still installs SDK main at
+`189a4776559a09120111f6557ee14731993874c6`; the SDK checkout is unchanged and no
+ARC synchronization or paid inference was needed.
+
+Full regression passed against frozen production source: **3,574 tests**, 121
+Pillow deprecation warnings. Logs: `/tmp/vfx-spike-regression-yxhlw116`;
+shards 0/1/2 passed 889 tests each (22/22/40 warnings), and shard 3 passed
+907 tests (37 warnings). The full run includes the strengthened child-stop test
+requiring unchanged stop and audit bytes through root terminalization. This is a
+migration checkpoint; remaining builders, qualification selection and live
+end-to-end proof still prevent declaring the cutover complete.

@@ -803,3 +803,24 @@ selection is implemented. Native admission checks each actual observer/focus/pan
 invocation, so a credential for one cannot silently qualify another prompt or phase.
 The remaining authority selection and reviewed live calibration are explicit cutover
 work, not a reason to invoke the retired critic runtime.
+
+### Native failure causes and inherited stop propagation
+
+The public run boundary preserves Flynn's typed failure cause: `BudgetExhausted`
+maps to `model_budget_exhausted`, and `InferenceFailure` (including rejected model
+responses) maps to `model_session_failure`. Existing explicit phase causes take
+precedence. Generic contract violations and tool proposal refusals are not inferred
+to be provider failures. Cooperative cancellation without a recorded signal intent
+is `cancelled_without_intent`, never an interruption receipt.
+
+An inherited stage attaches its successfully published stop to the same exception
+before propagating it. The root selects that exact immutable stop; reclassifying the
+exception under the root command used to conflict with the child's publication and
+prevent terminalization. Neither exception identity nor SDK usage is replaced. A
+stop found on disk alone is not adopted as authority for another failure.
+
+These are diagnostic and publication guarantees, not new recovery permissions.
+An otherwise unclassified native failure retains the conservative engineering stop
+for its missing phase-specific recovery contract. It authorizes no retry, resume,
+environment repair or VFX acceptance. VFX still owes those exact transaction
+contracts where production recovery is required; SDK exceptions cannot supply them.

@@ -11,6 +11,7 @@ structured run instead of writing ad hoc shot-root output.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import mimetypes
@@ -20,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import flynn_agents_sdk as flynn
 
 from vfx_harness.domain.environment_results import EnvironmentResult
 from vfx_harness.domain.run_status import RUN_STATUS_SCHEMA, RunStatusV2
@@ -544,12 +547,19 @@ def publish_exception_stop(
 
 def terminal_record(exc: BaseException) -> tuple[str, int, str, str]:
     """Classify a failed invocation without reducing distinct stops to exit code 1."""
-    if isinstance(exc, KeyboardInterrupt):
+    if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
         # A cancellation with no recorded signal intent is not an operator interruption.
         return "failed", 130, "cancelled_without_intent", "cancelled without a recorded signal intent"
 
     code = exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) else 1
     cause = str(getattr(exc, "terminal_cause", "") or "")
+    # Flynn owns the failure type and durable accounting. This boundary names the
+    # observed cause only; it cannot derive retry/resume or environment recovery
+    # authority from an exhausted budget or a failed provider invocation.
+    if not cause and isinstance(exc, flynn.BudgetExhausted):
+        code, cause = 3, "model_budget_exhausted"
+    elif not cause and isinstance(exc, flynn.InferenceFailure):
+        code, cause = 3, "model_session_failure"
     metadata = getattr(exc, "run_metadata", {})
     outcome = str(metadata.get("outcome") or "") if isinstance(metadata, dict) else ""
     if not cause and outcome:

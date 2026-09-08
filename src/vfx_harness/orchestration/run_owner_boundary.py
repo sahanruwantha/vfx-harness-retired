@@ -278,7 +278,13 @@ def invocation(
             raise
         except BaseException as exc:
             _state, code, cause, _detail = run_artifacts.terminal_record(exc)
-            run_artifacts.publish_exception_stop(inherited, command, exc, code=code, terminal_cause=cause)
+            # Carry this exact publication with the same in-process exception.
+            # Reclassifying it at the root's command creates a different immutable
+            # stop and prevents terminalization. Never adopt a stop merely because
+            # a file exists, and never replace the exception (or its SDK usage).
+            exc.stop_envelope = run_artifacts.publish_exception_stop(
+                inherited, command, exc, code=code, terminal_cause=cause,
+            )
             raise
         return
     shot = Path(shot_folder).expanduser().resolve()

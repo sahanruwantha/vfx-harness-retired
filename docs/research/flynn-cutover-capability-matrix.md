@@ -22,7 +22,7 @@ VFX installs SDK main `189a4776559a09120111f6557ee14731993874c6` over SSH.
 | Composed layer look and judgment debts | Native images and verdict observations | VFX derives exact typed debt claims; measured qualification can bind them explicitly | Select current plan-backed qualification for exact claims; retain independent layer look, replay groups and receipts |
 | Shot acceptance | Native critic mechanism available | VFX replays accepted chain and publishes typed acceptance outcome; critic inference is native, unbound scope remains unresolved | Bind acceptance-owned qualification and prove complete passing moment coverage with qualified live judgment |
 | Blender, recipe and planning tool registration | Native tool schemas, validation and structured text/image results | Some shared operations already native; legacy MCP decorators/servers remain | Remove obsolete adapters after remaining consumers migrate; preserve semantic scope and confinement |
-| Logging, configuration, installation and preflight | Provider-neutral usage/identity/termination, known/unknown/not-applicable accounting | Native session reports exist alongside Claude message readers, credentials, defaults and dependency | Remove remaining Claude integration; verify native error-to-stop classification, fresh install, provider preflight and honest usage reporting |
+| Logging, configuration, installation and preflight | Provider-neutral usage/identity/termination, known/unknown/not-applicable accounting | Native failure causes and exact inherited stop propagation are preserved; session reports coexist with legacy configuration | Remove remaining Claude integration; provide phase-specific recovery contracts where needed; verify fresh install, provider preflight and honest usage reporting |
 
 The shared critic checkpoint passed all 3,553 regression tests. An AST inventory still
 finds 24 production modules importing the Claude SDK, concentrated in the remaining
@@ -57,10 +57,25 @@ Complete production qualification selection remains owed:
 - Calibrate the actual role prompt, images and provider configuration. Observer, focus,
   evidence-audit and tie-breaker invocations cannot silently inherit each other's proof,
   nor the historical Claude noise measurement. Missing admission refuses the invocation.
+- The current exact prompt fingerprint includes candidate basenames and dynamic
+  evidence values. Define a typed qualification protocol separating its calibrated
+  rubric from variable observations before expecting one credential to work across
+  probe and canonical replay. Preserve exact per-invocation context provenance;
+  dropping fingerprints or normalizing arbitrary prompt text is not a qualification
+  mechanism.
 - Prove qualified live judgments with reviewed controls; fixture passes are not model
   qualification. Unqualified layer/acceptance opinions currently remain unresolved.
 
 ## Shared SDK capability decision
+
+Generated construction has an existing harness-owned staging and guarded promotion
+operation (`unit_construction.resolve_unit_construction`) and descriptor-bound replay
+inputs. Native integration must carry the selected construction pointer and GLB into
+the exact scratch candidate's cold replay and completion source closure, not merely
+pin a live Blender session. Replay prepares construction from the physical script
+path; the separate authority locator does not select that dependency. Prove this
+with a real imported mesh and injected pointer/GLB substitutions before widening
+native routing or removing the legacy builder.
 
 The installed SDK already provides tools, guarded dispatch, required bounded context,
 selected image inputs, distinct observations/evaluations/state updates, durable budgets,
