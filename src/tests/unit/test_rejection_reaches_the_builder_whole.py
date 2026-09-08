@@ -22,6 +22,7 @@ import inspect
 from pathlib import Path
 
 from vfx_harness.blender.tools import misc
+from vfx_harness.evidence import image_check_operation
 from vfx_harness.evidence.checks import Verdict
 
 FRAGILE = (
@@ -56,13 +57,22 @@ def test_a_verdict_with_no_reason_still_says_something() -> None:
 
 def test_the_payment_surface_renders_through_that_function() -> None:
     """Parsed, not grepped: a substring check passes with the call deleted."""
-    tree = ast.parse(Path(inspect.getfile(misc)).read_text(encoding="utf-8"))
+    tree = ast.parse(Path(inspect.getfile(image_check_operation)).read_text(encoding="utf-8"))
     calls = {
         node.func.attr
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     assert "why" in calls
+    adapter = ast.parse(Path(inspect.getfile(misc)).read_text(encoding="utf-8"))
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "image_check_operation"
+        and node.func.attr == "propose_checks"
+        for node in ast.walk(adapter)
+    )
 
 
 def test_no_consumer_in_that_file_subscripts_a_reason_list() -> None:
@@ -73,9 +83,10 @@ def test_no_consumer_in_that_file_subscripts_a_reason_list() -> None:
     defect. A future consumer adding its own `v.reasons[0]` or `[:n]` here fails; prose
     about the defect does not.
     """
-    tree = ast.parse(Path(inspect.getfile(misc)).read_text(encoding="utf-8"))
     sliced = [
         node
+        for module in (misc, image_check_operation)
+        for tree in [ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))]
         for node in ast.walk(tree)
         if isinstance(node, ast.Subscript)
         and isinstance(node.value, ast.Attribute)

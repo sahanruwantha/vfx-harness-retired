@@ -232,6 +232,11 @@ operation.
   Native failures propagate; never retry through the other engine. Raster and generated
   construction routes retain their explicit existing engine until migrated. The layer
   controller and VFX receipt readers retain checkpoint/completion authority (ADR-0012).
+- Native image-payment tools invoke the shared VFX image-check operation, register their
+  returned dispatch guard and supply the exact candidate check. Keep the building claim,
+  live fence, run/unit/parent-chain image identities and artifact bytes current through
+  guarded publication. Payment observations never authorize acceptance; raster routing
+  stays gated until capture, payment and canonical replay are integrated (ADR-0012).
 - Native builder inspection reconstructs the selected prior chain from an empty scene,
   evaluates the active unit frame and exposes only owned and read-only predecessor
   objects. Prepare and recheck replay-source bindings through the inspection report;

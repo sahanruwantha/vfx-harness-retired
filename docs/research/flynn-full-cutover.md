@@ -882,3 +882,42 @@ former raster implementation. Those assertions now inspect the owning raster eng
 and also pin the public dispatcher identity; both complete affected modules then passed
 all 47 tests. No runtime fix was needed. The full run emitted 15 Pillow `getdata`
 deprecation warnings. Complete-source Ruff and diff checks passed.
+
+## Shared image payments and native Flynn transport
+
+The former `propose_checks` body now lives in `evidence.image_check_operation`.
+It imports without Claude, shares one schema and measurement/publication path across
+transports, and returns explicit kept and unpaid ids alongside complete feedback.
+Oversized batches and unknown fields fail validation instead of being silently
+truncated. Existing necessity margins, debt matching, adversary selection and
+runtime evidence publication retain their VFX ownership.
+
+`builder.flynn_image_checks.image_check_tool` binds that operation to a live builder
+lease and exact building claim. It verifies the current run, unit digest, image
+records' run/unit/parent-chain identities and actual bytes before dispatch and
+publication. The caller supplies its current-candidate check and must register the
+returned Flynn dispatch guard. A revoked candidate discards only the staged payment;
+successful results carry `accepted: false` and do not commit SDK state.
+
+Focused validation covers 65 distinct tests: a real VFX authority/claim and guarded
+payment write through a scripted Flynn runtime and SQLite journal; candidate change
+during preparation; wrong run/unit/chain and replaced images; invalid handles and
+settings; argument bounds; existing image provenance, debt, instrument and threshold
+tests. The shared operation also imports in a subprocess that blocks Claude imports.
+These image fixtures are synthetic stills; no new Blender render or paid inference
+was used. SDK source and ARC were unchanged.
+
+Production raster routing remains gated. Next is binding pre-unit adversary capture
+and current candidate render handles to this capability, then proving image-payment
+and canonical replay together before switching raster units to Flynn. Generated
+assets and remaining critic sessions still require migration.
+
+Final validation ran all 3,355 tests against frozen production source: 3,354 passed
+and one source-inspection assertion still looked for rejection rendering in the
+former wrapper. It now inspects the shared operation and proves the production
+wrapper delegates there; the full five-test feedback module passed after correction.
+An earlier interrupted run identified a direct render-path construction; the adapter
+was changed to the central read-only run-artifact resolver, its 23-test architecture
+and native contract check passed, and the full run above started fresh afterward.
+The full run emitted 25 Pillow `getdata` deprecation warnings. Complete-source Ruff,
+diff checks and a final isolated package import with Claude blocked passed.

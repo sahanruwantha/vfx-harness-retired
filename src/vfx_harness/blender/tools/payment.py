@@ -15,8 +15,12 @@ from pathlib import Path
 
 from vfx_harness.blender.session import BlenderSession
 from vfx_harness.domain.atomicity import LIVE_WRITE_FAMILY_RULE, script_write_family_evidence
-from vfx_harness.domain.image_debts import debts_from_dicts, unpaid_image_contract_debts
-from vfx_harness.evidence.checks import load_image_contract_payment_rows
+from vfx_harness.evidence.image_payment_inputs import (
+    _refresh_unpaid_image_debts as _refresh_unpaid_image_debts,
+)
+from vfx_harness.evidence.image_payment_inputs import (
+    _sha256_file as _sha256_file,
+)
 from vfx_harness.observability import run_artifacts
 
 
@@ -67,12 +71,6 @@ def _run_bpy_write_family_error(source: str, unit_scope: Mapping | None) -> str:
         + ". Split or rematerialize the work; semantic role tags cannot make mixed "
         f"mutation legal. {LIVE_WRITE_FAMILY_RULE}"
     )
-
-
-def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _parent_chain_hash(prior_paths: list[Path]) -> str:
     digest = hashlib.sha256()
     for path in prior_paths:
@@ -177,29 +175,3 @@ def _merge_worklist_items(state: dict, new_items: list[str]) -> dict:
     state["items"] = list(dict.fromkeys([*unfinished, *new_items]))
     state["done"] = [item for item in state.get("done", []) if item in state["items"]]
     return state
-
-
-def _refresh_unpaid_image_debts(
-    comparison_state: dict,
-    shot_dir: str | Path | None,
-    *,
-    selected_authority=None,
-) -> list[dict]:
-    """Recompute unpaid image-contract debts from disk after propose_checks / mutation."""
-
-    cards = debts_from_dicts(comparison_state.get("image_debts"))
-    if not cards or not shot_dir:
-        comparison_state["unpaid_image_debts"] = []
-        return []
-    unpaid = [
-        card.as_dict()
-        for card in unpaid_image_contract_debts(
-            cards,
-            load_image_contract_payment_rows(
-                shot_dir,
-                selected_authority=selected_authority,
-            ),
-        )
-    ]
-    comparison_state["unpaid_image_debts"] = unpaid
-    return unpaid

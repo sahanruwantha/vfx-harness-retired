@@ -17,6 +17,9 @@ from vfx_harness.blender.black_frame_report import same_density
 from vfx_harness.blender.tools.images import _b64, _metrics_line, _stats
 from vfx_harness.blender.tools.reports import _DISPLAY_H, _METRIC_H, _SHEET_MAX_W
 from vfx_harness.evidence.compare_panels import mark_pair
+from vfx_harness.evidence.image_payment_inputs import (
+    _candidate_for_proposed_check as _candidate_for_proposed_check,
+)
 from vfx_harness.evidence.metrics import compare as _mcompare
 from vfx_harness.evidence.metrics import look_pair as _lp
 
@@ -245,25 +248,6 @@ def _closed_density_repeat_message(comparison_state: dict, *, role: str, frame: 
         "repeat the sweep. Test a different authorized variable or call "
         "cannot_express_in_scope when no such variable remains."
     )
-
-
-def _candidate_for_proposed_check(
-    check: dict, default_handle: str | None, registry: dict
-) -> tuple[str, dict | None, str]:
-    """Resolve one check's frame-local immutable candidate handle."""
-    handle = str(check.get("after_handle") or default_handle or "")
-    if not handle:
-        return "", None, "after_handle is required on the check or at batch level"
-    record = registry.get(handle)
-    if not isinstance(record, dict) or record.get("role") != "live_candidate":
-        available = sorted(
-            key for key, value in registry.items() if isinstance(value, dict) and value.get("role") == "live_candidate"
-        )[-6:]
-        hint = ", ".join(available) or "none — call render_frame first"
-        return handle, None, f"unknown current-run candidate handle {handle!r}; recent handles: {hint}"
-    return handle, record, ""
-
-
 def _render_setting_writes(script: str) -> set[str]:
     """Return free-form writes to harness-owned renderer configuration.
 

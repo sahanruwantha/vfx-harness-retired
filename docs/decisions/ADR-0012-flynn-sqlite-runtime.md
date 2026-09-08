@@ -413,3 +413,18 @@ model and credentials, finite output/time limits and at least four total steps i
 scripted canonical replay. Unpriced USD caps refuse before provider construction. The
 existing engine retains its candidate guards and canonical evaluator, and the layer
 controller still publishes and independently reopens unit and layer completion receipts.
+
+## Shared image-payment operation
+
+Runtime image checks are a VFX operation, independent of the model transport.
+`evidence.image_check_operation` owns the closed argument schema, immutable handle
+lookup, candidate/adversary measurements, debt matching and result. The existing
+Claude tool delegates to it; the native Flynn image-check capability invokes the
+same operation through the exact building claim's prepared publication transaction.
+Flynn records an observation and external operation, never a unit state commit.
+
+The native capability requires the live builder fence, current run and unit digest,
+the caller's current-candidate check, and unchanged run-owned render bytes. Its
+returned dispatch guard must be registered by the caller. Image capture, adversary
+selection, debt compilation and canonical replay remain harness responsibilities.
+This capability does not enable production raster routing on its own.
