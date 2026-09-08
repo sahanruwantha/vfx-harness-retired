@@ -13,6 +13,7 @@ from flynn_agents_sdk import deepseek
 from PIL import Image
 
 from tests.contract.test_flynn_critic_transport import audit, response
+from tests.critic_calibration_fixtures import measured_artifact
 from vfx_harness.agents import critic_qualification, critic_transport
 from vfx_harness.domain.critic_verdict import critic_verdict_schema
 from vfx_harness.domain.work_units.claims import Claim
@@ -42,7 +43,7 @@ def publish(bound, claim, record):
 
 
 @pytest.fixture
-def qualified(bound):
+def claim_profile(bound):
     q = {"suite": "form-v1", "judge_model": deepseek.VISION_MODEL,
          "prompt": hashlib.sha256(PROMPT.encode()).hexdigest(), "evidence_shape": critic_transport.IMAGE_SHAPE,
          "artifact": "qualification.json", "artifact_sha256": "0" * 64}
@@ -76,6 +77,13 @@ def qualified(bound):
     record = {"schema": 1, **{key: q[key] for key in ("suite", "judge_model", "prompt", "evidence_shape")},
               "passed": True, "budgets": dict.fromkeys(RATES, 0.1), "metrics": dict.fromkeys(RATES, 0),
               "native_invocation_sha256": critic_qualification.digest(profile)}
+    return claim, record
+
+
+@pytest.fixture
+def qualified(bound, claim_profile, monkeypatch):
+    claim, expected = claim_profile
+    record = measured_artifact(bound, claim, expected, monkeypatch, invoke)
     publish(bound, claim, record)
     return claim, record
 

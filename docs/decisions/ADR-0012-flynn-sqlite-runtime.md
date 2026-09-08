@@ -680,3 +680,37 @@ citation are explicit additional blockers. The output is
 and qualification/acceptance always false. It is deliberately not an admission artifact.
 Reviewed ground truth, sufficient held-out coverage, qualification publication, and exact
 layer/debt authority selection remain required before production critic cutover.
+
+### Measured qualification publication and admission
+
+The VFX publication adapter accepts a hash-selected
+`vfx-harness.critic-calibration-suite/v1` request: exact suite/claim identity, invocation
+profile, budgets and labeled cases with pinned trial sources. The request and all case,
+trial and source-reference objects have closed key sets. An owning caller supplies the
+current authority check; the adapter requires the same active run throughout publication.
+It does not invent a review approval for the authored labels or statistical coverage.
+
+Publication reopens the complete suite, computes its evaluation, and refuses failed
+budgets, citation errors or reference-control errors. It writes the evaluation and a
+candidate qualification artifact through run-artifact publication under that run's
+reports. The artifact's schema-1 qualification fields are derived from the measured
+profile/results, with an exact `claim_id` and `calibration_proof` binding the request and
+evaluation bytes. The reader independently re-evaluates their journals/images and compares
+both the selected evaluation and the complete artifact with those derived values.
+
+Native admission now requires this measured proof. Prior native artifacts containing only
+asserted rates refuse; there is no native compatibility fallback. Admission checks the
+claim id as well as the existing model/prompt/image/configuration binding, and reopens the
+proof through observation consumption. A changed proof during inference refuses the
+observation without erasing spending. Rehashing an edited evaluation or changing a rate
+inside an otherwise passed artifact cannot pass source re-derivation.
+
+Publishing a candidate credential does not edit a plan, select a claim's qualification,
+accept a layer or finish a debt. Those remain separate authority transactions. Interrupted
+publication can leave unselected run reports; their presence grants no authority. The
+public production critic remains on its current route until reviewed suite selection and
+the layer/debt ownership wrapper are connected.
+
+Admission fixtures now create actual offline calibration journals and publish their
+measured proof. They no longer manufacture passing metric fields as the positive path.
+These mocked-provider trials exercise the mechanism, not the quality of a live model.

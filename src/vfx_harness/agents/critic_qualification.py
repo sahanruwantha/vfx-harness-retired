@@ -9,6 +9,7 @@ from pathlib import Path
 
 from vfx_harness.domain.work_units import claims as claim_contracts
 from vfx_harness.domain.work_units.claims import Claim
+from vfx_harness.orchestration import critic_qualification_publication
 from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
 
 
@@ -53,6 +54,7 @@ class Admission:
         self.claims = claims
         self.snapshot = digest([asdict(claim) for claim in claims])
         self.references = []
+        self.proofs = []
         for claim in claims:
             if claim.authority != "qualified_qualitative_required" or not claim.qualification:
                 raise ValueError(f"critic claim {claim.id} requires explicit qualitative qualification authority")
@@ -85,6 +87,10 @@ class Admission:
                 raise ValueError(
                     f"critic qualification {claim.id} requires native_invocation_sha256; requalify this judge"
                 )
+            if record.get("claim_id") != claim.id:
+                raise ValueError(f"critic qualification must measure selected claim {claim.id}")
+            critic_qualification_publication.verify(folder, record)
+            self.proofs.append(record)
             self.references.append(
                 {
                     "claim_id": claim.id,
@@ -102,6 +108,8 @@ class Admission:
             payload = read_real_file(self.folder, self.folder / source["path"], "critic qualification")
             if hashlib.sha256(payload).hexdigest() != source["sha256"]:
                 raise ValueError(f"critic qualification {source['claim_id']} bytes changed; reselect current authority")
+        for record in self.proofs:
+            critic_qualification_publication.verify(self.folder, record)
 
     def admit(self, profile: dict) -> None:
         self.check()

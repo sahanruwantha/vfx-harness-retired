@@ -9,15 +9,15 @@ import pytest
 from PIL import Image
 
 from tests.contract.test_critic_qualification_admission import bound as bound
+from tests.contract.test_critic_qualification_admission import claim_profile as claim_profile
 from tests.contract.test_critic_qualification_admission import invoke
-from tests.contract.test_critic_qualification_admission import qualified as qualified
 from tests.contract.test_flynn_critic_transport import response, verdict
 from vfx_harness.evaluation import critic_calibration as calibration
 
 
 @pytest.fixture
-def suite(bound, qualified, request):
-    claim, artifact = qualified
+def suite(bound, claim_profile, request):
+    claim, artifact = claim_profile
     cases = []
     labels = {"known_good": "pass", "identical": "pass", "defective": "fail",
               "near_threshold": "fail", "irrelevant": "pass", "unjudgeable": "unjudgeable"}

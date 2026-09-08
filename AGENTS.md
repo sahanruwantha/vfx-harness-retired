@@ -661,6 +661,15 @@ distinct trials and an explicit irrelevant-change baseline; never treat missing 
 as zero errors. Preserve metric numerators/denominators, score instability, citation errors
 and unusable-reference errors. A measurement report does not publish qualification or
 select layer/debt authority (ADR-0012).
+Native qualification publication takes an exact hash-selected, closed calibration suite
+and a current owning-run check. Re-evaluate the suite before writing its measured artifact;
+never accept supplied metrics or silently adopt a changed source selection. Publication
+creates a run-owned candidate credential and does not mutate selected plans or claims.
+Native admission requires its exact claim id and `calibration_proof`, reopens the suite,
+evaluation, journals and images, and derives the artifact again through consumption.
+Old asserted-rate artifacts without measured proof refuse native admission. Authored label
+review and layer/debt qualification selection remain owning harness responsibilities
+(ADR-0012).
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial

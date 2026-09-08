@@ -1280,3 +1280,30 @@ No paid inference or SDK change was needed; ARC was not touched.
 Frozen-source full validation passed all 3,498 VFX tests (865 + 865 + 884 + 884),
 with 84 existing Pillow deprecation warnings. The longest test process took 1,099.50
 seconds. Complete-source Ruff and final diff checks passed.
+
+## Measured qualification publication
+
+Added the VFX publication adapter for an exact hash-selected calibration suite. It
+re-evaluates the recorded trials, refuses failed measurements, and writes the evaluation
+plus a derived candidate qualification artifact under the owning run. The source selection
+and owning-run check remain current through return; no selected plan or claim is mutated.
+
+Native admission now requires the exact measured claim id and `calibration_proof` binding
+the suite request and evaluation. It re-derives the proof from journal/image sources through
+consumption. Asserted-rate artifacts without this proof refuse, and editing/re-hashing an
+evaluation cannot replace measured results. Source substitution during inference preserves
+usage and refuses observation consumption.
+
+Positive admission fixtures now produce actual offline model-adapter journals and publish
+measured artifacts, replacing their hand-authored pass-rate fields. The 87 admission,
+calibration and transport checks passed in 190.16 seconds; the final publication-specific
+checks passed all 14 tests in 33.16 seconds. No paid inference or SDK change was needed,
+and ARC was not touched.
+
+This publishes a candidate credential, not reviewed label authority or a selected layer/debt
+qualification. Reviewed real-model calibration and the owning production wrapper remain
+cutover gates; no production critic route changed.
+
+Final frozen-source regression passed all 3,512 VFX tests (869 + 869 + 887 + 887),
+with 84 existing Pillow deprecation warnings. The longest process took 1,321.25 seconds.
+Complete-source Ruff and final diff checks passed.
