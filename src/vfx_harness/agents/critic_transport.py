@@ -66,14 +66,19 @@ async def execute(
     images: tuple[tuple[str, str], ...], allow_na: bool,
     inference: flynn.InferenceAdapter, check_current: Callable[[], None],
     qualification_claims: tuple[Claim, ...] = (),
+    calibration_claims: tuple[Claim, ...] = (),
 ) -> dict:
     """Record one bounded opinion; refusals/errors propagate without retry or fallback.
 
     Model observations require matching requested and provider-reported identity.
     Scripted observations remain explicitly not applicable. Neither is a
     qualification credential or proof of the provider's actual model weights.
+    Calibration supplies the same claim semantics without admitting an artifact;
+    it records a trial, never a passed qualification or an accepted claim.
     """
     check_current()
+    if qualification_claims and calibration_claims:
+        raise ValueError("critic calibration and qualification admission are mutually exclusive")
     if any(not isinstance(value, str) or not value.strip()
            for value in (scope_id, phase, requested_provider, requested_model, prompt)):
         raise ValueError("critic requires nonempty scope, phase, requested provider/model and prompt")
@@ -93,8 +98,12 @@ async def execute(
         folder, qualification_claims, model=requested_model, prompt=prompt, image_shape=IMAGE_SHAPE,
         axes=tuple(names), frames=frames,
     ) if qualification_claims else None
+    calibration_semantics = critic_qualification.selected_semantics(
+        calibration_claims, axes=tuple(names), frames=frames,
+    ) if calibration_claims else []
+    calibration_snapshot = critic_qualification.digest([asdict(claim) for claim in calibration_claims])
     scope = {"scope_id": scope_id, "phase": phase, "axes": axes, "frames": frames, "allow_na": allow_na,
-             "claims": admission.semantics if admission else []}
+             "claims": admission.semantics if admission else calibration_semantics}
     packet = flynn.ContextCompiler(max_characters=MAX_CONTEXT_CHARACTERS).compile((
         flynn.ContextItem("critic-prompt", prompt, required=True),
         flynn.ContextItem("critic-scope", json.dumps(scope, sort_keys=True), required=True),
@@ -130,6 +139,9 @@ async def execute(
                    for source, snapshot in zip(sources, snapshots, strict=True)],
     }
     qualification_check = {"status": "not_requested" if admission is None else "pending"}
+    calibration_check = {"status": "pending" if calibration_claims else "not_requested"}
+    configuration_check = qualification_check if admission else calibration_check
+    requires_configuration = admission is not None or bool(calibration_claims)
 
     def current():
         check_current()
@@ -138,6 +150,8 @@ async def execute(
             raise ValueError("native critic owning run changed; observation cannot be consumed")
         if admission is not None:
             admission.check()
+        if critic_qualification.digest([asdict(claim) for claim in calibration_claims]) != calibration_snapshot:
+            raise ValueError("selected calibration claims changed; prepare a new calibration trial")
         for source in sources:
             payload = read_real_file(folder, folder / source["path"], "critic image source")
             if _digest(payload) != source["sha256"]:
@@ -146,10 +160,11 @@ async def execute(
     def prepare(request):
         current()
         prepared = replace(request, images=snapshots, max_output_tokens=LIMITS.output_tokens)
-        if admission is not None:
+        if requires_configuration:
             if not isinstance(inference, flynn.ConfiguredInference):
                 raise ValueError(
-                    "qualified critic requires a configuration-reporting model adapter; scripted cannot qualify"
+                    "critic qualification/calibration requires a configuration-reporting model adapter; "
+                    "scripted cannot qualify"
                 )
             configuration = inference.configuration(prepared)
             if not isinstance(configuration, flynn.InferenceConfiguration):
@@ -161,9 +176,11 @@ async def execute(
             if (configuration.provider, configuration.model) != (requested_provider, requested_model):
                 raise ValueError("critic configured provider/model differs from selected qualification")
             profile = invocation_contract | {"configuration": asdict(configuration)}
-            qualification_check.update(profile=profile, configuration_sha256=configuration.sha256)
-            admission.admit(profile)
-            qualification_check["status"] = "admitted_before_inference"
+            configuration_check.update(profile=profile, configuration_sha256=configuration.sha256,
+                                       native_invocation_sha256=critic_qualification.digest(profile))
+            if admission is not None:
+                admission.admit(profile)
+            configuration_check["status"] = "admitted_before_inference" if admission else "prepared_trial"
         return prepared
 
     model_identity = {"status": "unverified"}
@@ -181,8 +198,8 @@ async def execute(
                               provider=usage["provider"], requested_model=usage["model"],
                               response_model=usage.get("response_model"))
         if usage["kind"] == "scripted":
-            if admission is not None:
-                raise ValueError("scripted critic observations cannot satisfy model qualification")
+            if requires_configuration:
+                raise ValueError("scripted critic observations cannot satisfy model qualification or calibration")
             model_identity["status"] = "not_applicable"
         else:
             expected = (requested_provider, requested_model, requested_model)
@@ -193,12 +210,12 @@ async def execute(
                     "preserve this observation attempt and qualify the intended model before retrying"
                 )
             model_identity["status"] = "matched"
-        if admission is not None:
-            if usage.get("configuration_sha256") != qualification_check["configuration_sha256"]:
+        if requires_configuration:
+            if usage.get("configuration_sha256") != configuration_check["configuration_sha256"]:
                 raise ValueError(
                     "critic dispatched configuration differs from qualification; preserve spending and requalify"
                 )
-            qualification_check["status"] = "matched_dispatched_configuration"
+            configuration_check["status"] = "matched_dispatched_configuration"
         return flynn.GuardDecision(True, "current critic inputs and recorded inference identity checked")
 
     async def submit(arguments):
@@ -239,6 +256,7 @@ async def execute(
                 "termination": run.outcome(), "inputs_validated_after_inference": validated,
                 "model_identity": model_identity,
                 "qualification_check": qualification_check,
+                "calibration_check": calibration_check,
                 "acceptance_authorized": False, "qualification_verified": bool(admission) and validated,
                 "pricing_status": "unpriced",
             })

@@ -612,3 +612,31 @@ provider settings have a separate 24,000-character cap. There is still one infer
 one verdict submission, no state commit, and no automatic retry. Reports preserve failed
 admission and spending after dispatch separately. Fixture qualification artifacts test
 these checks; they are not live-model calibration evidence.
+
+### Native calibration inputs
+
+The previous admission API exposed a bootstrap gap: a trial without qualification claims
+omitted those claims from its prompt and invocation fingerprint, while supplying them
+required an already-passed artifact. A calibration request therefore could not exercise
+the inputs it was intended to qualify.
+
+`calibration_claims` now supplies explicit typed required qualitative claims, mutually
+exclusive with `qualification_claims`. Both modes compile the same claim semantics,
+scope, response protocol and images. Calibration excludes qualification credentials from
+model inputs just as admission does; it neither opens nor validates an artifact. Claim
+scope, bounded context, immutable inputs, requested/reported model identity and effective
+dispatched configuration remain enforced. Scripted or configuration-unreported trials
+refuse, and post-dispatch failures preserve the journal and usage.
+
+The observation report's separate `calibration_check` records the invocation profile,
+its SHA-256, expected configuration fingerprint and verification status. A successful
+trial always returns `qualification_verified: false`, no qualified claim ids and no
+acceptance authority. This report supplies traceable trial inputs, not suite metrics,
+ground-truth labels, a passed qualification artifact or a production routing decision.
+The independent suite evaluator and selected layer/debt authority remain migration gates.
+
+Contract tests prove that an artifact-free trial and a separately fixture-admitted call
+send identical HTTP request bodies, including bounded claim context. They also inject
+configuration/claim substitution, missing accounting metadata, implicit or out-of-scope
+claims, oversized context, conflicting modes and scripted adapters. No live model is
+qualified by these offline fixtures.

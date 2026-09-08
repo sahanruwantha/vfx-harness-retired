@@ -18,6 +18,22 @@ def digest(value: object) -> str:
     ).hexdigest()
 
 
+def selected_semantics(claims: tuple[Claim, ...], *, axes: tuple[str, ...], frames: tuple[int, ...]) -> list[dict]:
+    """Share exact claim inputs between calibration and admission, without inventing authority."""
+    if not claims or any(not isinstance(claim, Claim) for claim in claims):
+        raise ValueError(
+            "native qualification requires parsed selected claims; implicit layer/debt claims need authority"
+        )
+    if len({claim.id for claim in claims}) != len(claims):
+        raise ValueError("native qualification requires distinct selected claim ids")
+    for claim in claims:
+        if claim.authority != "qualified_qualitative_required" or not claim.required:
+            raise ValueError(f"critic claim {claim.id} requires a required qualitative claim")
+        if claim.axis not in axes or not set(claim.moments).intersection(frames):
+            raise ValueError(f"critic claim {claim.id} is outside invocation scope; select its owning judge point")
+    return [{key: value for key, value in asdict(claim).items() if key != "qualification"} for claim in claims]
+
+
 class Admission:
     """An owning caller selects claims; model output can neither select nor qualify them."""
 
@@ -32,22 +48,14 @@ class Admission:
         axes: tuple[str, ...],
         frames: tuple[int, ...],
     ):
-        if not claims or any(not isinstance(claim, Claim) for claim in claims):
-            raise ValueError(
-                "native qualification requires parsed selected claims; implicit layer/debt claims need authority"
-            )
-        if len({claim.id for claim in claims}) != len(claims):
-            raise ValueError("native qualification requires distinct selected claim ids")
+        self.semantics = selected_semantics(claims, axes=axes, frames=frames)
         self.folder = folder
         self.claims = claims
         self.snapshot = digest([asdict(claim) for claim in claims])
         self.references = []
-        self.semantics = []
         for claim in claims:
             if claim.authority != "qualified_qualitative_required" or not claim.qualification:
                 raise ValueError(f"critic claim {claim.id} requires explicit qualitative qualification authority")
-            if claim.axis not in axes or not set(claim.moments).intersection(frames):
-                raise ValueError(f"critic claim {claim.id} is outside invocation scope; select its owning judge point")
             q = claim.qualification
             payload = read_real_file(folder, folder / q["artifact"], "critic qualification")
             claim_contracts.validate_qualification(folder, claim, f"critic claim {claim.id}")
@@ -86,7 +94,6 @@ class Admission:
                     "native_invocation_sha256": invocation,
                 }
             )
-            self.semantics.append({key: value for key, value in asdict(claim).items() if key != "qualification"})
 
     def check(self) -> None:
         if digest([asdict(claim) for claim in self.claims]) != self.snapshot:

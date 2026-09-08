@@ -274,3 +274,104 @@ def test_scripted_cannot_satisfy_a_model_qualification(bound, qualified):
         assert run.remaining()["inference"] == 1
         assert run.records()["inference_usage"] == []
     assert report["qualification_verified"] is False
+
+
+def test_calibration_needs_no_artifact_and_exercises_identical_admitted_inputs(bound, qualified):
+    claim, record = qualified
+    (bound.shot / "qualification.json").unlink()
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return response()
+
+    trial = invoke(bound, claim, handler, qualification_claims=(),
+                   calibration_claims=(replace(claim, qualification=None),))
+    report = json.loads((bound.shot / trial["report"]).read_text())
+    assert trial["qualification_verified"] is trial["acceptance_authorized"] is False
+    assert trial["qualified_claim_ids"] == []
+    assert report["qualification_check"] == {"status": "not_requested"}
+    assert report["inputs"]["qualification_sources"] == []
+    calibration = report["calibration_check"]
+    assert calibration["status"] == "matched_dispatched_configuration"
+    assert calibration["native_invocation_sha256"] == record["native_invocation_sha256"]
+    assert report["usage"]["known_output_tokens"] == 31
+    with flynn.SQLiteRun.open(bound.root / report["journal"]) as run:
+        assert run.records()["commits"] == []
+        assert run.read().revision == 0
+        assert run.latest_observation() is not None
+
+    # This is an authored admission fixture, not a metric derived from the trial.
+    publish(bound, claim, record)
+    admitted = invoke(bound, claim, handler)
+    admitted_report = json.loads((bound.shot / admitted["report"]).read_text())
+    assert admitted_report["calibration_check"] == {"status": "not_requested"}
+    assert calibration["profile"] == admitted_report["qualification_check"]["profile"]
+    assert requests[0] == requests[1]
+
+
+def test_calibration_cannot_also_request_admission(bound, qualified):
+    claim, _record = qualified
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        invoke(bound, claim, lambda _: pytest.fail("ambiguous mode reached provider"), calibration_claims=(claim,))
+    assert not list((bound.checkpoints / "flynn").glob("*.sqlite"))
+
+
+@pytest.mark.parametrize("failure", ["configuration", "unreported", "claim"])
+def test_calibration_refuses_dispatch_substitution_and_preserves_usage(bound, qualified, failure):
+    claim, _record = qualified
+
+    def handler(_):
+        if failure == "claim":
+            claim.qualification["suite"] = "changed"
+        return response()
+
+    factory = {"configuration": ChangedAtDispatch, "unreported": MissingConfiguration}.get(
+        failure, deepseek.DeepSeekAdapter,
+    )
+    with pytest.raises(ValueError, match=r"configuration|claims changed"):
+        invoke(bound, claim, handler, factory=factory, qualification_claims=(), calibration_claims=(claim,))
+    database, report = audit(bound)
+    with flynn.SQLiteRun.open(database) as run:
+        assert run.remaining()["tool"] == 1
+        assert run.latest_observation() is None
+        assert run.records()["commits"] == []
+    assert report["usage"]["known_output_tokens"] == 31
+    assert report["qualification_verified"] is report["acceptance_authorized"] is False
+    assert report["calibration_check"]["status"] == "prepared_trial"
+
+
+@pytest.mark.parametrize("failure", ["implicit", "duplicate", "axis", "frame", "advisory", "oversized"])
+def test_calibration_requires_bounded_explicit_claim_scope(bound, qualified, failure):
+    claim, _record = qualified
+    claims = (claim,)
+    if failure == "implicit":
+        claims = (SimpleNamespace(id="implicit-look"),)
+    elif failure == "duplicate":
+        claims = (claim, claim)
+    else:
+        changes = {"axis": {"axis": "other"}, "frame": {"moments": (8,)},
+                   "advisory": {"required": False, "authority": "advisory"},
+                   "oversized": {"proposition": "x" * critic_transport.MAX_CONTEXT_CHARACTERS}}
+        claims = (replace(claim, **changes[failure]),)
+    with pytest.raises(ValueError):
+        invoke(bound, claim, lambda _: pytest.fail("invalid calibration reached provider"),
+               qualification_claims=(), calibration_claims=claims)
+    assert not list((bound.checkpoints / "flynn").glob("*.sqlite"))
+
+
+def test_scripted_observations_cannot_be_reported_as_calibration(bound, qualified):
+    claim, _record = qualified
+    with pytest.raises(ValueError, match="configuration-reporting"):
+        asyncio.run(critic_transport.execute(
+            folder=bound.shot, scope_id="layer:surface", phase="observer", requested_provider="deepseek",
+            requested_model=deepseek.VISION_MODEL, prompt=PROMPT, axes=AXES, frames=(7,), images=IMAGES,
+            allow_na=False, check_current=lambda: None, calibration_claims=(claim,),
+            inference=flynn.ScriptedAdapter([]),
+        ))
+    database, report = audit(bound)
+    with flynn.SQLiteRun.open(database) as run:
+        assert run.remaining()["inference"] == 1
+        assert run.records()["inference_usage"] == []
+    assert report["qualification_verified"] is False
+    assert report["calibration_check"]["status"] == "pending"

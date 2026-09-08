@@ -648,6 +648,12 @@ state payload. A qualification-verified observation grants no state commit, retr
 completion; the production wrapper must still derive complete owned qualification and
 retain VFX reconciliation and receipt acceptance. Offline admission fixtures do not
 qualify a live model (ADR-0012).
+Native calibration uses explicit `calibration_claims`, mutually exclusive with admission.
+It sends the same bounded claim semantics and invocation protocol without requiring an
+existing qualification artifact. Require a configuration-reporting model and compare its
+durable dispatched fingerprint; preserve failed attempts and spend. Trial reports never
+mark qualification verified or grant acceptance. Passing fixture trials is not a measured
+qualification suite, and implicit layer/debt placeholders remain inadmissible (ADR-0012).
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial

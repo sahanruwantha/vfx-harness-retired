@@ -1229,3 +1229,23 @@ suite passed all 3,467 tests (858 + 857 + 876 + 876), with 84 existing Pillow wa
 the longest process took 1,075.06 seconds. An earlier full run was deliberately stopped
 to add image dimensions/mode/frame-count binding, then replaced by this complete run.
 Complete-source Ruff and final diff checks passed. No paid inference was used.
+
+## Artifact-free native calibration trials
+
+Tracing layer/debt ownership exposed a prerequisite: the native observation path omitted
+claim semantics unless it first admitted an existing qualification artifact. Added explicit
+`calibration_claims` so a model trial can exercise exactly the invocation later admitted,
+without circularly requiring that artifact. Admission and calibration are mutually
+exclusive; shared validation retains explicit typed scope and bounded context.
+
+Calibration records its invocation profile/digest and verifies configuration against
+durable dispatched usage. Changed claims/settings, missing configuration metadata and
+scripted adapters refuse. Successful trials remain unqualified observations and authorize
+no state commit or VFX acceptance. The request-equivalence test uses actual adapter
+serialization with mocked HTTP, not a live calibration result.
+
+Validation: all 99 focused qualification, transport, image-manifest, rubric, typed-critic
+and execution-guard tests passed in 9.42 seconds. This change stays within the native critic
+concern and adds no package/import dependency changes; the full suite was not rerun.
+No SDK change, ARC test or paid inference was needed. Independent measured-suite evaluation,
+selected layer/debt qualification and the production critic cutover remain outstanding.
