@@ -233,11 +233,17 @@ operation.
   `plans/ownership_mapping.json` are plan-wide gate blockers, never informational prose
   that a clean gate may ignore (ADR-0012, HIR-0252).
 - Production unit routing derives from typed construction and evidence requirements.
-  Procedural units requiring only executable evidence use Flynn with the exact active
+  Procedural or generated units requiring only executable evidence use Flynn with the exact active
   building claim, live shot fence and explicit step, output-token and wall-time caps.
-  Native failures propagate; never retry through the other engine. Qualitative and generated
+  Native failures propagate; never retry through the other engine. Qualitative and simplify
   construction routes retain their explicit existing engine until migrated. The layer
   controller and VFX receipt readers retain checkpoint/completion authority (ADR-0012).
+- Generated construction preparation is a harness-selected scripted Flynn operation,
+  never a model choice. Reserve capacity for the complete remaining path before staging.
+  Preserve exact pointer, GLB and witness bindings through native dispatch and publication.
+  Construction pointers derive from the same canonical unit path as scripts; scratch
+  replay selects construction by its canonical locator, never a guessed alternate directory
+  or a pointer beside the temporary source (HIR-0254).
 - Native image-payment tools invoke the shared VFX image-check operation, register their
   returned dispatch guard and supply the exact candidate check. Keep the building claim,
   live fence, run/unit/parent-chain image identities and artifact bytes current through
@@ -255,7 +261,7 @@ operation.
   image inputs, outside the bounded text context; replace images with each selected
   observation instead of accumulating them. A tool refusal is not a satisfied execution
   assessment, and neither assessment authorizes VFX acceptance (ADR-0012).
-- The production dispatcher selects the native Flynn executor for procedural solid or EEVEE
+- The production dispatcher selects the native Flynn executor for procedural or generated solid or EEVEE
   image contracts with required executable claims covering every judge frame. Capture
   and payment invalidate the prior probe; freeze and canonical dispatch reopen payment
   identity and captured bytes. Reserve recapture after candidate rewrites and retain

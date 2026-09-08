@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import PurePosixPath
 from typing import Any
+
+from vfx_harness.domain.unit_artifact_paths import canonical_unit_script_path
 
 GENERATE_WITNESS_PATTERN = re.compile(r"^refobs-[A-Za-z0-9]+$")
 PROMOTED_GLB_PATTERN = re.compile(r"^build/construction/[0-9a-f]{64}\.glb$")
@@ -71,7 +74,7 @@ def promoted_glb_relpath(sha256: str) -> str:
 
 
 def construction_pointer_relpath(layer_id: str, unit_id: str) -> str:
-    return f"build/units/{layer_id}/{unit_id}.construction.json"
+    return str(PurePosixPath(canonical_unit_script_path(layer_id, unit_id)).with_suffix(".construction.json"))
 
 
 def legal_promoted_relpath(relpath: str) -> bool:

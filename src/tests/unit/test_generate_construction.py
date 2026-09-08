@@ -491,8 +491,9 @@ def test_construction_import_reopen_uses_captured_memfd_bytes(tmp_path: Path) ->
     assert not Path(importer_path).exists()
 
 
+@pytest.mark.parametrize("scratch", [False, True])
 def test_evaluator_replay_receipt_binds_pointer_and_glb_identity(
-    tmp_path: Path,
+    tmp_path: Path, scratch: bool,
 ) -> None:
     digest = hashlib.sha256(_glb_bytes()).hexdigest()
     rel = promoted_glb_relpath(digest)
@@ -516,9 +517,14 @@ def test_evaluator_replay_receipt_binds_pointer_and_glb_identity(
         + "\n",
         encoding="utf-8",
     )
+    source = script
+    if scratch:
+        source = tmp_path / "runs" / "fixture" / "scratch" / "candidate.py"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(script.read_bytes())
     artifact = prior_runtime._prepare_artifact_replay_inputs(
         tmp_path,
-        [(script.relative_to(tmp_path).as_posix(), script)],
+        [(script.relative_to(tmp_path).as_posix(), source)],
     )[0]
 
     rows, _bindings = prepare_replay_inputs(tmp_path.absolute(), (artifact.executed,))

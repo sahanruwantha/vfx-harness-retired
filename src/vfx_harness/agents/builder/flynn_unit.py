@@ -19,6 +19,7 @@ from vfx_harness.agents import unit_scope
 from vfx_harness.agents.builder import (
     candidate_script,
     evidence,
+    flynn_construction,
     flynn_image_capture,
     prior,
     revalidate,
@@ -150,8 +151,8 @@ def native_execution_refusal(unit) -> str | None:
             return "Flynn requires executable claims covering every judge frame; visual judgment is unsupported"
     if getattr(unit, "provisional_requirement_ids", ()):
         return "Flynn executable unit cannot decide provisional visual requirements"
-    if unit.construction.route != "procedural":
-        return "Flynn executable unit currently requires procedural construction"
+    if unit.construction.route not in {"procedural", "generate"}:
+        return "Flynn executable unit requires procedural or generated construction"
     return None
 
 
@@ -270,12 +271,18 @@ async def _build_unit(
     owned_candidate = None
     canonical_verdicts = []
     replay_inputs = []
+    construction = (
+        flynn_construction.UnitConstruction(shot, attempt_guard)
+        if active_unit.construction.route == "generate" else None
+    )
 
     def candidate_digest():
         return hashlib.sha256(read_real_file(shot.folder, candidate, "Flynn candidate")).hexdigest()
 
     def check_current():
         attempt_guard.check("check Flynn unit dispatch authority")
+        if construction is not None:
+            construction.check()
         if owned_candidate is None:
             if candidate.exists() or candidate.is_symlink():
                 raise ValueError("Flynn candidate exists outside this attempt's writes; preserve it and stop")
@@ -330,6 +337,7 @@ async def _build_unit(
             "observed_candidate_sha256": observed,
             "frozen_candidate_sha256": frozen,
             "unpaid_image_debts": [debt.as_dict() for debt in payment_state()[0]],
+            "construction": construction.context() if construction is not None else None,
             "current_image_handles": [
                 {key: record[key] for key in ("handle", "frame", "candidate_sha256", "sha256")}
                 for record in images.state["image_artifacts"].values()
@@ -549,6 +557,26 @@ async def _build_unit(
             selected_authority,
             attempt_guard,
         ).ledger
+        if construction is not None:
+            remaining = run.remaining()
+            unpaid, _ = payment_state()
+            image_operations = len({debt.frame for debt in unpaid}) + (
+                len(unpaid) + payment_batch_size - 1
+            ) // payment_batch_size
+            if any(remaining[kind] < minimum + image_operations for kind, minimum in (
+                ("inference", 5), ("tool", 5), ("external", 4),
+            )):
+                raise flynn.BudgetExhausted(
+                    "generated construction requires capacity for preparation, candidate write, "
+                    "required image captures/payments, probe, freeze and independent replay"
+                )
+            preparation = flynn.Runtime(
+                inference=flynn.ScriptedAdapter([flynn.ToolCall("prepare_construction", "{}")]),
+                tools=flynn.ToolBroker([construction.tool]), evaluator=_ObservationEvaluator(),
+                run=run, grants=("prepare_construction",), guards=guards,
+            )
+            await preparation.step("Prepare the exact construction route selected by the unit plan.")
+            check_current()
         runtime = flynn.Runtime(
             inference=inference,
             tools=tools,

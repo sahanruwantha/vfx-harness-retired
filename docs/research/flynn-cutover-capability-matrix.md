@@ -17,11 +17,13 @@ VFX installs SDK main `189a4776559a09120111f6557ee14731993874c6` over SSH.
 | Procedural executable EEVEE image builder | Same execution mechanisms plus image transport | Native cold candidate/adversary capture, payments and canonical replay | Preserve recapture, stale-image and independent completion gates |
 | Procedural executable Workbench image builder | No missing generic SDK mechanism identified | Native capture derives the same medium as canonical replay; focused solid lifecycle passes | Passed full 3,535-test regression including default driver routing and source-substitution refusal |
 | Qualitative and provisional unit builders | Native session and native critic transport exist | Legacy unit loop still active; VFX owns claim qualification, evidence reconciliation and repair | Wire qualified judgment into complete native build path, with measured qualification and refusal before autonomous blocking |
-| Generated construction | Generic confined ProgramWorker exists; structured external tools exist | Asset generation belongs to typed builder construction, not the retired standalone asset command | Port generation dispatch and pinned asset dependencies into native tools; verify generation failure, source substitution and cold replay |
+| Generated construction with executable claims | Guarded scripted preparation, budgets and SQLite records | Native preparation reuses VFX staging/promotion; exact pointer, GLB and witness bindings survive cold replay and completion | Preserve generation failure, witness/source substitution and insufficient-budget checks; live service validation remains owed |
+| Simplify construction | Native scoped candidate execution already exists | Legacy builder still executes this typed route | Migrate with a real predecessor mesh and scoped simplification evidence |
 | Unit, layer, debt and acceptance critics | Native bounded verdict transport, exact configuration and usage records | Shared production inference uses Flynn; measured admission gates scoped qualitative decisions | Complete explicit layer/debt/acceptance credential selection and qualified live validation |
 | Composed layer look and judgment debts | Native images and verdict observations | VFX derives exact typed debt claims; measured qualification can bind them explicitly | Select current plan-backed qualification for exact claims; retain independent layer look, replay groups and receipts |
 | Shot acceptance | Native critic mechanism available | VFX replays accepted chain and publishes typed acceptance outcome; critic inference is native, unbound scope remains unresolved | Bind acceptance-owned qualification and prove complete passing moment coverage with qualified live judgment |
 | Blender, recipe and planning tool registration | Native tool schemas, validation and structured text/image results | Some shared operations already native; legacy MCP decorators/servers remain | Remove obsolete adapters after remaining consumers migrate; preserve semantic scope and confinement |
+| Builder recipe retrieval | Native structured tool transport; planning already has a Flynn recipe tool | Shared `recipe_lookup` owns scope filtering; native unit builder still lacks the retrieval tool | Reuse the lookup in native builder grants with bounded fragments and recipe-use telemetry; remove legacy registration after its remaining callers migrate |
 | Logging, configuration, installation and preflight | Provider-neutral usage/identity/termination, known/unknown/not-applicable accounting | Native failure causes and exact inherited stop propagation are preserved; session reports coexist with legacy configuration | Remove remaining Claude integration; provide phase-specific recovery contracts where needed; verify fresh install, provider preflight and honest usage reporting |
 
 The shared critic checkpoint passed all 3,553 regression tests. An AST inventory still
@@ -68,14 +70,13 @@ Complete production qualification selection remains owed:
 
 ## Shared SDK capability decision
 
-Generated construction has an existing harness-owned staging and guarded promotion
-operation (`unit_construction.resolve_unit_construction`) and descriptor-bound replay
-inputs. Native integration must carry the selected construction pointer and GLB into
-the exact scratch candidate's cold replay and completion source closure, not merely
-pin a live Blender session. Replay prepares construction from the physical script
-path; the separate authority locator does not select that dependency. Prove this
-with a real imported mesh and injected pointer/GLB substitutions before widening
-native routing or removing the legacy builder.
+Generated construction now uses the existing harness-owned staging and guarded promotion
+operation (`unit_construction.resolve_unit_construction`) through Flynn. Canonical path
+derivation is shared by scripts and construction pointers, including numeric layer
+normalization. Prepared replay binds construction from the canonical locator while
+reading candidate script bytes from the exact scratch source. Real GLB import,
+completion, source substitution and cold capture are covered by integration fixtures;
+external generation and plate judgments remain fixture adapters in those tests.
 
 The installed SDK already provides tools, guarded dispatch, required bounded context,
 selected image inputs, distinct observations/evaluations/state updates, durable budgets,

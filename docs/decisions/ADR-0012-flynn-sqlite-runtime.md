@@ -756,7 +756,7 @@ instead of telling every unit to use EEVEE.
 The dispatcher no longer treats Workbench as a reason to select the legacy builder.
 Procedural units with executable required claims at every judge point and no
 provisional visual requirements use Flynn regardless of their declared render medium.
-Qualitative and generated construction remain separate migration work. Optical-source
+Qualitative construction remains separate migration work. Optical-source
 requirements, claim authority, image-debt ownership and completion receipts are unchanged.
 In particular, removing look capabilities is not permission to invent an optical source
 or use solid evidence to pay a contract originally measured in EEVEE.
@@ -824,3 +824,31 @@ An otherwise unclassified native failure retains the conservative engineering st
 for its missing phase-specific recovery contract. It authorizes no retry, resume,
 environment repair or VFX acceptance. VFX still owes those exact transaction
 contracts where production recovery is required; SDK exceptions cannot supply them.
+
+### Generated construction uses the native unit engine
+
+Units with the selected `generate` route and executable required claims now use Flynn.
+VFX dispatches one scripted `prepare_construction` operation in the unit's SQLite run
+before model execution. It uses the existing exact-claim staging and promotion boundary;
+the model cannot choose the generator, replace the witness set or select another asset.
+Before starting, VFX requires operation capacity for preparation, candidate writing,
+required image captures/payments, probing, freeze and independent canonical replay.
+SDK usage for preparation is not applicable to model inference, rather than unknown.
+
+The returned asset binding remains current through all native dispatches and publication.
+It retains pointer, GLB and witness identities; a failed, changed or cancelled preparation
+does not adopt replacement bytes or fall back to Claude. Model context includes only the
+selected construction identity and pinned-import instruction alongside existing bounded
+unit context. SQLite records execution; VFX still independently publishes completion.
+
+Construction pointers now share the script's canonical identity derivation, including
+numeric layer normalization. Prepared replay reads candidate code from its exact scratch
+source and construction from the canonical script locator. The same rule applies to
+native cold image capture. Pointer and GLB dependencies remain source-bound through
+receipt publication and completion reads. No alternate legacy directory or scratch-local
+pointer becomes authority. This is HIR-0254's fix for a reproduced empty pin, not new SDK
+asset or VFX acceptance semantics.
+
+External generation quality, qualified visual builders and final live validation remain
+separate migration gates. The unwired `retrieve` route remains refused, and `simplify`
+continues through its existing builder pending scoped predecessor-mesh validation.

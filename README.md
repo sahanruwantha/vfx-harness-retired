@@ -435,19 +435,21 @@ planner runs in the root-owner process, uses 32,000-character bounded text conte
 and stores complete phase snapshots outside its gate workspace. It requires explicit
 wall-time and output-token caps (`VFXH_GLOBAL_PLAN_SECONDS`, default 600, and
 `VFXH_GLOBAL_PLAN_OUTPUT_TOKENS`, default 32768). It also refuses unpriced USD caps.
-Qualitative/generated-asset builder roles are still being migrated; the Claude dependency
+Qualitative and simplify builder roles are still being migrated; the Claude dependency
 remains for those builder sessions until their native gates pass. Preflight still checks those
 remaining roles and confinement; a successful preflight does not verify DeepSeek
 credentials. No Claude fallback exists in approach review or global planning.
 
-The production dispatcher selects `agents/builder/flynn_unit.py` for procedural units
+The production dispatcher selects `agents/builder/flynn_unit.py` for procedural or generated units
 whose typed requirements need only executable evidence. Other evidence/construction
 routes retain their existing engine. This includes EEVEE and Workbench solid image
 units with executable required claims covering every judge point and no provisional
 visual requirements.
 They capture current candidate/adversary images, pay image debts, and bind the canonical
 primary render to the layer checkpoint. A composed layer's independent look judgment
-remains required. Qualitative and generated units still await migration.
+remains required. Generated units first prepare the plan-selected asset through a scripted
+Flynn operation. Pointer, GLB and witness bindings remain current through cold replay and
+completion; construction is not selected by the model. Qualitative units still await migration.
 Flynn failures never fall back to Claude.
 The shared production critic now records native Flynn observations with explicit image
 identity, usage and termination. Only complete selected claim scope with measured native
@@ -457,7 +459,9 @@ qualification selection remain unfinished migration gates; their obligations are
 `VFXH_EXECUTABLE_BUILDER_MODEL` defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
 `VFXH_EXECUTABLE_BUILDER_SECONDS`, `VFXH_EXECUTABLE_BUILDER_OUTPUT_TOKENS` and
 `VFXH_EXECUTABLE_BUILDER_MAX_STEPS` default to 600, 32768 and 12. Steps include the
-scripted canonical invocation; at least four are required. `DEEPSEEK_API_KEY` is required,
+scripted canonical invocation; at least four are required. Generated units also consume a
+scripted preparation operation and need at least five steps, plus required capture/payment
+operations, before preparation can start. `DEEPSEEK_API_KEY` is required,
 and unpriced USD caps refuse before provider construction. The existing layer controller
 owns checkpointing and completion. Development callers may still inject `unit_builder`
 with explicit inference and limits for offline tests.

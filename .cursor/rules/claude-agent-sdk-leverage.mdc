@@ -26,6 +26,10 @@ and abstention remains legal. Grants must leave enough budget for the complete r
 path; forward replay failure stage/message as selected feedback (HIR-0250). Include exact
 current candidate source and SHA-256 as required bounded context; refuse overflow before
 inference, without accumulating prior versions or predecessor scripts (HIR-0251).
+Generated construction uses a harness-selected scripted Flynn preparation operation.
+Keep its pointer, GLB and witness bindings current, reserve the remaining execution
+capacity before staging, and bind scratch replay to construction at the canonical unit
+locator. Script and pointer paths share one identity derivation (HIR-0254).
 
 Treat the Claude Agent SDK as a production runtime, not merely prompt transport. Inspect the
 installed SDK before building custom orchestration and prefer its strongest applicable native

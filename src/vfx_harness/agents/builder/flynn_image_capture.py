@@ -44,8 +44,8 @@ class UnitImageCapture:
         self.root = shot.folder.expanduser().absolute()
         if attempt_guard.folder.resolve() != self.root.resolve():
             raise ValueError("image capture requires the exact attempt's shot")
-        if attempt_guard.unit.construction.route != "procedural":
-            raise ValueError("native image capture currently requires procedural construction")
+        if attempt_guard.unit.construction.route not in {"procedural", "generate"}:
+            raise ValueError("native image capture requires procedural or generated construction")
         self.mode = render_mode_for_medium(unit_observation_medium(attempt_guard.unit))
         self.frames = tuple(sorted({point.frame for point in attempt_guard.unit.evaluation.judges}))
         self.candidate = candidate_script.exact_candidate_script_path(self.root, attempt_guard)
@@ -170,7 +170,7 @@ class UnitImageCapture:
         frame = arguments["frame"]
         with self.lease.operation(self.root):
             prepared_candidate = prior._prepare_artifact_replay_inputs(self.root, [
-                (self.candidate.relative_to(self.root).as_posix(), self.candidate)
+                (self.attempt.unit.mutates.script_spans[0], self.candidate)
             ])[0]
             candidate_sha = prepared_candidate.executed.script_sha256
             adversary = self.state["image_adversaries"].get(frame)

@@ -1450,3 +1450,40 @@ shards 0/1/2 passed 889 tests each (22/22/40 warnings), and shard 3 passed
 requiring unchanged stop and audit bytes through root terminalization. This is a
 migration checkpoint; remaining builders, qualification selection and live
 end-to-end proof still prevent declaring the cutover complete.
+
+## Native generated construction and canonical asset identity
+
+The native executor now supports the selected `generate` route when all required
+claims are executable and every judge point is covered. VFX invokes its existing
+staging/promotion operation as a scripted Flynn tool before model execution, records
+it in the same SQLite run, and retains pointer, GLB and witness bindings through
+dispatch and publication. It checks capacity for the minimum complete remaining
+path before staging, including required captures/payments. Model context receives
+the selected identity and pinned-import instruction, not generator-selection tools.
+
+The real-GLB fixture exposed two dependency-path defects: replay looked beside a
+scratch candidate rather than its canonical locator, and construction independently
+used directory `1` where canonical scripts use `01`. The shared pure path leaf and
+canonical dependency selection fix both without adopting alternate legacy paths.
+An isolated worker probe proved the actual memory-pin/import transport worked.
+The retained integration test then passed actual cold replay, unit completion and
+image capture, and refused completion after the asset changed. HIR-0254 records
+the failing pin trace and ownership decision.
+
+Focused validation passed 32 construction/path/failure tests, followed by 15
+neighboring procedural/image and revised budget checks (7 Pillow warnings), then
+the staged-byte cancellation test. These sets overlap; they are not a combined
+unique total. Initial fixtures were corrected to supply mandatory visibility
+evidence and use the supported Blender object lookup; neither production gate was
+relaxed. Generation and plate judgment use fixture adapters, while GLB import,
+canonical evaluation, capture and completion are real. No paid generation,
+live model qualification, SDK change or ARC synchronization was performed.
+
+Complete-source Ruff and public CLI loading passed. The full frozen-source
+regression passed **3,588 tests**, with 121 Pillow deprecation warnings. Logs:
+`/tmp/vfx-spike-regression-8bo7fjfh`; shards 0/1 passed 888 tests each (27/40
+warnings), and shards 2/3 passed 906 tests each (37/17 warnings). An earlier run
+was stopped before correcting source whitespace and is not counted as validation.
+HIR-0254 is accepted on this evidence. Qualitative builders, simplify, native
+builder recipe retrieval, remaining Claude dependencies and qualified live
+end-to-end validation remain open; this is not completion of the cutover.

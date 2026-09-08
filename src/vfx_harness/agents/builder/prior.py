@@ -244,9 +244,11 @@ def _prepare_artifact_replay_inputs(
         except TrustedFileError as exc:
             raise BlenderError(str(exc)) from exc
         try:
+            # Scratch candidate bytes execute under their canonical script identity.
+            # Construction belongs to that identity, not to the temporary source path.
             construction = generate_construction.prepare_construction_replay_input(
                 root,
-                source_path,
+                root / locator,
             )
         except generate_construction.GenerateConstructionError as exc:
             raise BlenderError(str(exc)) from exc

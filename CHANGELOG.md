@@ -7,6 +7,13 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Generated construction with executable claims now uses Flynn for preparation and
+  unit execution. Asset, pointer and witness identities remain bound through cold
+  replay and completion; insufficient budgets refuse before generation. Construction
+  pointers share the canonical unit path, including numeric layer normalization,
+  and scratch candidates select dependencies by that canonical identity
+  ([HIR-0254](docs/improvements/HIR-0254-native-generated-construction-replay.md)).
+
 - Native Flynn budget, inference and cancellation failures retain their terminal
   causes. The root run selects an inherited stage's exact published stop instead of
   conflicting with it during terminalization; original exceptions and usage survive

@@ -9,6 +9,7 @@ from typing import Any
 from vfx_harness.domain.field_parsing import identifier as _id
 from vfx_harness.domain.field_parsing import mapping as _mapping
 from vfx_harness.domain.field_parsing import text as _text
+from vfx_harness.domain.unit_artifact_paths import canonical_unit_script_path as canonical_unit_script_path
 
 __all__ = ["_id", "_mapping", "_text"]
 
@@ -70,17 +71,3 @@ def _relative_path(value: Any, where: str) -> str:
     if p.is_absolute() or ".." in p.parts:
         raise ValueError(f"{where} must be a safe relative path")
     return out
-
-
-def canonical_unit_script_path(layer_id: str, unit_id: str) -> str:
-    """Return the sole replay artifact path for one unit.
-
-    Unit scripts are executable files, not addressable spans inside a composed layer
-    script.  Keeping the path derivable from typed layer/unit identity prevents a
-    planner from publishing fragment notation that the filesystem later interprets as
-    a literal filename.
-    """
-    layer = _id(str(layer_id), "layer id")
-    unit = _id(str(unit_id), "unit id")
-    directory = layer.zfill(2) if layer.isdigit() else layer
-    return f"build/units/{directory}/{unit}.py"
