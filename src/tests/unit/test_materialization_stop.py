@@ -9,6 +9,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 
 import anyio
+import flynn_agents_sdk as flynn
 import pytest
 
 from vfx_harness.agents.planner import (
@@ -17,7 +18,6 @@ from vfx_harness.agents.planner import (
     materialization_stop_state,
     rematerialize,
 )
-from vfx_harness.agents.resilience import AgentSessionFailure
 from vfx_harness.domain.authority_head_records import canonical_json_bytes
 from vfx_harness.domain.authority_state_records import AuthorityStateRecordRef
 from vfx_harness.domain.layer_outcomes import SealedLayerOutcome
@@ -44,6 +44,7 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     AuthoritySelectionConflict,
     AuthoritySelectionToken,
 )
+from vfx_harness.orchestration.builder_execution_fence import builder_execution_fence
 from vfx_harness.orchestration.jit_materialization import gate_evidence
 from vfx_harness.orchestration.jit_materialization import publish as jit_publish
 from vfx_harness.orchestration.jit_materialization.overlay_base import write_overlay_base
@@ -1852,38 +1853,26 @@ def test_public_materialization_boundary_raises_the_compiled_typed_stop(
         "inspect_materialization",
         lambda *_args, **_kwargs: (["/layer/stages: no bounded work unit"], None),
     )
-    monkeypatch.setattr(rematerialize.run_artifacts, "ensure", lambda *_args, **_kwargs: layout)
+    monkeypatch.setattr(rematerialize.run_artifacts, "active", lambda *_args, **_kwargs: layout)
 
     def seed(_root: Path, target: Path, **_kwargs: object) -> None:
         target.write_bytes(candidate.read_bytes())
 
     monkeypatch.setattr(rematerialize, "seed_materialization_candidate", seed)
     monkeypatch.setattr(rematerialize, "_materialization_kickoff", lambda *_args, **_kwargs: "kickoff")
-    monkeypatch.setattr(rematerialize, "build_plan_tools", lambda *_args, **_kwargs: ({}, []))
-    monkeypatch.setattr(rematerialize, "build_recipe_tools", lambda: ({}, []))
-    monkeypatch.setattr(rematerialize, "planner_hooks", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(
-        rematerialize,
-        "_with_target_feedback",
-        lambda *_args, **_kwargs: object(),
-    )
-    monkeypatch.setattr(rematerialize, "sdk_options", lambda **_kwargs: object())
-
     async def fail_session(*_args, **_kwargs) -> None:
-        raise AgentSessionFailure("opaque session failure", "session_stalled")
+        raise flynn.BudgetExhausted("materialization step budget exhausted")
 
-    monkeypatch.setattr(rematerialize, "run_session", fail_session)
+    monkeypatch.setattr(rematerialize.materialization_runtime, "execute", fail_session)
     shot = SimpleNamespace(folder=shot_path)
     layer = SimpleNamespace(id="1", judges=())
 
     async def invoke() -> None:
-        await rematerialize._materialize_deferred_layer(
-            shot,
-            layer,
-            model="model",
-            blender="blender",
-            max_turns=1,
-        )
+        with builder_execution_fence(shot_path) as lease:
+            await rematerialize._materialize_deferred_layer(
+                shot, layer, model="model", blender="blender", max_turns=1,
+                fence_lease=lease,
+            )
 
     with pytest.raises(run_artifacts.TypedStop) as raised:
         anyio.run(invoke)

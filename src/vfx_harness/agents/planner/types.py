@@ -8,22 +8,6 @@ from pathlib import Path
 from vfx_harness.domain.stop_envelopes import StopEnvelope
 from vfx_harness.observability import unclassified_authority
 
-# Materialization authority is the selected bundle, the decision ledger, sealed
-# outcomes, and the candidate file. Glob/Grep of historical bundles is not a repair
-# instrument; Edit is JSON text-edit of the wrong document (HIR-0023). Task/Agent
-# are not remat repair instruments: a spawned Explore burned remat4 reading denied
-# paths, then the process died on a broken pipe (HIR-0026).
-MATERIALIZATION_DENIED_TOOLS = [
-    "Bash",
-    "Edit",
-    "Glob",
-    "Grep",
-    "Task",
-    "Agent",
-    "ListAgents",
-    "ScheduleWakeup",
-]
-
 
 @dataclass(frozen=True, slots=True)
 class PlanLoopResult:

@@ -67,7 +67,8 @@ operation.
   authority. An interrupted v2 run selects `reports/interruption-receipt.json` and its
   satisfied evaluation by digest and authorizes no transaction. `status.json` `detail` and the exit-code digit are operator diagnostics only
   (HIR-0037, HIR-0164). Materialization writes
-  `logs/transcripts/plan/materialize-layer-*.jsonl` (HIR-0038). Open detail
+  `reports/materialization-session-*.json`, selecting the request/result/usage journal
+  under `checkpoints/flynn/` (HIR-0038, ADR-0012). Open detail
   (`reports/layers/`, `plan_gate.json`, `evidence/`,
   transcripts, checkpoints) only when the summary names a reason. Never diagnose by recursively
   listing the shot or grepping every transcript, and never parse meaning from filenames.
@@ -978,8 +979,10 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   and attests only its clean candidate revision. A materialization session does not expose
   a separate terminal `gate_preview`; every subsequent patch invalidates attestation and
   requires finalization again (HIR-0141).
-  Materialization binds `transcript` and `costlog` (`materialize-layer-{id}`);
-  `log_message` journals only when bound (HIR-0038). `publish_unit_plan` stamps the
+  Materialization records requests, calls, results, usage and termination in its fresh
+  Flynn SQLite journal; its session report selects that journal and final candidate
+  identity. Optional Claude transcript/cost callbacks are not its audit surface
+  (HIR-0038, ADR-0012). `publish_unit_plan` stamps the
   bundle-pinned integrity sidecar with the bytes it publishes so the session's own
   `gate_preview` evaluates the draft; gate attestation remains the terminal gate's alone, and
   a stale `planning` claim with no live session is released only through `vfx units retry`
@@ -1157,6 +1160,10 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   current feedback, and recheck the candidate and VFX finalization before returning.
   Their completion prepares a candidate; only the existing VFX authority transaction
   publishes it. A spent or uncertain invocation is never reopened as a fresh budget.
+  Production materialization and rematerialization retain a live shot-wide execution
+  fence across planning and publication, including controller child stages. A run path
+  or claim on disk never substitutes for that lease. Each attempt seeds a distinct
+  candidate and journal; failure does not overwrite a preceding attempt's scratch.
   Recorded gaps are durable shot state read through the one shared
   `vocabulary_gaps_path(shot_folder)`; materialization validation takes `shot_folder` as a
   required argument distinct from the plan-bundle `global_root`. Reading them relative to the

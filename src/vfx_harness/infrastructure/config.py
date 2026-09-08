@@ -174,6 +174,9 @@ class Settings:
     global_planner_model: str = VISION_MODEL
     global_plan_seconds: int = 600
     global_plan_output_tokens: int = 32768
+    materialization_model: str = VISION_MODEL
+    materialization_seconds: int = 600
+    materialization_output_tokens: int = 32768
     builder_model: str = DEFAULT_EXECUTION_MODEL
     script_model: str = DEFAULT_EXECUTION_MODEL
     reviewer_model: str = VISION_MODEL
@@ -213,6 +216,9 @@ class Settings:
             global_planner_model=_text("VFXH_GLOBAL_PLANNER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
             global_plan_seconds=_int("VFXH_GLOBAL_PLAN_SECONDS", 600),
             global_plan_output_tokens=_int("VFXH_GLOBAL_PLAN_OUTPUT_TOKENS", 32768),
+            materialization_model=_text("VFXH_MATERIALIZATION_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
+            materialization_seconds=_int("VFXH_MATERIALIZATION_SECONDS", 600),
+            materialization_output_tokens=_int("VFXH_MATERIALIZATION_OUTPUT_TOKENS", 32768),
             builder_model=_text("VFXH_BUILDER_MODEL", execution_model),
             script_model=_text("VFXH_SCRIPT_MODEL", execution_model),
             reviewer_model=_text("VFXH_REVIEWER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),

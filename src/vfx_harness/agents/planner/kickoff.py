@@ -6,7 +6,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from vfx_harness.agents.plan_guardrails import target_validation_feedback
 from vfx_harness.domain.judgment_debt_models import JUDGMENT_DEBT_PROPERTIES
 from vfx_harness.domain.plan_records import load_active_structured_decisions, roles_match_reserved
 from vfx_harness.domain.work_units import (
@@ -131,17 +130,6 @@ def _materialization_kickoff_authority(
         bundle_hash=selected_bundle.content_hash,
         selected_layers=selected_layers,
     )
-
-
-def _with_target_feedback(hooks: dict, target: Path, validate) -> dict:
-    """Append warm write-time validation of one target file to a planner hook set."""
-
-    hooks = dict(hooks)
-    hooks["PostToolUse"] = [
-        *hooks.get("PostToolUse", []),
-        target_validation_feedback(target, validate),
-    ]
-    return hooks
 
 
 # The unit-ticket tool exposes the closed WorkUnit schema. This remains only the outer

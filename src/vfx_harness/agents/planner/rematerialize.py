@@ -4,27 +4,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
-from claude_agent_sdk import query
+import flynn_agents_sdk as flynn
 
-from vfx_harness.agents.model_stream import with_idle_deadline
-from vfx_harness.agents.plan_guardrails import planner_hooks
-from vfx_harness.agents.plan_tools import build_plan_tools
+from vfx_harness.agents import materialization_runtime
 from vfx_harness.agents.planner import rematerialization_evidence
 from vfx_harness.agents.planner.budget import materialization_turn_budget
-from vfx_harness.agents.planner.kickoff import (
-    _materialization_kickoff,
-    _with_target_feedback,
-)
+from vfx_harness.agents.planner.kickoff import _materialization_kickoff
 from vfx_harness.agents.planner.materialization_stop import publish_materialization_stop
 from vfx_harness.agents.planner.pkg import planner_package
-from vfx_harness.agents.planner.types import MATERIALIZATION_DENIED_TOOLS, _phase_tools
-from vfx_harness.agents.resilience import AgentSessionFailure, result_signal, run_session
-from vfx_harness.agents.sdk_options import sdk_options
-from vfx_harness.infrastructure.config import DEFAULT_EXECUTION_MODEL
-from vfx_harness.knowledge.recipe_tools import build_recipe_tools
-from vfx_harness.observability import costlog, run_artifacts, transcript
-from vfx_harness.observability.log import log, log_message
+from vfx_harness.observability import run_artifacts
+from vfx_harness.observability.log import log
 from vfx_harness.orchestration import plan_authority, unit_state
 from vfx_harness.orchestration.authority_capsule_resolution import (
     selected_layer_capsule_digest,
@@ -42,10 +33,12 @@ from vfx_harness.orchestration.authority_selection_transaction import (
     authority_selection_lock,
     require_matching_authority_selection_token,
 )
+from vfx_harness.orchestration.builder_execution_fence import (
+    BuilderExecutionFenceLease,
+    require_builder_execution_lease,
+)
 from vfx_harness.orchestration.jit_materialization import (
     MATERIALIZATION_SCHEMA,
-    inspect_materialization,
-    materialization_finalization_current,
     publish_materialization,
     revert_materialization,
     seed_materialization_candidate,
@@ -74,6 +67,7 @@ async def _materialize_deferred_layer(
     replacing: str | None = None,
     overlay_root: str | Path | None = None,
     selected_authority: ResolvedSelectedAuthority | None = None,
+    fence_lease: BuilderExecutionFenceLease | None = None,
 ) -> None:
     """Close one layer's owned requirements with concrete authority, then select its view.
 
@@ -81,6 +75,7 @@ async def _materialize_deferred_layer(
     Publication is the only select; a crash must not have already moved the live pointer.
     """
 
+    require_builder_execution_lease(fence_lease, shot.folder)
     selected_authority = (
         resolve_selected_authority(shot.folder)
         if selected_authority is None
@@ -91,9 +86,11 @@ async def _materialize_deferred_layer(
     bundle = selected_authority.plan.bundle
     owned_requirements = _owned_requirement_count(bundle.root / "layers.json", str(layer.id))
     max_turns = materialization_turn_budget(max_turns, owned_requirements)
-    layout = run_artifacts.ensure(shot.folder, command="plan-layer")
+    layout = run_artifacts.active(shot.folder)
+    if layout is None:
+        raise ValueError("native materialization requires an active public VFX invocation")
     identity_segment = layer_identity_segment(str(layer.id))
-    target = layout.scratch / f"jit-{identity_segment}.json"
+    target = layout.scratch / f"jit-{identity_segment}-{uuid4().hex}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     rel_target = target.relative_to(shot.folder).as_posix()
     seed_materialization_candidate(
@@ -103,37 +100,6 @@ async def _materialize_deferred_layer(
         bundle_hash=bundle.content_hash,
         base_selection=selected_authority.selection_token,
     )
-
-    def _validate_target() -> list[str]:
-
-        # Mirror publication EXACTLY: the base must be the view-resolved layers, not the
-        # bundle's sparse rows — other layers' materialized declarations (ADR-0007
-        # dressable grants) live only in their overlays, and the sparse base made the
-        # write hook refuse dresses the publication path would accept (run bm9og09xw).
-        try:
-            def _base(name: str) -> Path:
-                if overlay_root is None:
-                    return selected_authority.artifact_paths[name]
-                path = Path(overlay_root) / name
-                if path.is_symlink() or not path.is_file():
-                    raise OSError(
-                        f"materialization overlay base is missing real artifact {name}"
-                    )
-                return path
-
-            findings, _materialized = inspect_materialization(
-                bundle.root,
-                target,
-                expected_bundle_hash=bundle.content_hash,
-                shot_folder=shot.folder,
-                base_layers_path=_base("layers.json"),
-                base_scene_checks_path=_base("scene_checks.json"),
-                resolutions_path=shot.folder / "state" / "plan-resolutions.jsonl",
-                base_requirements_path=_base("requirements.json"),
-            )
-            return findings
-        except OSError as exc:
-            return [str(exc)]
 
     system = f"""You materialize exactly one deferred VFX build layer at its dependency boundary.
 The harness has already seeded `{rel_target}` with schema `{MATERIALIZATION_SCHEMA}`, bundle
@@ -232,110 +198,14 @@ global authority, create unit state, write prose, or write another file."""
         overlay_root=overlay_root,
         selected_authority=selected_authority,
     )
-    lab_dir = layout.scratch / "plan-lab" / f"{identity_segment}-materialize"
-    pserver, pnames = build_plan_tools(
-        shot.folder,
-        blender=blender,
-        lab_dir=lab_dir,
-        measure_ref_paths=tuple(ref for _frame, ref in layer.judges),
-        enabled_tools=frozenset(
-            {
-                "measure_ref",
-                "spike",
-                "ask_supervisor",
-                "evidence_vocabulary",
-                "escalate_vocabulary_gap",
-                "stage_materialization_unit",
-                "unstage_materialization_unit",
-                "mint_refobs",
-                "materialization_status",
-                "finalize_materialization",
-                "patch_materialization",
-            }
-        ),
-        candidate_materialization=target,
-        overlay_root=overlay_root,
-    )
-    rserver, rnames = build_recipe_tools()
-    materialization_tools = _phase_tools(
-        pnames,
-        "measure_ref",
-        "spike",
-        "ask_supervisor",
-        "evidence_vocabulary",
-        "escalate_vocabulary_gap",
-        "stage_materialization_unit",
-        "unstage_materialization_unit",
-        "mint_refobs",
-        "materialization_status",
-        "finalize_materialization",
-        "patch_materialization",
-    )
-    options = sdk_options(
-        model=model,
-        system_prompt=system,
-        cwd=str(shot.folder),
-        mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=[*materialization_tools, *rnames],
-        disallowed_tools=[*MATERIALIZATION_DENIED_TOOLS, "Write"],
-        permission_mode="bypassPermissions",
-        max_buffer_size=32 * 1024 * 1024,
-        setting_sources=[],
-        max_turns=max_turns,
-        effort="high",
-        hooks=_with_target_feedback(
-            planner_hooks(
-                shot.folder,
-                writable_files=(target,),
-                strict_reads=True,
-                completion_gate=False,
-            ),
-            target,
-            _validate_target,
-        ),
-    )
-
-    async def _attempt() -> str:
-        said: list[str] = []
-        async for message in with_idle_deadline(
-            query(prompt=kickoff, options=options),
-            label="materialization",
-        ):
-            log_message(message)
-            for block in getattr(message, "content", None) or []:
-                if value := getattr(block, "text", None):
-                    said.append(value)
-            if signal := result_signal(message):
-                said.append(signal)
-        return "\n".join(said)[-4000:]
-
-    costlog.bind(shot.folder, role="plan:materialize", model=model, tag=str(layer.id))
-    tpath = transcript.bind(shot.folder, "plan", label=f"materialize-layer-{layer.id}")
-    if tpath:
-        log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
-    transcript.prompt(
-        kickoff,
-        role="kickoff",
-        mode="PLAN_MATERIALIZE",
-        model=model,
-        layer=layer.id,
-        replacing=replacing,
-        max_turns=max_turns,
-    )
     try:
-        await run_session(
-            _attempt,
-            succeeded=lambda: materialization_finalization_current(
-                shot.folder,
-                target,
-                bundle_hash=bundle.content_hash,
-            ),
-            label=f"materialize layer {layer.id}",
-            accept_max_turns_if_succeeded=True,
+        await materialization_runtime.execute(
+            layout=layout, candidate=target, charter=system, kickoff=kickoff,
+            model=model, blender=blender, max_turns=max_turns,
+            fence_lease=fence_lease, overlay_root=Path(overlay_root) if overlay_root is not None else None,
         )
-    except AgentSessionFailure as exc:
-        log(f"! materialize session died: {str(exc)[:200]}")
-        transcript.event("died", error=str(exc)[:2000])
+    except (flynn.BudgetExhausted, flynn.InferenceFailure, flynn.ProposalRejected) as exc:
+        log(f"! native materialization stopped: {type(exc).__name__}")
         envelope = publish_materialization_stop(
             layout,
             bundle=bundle,
@@ -346,9 +216,7 @@ global authority, create unit state, write prose, or write another file."""
         raise run_artifacts.TypedStop(
             3, envelope, terminal_cause="materialization_failed"
         ) from exc
-    finally:
-        transcript.unbind()
-        costlog.unbind()
+    require_builder_execution_lease(fence_lease, shot.folder)
     try:
         publish_materialization(shot.folder, target, overlay_root=overlay_root)
     except (OSError, TypeError, ValueError, plan_authority.PlanPublicationError) as exc:
@@ -365,16 +233,9 @@ global authority, create unit state, write prose, or write another file."""
     log(f"deferred layer {layer.id} materialized against bundle {bundle.content_hash[:12]}")
 
 
-DRAFT_MODEL = DEFAULT_EXECUTION_MODEL
-# Draft and verify deliberately share the configured planner model. Their independence
-# comes from distinct sessions and an adversarial contract, not from pretending two calls
-# to one model are statistically independent. CLI flags can still create a mixed-model
-# lane when an experiment needs it.
-VERIFY_MODEL = DEFAULT_EXECUTION_MODEL
-MODEL = VERIFY_MODEL  # single-pass default
-
-
-async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str], bool], *, model, blender, max_turns):
+async def _rematerialize_layer(
+    shot, layer, authority: tuple[str, str, list[str], bool], *, model, blender, max_turns, fence_lease=None,
+):
     """Replace one materialized layer through the atomic authority-state publisher.
 
     Materialization is a decision, and a decision proven wrong must be replaceable —
@@ -455,6 +316,7 @@ async def _rematerialize_layer(shot, layer, authority: tuple[str, str, list[str]
         replacing=f"{trigger}\n\n{evidence_block}" if evidence_block else trigger,
         overlay_root=overlay,
         selected_authority=base_authority,
+        fence_lease=fence_lease,
     )
     published_authority = resolve_selected_authority(shot.folder)
     try:

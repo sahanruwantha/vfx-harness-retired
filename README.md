@@ -326,7 +326,7 @@ This is a strict migration. Obsolete schemas are rejected, not translated.
 
 ### Model lanes
 
-JIT planning and builder roles default to `claude-sonnet-5`; the visual critic defaults to
+Unit planning and builder roles default to `claude-sonnet-5`; the visual critic defaults to
 `claude-opus-5`. Override without code edits:
 
 ```bash
@@ -334,9 +334,15 @@ VFXH_EXECUTION_MODEL=claude-sonnet-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <sh
 VFXH_EXECUTION_MODEL=claude-opus-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <shot>
 ```
 
-`VFXH_PLANNER_MODEL` selects JIT planning. `VFXH_GLOBAL_PLANNER_MODEL` selects the
+`VFXH_PLANNER_MODEL` selects unit planning. `VFXH_GLOBAL_PLANNER_MODEL` selects the
 native Flynn global planner and defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
 Global planning requires `DEEPSEEK_API_KEY`; it uses no Claude session.
+Layer materialization also uses Flynn and `DEEPSEEK_API_KEY`.
+`VFXH_MATERIALIZATION_MODEL` defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
+`VFXH_MATERIALIZATION_SECONDS` and `VFXH_MATERIALIZATION_OUTPUT_TOKENS` default to
+600 seconds and 32768 output tokens per attempt. Unpriced USD caps are refused.
+Its session reports point to SQLite journals containing requests, tool observations and usage;
+successful finalization still requires the separate VFX publication transaction.
 `VFXH_BUILDER_MODEL`, `VFXH_SCRIPT_MODEL`,
 `VFXH_ASSET_MODEL`, and `VFXH_DISTILLER_MODEL` override individual roles. Changing the
 critic model, prompt, or evidence layout is a new judge configuration: qualify it before

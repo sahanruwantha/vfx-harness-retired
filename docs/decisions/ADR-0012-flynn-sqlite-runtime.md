@@ -350,3 +350,14 @@ publisher, and a spent or uncertain invocation cannot restart its budget. Diagno
 spikes need no promotion into contract evidence for this session: typed materialization
 validation and finalization, followed by the existing publication transaction, remain
 the acceptance path.
+
+Production layer materialization now uses that session through a DeepSeek adapter.
+VFX owns provider configuration and rejects unpriced USD caps. Its live ownership is
+the existing shot-wide execution fence, retained from the public planning entry point
+through separate authority publication. This supports controller child stages without
+pretending an inherited run path is the root owner's process capability. Unit planning
+reuses its already-held builder lease; standalone materialization acquires its own.
+Fresh candidate paths preserve failed attempts, and SQLite request/result/usage records
+replace the old materialization-only Claude transcript and cost callbacks. Known
+inference failures and exhausted budgets compile the existing VFX typed stop; unexpected
+errors and lost ownership are not converted into domain success or retried automatically.

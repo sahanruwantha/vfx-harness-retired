@@ -316,21 +316,8 @@ def test_calibration_singles_stay_bounded_before_any_batch() -> None:
     assert budget.take_single()         # reset restores precise follow-up probes
 
 
-def test_materialization_session_denies_glob_and_registers_patch(tmp_path: Path) -> None:
+def test_legacy_planning_transport_registers_patch(tmp_path: Path) -> None:
     from vfx_harness.agents.plan_tools import build_plan_tools
-    from vfx_harness.agents.planner import MATERIALIZATION_DENIED_TOOLS
-
-    assert MATERIALIZATION_DENIED_TOOLS == [
-        "Bash",
-        "Edit",
-        "Glob",
-        "Grep",
-        "Task",
-        "Agent",
-        "ListAgents",
-        "ScheduleWakeup",
-    ]
-
     candidate = tmp_path / "jit-layer-1.json"
     candidate.write_text("{}", encoding="utf-8")
     _server, names = build_plan_tools(
@@ -373,16 +360,15 @@ def test_materialization_registers_incremental_unit_staging_tools(tmp_path: Path
     }
 
 
-def test_materializer_denies_generic_write_and_requires_valid_staged_candidate() -> None:
+def test_materializer_uses_native_runtime_and_separate_publication() -> None:
     import inspect
 
     from vfx_harness.agents import planner
 
     source = inspect.getsource(planner._materialize_deferred_layer)
-    assert 'disallowed_tools=[*MATERIALIZATION_DENIED_TOOLS, "Write"]' in source
-    assert "stage_materialization_unit" in source
-    assert "unstage_materialization_unit" in source
-    assert "mint_refobs" in source
-    assert "materialization_finalization_current" in source
-    assert "accept_max_turns_if_succeeded=True" in source
-    assert '"gate_preview"' not in source
+    assert "materialization_runtime.execute(" in source
+    assert "require_builder_execution_lease(" in source
+    assert "publish_materialization(" in source
+    assert "sdk_options(" not in source
+    assert "run_session(" not in source
+    assert "query(" not in source

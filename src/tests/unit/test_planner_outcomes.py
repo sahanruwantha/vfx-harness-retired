@@ -969,13 +969,11 @@ def test_materialization_kickoff_compiles_frame_authority_and_named_outcomes(
     assert "readable_files" not in kickoff
 
 
-def test_materialize_deferred_layer_binds_a_transcript() -> None:
-    """Remat6's failure loop was unreconstructable: log_message only journals when
-    transcript is bound, and materialization never bound."""
+def test_materialization_uses_the_native_durable_session_boundary() -> None:
+    """The native journal replaces the optional Claude transcript/cost callbacks."""
     import inspect
 
     source = inspect.getsource(planner._materialize_deferred_layer)
-    assert "transcript.bind" in source
-    assert "materialize-layer-" in source
-    assert "transcript.unbind" in source
-    assert "costlog.bind" in source
+    assert "materialization_runtime.execute(" in source
+    assert "run_session(" not in source
+    assert "query(" not in source

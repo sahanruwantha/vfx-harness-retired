@@ -48,6 +48,7 @@ from vfx_harness.orchestration.authority_selection_transaction import (
 )
 from vfx_harness.orchestration.builder_execution_fence import (
     BuilderExecutionFenceLease,
+    builder_execution_fence,
     require_builder_execution_lease,
 )
 from vfx_harness.orchestration.layer_outcome_context import prior_outcomes_block
@@ -108,6 +109,7 @@ async def _generate_layer_plan(
     rematerialize: tuple[str, str, list[str], bool] | None = None,
     materialize_only: bool = False,
     attempt_guard: UnitAttemptGuard | None = None,
+    fence_lease: BuilderExecutionFenceLease | None = None,
 ) -> Path:
     """Generate one work-unit plan after its declared dependencies have sealed outcomes.
 
@@ -115,7 +117,9 @@ async def _generate_layer_plan(
     global plan or machine contracts, and there is no monolithic-plan fallback.
     """
     shot = planner_package().load_shot(folder)
-    model = model or Settings.from_environment(load_dotenv_file=False).planner_model
+    settings = Settings.from_environment(load_dotenv_file=False)
+    materialization_model = model or settings.materialization_model
+    model = model or settings.planner_model
     selected_authority = resolve_selected_authority(shot.folder)
     if selected_authority.plan is None:
         raise ValueError("layer planning requires selected global plan authority")
@@ -138,16 +142,18 @@ async def _generate_layer_plan(
         # accepted units are not a door refusal because the transaction preserves exact
         # unchanged unit bindings (HIR-0026, HIR-0052, HIR-0171).
         layer = await _rematerialize_layer(
-            shot, layer, rematerialize, model=model, blender=blender, max_turns=max_turns
+            shot, layer, rematerialize, model=materialization_model, blender=blender,
+            max_turns=max_turns, fence_lease=fence_lease,
         )
     elif layer.execution == "jit_deferred":
         await planner_package()._materialize_deferred_layer(
             shot,
             layer,
-            model=model,
+            model=materialization_model,
             blender=blender,
             max_turns=max_turns,
             selected_authority=selected_authority,
+            fence_lease=fence_lease,
         )
 
     # Materialization is an authority transition, so the selected snapshot after that
@@ -500,18 +506,20 @@ async def generate_layer_plan(
 ) -> Path:
     """Materialize a layer or plan one claimed unit under its live builder fence."""
 
-    if materialize_only:
-        return await _generate_layer_plan(
-            folder,
-            layer_id,
-            unit_id=unit_id,
-            model=model,
-            blender=blender,
-            max_turns=max_turns,
-            rematerialize=rematerialize,
-            materialize_only=True,
-            attempt_guard=attempt_guard,
-        )
+    if materialize_only and fence_lease is None:
+        with builder_execution_fence(folder) as owned_lease:
+            return await generate_layer_plan(
+                folder,
+                layer_id,
+                unit_id=unit_id,
+                model=model,
+                blender=blender,
+                max_turns=max_turns,
+                rematerialize=rematerialize,
+                materialize_only=True,
+                attempt_guard=attempt_guard,
+                fence_lease=owned_lease,
+            )
 
     require_builder_execution_lease(fence_lease, folder)
     with fence_lease.operation(folder):
@@ -523,6 +531,7 @@ async def generate_layer_plan(
             blender=blender,
             max_turns=max_turns,
             rematerialize=rematerialize,
-            materialize_only=False,
+            materialize_only=materialize_only,
             attempt_guard=attempt_guard,
+            fence_lease=fence_lease,
         )

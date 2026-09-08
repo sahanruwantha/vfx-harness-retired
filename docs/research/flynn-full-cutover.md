@@ -677,3 +677,48 @@ diff checks passed; no model calls or production shots were used.
 Full regression validation passed **3,276 tests** (815 + 814 + 814 + 833), with
 15 existing Pillow warnings. All four groups exited successfully on frozen runtime
 source. Ruff and diff checks remained clean. SDK source and ARC were unchanged.
+
+## Production materialization cutover
+
+`planner/rematerialize.py` now calls `materialization_runtime.execute`, which configures
+the native Flynn session with the existing charter and exact compiled layer authority.
+It no longer constructs a Claude client, MCP tool server, SDK options, retry loop, or
+write-feedback hooks. The materialization-only hook and obsolete deny-list/default-model
+exports were removed. The mixed planner package still contains the legacy unit planner;
+the standalone native runtime and session import without Claude.
+
+Materialization has independent model, time and output-token settings, defaulting to
+the configured DeepSeek model, 600 seconds and 32768 tokens. An explicit model override
+is validated, credentials are required before inference, and unpriced USD limits refuse.
+Unit planning retains its own model setting until that role is migrated. The existing
+requirement-derived step cap remains unchanged.
+
+The previous step's root-owner lease proposal is corrected: controller materialization
+can execute in a child stage. The public planning boundary instead retains the existing
+shot-wide execution fence, reuses a supplied builder lease, and passes it through every
+native request and dispatch to publication. A concurrent builder or expired lease
+refuses. Both candidate and journal get fresh identities, preserving earlier attempts.
+
+The SQLite journal replaces materialization's optional transcript/cost callbacks and
+retains complete requests, calls, observations and neutral usage. The session report
+selects it and the final candidate identity. The VFX publisher still independently
+verifies finalization and commits selected authority; known inference failures and
+budget exhaustion produce the existing typed materialization stop without retries.
+
+Production unit planning, builders, critics and remaining legacy planning tool adapters
+are not part of this cutover. Their migration remains necessary before removing the
+Claude dependency from the package as a whole.
+
+Focused regression validation passed **98 tests** across the native session, production
+adapter, rematerialization preservation, typed stops and architecture checks. The final
+production-boundary set passed **11 tests**, including an additional public-entry-point
+run through real staging, finalization and authority publication using scripted inference
+and a controlled gate. These tests reopen the journal's complete requests/calls/results
+and usage, check fresh settings and credentials, reject expired/contending fences, and
+confirm the public wrapper retains or acquires the same live lease. The isolated installed
+native provider/session modules import with Claude blocked. No paid inference or production
+shot was used.
+
+Full regression validation passed **3,291 tests** (818 + 818 + 818 + 837), with
+15 existing Pillow warnings. All groups exited successfully on frozen runtime source.
+Complete-source Ruff and diff checks passed. SDK source and ARC were unchanged.

@@ -22,7 +22,16 @@ default wall-time cap and 32768 output-token budget, configurable with
 `VFXH_GLOBAL_PLAN_SECONDS` and `VFXH_GLOBAL_PLAN_OUTPUT_TOKENS`. Global planning
 refuses `VFXH_RUN_MAX_USD` until its usage has a price policy.
 
-JIT planning, builders and critics still use their existing Claude sessions.
+Layer materialization and rematerialization use Flynn under the live shot-wide execution
+fence, including controller child stages. `VFXH_MATERIALIZATION_MODEL` defaults to
+`DEEPSEEK_MODEL`, then Flynn's vision model; unsupported models refuse. The independent
+`VFXH_MATERIALIZATION_SECONDS` and `VFXH_MATERIALIZATION_OUTPUT_TOKENS` caps default to
+600 and 32768. This role also refuses unpriced USD caps. Read its
+`reports/materialization-session-*.json` and the selected SQLite journal under
+`checkpoints/flynn/` for requests, results, usage and termination. Candidate and journal
+identities are fresh for each attempt; there is no automatic model-session retry.
+
+Unit planning, builders and critics still use their existing Claude sessions.
 When both Claude credentials are configured, the harness selects the subscription token
 (`CLAUDE_CODE_OAUTH_TOKEN`) by default and withholds `ANTHROPIC_API_KEY` from the SDK; set
 `VFXH_CREDENTIAL=api_key` to bill API credits instead. `VFXH_PLAN_MAX_TURNS` (default 12)

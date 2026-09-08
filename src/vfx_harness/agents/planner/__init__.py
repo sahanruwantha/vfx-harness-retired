@@ -17,16 +17,11 @@ from vfx_harness.agents.planner.kickoff import _owned_requirements_block as _own
 from vfx_harness.agents.planner.kickoff import _sealed_outcomes_block as _sealed_outcomes_block
 from vfx_harness.agents.planner.kickoff import _unit_capability_authority_block as _unit_capability_authority_block
 from vfx_harness.agents.planner.kickoff import _upstream_interfaces_block as _upstream_interfaces_block
-from vfx_harness.agents.planner.kickoff import _with_target_feedback as _with_target_feedback
 from vfx_harness.agents.planner.loops import generate_plan_two_pass as generate_plan_two_pass
 from vfx_harness.agents.planner.loops import generate_plan_until_clean as generate_plan_until_clean
 from vfx_harness.agents.planner.loops import main as main
-from vfx_harness.agents.planner.rematerialize import DRAFT_MODEL as DRAFT_MODEL
-from vfx_harness.agents.planner.rematerialize import MODEL as MODEL
-from vfx_harness.agents.planner.rematerialize import VERIFY_MODEL as VERIFY_MODEL
 from vfx_harness.agents.planner.rematerialize import _materialize_deferred_layer as _materialize_deferred_layer
 from vfx_harness.agents.planner.rematerialize import _rematerialize_layer as _rematerialize_layer
-from vfx_harness.agents.planner.types import MATERIALIZATION_DENIED_TOOLS as MATERIALIZATION_DENIED_TOOLS
 from vfx_harness.agents.planner.types import PlanGateFailure as PlanGateFailure
 from vfx_harness.agents.planner.types import PlanLoopResult as PlanLoopResult
 from vfx_harness.agents.planner.types import _phase_tools as _phase_tools
