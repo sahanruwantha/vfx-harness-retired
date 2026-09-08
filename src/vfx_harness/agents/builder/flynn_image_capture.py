@@ -13,6 +13,7 @@ from vfx_harness.agents.builder import candidate_script, flynn_image_checks, pri
 from vfx_harness.agents.builder.attempt_guard import AttemptBoundBlenderSession, UnitAttemptGuard
 from vfx_harness.agents.builder.models import _RESET
 from vfx_harness.domain.image_debts import image_contract_debt_cards
+from vfx_harness.domain.judgment_debt_models import render_mode_for_medium, unit_observation_medium
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import authority_selection_transaction as durable
 from vfx_harness.orchestration.builder_execution_fence import require_builder_execution_lease
@@ -45,6 +46,7 @@ class UnitImageCapture:
             raise ValueError("image capture requires the exact attempt's shot")
         if attempt_guard.unit.construction.route != "procedural":
             raise ValueError("native image capture currently requires procedural construction")
+        self.mode = render_mode_for_medium(unit_observation_medium(attempt_guard.unit))
         self.frames = tuple(sorted({point.frame for point in attempt_guard.unit.evaluation.judges}))
         self.candidate = candidate_script.exact_candidate_script_path(self.root, attempt_guard)
         # Keep receipt-backed lists intact so their own current-publication checks run.
@@ -72,7 +74,8 @@ class UnitImageCapture:
         self.capture_tool = flynn.Tool.structured(
             "capture_unit_frame", description=(
                 "Cold-render the harness-selected prior chain and current candidate at one declared judge frame. "
-                "Returns both images and a current-candidate payment handle at fixed EEVEE/0.5 settings. "
+                "Returns both images and a current-candidate payment handle "
+                "in the unit's declared medium at scale 0.5. "
                 "A new candidate invalidates previous candidate handles. Does not accept the unit."
             ), parameters_json=json.dumps({
                 "type": "object", "properties": {"frame": {"type": "integer", "enum": self.frames}},
@@ -133,8 +136,8 @@ class UnitImageCapture:
     def render(self, frame, role, candidate_sha):
         self.session.run(f"bpy.context.scene.frame_set({frame})", journal=False)
         self.session.run(prior._ARTIFACT_EVALUATION_BARRIER, journal=False)
-        rendered = self.session.call("render", frame=frame, mode="eevee", scale=0.5)
-        if rendered.get("frame") != frame or rendered.get("mode") != "eevee" or rendered.get("diagnostic_only"):
+        rendered = self.session.call("render", frame=frame, mode=self.mode, scale=0.5)
+        if rendered.get("frame") != frame or rendered.get("mode") != self.mode or rendered.get("diagnostic_only"):
             raise ValueError("image capture returned a different frame, medium or diagnostic render")
         payload = read_real_file(self.root, Path(rendered["image_path"]), "native rendered image")
         snapshot, _ = image_inputs.snapshot_image_payload(payload, "native unit render")
@@ -142,7 +145,7 @@ class UnitImageCapture:
             "run_id": self.attempt.claim.run_id, "unit_id": self.attempt.claim.unit_id,
             "unit_hash": self.attempt.claim.unit_digest, "claim_id": self.attempt.claim.claim_id,
             "parent_chain_hash": self.parent_hash, "candidate_sha256": candidate_sha,
-            "frame": frame, "mode": "eevee", "scale": 0.5,
+            "frame": frame, "mode": self.mode, "scale": 0.5,
             "resolution": rendered["resolution"], "role": role, "sha256": digest(payload),
         }
         key = digest(json.dumps(record, sort_keys=True).encode())

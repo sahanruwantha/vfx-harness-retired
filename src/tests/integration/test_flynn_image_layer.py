@@ -29,8 +29,8 @@ host['bvfx_role'] = 'support.marker'
 '''
 
 
-def layer_authority(root):
-    image_authority(root)
+def layer_authority(root, *, medium="eevee"):
+    image_authority(root, medium=medium)
     document = json.loads((root / 'layers.json').read_text())
     layer = document['layers'][0]
     layer.update(id='2', script='build/02_image.py')
@@ -92,14 +92,14 @@ def publish_layers(root, layout, **kwargs):
     return ready[1:]
 
 
-def fixture(root, monkeypatch):
+def fixture(root, monkeypatch, *, medium="eevee"):
     pending = []
 
     def publish(*args, **kwargs):
         pending.extend(publish_layers(*args, **kwargs))
 
     shot, _, _, selected, _, layout = _authority(
-        root, monkeypatch, configure=layer_authority, claim=False, publisher=publish,
+        root, monkeypatch, configure=lambda root: layer_authority(root, medium=medium), claim=False, publisher=publish,
         run_parameters={'command': 'run', 'dispatch_kind': 'driver'},
     )
     layers = load_layers(shot, selected_authority=selected)
@@ -131,9 +131,10 @@ def materialize_image_layer(root, shot, selected, layout, pending):
 
 
 class Adapter:
-    def __init__(self, root, unit_id):
+    def __init__(self, root, unit_id, *, medium="eevee"):
         self.root = root
         self.unit_id = unit_id
+        self.medium = medium
         self.index = 0
 
     async def generate(self, request):
@@ -148,13 +149,15 @@ class Adapter:
         elif image and phase == 2:
             assert len(request.images) == 2
             data = json.loads(request.observation)['data']
+            assert data['candidate']['mode'] == data['adversary']['mode'] == self.medium
             metric = Check('measure', 'region_mean', '>=', 0, float('inf'), regions={'r': (0, 0, 1, 1)})
             before = evaluate(metric, self.root / data['adversary']['path'])
             after = evaluate(metric, self.root / data['candidate']['path'])
-            assert after > before + 50
+            assert abs(after - before) > 50
             call = flynn.ToolCall('propose_checks', json.dumps({
                 'checks': [{'id': 'image-gap', 'frame': 240, 'axis': 'final_lock', 'metric': 'region_mean',
-                            'regions': {'r': [0, 0, 1, 1]}, 'op': '>=', 'lo': (before + after) / 2,
+                            'regions': {'r': [0, 0, 1, 1]}, 'op': '>=' if after > before else '<=',
+                            ('lo' if after > before else 'hi'): (before + after) / 2,
                             'ref': 'refs/a.png'}], 'after_handle': data['candidate']['handle'],
             }))
         elif phase == (3 if image else 1):

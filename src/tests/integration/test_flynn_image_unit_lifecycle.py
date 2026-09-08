@@ -37,13 +37,13 @@ mesh.materials.append(material)
 '''
 
 
-def image_authority(root):
+def image_authority(root, *, medium="eevee"):
     layers = json.loads((root / 'layers.json').read_text())
     layer = layers['layers'][0]
     layer['evidence_domains'] = ['scene', 'image', 'projected_composition']
     layer['judge'] = [{'frame': 240, 'ref': 'refs/a.png'}]
     unit = layer['stages'][0]
-    unit['look_capabilities'] = ['material']
+    unit['look_capabilities'] = ['material'] if medium == 'eevee' else []
     unit['provides'] = ['geometry', 'illumination']
     unit['evaluation']['judge'] = layer['judge']
     claim = unit['evaluation']['claims'][0]
@@ -73,13 +73,18 @@ def image_authority(root):
     Image.new('RGB', (64, 64), (220, 220, 220)).save(root / 'refs/a.png')
 
 
+@pytest.mark.parametrize('medium', ['solid', 'eevee'])
 @pytest.mark.parametrize('mode', ['finish', 'recapture', 'tamper'])
-def test_native_image_unit_earns_completion_from_canonical_render(tmp_path, monkeypatch, mode):
+def test_native_image_unit_earns_completion_from_canonical_render(tmp_path, monkeypatch, mode, medium):
     recapture = mode == 'recapture'
-    shot, layer, unit, selected, guard, layout = _authority(tmp_path, monkeypatch, configure=image_authority)
+    shot, layer, unit, selected, guard, layout = _authority(
+        tmp_path, monkeypatch, configure=lambda root: image_authority(root, medium=medium),
+    )
     source = tmp_path / 'prior.py'
     source.write_text(PRIOR.split('bpy.ops.mesh', 1)[0])
-    candidate_sha = hashlib.sha256(PROGRAM.encode()).hexdigest()
+    # This fixture really emits in both cases; solid judges its geometry, not emission.
+    program = PROGRAM
+    candidate_sha = hashlib.sha256(program.encode()).hexdigest()
     requests = []
     captured = {}
 
@@ -102,22 +107,24 @@ def test_native_image_unit_earns_completion_from_canonical_render(tmp_path, monk
             step = len(requests)
             requests.append(request)
             if step == 0:
-                call = flynn.ToolCall('write_candidate', json.dumps({'source': PROGRAM}))
+                call = flynn.ToolCall('write_candidate', json.dumps({'source': program}))
             elif step == 1:
                 call = flynn.ToolCall('capture_unit_frame', '{"frame":240}')
             elif step == 2:
                 feedback = json.loads(request.observation)
                 assert len(request.images) == 2
                 data = feedback['data']
+                assert data['candidate']['mode'] == data['adversary']['mode'] == medium
                 captured.update(data['candidate'])
                 metric = Check('measure', 'region_mean', '>=', 0, float('inf'), regions={'r': (0, 0, 1, 1)})
                 before = evaluate(metric, tmp_path / data['adversary']['path'])
                 after = evaluate(metric, tmp_path / data['candidate']['path'])
-                assert after > before + 50
+                assert abs(after - before) > 50
                 call = flynn.ToolCall('propose_checks', json.dumps({
                     'checks': [{'id': 'image-gap', 'frame': 240, 'axis': 'final_lock',
                                 'metric': 'region_mean', 'regions': {'r': [0, 0, 1, 1]},
-                                'op': '>=', 'lo': (before + after) / 2, 'ref': 'refs/a.png'}],
+                                'op': '>=' if after > before else '<=',
+                                ('lo' if after > before else 'hi'): (before + after) / 2, 'ref': 'refs/a.png'}],
                     'after_handle': data['candidate']['handle'],
                 }))
             elif step == 3:
@@ -166,7 +173,7 @@ def test_native_image_unit_earns_completion_from_canonical_render(tmp_path, monk
         assert render_sha != candidate_sha
         frozen = unit_state.freeze_checkpoint(
             tmp_path, '1', unit, active_contract_ids=(), candidate_hash=render_sha,
-            settings_hash=hashlib.sha256(b'eevee').hexdigest(), script_hash=candidate_sha,
+            settings_hash=hashlib.sha256(medium.encode()).hexdigest(), script_hash=candidate_sha,
             input_hash=guard.expected_plan_hash, layer_active_vis_ids=(),
             attempt=guard.claim, selection_token=selected.selection_token,
         )

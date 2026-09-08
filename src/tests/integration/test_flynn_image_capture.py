@@ -1,4 +1,4 @@
-"""Real confined EEVEE images from exact cold prior/candidate replay."""
+"""Real confined Workbench images from exact cold prior/candidate replay."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ m.node_tree.links.new(e.outputs[0], o.inputs['Surface'])
 bpy.context.object.data.materials.append(m)
 '''
 CANDIDATE = '''import bpy
-bpy.data.materials.get('fixture_surface').node_tree.nodes.get('Emission').inputs[0].default_value = (0.7, 0.7, 0.7, 1)
+bpy.context.object.scale = (0.1, 0.1, 0.1)
 '''
 
 
@@ -55,12 +55,14 @@ def test_cold_capture_ignores_warm_scene_and_pays_from_its_actual_images(tmp_pat
         metric = Check('measure', 'region_mean', '>=', 0, float('inf'), regions={'r': (0, 0, 1, 1)})
         before = evaluate(metric, tmp_path / data['adversary']['path'])
         after = evaluate(metric, tmp_path / data['candidate']['path'])
-        assert after > before + 50
+        assert abs(after - before) > 50
+        assert data['candidate']['mode'] == data['adversary']['mode'] == 'solid'
         assert data['candidate']['frame'] == data['adversary']['frame'] == 240
         assert data['candidate']['resolution'] == data['adversary']['resolution']
         args = {'checks': [{'id': 'measured-image-gap', 'frame': 240, 'axis': 'final_lock',
                             'metric': 'region_mean', 'regions': {'r': [0, 0, 1, 1]},
-                            'op': '>=', 'lo': (before + after) / 2, 'ref': 'refs/a.png'}],
+                            'op': '>=' if after > before else '<=',
+                            ('lo' if after > before else 'hi'): (before + after) / 2, 'ref': 'refs/a.png'}],
                 'after_handle': data['candidate']['handle']}
         payment = asyncio.run(capture.payment.tool.execute(json.dumps(args)))
         assert json.loads(flynn.ToolResult.from_json(payment).data_json)['kept_ids'] == ['measured-image-gap']

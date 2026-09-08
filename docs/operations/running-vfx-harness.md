@@ -45,10 +45,10 @@ Flynn's vision model). The `VFXH_EXECUTABLE_BUILDER_SECONDS`,
 default to 600 seconds, 32768 tokens and 12 total steps including scripted canonical
 replay (minimum four). This path requires `DEEPSEEK_API_KEY`, refuses unpriced USD caps,
 and never retries a failed native attempt through Claude. Its usage reports select
-claim-owned SQLite journals under `checkpoints/flynn/`. Executable EEVEE image units also
+claim-owned SQLite journals under `checkpoints/flynn/`. Executable EEVEE and Workbench solid image units also
 use this path: capture/payment operations consume steps and reserve room for probe,
 freeze and canonical replay. Every judge point needs executable required claims, with
-no provisional visual requirement. Solid, qualitative and generated-asset units and
+no provisional visual requirement. Qualitative and generated-asset units and
 critics retain their existing Claude sessions until their native migration. An image
 unit's executable checks do not waive the composed layer's separate look judgment.
 When both Claude credentials are configured, the harness selects the subscription token

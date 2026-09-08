@@ -743,3 +743,31 @@ proximity, or switch the production critic. The owning production wrapper still 
 reviewed selected-artifact authority. Tests exercise debt derivation through offline
 calibration, measured publication, explicit binding, group composition and native admission,
 while proving no VFX acceptance is granted.
+
+### Native executable Workbench image routing
+
+Native capture derives `solid | eevee` through the existing typed unit observation
+medium mapping used by canonical replay. It records and checks that medium on both
+the cold prior-chain adversary and the separately replayed candidate, at scale 0.5
+and matching resolution. A worker returning another medium refuses before any
+handle is registered. Image payment instructions name matching harness settings
+instead of telling every unit to use EEVEE.
+
+The dispatcher no longer treats Workbench as a reason to select the legacy builder.
+Procedural units with executable required claims at every judge point and no
+provisional visual requirements use Flynn regardless of their declared render medium.
+Qualitative and generated construction remain separate migration work. Optical-source
+requirements, claim authority, image-debt ownership and completion receipts are unchanged.
+In particular, removing look capabilities is not permission to invent an optical source
+or use solid evidence to pay a contract originally measured in EEVEE.
+
+The integration fixtures exercise real confined solid capture, image payment, recapture
+and independent canonical completion, including substitution after freeze. The solid
+fixture actually emits and declares that capability but observes geometry through
+Workbench. The EEVEE fixture observes its emission. The production driver fixture also
+checks accepted predecessors, composed replay and refusal after artifact substitution.
+Its EEVEE variant retains the declared composed look vote; the solid variant declares
+only executable form claims and owes no additional look vote. Model responses and the
+EEVEE look critic are scripted in these fixtures, so they do not demonstrate live
+inference, qualification or full-shot acceptance. Final regression results are recorded
+in the cutover research log.

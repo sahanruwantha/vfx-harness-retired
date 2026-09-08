@@ -4,6 +4,10 @@ The owner requires complete removal of Claude and the Claude Agent SDK. Flynn is
 single target runtime. Extend Flynn where needed; do not emulate Claude's API or retain
 an engine selector. SDK changes land on main and consumers install main over SSH.
 
+The current remaining paths and validation obligations are tracked in the
+[capability matrix](flynn-cutover-capability-matrix.md). The sections below retain
+implementation history.
+
 ## Ownership and order
 
 1. **Structured tools and results (SDK).** Native text/image content, immutable structured
@@ -1335,3 +1339,35 @@ calibration and plan-backed selection by the owning wrapper remain migration gat
 The frozen-source full suite passed all 3,531 VFX tests (874 + 873 + 892 + 892),
 with 84 existing Pillow deprecation warnings. The longest process took 1,194.29 seconds.
 Complete-source Ruff and final diff checks passed.
+
+## Executable Workbench image production path
+
+Native capture now derives the exact canonical medium from the unit, records it on
+candidate and adversary, and refuses a worker returning another medium before handle
+registration. Procedural executable solid-image units use the default Flynn dispatcher.
+The obsolete EEVEE-only routing condition and unused raster eligibility parameter are
+removed. Shared payment instructions now require the harness-selected settings.
+
+Initial integration fixtures were rejected by existing authority gates: adding material
+capability without required image claims was invalid, and removing an actual emission
+capability made image debt lack its declared optical source. The fixtures were corrected
+without changing those gates. Workbench measures geometry; the emission fixture still
+really emits and declares illumination. The production solid fixture has no look
+capabilities and correctly owes no composed look vote; the EEVEE variant retains its
+scripted look critic. Both still require independent replay and completion/publication
+receipts, and artifact substitution cannot be hidden by a successful child exit.
+
+Validation: complete-source Ruff and public `.venv/bin/vfx --help` passed. The focused
+solid capture/lifecycle run passed four tests, including recapture and post-freeze
+substitution refusal. Full regression passed **3,535 tests**, with 121 Pillow deprecation
+warnings, using unchanged production source throughout. Logs are under
+`/tmp/vfx-spike-regression-wtbsetqq`: shard 0, 875 passed (27 warnings); shard 1,
+874 passed (37 warnings); shard 2, 893 passed (35 warnings); shard 3, 893 passed
+(22 warnings). This includes default solid/EEVEE driver routing and publication
+substitution refusal after complete dependent-layer builds.
+
+SDK main and VFX's SSH installation both remain
+`189a4776559a09120111f6557ee14731993874c6`. No SDK/ARC changes or paid inference were
+needed. These scripted-provider Blender tests do not establish live visual judgment
+or full-shot acceptance. The capability matrix records the remaining complete-cutover
+obligations, led by the common production critic and its qualification authority.

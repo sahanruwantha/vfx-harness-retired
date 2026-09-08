@@ -139,7 +139,7 @@ def _prepare_feedback(request: flynn.InferenceRequest) -> flynn.InferenceRequest
     return replace(request, observation=feedback, images=images)
 
 
-def native_execution_refusal(unit, *, raster: bool) -> str | None:
+def native_execution_refusal(unit) -> str | None:
     """Shared domain eligibility for routing and explicit native execution.
 
     This governs one unit, not the composed layer's independent look judgment.
@@ -150,8 +150,6 @@ def native_execution_refusal(unit, *, raster: bool) -> str | None:
             return "Flynn requires executable claims covering every judge frame; visual judgment is unsupported"
     if getattr(unit, "provisional_requirement_ids", ()):
         return "Flynn executable unit cannot decide provisional visual requirements"
-    if raster and evidence._unit_raster_mode(unit) != "eevee":
-        return "Flynn image capture requires the unit's canonical medium to be EEVEE"
     if unit.construction.route != "procedural":
         return "Flynn executable unit currently requires procedural construction"
     return None
@@ -233,7 +231,7 @@ async def _build_unit(
     if selected_authority != attempt_guard.selected_authority:
         raise ValueError("Flynn selected authority must be the exact attempt's snapshot")
     raster = evidence._unit_requires_raster(shot, active_unit, selected_authority=selected_authority)
-    refusal = native_execution_refusal(active_unit, raster=raster)
+    refusal = native_execution_refusal(active_unit)
     if refusal is not None:
         raise ValueError(refusal)
     completion_authorization = unit_completion_state.authorize_completed_units_for_layer(

@@ -10,6 +10,7 @@ import flynn_agents_sdk as flynn
 import pytest
 from flynn_agents_sdk import deepseek
 
+from tests.integration.test_flynn_image_unit_lifecycle import image_authority
 from tests.integration.test_flynn_unit_lifecycle import _authority
 from vfx_harness.agents import builder
 from vfx_harness.agents.builder import unit_dispatch
@@ -27,8 +28,10 @@ class Adapter:
 
 
 @pytest.fixture
-def bound(tmp_path, monkeypatch):
-    state = _authority(tmp_path, monkeypatch)
+def bound(tmp_path, monkeypatch, request):
+    medium = getattr(request, "param", None)
+    configure = (lambda root: image_authority(root, medium=medium)) if medium else None
+    state = _authority(tmp_path, monkeypatch, configure=configure)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-key")
     monkeypatch.setenv("VFXH_EXECUTABLE_BUILDER_MODEL", deepseek.VISION_MODEL)
     monkeypatch.delenv("VFXH_RUN_MAX_USD", raising=False)
@@ -109,21 +112,11 @@ def test_native_failure_propagates_without_retry_or_other_engine(bound, monkeypa
     assert len(calls) == 1
 
 
-def test_solid_route_stays_explicit_and_does_not_construct_native_provider(bound, monkeypatch):
-    monkeypatch.setattr(unit_dispatch.evidence, "_unit_requires_raster", lambda *a, **kw: True)
-    monkeypatch.setattr(deepseek, "DeepSeekAdapter", lambda **kw: pytest.fail("raster reached native provider"))
-
-    async def raster(*args, **kwargs):
-        assert kwargs["attempt_guard"] is bound[4]
-        return "raster fixture"
-
-    monkeypatch.setattr(unit_dispatch.unit_loop, "build_unit", raster)
-    assert invoke(bound) == "raster fixture"
-
-
-def test_executable_eevee_route_uses_native_engine(bound, monkeypatch):
-    monkeypatch.setattr(unit_dispatch.evidence, "_unit_requires_raster", lambda *a, **kw: True)
-    monkeypatch.setattr(unit_dispatch.evidence, "_unit_raster_mode", lambda unit: "eevee")
+@pytest.mark.parametrize("bound", ["solid", "eevee"], indirect=True)
+def test_executable_image_route_uses_native_engine(bound, monkeypatch):
+    assert unit_dispatch.flynn_unit.evidence._unit_requires_raster(
+        bound[0], bound[2], selected_authority=bound[3],
+    )
     monkeypatch.setattr(deepseek, "DeepSeekAdapter", lambda **kw: Adapter())
     monkeypatch.setattr(unit_dispatch.unit_loop, "build_unit", lambda *a, **kw: pytest.fail("legacy image engine"))
 
@@ -135,7 +128,7 @@ def test_executable_eevee_route_uses_native_engine(bound, monkeypatch):
     assert invoke(bound) == "native image"
 
 
-@pytest.mark.parametrize("unsupported", ["qualitative", "uncovered", "provisional", "construction", "solid"])
+@pytest.mark.parametrize("unsupported", ["qualitative", "uncovered", "provisional", "construction"])
 def test_native_eligibility_refuses_unsupported_evidence(bound, unsupported):
     unit = bound[2]
     if unsupported == "qualitative":
@@ -149,7 +142,7 @@ def test_native_eligibility_refuses_unsupported_evidence(bound, unsupported):
                                construction=unit.construction)
     elif unsupported == "construction":
         unit = replace(unit, construction=replace(unit.construction, route="generated"))
-    assert unit_dispatch.flynn_unit.native_execution_refusal(unit, raster=unsupported == "solid")
+    assert unit_dispatch.flynn_unit.native_execution_refusal(unit)
 
 
 def test_native_configuration_is_independent_of_remaining_builder_model(monkeypatch):

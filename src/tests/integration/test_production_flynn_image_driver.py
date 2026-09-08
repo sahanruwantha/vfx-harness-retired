@@ -22,8 +22,9 @@ from vfx_harness.orchestration import run_owner_boundary, unit_state
 from vfx_harness.orchestration.layer_publication import require_current_layer_publication
 
 
-def test_driver_requires_current_image_publication_after_native_build(tmp_path, monkeypatch):
-    shot, layers, selected, layout, pending = fixture(tmp_path, monkeypatch)
+@pytest.mark.parametrize("medium", ["solid", "eevee"])
+def test_driver_requires_current_image_publication_after_native_build(tmp_path, monkeypatch, medium):
+    shot, layers, selected, layout, pending = fixture(tmp_path, monkeypatch, medium=medium)
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'fixture-key')
     monkeypatch.setenv('VFXH_EXECUTABLE_BUILDER_MODEL', deepseek.VISION_MODEL)
     monkeypatch.setenv('VFXH_EXECUTABLE_BUILDER_MAX_STEPS', '8')
@@ -48,11 +49,11 @@ def test_driver_requires_current_image_publication_after_native_build(tmp_path, 
             if self.adapter is None:
                 card = json.loads(request.objective.split('[unit-scope]\n', 1)[1].split('\n\n[unit-plan]', 1)[0])
                 executed.append(card['unit_id'])
-                self.adapter = Adapter(tmp_path, card['unit_id'])
+                self.adapter = Adapter(tmp_path, card['unit_id'], medium=medium)
             return await self.adapter.generate(request)
 
     def forbidden(*args, **kwargs):
-        raise AssertionError('Executable EEVEE production work reached the legacy unit engine')
+        raise AssertionError('Executable image production work reached the legacy unit engine')
 
     monkeypatch.setattr(deepseek, 'DeepSeekAdapter', Provider)
     monkeypatch.setattr(unit_dispatch.unit_loop, 'build_unit', forbidden)
@@ -81,7 +82,8 @@ def test_driver_requires_current_image_publication_after_native_build(tmp_path, 
                 args, shot, layout, lease, lid, 'python', layout.logs / 'driver.log', started,
             ) == 'passed'
         assert executed == ['camera', 'marker', 'lock']
-        assert critic_calls == [240]
+        # Only the beauty fixture declares layer look; solid keeps executable form claims.
+        assert critic_calls == ([240] if medium == "eevee" else [])
         publications = {lid: require_current_layer_publication(tmp_path, layer, selected)
                         for lid, layer in layers.items()}
         assert all(publication.receipt.final_status == 'passed' for publication in publications.values())

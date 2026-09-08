@@ -229,7 +229,7 @@ operation.
 - Production unit routing derives from typed construction and evidence requirements.
   Procedural units requiring only executable evidence use Flynn with the exact active
   building claim, live shot fence and explicit step, output-token and wall-time caps.
-  Native failures propagate; never retry through the other engine. Raster and generated
+  Native failures propagate; never retry through the other engine. Qualitative and generated
   construction routes retain their explicit existing engine until migrated. The layer
   controller and VFX receipt readers retain checkpoint/completion authority (ADR-0012).
 - Native image-payment tools invoke the shared VFX image-check operation, register their
@@ -240,7 +240,8 @@ operation.
 - Native unit image capture uses declared judge frames, a frozen scene setup and the
   exact ordered prior sources/dependencies. Recheck receipt-backed priors through report
   publication; reconstruct the adversary without the candidate and cold-replay the exact
-  candidate separately. Fixed EEVEE/0.5 images must have matching resolution. A rewritten
+  candidate separately. Capture derives the unit's canonical solid or EEVEE medium;
+  candidate and adversary use scale 0.5 and matching resolution. A rewritten
   candidate must be recaptured before payment; its previous handles are retired. No
   partial capture registers a handle, and capture reports grant no acceptance (ADR-0012).
 - Native builder feedback preserves the original observation digest, structured data,
@@ -248,13 +249,13 @@ operation.
   image inputs, outside the bounded text context; replace images with each selected
   observation instead of accumulating them. A tool refusal is not a satisfied execution
   assessment, and neither assessment authorizes VFX acceptance (ADR-0012).
-- When explicitly selected, the native Flynn unit executor supports procedural EEVEE
+- The production dispatcher selects the native Flynn executor for procedural solid or EEVEE
   image contracts with required executable claims covering every judge frame. Capture
   and payment invalidate the prior probe; freeze and canonical dispatch reopen payment
   identity and captured bytes. Reserve recapture after candidate rewrites and retain
   budget for probing, freeze and independent replay. The ledger names the canonical
-  render, never a diagnostic capture or a script masquerading as an image. Default
-  raster routing remains a separate migration gate (ADR-0012).
+  render, never a diagnostic capture or a script masquerading as an image. Qualitative
+  requirements remain a separate migration gate (ADR-0012).
 - Native builder inspection reconstructs the selected prior chain from an empty scene,
   evaluates the active unit frame and exposes only owned and read-only predecessor
   objects. Prepare and recheck replay-source bindings through the inspection report;

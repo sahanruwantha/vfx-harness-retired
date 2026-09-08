@@ -125,7 +125,7 @@ def test_candidate_rewrite_requires_recapture_and_retires_old_handles(tmp_path, 
         capture.require_current_images()
 
 
-@pytest.mark.parametrize('failure', ['candidate', 'prior', 'render', 'frame', 'report', 'setup', 'order'])
+@pytest.mark.parametrize('failure', ['candidate', 'prior', 'render', 'frame', 'report', 'setup', 'order', 'medium'])
 def test_failed_capture_never_registers_a_handle(tmp_path, monkeypatch, failure):
     with builder_execution_fence(tmp_path) as lease:
         capture, candidate, source, session, _ = bind(tmp_path, monkeypatch, lease)
@@ -141,6 +141,13 @@ def test_failed_capture_never_registers_a_handle(tmp_path, monkeypatch, failure)
             def fail():
                 raise RuntimeError('render failed')
             session.after_render = fail
+        elif failure == 'medium':
+            original_call = session.call
+
+            def wrong_medium(*args, **kwargs):
+                return {**original_call(*args, **kwargs), 'mode': 'eevee'}
+
+            session.call = wrong_medium
         elif failure == 'report':
             original = flynn_image_capture.run_artifacts.RunLayout.write_report
             def replace_report(self, name, report):

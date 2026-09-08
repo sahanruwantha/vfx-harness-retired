@@ -38,7 +38,7 @@ DESCRIPTION = (
     "manufacture it.\nafter_handle is the IMAGE EVIDENCE HANDLE returned by render_frame or an "
     "uncropped compare_frame at the owed frame. Raw paths are intentionally not accepted. For a"
     " multi-frame batch, put after_handle on each check; a batch-level after_handle is "
-    "shorthand only when every check uses the same frame. Render at mode='eevee', scale=0.5 so "
+    "shorthand only when every check uses the same frame. Use the harness-selected medium and scale so "
     "it is settings-identical to the harness adversary. Survivors are appended to the "
     "runtime_checks.json evidence ledger; planner contracts remain immutable in checks.json. "
     "Propose few and real. When the active unit owes image-contract debts, each kept row must "
@@ -210,7 +210,7 @@ def propose_checks(args, *, shot_dir, layer_id, comparison_state, selected_autho
             lines.append(
                 f"  REJECTED {cid:10} candidate/adversary settings differ in "
                 + ", ".join(mismatch)
-                + "; render_frame(mode='eevee', scale=0.5)"
+                + "; recapture with the harness adversary's mode, scale and resolution"
             )
             continue
         try:

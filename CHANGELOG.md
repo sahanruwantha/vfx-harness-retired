@@ -7,6 +7,11 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Procedural executable Workbench solid image units now use Flynn in production.
+  Cold captures and image payments use the unit's canonical render medium; wrong-medium
+  captures refuse before publishing handles. Independent replay and completion receipts
+  remain required ([ADR-0012](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)).
+
 - Native Flynn critic observation transport now records bounded structured opinions,
   verified image inputs and usage on failed calls. It grants no qualification or
   acceptance authority; production critic migration still requires invocation-bound
