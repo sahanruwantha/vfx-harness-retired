@@ -1153,6 +1153,10 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   diagnostic only. Four attempts per session and two failures per semantic hypothesis
   bound exploration; row reordering does not reset that budget. Scratch spike reports
   are not published planning evidence or accepted scene state (ADR-0012).
+  Native materialization sessions use fresh bounded Flynn journals, retain only selected
+  current feedback, and recheck the candidate and VFX finalization before returning.
+  Their completion prepares a candidate; only the existing VFX authority transaction
+  publishes it. A spent or uncertain invocation is never reopened as a fresh budget.
   Recorded gaps are durable shot state read through the one shared
   `vocabulary_gaps_path(shot_folder)`; materialization validation takes `shot_folder` as a
   required argument distinct from the plan-bundle `global_root`. Reading them relative to the

@@ -340,3 +340,13 @@ and its structured observation. Construction and measurement run in separate con
 Blender processes so script stdout cannot become a measurement channel. Reports bind
 current planning authority and exact scratch artifacts; explicit planning-evidence
 publication remains a separate VFX transaction, not a consequence of tool success.
+
+Native materialization session policy also belongs to VFX. The session combines the
+existing materialization and exploration capabilities under one exact candidate check,
+supplies bounded required context plus the latest selected observation, and stops only
+after reopening current VFX finalization. Flynn owns the fresh journal, dispatch guards,
+usage, limits and terminal execution record. The session never calls the authority
+publisher, and a spent or uncertain invocation cannot restart its budget. Diagnostic
+spikes need no promotion into contract evidence for this session: typed materialization
+validation and finalization, followed by the existing publication transaction, remain
+the acceptance path.

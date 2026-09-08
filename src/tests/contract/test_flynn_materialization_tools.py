@@ -60,9 +60,10 @@ def execute(bound, steps, *, after_inference=lambda _: None, check=lambda: None)
             return flynn.InferenceResult.scripted(flynn.ToolCall(name, json.dumps(arguments)))
 
     async def run():
-        tools, guard = flynn_materialization_tools.materialization_tools(
+        capabilities = flynn_materialization_tools.materialization_tools(
             layout=layout, candidate=candidate, check_current=check,
         )
+        tools, guard = capabilities.tools, capabilities.guard
         grants = tuple(tool.name for tool in tools)
         with flynn.SQLiteRun.create(layout.checkpoints / "materialization.sqlite", run_id="materialize",
                                    initial_state="unaccepted", limits=flynn.RunLimits(10, 10, 10)) as journal:

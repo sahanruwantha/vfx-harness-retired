@@ -629,3 +629,51 @@ Full regression validation passed **3,259 tests** (810 + 810 + 810 + 829), with
 the 15 existing Pillow warnings. All groups exited successfully on unchanged runtime
 source. Complete-source Ruff and diff checks passed. No SDK changes, ARC runs, paid
 inference, or production-shot changes were needed.
+
+## Native layer-materialization session
+
+`agents/materialization_session.py` now assembles native materialization, planning
+knowledge, reference measurement and confined spike capabilities in one bounded Flynn
+session. The materialization capability set exposes its exact current-input check and
+identity to its caller, so session policy, request preparation, sibling capabilities,
+dispatch and return all use the same candidate revision boundary.
+
+Each invocation creates a fresh SQLite journal with explicit wall-time and output-token
+limits. Reusing its name refuses, including after budget exhaustion. Required layer
+context and the latest structured observation must fit the 32,000-character envelope;
+feedback overflow refuses another inference rather than dropping required content.
+Images are forwarded only with their selected observation, then replaced. Tool results
+remain observations, without SDK state commits. The run report records usage, budget,
+termination and whether finalization was current at return; pricing remains unassigned.
+
+Successful finalization prose cannot stop the session. After a successful finalize call,
+the session reopens VFX's current finalization record, verifies the exact candidate again
+at return, and leaves authority selection to `publish_materialization`. A candidate
+changed between steps or during termination cannot be reported as finalized.
+
+The preceding investigation's ordering is corrected for this stage: spike-evidence
+publication is not a prerequisite for materialization. Its transaction accepts typed
+contracts and finalization, while the native global planner deliberately has no Blender
+capability. Promoting exploration into a new acceptance surface is unnecessary here.
+Spikes remain explicitly diagnostic. A future citable spike contract would still need
+its own provenance-complete VFX publication path.
+
+This provides the session boundary, not the production entry-point cutover. The legacy
+`planner/rematerialize.py` adapter still invokes Claude; replacing that invocation,
+its configuration and transcript accounting with this session is the next integration
+step. Unit-plan generation, builders and judgment roles also remain to be migrated.
+
+That adapter change must also remove the old write-feedback hook dependency from the
+materialization kickoff path, enforce a current process-owned run lease, and supply
+explicit materialization model/time/token settings. The session deliberately receives
+an inference adapter and required context from its caller rather than choosing provider
+configuration or importing the legacy planner facade itself.
+
+Focused regression validation passed **83 tests** across native materialization tools,
+the session and existing global planning. The isolated installed package imports the
+session and capability set with `claude_agent_sdk` blocked. Complete-source Ruff and
+diff checks passed; no model calls or production shots were used.
+
+Full regression validation passed **3,276 tests** (815 + 814 + 814 + 833), with
+15 existing Pillow warnings. All four groups exited successfully on frozen runtime
+source. Ruff and diff checks remained clean. SDK source and ARC were unchanged.

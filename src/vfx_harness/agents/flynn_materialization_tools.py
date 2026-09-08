@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from uuid import uuid4
@@ -28,10 +29,18 @@ from vfx_harness.orchestration.plan_bundle_integrity import digest, read_real_fi
 FEEDBACK_CHARACTERS = 8_000
 
 
+@dataclass(frozen=True)
+class MaterializationCapabilities:
+    tools: tuple[flynn.Tool, ...]
+    guard: flynn.DispatchGuard
+    check_current: Callable[[], None]
+    identity: Callable[[], dict]
+
+
 def materialization_tools(
     *, layout: RunLayout, candidate: Path, check_current: Callable[[], None],
     overlay_root: Path | None = None,
-) -> tuple[tuple[flynn.Tool, ...], flynn.DispatchGuard]:
+) -> MaterializationCapabilities:
     """Bind six native operations to an existing seeded candidate and live owner check.
 
     The caller serializes the attempt and must register the returned dispatch guard.
@@ -186,7 +195,16 @@ def materialization_tools(
         check()
         return flynn.GuardDecision(True, "exact VFX materialization attempt and candidate remain current")
 
+    def identity():
+        check()
+        return {
+            "layer": layer_id, "candidate": str(candidate.relative_to(layout.root)),
+            "base_selection": selection.to_dict(), "bundle_hash": authority.bundle_hash,
+            "planning_inputs_sha256": inputs_digest, "outputs": dict(owned),
+        }
+
     check()
-    return tuple(register(operation) for operation in operations), flynn.DispatchGuard(
-        "current-vfx-materialization-attempt", guard,
+    return MaterializationCapabilities(
+        tuple(register(operation) for operation in operations),
+        flynn.DispatchGuard("current-vfx-materialization-attempt", guard), check, identity,
     )
