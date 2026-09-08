@@ -33,6 +33,7 @@ from vfx_harness.agents.builder.models import _RESET, BuildUnpassed
 from vfx_harness.domain.image_debts import image_contract_debt_cards, unpaid_image_contract_debts
 from vfx_harness.domain.semantic_roles import match_semantic
 from vfx_harness.evidence import checks, image_check_operation
+from vfx_harness.knowledge import flynn_recipes
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration import unit_completion_state, unit_state
 from vfx_harness.orchestration.authority_selection_transaction import durably_ensure_real_directory
@@ -158,7 +159,7 @@ def native_execution_refusal(unit) -> str | None:
 
 def _model_grants(*, inspected: bool, written: bool, observed: str | None, remaining: dict,
                   image_tools=False, captures=0, payments=0, can_pay=False, unpaid=False,
-                  write_captures=None) -> tuple[str, ...]:
+                  write_captures=None, recipes=False) -> tuple[str, ...]:
     """Grant only phases that leave room for observation, freeze and cold replay."""
     def fits(inference, external):
         return (
@@ -170,6 +171,8 @@ def _model_grants(*, inspected: bool, written: bool, observed: str | None, remai
     grants = ["abstain"]
     extra = captures + payments
     write_extra = (captures if write_captures is None else write_captures) + payments
+    if recipes and (not written or observed is not None) and fits(5 + write_extra, 3 + write_extra):
+        grants.append("find_recipe")
     if not inspected and not written and fits(5 + extra, 4 + extra):
         grants.append("inspect_unit")
     if (not written or observed is not None) and fits(4 + write_extra, 3 + write_extra):
@@ -327,7 +330,9 @@ async def _build_unit(
     if images is not None:
         guards += (images.guard,)
 
-    def prepare(request):
+    latest_request = None
+
+    def context_request(request):
         check_current()
         request = _prepare_feedback(request)
         feedback = request.observation
@@ -351,13 +356,43 @@ async def _build_unit(
             objective += "\n\nCurrent candidate: " + json.dumps({
                 "source": source.decode("utf-8"), "sha256": hashlib.sha256(source).hexdigest(),
             }, sort_keys=True)
-        flynn.ContextCompiler(max_characters=max_context_characters).compile(
-            (
-                flynn.ContextItem("objective", objective, required=True),
-                flynn.ContextItem("selected-observation", feedback or "", required=True),
-            )
-        )
         return replace(request, objective=objective, observation=feedback)
+
+    def context_items(request, *, required=True):
+        return (
+            flynn.ContextItem("objective", request.objective, required=required),
+            flynn.ContextItem("selected-observation", request.observation or "", required=required),
+        )
+
+    def prepare(request):
+        nonlocal latest_request
+        latest_request = request
+        prepared = context_request(request)
+        flynn.ContextCompiler(max_characters=max_context_characters).compile(context_items(prepared))
+        return prepared
+
+    def recipe_fits(result):
+        if latest_request is None:
+            raise ValueError("recipe context admission requires the current native model request")
+        prepared = context_request(replace(latest_request, observation=result.to_json()))
+        compiled = flynn.ContextCompiler(max_characters=max_context_characters).compile(
+            context_items(prepared, required=False),
+        )
+        return not compiled.omitted_ids
+
+    def recipe_result(text, data, *, refused=False):
+        return flynn.ToolResult(
+            status="refused" if refused else "ok", content=(flynn.TextContent(text),),
+            data_json=json.dumps({**data, "claim_id": attempt_guard.claim.claim_id,
+                                 "unit_digest": attempt_guard.claim.unit_digest,
+                                 "layer": str(layer.id), "unit": active_unit.id,
+                                 "mutation_authorized": False}, sort_keys=True),
+        )
+
+    recipe = flynn_recipes.recipe_tool(
+        roles=tuple(active_unit.mutates.roles), check=check_current,
+        result=recipe_result, result_fits=recipe_fits,
+    )
 
     async def inspect(arguments):
         nonlocal inspected
@@ -493,6 +528,7 @@ async def _build_unit(
     tools = flynn.ToolBroker(
         [
             *image_tools,
+            recipe,
             flynn.Tool(
                 "inspect_unit", _validate_arguments, inspect, observation=True, external_action=True,
                 description=(
@@ -582,7 +618,7 @@ async def _build_unit(
             tools=tools,
             evaluator=_ObservationEvaluator(),
             run=run,
-            grants=("inspect_unit", "write_candidate", "probe_candidate", "freeze_candidate", "abstain",
+            grants=("inspect_unit", "write_candidate", "probe_candidate", "freeze_candidate", "abstain", "find_recipe",
                     *(tool.name for tool in image_tools)),
             prepare_request=prepare,
             guards=guards,
@@ -605,7 +641,7 @@ async def _build_unit(
                 image_tools=images is not None, captures=len(missing_frames),
                 payments=(len(unpaid) + payment_batch_size - 1) // payment_batch_size,
                 can_pay=bool(current_images), unpaid=bool(unpaid),
-                write_captures=len(needed_frames),
+                write_captures=len(needed_frames), recipes=True,
             )
             step = await runtime.step(
                 "Inspect the unit, write and probe its candidate, then freeze the observed digest."

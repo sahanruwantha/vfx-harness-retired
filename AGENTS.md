@@ -261,6 +261,13 @@ operation.
   image inputs, outside the bounded text context; replace images with each selected
   observation instead of accumulating them. A tool refusal is not a satisfied execution
   assessment, and neither assessment authorizes VFX acceptance (ADR-0012).
+- Native builder recipe retrieval shares the planning lookup and bounded read/fragment
+  policy. Filter against the active unit's roles, admit only whole fragments fitting
+  required context, and reserve write, capture/payment, probe, freeze and replay capacity
+  before granting a read. Rereads consume budget; each result replaces prior feedback.
+  SQLite records recipe use and content identity without a process-global usage list.
+  Verification improves a relevant recipe's rank; it never creates a query match
+  (ADR-0012, HIR-0255).
 - The production dispatcher selects the native Flynn executor for procedural or generated solid or EEVEE
   image contracts with required executable claims covering every judge frame. Capture
   and payment invalidate the prior probe; freeze and canonical dispatch reopen payment

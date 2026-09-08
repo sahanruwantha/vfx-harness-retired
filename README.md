@@ -451,6 +451,12 @@ remains required. Generated units first prepare the plan-selected asset through 
 Flynn operation. Pointer, GLB and witness bindings remain current through cold replay and
 completion; construction is not selected by the model. Qualitative units still await migration.
 Flynn failures never fall back to Claude.
+Native builders can retrieve scoped recipes through the same Flynn tool as planning:
+six reads, three distinct fragments and 12,000 response characters per attempt.
+Each read must leave execution budget for the complete candidate path, and each whole
+fragment must fit the existing required context. Rereads are charged; feedback does not
+accumulate. The attempt's SQLite operations retain recipe names, fragment selection,
+scope and response digest as recipe-use telemetry.
 The shared production critic now records native Flynn observations with explicit image
 identity, usage and termination. Only complete selected claim scope with measured native
 qualification can authorize its visual verdict. Unqualified opinions are diagnostic and

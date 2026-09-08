@@ -1487,3 +1487,45 @@ was stopped before correcting source whitespace and is not counted as validation
 HIR-0254 is accepted on this evidence. Qualitative builders, simplify, native
 builder recipe retrieval, remaining Claude dependencies and qualified live
 end-to-end validation remain open; this is not completion of the cutover.
+
+## Bounded native builder recipes
+
+Native builders now register the shared Flynn recipe tool used by planning. VFX
+retains query ranking, mutation-role filtering, six-read/three-fragment/12,000-character
+limits, exact unit identity and complete-path phase grants. Flynn transports results
+and preserves usage and recipe-use observations in the attempt's SQLite journal.
+There is no new agent runtime, SDK policy or process-global telemetry accumulator.
+
+Before a result is exposed, the builder uses the same required-context construction
+as the next model call to prove the whole observation fits. Oversized fragments are
+refused without partial code; the next legal smaller selection can proceed. Feedback
+replaces the previous observation. Retrieval cannot consume the calls needed for
+write, required image capture/payment, probe, freeze and independent replay.
+
+The first focused run exposed a shared ranking defect: an unrelated verified recipe
+received a positive score with zero query matches and masked an out-of-scope refusal.
+HIR-0255 records the failing trace and relevance-first correction. The corrected
+focused run passed 54 tests, including three actual confined Blender/canonical runs,
+and an additional owner-loss check passed. Its initial assertion was corrected to
+match Flynn's documented uncertain dispatch after a raised tool: no returned result
+or state commit is invented, and the operation remains charged.
+
+Complete-source Ruff, public CLI loading and whitespace checks passed. The full
+frozen-source regression passed **3,598 tests**, with 121 Pillow deprecation warnings.
+Logs: `/tmp/vfx-spike-regression-0uldrfo6`; shard 0 passed 886 tests (40 warnings),
+and shards 1/2/3 passed 904 each (37/22/22 warnings). HIR-0255 is accepted on this
+evidence. No SDK change, ARC synchronization or paid inference was needed for this
+VFX-only port.
+
+Read-only review also corrected a pending matrix assumption: simplify is a typed
+mesh/volume carrier route under ADR-0009, not necessarily decimation of a predecessor.
+Its migration must prove real carrier construction, declared prior dependencies and
+scope; it must not add an unrequested predecessor requirement to make a fixture easy.
+
+Strict public preflight also passed during this checkpoint, without model spend:
+`/tmp/vfx-flynn-cutover-preflight.json`, environment-result/v2,
+result digest `67168745545f7a85cc7c2372a53931a0401ad4201f363e1a5abb6372952d4f1e`.
+This verifies the current environment checks, including confined Blender and the
+plan-consumer directory primitive; it does not verify DeepSeek authentication or
+qualitative capability. Installed package metadata still selects SDK `main` commit
+`189a4776559a09120111f6557ee14731993874c6`, non-editable.

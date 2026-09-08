@@ -30,6 +30,10 @@ Generated construction uses a harness-selected scripted Flynn preparation operat
 Keep its pointer, GLB and witness bindings current, reserve the remaining execution
 capacity before staging, and bind scratch replay to construction at the canonical unit
 locator. Script and pointer paths share one identity derivation (HIR-0254).
+Native recipe retrieval shares planning's bounded tool. Filter by unit roles, reserve
+the complete candidate path before granting a read, and admit whole fragments only
+when required context still fits. Replace feedback and retain use/digest telemetry
+in SQLite. Verification cannot create a query match (HIR-0255).
 
 Treat the Claude Agent SDK as a production runtime, not merely prompt transport. Inspect the
 installed SDK before building custom orchestration and prefer its strongest applicable native

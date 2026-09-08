@@ -50,3 +50,22 @@ def test_rewriting_a_paid_candidate_reserves_recapture():
     )
     assert 'write_candidate' not in grants
     assert 'freeze_candidate' in grants
+
+
+@pytest.mark.parametrize('written,observed,captures,payments,steps,external,allowed', [
+    (False, None, 0, 0, 5, 3, True),
+    (False, None, 0, 0, 4, 3, False),
+    (True, None, 0, 0, 8, 8, False),
+    (True, 'measured', 1, 1, 7, 5, True),
+    (True, 'measured', 1, 1, 6, 5, False),
+    (True, 'measured', 1, 1, 7, 4, False),
+])
+def test_recipe_reads_leave_capacity_for_candidate_and_evidence(
+    written, observed, captures, payments, steps, external, allowed,
+):
+    grants = engine._model_grants(
+        inspected=True, written=written, observed=observed, recipes=True,
+        captures=captures, payments=payments, write_captures=captures,
+        remaining={'inference': steps, 'tool': steps, 'external': external},
+    )
+    assert ('find_recipe' in grants) is allowed

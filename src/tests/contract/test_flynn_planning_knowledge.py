@@ -13,7 +13,7 @@ import pytest
 from tests.contract.test_flynn_materialization_tools import bound as bound
 from tests.contract.test_flynn_plan_publication import ObservationOnly
 from vfx_harness.agents import flynn_planning_knowledge
-from vfx_harness.knowledge import planning_vocabulary, recipes
+from vfx_harness.knowledge import planning_vocabulary, recipe_lookup, recipes
 from vfx_harness.orchestration import escalate
 from vfx_harness.orchestration.authority_selection import SelectedAuthorityResolutionError
 from vfx_harness.orchestration.plan_bundle_integrity import PlanPublicationError
@@ -217,3 +217,27 @@ def test_recipe_character_budget_charges_repeated_exposures(bound, monkeypatch):
     results = execute(bound, [("find_recipe", {"query": "fixture-api#full"})] * 3)
     assert [item.status for item in results] == ["ok", "ok", "refused"]
     assert json.loads(results[2].data_json)["status"] == "size_refused"
+
+
+def test_recipe_owner_loss_during_lookup_returns_no_observation(bound, monkeypatch):
+    live = True
+
+    def lookup(query, roles):
+        nonlocal live
+        live = False
+        return recipe_lookup.RecipeLookup("unpublished recipe", ("fixture",), "found")
+
+    def check():
+        if not live:
+            raise ValueError("recipe owner released")
+
+    monkeypatch.setattr(recipe_lookup, "lookup", lookup)
+    with pytest.raises(ValueError, match="recipe owner released"):
+        execute(bound, [("find_recipe", {"query": "fixture"})], check=check)
+    with flynn.SQLiteRun.open(bound[0].checkpoints / "knowledge.sqlite") as journal:
+        operation = journal.records()["operations"][0]
+        # SDK retains an uncertain dispatch when a tool raises; no result is invented.
+        assert operation["stage"] == "dispatched"
+        assert operation["output"] is None
+        assert journal.remaining() == {"inference": 9, "tool": 9, "external": 10}
+        assert not journal.records()["commits"]

@@ -852,3 +852,26 @@ asset or VFX acceptance semantics.
 External generation quality, qualified visual builders and final live validation remain
 separate migration gates. The unwired `retrieve` route remains refused, and `simplify`
 continues through its existing builder pending scoped predecessor-mesh validation.
+
+### Native builder recipe retrieval
+
+Planning and native unit builders now share `knowledge/flynn_recipes.py`, preserving
+six reads, three distinct fragments and 12,000 response characters per fresh attempt.
+The shared VFX lookup filters unit mutation roles and owns relevance ranking. A
+verification bonus applies only after a query match (HIR-0255). Flynn owns structured
+dispatch, grants, required-context compilation, result identity and durable accounting.
+
+A builder read is granted only before writing or after a measured candidate, with
+capacity left for a complete write, capture/payment, probe, freeze and canonical path.
+Before exposing a fragment, VFX compiles its exact selected feedback against the same
+required unit context and current candidate. A fragment that cannot fit is refused
+whole; no partial code or larger context cap is used. Reads are charged even when
+refused, while unexposed characters/fragments do not consume exposure budgets.
+Rereads are legal and charged because latest-observation selection evicts old results.
+
+The attempt's SQLite operation result records query, selected recipe/fragment names,
+response digest, claim and unit identity, remaining retrieval budget and scope refusal.
+This is recipe-use telemetry, not permission to mutate or evidence that a recipe was
+implemented correctly. No process-global usage list or second recipe log is introduced.
+Independent VFX replay and completion remain necessary. Legacy registration remains
+only for builder paths still awaiting migration; there is no native failure fallback.

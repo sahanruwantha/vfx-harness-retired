@@ -10,7 +10,7 @@ import flynn_agents_sdk as flynn
 from jsonschema import Draft202012Validator
 
 from vfx_harness.agents import flynn_questions, flynn_reference_measurement
-from vfx_harness.knowledge import planning_vocabulary, recipe_lookup
+from vfx_harness.knowledge import flynn_recipes, planning_vocabulary
 from vfx_harness.observability.run_artifacts import RunLayout
 from vfx_harness.orchestration import authority_selection, plan_inputs, vocabulary_gap_publication
 from vfx_harness.orchestration.authority_selection_heads import read_authority_selection_heads
@@ -21,9 +21,6 @@ from vfx_harness.orchestration.authority_selection_transaction import (
 from vfx_harness.orchestration.plan_bundle_integrity import digest, read_real_file
 
 MAX_RESPONSE_CHARACTERS = 12_000
-RECIPE_READS = 6
-RECIPE_CHARACTERS = 12_000
-RECIPE_FRAGMENTS = 3
 
 
 def planning_knowledge_tools(
@@ -68,8 +65,6 @@ def planning_knowledge_tools(
     axes = {axis for row in layers for axis in row["owns"]}
     vocabulary = planning_vocabulary.evidence_vocabulary()
     vocabulary_digest = digest(json.dumps(vocabulary, sort_keys=True).encode())
-    remaining_reads, remaining_characters = RECIPE_READS, RECIPE_CHARACTERS
-    fragments: set[str] = set()
 
     def identity():
         return {"layer": layer_id, "unit": unit_id, "base_selection": selected.selection_token.to_dict(),
@@ -106,44 +101,6 @@ def planning_knowledge_tools(
         return result(f"Evidence vocabulary: {kind or 'kind index'}. See the structured selection.",
                       {"schema": "vfx-harness.evidence-vocabulary-observation/v1",
                              "vocabulary_sha256": vocabulary_digest, "selection": data})
-
-    def validate_query(arguments):
-        if (set(arguments) != {"query"} or not isinstance(arguments["query"], str)
-                or not arguments["query"].strip() or len(arguments["query"]) > 256):
-            raise ValueError("find_recipe requires one nonempty query of at most 256 characters")
-
-    async def find_recipe(arguments):
-        nonlocal remaining_reads, remaining_characters
-        check()
-        if remaining_reads == 0:
-            return result("Recipe retrieval budget exhausted; stop retrieving in this session.", {
-                "schema": "vfx-harness.recipe-observation/v1", "status": "budget_refused",
-                "remaining_reads": 0, "remaining_characters": remaining_characters, "used": [],
-            }, refused=True)
-        remaining_reads -= 1
-        found = recipe_lookup.lookup(arguments["query"], roles)
-        check()
-        fragment = recipe_lookup.fragment_key(arguments["query"], found.used) if found.used else None
-        if fragment is not None and fragment not in fragments and len(fragments) == RECIPE_FRAGMENTS:
-            return result("Distinct recipe fragment budget exhausted; use a selected fragment or instrument.", {
-                "schema": "vfx-harness.recipe-observation/v1", "status": "fragment_refused",
-                "remaining_reads": remaining_reads, "remaining_characters": remaining_characters, "used": [],
-            }, refused=True)
-        if len(found.text) > min(MAX_RESPONSE_CHARACTERS, remaining_characters):
-            return result("Recipe response exceeds the remaining budget; request a smaller named section.", {
-                "schema": "vfx-harness.recipe-observation/v1", "status": "size_refused",
-                "remaining_reads": remaining_reads, "remaining_characters": remaining_characters, "used": [],
-            }, refused=True)
-        remaining_characters -= len(found.text)
-        if fragment is not None:
-            fragments.add(fragment)
-        return result(found.text, {
-            "schema": "vfx-harness.recipe-observation/v1", "status": found.status,
-            "query": arguments["query"], "used": list(found.used), "mutation_roles": roles,
-            "response_sha256": digest(found.text.encode()), "remaining_reads": remaining_reads,
-            "remaining_characters": remaining_characters,
-            "selected_fragments": sorted(fragments),
-        }, refused=found.status == "out_of_scope")
 
     question_validator = Draft202012Validator(flynn_questions.QUESTION_SCHEMA)
 
@@ -213,15 +170,7 @@ def planning_knowledge_tools(
                 "type": "object", "properties": {"kind": {"type": "string", "enum": ["", *vocabulary["kinds"]]}},
                 "required": ["kind"], "additionalProperties": False,
             }), validate=validate_kind, execute=evidence),
-            flynn.Tool.structured("find_recipe", description=(
-                "Search vetted recipes. Query an exact name for its section index, then name#section for one "
-                "fragment. Six reads, three distinct fragments and 12000 response characters per session; "
-                "rereads consume read and character budgets. "
-                "Planning discovery grants no mutation authority. Unit scope filters recipes by mutation roles."
-            ), parameters_json=json.dumps({
-                "type": "object", "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 256}},
-                "required": ["query"], "additionalProperties": False,
-            }), validate=validate_query, execute=find_recipe),
+            flynn_recipes.recipe_tool(roles=roles, check=check, result=result),
             flynn.Tool.structured("ask_supervisor", description=(
                 "Record a client ambiguity and its working assumption, with exact selected layer/axis impact. "
                 "A duplicate returns its stored assumption; this neither answers the question nor approves a plan."

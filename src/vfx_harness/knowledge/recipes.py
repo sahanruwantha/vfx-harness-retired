@@ -49,7 +49,8 @@ def _score(rec: dict, terms: list[str]) -> int:
     head = (rec["name"] + " " + " ".join(rec["tags"]) + " " + rec["when"]).lower()
     body = rec["body"].lower()
     # tag/name/when hits weigh more than body hits; verified gets a small boost
-    return sum(3 * (t in head) + (t in body) for t in terms) + (1 if rec["verified"] else 0)
+    relevance = sum(3 * (t in head) + (t in body) for t in terms)
+    return relevance + int(rec["verified"]) if relevance else 0
 
 
 _ALWAYS_IN_SCOPE = frozenset({"blender-5-api", "warm-session-probe-loop"})

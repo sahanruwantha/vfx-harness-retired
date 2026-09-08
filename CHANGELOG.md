@@ -7,6 +7,12 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Native builders share planning's bounded Flynn recipe retrieval. Scope filtering,
+  whole-fragment context admission and remaining-path grants prevent retrieval from
+  widening permissions or consuming completion capacity. SQLite retains recipe-use
+  identities. Verified recipes now require a query match before receiving a ranking
+  bonus ([HIR-0255](docs/improvements/HIR-0255-recipe-verification-is-not-relevance.md)).
+
 - Generated construction with executable claims now uses Flynn for preparation and
   unit execution. Asset, pointer and witness identities remain bound through cold
   replay and completion; insufficient budgets refuse before generation. Construction
