@@ -800,24 +800,26 @@ def test_qualitative_blocking_authority_requires_qualification():
         Claim.parse(row, "claim")
     row["qualification"] = {
         "suite": "form-v1",
-        "judge_model": "judge-v1",
-        "prompt": "abc123",
-        "evidence_shape": "beauty-plus-focus-v1",
         "artifact": "qualifications/form-v1.json",
         "artifact_sha256": "0" * 64,
     }
     row["evidence"] = [{"kind": "qualification", "id": "form-v1"}]
     assert Claim.parse(row, "claim").authority == "qualified_qualitative_required"
 
+    row["qualification"]["prompt"] = "retired-single-prompt"
+    with pytest.raises(ValueError, match="requires exactly"):
+        Claim.parse(row, "claim")
 
-def test_layer_loader_requires_hash_pinned_passed_qualitative_qualification(tmp_path):
+
+@pytest.mark.parametrize("asserted_pass", [True, False])
+def test_layer_loader_rejects_asserted_rate_artifacts(tmp_path, asserted_pass):
     artifact = {
         "schema": 1,
         "suite": "form-v1",
         "judge_model": "judge-v1",
         "prompt": "abc123",
         "evidence_shape": "beauty-plus-focus-v1",
-        "passed": True,
+        "passed": asserted_pass,
         "budgets": {
             "false_pass_rate": 0.05,
             "false_failure_rate": 0.05,
@@ -848,9 +850,6 @@ def test_layer_loader_requires_hash_pinned_passed_qualitative_qualification(tmp_
         evidence=[{"kind": "qualification", "id": "form-v1"}],
         qualification={
             "suite": "form-v1",
-            "judge_model": "judge-v1",
-            "prompt": "abc123",
-            "evidence_shape": "beauty-plus-focus-v1",
             "artifact": "qualifications/form-v1.json",
             "artifact_sha256": hashlib.sha256(raw).hexdigest(),
         },
@@ -871,17 +870,10 @@ def test_layer_loader_requires_hash_pinned_passed_qualitative_qualification(tmp_
         ],
     }
     (tmp_path / "layers.json").write_text(json.dumps(doc), encoding="utf-8")
-    assert load_layers(SimpleNamespace(folder=tmp_path))["1"].stages[0].evaluation.claims[0].required
-
-    artifact["passed"] = False
-    bad_raw = (json.dumps(artifact, sort_keys=True) + "\n").encode()
-    (tmp_path / "qualifications" / "form-v1.json").write_bytes(bad_raw)
-    doc["layers"][0]["stages"][0]["evaluation"]["claims"][0]["qualification"][
-        "artifact_sha256"
-    ] = hashlib.sha256(bad_raw).hexdigest()
-    (tmp_path / "layers.json").write_text(json.dumps(doc), encoding="utf-8")
-    with pytest.raises(ValueError, match="did not pass"):
+    # Hash-pinning asserted rates does not provide measured source proof.
+    with pytest.raises(ValueError, match="complete measured profile set"):
         load_layers(SimpleNamespace(folder=tmp_path))
+
 
 
 def test_interaction_claim_needs_bounded_coordination():

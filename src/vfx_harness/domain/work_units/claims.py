@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from vfx_harness.domain.work_units.evidence_domains import CLAIM_DOMAINS
@@ -177,34 +174,20 @@ class Claim:
 
         qualification = row.get("qualification")
         if authority == "qualified_qualitative_required":
-            # Walking this shape one missing-field error at a time cost run b603zc93p
-            # its whole session (it guessed criteria/judge_frames). Name the complete
-            # schema and the usual alternative in every failure.
-            _QUALIFICATION_SHAPE = (
-                f"{where}.qualification requires EXACTLY: suite, judge_model, prompt, "
-                "evidence_shape, artifact (repo-relative rubric file), artifact_sha256 "
-                "(64 lowercase hex of that file). This authority is rubric-file-backed "
-                "acceptance machinery — for appearance judged at build time, the usual "
-                "shape is authority: executable_required with asserts: image instead"
-            )
-            try:
-                q = _mapping(qualification, f"{where}.qualification")
-                qualification = {
-                    "suite": _text(q.get("suite"), f"{where}.qualification.suite"),
-                    "judge_model": _text(q.get("judge_model"), f"{where}.qualification.judge_model"),
-                    "prompt": _text(q.get("prompt"), f"{where}.qualification.prompt"),
-                    "evidence_shape": _text(q.get("evidence_shape"), f"{where}.qualification.evidence_shape"),
-                    "artifact": _relative_path(q.get("artifact"), f"{where}.qualification.artifact"),
-                    "artifact_sha256": _text(
-                        q.get("artifact_sha256"), f"{where}.qualification.artifact_sha256"
-                    ).lower(),
-                }
-            except ValueError as exc:
-                raise ValueError(f"{exc}. {_QUALIFICATION_SHAPE}") from exc
-            if not _SHA256.fullmatch(qualification["artifact_sha256"]):
+            q = _mapping(qualification, f"{where}.qualification")
+            expected = {"suite", "artifact", "artifact_sha256"}
+            if set(q) != expected:
                 raise ValueError(
-                    f"{where}.qualification.artifact_sha256 must be 64 lowercase hex characters. {_QUALIFICATION_SHAPE}"
+                    f"{where}.qualification requires exactly {sorted(expected)}; "
+                    "select a measured profile set instead of a single prompt/model credential"
                 )
+            qualification = {
+                "suite": _text(q.get("suite"), f"{where}.qualification.suite"),
+                "artifact": _relative_path(q.get("artifact"), f"{where}.qualification.artifact"),
+                "artifact_sha256": _text(q.get("artifact_sha256"), f"{where}.qualification.artifact_sha256"),
+            }
+            if not _SHA256.fullmatch(qualification["artifact_sha256"]):
+                raise ValueError(f"{where}.qualification.artifact_sha256 must be 64 lowercase hex characters")
         elif qualification is not None:
             raise ValueError(f"{where}.qualification is only valid for qualified qualitative authority")
 
@@ -282,53 +265,6 @@ class Claim:
     def binding_ids(self) -> tuple[str, ...]:
         return tuple(item.id for item in self.evidence)
 
-
-def validate_qualification(root: str | Path, claim: Claim, where: str) -> None:
-    """Prove that a qualitative blocking claim references an exact passed qualification."""
-    if claim.authority != "qualified_qualitative_required":
-        return
-    qualification = claim.qualification or {}
-    artifact = Path(root) / qualification["artifact"]
-    if not artifact.is_file():
-        raise ValueError(f"{where}.qualification artifact is missing: {qualification['artifact']}")
-    payload = artifact.read_bytes()
-    actual_hash = hashlib.sha256(payload).hexdigest()
-    if actual_hash != qualification["artifact_sha256"]:
-        raise ValueError(
-            f"{where}.qualification artifact hash mismatch: expected "
-            f"{qualification['artifact_sha256']}, got {actual_hash}"
-        )
-    try:
-        record = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{where}.qualification artifact is invalid JSON: {exc}") from exc
-    if not isinstance(record, dict) or record.get("schema") != 1:
-        raise ValueError(f"{where}.qualification artifact must be an object with schema=1")
-    for key in ("suite", "judge_model", "prompt", "evidence_shape"):
-        if record.get(key) != qualification[key]:
-            raise ValueError(f"{where}.qualification artifact {key} does not match the claim")
-    if record.get("passed") is not True:
-        raise ValueError(f"{where}.qualification artifact did not pass")
-    budgets = record.get("budgets")
-    metrics = record.get("metrics")
-    required_rates = (
-        "false_pass_rate",
-        "false_failure_rate",
-        "repeatability_failure_rate",
-        "scope_leakage_rate",
-        "irrelevant_change_sensitivity_rate",
-    )
-    if not isinstance(budgets, dict) or not isinstance(metrics, dict):
-        raise ValueError(f"{where}.qualification artifact requires budgets and metrics objects")
-    for key in required_rates:
-        budget = budgets.get(key)
-        measured = metrics.get(key)
-        if not isinstance(budget, (int, float)) or isinstance(budget, bool) or not 0 <= budget <= 1:
-            raise ValueError(f"{where}.qualification budget {key} must be a rate in [0,1]")
-        if not isinstance(measured, (int, float)) or isinstance(measured, bool) or not 0 <= measured <= 1:
-            raise ValueError(f"{where}.qualification metric {key} must be a rate in [0,1]")
-        if measured > budget:
-            raise ValueError(f"{where}.qualification metric {key}={measured} exceeds budget {budget}")
 
 
 @dataclass(frozen=True)

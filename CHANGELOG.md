@@ -7,6 +7,12 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Claims select measured critic profile sets, admitting each role/frame configuration
+  only by its exact invocation identity. Layer loading and native admission reopen
+  every member's measured proof; old asserted-rate and single-profile credentials
+  are rejected. Qualification parsing is filesystem-free
+  ([HIR-0257](docs/improvements/HIR-0257-measured-critic-profile-sets.md)).
+
 - Native critic v2 separates the qualified rubric and selected authority from changing
   candidate observations. Calibration reopens exact context and image identities;
   observation changes can reuse the same protocol, while scope, rubric or configuration

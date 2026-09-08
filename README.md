@@ -485,6 +485,11 @@ run report containing the exact replay inputs. It never treats a leftover worker
 as accepted state or grants acceptance from an inspection.
 The scripted lifecycle gate runs real confined Blender and the production unit receipt
 writers without model calls:
+Claims select a measured profile set through `suite`, `artifact` and `artifact_sha256`.
+Each actual critic invocation must match one independently measured member. Layer
+loading and native admission reopen the complete proof; a stored passing flag or old
+single-prompt credential is insufficient. These selection mechanics do not supply
+reviewed labels or qualify a live model.
 
 ```bash
 .venv/bin/python -m pytest -q src/tests/integration/test_flynn_unit_lifecycle.py

@@ -20,8 +20,7 @@ def test_only_complete_selected_and_admitted_scope_can_pass(tmp_path, monkeypatc
         'property': 'shape', 'subject_roles': ['subject'], 'moments': [7], 'kind': 'atomic',
         'required': True, 'authority': 'qualified_qualitative_required', 'repair_owner': 'form',
         'asserts': 'image', 'evidence': [{'kind': 'qualification', 'id': 'form-v1'}],
-        'qualification': {'suite': 'form-v1', 'judge_model': 'fixture', 'prompt': 'fixture',
-                          'evidence_shape': 'fixture', 'artifact': 'fixture.json', 'artifact_sha256': 'f' * 64},
+        'qualification': {'suite': 'form-v1', 'artifact': 'fixture.json', 'artifact_sha256': 'f' * 64},
     }, 'fixture claim')
     # The stub stands for independently verified transport. It does not create a real credential.
     claim = replace(claim, qualification=None if gap == 'unbound' else {'stub': True})

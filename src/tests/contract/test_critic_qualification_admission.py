@@ -52,7 +52,8 @@ def claim_profile(bound):
         "id": "claim.form", "proposition": "The subject has the declared form", "axis": "form",
         "property": "shape", "subject_roles": ["subject"], "moments": [7], "kind": "atomic",
         "required": True, "authority": "qualified_qualitative_required", "repair_owner": "form",
-        "asserts": "image", "evidence": [{"kind": "qualification", "id": "form-v1"}], "qualification": q,
+        "asserts": "image", "evidence": [{"kind": "qualification", "id": "form-v1"}],
+        "qualification": {key: q[key] for key in ("suite", "artifact", "artifact_sha256")},
     }, "fixture claim")
     configuration = flynn.InferenceConfiguration(
         "deepseek", deepseek.VISION_MODEL, "flynn.deepseek-chat/v1", json.dumps({
@@ -159,13 +160,13 @@ def test_rubric_or_selected_authority_change_requires_requalification(bound, qua
 def test_unqualified_or_stale_artifact_refuses_before_inference(bound, qualified, failure):
     claim, record = qualified
     if failure in ("prompt", "evidence_shape", "judge_model"):
-        record[failure] = claim.qualification[failure] = "different"
+        record["profiles"][0]["prompt_sha256" if failure == "prompt" else failure] = "different"
     elif failure == "passed":
         record["passed"] = False
     elif failure == "metric":
-        record["metrics"]["false_pass_rate"] = 1
+        record["profiles"][0]["metrics"]["false_pass_rate"] = 1
     elif failure == "missing_binding":
-        record.pop("native_invocation_sha256")
+        record["profiles"][0].pop("native_invocation_sha256")
     elif failure == "schema":
         record["schema"] = True
     publish(bound, claim, record)
@@ -200,9 +201,9 @@ def test_invocation_drift_refuses_before_budget_reservation(bound, qualified, ch
         updates["phase"] = "different-review"
     else:
         claim = replace(claim, proposition="A different claim")
-    with pytest.raises(ValueError, match=r"invocation|bounded context"):
+    with pytest.raises(ValueError, match=r"invocation|bounded context|semantics"):
         invoke(bound, claim, lambda _: pytest.fail("different invocation reached provider"), options=options, **updates)
-    if change == "frames":
+    if change in ("frames", "claim"):
         assert not list((bound.checkpoints / "flynn").glob("*.sqlite"))
         return
     database, report = audit(bound)
@@ -264,13 +265,13 @@ def test_post_admission_substitution_preserves_spending_and_refuses_verdict(boun
         if failure == "artifact":
             (bound.shot / "qualification.json").write_bytes(b"substitution")
         elif failure == "claim":
-            claim.qualification["prompt"] = "changed"
+            claim.qualification["suite"] = "changed"
         return response()
 
     factory = {"configuration": ChangedAtDispatch, "unreported": MissingConfiguration}.get(
         failure, deepseek.DeepSeekAdapter,
     )
-    with pytest.raises(ValueError, match=r"configuration|changed"):
+    with pytest.raises(ValueError, match=r"configuration|changed|digest differs"):
         invoke(bound, claim, handler, factory=factory)
     database, report = audit(bound)
     with flynn.SQLiteRun.open(database) as run:
@@ -298,7 +299,7 @@ def test_no_qualification_is_invented_for_invalid_claim_selection(bound, qualifi
         claims = (claim, claim)
     else:
         claims = (replace(claim, evidence=(replace(claim.evidence[0], id="other-suite"),)),)
-    with pytest.raises(ValueError, match=r"parsed selected claims|distinct selected|exact qualification suite"):
+    with pytest.raises(ValueError, match=r"parsed selected claims|distinct selected|measured qualification suite"):
         invoke(bound, claim, lambda _: pytest.fail("invalid selection reached provider"), qualification_claims=claims)
     assert not list((bound.checkpoints / "flynn").glob("*.sqlite"))
 
@@ -337,7 +338,7 @@ def test_calibration_needs_no_artifact_and_exercises_identical_admitted_inputs(b
     assert report["inputs"]["qualification_sources"] == []
     calibration = report["calibration_check"]
     assert calibration["status"] == "matched_dispatched_configuration"
-    assert calibration["native_invocation_sha256"] == record["native_invocation_sha256"]
+    assert calibration["native_invocation_sha256"] == record["profiles"][0]["native_invocation_sha256"]
     assert report["usage"]["known_output_tokens"] == 31
     with flynn.SQLiteRun.open(bound.root / report["journal"]) as run:
         assert run.records()["commits"] == []

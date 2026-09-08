@@ -3,6 +3,7 @@
 import hashlib
 import json
 from dataclasses import asdict, replace
+from uuid import uuid4
 
 import flynn_agents_sdk as flynn
 from PIL import Image
@@ -16,7 +17,7 @@ from vfx_harness.orchestration import critic_qualification_publication as public
 def measured_artifact(bound, claim, expected, monkeypatch, invoke):
     with monkeypatch.context() as context:
         context.setenv(run_artifacts.ENV, str(bound.root))
-        layout = run_artifacts.create(bound.shot, "measured-qualification-fixture")
+        layout = run_artifacts.create(bound.shot, f"measured-qualification-{uuid4().hex}")
         prefix = layout.scratch.relative_to(bound.shot)
         for name in ("reference.png", "focus.png"):
             (bound.shot / prefix / name).write_bytes((bound.shot / name).read_bytes())
@@ -61,5 +62,11 @@ def measured_artifact(bound, claim, expected, monkeypatch, invoke):
         path = layout.write_report("selected-calibration-suite", request)
         selected = {"path": path.relative_to(bound.shot).as_posix(),
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-        published = publication.publish(bound.shot, request=selected, check_current=lambda: None)
+        set_path = layout.write_report("selected-calibration-set", {
+            "schema": publication.SET_SCHEMA, "suite": expected["suite"], "claim_id": claim.id,
+            "members": [selected],
+        })
+        set_source = {"path": set_path.relative_to(bound.shot).as_posix(),
+                      "sha256": hashlib.sha256(set_path.read_bytes()).hexdigest()}
+        published = publication.publish(bound.shot, request=set_source, check_current=lambda: None)
         return json.loads((bound.shot / published["path"]).read_text())

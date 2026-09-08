@@ -23,12 +23,12 @@ from vfx_harness.domain.work_units import (
     JudgePoint,
     WorkUnit,
     read_document,
-    validate_qualification,
     validate_unit_dag,
     validate_unit_script_path,
 )
 from vfx_harness.observability import run_artifacts
 from vfx_harness.observability.runid import RUN_ID
+from vfx_harness.orchestration import critic_qualification_publication
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 from vfx_harness.orchestration.shot_authority_capture import (
     ShotAuthorityWriterCapability,
@@ -355,7 +355,10 @@ def load_layers_from_path(
                     f"{outside}. {EXTRA_FRAME_BINDING_RULE}"
                 )
             for claim in unit.evaluation.claims:
-                validate_qualification(path.parent, claim, f"{where}.stages.{unit.id}.claims.{claim.id}")
+                if claim.authority == "qualified_qualitative_required":
+                    critic_qualification_publication.read_selected(
+                        path.parent, claim, f"{where}.stages.{unit.id}.claims.{claim.id}"
+                    )
                 if claim.axis not in set(g.get("owns") or []):
                     raise ValueError(
                         f"{where}.stages.{unit.id} claim {claim.id} uses axis "

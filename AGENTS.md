@@ -674,8 +674,10 @@ provider-reported response model before submitting a verdict; missing or differe
 refuses without discarding spending. Scripted observations explicitly have no model identity.
 Matching reported identity does not prove model weights or establish judge qualification.
 Native qualification admission is opt-in through parsed claims derived by the owning
-harness from current selected authority. Each claim must bind its exact passed, hash-pinned
-qualification artifact and `native_invocation_sha256`. Check the exact prompt, scope/claim
+harness from current selected authority. Each claim binds exactly `suite`, `artifact` and
+`artifact_sha256`, selecting a measured `vfx-harness.critic-qualification/v2` profile set.
+Admission must find exactly one member matching the actual `native_invocation_sha256`;
+missing or duplicate profiles refuse before inference. Check the exact prompt, scope/claim
 semantics, response tool/schema, image roles/format/dimensions/mode/frame count/detail and
 effective provider configuration before inference; compare the configuration fingerprint
 recorded from the dispatched payload before consuming the verdict. Reopen qualification
@@ -699,15 +701,17 @@ distinct trials and an explicit irrelevant-change baseline; never treat missing 
 as zero errors. Preserve metric numerators/denominators, score instability, citation errors
 and unusable-reference errors. A measurement report does not publish qualification or
 select layer/debt authority (ADR-0012).
-Native qualification publication takes an exact hash-selected, closed calibration suite
-and a current owning-run check. Re-evaluate the suite before writing its measured artifact;
-never accept supplied metrics or silently adopt a changed source selection. Publication
+Native qualification publication takes an exact hash-selected, closed calibration set
+and a current owning-run check. Every member selects its own measured suite request and
+independent evaluation; all members must measure the same selected claim and suite.
+Reopen all trials, journals and images before publishing, bind the complete set selection,
+and reject duplicates, omitted members, changed sources and supplied metrics. Publication
 creates a run-owned candidate credential and does not mutate selected plans or claims.
-Native admission requires its exact claim id and `calibration_proof`, reopens the suite,
-evaluation, journals and images, and derives the artifact again through consumption.
-Old asserted-rate artifacts without measured proof refuse native admission. Authored label
-review and layer/debt qualification selection remain owning harness responsibilities
-(ADR-0012).
+Selected-layer loading and native admission both reopen the complete measured proof through
+the owning adapter; the domain parser validates values and never reads qualification files.
+An old single-profile or asserted-rate artifact cannot become a v2 set by editing its
+schema or digest. Authored label review and layer/debt qualification selection remain
+owning harness responsibilities (ADR-0012).
 Composed judgment debt derives typed `Claim`/`EvidenceBinding` values with no qualification
 credential. Those exact semantics may enter native calibration. Explicit measured binding
 returns a new claim only after reopening proof and matching the complete calibrated

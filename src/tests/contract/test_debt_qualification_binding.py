@@ -85,7 +85,8 @@ def test_binding_cannot_repurpose_measured_qualification(bound, qualified, field
     claim, _record = qualified
     artifact = {"path": claim.qualification["artifact"], "sha256": claim.qualification["artifact_sha256"]}
     changed = replace(claim, qualification=None, **{field: value})
-    with pytest.raises(ValueError, match="semantics or owner"):
+    message = "must measure the selected claim" if field == "id" else "semantics or owner"
+    with pytest.raises(ValueError, match=message):
         publication.bind_claim(bound.shot, claim=changed, artifact=artifact, check_current=lambda: None)
 
 

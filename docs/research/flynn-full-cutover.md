@@ -1580,3 +1580,54 @@ This is a protocol checkpoint, not live qualification. One credential still sele
 one exact role/frame/image profile. Multi-profile selection, remaining qualitative
 and simplify builders, complete layer/debt/acceptance ownership, legacy dependency
 removal and reviewed real-model end-to-end validation remain owed.
+
+## Measured profile-set selection — validated checkpoint
+
+After `f111784`, qualification selection now binds a closed v2 profile set through
+exact `suite`, `artifact` and `artifact_sha256` claim fields. Each profile retains
+its own measured request/evaluation and complete source proof. Actual inference must
+match exactly one member; missing or duplicate configurations refuse. Both selected
+layer loading and native admission independently reopen the complete proof. Domain
+qualification parsing no longer reads files. HIR-0257 is accepted after the full
+gate; this is not reviewed live qualification or complete cutover.
+
+Development used an isolated source copy while HIR-0256's regression stayed frozen.
+It passed 14 pure-record checks, two initial admission checks and five measured
+multi-profile/source-substitution tests. A broader consumer run passed 77 cases and
+failed one old message assertion; that corrected case passed. These sets overlap.
+The integrated gate passed 264 cases and failed two retired architecture fixtures.
+Their migration, native consumer fixture updates and domain-boundary checks passed
+all 11 selected cases. A positive loader case now uses measured profiles and refuses
+a changed member evaluation; it passed independently. Asserted-rate artifacts refuse
+regardless of their stored passing flag. Complete-source Ruff and whitespace checks
+passed. No SDK changes, ARC work or paid inference were used.
+
+The final frozen-source gate passed all 3,639 tests with 121 warnings in
+`/tmp/vfx-spike-regression-5ifjdpbi` (shards 896, 915, 914 and 914); every worker
+exited zero. Remaining qualitative/simplify builder
+migration, explicit layer/debt/acceptance ownership, legacy dependency removal and
+reviewed bounded live end-to-end validation remain owed.
+
+### Next isolated draft: simplify carriers
+
+While the profile-set regression was frozen, an isolated source copy at
+`/tmp/vfx-simplify-next-w1_rdavl/work` adds simplify to native execution/capture
+eligibility and reuses the existing construction-family validator before inference.
+No missing SDK primitive was identified. ADR-0009 permits mesh or volume carriers;
+a predecessor mesh is not mandatory. The production checkout has not received this
+draft yet.
+
+The draft passes real mesh replay/completion and false-measurement/source-drift
+checks (three cases), world-volume density replay/completion (one), Solid and EEVEE
+capture/payment/canonical lifecycles (two), and default mesh/volume routing with
+native-failure propagation and no fallback (four). Validation exposed fixture
+requirements, not permission to relax production: geometry needs frame-bound visible
+evidence, context-derived object handles remain restricted by the artifact policy,
+and volume claims must cover the mutated density node. The final fixtures construct
+mesh data explicitly and declare complete evidence/ownership. Complete-source Ruff
+passes in the isolated copy. Final logs are `/tmp/vfx-simplify-next-integration-mesh-data.log`,
+`/tmp/vfx-simplify-next-volume-owned.log`, `/tmp/vfx-simplify-next-routing-images.log`
+(the image cases passed; its old volume-routing fixtures failed), and
+`/tmp/vfx-simplify-next-routing-final.log` (all four corrected routing cases passed).
+Integrate only after the profile-set checkpoint completes, then run the required
+integrated and full gates. These offline tests do not prove model or visual quality.

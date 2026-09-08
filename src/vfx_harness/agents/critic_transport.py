@@ -99,7 +99,7 @@ async def execute(
     prompt.validate_images(images)
     snapshots, sources = _snapshot_images(folder, images)
     admission = critic_qualification.Admission(
-        folder, qualification_claims, model=requested_model, prompt=prompt.rubric, image_shape=IMAGE_SHAPE,
+        folder, qualification_claims,
         axes=tuple(names), frames=frames,
     ) if qualification_claims else None
     calibration_semantics = critic_qualification.selected_semantics(

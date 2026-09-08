@@ -37,6 +37,10 @@ in SQLite. Verification cannot create a query match (HIR-0255).
 Critic v2 qualification binds rubric and selected authority separately from candidate
 observations. Preserve exact observation/context digests and source verification;
 old v1 proof cannot authorize v2 admission (HIR-0256).
+Qualification selects an explicit measured profile set. Match the actual invocation
+exactly, reopen all member proofs in both layer loading and admission, and keep file
+reads out of the domain parser. Old single-profile or asserted-rate artifacts refuse
+(HIR-0257).
 
 Treat the Claude Agent SDK as a production runtime, not merely prompt transport. Inspect the
 installed SDK before building custom orchestration and prefer its strongest applicable native

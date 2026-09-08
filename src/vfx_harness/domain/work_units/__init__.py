@@ -59,7 +59,6 @@ from vfx_harness.domain.work_units.claims import EvidenceBinding as EvidenceBind
 from vfx_harness.domain.work_units.claims import JudgePoint as JudgePoint
 from vfx_harness.domain.work_units.claims import MutationScope as MutationScope
 from vfx_harness.domain.work_units.claims import ProtectionSpec as ProtectionSpec
-from vfx_harness.domain.work_units.claims import validate_qualification as validate_qualification
 from vfx_harness.domain.work_units.evidence_domains import CLAIM_DOMAINS as CLAIM_DOMAINS
 from vfx_harness.domain.work_units.evidence_domains import EVIDENCE_DOMAINS as EVIDENCE_DOMAINS
 from vfx_harness.domain.work_units.evidence_domains import (

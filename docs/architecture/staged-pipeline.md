@@ -268,8 +268,8 @@ Every claim declares:
   "authority": "qualified_qualitative_required",
   "qualification": {
     "suite": "claim_type_version",
-    "judge_model": "model_version",
-    "prompt": "prompt_hash"
+    "artifact": "qualifications/claim-profile-set.json",
+    "artifact_sha256": "64_lowercase_hex_characters"
   },
   "repair_owner": "layer.work_unit"
 }

@@ -62,8 +62,8 @@ Complete production qualification selection remains owed:
   nor the historical Claude noise measurement. Missing admission refuses the invocation.
 - Native v2 qualification separates the calibrated rubric and selected authority from
   candidate observations. Exact observation/context and image identities remain
-  independently verified. One credential still binds one role/frame/image profile;
-  complete multi-profile selection remains required for panels and multiple moments.
+  independently verified. The measured profile set selects independently evaluated role/frame/image profiles
+  by exact invocation digest; all 3,639 regression tests pass (HIR-0257).
   Old v1 proofs require requalification, not text normalization or edited hashes.
 - Prove qualified live judgments with reviewed controls; fixture passes are not model
   qualification. Unqualified layer/acceptance opinions currently remain unresolved.
@@ -103,23 +103,23 @@ require ARC testing. No session may fall back to another runtime after native fa
 
 The goal stays active across intermediate commits until this evidence exists.
 
-## Next qualification selection contract
+## Measured qualification selection
 
-Current-state inspection finds two callers of the single-artifact qualification
-validator: selected-layer loading in `orchestration/ledger.py` and native admission
-in `agents/critic_qualification.py`. The claim currently stores one `prompt`, and
-publication derives one `native_invocation_sha256`. That cannot select independently
-measured observer, focus, evidence-audit, tie-breaker and per-frame profiles.
+Claims select exactly `suite`, `artifact` and `artifact_sha256`. The v2 artifact binds
+one closed selection request and distinct measured profiles, each with its own suite
+request, independent evaluation and complete source proof. The actual invocation must
+match exactly one member. Missing, duplicate or substituted members refuse before
+inference. Publication and binding remain VFX operations; no model selects or invents
+its qualification.
 
-The next implementation should bind one immutable measured profile set to the exact
-claim semantics. Each member must retain its own suite request, independent evaluation
-and complete source proof. Runtime selection must match the actual profile digest
-exactly; missing, duplicate or substituted members must refuse before inference.
-Publication and binding remain VFX authority operations, with no model-selected profile
-or implied calibration. Replace the obsolete single-prompt claim contract explicitly,
-rather than assigning its field a new hidden meaning. Move qualification file reads
-out of the domain parser into the owning adapter while changing those two consumers;
-the domain should validate record values, not open proof files.
+Both selected-layer loading and native admission reopen the complete measured proof.
+File reads now belong to the owning adapter, and architecture tests keep qualification
+domain parsing free of filesystem or execution dependencies. Old single-profile and
+asserted-rate artifacts are rejected. A positive loader test uses measured profiles
+and refuses a changed member evaluation. The final frozen-source regression passed
+all 3,639 tests with 121 warnings; every shard exited zero. HIR-0257 is accepted.
 
-This is pending implementation. It does not make the current v2 protocol checkpoint
-multi-profile, and reviewed real controls plus live qualification remain necessary.
+This proves selection mechanics. Complete layer/debt/acceptance ownership, reviewed
+controls and live qualification remain necessary. The simplify carrier migration is
+being developed in an isolated copy while this checkpoint is published; it is not yet
+part of production routing.

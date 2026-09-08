@@ -896,6 +896,25 @@ or legacy fallback infers a protocol from a completed prompt.
 
 This remains a VFX contract. Flynn already provides bounded required context, images,
 configuration identity, neutral usage and durable observations. Offline transport and
-measured-fixture tests prove these mechanisms, not visual quality. One selected
-credential still binds one exact role/frame/image profile; multi-profile selection,
-complete layer/debt/acceptance ownership and reviewed live calibration remain owed.
+measured-fixture tests prove these mechanisms, not visual quality. At this checkpoint
+one credential bound one exact profile; the following profile-set contract supersedes
+that selection limitation. Complete layer/debt/acceptance ownership and reviewed live
+calibration remain owed.
+
+### Explicit measured qualification profile sets
+
+HIR-0257 replaces the single-prompt claim credential with exactly `suite`, `artifact`
+and `artifact_sha256`. The selected `vfx-harness.critic-qualification/v2` record binds
+a closed calibration-set request and distinct measured profiles ordered by invocation
+digest. Every member has its own suite request, independent evaluation and complete
+journal/image proof, and must measure the same exact claim and suite. No profile gains
+authority from an average across members or a stored passing flag.
+
+Publication re-derives every member without editing selected plans. Both layer loading
+and native admission reopen the complete measured proof; an actual invocation must
+match exactly one member before inference. Claim semantics, selected files and proof
+remain current through observation return. The domain validates record values without
+filesystem access; the VFX publication/reader adapter owns source verification.
+Old single-profile credentials and asserted-rate artifacts are rejected rather than
+inferred into the new shape. This changes selection mechanics, not reviewed labels,
+live qualification, or VFX acceptance. SDK execution contracts are unchanged.
