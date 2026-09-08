@@ -595,3 +595,37 @@ passed. This validation used temporary fixtures and no paid inference or product
 Full regression validation passed **3,238 tests** on unchanged runtime source
 (805 + 805 + 805 + 823), with the 15 existing Pillow warnings. All four groups exited
 successfully; complete-source Ruff and diff checks remained clean. SDK source was unchanged.
+
+## Spike citation acceptance prerequisite
+
+Inspection before implementing native evidence publication found that the existing
+`plan-spike/v1` reader verified script/output hashes and exact contract equality, but
+accepted stored `pass` flags without re-evaluating the reported values. Its result mapping
+also silently replaced duplicate ids, and an empty contract/result set could claim success.
+
+The citation gate now requires a nonempty, distinct contract set and exactly one result
+per contract. It validates the contract, refuses errors and nonnumeric or nonfinite
+measurements, and applies the existing scene predicate to the recorded value. Stored
+success flags must agree; they cannot override a failed predicate. Non-object records
+produce a blocking schema finding. These checks belong to VFX, not Flynn.
+
+This is a prerequisite correction, not the native publication operation. The v1 reader
+still consumes recorded measurements; recomputing a predicate does not independently
+prove their provenance. Native publication must bind the fresh-process readings and
+their complete execution sources, retain Blender version identity, and freeze that
+evidence through the owning plan transaction. The current native spike capability is
+layer-bound, while the old depositor only publishes in a global workspace; copying the
+old depositor into native JIT would not establish the missing publication ownership.
+Native reports therefore remain explicitly unpublished scratch observations.
+
+The previous committed gate was replayed offline against three injected records:
+an out-of-band value claiming success, a failed result hidden by a duplicate passing
+result, and empty contracts/results claiming success. It reported zero blockers for
+all three. The corrected gate rejects each. Focused validation passed 60 tests,
+including 21 new refusal cases; the existing positive fixture now declares a valid
+scene-contract lifecycle, semantic role selector, and normalized bound.
+
+Full regression validation passed **3,259 tests** (810 + 810 + 810 + 829), with
+the 15 existing Pillow warnings. All groups exited successfully on unchanged runtime
+source. Complete-source Ruff and diff checks passed. No SDK changes, ARC runs, paid
+inference, or production-shot changes were needed.

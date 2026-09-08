@@ -526,7 +526,10 @@ def _typed_spike_fixture(root: Path) -> tuple[str, dict]:
     output = b"Blender 5.0.0\nprobe\n"
     (evidence / "probe.py").write_bytes(script)
     (evidence / "probe.out").write_bytes(output)
-    contract = {"id": "bbox-f36", "kind": "bbox_width", "frame": 36, "op": "band", "lo": 0.9, "hi": 1.3}
+    contract = {"id": "bbox-f36", "kind": "bbox_width", "roles": ["subject"],
+                "frame": 36, "op": "band", "lo": 0.9, "hi": 1.1,
+                "owner_layer": "1", "fault_owner": "1", "activates_at": "1", "lifecycle": "layer"}
+    assert validate_row(contract) is None
     _write(root / "scene_checks.json", {"schema": 2, "contracts": [contract]})
     record = {
         "schema": "vfx-harness.plan-spike/v1",

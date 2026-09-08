@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from vfx_harness.domain.contracts import load_document
@@ -72,6 +73,7 @@ from vfx_harness.evaluation.plan_gate.types import (
     _resolve,
 )
 from vfx_harness.evidence.checks import load, verify
+from vfx_harness.evidence.scene_checks import validate as scene_validation
 
 
 def _check_done(folder: Path) -> tuple[list[Finding], dict]:
@@ -427,7 +429,7 @@ def _check_evidence(folder: Path, plan: str) -> tuple[list[Finding], dict]:
                 "re-run the spike and cite its generated typed JSON record",
             ))
             return None
-        if record.get("schema") != "vfx-harness.plan-spike/v1":
+        if not isinstance(record, dict) or record.get("schema") != "vfx-harness.plan-spike/v1":
             out.append(Finding(
                 "evidence", True, subject, f"spike record has an unsupported schema ({rel})",
                 "re-run it with the contract-bound spike tool",
@@ -461,12 +463,27 @@ def _check_evidence(folder: Path, plan: str) -> tuple[list[Finding], dict]:
                 "re-run the spike in the supported runtime; mechanism evidence is version-bound",
             ))
             return None
-        rows = record.get("contracts") or []
-        results = {
-            str(item.get("id")): item
-            for item in record.get("results") or []
-            if isinstance(item, dict)
-        }
+        rows = record.get("contracts")
+        readings = record.get("results")
+        # A mapping comprehension would silently discard duplicate results, letting
+        # a later passing row hide an earlier failed measurement.
+        def distinct_ids(items):
+            return (
+                isinstance(items, list) and bool(items)
+                and all(isinstance(item, dict) and isinstance(item.get("id"), str)
+                        and item["id"].strip() for item in items)
+                and len({item["id"] for item in items}) == len(items)
+            )
+
+        if (not distinct_ids(rows) or not distinct_ids(readings)
+                or {row["id"] for row in rows} != {item["id"] for item in readings}):
+            out.append(Finding(
+                "evidence", True, subject,
+                f"spike record requires nonempty distinct contracts and exactly one result per contract ({rel})",
+                "re-run the complete contract set; empty, duplicate, missing, or extra results are not proof",
+            ))
+            return None
+        results = {item["id"]: item for item in readings}
         stale = []
         failed = []
         covered = {}
@@ -478,8 +495,18 @@ def _check_evidence(folder: Path, plan: str) -> tuple[list[Finding], dict]:
             if scene_by_id.get(contract_id) != row:
                 stale.append(contract_id)
                 continue
-            result = results.get(contract_id, {})
-            if result.get("pass") is not True:
+            result = results[contract_id]
+            value = result.get("value")
+            # Stored verdicts are consistency assertions, never substitutes for
+            # evaluating the current predicate against the recorded measurement.
+            measured = (
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value)
+            )
+            if (scene_validation.validate_row(row) or not measured
+                    or result.get("error") not in (None, "")
+                    or result.get("pass") is not True
+                    or not scene_validation._holds(row, value)):
                 failed.append(contract_id)
                 continue
             covered[contract_id] = row
