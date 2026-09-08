@@ -6,6 +6,8 @@ from copy import deepcopy
 from typing import Any, Literal
 
 from vfx_harness.agents.builder.pkg import builder_package
+from vfx_harness.domain.critic_verdict import PASS_MEAN as PASS_MEAN
+from vfx_harness.domain.critic_verdict import PASS_MIN as PASS_MIN
 from vfx_harness.domain.unit_outcomes import HypothesisFalsification
 from vfx_harness.infrastructure.config import (
     DEFAULT_CRITIC_MODEL,
@@ -14,25 +16,8 @@ from vfx_harness.infrastructure.config import (
 )
 
 MODEL = DEFAULT_EXECUTION_MODEL
-# The critic scores renders and runs 3-4x per layer to the builder's one session, so it
-# dominates layer cost. It was fable-5 on that reasoning; it is opus-5 now because the
-# verdict is the pipeline's only measure of quality and a cheaper judge is a false economy
-# when every downstream decision rests on it.
-#
-# NOTE the calibration below: _JUDGE_SD = 0.603 and the adjudication band derived from it
-# were MEASURED ON FABLE-5. They are the wrong constants for this judge until re-measured
-# (`python -m vfx_harness.evaluation.cli variance <shot>`). Until then the panel is being convened on
-# a noise estimate that belongs to a different model.
+# Native critic configuration is separate from the remaining legacy builders.
 CRITIC_MODEL = DEFAULT_CRITIC_MODEL
-AXES_SYSTEM = """\
-You define the CRITIC RUBRIC for one VFX shot. Read brief.md and the reference images,
-then output the 5-7 look axes a VFX supervisor would score a render on against THESE
-references — the dimensions this specific shot's look lives or dies by (e.g. composition,
-atmosphere, the hero subject's detail, environment, palette, finish/grade). Make them
-specific to this shot's content and style, not generic. Return ONLY a JSON array of
-{"key": "snake_case", "desc": "one concrete line"} and nothing else.
-"""
-
 DISTILL_SYSTEM = """\
 You harvest REUSABLE Blender recipes from a build that just passed its critic. Read the
 build script. Identify 0-2 GENERAL techniques worth reusing on other shots (volumetrics,
@@ -69,20 +54,6 @@ vfx_harness/knowledge/recipes/_spikes/README.md first; it documents the SPIKE_AR
 that scaffolding OUT of the .md: find_recipe hands the recipe body to a builder verbatim,
 and test scaffolding in there gets pasted straight into a shot.
 """
-
-# Layer: the render passes when every axis clears PASS_MIN and the mean clears
-# PASS_MEAN (both on the critic's 0–5 scale). Calibrated from data: across 4 builds the
-# best/canonical band is 3.1-3.3, and coupled global axes REDISTRIBUTE score under
-# revision — 3.3 sat inside that band and was missed by ≤0.16 four times straight.
-#
-# The "~±0.15 critic noise" this once claimed was WRONG, and wrong in the dangerous
-# direction. Measured directly: the same render against the same reference on one axis
-# scored 4.0, 3.0, 3.0, 2.0 across four repeats — a 2-point spread that flipped the
-# verdict. On a one- or two-axis layer the mean IS that single number, so a lone verdict
-# near the line is close to a coin flip. Hence _judge() below, which buys a second and
-# third opinion exactly where the decision is uncertain.
-PASS_MIN = 2
-PASS_MEAN = 3.1
 
 # Circuit breaker. Turns are a poor proxy for what we actually care about — a layer
 # needing 200 cheap turns is fine, one burning $40 in 40 turns is not — so cap SPEND

@@ -27,7 +27,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 # shots, and packaged knowledge paths to resolve where the project says they live.
 PROJECT_ROOT = PACKAGE_ROOT.parents[2]
 DEFAULT_EXECUTION_MODEL = "claude-sonnet-5"
-DEFAULT_CRITIC_MODEL = "claude-opus-5"
+DEFAULT_CRITIC_MODEL = VISION_MODEL
 
 
 def environment_file(path: str | Path | None = None) -> Path | None:
@@ -236,7 +236,7 @@ class Settings:
             reviewer_model=_text("VFXH_REVIEWER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
             asset_model=_text("VFXH_ASSET_MODEL", execution_model),
             distiller_model=_text("VFXH_DISTILLER_MODEL", execution_model),
-            critic_model=_text("VFXH_CRITIC_MODEL", DEFAULT_CRITIC_MODEL),
+            critic_model=_text("VFXH_CRITIC_MODEL", _text("DEEPSEEK_MODEL", DEFAULT_CRITIC_MODEL)),
             plan_max_turns=_int("VFXH_PLAN_MAX_TURNS", 12),
             plan_verify_max_turns=_int("VFXH_PLAN_VERIFY_MAX_TURNS", 6),
             model_event_idle_seconds=_int("VFXH_MODEL_EVENT_IDLE_SECONDS", 360),

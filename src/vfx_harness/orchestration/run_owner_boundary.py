@@ -36,10 +36,10 @@ def require_current_owner(layout: run_artifacts.RunLayout) -> RunOwnerFenceLease
     """Return the live same-process owner, never derive a capability from disk or env."""
     lease = _CURRENT_OWNER.get()
     if lease is None or lease.acquisition_kind != "owner":
-        raise RunOwnerFenceError("global planning requires execution inside the live root-owner process")
+        raise RunOwnerFenceError("operation requires execution inside the live root-owner process")
     lease.require_current_identity()
     if lease.run_root != layout.root or lease.claim.run_id != layout.run_id:
-        raise RunOwnerFenceError("current run owner does not own the requested planning run")
+        raise RunOwnerFenceError("current run owner does not own the requested run")
     return lease
 
 

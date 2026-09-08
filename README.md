@@ -326,13 +326,9 @@ This is a strict migration. Obsolete schemas are rejected, not translated.
 
 ### Model lanes
 
-Unit planning and builder roles default to `claude-sonnet-5`; the visual critic defaults to
-`claude-opus-5`. Override without code edits:
-
-```bash
-VFXH_EXECUTION_MODEL=claude-sonnet-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <shot>
-VFXH_EXECUTION_MODEL=claude-opus-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <shot>
-```
+Native planning, executable building and critic roles use Flynn and the configured
+DeepSeek vision model. `VFXH_CRITIC_MODEL` defaults to `DEEPSEEK_MODEL` (or Flynn's
+supported vision model). Remaining legacy builder roles still use `VFXH_EXECUTION_MODEL`.
 
 `VFXH_PLANNER_MODEL` selects native Flynn unit planning and defaults to `DEEPSEEK_MODEL`
 (or Flynn's vision model). `VFXH_UNIT_PLAN_SECONDS` and `VFXH_UNIT_PLAN_OUTPUT_TOKENS`
@@ -439,8 +435,8 @@ planner runs in the root-owner process, uses 32,000-character bounded text conte
 and stores complete phase snapshots outside its gate workspace. It requires explicit
 wall-time and output-token caps (`VFXH_GLOBAL_PLAN_SECONDS`, default 600, and
 `VFXH_GLOBAL_PLAN_OUTPUT_TOKENS`, default 32768). It also refuses unpriced USD caps.
-Raster/generated-asset builder and critic roles are still being migrated; the Claude dependency
-remains for those roles until their native gates pass. Preflight still checks those
+Qualitative/generated-asset builder roles are still being migrated; the Claude dependency
+remains for those builder sessions until their native gates pass. Preflight still checks those
 remaining roles and confinement; a successful preflight does not verify DeepSeek
 credentials. No Claude fallback exists in approach review or global planning.
 
@@ -453,6 +449,11 @@ They capture current candidate/adversary images, pay image debts, and bind the c
 primary render to the layer checkpoint. A composed layer's independent look judgment
 remains required. Qualitative and generated units still await migration.
 Flynn failures never fall back to Claude.
+The shared production critic now records native Flynn observations with explicit image
+identity, usage and termination. Only complete selected claim scope with measured native
+qualification can authorize its visual verdict. Unqualified opinions are diagnostic and
+cannot pass work or supply autonomous repair instructions. Layer-look and acceptance
+qualification selection remain unfinished migration gates; their obligations are retained.
 `VFXH_EXECUTABLE_BUILDER_MODEL` defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
 `VFXH_EXECUTABLE_BUILDER_SECONDS`, `VFXH_EXECUTABLE_BUILDER_OUTPUT_TOKENS` and
 `VFXH_EXECUTABLE_BUILDER_MAX_STEPS` default to 600, 32768 and 12. Steps include the

@@ -18,11 +18,16 @@ VFX installs SDK main `189a4776559a09120111f6557ee14731993874c6` over SSH.
 | Procedural executable Workbench image builder | No missing generic SDK mechanism identified | Native capture derives the same medium as canonical replay; focused solid lifecycle passes | Passed full 3,535-test regression including default driver routing and source-substitution refusal |
 | Qualitative and provisional unit builders | Native session and native critic transport exist | Legacy unit loop still active; VFX owns claim qualification, evidence reconciliation and repair | Wire qualified judgment into complete native build path, with measured qualification and refusal before autonomous blocking |
 | Generated construction | Generic confined ProgramWorker exists; structured external tools exist | Asset generation belongs to typed builder construction, not the retired standalone asset command | Port generation dispatch and pinned asset dependencies into native tools; verify generation failure, source substitution and cold replay |
-| Unit, layer, debt and acceptance critics | Native bounded verdict transport, exact configuration and usage records | Production critic still uses Claude; native calibration/publication/admission mechanisms exist | Replace critic invocation while retaining citations, focus/motion inputs, executable reconciliation and qualification checks |
+| Unit, layer, debt and acceptance critics | Native bounded verdict transport, exact configuration and usage records | Shared production inference uses Flynn; measured admission gates scoped qualitative decisions | Complete explicit layer/debt/acceptance credential selection and qualified live validation |
 | Composed layer look and judgment debts | Native images and verdict observations | VFX derives exact typed debt claims; measured qualification can bind them explicitly | Select current plan-backed qualification for exact claims; retain independent layer look, replay groups and receipts |
-| Shot acceptance | Native critic mechanism available | VFX replays accepted chain and publishes typed acceptance outcome; critic dependency remains indirect | Migrate shared critic and prove complete passing moment coverage with qualified live judgment |
+| Shot acceptance | Native critic mechanism available | VFX replays accepted chain and publishes typed acceptance outcome; critic inference is native, unbound scope remains unresolved | Bind acceptance-owned qualification and prove complete passing moment coverage with qualified live judgment |
 | Blender, recipe and planning tool registration | Native tool schemas, validation and structured text/image results | Some shared operations already native; legacy MCP decorators/servers remain | Remove obsolete adapters after remaining consumers migrate; preserve semantic scope and confinement |
-| Logging, configuration, installation and preflight | Provider-neutral usage/identity/termination, known/unknown/not-applicable accounting | Native session reports exist alongside Claude message readers, credentials, defaults and dependency | Remove all active Claude integration and engine selection; prove fresh install, provider preflight and honest usage reporting |
+| Logging, configuration, installation and preflight | Provider-neutral usage/identity/termination, known/unknown/not-applicable accounting | Native session reports exist alongside Claude message readers, credentials, defaults and dependency | Remove remaining Claude integration; verify native error-to-stop classification, fresh install, provider preflight and honest usage reporting |
+
+The shared critic checkpoint passed all 3,553 regression tests. An AST inventory still
+finds 24 production modules importing the Claude SDK, concentrated in the remaining
+builder loops/options/drain/facade, tool servers, hook adapters and message logger.
+This is a remaining-dependency count, not a count of active agent roles.
 
 ## Retired utilities and deletion scope
 
@@ -33,30 +38,27 @@ lookup remains an active tool; recipe verification remains executable evidence.
 Unused axis-classifier options and distillation prompts/reexports are cleanup candidates
 when their legacy builder modules are removed.
 
-## Next shared critic migration boundary
+## Remaining critic authority boundary
 
-`agents/builder/critic.py` is the common production invocation used by unit evaluation,
-composed layers and acceptance. Replace that invocation with `critic_transport.execute`
-and preserve the existing deterministic reconciliation around it. Native transport
-already retains failure/usage/termination and checks exact image and configuration
-identity. VFX still must:
+`agents/builder/critic.py` now invokes Flynn through `critic_session` and the existing
+native transport. The Claude query loop, options, image/message helpers and error retries
+are removed. Native image order, usage, cancellation, source identity and exact invocation
+admission remain guarded; pure score interpretation lives in `domain/critic_verdict.py`.
+Only IDs verified by native admission and bound to the selected claims reach qualified
+reconciliation. Every required qualitative claim and requested axis must be covered;
+otherwise the observation cannot pass work or provide visual repair instructions.
 
-- Select typed claims from current authority and the exact judge point. Pass only
-  measured, admitted claim IDs into reconciliation; the legacy designation alone is
-  insufficient proof.
-- Bind the live unit/layer/acceptance execution guard throughout preparation, inference
-  and result consumption. Retain original focus/motion/prior image order and all
-  declared required inputs.
-- Supply the actual role prompt and provider configuration for qualification. Replacing
-  the invocation must not silently reuse Claude calibration or its model-noise estimates.
-- Give composed layer look and debts explicit selected qualification authority. The
-  existing implicit `layer:<id>:qualified-look` receipt row is an obligation, not a
-  measured credential. Do not remove that obligation to bypass qualification.
-- Remove the superseded query loop, options, Claude image/message helpers and retry
-  behavior in the same migration; native failures propagate with their journal intact.
+Complete production qualification selection remains owed:
 
-These are identified remaining implementation obligations, not completed behavior or
-permission to relax qualification gates.
+- An implicit `layer:<id>:qualified-look` receipt row is an obligation, not a measured
+  credential. Keep that obligation and select explicit owning claims/credentials.
+- Bind debt credentials through the selected authority path and exact composition group.
+- Bind acceptance claims to full-shot scope, current accepted chain and required moments.
+- Calibrate the actual role prompt, images and provider configuration. Observer, focus,
+  evidence-audit and tie-breaker invocations cannot silently inherit each other's proof,
+  nor the historical Claude noise measurement. Missing admission refuses the invocation.
+- Prove qualified live judgments with reviewed controls; fixture passes are not model
+  qualification. Unqualified layer/acceptance opinions currently remain unresolved.
 
 ## Shared SDK capability decision
 

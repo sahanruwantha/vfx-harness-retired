@@ -771,3 +771,35 @@ only executable form claims and owes no additional look vote. Model responses an
 EEVEE look critic are scripted in these fixtures, so they do not demonstrate live
 inference, qualification or full-shot acceptance. Final regression results are recorded
 in the cutover research log.
+
+### Shared production critic inference uses Flynn
+
+The common `_critique` invocation now uses `critic_session` and native Flynn transport.
+It checks the exact live unit/layer execution guard, or the live root-run owner for a
+caller without that guard, and reopens selected authority through inference. Provider
+selection is `VFXH_CRITIC_MODEL`, defaulting to `DEEPSEEK_MODEL` or the supported Flynn
+vision model. Each opinion has one inference/tool operation, 8192 output tokens and a
+180-second deadline. An unpriced USD cap refuses. Errors and cancellation retain the
+native journal and propagate; no Claude fallback or inference-error retry exists.
+
+Reference, candidate, focus, motion and prior inputs retain their complete declared
+manifest and original image bytes. Claude block encoding, stream scraping, critic SDK
+options and obsolete axis-classifier options are removed. Pure score interpretation
+now resides in the domain contract instead of the legacy session drain. Motion/focus
+preparation and focused inference failures no longer silently preserve an earlier
+full-frame verdict. A focus failure is missing evidence, not a successful judgment.
+
+A claim's declared qualitative authority is not proof. Only current selected claims
+actually admitted by the native measured-proof reader enter qualified reconciliation.
+A visual pass requires complete coverage of required qualitative claims and requested
+axes. An unqualified opinion remains recorded, with `needs_human`, `qualification_gap`
+and its exact native observation report; it cannot pass work or supply autonomous
+visual repair instructions. Independent executable failures preserve their own issues
+and authority. Existing citation reconciliation and receipt publishers remain in VFX.
+
+This deliberately does not promote implicit layer-look or acceptance scope by borrowing
+unit labels. Those observations remain unresolved until explicit owning qualification
+selection is implemented. Native admission checks each actual observer/focus/panel
+invocation, so a credential for one cannot silently qualify another prompt or phase.
+The remaining authority selection and reviewed live calibration are explicit cutover
+work, not a reason to invoke the retired critic runtime.

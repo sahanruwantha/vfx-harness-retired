@@ -4,11 +4,8 @@ from claude_agent_sdk import ResultMessage as ResultMessage
 
 from vfx_harness.agents.builder.axes import _MOTION_AXIS_WORDS as _MOTION_AXIS_WORDS
 from vfx_harness.agents.builder.axes import _axes_need_motion as _axes_need_motion
-from vfx_harness.agents.builder.axes import _axes_options as _axes_options
 from vfx_harness.agents.builder.axes import _builder_ticket_context as _builder_ticket_context
-from vfx_harness.agents.builder.axes import _critic_options as _critic_options
 from vfx_harness.agents.builder.axes import _evidence_convergence_stop as _evidence_convergence_stop
-from vfx_harness.agents.builder.axes import _extract_json_list as _extract_json_list
 from vfx_harness.agents.builder.axes import _layer_needs_motion as _layer_needs_motion
 from vfx_harness.agents.builder.axes import _owned_axes as _owned_axes
 from vfx_harness.agents.builder.axes import _warn_unowned_axes as _warn_unowned_axes
@@ -23,8 +20,6 @@ from vfx_harness.agents.builder.critic import _critique as _critique
 from vfx_harness.agents.builder.critic import _judge as _judge
 from vfx_harness.agents.builder.critic import _needs_critic_panel as _needs_critic_panel
 from vfx_harness.agents.builder.critic import _round_rank as _round_rank
-from vfx_harness.agents.builder.critic_focus import _CRITIC_MAX_PX as _CRITIC_MAX_PX
-from vfx_harness.agents.builder.critic_focus import CRITIC_EFFORT as CRITIC_EFFORT
 from vfx_harness.agents.builder.critic_focus import _apply_evidence_gate as _apply_evidence_gate
 from vfx_harness.agents.builder.critic_focus import _audit_panel_citations as _audit_panel_citations
 from vfx_harness.agents.builder.critic_focus import _canonical_failing_ids as _canonical_failing_ids
@@ -32,23 +27,19 @@ from vfx_harness.agents.builder.critic_focus import _claim_context as _claim_con
 from vfx_harness.agents.builder.critic_focus import _filter_critic_issues as _filter_critic_issues
 from vfx_harness.agents.builder.critic_focus import _focus_references as _focus_references
 from vfx_harness.agents.builder.critic_focus import _focus_requests as _focus_requests
-from vfx_harness.agents.builder.critic_focus import _image_block as _image_block
 from vfx_harness.agents.builder.critic_focus import _image_optical_signal as _image_optical_signal
 from vfx_harness.agents.builder.critic_focus import _make_focus_panels as _make_focus_panels
 from vfx_harness.agents.builder.critic_focus import _motion_strip_crop as _motion_strip_crop
-from vfx_harness.agents.builder.critic_focus import _one_user_message as _one_user_message
 from vfx_harness.agents.builder.critic_focus import _repair_action as _repair_action
 from vfx_harness.agents.builder.critic_focus import _repair_change_summary as _repair_change_summary
 from vfx_harness.agents.builder.critic_focus import _repair_delta as _repair_delta
 from vfx_harness.agents.builder.critic_focus import _required_focus_requests as _required_focus_requests
-from vfx_harness.agents.builder.critic_focus import _structured_or_text as _structured_or_text
 from vfx_harness.agents.builder.critic_focus import _unsatisfiable_pair_findings as _unsatisfiable_pair_findings
 from vfx_harness.agents.builder.drain import _collect_approach as _collect_approach
 from vfx_harness.agents.builder.drain import _collect_errors as _collect_errors
 from vfx_harness.agents.builder.drain import _drain as _drain
 from vfx_harness.agents.builder.drain import _drain_once as _drain_once
 from vfx_harness.agents.builder.drain import _extract_json as _extract_json
-from vfx_harness.agents.builder.drain import _verdict as _verdict
 from vfx_harness.agents.builder.evidence import _fault_owner_options_for_unit as _fault_owner_options_for_unit
 from vfx_harness.agents.builder.evidence import _forecast_blocker_ids as _forecast_blocker_ids
 from vfx_harness.agents.builder.evidence import (
@@ -99,7 +90,6 @@ from vfx_harness.agents.builder.layer import build_layer_already_fenced as build
 from vfx_harness.agents.builder.models import _REPO as _REPO
 from vfx_harness.agents.builder.models import _RESET as _RESET
 from vfx_harness.agents.builder.models import _TRUNCATED as _TRUNCATED
-from vfx_harness.agents.builder.models import AXES_SYSTEM as AXES_SYSTEM
 from vfx_harness.agents.builder.models import CRITIC_MODEL as CRITIC_MODEL
 from vfx_harness.agents.builder.models import DISTILL_SYSTEM as DISTILL_SYSTEM
 from vfx_harness.agents.builder.models import MAX_BUDGET_USD as MAX_BUDGET_USD
@@ -175,9 +165,12 @@ from vfx_harness.agents.builder.verdicts import _worklist_evidence as _worklist_
 from vfx_harness.agents.builder.verdicts import composed_group_plans as composed_group_plans
 from vfx_harness.agents.builder.verify import _verify_script as _verify_script
 from vfx_harness.application.preflight import model_phase_failure as model_phase_failure
+from vfx_harness.domain.critic_verdict import evaluate_critic_scores
 from vfx_harness.infrastructure.config import Settings as Settings
 from vfx_harness.observability import costlog as costlog
 from vfx_harness.observability import transcript as transcript
 from vfx_harness.observability.log import TOOL_USE as TOOL_USE
 from vfx_harness.observability.log import reset_tool_use as reset_tool_use
 from vfx_harness.observability.log import tool_use_summary as tool_use_summary
+
+_verdict = evaluate_critic_scores

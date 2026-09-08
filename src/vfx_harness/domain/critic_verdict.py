@@ -2,6 +2,21 @@
 
 from __future__ import annotations
 
+# Layer: the render passes when every axis clears PASS_MIN and the mean clears
+# PASS_MEAN (both on the critic's 0–5 scale). Calibrated from data: across 4 builds the
+# best/canonical band is 3.1-3.3, and coupled global axes REDISTRIBUTE score under
+# revision — 3.3 sat inside that band and was missed by ≤0.16 four times straight.
+#
+# The "~±0.15 critic noise" this once claimed was WRONG, and wrong in the dangerous
+# direction. Measured directly: the same render against the same reference on one axis
+# scored 4.0, 3.0, 3.0, 2.0 across four repeats — a 2-point spread that flipped the
+# verdict. On a one- or two-axis layer the mean IS that single number, so a lone verdict
+# near the line is close to a coin flip. Hence _judge() below, which buys a second and
+# third opinion exactly where the decision is uncertain.
+PASS_MIN = 2
+PASS_MEAN = 3.1
+
+
 
 def critic_verdict_schema(
     axes: list[tuple[str, str]],
@@ -121,3 +136,39 @@ def critic_verdict_schema(
         "additionalProperties": False,
     }
 
+
+
+def evaluate_critic_scores(verdict: dict) -> dict:
+    """Compute pass/mean from the critic's IN-SCOPE axis scores. A scaffolding stage
+    marks axes a later stage delivers as "n/a" — absent-by-design must not drag the
+    mean (judging layer L on emission scored it 1.25 while its own axis scored 4)."""
+    raw = verdict.get("scores", {})
+    scores, na = {}, []
+    for k, v in raw.items():
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            scores[k] = float(v)
+        else:  # "n/a", "N/A", null … — out of this stage's scope
+            na.append(k)
+    n = len(scores)
+    mean = round(sum(scores.values()) / n, 2) if n else 0.0
+    verdict["mean"] = mean
+    verdict["scored_axes"] = sorted(scores)
+    verdict["na_axes"] = sorted(na)
+    # A verdict measured against the wrong plate is not a verdict. The critic reports
+    # this itself; before it was asked directly it would note the mismatch in `issues`
+    # and pass regardless. No score can rescue this — the plan's ref path is wrong.
+    if verdict.get("reference_usable") is False:
+        verdict["pass"] = False
+        verdict["reference_unusable"] = True
+        return verdict
+    # Thresholds must be GRANULARITY-AWARE. mean = sum/n, so one axis point of judge
+    # noise moves the mean by 1/n: 0.125 across 8 axes but 1.0 across one. A scoped
+    # layer with 1-2 in-scope axes must not face a harsher bar than a full acceptance
+    # layer (PASS_MEAN 3.1 on a single axis silently demands a 4).
+    if n and n <= 2:
+        verdict["pass"] = min(scores.values()) >= 3
+    else:
+        verdict["pass"] = bool(scores) and mean >= PASS_MEAN and min(scores.values()) >= PASS_MIN
+    return verdict

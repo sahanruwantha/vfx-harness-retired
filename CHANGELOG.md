@@ -12,10 +12,11 @@ live in the linked Harness Improvement Records.
   captures refuse before publishing handles. Independent replay and completion receipts
   remain required ([ADR-0012](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)).
 
-- Native Flynn critic observation transport now records bounded structured opinions,
-  verified image inputs and usage on failed calls. It grants no qualification or
-  acceptance authority; production critic migration still requires invocation-bound
-  qualification ([ADR-0012](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)).
+- Shared production critic inference now uses Flynn with verified image inputs,
+  durable usage and cancellation, and no Claude retry/fallback. Visual decisions require
+  complete measured qualification; unqualified opinions cannot accept work or authorize
+  visual repair. Layer-look and acceptance qualification selection remain migration gates
+  ([ADR-0012](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)).
 
 - Supported procedural EEVEE units now use Flynn in production. Image feedback keeps the
   fixed context cap, and native evaluation receipts identify the same canonical render as

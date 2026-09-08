@@ -2,117 +2,15 @@
 
 from __future__ import annotations
 
-import json
-import re
 from typing import TYPE_CHECKING
 
-from claude_agent_sdk import (
-    ClaudeAgentOptions,
-)
-
-from vfx_harness.agents.build_prompts import (
-    CRITIC_SYSTEM,
-)
-from vfx_harness.agents.builder.critic_focus import CRITIC_EFFORT
-from vfx_harness.agents.builder.models import AXES_SYSTEM, builder_model, critic_model
-from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.domain.brief import Shot
-from vfx_harness.domain.critic_verdict import critic_verdict_schema
-from vfx_harness.infrastructure.sandbox import sandbox_hooks
-from vfx_harness.observability.log import (
-    log,
-)
+from vfx_harness.observability.console import log
 from vfx_harness.orchestration.ledger import load_axes, load_layers
 from vfx_harness.orchestration.plan_authority import selected_artifact_path
 
 if TYPE_CHECKING:
     from vfx_harness.orchestration.authority_selection import ResolvedSelectedAuthority
-
-
-def _axes_options(shot: Shot) -> ClaudeAgentOptions:
-    return sdk_options(
-        model=builder_model(),
-        system_prompt=AXES_SYSTEM,
-        cwd=str(shot.folder),
-        hooks=sandbox_hooks(shot.folder, cwd=shot.folder),
-        allowed_tools=["Read", "Glob"],
-        disallowed_tools=["Write", "Edit", "Bash", "Grep", "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit"],
-        permission_mode="bypassPermissions",
-        max_buffer_size=32 * 1024 * 1024,
-        setting_sources=[],
-        max_turns=6,
-        effort="low",  # one cheap classification
-    )
-
-
-def _critic_options(
-    shot: Shot,
-    axes: list[tuple[str, str]] | None = None,
-    *,
-    allow_na: bool = True,
-    focus_frames: list[int] | None = None,
-) -> ClaudeAgentOptions:
-    # NO TOOLS. The images arrive attached to the request (see _critique), so the critic
-    # has nothing to fetch and cannot score a frame it never saw. This deleted three
-    # layers of machinery that existed only to police the old tool loop: the sandbox
-    # redirect for critic reads, the request/result id pairing, and the blind-critic guard.
-    return sdk_options(
-        model=critic_model(),
-        system_prompt=CRITIC_SYSTEM,
-        cwd=str(shot.folder),
-        allowed_tools=[],
-        disallowed_tools=[
-            "Read",
-            "Glob",
-            "Write",
-            "Edit",
-            "Bash",
-            "Grep",
-            "WebFetch",
-            "WebSearch",
-            "Task",
-            "Agent",
-            "NotebookEdit",
-        ],
-        permission_mode="bypassPermissions",
-        max_buffer_size=32 * 1024 * 1024,  # a multi-image request exceeds the 1MB default
-        setting_sources=[],
-        # Structured output can require a final protocol turn after the model has
-        # finished reasoning. In the real Layer 1 run, both first attempts exhausted a
-        # two-turn ceiling and both retries succeeded. Three turns are protocol headroom,
-        # not an invitation to loop: the critic has no tools and only one user message.
-        max_turns=3,
-        # The judgement everything depends on — but "xhigh" here was an assertion, never a
-        # measurement, and it is the single largest cost in the pipeline. Measured on layer
-        # 1: the critic produced 5-12k output per session for $4.18-11.31, i.e. $0.63-1.28
-        # per 1k output, against the builder's $0.07-0.09 — 9-18x more per token, while
-        # reading HALF the cache. Extended thinking is billed as output and does not appear
-        # in the output field, which is where the money goes. Configurable so the claim can
-        # be tested with `evals variance` instead of argued about.
-        effort=CRITIC_EFFORT,
-        # Validated at the tool layer with automatic retries, instead of scraping the
-        # last {...} out of free text — one critic already returned nothing parseable.
-        output_format=(
-            {
-                "type": "json_schema",
-                "schema": critic_verdict_schema(axes, allow_na=allow_na, focus_frames=focus_frames),
-            }
-            if axes
-            else None
-        ),
-    )
-
-
-def _extract_json_list(text: str) -> list:
-    """Pull the last JSON array out of a reply (fenced or bare)."""
-    fenced = re.findall(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
-    candidates = fenced or re.findall(r"(\[.*\])", text, re.DOTALL)
-    for chunk in reversed(candidates):
-        try:
-            return json.loads(chunk)
-        except json.JSONDecodeError:
-            continue
-    raise ValueError("no parseable JSON array")
 
 
 async def ensure_axes(

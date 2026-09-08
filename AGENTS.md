@@ -626,6 +626,18 @@ full ownership bindings remain in the guarded registry and source-verifiable rep
 evaluation receipt names the canonical primary render used by the layer checkpoint, while
 the replay closure separately binds the script; a script digest cannot stand in for that
 render (HIR-0253).
+Production critic inference runs through Flynn, including unit, composed-layer and acceptance
+callers of the shared critic. Recheck the live execution guard (or root-owner lease when no
+unit/layer guard applies) and exact selected authority throughout inference. Preserve native
+usage, errors, cancellation and observation report identity; never retry through Claude or
+retain an earlier verdict after failed motion/focus preparation or native inference.
+Only claim ids verified by native measured admission may enter qualified reconciliation.
+A visual pass requires every required qualitative claim and every requested axis in the selected
+scope to have that authority. An unqualified opinion is diagnostic: mark it unresolved,
+refuse acceptance, and provide no autonomous repair instructions from its visual issues.
+Independent executable failures retain their own authority and diagnostics. Implicit layer
+look and acceptance scope cannot become qualified by copying unit labels; explicit owning
+qualification selection remains a migration gate (ADR-0012).
 Native critic transport records a structured observation only. Its requested model,
 prompt/context/schema digests and image identities are provenance, never qualification.
 Critic image labels and attachment order derive from the shared bounded image manifest.

@@ -48,8 +48,12 @@ and never retries a failed native attempt through Claude. Its usage reports sele
 claim-owned SQLite journals under `checkpoints/flynn/`. Executable EEVEE and Workbench solid image units also
 use this path: capture/payment operations consume steps and reserve room for probe,
 freeze and canonical replay. Every judge point needs executable required claims, with
-no provisional visual requirement. Qualitative and generated-asset units and
-critics retain their existing Claude sessions until their native migration. An image
+no provisional visual requirement. Qualitative and generated-asset builder sessions retain their existing Claude runtime
+until their native migration. Shared production critics use Flynn with DEEPSEEK_API_KEY
+and VFXH_CRITIC_MODEL; each opinion is limited to one request, 8192 output tokens and
+180 seconds. Native errors propagate without retry. Unqualified opinions remain diagnostic
+and cannot accept work; explicit layer/debt/acceptance qualification selection is still
+required to complete those migration paths. An image
 unit's executable checks do not waive the composed layer's separate look judgment.
 When both Claude credentials are configured, the harness selects the subscription token
 (`CLAUDE_CODE_OAUTH_TOKEN`) by default and withholds `ANTHROPIC_API_KEY` from the SDK; set

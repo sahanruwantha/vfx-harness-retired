@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from claude_agent_sdk import (
-    query,
-)
+from dataclasses import asdict
 
-from vfx_harness.agents import critic_images
+from vfx_harness.agents import critic_images, critic_qualification, critic_session
 from vfx_harness.agents.build_prompts import (
+    CRITIC_SYSTEM,
     critic_prompt,
 )
-from vfx_harness.agents.builder.axes import _axes_need_motion, _critic_options
+from vfx_harness.agents.builder.axes import _axes_need_motion
 from vfx_harness.agents.builder.critic_focus import (
     _apply_evidence_gate,
     _audit_panel_citations,
@@ -18,37 +17,29 @@ from vfx_harness.agents.builder.critic_focus import (
     _filter_critic_issues,
     _focus_references,
     _focus_requests,
-    _image_block,
     _image_optical_signal,
     _make_focus_panels,
-    _one_user_message,
     _required_focus_requests,
-    _structured_or_text,
 )
-from vfx_harness.agents.builder.drain import _extract_json, _verdict
 from vfx_harness.agents.builder.evidence import _unit_raster_mode
 from vfx_harness.agents.builder.execution_guard import (
-    ExecutionAuthorityLost,
     ExecutionGuard,
 )
-from vfx_harness.agents.builder.models import PASS_MEAN, PASS_MIN, BuildTruncated, critic_model
+from vfx_harness.agents.builder.models import PASS_MEAN, PASS_MIN, critic_model
 from vfx_harness.agents.builder.pkg import builder_package
-from vfx_harness.agents.model_stream import with_idle_deadline
-from vfx_harness.application.preflight import model_phase_failure
 from vfx_harness.blender.session import BlenderError, BlenderSession
 from vfx_harness.domain.brief import Shot
-from vfx_harness.observability import costlog, transcript
-from vfx_harness.observability.log import (
-    log,
-)
+from vfx_harness.domain.critic_verdict import evaluate_critic_scores as _verdict
+from vfx_harness.observability import transcript
+from vfx_harness.observability.console import log
 from vfx_harness.orchestration import authority_selection
 from vfx_harness.orchestration.ledger import Milestone
 
 
-def _critic_image_blocks(
+def _critic_images(
     shot: Shot, reference: str, candidate: str, *, focus_panels=None,
     motion_rel=None, motion_frames=None, prior_rel=None, prior_mean=None,
-) -> list[dict]:
+):
     """Attach the complete declared manifest, or refuse before querying the critic."""
     panels = focus_panels or []
     images = [("reference", reference), ("candidate", candidate)]
@@ -61,7 +52,7 @@ def _critic_image_blocks(
     for slot in slots:
         if not (shot.folder / slot.path).is_file():
             raise BlenderError(f"critic {slot.label} missing at {slot.path}; prepare the declared image before judging")
-    blocks = [{"type": "text", "text": critic_images.describe(slots)}]
+    descriptions = [critic_images.describe(slots)]
     panel_index = 0
     for slot in slots:
         label = slot.label
@@ -82,8 +73,8 @@ def _critic_image_blocks(
                 "the candidate improved or regressed, and record as a typed observation "
                 "anything the previous attempt got right that the candidate has lost."
             )
-        blocks.extend(({"type": "text", "text": label}, _image_block(shot.folder / slot.path)))
-    return blocks
+        descriptions.append(label)
+    return tuple(images), "\n".join(descriptions)
 
 
 async def _critique(
@@ -106,6 +97,10 @@ async def _critique(
     selected_authority: authority_selection.ResolvedSelectedAuthority | None = None,
     execution_guard: ExecutionGuard | None = None,
 ) -> dict:
+    if execution_guard is not None:
+        execution_guard.check(
+            f"query {review_mode} critic for {execution_guard.label} at frame {m.frame}"
+        )
     if selected_authority is None:
         selected_authority = authority_selection.resolve_selected_authority(
             shot.folder
@@ -113,20 +108,15 @@ async def _critique(
     motion_rel, motion_frames = motion_evidence or (None, None)
     wants_motion = _axes_need_motion(axes) if allow_motion is None else allow_motion
     if motion_rel is None and shot.frontmatter.get("type") == "motion" and shot.frames > 1 and wants_motion:
-        try:  # a motion strip so motion/finish axes are judged across frames, not a still
-            stem = candidate_rel.split("/")[-1].split(".")[0]
-            motion_rel, motion_frames = builder_package()._stash_motion_strip(session, shot, m, stem)
-        except ExecutionAuthorityLost:
-            raise
-        except Exception as e:
-            log(f"motion strip skipped: {str(e)[:80]}", 1)
+        stem = candidate_rel.split("/")[-1].split(".")[0]
+        motion_rel, motion_frames = builder_package()._stash_motion_strip(session, shot, m, stem)
     focus_references = _focus_references(
         shot,
         m,
         focus_frames,
         selected_authority=selected_authority,
     )
-    claim_manifest, claim_bindings, qualified_claims = _claim_context(
+    claim_manifest, claim_bindings, _declared_qualified_claims = _claim_context(
         shot,
         m,
         enabled=scope is not None,
@@ -159,88 +149,30 @@ async def _critique(
         focus_frames=sorted(focus_references),
     )
 
-    blocks = [{"type": "text", "text": prompt}, *_critic_image_blocks(
+    images, descriptions = _critic_images(
         shot, m.ref, candidate_rel, focus_panels=focus_panels,
         motion_rel=motion_rel, motion_frames=motion_frames, prior_rel=prior_rel, prior_mean=prior_mean,
-    )]
+    )
+    claims = tuple(claim for claim in getattr(getattr(active_unit, "evaluation", None), "claims", ())
+                   if m.frame in claim.moments)
+    claim_snapshot = critic_qualification.digest([asdict(claim) for claim in claims])
 
-    # Still retried: the critic is a transient-failure choke point — an SDK hiccup here
-    # once killed a layer AFTER it had passed at 4.0 and written its script. Scoring is
-    # idempotent. What is gone is retrying because the critic never opened its images.
-    acc: dict = {}
-    for attempt in range(1, 4):
-        acc = {}
-        try:
-            critic_role = "focus_critic" if review_mode == "focus_review" else "critic"
-            with costlog.scoped(
-                role=critic_role,
-                phase=review_mode,
-                frame=getattr(m, "frame", None),
-                model=critic_model(),
-            ):
-                if execution_guard is not None:
-                    execution_guard.check(
-                        f"query {review_mode} critic for {execution_guard.label} "
-                        f"at frame {m.frame}"
-                    )
-                async for message in with_idle_deadline(
-                    query(
-                        prompt=_one_user_message(blocks),
-                        options=_critic_options(
-                            shot,
-                            axes,
-                            allow_na=scope is None,
-                            focus_frames=sorted(focus_references),
-                        ),
-                    ),
-                    label="critic",
-                ):
-                    _structured_or_text(message, acc)
-                    # The critic loop does NOT call log_message, which is where costlog was
-                    # hooked — so record at the source while the scoped role is active.
-                    costlog.record(message)
-                    if isinstance(message, builder_package().ResultMessage):
-                        phase_failure = model_phase_failure(
-                            {
-                                "subtype": getattr(message, "subtype", "unknown"),
-                                "turns": getattr(message, "num_turns", 0) or 0,
-                                "cost": getattr(message, "total_cost_usd", None) or 0.0,
-                                "is_error": bool(getattr(message, "is_error", False)),
-                                "api_error_status": getattr(
-                                    message, "api_error_status", None
-                                ),
-                            },
-                            0,
-                        )
-                        if phase_failure:
-                            transcript.event(
-                                "model_phase_failure",
-                                phase=review_mode,
-                                why=phase_failure,
-                            )
-                            raise BuildTruncated(
-                                f"critic {review_mode}: {phase_failure}",
-                                terminal_cause="model_session_failure",
-                            )
-                if execution_guard is not None:
-                    execution_guard.check(
-                        f"consume {review_mode} critic result for {execution_guard.label} "
-                        f"at frame {m.frame}"
-                    )
-            if acc.get("structured") or acc.get("text", "").strip():
-                break
-            log(f"critic returned nothing (attempt {attempt}/3) — retrying", 1)
-        except ExecutionAuthorityLost:
-            raise
-        except BuildTruncated:
-            raise
-        except Exception as e:
-            if attempt == 3:
-                raise
-            log(f"critic error (attempt {attempt}/3): {str(e)[:90]} — retrying", 1)
-    if not (acc.get("structured") or acc.get("text", "").strip()):
-        raise BlenderError(f"critic returned no verdict for {m.id} after 3 attempts")
-    verdict = _verdict(acc.get("structured") or _extract_json(acc["text"]))
+    def check_inputs():
+        if critic_qualification.digest([asdict(claim) for claim in claims]) != claim_snapshot:
+            raise ValueError("critic selected claims changed; prepare a new owned judgment")
+
+    observed = await critic_session.execute(
+        shot=shot, milestone=m, phase=review_mode,
+        prompt="\n\n".join((CRITIC_SYSTEM, prompt, descriptions)), axes=axes,
+        frames=tuple(sorted(focus_references)) or (m.frame,), images=images, allow_na=scope is None,
+        selected_authority=selected_authority, execution_guard=execution_guard,
+        claims=claims, check_inputs=check_inputs,
+    )
+    selected_qualified = {claim.id for claim in claims if claim.required
+                          and claim.authority == "qualified_qualitative_required" and claim.qualification is not None}
+    qualified_claims = (set(observed["qualified_claim_ids"]) & selected_qualified
+                        if observed["qualification_verified"] is True else set())
+    verdict = _verdict(observed["verdict"])
     verdict = _audit_panel_citations(verdict, focus_panels)
     verdict = _filter_critic_issues(
         verdict,
@@ -250,12 +182,28 @@ async def _critique(
     )
     verdict = _apply_evidence_gate(verdict, evidence)
     verdict["evidence"] = evidence or []
+    required = {claim.id for claim in claims if claim.required
+                and claim.authority == "qualified_qualitative_required"}
+    qualified_axes = {claim.axis for claim in claims if claim.id in qualified_claims}
+    if not required or not required.issubset(qualified_claims) or not set(dict(axes)).issubset(qualified_axes):
+        verdict["pass"] = False
+        verdict["needs_human"] = True
+        verdict["qualification_gap"] = (
+            "This visual opinion lacks measured qualification for the complete selected scope; "
+            "select and qualify its owning claims before autonomous acceptance or repair."
+        )
+        if verdict.get("decided_by") != "checks":
+            verdict["advisory_issues"] = verdict.get("issues", [])
+            verdict["issues"] = []
+    verdict["native_observation"] = {key: observed[key] for key in ("report", "report_sha256")}
     # A PASS followed by six urgent "fix" bullets is internally inconsistent and was a
     # major source of misleading run logs. Preserve such notes as non-blocking polish for
     # audit, but never route them into a repair path or present them as contractual defects.
     if verdict.get("pass") and verdict.get("issues"):
         verdict["polish"] = list(verdict["issues"])
         verdict["issues"] = []
+    if verdict.get("qualification_gap"):
+        log(verdict["qualification_gap"], 1)
     if verdict.get("reference_unusable"):
         log(
             f"✗ critic says the REFERENCE is unusable for {m.id}: "
@@ -322,6 +270,10 @@ async def _critique(
         focus_panels=[{k: v for k, v in panel.items() if k != "image_abs"} for panel in (focus_panels or [])],
         scope="layer" if scope else "full-rubric",
         review_mode=review_mode,
+        native_observation=verdict["native_observation"],
+        qualified_claim_ids=sorted(qualified_claims),
+        qualification_gap=verdict.get("qualification_gap"),
+        needs_human=bool(verdict.get("needs_human")),
         motion_strip=motion_rel,
     )
     return verdict
@@ -338,9 +290,10 @@ async def _critique(
 # sigma of the mean at this sd: n=3 → 0.70, n=4 → 0.60, n=6 → 0.49, n=8 → 0.43. The old
 # flat 0.4 was only defensible at n≈8, and most layers here are narrower than that.
 #
-# STALE AS OF THE SWITCH TO OPUS-5. Every number above was measured on FABLE-5. Judge
+# HISTORICAL MEASUREMENT; NOT FLYNN QUALIFICATION. Every number above was measured on FABLE-5. Judge
 # noise is a property of the judge, so both the sd and the flip rate belong to a model
-# that is no longer scoring anything here. The band may now be too wide (paying for
+# that is no longer scoring anything here. Each native panel invocation must independently
+# match its selected qualification; this heuristic supplies no credential. The band may now be too wide (paying for
 # panels that were never in doubt) or too narrow (passing verdicts that a second opinion
 # would have flipped) — and which of those it is, is not currently known.
 # Re-measure before trusting the adjudication economics: python -m vfx_harness.evaluation.cli variance <shot>
@@ -519,15 +472,10 @@ async def _judge(
         and shot.frames > 1
         and (_axes_need_motion(axes) if allow_motion is None else allow_motion)
     ):
-        try:
-            stem = candidate_rel.split("/")[-1].split(".")[0]
-            motion_evidence = builder_package()._stash_motion_strip(
-                session, shot, m, stem, frames_override=motion_frames_override
-            )
-        except ExecutionAuthorityLost:
-            raise
-        except Exception as exc:
-            log(f"motion strip skipped: {str(exc)[:80]}", 1)
+        stem = candidate_rel.split("/")[-1].split(".")[0]
+        motion_evidence = builder_package()._stash_motion_strip(
+            session, shot, m, stem, frames_override=motion_frames_override
+        )
     focus_references = _focus_references(
         shot,
         m,
@@ -608,41 +556,35 @@ async def _judge(
     )
     if requests and not focus_panels:
         log(f"critic requested {len(requests)} aligned focus panel(s) — rendering optical crops before deciding", 1)
-        try:
-            focus_panels = await _make_focus_panels(shot, m, session, requests, candidate_rel=candidate_rel)
-            transcript.event(
-                "critic_focus",
-                milestone=m.id,
-                frame=m.frame,
-                candidate=candidate_rel,
-                reference=m.ref,
-                requests=requests,
-                panels=focus_panels,
-            )
-            focused = await _critique(
-                shot,
-                m,
-                candidate_rel,
-                axes,
-                session,
-                verbose,
-                scope,
-                review_mode="focus_review",
-                focus_panels=focus_panels,
-                motion_evidence=motion_evidence,
-                allow_motion=allow_motion,
-                focus_frames=focus_frames_override,
-                active_unit=active_unit,
-                **critic_kw,
-            )
-            focused["focus_requested"] = requests
-            focused["focus_panels"] = focus_panels
-            first = focused
-        except ExecutionAuthorityLost:
-            raise
-        except Exception as exc:
-            first["focus_error"] = str(exc)[:200]
-            log(f"! focus panel review unavailable: {str(exc)[:120]} — retaining the full-frame verdict", 1)
+        focus_panels = await _make_focus_panels(shot, m, session, requests, candidate_rel=candidate_rel)
+        transcript.event(
+            "critic_focus",
+            milestone=m.id,
+            frame=m.frame,
+            candidate=candidate_rel,
+            reference=m.ref,
+            requests=requests,
+            panels=focus_panels,
+        )
+        focused = await _critique(
+            shot,
+            m,
+            candidate_rel,
+            axes,
+            session,
+            verbose,
+            scope,
+            review_mode="focus_review",
+            focus_panels=focus_panels,
+            motion_evidence=motion_evidence,
+            allow_motion=allow_motion,
+            focus_frames=focus_frames_override,
+            active_unit=active_unit,
+            **critic_kw,
+        )
+        focused["focus_requested"] = requests
+        focused["focus_panels"] = focus_panels
+        first = focused
     if not _needs_critic_panel(first):
         return _decided(first)
     log(

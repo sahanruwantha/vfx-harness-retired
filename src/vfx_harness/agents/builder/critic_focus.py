@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-import base64
 import difflib
-import io
 import json
-import os
 import re
 from pathlib import Path
 
 import anyio
-from claude_agent_sdk import (
-    AssistantMessage,
-    TextBlock,
-    ToolUseBlock,
-)
 from PIL import Image
 
 from vfx_harness.agents.builder.models import MAX_CANON_REPAIRS
@@ -603,51 +595,3 @@ def _repair_change_summary(before: str, after: str, limit: int = 3200) -> str:
     ]
     text = "\n".join(changed)
     return text[:limit] + ("\n…" if len(text) > limit else "")
-
-
-# Claude's long-edge sweet spot. Beyond this an image costs tokens without adding
-# discriminable detail, and the critic scores several images per call.
-CRITIC_EFFORT = os.environ.get("VFXH_CRITIC_EFFORT", "xhigh")
-
-_CRITIC_MAX_PX = 1568
-
-
-def _image_block(path: Path, max_px: int = _CRITIC_MAX_PX) -> dict:
-    """A base64 JPEG content block, downscaled to the useful maximum.
-
-    Verified against the live API before adopting: three images attached with positional
-    labels came back mapped correctly (reference/candidate/motion strip), and a control
-    request with no image attached correctly reported that it had none.
-    """
-    im = Image.open(path).convert("RGB")
-    if max(im.size) > max_px:
-        im.thumbnail((max_px, max_px), Image.LANCZOS)
-    buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=90)
-    return {
-        "type": "image",
-        "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(buf.getvalue()).decode()},
-    }
-
-
-async def _one_user_message(blocks: list[dict]):
-    """Stream exactly one multimodal user message; the SDK ends input when we return."""
-    yield {"type": "user", "session_id": "", "message": {"role": "user", "content": blocks}, "parent_tool_use_id": None}
-
-
-def _structured_or_text(message, acc: dict) -> None:
-    """Collect the verdict however the SDK delivers it.
-
-    With output_format=json_schema the answer arrives as a StructuredOutput TOOL USE
-    block, NOT as text — a request that scored three images perfectly returned no
-    TextBlock at all. Reading only text made the verdict depend on the model ALSO
-    volunteering prose JSON, which it is under no obligation to do.
-    """
-    if not isinstance(message, AssistantMessage):
-        return
-    for block in message.content:
-        if isinstance(block, ToolUseBlock) and block.name == "StructuredOutput":
-            if isinstance(block.input, dict):
-                acc["structured"] = block.input
-        elif isinstance(block, TextBlock):
-            acc["text"] = acc.get("text", "") + block.text

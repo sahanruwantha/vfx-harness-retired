@@ -13,7 +13,7 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
-from vfx_harness.agents.builder.models import MAX_BUDGET_USD, MAX_CONTINUES, PASS_MEAN, PASS_MIN, BuildTruncated
+from vfx_harness.agents.builder.models import MAX_BUDGET_USD, MAX_CONTINUES, BuildTruncated
 from vfx_harness.agents.builder.pkg import builder_package
 from vfx_harness.agents.builder.state import _APPROACH, _ERRORS
 from vfx_harness.application.preflight import model_phase_failure
@@ -235,39 +235,3 @@ def _extract_json(text: str) -> dict:
         except json.JSONDecodeError:
             continue
     raise ValueError("critic returned no parseable JSON scorecard")
-
-
-def _verdict(verdict: dict) -> dict:
-    """Compute pass/mean from the critic's IN-SCOPE axis scores. A scaffolding stage
-    marks axes a later stage delivers as "n/a" — absent-by-design must not drag the
-    mean (judging layer L on emission scored it 1.25 while its own axis scored 4)."""
-    raw = verdict.get("scores", {})
-    scores, na = {}, []
-    for k, v in raw.items():
-        if isinstance(v, bool):
-            continue
-        if isinstance(v, (int, float)):
-            scores[k] = float(v)
-        else:  # "n/a", "N/A", null … — out of this stage's scope
-            na.append(k)
-    n = len(scores)
-    mean = round(sum(scores.values()) / n, 2) if n else 0.0
-    verdict["mean"] = mean
-    verdict["scored_axes"] = sorted(scores)
-    verdict["na_axes"] = sorted(na)
-    # A verdict measured against the wrong plate is not a verdict. The critic reports
-    # this itself; before it was asked directly it would note the mismatch in `issues`
-    # and pass regardless. No score can rescue this — the plan's ref path is wrong.
-    if verdict.get("reference_usable") is False:
-        verdict["pass"] = False
-        verdict["reference_unusable"] = True
-        return verdict
-    # Thresholds must be GRANULARITY-AWARE. mean = sum/n, so one axis point of judge
-    # noise moves the mean by 1/n: 0.125 across 8 axes but 1.0 across one. A scoped
-    # layer with 1-2 in-scope axes must not face a harsher bar than a full acceptance
-    # layer (PASS_MEAN 3.1 on a single axis silently demands a 4).
-    if n and n <= 2:
-        verdict["pass"] = min(scores.values()) >= 3
-    else:
-        verdict["pass"] = bool(scores) and mean >= PASS_MEAN and min(scores.values()) >= PASS_MIN
-    return verdict

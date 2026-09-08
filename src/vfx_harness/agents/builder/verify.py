@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 import anyio
 
 from vfx_harness.agents.builder.axes import _layer_needs_motion
-from vfx_harness.agents.builder.drain import _verdict
 from vfx_harness.agents.builder.evidence import (
     _image_reproduction,
     _unit_raster_mode,
@@ -32,6 +31,7 @@ from vfx_harness.agents.builder.verdicts import _judge_unit_or_layer, _layer_mot
 from vfx_harness.blender.session import BlenderError, BlenderSession
 from vfx_harness.domain import evidence_authority
 from vfx_harness.domain.brief import Shot
+from vfx_harness.domain.critic_verdict import evaluate_critic_scores as _verdict
 from vfx_harness.observability.log import (
     log,
 )

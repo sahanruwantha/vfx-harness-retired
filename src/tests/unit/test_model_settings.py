@@ -52,14 +52,14 @@ def test_non_checkout_layout_requires_explicit_env_file(tmp_path, monkeypatch) -
     assert config.environment_file(env_file) == env_file
 
 
-def test_default_lane_uses_sonnet_execution_and_opus_critic(monkeypatch):
+def test_native_critic_model_is_independent_of_remaining_legacy_execution(monkeypatch):
     _clear(monkeypatch)
     settings = Settings.from_environment(load_dotenv_file=False)
 
     assert settings.execution_model == DEFAULT_EXECUTION_MODEL == "claude-sonnet-5"
     assert settings.planner_model == config.VISION_MODEL
     assert settings.reviewer_model == config.VISION_MODEL
-    assert settings.critic_model == DEFAULT_CRITIC_MODEL == "claude-opus-5"
+    assert settings.critic_model == DEFAULT_CRITIC_MODEL == config.VISION_MODEL
     assert {
         settings.builder_model,
         settings.script_model,

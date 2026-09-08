@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import TypeVar
 
@@ -277,17 +276,11 @@ def test_critic_does_not_retry_a_generic_execution_authority_loss(
     (tmp_path / "refs/f001.png").write_bytes(b"reference")
     (tmp_path / "renders/candidate.png").write_bytes(b"candidate")
     monkeypatch.setattr(critic_runtime, "critic_prompt", lambda *_args, **_kwargs: "fixture")
-    monkeypatch.setattr(critic_runtime, "_image_block", lambda _path: {"type": "image"})
     monkeypatch.setattr(critic_runtime, "_focus_references", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         critic_runtime,
         "_claim_context",
         lambda *_args, **_kwargs: ([], {}, set()),
-    )
-    monkeypatch.setattr(
-        critic_runtime.costlog,
-        "scoped",
-        lambda **_kwargs: nullcontext(),
     )
     shot = SimpleNamespace(
         folder=tmp_path,

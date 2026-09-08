@@ -23,18 +23,16 @@ def test_prompt_and_attachments_agree_when_focus_precedes_motion(tmp_path, monke
     paths = ["reference.png", "candidate.png", *(p["image_rel"] for p in panels), "motion.png", "prior.png"]
     for path in paths:
         (tmp_path / path).write_bytes(b"fixture")
-    monkeypatch.setattr(critic, "_image_block", lambda path: {"type": "image", "path": path.name})
     shot = SimpleNamespace(folder=tmp_path, id="fixture")
-    blocks = critic._critic_image_blocks(
+    images, description = critic._critic_images(
         shot, paths[0], paths[1], focus_panels=panels, motion_rel="motion.png",
         motion_frames=[5, 7, 9], prior_rel="prior.png", prior_mean=3,
     )
-    assert [block["path"] for block in blocks if block["type"] == "image"] == paths
-    assert f"Image {3 + focus_count}: MOTION STRIP (motion.png)" in blocks[0]["text"]
-    assert "PREVIOUS ATTEMPT — CONTEXT ONLY" in blocks[-2]["text"]
-    assert "Do NOT score this image" in blocks[-2]["text"]
-    motion_index = next(i for i, block in enumerate(blocks) if block.get("path") == "motion.png")
-    assert blocks[motion_index - 1]["text"] == "MOTION STRIP, frames [5, 7, 9]"
+    assert [path for _role, path in images] == paths
+    assert f"Image {3 + focus_count}: MOTION STRIP (motion.png)" in description
+    assert "PREVIOUS ATTEMPT — CONTEXT ONLY" in description
+    assert "Do NOT score this image" in description
+    assert "MOTION STRIP, frames [5, 7, 9]" in description
     prompt = build_prompts.critic_prompt(
         shot, Milestone("surface", 7, paths[0], "form"), paths[1], [("form", "Visible form")],
         motion_rel="motion.png", motion_frames=[5, 7, 9], focus_panels=panels,
@@ -50,8 +48,8 @@ def test_declared_missing_images_refuse_before_provider(tmp_path, monkeypatch, m
     (tmp_path / {"motion": "motion.png", "prior": "prior.png", "focus": "focus-0.png"}[missing]).unlink()
     monkeypatch.setattr(critic, "_focus_references", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(critic, "_claim_context", lambda *_args, **_kwargs: ([], {}, set()))
-    monkeypatch.setattr(critic, "query", lambda **_kwargs: pytest.fail("missing image reached provider"))
-    monkeypatch.setattr(critic, "_image_block", lambda _path: pytest.fail("partial manifest was encoded"))
+    monkeypatch.setattr(critic.critic_session, "execute",
+                        lambda **_kwargs: pytest.fail("missing image reached provider"))
     shot = SimpleNamespace(folder=tmp_path, id="fixture", frontmatter={"type": "still"}, frames=9)
     with pytest.raises(BlenderError, match="missing"):
         asyncio.run(critic._critique(
@@ -63,16 +61,15 @@ def test_declared_missing_images_refuse_before_provider(tmp_path, monkeypatch, m
 
 
 def test_extra_focus_panels_are_not_silently_dropped(tmp_path, monkeypatch):
-    monkeypatch.setattr(critic, "_image_block", lambda _path: pytest.fail("oversized manifest was encoded"))
     with pytest.raises(ValueError, match="at most two"):
-        critic._critic_image_blocks(SimpleNamespace(folder=tmp_path), "reference.png", "candidate.png",
+        critic._critic_images(SimpleNamespace(folder=tmp_path), "reference.png", "candidate.png",
                                     focus_panels=[panel(i) for i in range(3)])
 
 
 @pytest.mark.parametrize("optional", ["motion_rel", "prior_rel"])
 def test_empty_declared_optional_path_is_not_an_absent_image(tmp_path, optional):
     with pytest.raises(ValueError, match="explicit image path"):
-        critic._critic_image_blocks(SimpleNamespace(folder=tmp_path), "reference.png", "candidate.png",
+        critic._critic_images(SimpleNamespace(folder=tmp_path), "reference.png", "candidate.png",
                                     **{optional: ""})
 
 

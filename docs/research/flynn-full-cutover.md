@@ -1371,3 +1371,45 @@ SDK main and VFX's SSH installation both remain
 needed. These scripted-provider Blender tests do not establish live visual judgment
 or full-shot acceptance. The capability matrix records the remaining complete-cutover
 obligations, led by the common production critic and its qualification authority.
+
+## Shared production critic inference cutover
+
+The common `_critique` caller now runs through `critic_session` and Flynn's bounded
+observation transport. It preserves typed native usage, cancellation, errors, image
+identity and exact configured-model admission. The Claude query/retry loop, image and
+message adapters, critic options and unused axis-classifier options are removed. Pure
+score interpretation moved from the legacy drain into `domain/critic_verdict.py`.
+Motion/focus failures now propagate instead of preserving a prior verdict as success.
+
+The production consumer intersects native verified IDs with the selected artifact-bound
+claims and requires complete qualitative-claim and requested-axis coverage. Otherwise
+the recorded opinion has `needs_human` and an explicit `qualification_gap`, cannot pass
+work, and supplies no autonomous visual repair instructions. Independent executable
+failures retain their diagnostics and authority. The exact native observation report
+and digest are included in the verdict and transcript. Scope without explicit owning
+claims, including current implicit layer-look and acceptance calls, remains unresolved;
+this migration does not manufacture their qualification.
+
+Validation: 36 focused production/image-manifest/guard/model/rubric tests passed;
+12 production failure/import tests passed; 13 consumer-decision and typed-critic tests
+passed. These sets overlap and are not an additional unique-test total. An initial
+consumer fixture omitted required qualification metadata and was correctly refused;
+its explicitly stubbed test metadata was corrected without weakening the parser.
+The production tests use the actual native HTTP adapter with a mock provider, current
+plan/claim authority, images and SQLite journals. They prove known usage on rejected
+responses, cancellation without retry, stale image refusal, configuration refusal and
+no acceptance from an unqualified score. Consumer stubs isolate coverage decisions;
+they do not constitute real qualification credentials. Existing measured-admission
+tests continue to verify the independent proof mechanism.
+
+Complete-source Ruff, public `.venv/bin/vfx --help`, and full regression passed. The
+full suite ran against unchanged production source: **3,553 tests**, 121 Pillow
+deprecation warnings. Logs: `/tmp/vfx-spike-regression-r60sqoi6`; shard 0 passed
+879 tests (22 warnings), shard 1 passed 879 (32), shard 2 passed 898 (40), and
+shard 3 passed 897 (27). No paid inference, SDK change or ARC synchronization ran.
+
+An AST inventory still finds 24 production modules importing the Claude SDK: the
+remaining builder loops/options/drain/facade, guard adapters, legacy planning and
+Blender tool servers, recipe adapter, sandbox hooks and message logger. Full removal
+of those paths, native failure-to-stop projection, explicit layer/debt/acceptance
+qualification selection and reviewed live validation remain required by the goal.
