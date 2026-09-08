@@ -7,6 +7,11 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Native Flynn critic observation transport now records bounded structured opinions,
+  verified image inputs and usage on failed calls. It grants no qualification or
+  acceptance authority; production critic migration still requires invocation-bound
+  qualification ([ADR-0012](docs/decisions/ADR-0012-flynn-sqlite-runtime.md)).
+
 - Supported procedural EEVEE units now use Flynn in production. Image feedback keeps the
   fixed context cap, and native evaluation receipts identify the same canonical render as
   the layer checkpoint. Layer look judgment and receipt-backed driver advancement remain

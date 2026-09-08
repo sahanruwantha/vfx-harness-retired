@@ -3,10 +3,10 @@ from __future__ import annotations
 from vfx_harness.agents.builder import (
     _aggregate_critic_panel,
     _audit_panel_citations,
-    _critic_schema,
     _filter_critic_issues,
     _needs_critic_panel,
 )
+from vfx_harness.domain.critic_verdict import critic_verdict_schema
 
 
 def _observation(**updates):
@@ -28,7 +28,7 @@ def _observation(**updates):
 
 
 def test_critic_schema_requires_typed_observations_only():
-    schema = _critic_schema([("layout", "layout")], allow_na=False, focus_frames=[1])
+    schema = critic_verdict_schema([("layout", "layout")], allow_na=False, focus_frames=[1])
     assert "observations" in schema["required"]
     assert "issues" not in schema["properties"]
     assert "issue_evidence" not in schema["properties"]

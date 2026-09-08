@@ -625,6 +625,11 @@ full ownership bindings remain in the guarded registry and source-verifiable rep
 evaluation receipt names the canonical primary render used by the layer checkpoint, while
 the replay closure separately binds the script; a script digest cannot stand in for that
 render (HIR-0253).
+Native critic transport records a structured observation only. Its requested model,
+prompt/context/schema digests and image identities are provenance, never qualification.
+Do not route that opinion into production acceptance until the owning harness verifies
+qualification against the actual invocation. The transport's successful session and
+schema assessment authorize no state commit, retry or layer completion (ADR-0012).
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial

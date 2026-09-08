@@ -504,3 +504,34 @@ receipts with scripted inference and a scripted layer look judgment. The driver 
 the actual layer builder through its subprocess seam and reopens current publication; it
 must refuse substituted composed output despite a successful child exit. This does not claim
 live planning, visual judgment quality, whole-shot acceptance or complete Claude removal.
+
+## Native critic observation transport
+
+`agents/critic_transport.py` records one bounded structured critic opinion through Flynn.
+It uses the shared transport-independent `domain/critic_verdict.py` schema, preserving its
+existing axes, score, typed observation, focus-frame and reference-usability contracts.
+The legacy critic consumes that same schema. Its old schema facade export is removed.
+
+The caller supplies exact scope/phase, requested model, prompt, declared axes/frames,
+ordered image paths and a current-authority check. Reference and candidate are required,
+with at most two focus panels, one motion strip and one prior image. Native image snapshots
+retain verified original bytes instead of using the old Claude JPEG preprocessing; the
+explicit native image-shape generation therefore cannot inherit old qualification.
+The context cap is 24,000 characters and every context item is required. There is one
+inference call and one non-external verdict submission, at most 8,192 output tokens and
+180 seconds. No retry, fallback or state commit occurs.
+
+Authority, active run and image bytes are checked before inference, before submission and
+before returning the opinion. Invalid responses spend inference but do not submit a tool.
+Cancellation and provider failures propagate with their durable spending/termination records.
+Reports bind the requested prompt/context/response schema and image identities to the journal,
+whose usage records carry actual provider/model metadata. Requested identity is not claimed
+to be verified provider identity. Neither a schema-valid opinion nor either identity is
+qualification: reports and returned results explicitly set `qualification_verified` and
+`acceptance_authorized` false.
+
+This is a native transport capability, not a production critic switch. The existing
+qualification reader compares artifact fields to claim fields; runtime critic invocation
+does not compare its actual model, prompt and evidence shape to those fields. A production
+switch must close that gap, including the composed layer's independent look judgment.
+Reusing a previous model's qualification implicitly is not an allowed migration mechanism.

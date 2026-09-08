@@ -1070,3 +1070,42 @@ helpers in `critic_focus.py`: native image inputs, structured verdict submission
 execution guards, bounded attempts and neutral usage. VFX qualification, panel citation,
 evidence reconciliation and layer acceptance stay authoritative. Solid, qualitative and
 generated units and a clean installation without Claude remain separate migration gates.
+
+## Native critic observation capability
+
+Added `agents/critic_transport.py`, with no Claude dependency, for one bounded opinion
+through Flynn's native image inputs, structured tool, guards, SQLite journal and usage
+records. Extracted the unchanged critic schema into `domain/critic_verdict.py`; both
+transports consume it, and the obsolete builder schema facade export is removed.
+
+The capability verifies original image snapshots in reference/candidate/focus/motion/prior
+order and reopens their source bytes around inference and submission. It binds current
+caller authority and the owning run, caps context at 24,000 characters, and permits only
+one inference plus one verdict submission with no external action or state commit.
+Its output cap is 8,192 tokens and its deadline is 180 seconds. Errors and cancellation
+propagate without retries. The journal and report retain usage even when submission fails.
+
+Reports include scope/phase, requested model, exact prompt/context/schema digests and
+image identities. Actual provider/model metadata remains in the SDK's usage records.
+Neither is a qualification credential. Every returned/report result explicitly grants
+no qualification or acceptance authority. The existing production critic is not switched.
+
+The qualification prerequisite is concrete: `domain/work_units/claims.py` validates
+`judge_model`, `prompt` and `evidence_shape` against the claim's artifact, but runtime
+invocation never compares its own identity to those fields. The composed layer's implicit
+look judgment also needs an explicit binding for the new runtime. Native transport uses
+verified original image bytes, so it cannot silently inherit qualification for the former
+Claude JPEG preprocessing either. Next, derive and verify that invocation binding before
+allowing native opinions into reconciliation and layer acceptance; keep domain judgment
+and receipt publication in VFX.
+
+All 33 focused transport, typed-critic and execution-guard tests passed in 6.52 seconds.
+They include a real DeepSeek adapter over mocked HTTP, malformed/ungranted submissions,
+changed images/authority/run, timeout/cancellation spending, invalid input refusal and an
+isolated import with Claude blocked. Twelve prior/current schema combinations compare
+identically. The frozen-source full regression passed all 3,418 tests in four isolated
+processes (845 + 845 + 864 + 864), with 84 existing Pillow deprecation warnings. The
+longest process took 1,019.91 seconds. Final complete-source Ruff and diff checks passed.
+No SDK change, ARC testing or paid inference was needed. Flynn's guard context already
+exposes the operation id and its public records retain the associated inference usage;
+the next VFX qualification gate can compare provider-reported identity using those records.

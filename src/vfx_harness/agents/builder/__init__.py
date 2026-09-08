@@ -7,7 +7,6 @@ from vfx_harness.agents.builder.axes import _axes_need_motion as _axes_need_moti
 from vfx_harness.agents.builder.axes import _axes_options as _axes_options
 from vfx_harness.agents.builder.axes import _builder_ticket_context as _builder_ticket_context
 from vfx_harness.agents.builder.axes import _critic_options as _critic_options
-from vfx_harness.agents.builder.axes import _critic_schema as _critic_schema
 from vfx_harness.agents.builder.axes import _evidence_convergence_stop as _evidence_convergence_stop
 from vfx_harness.agents.builder.axes import _extract_json_list as _extract_json_list
 from vfx_harness.agents.builder.axes import _layer_needs_motion as _layer_needs_motion
