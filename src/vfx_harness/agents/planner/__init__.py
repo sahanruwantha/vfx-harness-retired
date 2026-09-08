@@ -1,10 +1,6 @@
 """Stage 2 — the PLAN harness."""
 
-from vfx_harness.agents.builder.critic_focus import _one_user_message as _one_user_message
 from vfx_harness.agents.global_planner import generate_plan as generate_plan
-from vfx_harness.agents.plan_tools import build_plan_tools as build_plan_tools
-from vfx_harness.agents.planner.generate import _KICKOFF_MAX_PX as _KICKOFF_MAX_PX
-from vfx_harness.agents.planner.generate import _kickoff_blocks as _kickoff_blocks
 from vfx_harness.agents.planner.generate import generate_layer_plan as generate_layer_plan
 from vfx_harness.agents.planner.kickoff import _MATERIALIZATION_EXAMPLE as _MATERIALIZATION_EXAMPLE
 from vfx_harness.agents.planner.kickoff import _PUBLISH_CONSUME_EXAMPLE as _PUBLISH_CONSUME_EXAMPLE

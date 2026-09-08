@@ -334,7 +334,11 @@ VFXH_EXECUTION_MODEL=claude-sonnet-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <sh
 VFXH_EXECUTION_MODEL=claude-opus-5 VFXH_CRITIC_MODEL=claude-opus-5 vfx run <shot>
 ```
 
-`VFXH_PLANNER_MODEL` selects unit planning. `VFXH_GLOBAL_PLANNER_MODEL` selects the
+`VFXH_PLANNER_MODEL` selects native Flynn unit planning and defaults to `DEEPSEEK_MODEL`
+(or Flynn's vision model). `VFXH_UNIT_PLAN_SECONDS` and `VFXH_UNIT_PLAN_OUTPUT_TOKENS`
+default to 600 seconds and 32768 output tokens per claimed attempt. A fresh SQLite
+journal records usage and observations; VFX independently gates publication or rolls
+back the exact plan/stamp pair. Unit planning requires `DEEPSEEK_API_KEY`. `VFXH_GLOBAL_PLANNER_MODEL` selects the
 native Flynn global planner and defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
 Global planning requires `DEEPSEEK_API_KEY`; it uses no Claude session.
 Layer materialization also uses Flynn and `DEEPSEEK_API_KEY`.
@@ -435,7 +439,7 @@ planner runs in the root-owner process, uses 32,000-character bounded text conte
 and stores complete phase snapshots outside its gate workspace. It requires explicit
 wall-time and output-token caps (`VFXH_GLOBAL_PLAN_SECONDS`, default 600, and
 `VFXH_GLOBAL_PLAN_OUTPUT_TOKENS`, default 32768). It also refuses unpriced USD caps.
-JIT planning, builder and critic roles are still being migrated; the Claude dependency
+Builder and critic roles are still being migrated; the Claude dependency
 remains for those roles until their native gates pass. Preflight still checks those
 remaining roles and confinement; a successful preflight does not verify DeepSeek
 credentials. No Claude fallback exists in approach review or global planning.

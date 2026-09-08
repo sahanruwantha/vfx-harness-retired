@@ -31,7 +31,14 @@ fence, including controller child stages. `VFXH_MATERIALIZATION_MODEL` defaults 
 `checkpoints/flynn/` for requests, results, usage and termination. Candidate and journal
 identities are fresh for each attempt; there is no automatic model-session retry.
 
-Unit planning, builders and critics still use their existing Claude sessions.
+Unit planning uses Flynn under both the builder execution fence and the exact unit
+planning claim. `VFXH_PLANNER_MODEL` defaults to `DEEPSEEK_MODEL` (or Flynn's vision
+model); `VFXH_UNIT_PLAN_SECONDS` and `VFXH_UNIT_PLAN_OUTPUT_TOKENS` default to 600 and
+32768. It requires `DEEPSEEK_API_KEY` and refuses unpriced USD caps. Inspect the selected
+`reports/unit-planning-session-*.json` and its SQLite journal under `checkpoints/flynn/`.
+A clean preview is not publication: the outer VFX transaction runs the terminal gate
+and stamps or rolls back only the pair it still owns. There is no automatic retry or
+session resume. Builders and critics still use their existing Claude sessions.
 When both Claude credentials are configured, the harness selects the subscription token
 (`CLAUDE_CODE_OAUTH_TOKEN`) by default and withholds `ANTHROPIC_API_KEY` from the SDK; set
 `VFXH_CREDENTIAL=api_key` to bill API credits instead. `VFXH_PLAN_MAX_TURNS` (default 12)

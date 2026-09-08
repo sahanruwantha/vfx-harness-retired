@@ -722,3 +722,57 @@ shot was used.
 Full regression validation passed **3,291 tests** (818 + 818 + 818 + 837), with
 15 existing Pillow warnings. All groups exited successfully on frozen runtime source.
 Complete-source Ruff and diff checks passed. SDK source and ARC were unchanged.
+
+## Production unit planning cutover
+
+`planner/generate.py` now calls `unit_planning_runtime.execute` inside its existing
+work-unit plan transaction. It no longer opens a Claude session, creates MCP servers,
+attaches legacy kickoff blocks, binds callback cost/transcript writers, or retries an
+uncertain session. The transaction claims its predecessor before inference and native
+publication tracks each owned plan/stamp pair. Session exit no longer adopts arbitrary
+current bytes. Exact selected-bundle plans retain model-free reuse.
+
+The native runtime requires the live shot-wide execution lease and the exact unit's
+planning claim, including its phase and shot. Each content publication holds that
+claim. It uses the supported Flynn DeepSeek vision adapter, required role and unit
+context bounded to 32,000 characters, output-token and wall-time caps, and a fresh
+SQLite journal. Unit-selected reference measurements, bounded recipes and vocabulary,
+supervisor questions and confined diagnostic spikes use the existing native tools.
+Only the latest tool feedback and images reach the next inference request. There is no
+layer vocabulary-gap grant or general write/shell surface.
+
+The session must publish its own plan and obtain a clean preview for the owning layer.
+At most three previews run the current consumer-view gate; complete reports retain
+findings while model feedback is bounded. The outer transaction independently reruns
+the terminal gate, verifies the exact plan/stamp pair, then attests or rolls back.
+A clean preview grants no gate attestation, build acceptance, or SDK state commit.
+Changing authored inputs, selected authority, claim ownership or either output refuses
+continued work; an unrelated writer's bytes cannot be adopted at session completion.
+
+`VFXH_PLANNER_MODEL` now defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
+`VFXH_UNIT_PLAN_SECONDS` and `VFXH_UNIT_PLAN_OUTPUT_TOKENS` default to 600 and 32768.
+Credentials remain outside reports and settings. Unpriced USD caps fail before the
+adapter is constructed. Session reports select complete SQLite requests, observations,
+usage and termination; they explicitly record that terminal gate attestation is external.
+
+Focused validation passed 49 publication/session/transaction tests and 45 planner,
+configuration and architecture checks. The production path uses real planning claims
+and execution leases with a scripted adapter, including an independent terminal gate
+that rejects after a clean session preview. Other cases cover repair after a failed
+preview, preview caps, latest-image replacement, stale ownership, foreign output,
+authored-input changes during evaluation, strict configuration, bounded context and
+spent invocation refusal. The isolated installed native runtime/session import with
+Claude blocked. No paid inference, production shot, SDK source or ARC changes were made.
+
+Remaining: migrate production builder and critic sessions, then retire their Claude
+transport and the now-unused legacy planning/tool infrastructure as one checked removal.
+
+Full regression collected 3,318 tests. Its four groups produced 818 + 818 + 818 +
+836 passes (3,290), with 15 existing Pillow warnings and 28 setup errors, all from
+one obsolete `test_global_planner_cutover.configured` patch of the removed Claude
+`query` symbol. The fixture now asserts that retired transport is absent. Its complete
+30-test module passed on rerun, covering every affected case. Production source stayed
+frozen throughout the full run; only that test fixture changed. Complete-source Ruff,
+diff checks and the isolated installed native imports passed. Thus every collected
+case is covered by a passing run; the original full invocation itself exited nonzero
+for the explicitly resolved fixture errors.

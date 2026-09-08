@@ -5,34 +5,23 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from claude_agent_sdk import query
-
-from vfx_harness.agents.builder.critic_focus import _image_block, _one_user_message
-from vfx_harness.agents.model_stream import with_idle_deadline
-from vfx_harness.agents.plan_guardrails import planner_hooks
-from vfx_harness.agents.plan_tools import build_plan_tools
+from vfx_harness.agents import unit_planning_runtime
 from vfx_harness.agents.planner.pkg import planner_package
 from vfx_harness.agents.planner.rematerialize import (
     _rematerialize_layer,
-)
-from vfx_harness.agents.planner.types import (
-    _phase_tools,
 )
 from vfx_harness.agents.prompts import (
     LAYER_PLANNER_ADDENDUM,
     layer_user_prompt,
 )
-from vfx_harness.agents.resilience import result_signal, run_session
-from vfx_harness.agents.sdk_options import sdk_options
 from vfx_harness.agents.unit_scope import compile_scope_with_predecessors
 from vfx_harness.domain.contracts import load_document
 from vfx_harness.domain.work_units import ready_units
 from vfx_harness.evaluation.plan_gate import report as gate_report
 from vfx_harness.evaluation.plan_gate import run as run_plan_gate
 from vfx_harness.infrastructure.config import Settings
-from vfx_harness.knowledge.recipe_tools import build_recipe_tools
-from vfx_harness.observability import costlog, run_artifacts, transcript
-from vfx_harness.observability.log import log, log_message
+from vfx_harness.observability import run_artifacts
+from vfx_harness.observability.log import log
 from vfx_harness.orchestration.authority_capsule_resolution import (
     selected_layer_capsule_digest,
 )
@@ -52,7 +41,6 @@ from vfx_harness.orchestration.builder_execution_fence import (
     require_builder_execution_lease,
 )
 from vfx_harness.orchestration.layer_outcome_context import prior_outcomes_block
-from vfx_harness.orchestration.layer_outcome_paths import layer_identity_segment
 from vfx_harness.orchestration.layer_plans import (
     amendment_block,
     contract_gaps_block,
@@ -82,20 +70,6 @@ from vfx_harness.orchestration.work_unit_plan_transaction import (
 
 if TYPE_CHECKING:
     from vfx_harness.agents.builder.attempt_guard import UnitAttemptGuard
-
-_KICKOFF_MAX_PX = 1568  # same budget the critic uses; ~1600 tokens per still
-
-
-def _kickoff_blocks(text: str, shot, *, refs=None) -> list[dict]:
-    """Kickoff prose plus the explicitly due reference stills, in shot order."""
-
-    blocks: list[dict] = [{"type": "text", "text": text}]
-    for p in shot.refs if refs is None else refs:
-        try:
-            blocks.append(_image_block(p, _KICKOFF_MAX_PX))
-        except Exception as e:  # a corrupt plate must not cost the whole pass
-            log(f"! could not attach {p.name}: {str(e)[:120]}", 1)
-    return blocks
 
 
 async def _generate_layer_plan(
@@ -317,68 +291,6 @@ async def _generate_layer_plan(
         predecessor_cards=predecessor_cards,
     )
     layout = run_artifacts.ensure(shot.folder, command="plan-layer")
-    lab_dir = layout.scratch / "plan-lab" / layer_identity_segment(str(layer.id))
-    pserver, pnames = build_plan_tools(
-        shot.folder,
-        blender=blender,
-        lab_dir=lab_dir,
-        enabled_tools=frozenset({
-            "measure_ref",
-            "spike",
-            "ask_supervisor",
-            "gate_preview",
-            "publish_unit_plan",
-        }),
-        unit_plan_target=target,
-        unit_plan_selected_authority=selected_authority,
-    )
-    rserver, rnames = build_recipe_tools()
-    unit_plan_tools = _phase_tools(
-        pnames,
-        "measure_ref",
-        "spike",
-        "ask_supervisor",
-        "gate_preview",
-        "publish_unit_plan",
-    )
-    options = sdk_options(
-        model=model,
-        system_prompt=system,
-        cwd=str(shot.folder),
-        mcp_servers={"plan": pserver, "recipes": rserver},
-        allowed_tools=[*unit_plan_tools, *rnames],
-        disallowed_tools=["Bash", "Edit", "Write"],
-        permission_mode="bypassPermissions",
-        max_buffer_size=32 * 1024 * 1024,
-        setting_sources=[],
-        max_turns=max_turns,
-        effort="high",
-        hooks=planner_hooks(
-            shot.folder,
-            writable_files=(target,),
-            strict_reads=True,
-            completion_gate=False,
-            attempt_guard=attempt_guard,
-        ),
-    )
-    judge_names = {Path(ref).name for _frame, ref in layer.judges}
-    blocks = _kickoff_blocks(
-        kickoff, shot, refs=tuple(ref for ref in shot.refs if ref.name in judge_names)
-    )
-    async def _attempt() -> str:
-        said: list[str] = []
-        async for message in with_idle_deadline(
-            query(prompt=_one_user_message(blocks), options=options),
-            label="unit plan",
-        ):
-            log_message(message)
-            for blk in getattr(message, "content", None) or []:
-                if text := getattr(blk, "text", None):
-                    said.append(text)
-            if signal := result_signal(message):
-                said.append(signal)
-        return "\n".join(said)[-4000:]
-
     # Materialization is a transaction: the shot may keep this plan ONLY if the
     # deterministic gate accepts the resulting consumer view. Run 20260824T103842Z-afec73
     # wrote its generated plan, failed the gate in the caller, and left the file behind —
@@ -386,47 +298,16 @@ async def _generate_layer_plan(
 
     authority_path = work_unit_plan_authority_path(target)
     async with work_unit_plan_transaction(target, authority_path) as plan_transaction:
-        before = target.stat().st_mtime_ns if target.is_file() else -1
-
-        def _wrote() -> bool:
-            return target.is_file() and target.stat().st_mtime_ns != before
-
-        costlog.bind(shot.folder, role="plan:layer", model=model, tag=str(layer.id))
-        tpath = transcript.bind(shot.folder, "plan", label=f"layer-{layer.id}")
-        if tpath:
-            log(f"transcript → {tpath.relative_to(shot.folder)}", 1)
-        transcript.prompt(
-            kickoff,
-            role="kickoff",
-            mode="PLAN_LAYER",
-            model=model,
-            layer=layer.id,
-            refs=[p.name for p in shot.refs],
-        )
+        plan_transaction.claim_current()
         try:
-            try:
-                log(
-                    f"plan agent [LAYER {layer.id} · UNIT {selected.id}]: "
-                    f"{selected.title} → {rel_target}"
-                )
-                attempt_guard.check(f"query unit plan {layer.id}.{selected.id}")
-                await run_session(
-                    _attempt,
-                    succeeded=_wrote,
-                    label=f"plan layer {layer.id} unit {selected.id}",
-                )
-                attempt_guard.check(f"complete unit plan {layer.id}.{selected.id}")
-            finally:
-                # The MCP write is complete at this boundary.  Capture its exact bytes
-                # even when the model session terminates abnormally so a legal rollback
-                # can retract only this attempt.
-                try:
-                    plan_transaction.claim_current()
-                finally:
-                    try:
-                        transcript.unbind()
-                    finally:
-                        costlog.unbind()
+            log(f"plan agent [LAYER {layer.id} · UNIT {selected.id}]: {selected.title} → {rel_target}")
+            await unit_planning_runtime.execute(
+                layout=layout, target=target, charter=system, kickoff=kickoff,
+                model=model, blender=blender, max_turns=max_turns,
+                fence_lease=fence_lease, attempt_guard=attempt_guard, transaction=plan_transaction,
+            )
+            attempt_guard.check(f"complete unit plan {layer.id}.{selected.id}")
+            plan_transaction.require_owned_current()
 
             text = target.read_text(encoding="utf-8")
             if len(text.strip()) < 200:

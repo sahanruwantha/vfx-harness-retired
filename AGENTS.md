@@ -226,6 +226,14 @@ operation.
   stay outside the gate workspace. Declared client blockers in the compiler-preserved
   `plans/ownership_mapping.json` are plan-wide gate blockers, never informational prose
   that a clean gate may ignore (ADR-0012, HIR-0252).
+- Unit-plan generation uses a fresh Flynn SQLite session under the live builder
+  execution fence and exact planning claim. Publication writes only the selected unit's
+  plan and integrity stamp while holding that claim. The session previews the current
+  consumer gate; the outer VFX transaction independently gates and stamps terminal
+  approval or rolls back only its exact owned pair. It never adopts arbitrary bytes
+  after inference, resumes a spent journal, or equates a preview with acceptance.
+  Session reports select the journal under `checkpoints/flynn/`; context contains the
+  required unit authority and only the latest observation and images (ADR-0012).
 - Native materialization tools bind one run-owned scratch candidate, its finalization
   revision, exact selected authority, validation sources, authored inputs, and declared
   reference bytes. Register their dispatch guard and supply the live attempt check;

@@ -57,10 +57,10 @@ def test_default_lane_uses_sonnet_execution_and_opus_critic(monkeypatch):
     settings = Settings.from_environment(load_dotenv_file=False)
 
     assert settings.execution_model == DEFAULT_EXECUTION_MODEL == "claude-sonnet-5"
+    assert settings.planner_model == config.VISION_MODEL
     assert settings.reviewer_model == config.VISION_MODEL
     assert settings.critic_model == DEFAULT_CRITIC_MODEL == "claude-opus-5"
     assert {
-        settings.planner_model,
         settings.builder_model,
         settings.script_model,
         settings.asset_model,
@@ -75,7 +75,7 @@ def test_global_execution_lane_and_role_overrides_are_independent(monkeypatch):
     monkeypatch.setenv("VFXH_CRITIC_MODEL", "judge-control")
     settings = Settings.from_environment(load_dotenv_file=False)
 
-    assert settings.planner_model == "execution-control"
+    assert settings.planner_model == config.VISION_MODEL
     assert settings.builder_model == "execution-control"
     assert settings.script_model == "script-control"
     assert settings.critic_model == "judge-control"

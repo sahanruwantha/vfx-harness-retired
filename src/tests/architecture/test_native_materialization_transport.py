@@ -8,6 +8,7 @@ import pytest
 
 @pytest.mark.parametrize("relative", [
     "agents/materialization_runtime.py", "agents/materialization_session.py",
+    "agents/unit_planning_session.py", "agents/unit_planning_runtime.py", "agents/planner/generate.py",
     "agents/planner/rematerialize.py", "agents/planner/kickoff.py",
 ])
 def test_materialization_owns_no_claude_transport_import(relative):

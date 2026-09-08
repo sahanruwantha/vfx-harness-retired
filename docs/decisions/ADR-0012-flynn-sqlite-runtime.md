@@ -361,3 +361,15 @@ Fresh candidate paths preserve failed attempts, and SQLite request/result/usage 
 replace the old materialization-only Claude transcript and cost callbacks. Known
 inference failures and exhausted budgets compile the existing VFX typed stop; unexpected
 errors and lost ownership are not converted into domain success or retried automatically.
+
+## Native unit planning
+
+Production unit-plan generation uses Flynn with a fresh bounded SQLite session under
+VFX's existing builder fence and exact planning claim. Native content publication is
+held inside the claim guard and owns only the schema-selected target and integrity
+stamp. It previews the independent consumer gate, with at most three evaluations.
+The outer planning transaction reruns the terminal gate and decides attestation or
+rollback. A clean preview remains an observation, never an SDK state commit or VFX
+acceptance. Model responses no longer make the transaction adopt whatever bytes are
+present at session exit. The selected unit's knowledge and reference tools, confined
+spikes, required authority context and latest feedback remain bounded by this session.

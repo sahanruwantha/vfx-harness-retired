@@ -28,7 +28,7 @@ def configured(bound, monkeypatch):
     settings = Settings(plan_max_turns=4)
     monkeypatch.setattr(Settings, "from_environment", lambda **_: settings)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "offline-fixture")
-    monkeypatch.setattr(jit_generate, "query", lambda **_: pytest.fail("global planner invoked Claude"))
+    assert not hasattr(jit_generate, "query"), "unit planner must not expose retired Claude transport"
     requests = []
     adapter_class = deepseek.DeepSeekAdapter
 

@@ -170,7 +170,9 @@ class Settings:
     transcript_enabled: bool = True
     distill_inline: bool = False
     execution_model: str = DEFAULT_EXECUTION_MODEL
-    planner_model: str = DEFAULT_EXECUTION_MODEL
+    planner_model: str = VISION_MODEL
+    unit_plan_seconds: int = 600
+    unit_plan_output_tokens: int = 32768
     global_planner_model: str = VISION_MODEL
     global_plan_seconds: int = 600
     global_plan_output_tokens: int = 32768
@@ -212,7 +214,9 @@ class Settings:
             transcript_enabled=not _flag("VFXH_NO_TRANSCRIPT"),
             distill_inline=_flag("VFXH_DISTILL_INLINE"),
             execution_model=execution_model,
-            planner_model=_text("VFXH_PLANNER_MODEL", execution_model),
+            planner_model=_text("VFXH_PLANNER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
+            unit_plan_seconds=_int("VFXH_UNIT_PLAN_SECONDS", 600),
+            unit_plan_output_tokens=_int("VFXH_UNIT_PLAN_OUTPUT_TOKENS", 32768),
             global_planner_model=_text("VFXH_GLOBAL_PLANNER_MODEL", _text("DEEPSEEK_MODEL", VISION_MODEL)),
             global_plan_seconds=_int("VFXH_GLOBAL_PLAN_SECONDS", 600),
             global_plan_output_tokens=_int("VFXH_GLOBAL_PLAN_OUTPUT_TOKENS", 32768),
