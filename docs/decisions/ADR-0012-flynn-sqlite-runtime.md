@@ -428,3 +428,21 @@ the caller's current-candidate check, and unchanged run-owned render bytes. Its
 returned dispatch guard must be registered by the caller. Image capture, adversary
 selection, debt compilation and canonical replay remain harness responsibilities.
 This capability does not enable production raster routing on its own.
+
+## Native candidate and adversary capture
+
+`builder.flynn_image_capture.UnitImageCapture` combines cold capture and the shared
+payment tool behind one dispatch guard. Its frame choices come from the exact unit's
+judge points. It freezes the deterministic scene setup, ordered prior source bytes and
+construction dependencies, and retains receipt-backed prior-list checks. Each capture
+renders at most one missing pre-unit adversary and one current candidate at EEVEE/0.5;
+the scenes are reconstructed independently from empty. Cached adversaries remain bound
+to the original prefix and setup. Candidate handles include the exact script digest and
+are retired on a new candidate generation; stale handles cannot authorize payment.
+
+Image files are published from verified byte snapshots into the run's render directory.
+The complete capture report retains replay inputs outside model context. Flynn receives
+the two images, compact identities and a report locator/digest, with no acceptance or
+state commit. Capture, candidate, prior, receipt and report substitutions fail closed.
+Production raster routing remains gated until the native builder's probe/freeze and
+canonical replay consume this capability under existing VFX completion rules.

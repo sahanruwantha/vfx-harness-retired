@@ -921,3 +921,37 @@ was changed to the central read-only run-artifact resolver, its 23-test architec
 and native contract check passed, and the full run above started fresh afterward.
 The full run emitted 25 Pillow `getdata` deprecation warnings. Complete-source Ruff,
 diff checks and a final isolated package import with Claude blocked passed.
+
+## Native cold image capture connected to payment
+
+Added `builder.flynn_image_capture.UnitImageCapture`, an isolated native capability
+combining `capture_unit_frame` and `propose_checks` with one dispatch guard. It freezes
+the scene preamble and exact ordered prior script/dependency inputs. Receipt-backed
+prefixes retain their current-publication checks. Frame choices derive from the bound
+unit's declared judge points; capture resets and replays the prior scene independently
+for the harness-selected adversary and current candidate, at fixed EEVEE/0.5 settings.
+
+Candidate records include the exact candidate SHA-256. Rewrites refuse payment until
+recaptured and retire old candidate handles; same-prefix adversaries can be reused.
+Images, candidate inputs, priors and the capture report are reopened before registration.
+Partial or substituted captures register nothing. Detailed replay inputs stay in the
+run report; the model gets two immutable image snapshots and compact report identities.
+The combined tools use Flynn's existing structured results, guards, budgets and SQLite
+observations. No SDK change, ARC work or live inference was required.
+
+A real confined Blender fixture cold-rendered a dim prior surface and brighter candidate,
+measured their actual images and published a runtime check through the native payment
+tool. It began with a stale warm-scene object and wrong frame, and confirmed both were
+excluded from the cold candidate. This proves capture/payment transport, not unit
+acceptance or a general visual-quality result. Production routing is unchanged: next is
+integrating these capabilities with native probe/freeze and canonical acceptance replay.
+
+Validation passed 60 focused contract, architecture, image-debt/provenance and real
+Blender integration tests against frozen source. Failure injection covered candidate
+substitution during inference and rendering, prior bytes/order/receipt changes, scene
+setup changes, invalid frames, failed renders and replaced reports. Payment refusal
+after inference preserves the inference reservation and spends no external dispatch.
+Ruff on the complete source tree, diff checks and an isolated installed-package import
+passed. The tests emitted 22 existing Pillow `getdata` deprecation warnings. This adds
+one isolated builder capability without changing existing runtime imports or routing;
+the full repository suite was not rerun.

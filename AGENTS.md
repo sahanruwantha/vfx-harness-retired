@@ -237,6 +237,12 @@ operation.
   live fence, run/unit/parent-chain image identities and artifact bytes current through
   guarded publication. Payment observations never authorize acceptance; raster routing
   stays gated until capture, payment and canonical replay are integrated (ADR-0012).
+- Native unit image capture uses declared judge frames, a frozen scene setup and the
+  exact ordered prior sources/dependencies. Recheck receipt-backed priors through report
+  publication; reconstruct the adversary without the candidate and cold-replay the exact
+  candidate separately. Fixed EEVEE/0.5 images must have matching resolution. A rewritten
+  candidate must be recaptured before payment; its previous handles are retired. No
+  partial capture registers a handle, and capture reports grant no acceptance (ADR-0012).
 - Native builder inspection reconstructs the selected prior chain from an empty scene,
   evaluates the active unit frame and exposes only owned and read-only predecessor
   objects. Prepare and recheck replay-source bindings through the inspection report;
